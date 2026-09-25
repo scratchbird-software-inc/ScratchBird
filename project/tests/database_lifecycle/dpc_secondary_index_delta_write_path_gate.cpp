@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
@@ -120,12 +122,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid non_unique_index_uuid;
   api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) {
       std::filesystem::remove_all(dir, ignored);
@@ -134,21 +139,15 @@ struct Fixture {
 };
 
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -230,8 +229,7 @@ Fixture MakeFixture(
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -241,12 +239,18 @@ Fixture MakeFixture(
   Require(created.ok(), "DPC-022 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "dpc022-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+                          context, Table(fixture, context),
+                          {"character", "character", "character"},
+                          {Index(fixture, context, fixture.non_unique_index_uuid,
+                                 "name", false, non_unique_family),
+                           Index(fixture, context, fixture.unique_index_uuid, "id", true)}),
                       "DPC-022 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -289,6 +293,9 @@ Fixture MakeFixture(
                   api::LocalCommitPublicationRecoveryClass::in_doubt,
           "DPC-022 prepared metadata transaction did not retain its durable publication set");
   Commit(context);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "dpc022-session"));
   return fixture;
 }
 
@@ -297,8 +304,8 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string id,
                                       std::string name,
                                       std::vector<std::string> options = {}) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(name)));
@@ -312,8 +319,8 @@ api::EngineUpdateRowsResult UpdateName(const Fixture& fixture,
                                        std::string id,
                                        std::string name,
                                        std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
@@ -328,8 +335,8 @@ api::EngineDeleteRowsResult DeleteRow(const Fixture& fixture,
                                       const api::EngineRequestContext& context,
                                       api::EngineUuid row_uuid,
                                       std::vector<std::string> options = {}) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "row_uuid_match";
@@ -578,6 +585,11 @@ void ValidateErrorPathLeavesNoDelta() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "dpc022_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "dpc022_statement_fixture").ok(),
+          "DPC-022 memory policy configuration failed");
   Require(kWritePathSearchKey == "DPC_DEFERRED_INDEX_WRITE_PATH",
           "DPC-022 write-path search key drifted");
   Require(kGateSearchKey == "DPC_SECONDARY_INDEX_DELTA_WRITE_PATH_GATE",

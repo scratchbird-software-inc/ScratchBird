@@ -788,9 +788,20 @@ EngineApiDiagnostic AppendSecurityEvidenceEvent(const EngineRequestContext& cont
   if (context.database_path.empty()) {
     return MakeSecurityDiagnostic("SECURITY.AUDIT.EVIDENCE_REQUIRED", "database_path_required");
   }
-  const std::string event = std::string("SBSEC1\tEVIDENCE\t") + std::to_string(context.local_transaction_id) + "\t" +
-                            operation_id + "\t" + evidence_kind + "\t" + EncodeCrudText(evidence_detail);
-  return AppendApiBehaviorEvent(context, event);
+  // Audit observations use the same bounded binary record codec as other
+  // API evidence. They never constitute MGA transaction finality.
+  EngineApiRequest identity_request;
+  identity_request.context = context;
+  ApiBehaviorRecord record;
+  record.creator_tx = context.local_transaction_id;
+  record.operation_id = operation_id;
+  record.object_uuid = ApiBehaviorObjectUuid(identity_request, "security_evidence");
+  record.object_kind = "security_evidence";
+  record.target_database_uuid = context.database_uuid;
+  record.default_name = evidence_kind;
+  record.payload = evidence_detail;
+  record.state = "recorded";
+  return AppendApiBehaviorEvent(context, MakeApiBehaviorRecordEvent(record));
 }
 
 }  // namespace scratchbird::engine::internal_api

@@ -670,27 +670,10 @@ std::array<std::uint8_t, 16> PrincipalUuidFor(const std::string& principal) {
   return uuid;
 }
 
-std::array<std::uint8_t, 16> TextToUuid(std::string_view text) {
+std::array<std::uint8_t, 16> IdentityArray(std::string_view bytes) {
   std::array<std::uint8_t, 16> out{};
-  auto hex_value = [](char ch) -> int {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-  };
-  std::size_t nibble = 0;
-  for (const char ch : text) {
-    if (ch == '-') continue;
-    const int value = hex_value(ch);
-    if (value < 0 || nibble >= 32) return {};
-    if ((nibble % 2) == 0) {
-      out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
-    } else {
-      out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
-    }
-    ++nibble;
-  }
-  return nibble == 32 ? out : std::array<std::uint8_t, 16>{};
+  if (bytes.size() == out.size()) std::copy(bytes.begin(), bytes.end(), out.begin());
+  return out;
 }
 
 std::string JsonEscape(const std::string& value) {
@@ -2779,17 +2762,7 @@ std::string ServerDriverTransactionDecisionJson(
   return out.str();
 }
 
-std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid) {
-  static constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t i = 0; i < uuid.size(); ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-    out.push_back(hex[(uuid[i] >> 4u) & 0x0fu]);
-    out.push_back(hex[uuid[i] & 0x0fu]);
-  }
-  return out;
-}
+
 
 std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& principal,
                                                           bool credential_valid,
@@ -5325,9 +5298,9 @@ SessionOperationResult HandleFinalizeVariableBinding(
     const auto& mapping=frame->mappings[node.parent_operand_ordinal-1];
     if(node.scope_uuid!=frame->scope_uuid.bytes||node.scope_generation!=frame->scope_generation||
        node.frame_uuid!=frame->frame_uuid.bytes||node.frame_generation!=frame->frame_generation||
-       node.variable_descriptor_uuid!=TextToUuid(mapping.variable_descriptor_uuid)||
+       node.variable_descriptor_uuid!=IdentityArray(mapping.variable_descriptor_uuid)||
        node.variable_descriptor_generation!=mapping.variable_descriptor_generation||
-       node.datatype_descriptor_uuid!=TextToUuid(mapping.datatype_descriptor_uuid)||
+       node.datatype_descriptor_uuid!=IdentityArray(mapping.datatype_descriptor_uuid)||
        node.datatype_descriptor_generation!=mapping.datatype_descriptor_generation||
        node.value_generation!=mapping.value_generation)return refuse("SBLR.VARIABLE.STALE","SBVN_registry_mismatch");}
   auto context=EngineContextForSession(registry->sessions_by_uuid.at(
@@ -5341,10 +5314,10 @@ SessionOperationResult HandleFinalizeVariableBinding(
   identity.result_descriptor_version=scratchbird::engine::internal_api::kSblrVariableResultDescriptorVersion;
   const auto availability=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(context,identity);
   if(!availability.ok||!availability.snapshot.installed)return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","variable_executor_missing");
-  const auto issue_uuid=[](std::uint64_t salt){const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());const auto id=scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::object,now+salt);return id.ok()?scratchbird::core::uuid::UuidToString(id.value.value):std::string{};};
+  const auto issue_uuid=[](std::uint64_t salt){const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());const auto id=scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::object,now+salt);return id.ok()?std::string(reinterpret_cast<const char*>(id.value.value.bytes.data()), 16):std::string{};};
   scratchbird::engine::sblr::SblrVariableAdmissionV1 admission;
   const auto final_uuid=issue_uuid(1),token_uuid=issue_uuid(2);
-  admission.final_receipt_uuid=TextToUuid(final_uuid);admission.admission_token_uuid=TextToUuid(token_uuid);
+  admission.final_receipt_uuid=IdentityArray(final_uuid);admission.admission_token_uuid=IdentityArray(token_uuid);
   admission.scope_uuid=decoded.scope_uuid;admission.scope_generation=decoded.scope_generation;
   admission.frame_uuid=decoded.frame_uuid;admission.frame_generation=decoded.frame_generation;
   admission.registry_snapshot_uuid=frame->registry_snapshot_uuid.bytes;

@@ -86,6 +86,10 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::vector<SblrValue> values,
                                           bool dependency_available = true) {
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;

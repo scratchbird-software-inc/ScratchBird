@@ -148,6 +148,10 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
       function_id == "sb.scalar.policy_blocked" ||
       function_id == "sb.scalar.policy_blocked_diagnostic";
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -891,7 +895,7 @@ int main() {
            "SBSQL-CE3790BA0486-policy-blocked-diagnostic-identity",
            Run(registry, "SBSQL.POLICY_BLOCKED"),
            "SB_DIAG_FUNCTION_NOT_REGISTERED",
-           "function_id is not present in the active function registry") && ok;
+           "binary function UUID is not present in the active function registry") && ok;
   ok = ExpectText("SBSQL-CB2705E35D88-diag_sqlstate-metadata",
                   Run(registry, "sb.scalar.diag_sqlstate"),
                   "00000") && ok;

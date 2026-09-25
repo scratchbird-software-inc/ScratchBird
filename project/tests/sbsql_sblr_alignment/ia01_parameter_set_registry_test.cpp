@@ -59,15 +59,28 @@ api::EngineUuid Id(UuidKind, std::uint64_t) {
   Require(value.has_value(), "UUID runtime issuance failed");
   return *value;
 }
+std::string IdentityFileKeyOracle(const api::EngineUuid& id) {
+  std::string input = "SB_PARAMETER_FILE_KEY_V2";
+  input.append(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+  Require(SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(),
+                 digest.data()) != nullptr, "file-key digest oracle failed");
+  constexpr char hex[] = "0123456789abcdef";
+  std::string key;
+  for (const auto value : digest) { key.push_back(hex[value >> 4]); key.push_back(hex[value & 15]); }
+  Require(key.find(uuid::UuidToString(id)) == std::string::npos,
+          "filesystem token exposed a display UUID");
+  return key;
+}
 struct Fixture {
   std::string base; api::EngineUuid database_uuid;
   std::vector<std::string> stores;
   ~Fixture(){std::error_code ignored;for(const auto& path:stores)std::filesystem::remove(path,ignored);}
   std::string Store(const api::EngineUuid& descriptor) {
-    auto path=base+".sb.sblr_parameter_set."+uuid::UuidToString(descriptor)+".v1";stores.push_back(path);return path;
+    auto path=base+".sb.sblr_parameter_set."+IdentityFileKeyOracle(descriptor)+".v2";stores.push_back(path);return path;
   }
   std::string BindStore(const api::EngineUuid& descriptor) {
-    auto path=base+".sb.sblr_parameter_bind."+uuid::UuidToString(descriptor)+".v1";stores.push_back(path);return path;
+    auto path=base+".sb.sblr_parameter_bind."+IdentityFileKeyOracle(descriptor)+".v2";stores.push_back(path);return path;
   }
 };
 Fixture MakeFixture(std::uint64_t salt) {

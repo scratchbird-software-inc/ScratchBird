@@ -579,13 +579,26 @@ bool EvaluateContextualTextEqualityV2(
     return false;
   }
   const auto& runtime = selected->runtime_materialization;
+  auto expected_target = runtime.target_descriptor;
+  expected_target.descriptor_uuid = runtime.graph_binding.exact_target_descriptor.descriptor_uuid;
+  if (!SameExactEngineDescriptorV1(target_value.descriptor, expected_target)) {
+    *diagnostic_id = "CTB.TEXT.DESCRIPTOR_INVALID";
+    *refusal_detail = "contextual TEXT row descriptor differs from the validated target";
+    return false;
+  }
+  // The comparison seam consumes the exact binary relational descriptor,
+  // after the persisted projection has been checked against the live lease.
+  auto comparison_target = target_value;
+  comparison_target.descriptor.encoded_descriptor.assign(
+      runtime.exact_target_relational_descriptor_v3_bytes.begin(),
+      runtime.exact_target_relational_descriptor_v3_bytes.end());
   const auto& literal_value = runtime.value;
   const auto& left_value = expected->literal_argument_ordinal == 1
                                ? literal_value
-                               : target_value;
+                               : comparison_target;
   const auto& right_value = expected->literal_argument_ordinal == 2
                                 ? literal_value
-                                : target_value;
+                                : comparison_target;
   int comparison = 0;
   if (!left_value.isSqlNull() && !right_value.isSqlNull() &&
       !api::QowCompareCanonicalCollatedScalarsV1(
@@ -822,8 +835,8 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       manifest_row.descriptor_epoch);
   if (!identity.ok) {
     const auto registered_identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
-        datatype_manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x02}},
+        2, 2, descriptor_uuid,
         manifest_row.descriptor_epoch);
     // A live registered identity may not be downgraded to a legacy
     // descriptor/type alias merely because its receipt is stale.  Only rows
@@ -3936,7 +3949,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   if (spatial) {
     for (std::size_t ordinal = 0; ordinal < kSpatialTypes.size(); ++ordinal) {
       spatial_type_uuids[ordinal] =
-          ExactCanonicalCoreDatatypeUuidV1(kSpatialTypes[ordinal]);
+          ExactCanonicalCoreDatatypeTypeUuidV1(kSpatialTypes[ordinal]);
     }
     if (std::ranges::any_of(spatial_type_uuids,
                             [](const auto& uuid) { return uuid.is_nil(); })) {
@@ -4351,8 +4364,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   const auto resource_contract_uuid =
       api::GenerateCrudEngineUuid("object");
   const auto suffix = std::to_string(source->node_id) + "." + implementation_id;
-  const auto alternative_uuid =
-      api::GenerateCrudEngineUuid("object");
+
   const auto cost_uuid =
       api::GenerateCrudEngineUuid("object");
   const auto generation =
@@ -4568,8 +4580,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       family + " model source", family + ".local.v1");
   if (!physical.ok || physical.physical_dag.nodes.size() != 1 ||
       physical.physical_dag.nodes.front().implementation_id != implementation_id ||
-      physical.physical_dag.nodes.front().selected_alternative_uuid !=
-          alternative_uuid ||
+      !core::uuid::IsEngineIdentityUuid(
+          physical.physical_dag.nodes.front().selected_alternative_uuid) ||
       physical.physical_dag.nodes.front().executor_capability_uuid !=
           capability_uuid) {
     return refuse(physical.diagnostic_id.empty()
@@ -4580,6 +4592,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       : physical.detail);
   }
   const auto& physical_source = physical.physical_dag.nodes.front();
+  // The physical planner owns the selected alternative identity. Bind the
+  // provider request to that published receipt, never to a separately minted ID.
+  const auto alternative_uuid = physical_source.selected_alternative_uuid;
   result.optimizer_selected = true;
   result.physical_dag_published = true;
   result.optimizer_admission_stage_count =

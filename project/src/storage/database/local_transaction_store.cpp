@@ -1234,9 +1234,10 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   result.status = StoreOkStatus();
   result.inventory = std::move(inventory);
   result.horizons = horizons.horizons;
-  // A readable page chain can still be the pre-publication generation after a
-  // process crash.  The fsynced publish journal is the authority that decides
-  // whether recovery exposes the old or new whole-inventory snapshot.
+  // Readable pages may contain an unselected attempt after a crash. The
+  // validated same-node SBTXP005 inventory publication carrier selects the
+  // complete old/new inventory and generation under the native MGA protocol;
+  // it never replays mutation commands or delegates finality to a generic log.
   return RecoverInventoryFromPublishJournal(device, result);
 }
 
@@ -1275,9 +1276,9 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   if (device == nullptr)
     return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.null_device_or_context");
   const auto operation_guard = device->AcquireOperationGuard();
-  // The journal is part of inventory authority. Refuse before even publishing
-  // its "publishing" image; relying on WriteAt's read-only check changes the
-  // journal first and can disturb a node opened only for inspection.
+  // Refuse read-only devices before replacing the native inventory carrier.
+  // Waiting for WriteAt's read-only check would already change its selected
+  // inventory image and disturb a node opened only for inspection.
   if (device != nullptr && device->read_only()) {
     return StorePageError("STORAGE.READ_ONLY_DEVICE",
                           "storage.transaction_inventory.read_only_device");

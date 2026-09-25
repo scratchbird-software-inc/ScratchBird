@@ -10,6 +10,7 @@
 #include "agent_runtime_service.hpp"
 
 #include <algorithm>
+#include <openssl/sha.h>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -34,11 +35,11 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.schema_version = 1;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = "019f0100-0000-7000-8000-000000000001";
+  image.authority.mga_transaction_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x01", 16);
   image.authority.transaction_generation = 7;
-  image.authority.evidence_uuid = "019f0100-0000-7000-8000-000000000002";
-  image.authority.database_uuid = "019f0100-0000-7000-8000-000000000003";
-  image.authority.catalog_storage_uuid = "019f0100-0000-7000-8000-000000000004";
+  image.authority.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x02", 16);
+  image.authority.database_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x03", 16);
+  image.authority.catalog_storage_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x04", 16);
   image.authority.storage_commit_evidence_uuid = image.authority.evidence_uuid;
   image.authority.catalog_generation = 1;
   image.authority.local_transaction_id = 7007;
@@ -47,9 +48,9 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.authority.fsync_or_checkpoint_evidence = true;
 
   agents::AgentInstanceRecord instance;
-  instance.instance_uuid = "019f0100-0000-7000-8000-000000000010";
+  instance.instance_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x10", 16);
   instance.agent_type_id = "storage_health_manager";
-  instance.policy_uuid = "019f0100-0000-7000-8000-000000000011";
+  instance.policy_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x11", 16);
   instance.scope = "node/database/filespace";
   instance.state = agents::AgentLifecycleState::registered;
   instance.policy_generation = 7;
@@ -66,7 +67,7 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   instance.safe_mode = true;
   instance.quarantined = true;
   instance.cancellation_requested = true;
-  instance.retirement_evidence_uuid = "019f0100-0000-7000-8000-000000000019";
+  instance.retirement_evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x19", 16);
   instance.last_failure_diagnostic_code = "SB_AGENT_TEST.FAILURE";
   instance.last_supervision_detail = "detail with separators |=;\tand newline\nkept";
   image.instances.push_back(instance);
@@ -104,7 +105,7 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.policies.push_back(policy);
 
   agents::AgentPolicyAttachmentRecord attachment;
-  attachment.attachment_uuid = "019f0100-0000-7000-8000-000000000012";
+  attachment.attachment_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x12", 16);
   attachment.agent_type_id = instance.agent_type_id;
   attachment.policy_family = policy.policy_family;
   attachment.policy_uuid = instance.policy_uuid;
@@ -117,7 +118,7 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.attachments.push_back(attachment);
 
   agents::AgentEvidenceRecord evidence;
-  evidence.evidence_uuid = "019f0100-0000-7000-8000-000000000013";
+  evidence.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x13", 16);
   evidence.agent_type_id = instance.agent_type_id;
   evidence.instance_uuid = instance.instance_uuid;
   evidence.evidence_kind = "catalog_open";
@@ -129,16 +130,16 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.evidence.push_back(evidence);
 
   agents::DurableAgentApprovalRecord approval;
-  approval.approval_uuid = "019f0100-0000-7000-8000-000000000014";
-  approval.action_uuid = "019f0100-0000-7000-8000-000000000015";
-  approval.principal_uuid = "019f0100-0000-7000-8000-000000000016";
+  approval.approval_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x14", 16);
+  approval.action_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x15", 16);
+  approval.principal_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x16", 16);
   approval.evidence_uuid = evidence.evidence_uuid;
   approval.approved = true;
   approval.approved_at_microseconds = 300;
   image.approvals.push_back(approval);
 
   agents::DurableAgentOverrideRecord override_record;
-  override_record.override_uuid = "019f0100-0000-7000-8000-000000000017";
+  override_record.override_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x17", 16);
   override_record.agent_type_id = instance.agent_type_id;
   override_record.scope = instance.scope;
   override_record.principal_uuid = approval.principal_uuid;
@@ -155,7 +156,7 @@ agents::DurableAgentCatalogImage DurableCatalog() {
   image.health.push_back(health);
 
   agents::DurableAgentHistoryRecord history;
-  history.history_uuid = "019f0100-0000-7000-8000-000000000018";
+  history.history_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x18", 16);
   history.subject_uuid = instance.instance_uuid;
   history.event_kind = "catalog_bootstrap";
   history.diagnostic_code = "SB_AGENT_CATALOG.HISTORY_RETAINED";
@@ -215,12 +216,23 @@ void TestDurableCatalogLayoutsCoverRuntimeRecordFamilies() {
 
 std::string RewriteHeaderSchemaVersion(std::string encoded,
                                         const std::string& replacement) {
-  const std::string token = "schema_version=1";
-  const auto pos = encoded.find(token);
-  Require(pos != std::string::npos,
-          "schema version token missing from durable catalog header");
-  encoded.replace(pos, token.size(), "schema_version=" + replacement);
+  Require(encoded.size() >= 80 && encoded.substr(0, 8) == "SBADC002",
+          "binary catalog header missing");
+  const auto version = static_cast<std::uint64_t>(std::stoull(replacement));
+  for (unsigned i = 0; i < 8; ++i)
+    encoded[8 + i] = static_cast<char>(version >> (8 * i));
   return encoded;
+}
+
+void RefreshImageChecksum(std::string* encoded) {
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  SHA256(reinterpret_cast<const unsigned char*>(encoded->data() + 80),
+         encoded->size() - 80, digest);
+  constexpr char digits[] = "0123456789abcdef";
+  for (std::size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+    (*encoded)[16 + i * 2] = digits[digest[i] >> 4];
+    (*encoded)[17 + i * 2] = digits[digest[i] & 15];
+  }
 }
 
 void TestStructuredValidation() {
@@ -260,12 +272,61 @@ void TestStructuredValidation() {
           "approval timestamp did not round-trip");
   Require(validation.image.overrides.size() == 1, "override did not round-trip");
   Require(validation.image.overrides.front().principal_uuid ==
-              "019f0100-0000-7000-8000-000000000016",
+              std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x16", 16),
           "override principal did not round-trip");
   Require(validation.image.health.size() == 1, "health did not round-trip");
   Require(validation.image.retained_history.size() == 1, "history did not round-trip");
   Require(validation.image.migrations.empty(),
           "unexpected migration record in current schema image");
+
+  Require(encoded.substr(0, 8) == "SBADC002", "binary format version missing");
+  Require(encoded.find(image.instances.front().instance_uuid) != std::string::npos,
+          "UUID16 was not retained verbatim");
+  auto binary_fixture = image;
+  binary_fixture.instances.front().instance_uuid =
+      std::string("\x00\x7c\x0a\x09\x3b\x3d\x70\x25\x80\x00\xff\x7c\x00\x00\x00\x01", 16);
+  binary_fixture.policies.front().required_metric_families = {"", std::string("a\0b", 3), "a|b"};
+  binary_fixture.policies.front().config_fields[std::string("a\0b", 3)] = std::string("\0|;=%\n", 7);
+  Require(agents::RefreshDurableAgentCatalogAuthorityDigest(
+              &binary_fixture, binary_fixture.authority.evidence_uuid).ok,
+          "binary fixture authority digest failed");
+  const auto binary_encoded = agents::SerializeDurableAgentCatalogImage(binary_fixture);
+  const auto binary_decoded = agents::ValidateDurableAgentCatalogImage(binary_encoded, true);
+  Require(binary_decoded.status.ok &&
+              binary_decoded.image.instances.front().instance_uuid == binary_fixture.instances.front().instance_uuid &&
+              binary_decoded.image.policies.front().required_metric_families == binary_fixture.policies.front().required_metric_families &&
+              binary_decoded.image.policies.front().config_fields == binary_fixture.policies.front().config_fields,
+          "binary framing lost delimiters, NULs or empty collection entries");
+  auto bad_identity = image;
+  bad_identity.instances.front().instance_uuid = "019f0100-0000-7000-8000-000000000010";
+  Require(agents::SerializeDurableAgentCatalogImage(bad_identity).empty(),
+          "text UUID was admitted into binary catalog");
+  for (const auto length : {std::size_t(0), std::size_t(7), std::size_t(15),
+                            std::size_t(79), encoded.size() - 1}) {
+    Require(!agents::ValidateDurableAgentCatalogImage(encoded.substr(0, length), false).status.ok,
+            "truncated catalog admitted");
+  }
+  auto malformed = encoded;
+  malformed.replace(80, 8, 8, static_cast<char>(0xff));
+  RefreshImageChecksum(&malformed);
+  auto invalid = agents::ValidateDurableAgentCatalogImage(malformed, false);
+  Require(!invalid.status.ok && invalid.image.instances.empty(),
+          "oversized frame length admitted or partially published");
+  malformed = encoded + encoded.substr(80);
+  RefreshImageChecksum(&malformed);
+  invalid = agents::ValidateDurableAgentCatalogImage(malformed, false);
+  Require(!invalid.status.ok && invalid.image.instances.empty(),
+          "duplicated catalog records admitted or partially published");
+  malformed = encoded;
+  const auto identity_offset = malformed.find(image.instances.front().instance_uuid);
+  malformed[identity_offset + 6] = 0;
+  RefreshImageChecksum(&malformed);
+  invalid = agents::ValidateDurableAgentCatalogImage(malformed, false);
+  Require(!invalid.status.ok && invalid.image.instances.empty(),
+          "malformed binary identity admitted or partially published");
+  Require(!agents::ValidateDurableAgentCatalogImage(
+              "SB_AGENT_DURABLE_CATALOG_IMAGE\tschema_version=1\n", false).status.ok,
+          "retired escaped-text catalog admitted");
 
   std::string tampered = encoded;
   tampered.push_back('x');
@@ -319,8 +380,8 @@ void TestServiceEvidenceGates() {
   request.manifest = agents::CanonicalAgentManifest();
   request.catalog = DurableCatalog();
   request.production_live_path = true;
-  request.service_owner_uuid = "019f0100-0000-7000-8000-000000000020";
-  request.evidence_uuid = "019f0100-0000-7000-8000-000000000021";
+  request.service_owner_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x20", 16);
+  request.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x21", 16);
 
   auto result = service.Open(request);
   Require(!result.status.ok &&
@@ -346,21 +407,21 @@ void TestServiceEvidenceGates() {
               !result.evidence.agents_are_security_authority,
           "authority non-drift evidence was absent");
 
-  result = service.Start("019f0100-0000-7000-8000-000000000022");
+  result = service.Start(std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x22", 16));
   Require(result.status.ok, "service start failed with durable evidence");
-  result = service.Drain("019f0100-0000-7000-8000-000000000023", 400);
+  result = service.Drain(std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x23", 16), 400);
   Require(result.status.ok, "service drain failed");
 }
 
 void TestLeaseHeartbeatAndReplay() {
   auto image = DurableCatalog();
   agents::DurableLeaseRequest request;
-  request.lease_uuid = "019f0100-0000-7000-8000-000000000030";
+  request.lease_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x30", 16);
   request.instance_uuid = image.instances.front().instance_uuid;
-  request.owner_uuid = "019f0100-0000-7000-8000-000000000031";
+  request.owner_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x31", 16);
   request.now_microseconds = 1000;
   request.lease_duration_microseconds = 5000;
-  request.evidence_uuid = "019f0100-0000-7000-8000-000000000032";
+  request.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x32", 16);
 
   auto status = agents::AcquireDurableAgentLease(&image, request);
   Require(status.ok, "initial lease acquire failed");
@@ -370,7 +431,7 @@ void TestLeaseHeartbeatAndReplay() {
           "same owner acquire was not idempotent");
 
   auto duplicate = request;
-  duplicate.owner_uuid = "019f0100-0000-7000-8000-000000000033";
+  duplicate.owner_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x33", 16);
   status = agents::AcquireDurableAgentLease(&image, duplicate);
   Require(!status.ok &&
               status.diagnostic_code ==
@@ -378,26 +439,26 @@ void TestLeaseHeartbeatAndReplay() {
           "duplicate live lease owner was accepted");
 
   request.now_microseconds = 1100;
-  request.evidence_uuid = "019f0100-0000-7000-8000-000000000034";
+  request.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x34", 16);
   status = agents::HeartbeatDurableAgentLease(&image, request);
   Require(status.ok, "heartbeat failed");
   Require(image.leases.front().heartbeat_generation == 1,
           "heartbeat generation was not persisted");
 
   agents::DurableAgentActionRecord action;
-  action.action_uuid = "019f0100-0000-7000-8000-000000000035";
+  action.action_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x35", 16);
   action.instance_uuid = request.instance_uuid;
   action.owner_uuid = request.owner_uuid;
   action.state = agents::DurableAgentActionState::running;
   image.actions.push_back(action);
   status = agents::RefreshDurableAgentCatalogAuthorityDigest(
-      &image, "019f0100-0000-7000-8000-000000000035");
+      &image, std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x35", 16));
   Require(status.ok, "running action setup did not refresh catalog root");
 
   const auto before_replay_root = image.authority.catalog_root_digest;
   const auto before_replay_generation = image.authority.catalog_generation;
   status = agents::RecoverDurableAgentCatalogAfterCrash(
-      &image, 1200, "019f0100-0000-7000-8000-000000000036");
+      &image, 1200, std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x36", 16));
   Require(status.ok, "crash replay failed");
   Require(image.authority.catalog_generation > before_replay_generation,
           "crash replay did not advance catalog generation");
@@ -419,13 +480,13 @@ void TestServiceRecoverRequiresCrashMode() {
   request.catalog = DurableCatalog();
   request.production_live_path = true;
   request.worker_foreground_protection_enabled = true;
-  request.service_owner_uuid = "019f0100-0000-7000-8000-000000000040";
-  request.evidence_uuid = "019f0100-0000-7000-8000-000000000041";
+  request.service_owner_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x40", 16);
+  request.evidence_uuid = std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x41", 16);
 
   agents::AgentRuntimeService service;
   auto result = service.Open(request);
   Require(result.status.ok, "service open failed");
-  result = service.Recover("019f0100-0000-7000-8000-000000000042", 2000);
+  result = service.Recover(std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x42", 16), 2000);
   Require(!result.status.ok &&
               result.status.diagnostic_code ==
                   "SB_AGENT_SERVICE.CRASH_RECOVERY_MODE_REQUIRED",
@@ -435,7 +496,7 @@ void TestServiceRecoverRequiresCrashMode() {
   agents::AgentRuntimeService recovery_service;
   result = recovery_service.Open(request);
   Require(result.status.ok, "crash recovery service open failed");
-  result = recovery_service.Recover("019f0100-0000-7000-8000-000000000043", 2000);
+  result = recovery_service.Recover(std::string("\x01\x9f\x01\x00\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x43", 16), 2000);
   Require(result.status.ok, "crash recovery service recover failed");
 }
 

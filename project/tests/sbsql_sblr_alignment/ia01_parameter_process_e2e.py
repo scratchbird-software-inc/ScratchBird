@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from binary_observation_client import read_trace_evidence
 
 from ia01_package_process_e2e import (
     PASSWORD, ProofError, allocate_work, free_port, seed_database, stop,
@@ -21,9 +22,7 @@ from ia01_package_process_e2e import (
 def require_parameter_evidence(paths: tuple[Path, ...]) -> None:
     for path in paths:
         wait_path(path)
-    audit = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace") for path in paths
-    )
+    audit = read_trace_evidence(paths)
     required = (
         "sblr_opcode_stream_admitted",
         "engine.op.package_begin",

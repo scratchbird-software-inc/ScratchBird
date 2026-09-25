@@ -7,7 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
+#include <map>
 #include "catalog/column_metadata_codec.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
@@ -79,13 +82,24 @@ bool HasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
+struct Fixture {
+  std::filesystem::path path;
+  api::EngineRequestContext owner;
+  std::map<api::EngineUuid, std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
+};
+
 std::string ColumnMetadata(std::string_view scalar_attributes,
                            const api::EngineUuid& constraint,
-                           const api::EngineUuid& referenced_table = {}) {
+                           const api::EngineUuid& referenced_table = {},
+                           const api::EngineUuid& support = {}) {
   api::CatalogColumnMetadata fields;
   Require(api::AdmitCatalogColumnMetadata(scalar_attributes, &fields),
           "invalid scalar constraint fixture metadata");
   fields.identities.emplace("constraint_uuid", constraint);
+  if (fields.text.contains("primary_key") && fields.text.at("primary_key") == "true") {
+    fields.identities.emplace("candidate_key_constraint_uuid", constraint);
+    if (!support.is_nil()) fields.identities.emplace("support_uuid", support);
+  }
   if (!referenced_table.is_nil()) {
     fields.identities.emplace("referenced_table_uuid", referenced_table);
     fields.text.emplace("referenced_column", "id");
@@ -113,51 +127,37 @@ std::filesystem::path MakeTempPath() {
   return std::filesystem::path(made) / "constraint.sbdb";
 }
 
-api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779800001000).value;
   create.filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779800001001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779800001002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "constraint DML database create failed");
-  return create.database_uuid.value;
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const api::EngineUuid& database_uuid,
+api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::uint32_t session_ordinal) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner;
   context.request_id = "prf-constraint-dml";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000301");
   context.session_uuid = scratchbird::tests::FixtureUuid(1547, session_ordinal);
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000001");
-  context.default_root_uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000302");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   context.trace_tags.push_back("PRF-030");
   context.trace_tags.push_back("PRF-035");
   return context;
 }
 
-api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const api::EngineUuid& database_uuid,
+api::EngineRequestContext Begin(Fixture& fixture,
                                 std::uint32_t session_ordinal) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(path, database_uuid, session_ordinal);
+  request.context = BaseContext(fixture, session_ordinal);
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) {
@@ -171,6 +171,10 @@ api::EngineRequestContext Begin(const std::filesystem::path& path,
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
+  if (!fixture.sessions.contains(context.session_uuid)) {
+    fixture.sessions.emplace(context.session_uuid,
+        std::make_shared<scratchbird::tests::FixtureEngineSession>(context));
+  }
   return context;
 }
 
@@ -196,7 +200,7 @@ void Rollback(const api::EngineRequestContext& context) {
 api::EngineTypedValue TextValue(std::string value, bool is_null = false) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
+  typed.descriptor.canonical_type_name = "character";
   typed.encoded_value = std::move(value);
   typed.is_null = is_null;
   return typed;
@@ -210,11 +214,11 @@ api::EngineRowValue Row(api::EngineUuid row_uuid,
   return row;
 }
 
-api::CrudTableRecord Table(api::EngineUuid table_uuid,
+api::CrudTableRecord Table(std::string name, api::EngineUuid table_uuid,
                            std::vector<std::pair<std::string, std::string>> columns) {
   api::CrudTableRecord table;
   table.table_uuid = std::move(table_uuid);
-  table.default_name = "constraint_fixture_table";
+  table.default_name = std::move(name);
   table.columns = std::move(columns);
   return table;
 }
@@ -234,54 +238,53 @@ api::CrudIndexRecord UniqueIndex(api::EngineUuid index_uuid,
   return index;
 }
 
-void SeedConstraintMetadata(const api::EngineRequestContext& context) {
-  const auto parent = Table(kParentTableUuid,
-                            {{"id", ColumnMetadata("type=text;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 810))},
-                             {"name", "type=text;nullable=false"}});
-  const auto child = Table(
-      kChildTableUuid,
-      {{"id", ColumnMetadata("type=text;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 811))},
+void SeedConstraintMetadata(api::EngineRequestContext& context) {
+  const auto parent = Table("constraint_parent", kParentTableUuid,
+                            {{"id", ColumnMetadata("canonical=character;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 810), {}, kParentPkIndexUuid)},
+                             {"name", "canonical=character;nullable=false"}});
+  const auto child = Table("constraint_child", kChildTableUuid,
+      {{"id", ColumnMetadata("canonical=character;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 811), {}, kChildPkIndexUuid)},
        {"customer_id",
-        ColumnMetadata("type=text;nullable=false", scratchbird::tests::FixtureUuid(1547, 803), kParentTableUuid)},
-       {"amount", ColumnMetadata("type=int;default=literal:1;check=gt:0", scratchbird::tests::FixtureUuid(1547, 812))},
-       {"note", ColumnMetadata("type=text;nullable=false", scratchbird::tests::FixtureUuid(1547, 813))}});
-  const auto no_index = Table(kNoIndexTableUuid,
-                              {{"id", ColumnMetadata("type=text;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 814))}});
-  const auto exclusion = Table(kExclusionTableUuid,
-                               {{"span", ColumnMetadata("type=text;exclusion=true", scratchbird::tests::FixtureUuid(1547, 815))}});
-  const auto deferred = Table(kDeferredTableUuid,
-                              {{"id", ColumnMetadata("type=text;nullable=false;primary_key=true;deferrable=true", scratchbird::tests::FixtureUuid(1547, 816))}});
-  const auto malformed_fk = Table(kMalformedFkTableUuid,
-                                  {{"parent_id", ColumnMetadata("type=text;foreign_key=true", scratchbird::tests::FixtureUuid(1547, 817))}});
+        ColumnMetadata("canonical=character;nullable=false", scratchbird::tests::FixtureUuid(1547, 803), kParentTableUuid)},
+       {"amount", ColumnMetadata("canonical=int64;default=literal:1;check=gt:0", scratchbird::tests::FixtureUuid(1547, 812))},
+       {"note", ColumnMetadata("canonical=character;nullable=false", scratchbird::tests::FixtureUuid(1547, 813))}});
+  const auto no_index = Table("constraint_noindex", kNoIndexTableUuid,
+                              {{"id", ColumnMetadata("canonical=character;nullable=false;primary_key=true", scratchbird::tests::FixtureUuid(1547, 814))}});
+  const auto exclusion = Table("constraint_exclusion", kExclusionTableUuid,
+                               {{"span", ColumnMetadata("canonical=character;exclusion=true", scratchbird::tests::FixtureUuid(1547, 815))}});
+  const auto deferred = Table("constraint_deferred", kDeferredTableUuid,
+                              {{"id", ColumnMetadata("canonical=character;nullable=false;primary_key=true;deferrable=true", scratchbird::tests::FixtureUuid(1547, 816), {}, kDeferredPkIndexUuid)}});
+  const auto malformed_fk = Table("constraint_malformedfk", kMalformedFkTableUuid,
+                                  {{"parent_id", ColumnMetadata("canonical=character;foreign_key=true", scratchbird::tests::FixtureUuid(1547, 817))}});
 
-  Require(!api::AppendMgaTableMetadata(context, parent).error, "append parent table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, parent, {"character", "character"}, {UniqueIndex(kParentPkIndexUuid, kParentTableUuid, "id")}).error, "append parent table metadata failed");
   Require(!api::AppendMgaIndexMetadata(context, UniqueIndex(kParentPkIndexUuid, kParentTableUuid, "id")).error,
           "append parent pk index metadata failed");
-  Require(!api::AppendMgaTableMetadata(context, child).error, "append child table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, child, {"character", "character", "int64", "character"}, {UniqueIndex(kChildPkIndexUuid, kChildTableUuid, "id")}).error, "append child table metadata failed");
   Require(!api::AppendMgaIndexMetadata(context, UniqueIndex(kChildPkIndexUuid, kChildTableUuid, "id")).error,
           "append child pk index metadata failed");
-  Require(!api::AppendMgaTableMetadata(context, no_index).error, "append no-index table metadata failed");
-  Require(!api::AppendMgaTableMetadata(context, exclusion).error, "append exclusion table metadata failed");
-  Require(!api::AppendMgaTableMetadata(context, deferred).error, "append deferred table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, no_index, {"character"}, {}).error, "append no-index table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, exclusion, {"character"}, {}).error, "append exclusion table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, deferred, {"character"}, {UniqueIndex(kDeferredPkIndexUuid, kDeferredTableUuid, "id")}).error, "append deferred table metadata failed");
   Require(!api::AppendMgaIndexMetadata(context, UniqueIndex(kDeferredPkIndexUuid, kDeferredTableUuid, "id")).error,
           "append deferred pk index metadata failed");
-  Require(!api::AppendMgaTableMetadata(context, malformed_fk).error, "append malformed-fk table metadata failed");
+  Require(!scratchbird::tests::PublishMgaTableFixture(context, malformed_fk, {"character"}, {}).error, "append malformed-fk table metadata failed");
 }
 
-api::EngineInsertRowsResult Insert(const api::EngineRequestContext& context,
+api::EngineInsertRowsResult Insert(Fixture& fixture, const api::EngineRequestContext& context,
                                    api::EngineUuid table_uuid,
                                    api::EngineRowValue row) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.sessions.at(context.session_uuid), context);
   request.target_table.uuid = std::move(table_uuid);
   request.target_table.object_kind = "table";
   request.input_rows.push_back(std::move(row));
   return api::EngineInsertRows(request);
 }
 
-api::EngineDeleteRowsResult DeleteParent(const api::EngineRequestContext& context, std::string id) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+api::EngineDeleteRowsResult DeleteParent(Fixture& fixture, const api::EngineRequestContext& context, std::string id) {
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.sessions.at(context.session_uuid), context);
   request.target_table.uuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000101");
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "column_equals";
@@ -290,12 +293,12 @@ api::EngineDeleteRowsResult DeleteParent(const api::EngineRequestContext& contex
   return api::EngineDeleteRows(request);
 }
 
-api::EngineUpdateRowsResult UpdateRow(const api::EngineRequestContext& context,
+api::EngineUpdateRowsResult UpdateRow(Fixture& fixture, const api::EngineRequestContext& context,
                                       api::EngineUuid table_uuid,
                                       api::EngineUuid row_uuid,
                                       std::vector<std::pair<std::string, api::EngineTypedValue>> assignments) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.sessions.at(context.session_uuid), context);
   request.target_table.uuid = std::move(table_uuid);
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "row_uuid_match";
@@ -304,19 +307,20 @@ api::EngineUpdateRowsResult UpdateRow(const api::EngineRequestContext& context,
   return api::EngineUpdateRows(request);
 }
 
-void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::EngineUuid& database_uuid) {
-  auto setup = Begin(path, database_uuid, 401);
+void VerifyConstraintEnforcement(Fixture& fixture) {
+  auto setup = Begin(fixture, 401);
   SeedConstraintMetadata(setup);
+  fixture.owner.current_schema_uuid = setup.current_schema_uuid;
   Commit(setup);
 
-  auto writer = Begin(path, database_uuid, 402);
-  auto parent = Insert(writer,
+  auto writer = Begin(fixture, 402);
+  auto parent = Insert(fixture, writer,
                        kParentTableUuid,
                        Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000501"),
                            {{"id", TextValue("c1")}, {"name", TextValue("customer")}}));
   Require(parent.ok, "parent insert failed");
 
-  auto child = Insert(writer,
+  auto child = Insert(fixture, writer,
                       kChildTableUuid,
                       Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000502"),
                           {{"id", TextValue("o1")},
@@ -341,14 +345,14 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   }
   Require(saw_default_amount, "default value was not materialized into returned row");
 
-  const auto update_not_null = UpdateRow(writer,
+  const auto update_not_null = UpdateRow(fixture, writer,
                                          kChildTableUuid,
                                          scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000502"),
                                          {{"note", TextValue({}, true)}});
   Require(HasDiagnostic(update_not_null, "CLI.CONSTRAINT_NOT_NULL_VIOLATION"),
           "UPDATE did not enforce canonical NOT NULL diagnostics");
 
-  const auto missing_not_null = Insert(writer,
+  const auto missing_not_null = Insert(fixture, writer,
                                        kChildTableUuid,
                                        Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000503"),
                                            {{"id", TextValue("o2")},
@@ -356,7 +360,7 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasDiagnostic(missing_not_null, "CLI.CONSTRAINT_NOT_NULL_VIOLATION"),
           "missing NOT NULL value did not emit canonical diagnostic");
 
-  const auto bad_check = Insert(writer,
+  const auto bad_check = Insert(fixture, writer,
                                 kChildTableUuid,
                                 Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000504"),
                                     {{"id", TextValue("o3")},
@@ -366,7 +370,7 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasDiagnostic(bad_check, "CLI.CONSTRAINT_CHECK_VIOLATION"),
           "CHECK violation did not emit canonical diagnostic");
 
-  const auto bad_fk = Insert(writer,
+  const auto bad_fk = Insert(fixture, writer,
                              kChildTableUuid,
                              Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000505"),
                                  {{"id", TextValue("o4")},
@@ -375,7 +379,7 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasDiagnostic(bad_fk, "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION"),
           "foreign key miss did not emit canonical diagnostic");
 
-  const auto duplicate_pk = Insert(writer,
+  const auto duplicate_pk = Insert(fixture, writer,
                                    kChildTableUuid,
                                    Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000506"),
                                        {{"id", TextValue("o1")},
@@ -384,25 +388,25 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasDiagnostic(duplicate_pk, "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION"),
           "duplicate primary key did not emit canonical diagnostic");
 
-  const auto update_parent_key = UpdateRow(writer,
+  const auto update_parent_key = UpdateRow(fixture, writer,
                                            kParentTableUuid,
                                            scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000501"),
                                            {{"id", TextValue("c2")}});
   Require(HasDiagnostic(update_parent_key, "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION"),
           "referenced parent key update was not restricted");
 
-  const auto delete_parent = DeleteParent(writer, "c1");
+  const auto delete_parent = DeleteParent(fixture, writer, "c1");
   Require(HasDiagnostic(delete_parent, "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION"),
           "referenced parent delete was not restricted");
 
-  const auto no_support = Insert(writer,
+  const auto no_support = Insert(fixture, writer,
                                  kNoIndexTableUuid,
                                  Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000507"),
                                      {{"id", TextValue("n1")}}));
   Require(HasDiagnostic(no_support, "CLI.SUPPORT_STRUCTURE_UNAVAILABLE"),
           "primary key without backing index did not fail closed");
 
-  const auto exclusion = Insert(writer,
+  const auto exclusion = Insert(fixture, writer,
                                 kExclusionTableUuid,
                                 Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000508"),
                                     {{"span", TextValue("1,10")}}));
@@ -410,14 +414,14 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasEvidence(exclusion, "constraint_exclusion", "span"),
           "exclusion constraint evidence missing");
 
-  const auto exclusion_conflict = Insert(writer,
+  const auto exclusion_conflict = Insert(fixture, writer,
                                          kExclusionTableUuid,
                                          Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000511"),
                                              {{"span", TextValue("5,15")}}));
   Require(HasDiagnostic(exclusion_conflict, "CLI.CONSTRAINT_EXCLUSION_VIOLATION"),
           "overlapping exclusion value did not emit canonical diagnostic");
 
-  const auto deferred = Insert(writer,
+  const auto deferred = Insert(fixture, writer,
                                kDeferredTableUuid,
                                Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000509"),
                                    {{"id", TextValue("d1")}}));
@@ -425,7 +429,7 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Require(HasEvidence(deferred, "constraint_deferred_pending_check", scratchbird::tests::FixtureUuid(1547, 816)),
           "deferred constraint pending-check evidence missing");
 
-  const auto malformed_fk = Insert(writer,
+  const auto malformed_fk = Insert(fixture, writer,
                                    kMalformedFkTableUuid,
                                    Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000510"),
                                        {{"parent_id", TextValue("c1")}}));
@@ -435,15 +439,14 @@ void VerifyConstraintEnforcement(const std::filesystem::path& path, const api::E
   Commit(writer);
 }
 
-void VerifyDeferredCommitViolation(const std::filesystem::path& path,
-                                   const api::EngineUuid& database_uuid) {
-  auto writer = Begin(path, database_uuid, 406);
-  const auto first = Insert(writer,
+void VerifyDeferredCommitViolation(Fixture& fixture) {
+  auto writer = Begin(fixture, 406);
+  const auto first = Insert(fixture, writer,
                             kDeferredTableUuid,
                             Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000701"),
                                 {{"id", TextValue("d2")}}));
   Require(first.ok, "first deferred duplicate fixture insert failed");
-  const auto second = Insert(writer,
+  const auto second = Insert(fixture, writer,
                              kDeferredTableUuid,
                              Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000702"),
                                  {{"id", TextValue("d2")}}));
@@ -456,10 +459,9 @@ void VerifyDeferredCommitViolation(const std::filesystem::path& path,
   Rollback(writer);
 }
 
-void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
-                                          const api::EngineUuid& database_uuid) {
-  auto rollback_writer = Begin(path, database_uuid, 403);
-  const auto rolled_insert = Insert(rollback_writer,
+void VerifyRollbackAndSavepointVisibility(Fixture& fixture) {
+  auto rollback_writer = Begin(fixture, 403);
+  const auto rolled_insert = Insert(fixture, rollback_writer,
                                     kChildTableUuid,
                                     Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000601"),
                                         {{"id", TextValue("rollback-id")},
@@ -468,8 +470,8 @@ void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
   Require(rolled_insert.ok, "rollback fixture insert failed");
   Rollback(rollback_writer);
 
-  auto after_rollback = Begin(path, database_uuid, 404);
-  const auto reinsert = Insert(after_rollback,
+  auto after_rollback = Begin(fixture, 404);
+  const auto reinsert = Insert(fixture, after_rollback,
                                kChildTableUuid,
                                Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000602"),
                                    {{"id", TextValue("rollback-id")},
@@ -478,10 +480,10 @@ void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
   Require(reinsert.ok, "rolled-back key remained visible to constraint enforcement");
   Commit(after_rollback);
 
-  auto savepoint_writer = Begin(path, database_uuid, 405);
+  auto savepoint_writer = Begin(fixture, 405);
   Require(!api::CreateMgaSavepointMarker(savepoint_writer, "sp_constraints").error,
           "create MGA savepoint marker failed");
-  const auto savepoint_insert = Insert(savepoint_writer,
+  const auto savepoint_insert = Insert(fixture, savepoint_writer,
                                        kChildTableUuid,
                                        Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000603"),
                                            {{"id", TextValue("savepoint-id")},
@@ -490,7 +492,7 @@ void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
   Require(savepoint_insert.ok, "savepoint fixture insert failed");
   Require(!api::RollbackToMgaSavepointMarker(savepoint_writer, "sp_constraints").error,
           "rollback to MGA savepoint marker failed");
-  const auto after_savepoint = Insert(savepoint_writer,
+  const auto after_savepoint = Insert(fixture, savepoint_writer,
                                       kChildTableUuid,
                                       Row(scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000604"),
                                           {{"id", TextValue("savepoint-id")},
@@ -503,15 +505,21 @@ void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
 }  // namespace
 
 int main() {
-  const auto path = MakeTempPath();
-  std::cout << "constraint_artifacts=" << path.parent_path() << std::endl;
-  const auto database_uuid = CreateDatabase(path);
-  VerifyConstraintEnforcement(path, database_uuid);
-  VerifyDeferredCommitViolation(path, database_uuid);
-  VerifyRollbackAndSavepointVisibility(path, database_uuid);
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "constraint_dml_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "constraint_dml_fixture").ok(), "constraint memory configuration failed");
+  Fixture fixture;
+  fixture.path = MakeTempPath();
+  std::cout << "constraint_artifacts=" << fixture.path.parent_path() << std::endl;
+  fixture.owner = CreateDatabase(fixture.path);
+  VerifyConstraintEnforcement(fixture);
+  VerifyDeferredCommitViolation(fixture);
+  VerifyRollbackAndSavepointVisibility(fixture);
+  fixture.sessions.clear();
   // The uniquely allocated fixture directory owns all database companions,
   // including nested relation/index segments and filespace growth artifacts.
-  std::filesystem::remove_all(path.parent_path());
+  std::filesystem::remove_all(fixture.path.parent_path());
   std::cout << "constraint_dml_enforcement_conformance=passed\n";
   return EXIT_SUCCESS;
 }

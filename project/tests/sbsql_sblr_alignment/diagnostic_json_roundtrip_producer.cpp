@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "server/diagnostics.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 #include "server/server_observability.hpp"
 
 #include <array>
@@ -17,7 +18,11 @@ bool ReadU32(std::uint32_t* value) {
            (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
   return true;
 }
-void Emit(const std::string& value) {
+void Emit(const std::string& encoded) {
+  const auto display = encoded.starts_with(scratchbird::wire::public_result::kMagic)
+      ? scratchbird::cli::RenderBinaryStatus(encoded) : std::optional<std::string>(encoded);
+  if (!display) std::exit(5);
+  const auto& value = *display;
   const auto size = static_cast<std::uint32_t>(value.size());
   const std::array<char, 4> bytes{static_cast<char>(size),
       static_cast<char>(size >> 8), static_cast<char>(size >> 16),

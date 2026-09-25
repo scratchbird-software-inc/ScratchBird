@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 from typing import Any
@@ -63,9 +64,23 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         "surface": "entropy",
         "path": "src/core/uuid/uuid.cpp",
         "tokens": (
-            "std::random_device random",
+            "FillCryptographicRandomBytes(bytes.data(), bytes.size())",
+            "return std::nullopt",
+            "TIME.UUID_RANDOMNESS_UNAVAILABLE",
             "GenerateEngineIdentityV7",
             "GenerateCompatibilityUnixTimeV7",
+        ),
+    },
+    {
+        "row_id": "cryptographic_random_backend",
+        "surface": "entropy",
+        "path": "src/core/common/crypto_random.hpp",
+        "tokens": (
+            "<openssl/rand.h>",
+            "FillCryptographicRandomBytes",
+            "RAND_bytes(destination+offset,static_cast<int>(count))!=1",
+            "OPENSSL_cleanse(destination,size)",
+            "return false",
         ),
     },
     {
@@ -133,7 +148,11 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "protected-material-handle:v1:hmac-sha256:",
             "protected-material-release:v1:hmac-sha256:",
-            "protected-material-audit:v1:sha256:",
+            "IssueRuntimeIdentityV7()",
+            "SerializeAuditPayload",
+            "event.audit_event_uuid.is_nil() || !AppendIdentity(payload, event.audit_event_uuid)",
+            "AttachSha256Digest(&record, kRecordOffsetDigest, kProtectedMaterialDigestBytes)",
+            "Sha256DigestMatches(record, kRecordOffsetDigest, digest_bytes)",
             "SECURITY.PROTECTED_MATERIAL.RETENTION_REQUIRED",
         ),
     },
@@ -306,6 +325,13 @@ def validate_rows(project_root: Path) -> list[dict[str, Any]]:
     missing_surfaces = sorted(REQUIRED_SURFACES - surfaces)
     if missing_surfaces:
         fail("missing_surfaces:" + ",".join(missing_surfaces))
+
+    # UUIDs consume the central CSPRNG and refuse provider failure. Requiring
+    # the retired random_device implementation would regress this boundary.
+    for relative in ("src/core/uuid/uuid.cpp", "src/core/common/crypto_random.hpp"):
+        entropy_text = read_project_file(project_root, relative)
+        if re.search(r"\bstd::(?:random_device|mt19937(?:_64)?|minstd_rand0?)\b", entropy_text):
+            fail(f"local_prng_entropy_fallback:{relative}")
 
     policy_text = read_project_file(
         project_root,

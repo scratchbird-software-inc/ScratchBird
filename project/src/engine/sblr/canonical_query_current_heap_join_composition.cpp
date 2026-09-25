@@ -2961,6 +2961,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   result.canonical_result_bytes =
       execution.result_publication.canonical_envelope_bytes;
   result.api_result = SuccessfulApiResult(planning_request, execution);
+  result.api_result.result_shape.null_extended_columns =
+      nullable_by_node.at(final_output_node->node_id);
   return result;
 }
 

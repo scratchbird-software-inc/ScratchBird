@@ -147,7 +147,7 @@ enum class DmlUpdateDurableRawAppendResultV1 : std::uint8_t {
 DmlUpdateDurableRawAppendResultV1 DmlUpdateDurableAppendEncodedFrame(
     const std::string& path, std::span<const std::uint8_t> encoded,
     bool successor_commit) {
-  if (encoded.empty()) return DmlUpdateDurableRawAppendResultV1::write_failed;
+  if (path.empty() || encoded.empty()) return DmlUpdateDurableRawAppendResultV1::write_failed;
 #if defined(_WIN32)
   HANDLE handle = CreateFileA(path.c_str(), FILE_APPEND_DATA,
                               FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
@@ -243,7 +243,7 @@ bool DmlUpdateDurableAppendFrame(const std::string& path,
 // root journal extent.
 bool DmlUpdateDurableReplaceFileAtomically(
     const std::string& path, std::span<const std::uint8_t> bytes) {
-  if (bytes.empty()) return false;
+  if (path.empty() || bytes.empty()) return false;
   const std::string temporary = path + ".publish.tmp";
   std::error_code ignored;
   std::filesystem::remove(temporary, ignored);
@@ -961,8 +961,9 @@ std::string DmlUpdateDurablePathForLookup(
       lookup.structural_occurrence_id == 0) {
     return {};
   }
-  return DmlUpdateDurableOperationStorePath(context) + "/" +
-         scratchbird::core::uuid::UuidToString(lookup.descriptor_uuid) + ".duop";
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  identity.descriptor_uuid = lookup.descriptor_uuid;
+  return DmlUpdateDurableDescriptorPath(context, identity);
 }
 
 bool DmlUpdateDurableSameReservationRequest(
@@ -1572,16 +1573,17 @@ bool DmlUpdateStatementDecodeBinaryFrame(
          expected == record->authority.durable_presence_sha256;
 }
 
-bool DmlUpdateStatementLoadBinaryChain(
-    const EngineRequestContext& context, const EngineUuid& savepoint_uuid,
+bool DmlUpdateStatementLoadBinaryChainAtPath(
+    const EngineRequestContext& context, const std::string& path,
+    const EngineUuid& expected_savepoint_uuid,
     std::vector<DmlUpdateStatementSavepointJournalRecordV1>* records,
     std::string* detail) {
-  if (records == nullptr || !DmlUpdateStatementUuidValid(savepoint_uuid)) {
+  if (records == nullptr || path.empty() ||
+      (!expected_savepoint_uuid.is_nil() &&
+       !DmlUpdateStatementUuidValid(expected_savepoint_uuid))) {
     if (detail != nullptr) *detail = "savepoint_identity_invalid";
     return false;
   }
-  const std::string path =
-      DmlUpdateDurableSavepointPath(context, savepoint_uuid);
   DmlUpdateDurableFileLock lock(path);
   if (!lock.ok()) {
     if (detail != nullptr) *detail = "savepoint_store_lock_failed";
@@ -1601,13 +1603,23 @@ bool DmlUpdateStatementLoadBinaryChain(
   for (const auto& frame : loaded.frames) {
     DmlUpdateStatementSavepointJournalRecordV1 record;
     if (!DmlUpdateStatementDecodeBinaryFrame(frame, &record) ||
-        record.authority.savepoint_uuid != savepoint_uuid) {
+        (!expected_savepoint_uuid.is_nil() &&
+         record.authority.savepoint_uuid != expected_savepoint_uuid) ||
+        (!records->empty() && record.authority.savepoint_uuid !=
+                                  records->front().authority.savepoint_uuid)) {
       if (detail != nullptr) *detail = "savepoint_binary_record_invalid";
       return false;
     }
     records->push_back(std::move(record));
   }
   const auto& first = records->front();
+  const auto canonical_path =
+      DmlUpdateDurableSavepointPath(context, first.authority.savepoint_uuid);
+  if (canonical_path.empty() || std::filesystem::path(path) !=
+                                    std::filesystem::path(canonical_path)) {
+    if (detail != nullptr) *detail = "savepoint_filename_identity_invalid";
+    return false;
+  }
   if (first.journal_sequence != 1 ||
       first.authority.lifecycle !=
           MgaDmlUpdateStatementSavepointLifecycleV1::active ||
@@ -1632,6 +1644,19 @@ bool DmlUpdateStatementLoadBinaryChain(
     }
   }
   return true;
+}
+
+bool DmlUpdateStatementLoadBinaryChain(
+    const EngineRequestContext& context, const EngineUuid& savepoint_uuid,
+    std::vector<DmlUpdateStatementSavepointJournalRecordV1>* records,
+    std::string* detail) {
+  if (!DmlUpdateStatementUuidValid(savepoint_uuid)) {
+    if (detail != nullptr) *detail = "savepoint_identity_invalid";
+    return false;
+  }
+  return DmlUpdateStatementLoadBinaryChainAtPath(context,
+      DmlUpdateDurableSavepointPath(context, savepoint_uuid), savepoint_uuid,
+      records, detail);
 }
 
 bool DmlUpdateStatementAppendBinaryRecord(
@@ -1710,16 +1735,9 @@ bool ApplyDmlUpdateBinarySavepointRecords(
     return false;
   }
   for (const auto& path : paths) {
-    const std::string filename = path.stem().string();
-    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(filename);
-    if (!filename_uuid.ok() ||
-        scratchbird::core::uuid::UuidToString(filename_uuid.value) != filename) {
-      if (refusal_detail) *refusal_detail = "update_savepoint_filename_identity_invalid";
-      return false;
-    }
     std::vector<DmlUpdateStatementSavepointJournalRecordV1> records;
     std::string detail;
-    if (!DmlUpdateStatementLoadBinaryChain(context, filename_uuid.value, &records,
+    if (!DmlUpdateStatementLoadBinaryChainAtPath(context, path.string(), {}, &records,
                                             &detail)) {
       if (refusal_detail != nullptr) {
         *refusal_detail = detail.empty()
@@ -1961,8 +1979,13 @@ DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
       result.detail = "required_savepoint_identity_invalid";
       return result;
     }
-    paths.emplace_back(DmlUpdateDurableSavepointPath(
-        context, required_savepoint_uuid));
+    const auto path = DmlUpdateDurableSavepointPath(context, required_savepoint_uuid);
+    if (path.empty()) {
+      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+      result.detail = "savepoint_store_path_invalid";
+      return result;
+    }
+    paths.emplace_back(path);
   } else {
     for (std::filesystem::directory_iterator iterator(directory, error), end;
          !error && iterator != end; iterator.increment(error)) {
@@ -1988,16 +2011,10 @@ DmlUpdateDurableSavepointLookupV1 DmlUpdateDurableFindStatementSavepoint(
       }
       continue;
     }
-    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(path.stem().string());
-    if (!filename_uuid.ok() || scratchbird::core::uuid::UuidToString(filename_uuid.value) != path.stem().string()) {
-      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
-      result.detail = "savepoint_filename_identity_invalid";
-      return result;
-    }
-    const EngineUuid uuid = filename_uuid.value;
     std::vector<DmlUpdateStatementSavepointJournalRecordV1> chain;
     std::string detail;
-    if (!DmlUpdateStatementLoadBinaryChain(context, uuid, &chain, &detail)) {
+    if (!DmlUpdateStatementLoadBinaryChainAtPath(
+            context, path.string(), required_savepoint_uuid, &chain, &detail)) {
       result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
       result.detail = detail.empty() ? "savepoint_chain_invalid" : detail;
       return result;
@@ -2249,7 +2266,7 @@ ReserveMgaDmlUpdateDurableOperationAuthorityV1(
         "sblr.dml_update_rows.durable_reservation_storage_failed");
     return result;
   }
-  const std::string path = directory + "/" + scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
+  const std::string path = DmlUpdateDurableDescriptorPath(context, identity);
   DmlUpdateDurableFileLock lock(path);
   if (!lock.ok()) {
     result.outcome = MgaDmlUpdateDurableOperationOutcomeV1::storage_failure;
@@ -2953,7 +2970,8 @@ RecoverMgaDmlUpdateDurableOperationChainV1(
         MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
         "durable_chain_cross_authority");
   }
-  if (current.identity.descriptor_generation != lookup.descriptor_generation ||
+  if (current.identity.descriptor_uuid != lookup.descriptor_uuid ||
+      current.identity.descriptor_generation != lookup.descriptor_generation ||
       current.structural_occurrence_id != lookup.structural_occurrence_id) {
     return DmlUpdateDurableRecoveryFailure(
         MgaDmlUpdateDurableOperationOutcomeV1::stale,
@@ -3368,6 +3386,7 @@ MgaDmlUpdateDurableInspectionV1 InspectMgaDmlUpdateDurableOperationForTestingV1(
   if (!current.ok || current.reservation_only || !current.snapshot_present ||
       current.journal.empty() ||
       !DmlUpdateDurableIdentityMatchesContext(context, current.identity) ||
+      current.identity.descriptor_uuid != lookup.descriptor_uuid ||
       current.identity.descriptor_generation != lookup.descriptor_generation ||
       current.structural_occurrence_id != lookup.structural_occurrence_id) {
     result.outcome = current.quarantined
@@ -3404,6 +3423,7 @@ bool DmlUpdateDurableAuthenticateTestingLookup(
   return current.ok && !current.reservation_only &&
          current.snapshot_present && !current.journal.empty() &&
          DmlUpdateDurableIdentityMatchesContext(context, current.identity) &&
+         current.identity.descriptor_uuid == lookup.descriptor_uuid &&
          current.identity.descriptor_generation == lookup.descriptor_generation &&
          current.structural_occurrence_id == lookup.structural_occurrence_id;
 }

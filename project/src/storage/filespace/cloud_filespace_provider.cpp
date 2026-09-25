@@ -9,12 +9,14 @@
 #include "cloud_filespace_provider.hpp"
 
 #include "metric_producer.hpp"
+#include "hash_digest.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <limits>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::storage::filespace {
@@ -28,7 +30,39 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::UuidToString;
+
+// Filesystem keys are one-way hashes of domain-separated native identities.
+// Binary manifests retain the identities; paths are not recovery authority.
+std::string CloudIdentityKey(const Uuid& uuid) {
+  if (!IsEngineIdentityUuid(uuid)) return {};
+  constexpr std::string_view domain = "SB_CLOUD_FILE_KEY_V2";
+  std::vector<byte> material(domain.begin(), domain.end());
+  material.insert(material.end(), uuid.bytes.begin(), uuid.bytes.end());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
+}
+void PutU32(std::string& bytes, u32 value) {
+  for (unsigned i = 0; i < 4; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
+}
+void PutU64(std::string& bytes, u64 value) {
+  for (unsigned i = 0; i < 8; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
+}
+void PutUuid(std::string& bytes, const Uuid& uuid) {
+  bytes.append(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
+}
+// Eight-byte versioned magic, LE32 body length, binary body, SHA256 checksum.
+// These manifests describe copies and policy; MGA inventory owns finality.
+std::string FrameManifest(std::string_view magic, const std::string& body) {
+  if (magic.size() != 8 || body.size() > std::numeric_limits<u32>::max()) return {};
+  std::string frame(magic);
+  PutU32(frame, static_cast<u32>(body.size()));
+  frame += body;
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const byte*>(frame.data()), frame.size());
+  if (!digest.ok()) return {};
+  frame.append(reinterpret_cast<const char*>(digest.digest.data()), digest.digest.size());
+  return frame;
+}
 
 Status CloudOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_disk};
@@ -62,8 +96,8 @@ void EmitCloudMetric(const char* operation,
           {"operation", operation},
           {"result", result},
           {"reason", reason},
-          {"database_uuid", UuidToString(binding.database_uuid.value)},
-          {"filespace_uuid", UuidToString(binding.filespace_uuid.value)},
+          {"database_uuid", binding.database_uuid.value},
+          {"filespace_uuid", binding.filespace_uuid.value},
           {"provider_family", CloudFilespaceProviderKindName(binding.kind)},
       }),
       1.0,
@@ -203,14 +237,31 @@ CloudFilespaceResult BindCloudFilespaceProvider(const CloudFilespaceProviderConf
                  binding);
   }
 
+  const auto database_key = CloudIdentityKey(config.database_uuid.value);
+  const auto filespace_key = CloudIdentityKey(config.filespace_uuid.value);
+  if (database_key.empty() || filespace_key.empty() || binding.provider_name.size() > 65536) {
+    return Error("SB-CLOUD-FILESPACE-MANIFEST-ENCODING-FAILED",
+                 "storage.cloud_filespace.manifest_encoding_failed", {}, binding);
+  }
+  std::string body;
+  PutUuid(body, config.database_uuid.value);
+  PutUuid(body, config.filespace_uuid.value);
+  PutU32(body, config.page_size);
+  PutU32(body, 1);  // lifecycle checkpoint required; provider-native consistency false
+  PutU32(body, static_cast<u32>(binding.provider_name.size()));
+  body += binding.provider_name;
+  const auto frame = FrameManifest("SBCFM002", body);
+  if (frame.empty()) {
+    return Error("SB-CLOUD-FILESPACE-MANIFEST-ENCODING-FAILED",
+                 "storage.cloud_filespace.manifest_encoding_failed", {}, binding);
+  }
   const std::filesystem::path root =
       std::filesystem::path(config.emulator_root) / "databases" /
-      UuidToString(config.database_uuid.value) / "filespaces" /
-      UuidToString(config.filespace_uuid.value);
+      database_key / "filespaces" / filespace_key;
   binding.root_path = root.string();
   binding.object_root_path = (root / "objects").string();
   binding.snapshot_root_path = (root / "snapshots").string();
-  binding.manifest_path = (root / "cloud_filespace_manifest.txt").string();
+  binding.manifest_path = (root / "cloud_filespace_manifest.sbcf").string();
   binding.credential_verified = true;
   binding.local_emulator = true;
 
@@ -237,13 +288,7 @@ CloudFilespaceResult BindCloudFilespaceProvider(const CloudFilespaceProviderConf
                  binding.manifest_path,
                  binding);
   }
-  manifest << "scratchbird.cloud_filespace.local_emulator.v1\n"
-           << "database_uuid=" << UuidToString(config.database_uuid.value) << "\n"
-           << "filespace_uuid=" << UuidToString(config.filespace_uuid.value) << "\n"
-           << "provider_name=" << binding.provider_name << "\n"
-           << "page_size=" << config.page_size << "\n"
-           << "snapshot_requires_lifecycle_checkpoint=1\n"
-           << "provider_native_snapshot_database_consistent=0\n";
+  manifest.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   manifest.flush();
   if (!manifest.good()) {
     return Error("SB-CLOUD-FILESPACE-MANIFEST-WRITE-FAILED",
@@ -345,10 +390,12 @@ CloudFilespaceResult CreateCloudFilespaceSnapshot(const CloudFilespaceSnapshotRe
                  {},
                  binding);
   }
-  if (request.snapshot_uuid.empty() || !SafeObjectKey(request.snapshot_uuid)) {
+  if (!IsEngineIdentityUuid(request.snapshot_uuid) ||
+      !IsTypedEngineIdentity(binding.database_uuid, UuidKind::database) ||
+      !IsTypedEngineIdentity(binding.filespace_uuid, UuidKind::filespace)) {
     return Error("SB-CLOUD-FILESPACE-SNAPSHOT-UUID-INVALID",
                  "storage.cloud_filespace.snapshot_uuid_invalid",
-                 request.snapshot_uuid,
+                 {},
                  binding);
   }
   if (!request.lifecycle_coordinated ||
@@ -363,7 +410,20 @@ CloudFilespaceResult CreateCloudFilespaceSnapshot(const CloudFilespaceSnapshotRe
                  binding);
   }
 
-  const auto snapshot_path = std::filesystem::path(binding.snapshot_root_path) / request.snapshot_uuid;
+  const auto snapshot_key = CloudIdentityKey(request.snapshot_uuid);
+  std::string body;
+  PutUuid(body, request.snapshot_uuid);
+  PutUuid(body, binding.database_uuid.value);
+  PutUuid(body, binding.filespace_uuid.value);
+  PutU64(body, request.checkpoint_generation);
+  PutU64(body, request.transaction_inventory_generation);
+  PutU32(body, 31);  // lifecycle, attach/write fences, flush, coordinated consistency
+  const auto frame = FrameManifest("SBCSM002", body);
+  if (snapshot_key.empty() || frame.empty()) {
+    return Error("SB-CLOUD-FILESPACE-SNAPSHOT-MANIFEST-ENCODING-FAILED",
+                 "storage.cloud_filespace.snapshot_manifest_encoding_failed", {}, binding);
+  }
+  const auto snapshot_path = std::filesystem::path(binding.snapshot_root_path) / snapshot_key;
   std::string copy_error;
   if (!CopyTree(binding.object_root_path, snapshot_path / "objects", &copy_error)) {
     return Error("SB-CLOUD-FILESPACE-SNAPSHOT-COPY-FAILED",
@@ -372,7 +432,7 @@ CloudFilespaceResult CreateCloudFilespaceSnapshot(const CloudFilespaceSnapshotRe
                  binding);
   }
 
-  const auto manifest_path = snapshot_path / "snapshot_manifest.txt";
+  const auto manifest_path = snapshot_path / "snapshot_manifest.sbcs";
   std::ofstream manifest(manifest_path, std::ios::binary | std::ios::trunc);
   if (!manifest.good()) {
     return Error("SB-CLOUD-FILESPACE-SNAPSHOT-MANIFEST-WRITE-FAILED",
@@ -380,18 +440,7 @@ CloudFilespaceResult CreateCloudFilespaceSnapshot(const CloudFilespaceSnapshotRe
                  manifest_path.string(),
                  binding);
   }
-  manifest << "scratchbird.cloud_filespace.snapshot.v1\n"
-           << "snapshot_uuid=" << request.snapshot_uuid << "\n"
-           << "database_uuid=" << UuidToString(binding.database_uuid.value) << "\n"
-           << "filespace_uuid=" << UuidToString(binding.filespace_uuid.value) << "\n"
-           << "lifecycle_coordinated=1\n"
-           << "attach_admission_fenced=1\n"
-           << "write_admission_fenced=1\n"
-           << "dirty_pages_flushed=1\n"
-           << "checkpoint_generation=" << request.checkpoint_generation << "\n"
-           << "transaction_inventory_generation=" << request.transaction_inventory_generation << "\n"
-           << "provider_native_snapshot_database_consistent=0\n"
-           << "database_consistent=1\n";
+  manifest.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   manifest.flush();
   if (!manifest.good()) {
     return Error("SB-CLOUD-FILESPACE-SNAPSHOT-MANIFEST-WRITE-FAILED",

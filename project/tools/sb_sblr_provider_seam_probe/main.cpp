@@ -90,12 +90,16 @@ int main() {
          "crypto_random_bytes should use deterministic hex provider", &errors);
 
   auto uuid_request = Request("data.scalar.uuid_generate");
-  uuid_request.context.sblr_context.deterministic_uuid_text = "019b6cf8-b000-7000-8000-00000000feed";
+  uuid_request.context.sblr_context.deterministic_uuid = scratchbird::core::platform::Uuid{{0x01,0x9b,0x6c,0xf8,0xb0,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xfe,0xed}};
   const auto uuid_result = fn::DispatchDataScalarFunction(uuid_request);
   Expect(uuid_result.result.ok(), "injected uuid should succeed", &errors);
   Expect(uuid_result.result.scalar_values.size() == 1 &&
-             uuid_result.result.scalar_values[0].text_value == "019b6cf8-b000-7000-8000-00000000feed" &&
-             uuid_result.result.scalar_values[0].payload_kind == sblr::SblrValuePayloadKind::uuid_text,
+             uuid_result.result.scalar_values[0].uuid_value ==
+                 *uuid_request.context.sblr_context.deterministic_uuid &&
+             uuid_result.result.scalar_values[0].text_value.empty() &&
+             uuid_result.result.scalar_values[0].encoded_value.empty() &&
+             uuid_result.result.scalar_values[0].binary_value.empty() &&
+             uuid_result.result.scalar_values[0].payload_kind == sblr::SblrValuePayloadKind::uuid_binary,
          "uuid_generate should use deterministic UUID provider", &errors);
 
   std::cout << "{\n";

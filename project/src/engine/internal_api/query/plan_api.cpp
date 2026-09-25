@@ -12181,6 +12181,13 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
     return std::nullopt;
   }
 
+  // Projection cells are already typed by the sys-information owner. UUID
+  // projections may be SQL NULL; retain one nullable descriptor across rows.
+  const auto projection_value = [](const SysInformationProjectionValue& source) {
+    auto value = SysInformationTypedValue(source);
+    value.descriptor.encoded_descriptor = "nullability=nullable";
+    return value;
+  };
   EngineQueryRelation relation;
   relation.relation_name = "sys_projection:" + projection;
   relation.descriptor_digest = EncodeMgaMetadataFields({"crud.relation.binding.v2", MetadataUuidBytes(request.target_object.uuid)});
@@ -12189,14 +12196,14 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
   if (!projection_result.rows.empty()) {
     for (const auto& [field, ignored] : projection_result.rows.front().fields) {
       (void)ignored;
-      relation.columns.push_back(SysInformationTypedValue(ignored).descriptor);
+      relation.columns.push_back(projection_value(ignored).descriptor);
     }
   }
   for (const auto& source_row : projection_result.rows) {
     EngineRowValue row;
     row.fields.reserve(source_row.fields.size());
     for (const auto& [field, value] : source_row.fields) {
-      row.fields.emplace_back(field, SysInformationTypedValue(value));
+      row.fields.emplace_back(field, projection_value(value));
     }
     const auto matches =
         ProjectionRowMatchesPredicate(row, request.predicate, error_detail);

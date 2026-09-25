@@ -591,6 +591,7 @@ struct MgaRelationHotAppendContext::Impl {
   std::vector<std::future<PreparedIndexAppendJob>> pending_index_materialization_jobs;
   std::map<EngineUuid, ScopedRelationSummaryDelta> scoped_row_summary_deltas;
   bool decoded_row_cache_auto_warm = true;
+  std::vector<std::pair<EngineUuid, std::uint64_t>> prepared_row_sequences;
   bool row_dirty = false;
   bool index_dirty = false;
   MgaRelationHotAppendCounters counters;
@@ -616,6 +617,33 @@ void MgaRelationHotAppendContext::SetDecodedRowCacheAutoWarm(bool enabled) {
   impl_->decoded_row_cache_auto_warm = enabled;
 }
 
+EngineApiDiagnostic MgaRelationHotAppendContext::PrepareRowVersionSequences(
+    std::span<CrudRowVersionRecord* const> rows) {
+  if (rows.empty() || !impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "row_sequence_preparation_invalid");
+  }
+  std::map<EngineUuid, bool> versions;
+  for (const auto* row : rows) {
+    if (row == nullptr || row->version_uuid.is_nil() || row->sequence != 0 ||
+        row->event_sequence != 0 || !versions.emplace(row->version_uuid, true).second) {
+      return MakeInvalidRequestDiagnostic("mga.row_store", "row_sequence_identity_invalid");
+    }
+  }
+  const auto reservation = ReserveEventSequenceRange(
+      impl_->context, "row_versions", RowStorePath(impl_->context), rows.size(),
+      [this]() { return ScanNextRowEventSequence(impl_->context); },
+      &impl_->allocator_lines);
+  if (!reservation.ok) return reservation.diagnostic;
+  ++impl_->counters.row_range_reservations;
+  impl_->prepared_row_sequences.reserve(rows.size());
+  auto sequence = reservation.first;
+  for (auto* row : rows) {
+    row->sequence = row->event_sequence = sequence++;
+    impl_->prepared_row_sequences.emplace_back(row->version_uuid, row->sequence);
+  }
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     std::vector<CrudRowVersionRecord>* rows,
     std::vector<std::uint64_t>* written_event_sequences) {
@@ -636,16 +664,30 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     written_event_sequences->clear();
     written_event_sequences->reserve(rows->size());
   }
-  const auto reservation = ReserveEventSequenceRange(
-      impl_->context,
-      "row_versions",
-      RowStorePath(impl_->context),
-      static_cast<std::uint64_t>(rows->size()),
-      [this]() { return ScanNextRowEventSequence(impl_->context); },
-      &impl_->allocator_lines);
-  if (!reservation.ok) { return reservation.diagnostic; }
-  ++impl_->counters.row_range_reservations;
-  std::uint64_t event_sequence = reservation.first;
+  std::uint64_t event_sequence = 0;
+  if (!impl_->prepared_row_sequences.empty()) {
+    if (rows->size() != impl_->prepared_row_sequences.size()) {
+      return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_row_count_mismatch");
+    }
+    for (std::size_t i = 0; i < rows->size(); ++i) {
+      const auto& [version, sequence] = impl_->prepared_row_sequences[i];
+      const auto& row = (*rows)[i];
+      if (row.version_uuid != version || row.sequence != sequence ||
+          row.event_sequence != sequence) {
+        return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_row_identity_mismatch");
+      }
+    }
+    event_sequence = impl_->prepared_row_sequences.front().second;
+    impl_->prepared_row_sequences.clear();
+  } else {
+    const auto reservation = ReserveEventSequenceRange(
+        impl_->context, "row_versions", RowStorePath(impl_->context), rows->size(),
+        [this]() { return ScanNextRowEventSequence(impl_->context); },
+        &impl_->allocator_lines);
+    if (!reservation.ok) return reservation.diagnostic;
+    ++impl_->counters.row_range_reservations;
+    event_sequence = reservation.first;
+  }
   std::string row_buffer;
   row_buffer.reserve(rows->size() * kHotAppendRowLineReserveBytes);
   const EngineUuid single_table_uuid = rows->front().table_uuid;
@@ -766,6 +808,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     std::vector<std::uint64_t>* written_event_sequences) {
   if (value_batch == nullptr) {
     return AppendRowVersions(rows, written_event_sequences);
+  }
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
@@ -931,6 +976,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>*
         value_batch) {
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
+  }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -1083,6 +1131,9 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     const std::vector<std::vector<std::pair<std::string, std::string>>>*
         value_batch,
     bool shared_key_order_known) {
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
+  }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -1256,6 +1307,9 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
     const std::vector<CrudRowVersionRecord>& rows,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
+  }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -1351,6 +1405,9 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
     const EngineUuid& temporary_session_uuid,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
+  }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -1442,6 +1499,9 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativeP
     const EngineUuid& table_uuid,
     const EngineUuid& temporary_session_uuid,
     const EngineNativeRowPacketFrame& frame) {
+  if (!impl_->prepared_row_sequences.empty()) {
+    return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
+  }
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }

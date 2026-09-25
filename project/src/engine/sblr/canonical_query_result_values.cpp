@@ -11,6 +11,8 @@
 #include "canonical_utf8.hpp"
 
 #include <algorithm>
+#include <bit>
+#include "nosql/spatial_api.hpp"
 #include <charconv>
 #include <map>
 #include <new>
@@ -48,13 +50,27 @@ bool MaterializePayload(const api::EngineTypedValue& value,
   if (value.binary_value.size() > maximum_payload) return false;
   const bool binary = !value.binary_value.empty();
   const auto type = column.transport.canonical_type_id;
-  if (type == dt::CanonicalTypeId::character) {
+  if (type == dt::CanonicalTypeId::character || type == dt::CanonicalTypeId::json_document || type == dt::CanonicalTypeId::list) {
     if (value.encoded_value.size() > maximum_payload) return false;
   } else if (value.encoded_value.size() > 128) {
     return false;
   }
   if (binary) *payload = value.binary_value;
   switch (type) {
+    case dt::CanonicalTypeId::uint64:
+      if (!binary) {
+        std::uint64_t number = 0;
+        const auto& text = value.encoded_value;
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+        if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data()+text.size()) return false;
+        payload->resize(8);
+        for (unsigned i = 0; i < 8; ++i) (*payload)[i] = static_cast<std::uint8_t>(number >> (8*i));
+      }
+      break;
+    case dt::CanonicalTypeId::json_document:
+    case dt::CanonicalTypeId::list:
+      if (!binary) payload->assign(value.encoded_value.begin(), value.encoded_value.end());
+      break;
     case dt::CanonicalTypeId::boolean:
       if (!binary) {
         if (value.encoded_value != "true" && value.encoded_value != "false") return false;
@@ -89,6 +105,31 @@ bool MaterializePayload(const api::EngineTypedValue& value,
               *column.precision - *column.scale)
         return false;
       if (!binary) payload->assign(decimal.canonical_bytes.begin(), decimal.canonical_bytes.end());
+      break;
+    }
+    case dt::CanonicalTypeId::real64:
+      if (!binary) {
+        double real{};
+        const auto parsed = std::from_chars(value.encoded_value.data(),
+            value.encoded_value.data() + value.encoded_value.size(), real);
+        if (parsed.ec != std::errc{} ||
+            parsed.ptr != value.encoded_value.data() + value.encoded_value.size()) return false;
+        const auto bits = std::bit_cast<std::uint64_t>(real);
+        payload->resize(8);
+        for (std::size_t i = 0; i < 8; ++i)
+          (*payload)[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+      }
+      break;
+    case dt::CanonicalTypeId::uuid:
+      // The retained columnar carrier uses a byte-preserving std::string.
+      // Its UUID value is already binary16; never parse or render UUID text.
+      if (!binary) payload->assign(value.encoded_value.begin(), value.encoded_value.end());
+      if (payload->size() != 16) return false;
+      break;
+    case dt::CanonicalTypeId::geometry: {
+      if (!binary) payload->assign(value.encoded_value.begin(), value.encoded_value.end());
+      api::nosql::SpatialPoint2dV1 point;
+      if (!api::nosql::DecodeSpatialPoint2dV1(*payload, &point)) return false;
       break;
     }
     case dt::CanonicalTypeId::character: {

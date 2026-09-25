@@ -1,6 +1,6 @@
 # Database Lifecycle Traceability Report
 
-Generated: `2026-09-04T06:12:10Z`
+Generated: `2026-09-25T15:23:20Z`
 Slice: `DBLC-013R`
 Acceptance gate: `DBLC_P13R_TRACEABILITY_COMPLETE`
 Status: `passed`
@@ -12,8 +12,8 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 ## Coverage Summary
 
-- Execution_Plan CTest labels observed in current CMake/test files: `8364`
-- Test source inventory entries observed: `22023`
+- Execution_Plan CTest labels observed in current CMake/test files: `9354`
+- Test source inventory entries observed: `22836`
 - Generated trace records: `593`
 - Fatal findings: `0`
 - Warnings: `0`

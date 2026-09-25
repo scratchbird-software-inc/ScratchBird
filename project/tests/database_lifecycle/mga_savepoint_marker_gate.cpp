@@ -6,6 +6,7 @@
 #include "transaction/savepoint_api.hpp"
 #include "sblr_savepoint_coordinator.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
+#include "mga_relation_store/mga_savepoint_marker_replay.hpp"
 #include "uuid.hpp"
 #include "sblr_savepoint_runtime.hpp"
 
@@ -304,6 +305,54 @@ void WireUuidCodec() {
         "binary executable savepoint descriptor round trip");
 }
 
+void BinaryReplay() {
+  Fixture f;
+  std::string stream;
+  std::vector<std::string> keys;
+  auto add = [&](const scratchbird::core::platform::Uuid& uuid) {
+    api::MgaSavepointMarkerRecord marker;
+    marker.kind = 1;
+    marker.uuid_identity = true;
+    marker.uuid = uuid;
+    marker.transaction = 17;
+    keys.push_back(api::MgaSavepointUuidKey(uuid));
+    stream += api::EncodeMgaSavepointMarker(marker);
+  };
+  const auto base = scratchbird::tests::FixtureUuidLiteral("01000000-0000-7000-8000-000000000000");
+  add(base);
+  for (unsigned byte = 0; byte < 16; ++byte)
+    for (unsigned bit = 0; bit < 8; ++bit) {
+      if ((byte == 6 && bit >= 4) || (byte == 8 && bit >= 6)) continue;
+      auto uuid = base;
+      uuid.bytes[byte] ^= static_cast<std::uint8_t>(1u << bit);
+      add(uuid);
+    }
+  Check(keys.size() == 123 && stream.size() == 123 * 124,
+        "binary marker history has every variable v7 bit and exact frame widths");
+  for (const std::size_t chunk : {1u, 7u, 15u, 16u, 23u, 124u, 4096u}) {
+    api::SavepointParsedState state;
+    std::string pending;
+    for (std::size_t offset = 0; offset < stream.size(); offset += chunk) {
+      pending.append(stream, offset, std::min(chunk, stream.size() - offset));
+      api::savepoint_replay::ConsumeMarkerBytes(&pending, &state, false);
+    }
+    api::savepoint_replay::ConsumeMarkerBytes(&pending, &state, true);
+    Check(!state.marker_authority_corrupt && pending.empty() &&
+              state.active_savepoints[17].size() == keys.size(),
+          "chunked native replay preserves exact UUID key cohort");
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      const auto found = state.active_savepoints[17].find(keys[i]);
+      Check(found != state.active_savepoints[17].end() &&
+                found->second.creation_ordinal == i + 1,
+            "native marker ordinal follows creation order, independently of UUID bits");
+    }
+  }
+  // The historical label decoder must not restore native authority from hex.
+  f.Write("SBMGA1\tSAVEPOINT\t17\t0001000000000070008000000000000000\t0\t0\t0\n");
+  Check(api::ValidateMgaSavepointMarkerAuthority(f.context).error,
+        "historical text record cannot introduce a native UUID marker");
+}
+
 void Corruption() {
   const std::string valid = "SBMGA1\tSAVEPOINT\t17\t61\t0\t0\t0\n";
   const std::vector<std::string> corrupt = {
@@ -347,7 +396,7 @@ void Corruption() {
 }  // namespace
 
 int main() {
-  for (const auto test : {Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, Corruption}) {
+  for (const auto test : {Stack, MarkerObservation, Ranges, Coordinator, BinaryCodec, WireUuidCodec, BinaryReplay, Corruption}) {
     try { test(); }
     catch (const std::exception& error) {
       Check(false, std::string("unexpected exception: ") + error.what());

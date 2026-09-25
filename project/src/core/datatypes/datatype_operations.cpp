@@ -42,7 +42,9 @@ Status ErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
 }
 
-bool CanonicalCharacterValueValid(const DatatypeOperationValue& value) noexcept {
+bool CanonicalOperationValueValid(const DatatypeOperationValue& value) noexcept {
+  if (value.type_id == CanonicalTypeId::uuid)
+    return value.is_null ? value.encoded_value.empty() : value.encoded_value.size() == 16;
   return value.is_null || value.type_id != CanonicalTypeId::character ||
       ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
                             value.encoded_value.size());
@@ -1002,30 +1004,6 @@ std::string HexEncodeLower(std::string_view value) {
   return out;
 }
 
-std::string UuidCompactHex(const std::string& value) {
-  std::string compact;
-  compact.reserve(32);
-  for (char c : value) {
-    if (c != '-') { compact.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c)))); }
-  }
-  return compact;
-}
-
-std::string UuidTextToBytes(const std::string& value, bool* ok) {
-  if (!IsUuidText(value)) {
-    *ok = false;
-    return {};
-  }
-  return HexDecodeStrict(UuidCompactHex(value), false, ok);
-}
-
-std::string BytesToUuidText(std::string_view value) {
-  if (value.size() != 16) { return {}; }
-  const std::string hex = HexEncodeLower(value);
-  return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" + hex.substr(12, 4) + "-" +
-         hex.substr(16, 4) + "-" + hex.substr(20, 12);
-}
-
 class JsonTextValidator {
  public:
   explicit JsonTextValidator(std::string_view text) : text_(text) {}
@@ -1328,6 +1306,10 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           bool reference_compatibility_profile) {
   if (source_type_id == target_type_id) { return DatatypeCastCategory::identity; }
   if (source_type_id == CanonicalTypeId::null_type) { return DatatypeCastCategory::lossless_implicit; }
+  if (source_type_id == CanonicalTypeId::uuid || target_type_id == CanonicalTypeId::uuid) {
+    return (source_type_id == CanonicalTypeId::binary || target_type_id == CanonicalTypeId::binary)
+        ? DatatypeCastCategory::lossless_explicit : DatatypeCastCategory::forbidden;
+  }
   if (IsOpaqueRenderOnly(source_type_id) && IsCharacter(target_type_id)) {
     return DatatypeCastCategory::lossless_explicit;
   }
@@ -1371,6 +1353,9 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if ((request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) &&
+      request.value.is_null && !request.value.encoded_value.empty())
+    return CastFailure("uuid_null_payload_invalid");
   DatatypeCastResult result;
   result.category = ClassifyDatatypeCast(request.value.type_id, request.target_type_id, request.reference_compatibility_profile);
   if (result.category == DatatypeCastCategory::forbidden) {
@@ -1407,16 +1392,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (request.value.is_null) { return result; }
 
   const std::string value = request.value.encoded_value;
-  if (request.value.type_id == CanonicalTypeId::uuid && request.target_type_id == CanonicalTypeId::binary) {
-    bool ok = false;
-    result.value.encoded_value = UuidTextToBytes(value, &ok);
-    if (!ok) { return CastFailure("uuid_invalid", result.category); }
-    return result;
-  }
-  if (request.value.type_id == CanonicalTypeId::binary && request.target_type_id == CanonicalTypeId::uuid) {
-    result.value.encoded_value = BytesToUuidText(value);
-    if (result.value.encoded_value.empty()) { return CastFailure("uuid_binary_length_invalid", result.category); }
-    return result;
+  if (request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) {
+    if (value.size() != 16) return CastFailure("uuid_binary_length_invalid", result.category);
+    return result;  // UUID identity and UUID/binary casts retain all 128 bits.
   }
   if (IsBinaryLike(request.value.type_id) && request.target_type_id == CanonicalTypeId::character) {
     result.value.encoded_value = HexEncodeLower(value);
@@ -1494,11 +1472,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     }
     return CastFailure("boolean_invalid", result.category);
   }
-  if (request.target_type_id == CanonicalTypeId::uuid) {
-    if (!IsUuidText(value)) { return CastFailure("uuid_invalid", result.category); }
-    result.value.encoded_value = LowerAscii(value);
-    return result;
-  }
   if (request.target_type_id == CanonicalTypeId::date) {
     if (!DateText(value)) { return CastFailure("date_invalid", result.category); }
     result.value.encoded_value = value.substr(0, 10);
@@ -1539,6 +1512,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::uuid && !CanonicalOperationValueValid(request.value))
+    return ExtractFailure("uuid_binary_length_invalid");
   DatatypeExtractResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
@@ -1565,18 +1540,18 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     return ExtractFailure("unsupported_interval_field:" + field);
   }
   if (request.value.type_id == CanonicalTypeId::uuid) {
-    if (!IsUuidText(value)) { return ExtractFailure("uuid_invalid"); }
+    if (value.size() != 16) return ExtractFailure("uuid_binary_length_invalid");
+    const auto version = static_cast<unsigned char>(value[6]) >> 4;
     if (field == "version") {
-      result.value = {CanonicalTypeId::uint8, std::string(1, value[14]), false};
+      result.value = {CanonicalTypeId::uint8, std::to_string(version), false};
       return result;
     }
     if (field == "uuidv7_unix_millis") {
-      if (value[14] != '7') { return ExtractFailure("uuid_not_v7"); }
-      std::string compact;
-      for (char c : value) {
-        if (c != '-') { compact.push_back(c); }
-      }
-      result.value = {CanonicalTypeId::uint64, std::to_string(HexToU64(std::string_view(compact).substr(0, 12))), false};
+      if (version != 7) return ExtractFailure("uuid_not_v7");
+      std::uint64_t millis = 0;
+      for (std::size_t i = 0; i < 6; ++i)
+        millis = (millis << 8) | static_cast<unsigned char>(value[i]);
+      result.value = {CanonicalTypeId::uint64, std::to_string(millis), false};
       return result;
     }
     return ExtractFailure("unsupported_uuid_field:" + field);
@@ -1777,10 +1752,10 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     return result;
   }
 
-  if (!CanonicalCharacterValueValid(request.left) || !CanonicalCharacterValueValid(request.right)) {
+  if (!CanonicalOperationValueValid(request.left) || !CanonicalOperationValueValid(request.right)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "character_utf8_invalid");
+        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   if (request.left.is_null || request.right.is_null) {
@@ -2004,8 +1979,8 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
-  if (!CanonicalCharacterValueValid(value)) {
-    *failure_detail = "character_utf8_invalid";
+  if (!CanonicalOperationValueValid(value)) {
+    *failure_detail = "canonical_value_encoding_invalid";
     return false;
   }
   if (value.is_null) {
@@ -2065,10 +2040,16 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "invalid_null_ordering");
     return result;
   }
-  if (!CanonicalCharacterValueValid(request.value)) {
+  if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "character_utf8_invalid");
+        "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "canonical_value_encoding_invalid");
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::uuid) {
+    result.sort_key.assign(1, request.value.is_null
+        ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+    if (!request.value.is_null) result.sort_key.append(request.value.encoded_value);
     return result;
   }
   if (request.value.is_null) {
@@ -2204,10 +2185,10 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
-  if (!CanonicalCharacterValueValid(request.value)) {
+  if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_SERIALIZATION_REJECTED", "datatype.serialization.rejected", "character_utf8_invalid");
+        "SB_DATATYPE_SERIALIZATION_REJECTED", "datatype.serialization.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::unknown) {
@@ -2216,6 +2197,14 @@ DatatypeSerializationResult SerializeDatatypeValue(
                                                         "SB_DATATYPE_SERIALIZATION_REJECTED",
                                                         "datatype.serialization.rejected",
                                                         "unknown_type");
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::uuid) {
+    // UUID-OPERATION-VALUE-BINARY-001: exact state/length framing, raw value bits.
+    result.serialized_value.assign("SBDVUUID", 8);
+    result.serialized_value.push_back(request.value.is_null ? '\0' : '\1');
+    result.serialized_value.push_back(request.value.is_null ? '\0' : '\20');
+    result.serialized_value.append(request.value.encoded_value);
     return result;
   }
   result.serialized_value = std::string("SBDV1;type=") +
@@ -2230,6 +2219,25 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
   DatatypeDeserializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (StartsWith(request.serialized_value, "SBDVUUID")) {
+    const auto& bytes = request.serialized_value;
+    const bool valid = bytes.size() >= 10 &&
+        ((bytes[8] == '\0' && bytes[9] == '\0' && bytes.size() == 10) ||
+         (bytes[8] == '\1' && bytes[9] == '\20' && bytes.size() == 26)) &&
+        (request.expected_type_id == CanonicalTypeId::unknown ||
+         request.expected_type_id == CanonicalTypeId::uuid);
+    if (!valid) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected",
+          "uuid_binary_frame_invalid");
+      return result;
+    }
+    result.value.type_id = CanonicalTypeId::uuid;
+    result.value.is_null = bytes[8] == '\0';
+    result.value.encoded_value = bytes.substr(10);
+    return result;
+  }
   if (!StartsWith(request.serialized_value, "SBDV1;")) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -2245,7 +2253,7 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
     fields[part.substr(0, equals)] = part.substr(equals + 1);
   }
   const CanonicalTypeId type_id = CanonicalTypeIdFromStableName(fields["type"]);
-  if (type_id == CanonicalTypeId::unknown ||
+  if (type_id == CanonicalTypeId::unknown || type_id == CanonicalTypeId::uuid ||
       (request.expected_type_id != CanonicalTypeId::unknown &&
        request.expected_type_id != type_id)) {
     result.status = ErrorStatus();
@@ -2276,10 +2284,10 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
                                                         "payload_hex_invalid");
     return result;
   }
-  if (!CanonicalCharacterValueValid(staged)) {
+  if (!CanonicalOperationValueValid(staged)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected", "character_utf8_invalid");
+        "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   result.value = std::move(staged);
@@ -2357,6 +2365,8 @@ CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name) {
   if (lower == "set") { return CanonicalTypeId::set_value; }
   // SQL/XML exposes the public descriptor spelling `xml`; the storage/runtime
   // authority remains the canonical xml_document type identity.
+  if (lower == "json") { return CanonicalTypeId::json_document; }
+  if (lower == "list<text nullable>") { return CanonicalTypeId::list; }
   if (lower == "xml") { return CanonicalTypeId::xml_document; }
   // CDSSV-VECTOR: normalized builtin descriptor profile names retain their
   // exact public spelling while binding to an existing canonical vector type

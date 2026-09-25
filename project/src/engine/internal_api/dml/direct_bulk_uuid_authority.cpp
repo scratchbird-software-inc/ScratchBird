@@ -9,6 +9,8 @@
 
 namespace scratchbird::engine::internal_api::dml::detail {
 namespace {
+// SEARCH_KEY: SB_ENGINE_DIRECT_BULK_UUID_IMPLEMENTATION_AUTHORITY
+// Owns the complete binary row/version UUID allocation cohort; identities confer no transaction ordering or finality.
 [[noreturn]] void InvalidIdentity(const char* code,const char* key) {
   namespace p=core::platform;
   throw CrudIdentityIssuanceError(core::uuid::MakeUuidDiagnostic(

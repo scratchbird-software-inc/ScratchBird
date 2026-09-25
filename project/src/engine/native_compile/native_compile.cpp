@@ -332,6 +332,7 @@ BackendInfo DetectBackend(bool simulate_unavailable, bool allow_dynamic_load) {
 }
 
 struct Lowerability {
+  bool authority_admitted = false;
   bool lowerable = false;
   std::string unit_kind = "unknown";
   std::string reason = "not_classified";
@@ -394,6 +395,12 @@ Lowerability ClassifyLowerability(const NativeCompileRequest& request) {
     lower.reason = "mutation_side_effect_forbidden";
     return lower;
   }
+  if (Contains(module, "cluster")) {
+    lower.unit_kind = "cluster_operation";
+    lower.reason = "cluster_operation_forbidden_noncluster";
+    return lower;
+  }
+  lower.authority_admitted = true;
   if (Contains(module, "udr_call")) {
     lower.unit_kind = "udr_call";
     lower.reason = "udr_call_interpreter_only";
@@ -402,11 +409,6 @@ Lowerability ClassifyLowerability(const NativeCompileRequest& request) {
   if (Contains(module, "log(") || Contains(module, "logging_function")) {
     lower.unit_kind = "logging_function";
     lower.reason = "logging_interpreter_only";
-    return lower;
-  }
-  if (Contains(module, "cluster")) {
-    lower.unit_kind = "cluster_operation";
-    lower.reason = "cluster_operation_forbidden_noncluster";
     return lower;
   }
   if (Contains(module, "predicate") || Contains(module, "filter")) {
@@ -746,6 +748,16 @@ NativeCompileResult CompileNativeUnit(const NativeCompileRequest& request) {
   preflight_backend.provider =
       std::string("configured|link-mode=") + SCRATCHBIRD_LLVM_LINK_MODE +
       "|library=" + SCRATCHBIRD_LLVM_LIBRARY_PATH;
+  const auto lowerability = ClassifyLowerability(request);
+  // Rejected inputs must not acquire backend resources or become interpreter
+  // successes through optional/disabled native-compile policy fallback.
+  if (!lowerability.authority_admitted) {
+    return Failure(request, profile, preflight_backend,
+                   lowerability.reason == "sql_compile_forbidden"
+                       ? "NATIVE.SQL_COMPILE_FORBIDDEN"
+                       : "NATIVE.COMPILE_FAILED_REFUSED",
+                   lowerability.reason);
+  }
   memory::LlvmMemoryAccountingAcquireResult llvm_memory_acquired;
   if (live_llvm_configured) {
     llvm_memory_acquired = memory::AcquireLlvmMemoryAccountingReservation(
@@ -766,7 +778,6 @@ NativeCompileResult CompileNativeUnit(const NativeCompileRequest& request) {
   const auto backend =
       DetectBackend(request.simulate_backend_unavailable,
                     !live_llvm_configured || llvm_memory_acquired.ok());
-  const auto lowerability = ClassifyLowerability(request);
   const auto start = std::chrono::steady_clock::now();
 
   auto finalize = [&](NativeCompileResult result) {

@@ -640,10 +640,10 @@ void CryptoUuidGeneration() {
   request.context.function_uuid={{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x76,0x15,0xba,0x9c,0x4d,0xa4,0x76,0x32,0x27,0x45}};
   Check(package.registry.BindCallContext(request.context)!=nullptr&&request.context.function_id=="sb.crypto.gen_random_uuid",
         "crypto UUID invocation binds through the actual fixed binary seed");
-  request.context.sblr_context.deterministic_uuid_text="019d0000-0000-7000-8000-000000000001";
+  request.context.sblr_context.deterministic_uuid=scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01}};
   rng_armed=true;rng_prefix=16;rng_result=1;rng_interceptions=0;
   const auto generated=f::DispatchCryptoHashFunction(request);
-  Check(!rng_armed&&rng_interceptions==1,"UUID generator cannot bypass Core entropy using a text override");
+  Check(!rng_armed&&rng_interceptions==1,"crypto UUID generator cannot bypass Core entropy using a fixture override");
   rng_armed=false;
   Check(generated.result.ok()&&generated.result.scalar_values.size()==1&&generated.result.rows.empty(),"Core RNG supplies one UUID result");
   if(!generated.result.scalar_values.empty()) {

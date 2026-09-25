@@ -49,7 +49,10 @@ TypedUuid NewEvidenceId(const SecondaryIndexOverlayLedger* ledger) {
 
 std::string LogicalIndexEntryKey(const TypedUuid& row_uuid,
                                  const std::string& key_payload) {
-  return scratchbird::core::uuid::UuidToString(row_uuid.value) + "\x1f" + key_payload;
+  // Fixed-width binary identity followed by the exact key payload. Embedded
+  // zero or separator bytes are data and cannot change the field boundary.
+  return std::string(reinterpret_cast<const char*>(row_uuid.value.bytes.data()),
+                     row_uuid.value.bytes.size()) + key_payload;
 }
 
 std::string LogicalIndexEntryKey(const SecondaryIndexOverlayEntry& entry) {

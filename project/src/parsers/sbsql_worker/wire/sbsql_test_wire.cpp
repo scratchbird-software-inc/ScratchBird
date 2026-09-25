@@ -1164,9 +1164,14 @@ BuildEngineProjectedNativeBindingContext(
         producer, statement_context, resolved_object_reference_seeds, messages);
   }
   NativeRelationalBindingContext context;
+  std::unordered_set<std::uint32_t> contextual_reservation_handles;
   const auto finish_context = [&]()
       -> std::optional<NativeRelationalBindingContext> {
     for (auto& descriptor : context.descriptors) {
+      // Structural placeholders are replaced only by the subsequent engine
+      // contextual-literal issuance. They must retain zero codec authority
+      // until that exact reservation has been checked and sealed.
+      if (contextual_reservation_handles.contains(descriptor.descriptor_id)) continue;
       if (!PreserveNativeDescriptorAuthority(&descriptor, statement_context)) {
         return fail("descriptor_datatype_authority_not_preserved");
       }
@@ -1769,11 +1774,13 @@ BuildEngineProjectedNativeBindingContext(
                    CanonicalUuidBytes(profile.descriptor_uuid).has_value();
           });
     };
+    const auto int64_profile = profile_for(1, 0, *int64_type);
     const auto boolean_profile = profile_for(20, 0, *boolean_type);
     const auto real64_profile = profile_for(18, 0, *real64_type);
     const auto uint64_profile = profile_for(16, 0, *uint64_type);
     const auto geometry_profile = profile_for(22, 0, *geometry_type);
-    if (boolean_profile == statement_context.descriptor_profiles.end() ||
+    if (int64_profile == statement_context.descriptor_profiles.end() ||
+        boolean_profile == statement_context.descriptor_profiles.end() ||
         real64_profile == statement_context.descriptor_profiles.end() ||
         uint64_profile == statement_context.descriptor_profiles.end() ||
         geometry_profile == statement_context.descriptor_profiles.end()) {
@@ -1791,9 +1798,7 @@ BuildEngineProjectedNativeBindingContext(
     const auto real64_descriptor = add_profile(*real64_profile, "real64");
     const auto uint64_descriptor = add_profile(*uint64_profile, "uint64");
     const auto geometry_descriptor = add_profile(*geometry_profile, "geometry");
-    const auto int64_descriptor = add_descriptor(
-        *int64_type, *int64_type, "int64", BoundNullability::kNonNull,
-        std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    const auto int64_descriptor = add_profile(*int64_profile, "int64");
     if (!boolean_descriptor.has_value() || !real64_descriptor.has_value() ||
         !uint64_descriptor.has_value() || !geometry_descriptor.has_value() ||
         !int64_descriptor.has_value()) {
@@ -1851,6 +1856,7 @@ BuildEngineProjectedNativeBindingContext(
         placeholder.width_precision_scale.scale = profile->scale;
       }
       const auto descriptor_id = placeholder.descriptor_id;
+      contextual_reservation_handles.insert(descriptor_id);
       context.descriptors.push_back(std::move(placeholder));
       ++contextual_placeholder_count;
       return descriptor_id;

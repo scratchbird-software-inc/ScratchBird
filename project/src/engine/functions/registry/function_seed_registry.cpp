@@ -1467,12 +1467,12 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
     // engine guards in data_scalar_functions_06_system_session_catalog.inc
     // reading database_uuid and current_schema_uuid from sblr_context (mirroring
     // current_user pattern). sb.uuid.v4 dispatches through existing uuid_generate
-    // (version=4 is the engine default — RandomUuidV4Text). sb.uuid.v1 and
+    // (version=4 is the engine default — RandomUuidV4). sb.uuid.v1 and
     // sb.uuid.v7 engine implementations added 2026-05-11 (uuid_v1/v7 sub-stream)
-    // via new RandomUuidV1Text and RandomUuidV7Text helpers in
+    // via new RandomUuidV1 and RandomUuidV7 helpers in
     // data_scalar_functions_01_numeric_temporal.inc and dedicated dispatch
     // entries in data_scalar_functions_07_dispatch_entrypoints.inc; both
-    // accept the deterministic_uuid_text override for fixture reproducibility;
+    // accept the deterministic_uuid override for fixture reproducibility;
     // uuid_generate also extended to route version=1 and version=7.
     {"sb.session.current_catalog", FunctionUuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x71, 0x44, 0xa0, 0x89, 0x1d, 0xcc, 0x5a, 0xfb, 0x03, 0x50}}, "data.scalar", "current_catalog",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},

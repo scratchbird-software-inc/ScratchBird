@@ -451,7 +451,7 @@ void TestNonScalarOperatorCastProof() {
 void TestStableHashAndDeserializationRefusals() {
   dt::DatatypeHashRequest hash_request;
   hash_request.value = Value(dt::CanonicalTypeId::uuid,
-                             "018f8a2a-1b2c-7def-8123-456789abcdef");
+                             std::string("\x01\x8f\x8a\x2a\x1b\x2c\x7d\xef\x81\x23\x45\x67\x89\xab\xcd\xef",16));
   const auto first = dt::HashDatatypeValue(hash_request);
   const auto second = dt::HashDatatypeValue(hash_request);
   Require(first.ok() && second.ok() &&
@@ -560,9 +560,88 @@ void TestExplicitDisplayBoundaryRendering() {
           "MDF-014 unknown display boundary did not fail closed");
 }
 
+void TestBinaryUuidOperations() {
+  const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff", 16);
+  const auto value = Value(dt::CanonicalTypeId::uuid, bytes);
+  const auto serialized = dt::SerializeDatatypeValue({value});
+  const std::string expected = std::string("SBDVUUID\1\20", 10) + bytes;
+  Require(serialized.ok() && serialized.serialized_value == expected,
+          "UUID serializer changed raw octets or frame");
+  const auto decoded = dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, expected});
+  Require(decoded.ok() && !decoded.value.is_null && decoded.value.encoded_value == bytes,
+          "UUID frame did not round trip");
+  for (std::size_t size = 0; size < expected.size(); ++size)
+    Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, expected.substr(0, size)}).ok(),
+            "truncated UUID frame admitted");
+  for (auto invalid : {expected + "x", std::string("SBDVUUID\2\20",10) + bytes,
+                       std::string("SBDVUUID\1\17",10) + bytes,
+                       std::string("SBDV1;type=uuid;state=value;payload=01020304050670008000090a3b7c00ff")})
+    Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, invalid}).ok(),
+            "noncanonical UUID frame admitted");
+  Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::int64, expected}).ok(),
+          "UUID frame decoded as another type");
+  const auto null_value = dt::DatatypeOperationValue{dt::CanonicalTypeId::uuid, {}, true};
+  const auto null_frame = dt::SerializeDatatypeValue({null_value});
+  Require(null_frame.ok() && null_frame.serialized_value == std::string("SBDVUUID\0\0",10) &&
+      dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid,null_frame.serialized_value}).value.is_null,
+      "UUID SQL NULL framing drifted");
+  const auto nil = Value(dt::CanonicalTypeId::uuid, std::string(16,'\0'));
+  Require(dt::SerializeDatatypeValue({nil}).ok(), "nil UUID value refused");
+  const auto sorted = dt::MakeDatatypeSortKey({value});
+  Require(sorted.ok() && sorted.sort_key == std::string(1,'\1') + bytes,
+          "UUID sort key converted binary octets");
+  Require(dt::CompareDatatypeValues({nil,value}).comparison < 0 &&
+          dt::HashDatatypeValue({value}).ok(), "UUID comparison/hash refused valid bytes");
+  for (const auto invalid : {Value(dt::CanonicalTypeId::uuid, bytes.substr(1)),
+                            Value(dt::CanonicalTypeId::uuid,"01020304-0506-7000-8000-090a3b7c00ff")}) {
+    Require(!dt::SerializeDatatypeValue({invalid}).ok() && !dt::HashDatatypeValue({invalid}).ok() &&
+            !dt::MakeDatatypeSortKey({invalid}).ok() && !dt::CompareDatatypeValues({invalid,value}).ok(),
+            "UUID operation accepted nonbinary16 value");
+  }
+  const dt::DatatypeOperationValue dirty_null{dt::CanonicalTypeId::uuid, bytes, true};
+  dt::DatatypeCastRequest invalid_null_cast;
+  invalid_null_cast.value = dirty_null;
+  invalid_null_cast.target_type_id = dt::CanonicalTypeId::uuid;
+  Require(!dt::SerializeDatatypeValue({dirty_null}).ok() &&
+          !dt::HashDatatypeValue({dirty_null}).ok() &&
+          !dt::MakeDatatypeSortKey({dirty_null}).ok() &&
+          !dt::CompareDatatypeValues({dirty_null,value}).ok() &&
+          !dt::CastDatatypeValue(invalid_null_cast).ok(), "UUID SQL NULL retained payload bytes");
+  dt::DatatypeCastRequest cast;
+  cast.value = Value(dt::CanonicalTypeId::uuid, bytes);
+  cast.explicit_cast = true;
+  for (auto target : {dt::CanonicalTypeId::uuid, dt::CanonicalTypeId::binary}) {
+    cast.target_type_id = target;
+    const auto result = dt::CastDatatypeValue(cast);
+    Require(result.ok() && result.value.encoded_value == bytes,
+            "UUID identity/binary cast changed native bytes");
+  }
+  cast.value.type_id = dt::CanonicalTypeId::binary;
+  cast.target_type_id = dt::CanonicalTypeId::uuid;
+  Require(dt::CastDatatypeValue(cast).ok(), "binary16 UUID cast rejected");
+  cast.value.encoded_value.pop_back();
+  Require(!dt::CastDatatypeValue(cast).ok(), "truncated UUID accepted");
+  cast.value = Value(dt::CanonicalTypeId::character, "01020304-0506-7000-8000-090a3b7c00ff");
+  Require(!dt::CastDatatypeValue(cast).ok(), "engine converted textual UUID");
+  cast.value = Value(dt::CanonicalTypeId::uuid, bytes);
+  cast.target_type_id = dt::CanonicalTypeId::character;
+  Require(!dt::CastDatatypeValue(cast).ok(), "engine rendered UUID text");
+  dt::DatatypeExtractRequest extract;
+  extract.value = cast.value;
+  extract.field = "version";
+  auto result = dt::ExtractDatatypeField(extract);
+  Require(result.ok() && result.value.encoded_value == "7", "binary UUID version extraction failed");
+  extract.field = "uuidv7_unix_millis";
+  result = dt::ExtractDatatypeField(extract);
+  Require(result.ok() && result.value.encoded_value == "1108152157446",
+          "binary UUID timestamp extraction failed");
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool uuid_only = argc == 2 && std::string_view(argv[1]) == "--binary-uuid-only";
+  Require(argc == 1 || uuid_only, "unknown datatype test mode");
   // MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS
   // DEFER-DPE-COMPARISON-KEYS
   // DEFER-DPE-CAST-STORAGE
@@ -571,6 +650,8 @@ int main() {
   // CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY
   // CURRENT-CORE-DATATYPE-LOCALE-COLLATION
   // CURRENT-CORE-DATATYPE-NONSCALAR-OPERATORS
+  TestBinaryUuidOperations();
+  if (uuid_only) return EXIT_SUCCESS;
   TestOrderedKeysAndResourceBoundComparison();
   TestLocaleSpecificCharacterCollationProof();
   TestNumericOperationsUseTypedSemantics();

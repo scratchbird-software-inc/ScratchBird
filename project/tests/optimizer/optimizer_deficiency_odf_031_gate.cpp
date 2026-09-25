@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
@@ -14,6 +15,7 @@
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -99,6 +101,8 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   platform::Uuid table_uuid;
   platform::Uuid id_index_uuid;
   platform::Uuid name_index_uuid;
@@ -106,6 +110,7 @@ struct Fixture {
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) {
       std::filesystem::remove_all(dir, ignored);
@@ -116,23 +121,15 @@ struct Fixture {
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id,
                                       bool security_context_present = true) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 10;
-  context.security_epoch = 20;
-  context.resource_epoch = 30;
-  context.name_resolution_epoch = 40;
   return context;
 }
 
@@ -207,13 +204,15 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                               << created.diagnostic.message_key << '\n';
   Require(created.ok(), "ODF-031 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
   fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
@@ -221,7 +220,11 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
       NewNativeUuid(platform::UuidKind::object, salt + 13);
 
   auto context = Begin(fixture, "odf031-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+                          context, Table(fixture, context), {"character", "character", "character"},
+                          {Index(fixture, context, fixture.id_index_uuid, "id", api::kCrudIndexFamilyBtree, true),
+                           Index(fixture, context, fixture.name_index_uuid, "name", api::kCrudIndexFamilyBtree, false),
+                           Index(fixture, context, fixture.note_bitmap_index_uuid, "note", api::kCrudIndexFamilyBitmap, false)}),
                       "ODF-031 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -251,6 +254,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                                 false)),
                       "ODF-031 bitmap index metadata append failed");
   Commit(context);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf031-session"));
   return fixture;
 }
 
@@ -259,8 +265,9 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string id,
                                       std::string name,
                                       std::string note) {
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(
@@ -287,6 +294,11 @@ api::EngineUpdateRowsResult Update(const Fixture& fixture,
                                    api::EnginePredicateEnvelope predicate,
                                    std::string note,
                                    std::vector<std::string> options = {}) {
+  std::unique_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+  if (context.security_context_present) {
+    statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(*fixture.session, context);
+    context = statement->context;
+  }
   api::EngineUpdateRowsRequest request;
   request.context = std::move(context);
   request.target_table.uuid = fixture.table_uuid;
@@ -381,6 +393,12 @@ void RequireUnsafeRouteRefused(const api::EngineUpdateRowsResult& result,
   Require(result.diagnostics.front().detail.find("target_access_plan_refused") !=
               std::string::npos,
           "ODF-031 unsafe target access diagnostic detail mismatch");
+  if (!EvidenceContains(result.evidence, "dml_target_access_plan_refusal", diagnostic_token)) {
+    std::cerr << "expected_refusal=" << diagnostic_token << '\n';
+    for (const auto& item : result.evidence)
+      std::cerr << item.evidence_kind << ':'
+                << scratchbird::tests::EvidenceTextFields(item.evidence_id) << '\n';
+  }
   Require(EvidenceContains(result.evidence,
                            "dml_target_access_plan_refusal",
                            diagnostic_token),
@@ -479,8 +497,9 @@ void FallbacksAreExplicit() {
   }
   {
     auto context = Begin(fixture, "odf031-stale-epochs");
+    scratchbird::tests::FixtureEngineStatement statement(*fixture.session, context);
     api::EngineUpdateRowsRequest request;
-    request.context = context;
+    request.context = statement.context;
     request.bound_object_identity.catalog_generation_id = 9;
     request.bound_object_identity.security_epoch = 19;
     request.bound_object_identity.resource_epoch = 29;
@@ -553,6 +572,11 @@ void EvidenceHasNoRuntimeDocDependency() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf031_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf031_statement_fixture").ok(),
+          "ODF-031 memory policy configuration failed");
   CandidateStreamsUsePlans();
   FallbacksAreExplicit();
   EvidenceHasNoRuntimeDocDependency();

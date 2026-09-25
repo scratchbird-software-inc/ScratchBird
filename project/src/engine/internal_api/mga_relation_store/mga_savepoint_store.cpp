@@ -19,6 +19,8 @@
 #include "core/platform/savepoint_crash_injection.hpp"
 
 #include <algorithm>
+#include <array>
+#include "mga_savepoint_marker_replay.hpp"
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -40,6 +42,8 @@
 #endif
 
 namespace scratchbird::engine::internal_api {
+using savepoint_replay::ConsumeMarkerBytes;
+using savepoint_replay::NormalizeSavepointRowRollbackRanges;
 namespace {
 
 // SEARCH_KEY: SB_ENGINE_MGA_SAVEPOINT_STORE_IMPLEMENTATION_AUTHORITY
@@ -47,77 +51,24 @@ namespace {
 // Savepoints remain transaction-local boundaries and never allocate or publish
 // independent transaction finality.
 
-constexpr const char* kRowStoreMagic = "SBMGA1";
-constexpr std::string_view kDmlUpdateStatementSavepointCreateKind =
-    "DML_UPDATE_STATEMENT_SAVEPOINT_CREATE_V1";
-constexpr std::string_view kDmlUpdateStatementSavepointRollbackKind =
-    "DML_UPDATE_STATEMENT_SAVEPOINT_ROLLBACK_V1";
-constexpr std::string_view kDmlUpdateStatementSavepointReleaseKind =
-    "DML_UPDATE_STATEMENT_SAVEPOINT_RELEASE_V1";
-
 std::string SavepointStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_savepoints";
 }
 
-std::vector<std::string> SplitTabs(const std::string& line) {
-  std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const auto tab = line.find('\t', start);
-    fields.push_back(line.substr(start, tab == std::string::npos
-                                           ? std::string::npos
-                                           : tab - start));
-    if (tab == std::string::npos) { break; }
-    start = tab + 1;
-  }
-  return fields;
-}
-
-bool ParseU64(const std::string& text, std::uint64_t* value) {
-  if (text.empty() || (text.size() > 1 && text.front() == '0')) return false;
-  const auto parsed =
-      std::from_chars(text.data(), text.data() + text.size(), *value);
-  return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
-}
-
-int HexValue(const char c) {
-  if (c >= '0' && c <= '9') { return c - '0'; }
-  if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
-  if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-  return -1;
-}
-
-std::string DecodeCrudTextLocal(const std::string& encoded) {
-  if ((encoded.size() % 2) != 0) { return {}; }
-  std::string decoded;
-  decoded.reserve(encoded.size() / 2);
-  for (std::size_t index = 0; index < encoded.size(); index += 2) {
-    const int high = HexValue(encoded[index]);
-    const int low = HexValue(encoded[index + 1]);
-    if (high < 0 || low < 0) { return {}; }
-    decoded.push_back(static_cast<char>((high << 4) | low));
-  }
-  return decoded;
-}
-
-bool AppendLine(const std::string& path, const std::string& line) {
-  // The legacy field projection is internal only. All new persisted records
-  // are checksummed binary frames; a native identity occupies exactly 16 bytes.
-  const auto fields = SplitTabs(line);
-  if (fields.size() != 7 && fields.size() != 10) return false;
+bool AppendMarker(const std::string& path, std::uint8_t kind, std::uint64_t transaction,
+                  const std::string& identity, std::array<std::uint64_t, 3> cutoffs,
+                  std::array<std::uint64_t, 3> upper = {}) {
   MgaSavepointMarkerRecord record;
-  record.kind = fields[1] == "SAVEPOINT" ? 1 : fields[1] == "RELEASE_SAVEPOINT" ? 2 : 3;
-  record.identity = DecodeCrudTextLocal(fields[3]);
-  record.uuid_identity = !record.identity.empty() && record.identity.front() == '\0';
+  record.kind = kind;
+  record.transaction = transaction;
+  record.uuid_identity = !identity.empty() && identity.front() == '\0';
   if (record.uuid_identity) {
-    if (!DecodeMgaSavepointUuidKey(record.identity, &record.uuid)) return false;
-    record.identity.clear();
+    if (!DecodeMgaSavepointUuidKey(identity, &record.uuid)) return false;
+  } else {
+    record.identity = identity;
   }
-  if (!ParseU64(fields[2], &record.transaction)) return false;
-  for (unsigned i = 0; i < 3; ++i) {
-    if (!ParseU64(fields[4 + i], &record.cutoffs[i])) return false;
-    if (fields.size() == 10 && !ParseU64(fields[7 + i], &record.upper[i])) return false;
-  }
+  std::copy(cutoffs.begin(), cutoffs.end(), record.cutoffs);
+  std::copy(upper.begin(), upper.end(), record.upper);
   const auto bytes = EncodeMgaSavepointMarker(record);
   if (bytes.empty()) return false;
   // Prepare names/handles before the first write. Marker publication must
@@ -154,197 +105,8 @@ bool AppendLine(const std::string& path, const std::string& line) {
 #endif
 }
 
-std::string JoinLine(const std::vector<std::string>& fields) {
-  std::string line;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) { line.push_back('\t'); }
-    line.append(fields[index]);
-  }
-  return line;
-}
-
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-}
-
-bool ApplySavepointRecordLine(const std::string& line,
-                              SavepointParsedState* state) {
-  if (state == nullptr) return false;
-  const auto fields = SplitTabs(line);
-  if (fields.size() < 2 || fields[0] != kRowStoreMagic) return false;
-  const std::string& kind = fields[1];
-  const bool update_statement_create =
-      kind == kDmlUpdateStatementSavepointCreateKind;
-  const bool update_statement_rollback =
-      kind == kDmlUpdateStatementSavepointRollbackKind;
-  const bool update_statement_release =
-      kind == kDmlUpdateStatementSavepointReleaseKind;
-  if (update_statement_create || update_statement_rollback ||
-      update_statement_release) {
-    // UPDATE statement identity/barrier authority is binary MGA durability.
-    // A historical host-text record is never admitted as a compatibility
-    // authority and forces current transaction reads to fail closed.
-    state->update_statement_authority_corrupt = true;
-    return false;
-  }
-  const bool create = kind == "SAVEPOINT";
-  const bool release = kind == "RELEASE_SAVEPOINT";
-  const bool rollback = kind == "ROLLBACK_TO_SAVEPOINT";
-  if ((!create && !release && !rollback) ||
-      fields.size() != (rollback ? 10u : 7u)) return false;
-  std::uint64_t tx = 0;
-  if (!ParseU64(fields[2], &tx) || tx == 0) return false;
-  const std::string name = DecodeCrudTextLocal(fields[3]);
-  if (name.empty() || EncodeCrudText(name) != fields[3]) return false;
-  if (name.front() == '\0') {
-    scratchbird::core::platform::Uuid uuid;
-    if (!DecodeMgaSavepointUuidKey(name, &uuid)) return false;
-  }
-  SavepointCutoffs cutoffs;
-  if (!ParseU64(fields[4], &cutoffs.row_event_sequence) ||
-      !ParseU64(fields[5], &cutoffs.metadata_event_sequence) ||
-      !ParseU64(fields[6], &cutoffs.index_event_sequence)) return false;
-  if (create) {
-    if (state->next_creation_ordinal == UINT64_MAX) {
-      state->marker_authority_corrupt = true;
-      return false;
-    }
-    cutoffs.creation_ordinal = state->next_creation_ordinal++;
-    if (auto* observed = state->observation;
-        observed && observed->transaction == tx && observed->identity == name) {
-      if (observed->require_unique_identity) {
-        if (observed->creation_ordinal) {
-          state->marker_authority_corrupt = true;
-          return false;
-        }
-        observed->creation_ordinal = cutoffs.creation_ordinal;
-      }
-      if (cutoffs.creation_ordinal == observed->creation_ordinal) {
-        observed->lifecycle = MgaSavepointMarkerLifecycle::active;
-        observed->cutoffs = cutoffs;
-      } else if (observed->lifecycle == MgaSavepointMarkerLifecycle::active) {
-        observed->lifecycle = MgaSavepointMarkerLifecycle::invalidated;
-      }
-    }
-    state->active_savepoints[tx][name] = cutoffs;
-  } else if (release) {
-    const auto tx_it = state->active_savepoints.find(tx);
-    if (auto* observed = state->observation;
-        observed && observed->transaction == tx && observed->identity == name &&
-        observed->lifecycle == MgaSavepointMarkerLifecycle::active &&
-        tx_it != state->active_savepoints.end() && tx_it->second.contains(name) &&
-        tx_it->second.at(name).creation_ordinal == observed->creation_ordinal) {
-      observed->lifecycle = MgaSavepointMarkerLifecycle::released;
-    }
-    if (tx_it == state->active_savepoints.end() ||
-        tx_it->second.erase(name) == 0) {
-      state->marker_authority_corrupt = true;
-    }
-  } else if (rollback) {
-    SavepointRollbackRange range;
-    range.cutoffs = cutoffs;
-    if (!ParseU64(fields[7], &range.row_upper_event_sequence) ||
-        !ParseU64(fields[8], &range.metadata_upper_event_sequence) ||
-        !ParseU64(fields[9], &range.index_upper_event_sequence) ||
-        range.row_upper_event_sequence < cutoffs.row_event_sequence ||
-        range.metadata_upper_event_sequence < cutoffs.metadata_event_sequence ||
-        range.index_upper_event_sequence < cutoffs.index_event_sequence) return false;
-    auto tx_it = state->active_savepoints.find(tx);
-    if (tx_it == state->active_savepoints.end() ||
-        !tx_it->second.contains(name)) {
-      state->marker_authority_corrupt = true;
-      return false;
-    }
-    const auto target = tx_it->second.at(name);
-    if (target.row_event_sequence != cutoffs.row_event_sequence ||
-        target.metadata_event_sequence != cutoffs.metadata_event_sequence ||
-        target.index_event_sequence != cutoffs.index_event_sequence) {
-      state->marker_authority_corrupt = true;
-      return false;
-    }
-    if (auto* observed = state->observation;
-        observed && observed->transaction == tx &&
-        observed->lifecycle == MgaSavepointMarkerLifecycle::active) {
-      if (observed->creation_ordinal > target.creation_ordinal)
-        observed->lifecycle = MgaSavepointMarkerLifecycle::invalidated;
-      else if (observed->creation_ordinal == target.creation_ordinal)
-        observed->rolled_back = true;
-    }
-    std::erase_if(tx_it->second, [&](const auto& entry) {
-      return entry.second.creation_ordinal > target.creation_ordinal;
-    });
-    state->rollback_ranges[tx].push_back(range);
-  }
-  return true;
-}
-
-void NormalizeSavepointRowRollbackRanges(SavepointParsedState* state) {
-  if (state == nullptr) return;
-  state->normalized_row_rollback_ranges.clear();
-  for (const auto& [transaction, source_ranges] : state->rollback_ranges) {
-    auto& normalized = state->normalized_row_rollback_ranges[transaction];
-    normalized.reserve(source_ranges.size());
-    for (const auto& range : source_ranges) {
-      if (range.row_upper_event_sequence <=
-          range.cutoffs.row_event_sequence) {
-        continue;
-      }
-      normalized.push_back({range.cutoffs.row_event_sequence,
-                            range.row_upper_event_sequence});
-    }
-    std::ranges::sort(normalized);
-    std::size_t write = 0;
-    for (const auto& range : normalized) {
-      if (write != 0 && range.first <= normalized[write - 1].second) {
-        normalized[write - 1].second =
-            std::max(normalized[write - 1].second, range.second);
-      } else {
-        normalized[write++] = range;
-      }
-    }
-    normalized.resize(write);
-  }
-  state->row_rollback_ranges_normalized = true;
-}
-
-void ConsumeMarkerBytes(std::string* pending, SavepointParsedState* state,
-                        bool final) {
-  std::size_t consumed = 0;
-  while (consumed < pending->size() && !state->marker_authority_corrupt) {
-    const std::string_view remaining(pending->data() + consumed, pending->size() - consumed);
-    if (static_cast<unsigned char>(remaining.front()) == kMgaSavepointFrameLead) {
-      const auto size = MgaSavepointMarkerFrameSize(remaining);
-      if (size == UINT32_MAX) { state->marker_authority_corrupt = true; break; }
-      if (size == 0 || remaining.size() < size) break;
-      MgaSavepointMarkerRecord record;
-      if (!DecodeMgaSavepointMarker(remaining.substr(0, size), &record)) {
-        state->marker_authority_corrupt = true;
-        break;
-      }
-      // Reuse the range/stack validator through an in-memory field projection.
-      // This projection is never written to disk or sent over a wire protocol.
-      std::vector<std::string> fields{
-          kRowStoreMagic, record.kind == 1 ? "SAVEPOINT" :
-              record.kind == 2 ? "RELEASE_SAVEPOINT" : "ROLLBACK_TO_SAVEPOINT",
-          std::to_string(record.transaction), EncodeCrudText(record.uuid_identity
-              ? MgaSavepointUuidKey(record.uuid) : record.identity)};
-      for (auto value : record.cutoffs) fields.push_back(std::to_string(value));
-      if (record.kind == 3)
-        for (auto value : record.upper) fields.push_back(std::to_string(value));
-      if (!ApplySavepointRecordLine(JoinLine(fields), state))
-        state->marker_authority_corrupt = true;
-      consumed += size;
-    } else {
-      const auto end = remaining.find('\n');
-      if (end == std::string_view::npos) break;
-      if (!ApplySavepointRecordLine(std::string(remaining.substr(0, end)), state))
-        state->marker_authority_corrupt = true;
-      consumed += end + 1;
-    }
-  }
-  pending->erase(0, consumed);
-  if ((final && !pending->empty()) || pending->size() > kMgaSavepointFrameMaximum)
-    state->marker_authority_corrupt = true;
 }
 
 }  // namespace
@@ -454,202 +216,6 @@ EngineApiDiagnostic ValidateMgaSavepointMarkerAuthority(
   return OkDiagnostic();
 }
 
-bool ParseSavepointsBounded(const EngineRequestContext& context,
-                            BoundedScopedRowReadControl* control,
-                            const std::uint64_t retained_memory_bytes,
-                            SavepointParsedState* output) {
-  if (output == nullptr) return false;
-  *output = {};
-  output->diagnostic = MakeInvalidRequestDiagnostic("mga.savepoints", "savepoint_read_incomplete");
-  if (control == nullptr) return false;
-  SavepointParsedState staged;
-  auto* state = &staged;
-  std::uint64_t path_projection = retained_memory_bytes;
-  if (!CheckedHeapReadMemoryAdd(
-          static_cast<std::uint64_t>(context.database_path.size()),
-          &path_projection) ||
-      !CheckedHeapReadMemoryAdd(64, &path_projection) ||
-      !ObserveBoundedHeapReadMemory(control, path_projection)) {
-    if (control->refusal_detail.empty()) {
-      control->refusal_detail =
-          "heap_read_savepoint_memory_receipt_overflow";
-    }
-    return false;
-  }
-  const std::string path = SavepointStorePath(context);
-  std::error_code error;
-  const auto size_started = std::chrono::steady_clock::now();
-  const auto link_status = std::filesystem::symlink_status(path, error);
-  if (!AccountHeapReadWait(control, size_started)) return false;
-  if (error == std::errc::no_such_file_or_directory ||
-      (!error && link_status.type() == std::filesystem::file_type::not_found)) {
-    std::string durable_detail;
-    if (!ApplyDmlUpdateBinarySavepointRecordsForStoreModule(context, state,
-                                               &durable_detail) ||
-        state->update_statement_authority_corrupt) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail = durable_detail.empty()
-                                    ? "heap_read_update_savepoint_corrupt"
-                                    : durable_detail;
-      return false;
-    }
-    NormalizeSavepointRowRollbackRanges(state);
-    state->diagnostic = OkDiagnostic();
-    *output = std::move(staged);
-    return true;
-  }
-  if (error) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_status_failed";
-    return false;
-  }
-  const auto metadata_started = std::chrono::steady_clock::now();
-  const auto status = std::filesystem::status(path, error);
-  if (error || !std::filesystem::is_regular_file(status)) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_status_failed";
-    return false;
-  }
-  const auto raw_size = std::filesystem::file_size(path, error);
-  if (error) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_size_failed";
-    return false;
-  }
-  const auto original_time = std::filesystem::last_write_time(path, error);
-  if (!AccountHeapReadWait(control, metadata_started)) return false;
-  if (error) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_time_failed";
-    return false;
-  }
-  if (raw_size > std::numeric_limits<std::uint64_t>::max()) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
-    control->refusal_detail = "heap_read_savepoint_size_overflow";
-    return false;
-  }
-  const auto file_bytes = static_cast<std::uint64_t>(raw_size);
-  // A valid record can create map/vector nodes and decoded field temporaries.
-  // Reserve a conservative logical envelope before opening or parsing it so
-  // the operator grant is an admission gate, not a post-allocation sample.
-  std::uint64_t parse_projection = 0;
-  if (!CheckedHeapReadMemoryMultiply(file_bytes, 128,
-                                     &parse_projection) ||
-      !CheckedHeapReadMemoryAdd(sizeof(*state) + 4096,
-                                &parse_projection) ||
-      !CheckedHeapReadMemoryAdd(retained_memory_bytes,
-                                &parse_projection) ||
-      !ObserveBoundedHeapReadMemory(control, parse_projection)) {
-    if (control->refusal_detail.empty()) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
-      control->refusal_detail =
-          "heap_read_savepoint_memory_receipt_overflow";
-    }
-    return false;
-  }
-  std::ifstream input;
-  const auto open_started = std::chrono::steady_clock::now();
-  input.open(path, std::ios::binary);
-  if (!AccountHeapReadWait(control, open_started)) return false;
-  if (!input) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_open_failed";
-    return false;
-  }
-  constexpr std::size_t kReadChunkBytes = 64 * 1024;
-  char chunk[kReadChunkBytes];
-  std::string line;
-  std::uint64_t actual_file_bytes = 0;
-  bool reached_eof = false;
-  while (!reached_eof) {
-    if (BoundedScopedReadCancelled(control)) return false;
-    const std::uint64_t remaining = file_bytes - actual_file_bytes;
-    const std::size_t requested =
-        remaining == 0
-            ? 1
-            : static_cast<std::size_t>(
-                  std::min<std::uint64_t>(remaining, kReadChunkBytes));
-    const auto read_started = std::chrono::steady_clock::now();
-    input.read(chunk, static_cast<std::streamsize>(requested));
-    if (!AccountHeapReadWait(control, read_started)) return false;
-    const std::streamsize read_count = input.gcount();
-    if (read_count < 0 ||
-        static_cast<std::uint64_t>(read_count) > remaining) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail =
-          "heap_read_savepoint_grew_during_read";
-      return false;
-    }
-    actual_file_bytes += static_cast<std::uint64_t>(read_count);
-    if (!AccountHeapStorageBytes(
-            control, static_cast<std::uint64_t>(read_count))) {
-      return false;
-    }
-    const std::size_t count = static_cast<std::size_t>(read_count);
-    line.append(chunk, count);
-    ConsumeMarkerBytes(&line, state, false);
-    if (input.bad()) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail = "heap_read_savepoint_read_failed";
-      return false;
-    }
-    if (read_count < static_cast<std::streamsize>(requested)) {
-      if (!input.eof()) {
-        control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-        control->refusal_detail = "heap_read_savepoint_read_failed";
-        return false;
-      }
-      reached_eof = true;
-    }
-  }
-  if (actual_file_bytes != file_bytes) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail =
-        "heap_read_savepoint_changed_during_read";
-    return false;
-  }
-  ConsumeMarkerBytes(&line, state, true);
-  const auto final_stat_started = std::chrono::steady_clock::now();
-  const auto final_status = std::filesystem::status(path, error);
-  if (error || !std::filesystem::is_regular_file(final_status)) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_final_status_failed";
-    return false;
-  }
-  const auto final_size = std::filesystem::file_size(path, error);
-  if (error || final_size != raw_size) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_final_size_changed";
-    return false;
-  }
-  const auto final_time = std::filesystem::last_write_time(path, error);
-  if (!AccountHeapReadWait(control, final_stat_started)) return false;
-  // ConsumeMarkerBytes(final=true) already classifies every residual byte as
-  // corrupt marker authority. Keep file-change failures distinct so a torn
-  // frame reaches the owning corruption diagnostic below.
-  if (error || final_time != original_time) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = "heap_read_savepoint_partial_or_changed_record";
-    return false;
-  }
-  std::string durable_detail;
-  if (!ApplyDmlUpdateBinarySavepointRecordsForStoreModule(context, state,
-                                             &durable_detail) ||
-      state->update_statement_authority_corrupt || state->marker_authority_corrupt) {
-    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-    control->refusal_detail = durable_detail.empty()
-                                  ? (state->marker_authority_corrupt
-                                         ? "heap_read_savepoint_authority_corrupt"
-                                         : "heap_read_update_savepoint_corrupt")
-                                  : durable_detail;
-    return false;
-  }
-  NormalizeSavepointRowRollbackRanges(state);
-  state->diagnostic = OkDiagnostic();
-  *output = std::move(staged);
-  return true;
-}
-
 bool RowEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
                                    std::uint64_t creator_tx,
                                    std::uint64_t event_sequence) {
@@ -747,16 +313,10 @@ EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context
   const std::uint64_t row_cutoff = NextRowEventSequence(context) - 1;
   const std::uint64_t metadata_cutoff = NextMetadataEventSequence(context) - 1;
   const std::uint64_t index_cutoff = NextIndexEventSequence(context) - 1;
-  const std::string line = JoinLine({kRowStoreMagic,
-                                     "SAVEPOINT",
-                                     std::to_string(context.local_transaction_id),
-                                     EncodeCrudText(savepoint_name),
-                                     std::to_string(row_cutoff),
-                                     std::to_string(metadata_cutoff),
-                                     std::to_string(index_cutoff)});
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.create_savepoint", "savepoint_append_failed");
-  if (!AppendLine(SavepointStorePath(context), line)) return failure;
+  if (!AppendMarker(SavepointStorePath(context), 1, context.local_transaction_id, savepoint_name,
+      {row_cutoff, metadata_cutoff, index_cutoff})) return failure;
   return success;
 }
 
@@ -766,16 +326,10 @@ EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& contex
   const std::uint64_t row_cutoff = NextRowEventSequence(context) - 1;
   const std::uint64_t metadata_cutoff = NextMetadataEventSequence(context) - 1;
   const std::uint64_t index_cutoff = NextIndexEventSequence(context) - 1;
-  const std::string line = JoinLine({kRowStoreMagic,
-                                     "RELEASE_SAVEPOINT",
-                                     std::to_string(context.local_transaction_id),
-                                     EncodeCrudText(savepoint_name),
-                                     std::to_string(row_cutoff),
-                                     std::to_string(metadata_cutoff),
-                                     std::to_string(index_cutoff)});
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.release_savepoint", "savepoint_release_append_failed");
-  if (!AppendLine(SavepointStorePath(context), line)) return failure;
+  if (!AppendMarker(SavepointStorePath(context), 2, context.local_transaction_id, savepoint_name,
+      {row_cutoff, metadata_cutoff, index_cutoff})) return failure;
   return success;
 }
 
@@ -795,21 +349,13 @@ EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& con
   const std::uint64_t row_upper = NextRowEventSequence(context) - 1;
   const std::uint64_t metadata_upper = NextMetadataEventSequence(context) - 1;
   const std::uint64_t index_upper = NextIndexEventSequence(context) - 1;
-  const std::string line = JoinLine({kRowStoreMagic,
-                                     "ROLLBACK_TO_SAVEPOINT",
-                                     std::to_string(context.local_transaction_id),
-                                     EncodeCrudText(savepoint_name),
-                                     std::to_string(savepoint_it->second.row_event_sequence),
-                                     std::to_string(savepoint_it->second.metadata_event_sequence),
-                                     std::to_string(savepoint_it->second.index_event_sequence),
-                                     std::to_string(row_upper),
-                                     std::to_string(metadata_upper),
-                                     std::to_string(index_upper)});
   auto success = OkDiagnostic();
   auto failure = MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_rollback_append_failed");
   scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
       "rollback_before_marker", context.local_transaction_id);
-  if (!AppendLine(SavepointStorePath(context), line)) return failure;
+  if (!AppendMarker(SavepointStorePath(context), 3, context.local_transaction_id, savepoint_name,
+      {savepoint_it->second.row_event_sequence, savepoint_it->second.metadata_event_sequence,
+       savepoint_it->second.index_event_sequence}, {row_upper, metadata_upper, index_upper})) return failure;
   scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
       "rollback_after_marker", context.local_transaction_id);
   return success;

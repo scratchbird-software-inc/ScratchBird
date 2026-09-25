@@ -9,8 +9,10 @@
 // SEARCH_KEY: SB_SERVER_OBSERVABILITY_AUDIT_SUPPORT
 
 #include "server_observability.hpp"
+#include "../wire/binary_observation_log.hpp"
 
 #include "sbps.hpp"
+#include "wire/binary_status_packet.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -42,64 +44,95 @@ std::string RedactedPath(const std::string& value) {
 }
 
 std::string AuditUuid() {
-  return UuidBytesToText(sbps::MakeUuidV7Bytes());
+  const auto id = sbps::MakeUuidV7Bytes();
+  return {reinterpret_cast<const char*>(id.data()), id.size()};
 }
 
 bool AppendLine(const std::filesystem::path& path, const std::string& line) {
   if (path.empty()) return false;
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path, std::ios::app);
-  if (!out) return false;
-  out << line << '\n';
-  out.close();
-  return static_cast<bool>(out);
+  std::string payload = line;
+  if (!payload.starts_with(scratchbird::wire::public_result::kMagic)) {
+    scratchbird::wire::binary_status::Stream record;
+    record << payload;
+    payload = record.str();
+  }
+  return scratchbird::wire::binary_status::AppendObservation(path, payload);
+}
+
+std::string IdentityEvidence(const std::string& name, const std::string& bytes) {
+  std::string result;
+  if (!scratchbird::wire::public_result::Encode(
+          std::vector<scratchbird::wire::public_result::Field>{
+              {name, scratchbird::wire::public_result::Kind::uuid, bytes}}, &result))
+    throw std::invalid_argument("observability_identity_evidence_invalid");
+  return result;
+}
+
+std::string FlushMarker(const std::string& identity, const char* target,
+                        const std::string& reason) {
+  scratchbird::wire::binary_status::Stream out;
+  out << "{\"supportability_flush\":{\"flush_uuid\":\""
+      << scratchbird::wire::binary_status::Identity(identity)
+      << "\",\"target\":\"" << target << "\",\"reason\":\""
+      << scratchbird::wire::binary_status::Text{JsonEscape(reason)} << "\"}}";
+  return out.str();
+}
+
+std::string SupportBundleFailurePacket(const std::string& code) {
+  scratchbird::wire::binary_status::Stream out;
+  out << "[{\"support_bundle_uuid\":\""
+      << scratchbird::wire::binary_status::Identity(std::string_view{})
+      << "\",\"bundle_ref\":\"\",\"outcome\":\"failed\",\"diagnostic_code\":\""
+      << scratchbird::wire::binary_status::Text{JsonEscape(code)} << "\"}]";
+  return out.str();
 }
 
 std::string MetricKey(const std::string& path,
                       const std::map<std::string, std::string>& labels) {
-  std::string key = path;
-  for (const auto& [label, value] : labels) {
-    key += "|" + label + "=" + value;
-  }
+  std::vector<scratchbird::wire::public_result::Field> fields{
+      {"path", scratchbird::wire::public_result::Kind::text, path}};
+  for (const auto& [label, value] : labels)
+    fields.push_back({label, label.ends_with("_uuid")
+        ? scratchbird::wire::public_result::Kind::uuid
+        : scratchbird::wire::public_result::Kind::text,
+        label.ends_with("_uuid") ? scratchbird::wire::binary_status::Identity(value).bytes : value});
+  std::string key;
+  if (!scratchbird::wire::public_result::Encode(fields, &key))
+    throw std::invalid_argument("metric_label_framing_invalid");
   return key;
 }
 
 std::string LabelsJson(const std::map<std::string, std::string>& labels) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{";
   bool first = true;
   for (const auto& [key, value] : labels) {
     if (!first) out << ',';
     first = false;
-    out << "\"" << JsonEscape(key) << "\":\"" << JsonEscape(value) << "\"";
+    out << "\"" << scratchbird::wire::binary_status::Text{JsonEscape(key)} << "\":\"";
+    if (key.ends_with("_uuid")) out << scratchbird::wire::binary_status::Identity(value);
+    else out << scratchbird::wire::binary_status::Text{JsonEscape(value)};
+    out << "\"";
   }
   out << "}";
   return out.str();
 }
 
 std::string MetricSampleJson(const ServerMetricSample& sample) {
-  std::ostringstream out;
-  out << "{\"path\":\"" << JsonEscape(sample.path)
-      << "\",\"type\":\"" << JsonEscape(sample.type)
+  scratchbird::wire::binary_status::Stream out;
+  out << "{\"path\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(sample.path)}
+      << "\",\"type\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(sample.type)}
       << "\",\"value\":" << sample.value
       << ",\"labels\":" << LabelsJson(sample.labels)
-      << ",\"visibility_right\":\"" << JsonEscape(sample.visibility_right)
-      << "\",\"redaction_class\":\"" << JsonEscape(sample.redaction_class) << "\"}";
+      << ",\"visibility_right\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(sample.visibility_right)}
+      << "\",\"redaction_class\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(sample.redaction_class)} << "\"}";
   return out.str();
 }
 
 std::string MetricLabelSummary(const std::map<std::string, std::string>& labels) {
-  std::ostringstream out;
-  bool first = true;
-  for (const auto& [key, value] : labels) {
-    if (!first) {
-      out << ';';
-    }
-    first = false;
-    out << key << '=' << value;
-  }
-  return out.str();
+  return LabelsJson(labels);
 }
 
 bool ShouldPersistMetricIncrement(ServerObservabilityState* state) {
@@ -265,25 +298,25 @@ std::string LifecycleMetricOutcome(std::string_view outcome) {
 }
 
 std::string AuditEventJson(const ServerAuditEvent& event) {
-  std::ostringstream out;
-  out << "{\"audit_event\":{\"event_uuid\":\"" << JsonEscape(event.event_uuid)
-      << "\",\"event_type\":\"" << JsonEscape(event.event_type)
-      << "\",\"actor_class\":\"" << JsonEscape(event.actor_class)
-      << "\",\"outcome\":\"" << JsonEscape(event.outcome)
-      << "\",\"diagnostic_code\":\"" << JsonEscape(event.diagnostic_code)
-      << "\",\"safe_detail\":\"" << JsonEscape(event.safe_detail)
+  scratchbird::wire::binary_status::Stream out;
+  out << "{\"audit_event\":{\"event_uuid\":\"" << scratchbird::wire::binary_status::Identity(event.event_uuid)
+      << "\",\"event_type\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(event.event_type)}
+      << "\",\"actor_class\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(event.actor_class)}
+      << "\",\"outcome\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(event.outcome)}
+      << "\",\"diagnostic_code\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(event.diagnostic_code)}
+      << "\",\"safe_detail\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(event.safe_detail)}
       << "\",\"sequence\":" << event.sequence << "}}";
   return out.str();
 }
 
 std::string LogRecordJson(const ServerStructuredLogRecord& record) {
   std::ostringstream out;
-  out << "{\"server_log\":{\"event_type\":\"" << JsonEscape(record.event_type)
-      << "\",\"severity\":\"" << JsonEscape(record.severity)
-      << "\",\"component\":\"" << JsonEscape(record.component)
-      << "\",\"diagnostic_code\":\"" << JsonEscape(record.diagnostic_code)
-      << "\",\"safe_message\":\"" << JsonEscape(record.safe_message)
-      << "\",\"redaction_state\":\"" << JsonEscape(record.redaction_state)
+  out << "{\"server_log\":{\"event_type\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.event_type)}
+      << "\",\"severity\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.severity)}
+      << "\",\"component\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.component)}
+      << "\",\"diagnostic_code\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.diagnostic_code)}
+      << "\",\"safe_message\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.safe_message)}
+      << "\",\"redaction_state\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(record.redaction_state)}
       << "\",\"wall_micros\":" << NowMicros() << "}}";
   return out.str();
 }
@@ -373,13 +406,13 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
   ServerObservabilityState state;
   state.metrics_enabled = config.metrics_enabled;
   state.metric_generation = artifacts.generation == 0 ? 1 : artifacts.generation;
-  state.metrics_path = config.control_dir / "sb_server.metrics.jsonl";
-  state.audit_path = config.control_dir / "sb_server.audit.jsonl";
+  state.metrics_path = config.control_dir / "sb_server.metrics.sbobs";
+  state.audit_path = config.control_dir / "sb_server.audit.sbobs";
   state.log_path = config.log_file == "stderr"
-                       ? config.control_dir / "sb_server.log"
+                       ? config.control_dir / "sb_server.sbobs"
                        : std::filesystem::path(config.log_file);
   state.support_bundle_dir = config.control_dir / "support-bundles";
-  state.support_bundle_index_path = state.support_bundle_dir / "support_bundle_index.jsonl";
+  state.support_bundle_index_path = state.support_bundle_dir / "support_bundle_index.sbobs";
 
   SeedMetric(&state, "sys.metrics.server.config.generation", "gauge", state.metric_generation);
   SeedMetric(&state, "sys.metrics.server.lifecycle.state", "state", 1,
@@ -411,7 +444,7 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
   SeedMetric(&state, "sys.metrics.server.memory.heap_trim_skipped_total", "counter", 0,
              {{"reason", "all"}});
   SeedMetric(&state, "sys.metrics.ipc.parser_server.channel.open_total", "counter", 0,
-             {{"parser_family_uuid", "all"}, {"outcome", "accepted"}});
+             {{"parser_family", "all"}, {"outcome", "accepted"}});
   SeedMetric(&state, "sys.metrics.ipc.parser_server.frame.invalid_total", "counter", 0,
              {{"reason", "all"}});
   SeedMetric(&state, "sys.metrics.ipc.parser_server.sblr.execute_microseconds", "histogram", 0,
@@ -431,8 +464,8 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
   SeedMetric(&state, "sys.metrics.supportability.redaction.blocked_fields_total", "counter", 0,
              {{"field_class", "all"}});
   SeedMetric(&state, "sys.metrics.supportability.bundle.completeness_ratio", "gauge", 100,
-             {{"bundle_profile_uuid", "server.support_bundle.default.v1"},
-              {"redaction_profile_uuid", "server.support_bundle.default_redaction.v1"},
+             {{"bundle_profile", "server.support_bundle.default.v1"},
+              {"redaction_profile", "server.support_bundle.default_redaction.v1"},
               {"result", "complete"}});
   SeedMetric(&state, "sys.metrics.lifecycle.operation_total", "counter", 0,
              {{"operation", "all"}, {"outcome", "all"}, {"route_family", "all"}});
@@ -679,6 +712,9 @@ ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
     ServerLifecycleObservabilityEvent event) {
   ServerLifecycleObservabilityRecord record;
   if (state == nullptr) return record;
+  for (const auto* id : {&event.request_uuid, &event.session_uuid, &event.database_uuid,
+                         &event.correlation_uuid, &event.reference_profile_uuid})
+    if (!id->empty() && id->size() != 16) return record;
   if (event.correlation_uuid.empty()) event.correlation_uuid = AuditUuid();
   if (event.cache_family.empty()) event.cache_family = "lifecycle_metadata";
   if (event.cache_reason.empty()) event.cache_reason = event.operation_key + ":" + event.outcome;
@@ -763,9 +799,7 @@ ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
                           "sys.metrics.parser.lifecycle_render_total",
                           1,
                           {{"operation", event.operation_key},
-                           {"reference_profile", event.reference_profile_uuid.empty()
-                                                ? "native"
-                                                : event.reference_profile_uuid},
+                           {"reference_profile_uuid", event.reference_profile_uuid},
                            {"outcome", LifecycleMetricOutcome(event.outcome)}});
   }
   if (event.cache_invalidation_required) {
@@ -806,35 +840,20 @@ ServerSupportabilityFlushResult FlushServerObservability(ServerObservabilityStat
   const std::string safe_reason = RedactSupportabilityText(std::move(reason));
   const std::string flush_uuid = AuditUuid();
   const bool metric_snapshot_flushed = PersistCurrentMetricSnapshot(state);
-  const bool metric_flush_marker =
-      AppendLine(state->metrics_path,
-                 "{\"supportability_flush\":{\"flush_uuid\":\"" +
-                     JsonEscape(flush_uuid) +
-                     "\",\"target\":\"metrics\",\"reason\":\"" +
-                     JsonEscape(safe_reason) + "\"}}");
+  const bool metric_flush_marker = AppendLine(state->metrics_path,
+      FlushMarker(flush_uuid, "metrics", safe_reason));
   result.metrics_flushed = metric_snapshot_flushed && metric_flush_marker;
-  result.audit_flushed = AppendLine(state->audit_path,
-                                    ServerAuditSnapshotJson(*state)) &&
-                         AppendLine(state->audit_path,
-                                    "{\"supportability_flush\":{\"flush_uuid\":\"" +
-                                        JsonEscape(flush_uuid) +
-                                        "\",\"target\":\"audit\",\"reason\":\"" +
-                                        JsonEscape(safe_reason) + "\"}}");
+  result.audit_flushed = AppendLine(state->audit_path, ServerAuditSnapshotJson(*state)) &&
+      AppendLine(state->audit_path, FlushMarker(flush_uuid, "audit", safe_reason));
   result.log_flushed = AppendLine(state->log_path,
-                                  "{\"supportability_flush\":{\"flush_uuid\":\"" +
-                                      JsonEscape(flush_uuid) +
-                                      "\",\"target\":\"operational_log\",\"reason\":\"" +
-                                      JsonEscape(safe_reason) + "\"}}");
-  result.support_bundle_index_flushed =
-      AppendLine(state->support_bundle_index_path,
-                 "{\"supportability_flush\":{\"flush_uuid\":\"" + JsonEscape(flush_uuid) +
-                     "\",\"target\":\"support_bundle_index\",\"reason\":\"" +
-                     JsonEscape(safe_reason) + "\"}}");
+      FlushMarker(flush_uuid, "operational_log", safe_reason));
+  result.support_bundle_index_flushed = AppendLine(state->support_bundle_index_path,
+      FlushMarker(flush_uuid, "support_bundle_index", safe_reason));
   result.flushed = result.metrics_flushed && result.audit_flushed && result.log_flushed &&
                    result.support_bundle_index_flushed;
   result.diagnostic_code = result.flushed ? "SUPPORTABILITY.FLUSH_COMPLETE"
                                           : "SUPPORTABILITY.FLUSH_PARTIAL";
-  result.evidence.push_back("flush_uuid:" + flush_uuid);
+  result.evidence.push_back(IdentityEvidence("flush_uuid", flush_uuid));
   result.evidence.push_back("reason:" + safe_reason);
   IncrementServerMetric(state,
                         "sys.metrics.supportability.flush_total",
@@ -887,9 +906,9 @@ ServerSupportabilityFlushResult RotateServerOperationalLog(ServerObservabilitySt
 }
 
 std::string ServerMetricsSnapshotJson(const ServerObservabilityState& state) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"server_metrics\":{\"generation\":" << state.metric_generation
-      << ",\"persistence\":\"enabled\",\"persist_mode\":\"coalesced_jsonl\","
+      << ",\"persistence\":\"enabled\",\"persist_mode\":\"coalesced_binary_records\","
       << "\"metric_observation_count\":" << state.metric_observation_count
       << ",\"metric_persist_stride\":" << state.metric_persist_stride
       << ",\"metric_persist_skipped\":" << state.metric_persist_skipped
@@ -906,9 +925,9 @@ std::string ServerMetricsSnapshotJson(const ServerObservabilityState& state) {
 }
 
 std::string ServerAuditSnapshotJson(const ServerObservabilityState& state) {
-  std::ostringstream out;
+  scratchbird::wire::binary_status::Stream out;
   out << "{\"server_audit\":{\"event_count\":" << state.audit_events.size()
-      << ",\"persist_mode\":\"coalesced_jsonl\","
+      << ",\"persist_mode\":\"coalesced_binary_records\","
       << "\"audit_observation_count\":" << state.audit_observation_count
       << ",\"audit_persist_stride\":" << state.audit_persist_stride
       << ",\"audit_persist_skipped\":" << state.audit_persist_skipped
@@ -1178,24 +1197,28 @@ ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilitySta
   if (!flush.flushed) {
     result.diagnostic_code = "OPS.SUPPORT_BUNDLE.FLUSH_REQUIRED";
     result.evidence = flush.evidence;
-    result.records_json =
-        "[{\"support_bundle_uuid\":\"\",\"bundle_ref\":\"\","
-        "\"outcome\":\"failed\",\"diagnostic_code\":\"OPS.SUPPORT_BUNDLE.FLUSH_REQUIRED\"}]";
+    result.records_json = SupportBundleFailurePacket(result.diagnostic_code);
     return result;
   }
   const auto bundle_uuid = AuditUuid();
-  const auto bundle_path = state.support_bundle_dir / (bundle_uuid + ".json");
+  auto sequence = state.support_bundle_export_sequence + 1;
+  auto bundle_path = state.support_bundle_dir / ("bundle_" + std::to_string(sequence) + ".sbobs");
+  while (std::filesystem::exists(bundle_path))
+    bundle_path = state.support_bundle_dir / ("bundle_" + std::to_string(++sequence) + ".sbobs");
   const auto request_uuid = AuditUuid();
-  const auto manifest_checksum_seed =
-      bundle_uuid + "|" + request_uuid + "|" + artifacts.state + "|" +
-      std::to_string(artifacts.generation) + "|" + std::to_string(engine_state.databases.size()) +
-      "|" + std::to_string(sessions.sessions_by_uuid.size());
-  const auto manifest_checksum = StableChecksumHex(manifest_checksum_seed);
-  std::ostringstream body;
-  body << "{\"support_bundle\":{\"bundle_uuid\":\"" << JsonEscape(bundle_uuid)
+  scratchbird::wire::binary_status::Stream manifest_checksum_seed;
+  manifest_checksum_seed << scratchbird::wire::binary_status::Identity(bundle_uuid)
+      << scratchbird::wire::binary_status::Identity(request_uuid)
+      << "{\"state\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(artifacts.state)}
+      << "\",\"generation\":" << artifacts.generation
+      << ",\"databases\":" << engine_state.databases.size()
+      << ",\"sessions\":" << sessions.sessions_by_uuid.size() << '}';
+  const auto manifest_checksum = StableChecksumHex(manifest_checksum_seed.str());
+  scratchbird::wire::binary_status::Stream body;
+  body << "{\"support_bundle\":{\"bundle_uuid\":\"" << scratchbird::wire::binary_status::Identity(bundle_uuid)
        << "\",\"redaction_profile\":\"server.support_bundle.default_redaction.v1\","
-       << "\"manifest\":{\"schema\":\"SB_SERVER_SUPPORT_BUNDLE_V2\","
-       << "\"request_uuid\":\"" << JsonEscape(request_uuid)
+       << "\"manifest\":{\"schema\":\"SB_SERVER_SUPPORT_BUNDLE_V3\","
+       << "\"request_uuid\":\"" << scratchbird::wire::binary_status::Identity(request_uuid)
        << "\",\"requester\":\"engine-authorized-management-session\","
        << "\"authority_path\":\"engine.authorization.management.SUPPORT_EXPORT\","
        << "\"scope\":\"local_node\","
@@ -1212,7 +1235,7 @@ ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilitySta
        << "\",\"signature_ref\":\"engine-local-supportability-signature.v1\","
        << "\"local_path_policy\":\"redacted\"},"
        << "\"server_status\":{\"mode\":\"" << ServerModeName(config.mode)
-       << "\",\"lifecycle_state\":\"" << JsonEscape(artifacts.state)
+       << "\",\"lifecycle_state\":\"" << scratchbird::wire::binary_status::Text{JsonEscape(artifacts.state)}
        << "\",\"lifecycle_generation\":" << artifacts.generation
        << ",\"control_dir\":\"" << RedactedPath(config.control_dir.string()) << "\"},"
        << "\"database_count\":" << engine_state.databases.size()
@@ -1224,7 +1247,7 @@ ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilitySta
        << "\"operational_log_summary\":{\"record_count\":" << state.log_records.size()
        << ",\"log_ref\":\"[path-redacted]\"},"
        << "\"redaction_evidence\":{\"redaction_state\":\"redacted\","
-       << "\"redaction_profile_uuid\":\"server.support_bundle.default_redaction.v1\","
+       << "\"redaction_profile\":\"server.support_bundle.default_redaction.v1\","
        << "\"forbidden_field_classes\":[\"password\",\"secret\",\"token\",\"private_key\","
        << "\"credential\",\"verifier\",\"encryption_key\",\"decryption_key\",\"key_handle\"]},"
        << "\"completeness\":{\"required_sections\":7,\"present_sections\":7,"
@@ -1234,44 +1257,42 @@ ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilitySta
        << "}}\n";
   std::error_code ec;
   std::filesystem::create_directories(state.support_bundle_dir, ec);
-  std::ofstream out(bundle_path, std::ios::trunc);
+  std::ofstream out(bundle_path, std::ios::trunc | std::ios::binary);
   if (out) {
     out << body.str();
     out.close();
   }
   if (!out) {
     result.diagnostic_code = "OPS.SUPPORT_BUNDLE.WRITE_FAILED";
-    result.records_json =
-        "[{\"support_bundle_uuid\":\"\",\"bundle_ref\":\"\","
-        "\"outcome\":\"failed\",\"diagnostic_code\":\"OPS.SUPPORT_BUNDLE.WRITE_FAILED\"}]";
+    result.records_json = SupportBundleFailurePacket(result.diagnostic_code);
     return result;
   }
-  const bool index_written =
-      AppendLine(state.support_bundle_index_path,
-                 "{\"support_bundle_uuid\":\"" + JsonEscape(bundle_uuid) +
-                     "\",\"request_uuid\":\"" + JsonEscape(request_uuid) +
-                     "\",\"bundle_ref\":\"[path-redacted]\","
-                     "\"authority_path\":\"engine.authorization.management.SUPPORT_EXPORT\","
-                     "\"redaction_state\":\"redacted\","
-                     "\"retention_policy_ref\":\"support.bundle.default_retention.v1\","
-                     "\"disposition_policy_ref\":\"support.bundle.default_disposition.v1\","
-                     "\"tamper_checksum\":\"" + manifest_checksum + "\","
-                     "\"forbidden_fields_absent\":true}");
+  scratchbird::wire::binary_status::Stream index_record;
+  index_record << "{\"support_bundle_uuid\":\""
+      << scratchbird::wire::binary_status::Identity(bundle_uuid)
+      << "\",\"request_uuid\":\""
+      << scratchbird::wire::binary_status::Identity(request_uuid)
+      << "\",\"bundle_ref\":\"[path-redacted]\","
+         "\"authority_path\":\"engine.authorization.management.SUPPORT_EXPORT\","
+         "\"redaction_state\":\"redacted\","
+         "\"retention_policy_ref\":\"support.bundle.default_retention.v1\","
+         "\"disposition_policy_ref\":\"support.bundle.default_disposition.v1\","
+         "\"tamper_checksum\":\"" << manifest_checksum << "\","
+         "\"forbidden_fields_absent\":true}";
+  const bool index_written = AppendLine(state.support_bundle_index_path, index_record.str());
   if (!index_written) {
     std::error_code remove_ec;
     std::filesystem::remove(bundle_path, remove_ec);
     result.diagnostic_code = "OPS.SUPPORT_BUNDLE.INDEX_WRITE_FAILED";
-    result.records_json =
-        "[{\"support_bundle_uuid\":\"\",\"bundle_ref\":\"\","
-        "\"outcome\":\"failed\",\"diagnostic_code\":\"OPS.SUPPORT_BUNDLE.INDEX_WRITE_FAILED\"}]";
+    result.records_json = SupportBundleFailurePacket(result.diagnostic_code);
     return result;
   }
   state.support_bundle_export_uuids.push_back(bundle_uuid);
   state.support_bundle_export_sequence++;
-  std::ostringstream descriptor;
-  descriptor << "[{\"support_bundle_uuid\":\"" << JsonEscape(bundle_uuid)
+  scratchbird::wire::binary_status::Stream descriptor;
+  descriptor << "[{\"support_bundle_uuid\":\"" << scratchbird::wire::binary_status::Identity(bundle_uuid)
              << "\",\"bundle_ref\":\"[path-redacted]\","
-             << "\"request_uuid\":\"" << JsonEscape(request_uuid) << "\","
+             << "\"request_uuid\":\"" << scratchbird::wire::binary_status::Identity(request_uuid) << "\","
              << "\"authority_path\":\"engine.authorization.management.SUPPORT_EXPORT\","
              << "\"redaction_state\":\"redacted\","
              << "\"retention_policy_ref\":\"support.bundle.default_retention.v1\","
@@ -1283,7 +1304,7 @@ ServerSupportBundleExportResult ExportServerSupportBundle(ServerObservabilitySta
   result.diagnostic_code = "OPS.SUPPORT_BUNDLE.EXPORT_COMPLETE";
   result.bundle_uuid = bundle_uuid;
   result.evidence = flush.evidence;
-  result.evidence.push_back("request_uuid:" + request_uuid);
+  result.evidence.push_back(IdentityEvidence("request_uuid", request_uuid));
   result.evidence.push_back("tamper_checksum:" + manifest_checksum);
   return result;
 }

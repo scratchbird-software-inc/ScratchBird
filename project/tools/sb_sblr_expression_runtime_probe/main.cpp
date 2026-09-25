@@ -59,7 +59,7 @@ scratchbird::engine::sblr::SblrExecutionContext MakeContext() {
   context.current_monotonic_ns = "125000000";
   context.deterministic_random_u64 = 424242;
   context.deterministic_random_u64_present = true;
-  context.deterministic_uuid_text = "018f0000-0000-7000-8000-00000000d777";
+  context.deterministic_uuid = scratchbird::core::platform::Uuid{{0x01,0x8f,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x77}};
   context.current_sqlstate = "00000";
   context.current_diagnostic_id = "SB_DIAG_OK";
   context.last_identity_value = "9001";

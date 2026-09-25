@@ -6,10 +6,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/update_api.hpp"
 #include "index_apply_planner.hpp"
+#include "dml/index_apply_locality_bridge.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
@@ -87,6 +91,9 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  platform::Uuid primary_key_uuid;
   platform::Uuid table_uuid;
   platform::Uuid id_index_uuid;
   platform::Uuid city_index_uuid;
@@ -94,6 +101,7 @@ struct Fixture {
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -166,23 +174,15 @@ void AssertNoRuntimeDocLeaks(const std::vector<api::EngineEvidenceReference>& ev
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewUuidValue(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewUuidValue(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 43;
-  context.security_epoch = 44;
-  context.resource_epoch = 45;
-  context.name_resolution_epoch = 46;
   return context;
 }
 
@@ -213,7 +213,14 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "odf043_locality_apply";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  api::CatalogColumnMetadata key;
+  key.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  key.identities = {{"candidate_key_constraint_uuid", fixture.primary_key_uuid},
+                    {"support_uuid", fixture.id_index_uuid}};
+  std::string key_metadata;
+  Require(api::EncodeCatalogColumnMetadata(key, &key_metadata),
+          "ODF-043 primary key metadata encoding failed");
+  table.columns.push_back({"id", std::move(key_metadata)});
   table.columns.push_back({"city", "canonical=character;not_null=true"});
   table.columns.push_back({"note", "canonical=character;not_null=true"});
   return table;
@@ -256,13 +263,14 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueSeed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-043 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.primary_key_uuid = NewUuidValue(platform::UuidKind::object, salt + 14);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewUuidValue(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewUuidValue(platform::UuidKind::object, salt + 11);
   fixture.city_index_uuid = NewUuidValue(platform::UuidKind::object, salt + 12);
@@ -270,7 +278,8 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
       NewUuidValue(platform::UuidKind::object, salt + 13);
 
   auto metadata = Begin(fixture, "odf043-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(metadata, Table(fixture, metadata),
+                          {"character", "character", "character"}, {Index(fixture, metadata, fixture.id_index_uuid, "id", api::kCrudIndexFamilyBtree, true), Index(fixture, metadata, fixture.city_index_uuid, "city", api::kCrudIndexFamilyBtree, false), Index(fixture, metadata, fixture.note_hash_index_uuid, "note", api::kCrudIndexFamilyHash, false)}),
                       "ODF-043 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           metadata,
@@ -300,6 +309,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                                 false)),
                       "ODF-043 note hash index metadata append failed");
   Commit(metadata);
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf043-session"));
   return fixture;
 }
 
@@ -310,12 +322,12 @@ std::vector<api::EngineRowValue> Rows(std::string prefix) {
           Row(prefix + "-004", "oslo", "delta")};
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -332,11 +344,11 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   return request;
 }
 
-api::EngineUpdateRowsRequest UpdateRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> UpdateRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
@@ -346,7 +358,22 @@ api::EngineUpdateRowsRequest UpdateRequest(
   return request;
 }
 
-void AssertLocalityEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
+bool HasNativeLocality(const std::vector<api::EngineEvidenceReference>& evidence,
+                       const api::EngineUuid& index_uuid, std::string_view locality) {
+  for (std::size_t i = 1; i < evidence.size(); ++i) {
+    const auto& identity = evidence[i - 1];
+    const auto& key = evidence[i];
+    const auto* id = std::get_if<api::EngineUuid>(&identity.evidence_id);
+    const auto* label = std::get_if<std::string>(&key.evidence_id);
+    if (identity.evidence_kind == "index_apply_target_index_uuid" && id &&
+        *id == index_uuid && key.evidence_kind == "index_apply_target_leaf_page_locality_key" &&
+        label && *label == locality) return true;
+  }
+  return false;
+}
+
+void AssertLocalityEvidence(const Fixture& fixture,
+                            const std::vector<api::EngineEvidenceReference>& evidence,
                             std::string_view phase) {
   if (!HasEvidence(evidence,
                    "index_apply_planner",
@@ -381,9 +408,7 @@ void AssertLocalityEvidence(const std::vector<api::EngineEvidenceReference>& evi
                                  "index_apply_family_profile_key",
                                  api::kCrudIndexFamilyBtree),
             "ODF-043 btree family/profile evidence missing");
-    Require(EvidenceKindContains(evidence,
-                                 "index_apply_target_leaf_page_locality_key",
-                                 "unique_order:"),
+    Require(HasNativeLocality(evidence, fixture.id_index_uuid, "unique_order"),
             "ODF-043 unique order locality evidence missing");
     Require(HasEvidence(evidence, "index_apply_unique_order_preserved", "true"),
             "ODF-043 unique order preservation evidence missing");
@@ -444,6 +469,31 @@ void CorePlannerGroupsByFamilyAndLocality() {
           "ODF-043 unique group did not retain source row order");
 }
 
+void LocalityBridgePreservesMutationKind() {
+  api::MgaExactIndexEntryAppendBatch source;
+  source.index.index_uuid = scratchbird::tests::FixtureUuid(6043, 20);
+  source.index.table_uuid = scratchbird::tests::FixtureUuid(6043, 21);
+  source.table_uuid = source.index.table_uuid;
+  source.index.family = api::kCrudIndexFamilyHash;
+  source.index.profile = "hash";
+  source.entries.push_back({"key", "payload",
+      scratchbird::tests::FixtureUuid(6043, 22),
+      scratchbird::tests::FixtureUuid(6043, 23)});
+  for (const auto kind : {"retire", "insert", "exact"}) {
+    source.entry_kind = kind;
+    const auto plan = api::PlanLocalityAwareExactIndexApplyBatches({source});
+    Require(!plan.diagnostic.error && plan.batches.size() == 1,
+            "ODF-043 exact locality planning failed");
+    const auto& batch = plan.batches.front();
+    Require(batch.entry_kind == kind && batch.table_uuid == source.table_uuid &&
+                batch.index.index_uuid == source.index.index_uuid &&
+                batch.entries.size() == 1 &&
+                batch.entries.front().row_uuid == source.entries.front().row_uuid &&
+                batch.entries.front().version_uuid == source.entries.front().version_uuid,
+            "ODF-043 locality regrouping changed native mutation identity or kind");
+  }
+}
+
 void DirectBulkAndUpdateUseLocalityPlanner() {
   auto fixture = MakeFixture("route", 43000);
   auto context = Begin(fixture, "odf043-bulk");
@@ -454,20 +504,26 @@ void DirectBulkAndUpdateUseLocalityPlanner() {
           "ODF-043 direct bulk row count drifted");
   Require(HasEvidence(imported.evidence, "import_execution", "direct_physical"),
           "ODF-043 import did not use direct physical lane");
-  AssertLocalityEvidence(imported.evidence, "bulk");
+  AssertLocalityEvidence(fixture, imported.evidence, "bulk");
 
   const auto updated = api::EngineUpdateRows(UpdateRequest(fixture, context));
   RequireOk(updated, "ODF-043 update route failed");
   Require(updated.updated_count == 2,
           "ODF-043 update row count drifted");
-  AssertLocalityEvidence(updated.evidence, "update");
+  AssertLocalityEvidence(fixture, updated.evidence, "update");
   Commit(context);
 }
 
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf043_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf043_statement_fixture").ok(),
+          "ODF-043 memory policy configuration failed");
   CorePlannerGroupsByFamilyAndLocality();
+  LocalityBridgePreservesMutationKind();
   DirectBulkAndUpdateUseLocalityPlanner();
   return EXIT_SUCCESS;
 }

@@ -68,8 +68,8 @@ core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      core::platform::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      core::platform::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
+      2, 2, descriptor_uuid,
       found->descriptor_epoch);
   // Core rows that have a registered codec identity carry a distinct type
   // UUID (notably int64).  Older core rows still use their catalog descriptor

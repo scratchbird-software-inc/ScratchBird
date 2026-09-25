@@ -11,6 +11,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "database_lifecycle.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -164,43 +165,18 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const platform::Uuid& database_uuid,
-                                      const platform::Uuid& principal_uuid,
-                                      std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.request_id = std::move(request_id);
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = principal_uuid;
-  context.session_uuid = NewIdentity(platform::UuidKind::object);
-  context.security_context_present = true;
-  context.identifier_profile_uuid = "sbsql_v3";
-  context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 17;
-  context.resource_epoch = 19;
-  context.name_resolution_epoch = 1;
-  return context;
-}
-
-api::EngineRequestContext Begin(const std::filesystem::path& path,
-                                const platform::Uuid& database_uuid,
-                                const platform::Uuid& principal_uuid,
+api::EngineRequestContext Begin(const api::EngineRequestContext& owner_context,
                                 std::string request_id) {
   api::EngineBeginTransactionRequest request;
-  request.context =
-      BaseContext(path, database_uuid, principal_uuid, std::move(request_id));
+  request.context = owner_context;
+  request.context.request_id = std::move(request_id);
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   RequireOk(begun, "DPC-010 begin transaction failed");
   auto context = request.context;
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      begun.snapshot_visible_through_local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   return context;
 }
@@ -217,15 +193,14 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "DPC-010 rollback failed");
 }
 
-platform::Uuid CreateDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
   create.page_size = 16384;
   create.creation_unix_epoch_millis = NowMillis();
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -233,7 +208,7 @@ platform::Uuid CreateDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "DPC-010 database create failed");
-  return create.database_uuid.value;
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
 api::EngineCatalogCreateObjectRequest CreateObjectRequest(
@@ -279,14 +254,14 @@ api::EngineQueryRelation InlineCountRelation(const platform::Uuid& table_uuid,
   return relation;
 }
 
-api::EnginePlanOperationRequest CachedCountRequest(
+scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> CachedCountRequest(
+    const scratchbird::tests::FixtureEngineSession& session,
     api::EngineRequestContext context,
     const platform::Uuid& table_uuid,
     const std::string& relation_name,
     const std::string& sblr_digest,
     const std::string& statistics_snapshot_id) {
-  api::EnginePlanOperationRequest request;
-  request.context = std::move(context);
+  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> request(session, context);
   request.execute = true;
   request.query_operation = "count";
   request.target_object.uuid = table_uuid;
@@ -315,6 +290,8 @@ void RequireSameCountResult(const api::EnginePlanOperationResult& lhs,
 }
 
 struct CatalogFixture {
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
@@ -326,6 +303,7 @@ struct CatalogFixture {
   api::EngineApiU64 table_catalog_epoch = 0;
 
   ~CatalogFixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) std::filesystem::remove_all(dir, ignored);
   }
@@ -337,16 +315,15 @@ CatalogFixture MakeCatalogFixture() {
                 ("scratchbird_dpc010_catalog_" + std::to_string(UniqueMillis()));
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "dpc010_catalog.sbdb";
-  fixture.database_uuid = CreateDatabase(fixture.database_path);
-  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  fixture.owner_context = CreateDatabase(fixture.database_path);
+  fixture.database_uuid = fixture.owner_context.database_uuid;
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
   fixture.schema_uuid = NewIdentity(platform::UuidKind::schema);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object);
   fixture.table_name = "dpc010_plan_table_" + std::to_string(UniqueMillis());
   fixture.renamed_table_name = fixture.table_name + "_renamed";
 
-  auto schema_context = Begin(fixture.database_path,
-                              fixture.database_uuid,
-                              fixture.principal_uuid,
+  auto schema_context = Begin(fixture.owner_context,
                               "dpc010-create-schema");
   const auto created_schema =
       api::EngineCatalogCreateObject(CreateObjectRequest(schema_context,
@@ -357,9 +334,7 @@ CatalogFixture MakeCatalogFixture() {
   RequireOk(created_schema, "DPC-010 schema create failed");
   Commit(schema_context);
 
-  auto table_context = Begin(fixture.database_path,
-                             fixture.database_uuid,
-                             fixture.principal_uuid,
+  auto table_context = Begin(fixture.owner_context,
                              "dpc010-create-table");
   table_context.catalog_generation_id = created_schema.metadata_cache_epoch;
   table_context.name_resolution_epoch = created_schema.metadata_cache_epoch;
@@ -372,15 +347,14 @@ CatalogFixture MakeCatalogFixture() {
   RequireOk(created_table, "DPC-010 table create failed");
   fixture.table_catalog_epoch = created_table.metadata_cache_epoch;
   Commit(table_context);
-
+  fixture.owner_context.current_schema_uuid = fixture.schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
   return fixture;
 }
 
 void TestPlanCacheStabilityAndInvalidation() {
   auto fixture = MakeCatalogFixture();
-  auto read_context = Begin(fixture.database_path,
-                            fixture.database_uuid,
-                            fixture.principal_uuid,
+  auto read_context = Begin(fixture.owner_context,
                             "dpc010-cache-read");
   read_context.catalog_generation_id = fixture.table_catalog_epoch;
   read_context.name_resolution_epoch = fixture.table_catalog_epoch;
@@ -399,7 +373,7 @@ void TestPlanCacheStabilityAndInvalidation() {
   const std::string stats_b = "dpc010-statistics-generation-b";
 
   const auto first = api::EnginePlanOperation(
-      CachedCountRequest(read_context,
+      CachedCountRequest(*fixture.session, read_context,
                          fixture.table_uuid,
                          fixture.table_name,
                          sblr_digest,
@@ -407,14 +381,14 @@ void TestPlanCacheStabilityAndInvalidation() {
   RequireOk(first, "DPC-010 first cached plan failed");
   Require(HasEvidence(first, "optimizer_live_plan_cache", "miss"),
           "DPC-010 first cached plan did not miss");
-  Require(HasIdentityEvidence(first, "optimizer_live_plan_cache_binding", fixture.table_uuid),
+  Require(HasIdentityEvidence(first, "descriptor", fixture.table_uuid),
           "DPC-010 plan cache did not bind descriptor UUID");
   Require(CountValue(first) == "3", "DPC-010 first count result drifted");
   const auto first_key = EvidenceValue(first, "optimizer_live_plan_cache_key");
   Require(!first_key.empty(), "DPC-010 first cache key missing");
 
   const auto second = api::EnginePlanOperation(
-      CachedCountRequest(read_context,
+      CachedCountRequest(*fixture.session, read_context,
                          fixture.table_uuid,
                          fixture.table_name,
                          sblr_digest,
@@ -429,7 +403,7 @@ void TestPlanCacheStabilityAndInvalidation() {
                          "DPC-010 cache hit was not result deterministic");
 
   const auto stats_changed = api::EnginePlanOperation(
-      CachedCountRequest(read_context,
+      CachedCountRequest(*fixture.session, read_context,
                          fixture.table_uuid,
                          fixture.table_name,
                          sblr_digest,
@@ -445,9 +419,7 @@ void TestPlanCacheStabilityAndInvalidation() {
                          "DPC-010 statistics miss changed query result");
   Rollback(read_context);
 
-  auto rename_context = Begin(fixture.database_path,
-                              fixture.database_uuid,
-                              fixture.principal_uuid,
+  auto rename_context = Begin(fixture.owner_context,
                               "dpc010-rename-table");
   rename_context.catalog_generation_id = fixture.table_catalog_epoch;
   rename_context.name_resolution_epoch = fixture.table_catalog_epoch;
@@ -462,14 +434,12 @@ void TestPlanCacheStabilityAndInvalidation() {
           "DPC-010 rename did not advance catalog/name epoch");
   Commit(rename_context);
 
-  auto after_ddl_context = Begin(fixture.database_path,
-                                 fixture.database_uuid,
-                                 fixture.principal_uuid,
+  auto after_ddl_context = Begin(fixture.owner_context,
                                  "dpc010-cache-after-ddl");
   after_ddl_context.catalog_generation_id = renamed.metadata_cache_epoch;
   after_ddl_context.name_resolution_epoch = renamed.metadata_cache_epoch;
   const auto after_ddl = api::EnginePlanOperation(
-      CachedCountRequest(after_ddl_context,
+      CachedCountRequest(*fixture.session, after_ddl_context,
                          fixture.table_uuid,
                          fixture.renamed_table_name,
                          sblr_digest,
@@ -487,6 +457,8 @@ void TestPlanCacheStabilityAndInvalidation() {
 }
 
 struct CrudFixture {
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
@@ -496,6 +468,7 @@ struct CrudFixture {
   api::EngineRequestContext context;
 
   ~CrudFixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) std::filesystem::remove_all(dir, ignored);
   }
@@ -539,21 +512,24 @@ CrudFixture MakeCrudFixture() {
                 ("scratchbird_dpc010_crud_" + std::to_string(UniqueMillis()));
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "dpc010_crud.sbdb";
-  fixture.database_uuid = CreateDatabase(fixture.database_path);
-  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
+  fixture.owner_context = CreateDatabase(fixture.database_path);
+  fixture.database_uuid = fixture.owner_context.database_uuid;
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object);
-  fixture.context = Begin(fixture.database_path,
-                          fixture.database_uuid,
-                          fixture.principal_uuid,
+  fixture.context = Begin(fixture.owner_context,
                           "dpc010-crud-metadata");
 
-  const auto table = api::AppendMgaTableMetadata(fixture.context,
-                                                 TableRecord(fixture));
+  const auto table = scratchbird::tests::PublishMgaTableFixture(fixture.context,
+      TableRecord(fixture), {"character", "character"}, {CoveringIndexRecord(fixture)});
   Require(!table.error, "DPC-010 table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(fixture.context,
                                                  CoveringIndexRecord(fixture));
   Require(!index.error, "DPC-010 index metadata append failed");
+  Commit(fixture.context);
+  fixture.owner_context.current_schema_uuid = fixture.context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
+  fixture.context = Begin(fixture.owner_context, "dpc010-crud-data");
 
   std::vector<api::EngineRowValue> rows;
   rows.reserve(128);
@@ -562,8 +538,8 @@ CrudFixture MakeCrudFixture() {
                            "note-" + std::to_string(i)));
   }
 
-  api::EngineInsertRowsRequest insert;
-  insert.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> insert(
+      *fixture.session, fixture.context);
   insert.context.request_id = "dpc010-insert-fixture";
   insert.target_table.uuid = fixture.table_uuid;
   insert.target_table.object_kind = "table";
@@ -589,8 +565,8 @@ api::EnginePredicateEnvelope Predicate(std::string kind,
 api::EnginePlanOperationResult PlanCrud(CrudFixture& fixture,
                                         api::EnginePredicateEnvelope predicate,
                                         std::vector<std::string> options = {}) {
-  api::EnginePlanOperationRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = "dpc010-crud-plan";
   request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";

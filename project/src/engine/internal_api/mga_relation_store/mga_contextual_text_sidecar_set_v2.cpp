@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "core/datatypes/admitted_datatype_cohort.hpp"
 #include "mga_relation_store/mga_contextual_text_sidecar_set_v2.hpp"
 
 #include "hash_digest.hpp"
@@ -279,8 +280,10 @@ bool EncodeExpectedDescriptor(
   const Descriptor& descriptor = column.expected_text_descriptor;
   if (!Nonzero(column.column_uuid) ||
       column.projected_datatype_descriptor_generation != 1 ||
-      column.projected_datatype_catalog_generation != 1 ||
-      column.projected_datatype_registry_generation != 1 ||
+      !core::datatypes::IsAdmittedDatatypeCohort(
+          column.projected_datatype_catalog_snapshot_uuid,
+          column.projected_datatype_catalog_generation,
+          column.projected_datatype_registry_generation) ||
       column.projected_resource_epoch == 0 ||
       descriptor.descriptor_uuid !=
           column.projected_datatype_descriptor_uuid ||
@@ -295,7 +298,7 @@ bool EncodeExpectedDescriptor(
       descriptor.resource_epoch != column.projected_resource_epoch) {
     return Invalid(
         diagnostic,
-        "projected d701/1/1, d718/1, or resource epoch does not match SBTLTD02");
+        "projected datatype cohort, d718/1, or resource epoch does not match SBTLTD02");
   }
 
   sblr::ContextualTextCodecDiagnosticV2 codec_diagnostic;

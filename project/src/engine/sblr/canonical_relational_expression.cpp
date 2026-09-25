@@ -398,6 +398,8 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
     *refusal_detail = canonical.diagnostic.diagnostic_code.empty()
                           ? "literal payload is invalid for its descriptor"
                           : canonical.diagnostic.diagnostic_code;
+    for (const auto& argument : canonical.diagnostic.arguments)
+      if (argument.key == "detail") *refusal_detail += ":" + argument.value;
     return false;
   }
   *canonical_payload = canonical.value.encoded_value;
@@ -737,8 +739,8 @@ bool SamePersistedRowDescriptor(
       // the full canonical boolean authority tuple.
       record_name(descriptor_uuid, row.stable_name);
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
-          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
+          2, 2, descriptor_uuid,
           row.descriptor_epoch);
       if (!identity.ok || identity.row.type_uuid.is_nil()) continue;
       record_name(identity.row.type_uuid, row.stable_name);
@@ -2474,15 +2476,20 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
     // identities. Resolve those type UUIDs only through exact current registry
     // rows; never treat an arbitrary UUID as a datatype alias.
     for (const auto stable_name : {std::string_view{"int64"},
-                                   std::string_view{"decimal"}}) {
+                                   std::string_view{"decimal"}, std::string_view{"real64"},
+                                   std::string_view{"uuid"}, std::string_view{"geometry"},
+                                   std::string_view{"uint64"}, std::string_view{"json_document"},
+                                   std::string_view{"list"},
+                                   std::string_view{"int32"}, std::string_view{"int128"},
+                                   std::string_view{"text"}}) {
       const auto row = std::ranges::find_if(
           core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
             return candidate.stable_name == stable_name;
           });
       if (row == core_manifest.manifest.descriptor_rows.end()) continue;
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}},
-          core_manifest.manifest.catalog_epoch, 1,
+          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
+          2, 2,
           TypedUuidIdentity(row->descriptor_uuid), row->descriptor_epoch);
       if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
         *canonical_type_name = row->stable_name;

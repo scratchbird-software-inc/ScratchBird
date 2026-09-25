@@ -1,4 +1,7 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "credentialed_database_fixture.hpp"
+#include <filesystem>
+#include <unistd.h>
 #include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -9,6 +12,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/sys_information_projection.hpp"
+#include "wire/binary_status_packet.hpp"
 #include "memory_observability_overhead.hpp"
 #include "observability/show_api.hpp"
 #include "query/plan_api.hpp"
@@ -45,10 +49,28 @@ info::SysInformationProjectionContext Context() {
   return context;
 }
 
+struct DatabaseFixture {
+  std::filesystem::path directory;
+  std::filesystem::path database;
+  info::EngineUuid database_uuid;
+  DatabaseFixture() {
+    std::string pattern = (std::filesystem::temp_directory_path()/"ipar_projection_XXXXXX").string();
+    std::vector<char> name(pattern.begin(),pattern.end()); name.push_back(0);
+    const auto* made = ::mkdtemp(name.data());
+    Require(made != nullptr, "IPAR projection fixture directory creation failed");
+    directory = made; database = directory/"projection.sbdb";
+    const auto created = scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(database, "");
+    Require(created.ok(), "IPAR projection fixture database creation failed");
+    database_uuid = created.state.database_uuid.value;
+  }
+  ~DatabaseFixture() { std::error_code ec; std::filesystem::remove_all(directory,ec); }
+};
+
 info::EngineRequestContext EngineContext() {
   info::EngineRequestContext context;
-  context.database_path = "/tmp/ipar_observability_projection_gate.sbdb";
-  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1901);
+  static const DatabaseFixture fixture;
+  context.database_path = fixture.database.string();
+  context.database_uuid = fixture.database_uuid;
   context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1902);
   context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1903);
   context.catalog_generation_id = 7;
@@ -146,8 +168,15 @@ void RequireNoPrivateLeak(const info::SysInformationProjectionResult& result) {
   for (const auto& row : result.rows) {
     for (const auto& [field_name, typed_value] : row.fields) {
       const auto* text = std::get_if<std::string>(&typed_value);
-      Require(text != nullptr, "IPAR public projection exposed non-text identity data");
-      const auto& value = *text;
+      const auto* binary = std::get_if<info::SysInformationBinaryValue>(&typed_value);
+      Require(text != nullptr || (binary != nullptr && field_name == "label_summary"),
+              "IPAR public projection exposed an unexpected value kind");
+      const auto& value = text ? *text : binary->bytes;
+      if (binary) {
+        std::vector<scratchbird::wire::public_result::Field> fields;
+        Require(scratchbird::wire::binary_status::Decode(value, &fields),
+                "IPAR binary labels are not canonical observation packets");
+      }
       Require(value.find("/tmp/private") == std::string::npos,
               "private path leaked in " + field_name);
       Require(value.find("secret=") == std::string::npos,
@@ -188,13 +217,20 @@ std::vector<info::SysInformationIparAgentLifecycleSource> LifecycleRows() {
   };
 }
 
+std::string MetricLabelPacket(const char* text) {
+  scratchbird::wire::binary_status::Stream packet;
+  packet << text << ";request_uuid=" << scratchbird::wire::binary_status::Identity(
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000000123"));
+  return packet.str();
+}
+
 std::vector<info::SysInformationIparMetricCounterSource> CounterRows() {
   return {
       {.metric_id = "IPAR-M001",
        .metric_path = "sys.metrics.ipar.script.prepared_descriptor_hits",
        .metric_type = "counter",
        .metric_unit = "count",
-       .label_summary = "script_id=SBDFS-020",
+       .label_summary = MetricLabelPacket("script_id=SBDFS-020"),
        .producer = "engine_insert",
        .source_state = "observed",
        .value = 1048576,
@@ -204,7 +240,7 @@ std::vector<info::SysInformationIparMetricCounterSource> CounterRows() {
        .metric_path = "sys.metrics.ipar.script.slow_path_reason_count",
        .metric_type = "counter",
        .metric_unit = "count",
-       .label_summary = "chosen_path=degraded_path",
+       .label_summary = MetricLabelPacket("chosen_path=degraded_path"),
        .producer = "engine_insert",
        .source_state = "observed",
        .value = 1,
@@ -393,6 +429,21 @@ void TestPopulatedRows() {
           "IPAR counter metric path missing");
   Require(HasRowValue(counters, "value", "1048576"),
           "IPAR counter value missing");
+  for (const auto& row : counters.rows) {
+    const auto* labels = info::SysInformationField(row, "label_summary");
+    Require(labels && std::holds_alternative<info::SysInformationBinaryValue>(*labels),
+            "metric labels were projected as text");
+    const auto typed = info::SysInformationTypedValue(*labels);
+    const auto& expected = std::get<info::SysInformationBinaryValue>(*labels).bytes;
+    Require(typed.descriptor.canonical_type_name == "binary" && typed.encoded_value.empty() &&
+            std::string(typed.binary_value.begin(), typed.binary_value.end()) == expected,
+            "metric label packet changed during typed projection");
+    std::vector<scratchbird::wire::public_result::Field> fields;
+    Require(scratchbird::wire::binary_status::Decode(expected, &fields),
+            "metric label packet lost framing");
+    Require(fields.back().kind == scratchbird::wire::public_result::Kind::uuid &&
+            fields.back().value.size() == 16, "metric label identity lost binary16");
+  }
   RequireNoPrivateLeak(counters);
 
   const auto telemetry = Build("sys.ipar.telemetry_controls", {}, {}, TelemetryRows());

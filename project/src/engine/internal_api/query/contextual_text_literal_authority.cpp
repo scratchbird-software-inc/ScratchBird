@@ -469,6 +469,9 @@ bool ResolveProjectedTargetDescriptor(
   resolved.descriptor_uuid.bytes = selected->descriptor_uuid;
   resolved.type_uuid.bytes = selected->type_uuid;
   resolved.collation_uuid.bytes = selected->collation_uuid;
+  resolved.charset_uuid.bytes = selected->charset_uuid;
+  resolved.datatype_descriptor_uuid = *embedded_datatype_descriptor_uuid;
+  resolved.datatype_descriptor_generation = selected->descriptor_generation;
   // Public MGA projection rows retain the persisted descriptor class.  The
   // executor-facing value descriptor is the scalar view of that exact column;
   // its UUID, type and encoded authority remain byte-for-byte unchanged.

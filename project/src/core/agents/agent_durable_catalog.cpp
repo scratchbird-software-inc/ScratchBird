@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_durable_catalog.hpp"
+#include "uuid.hpp"
+#include <chrono>
+#include <stdexcept>
+#include <string_view>
 
 #include <algorithm>
 #include <cstddef>
@@ -19,53 +23,56 @@
 namespace scratchbird::core::agents {
 namespace {
 
-constexpr const char* kDurableCatalogMagic = "SB_AGENT_DURABLE_CATALOG_IMAGE";
+constexpr const char* kDurableCatalogMagic = "SBADC002";
 constexpr u64 kDurableCatalogSchemaVersion = 1;
 
-std::string BoolText(bool value) {
-  return value ? "1" : "0";
+// SBADC002: length-framed records and fields. UUID fields contain exactly
+// sixteen native bytes (or an empty optional slot), never escaped text.
+constexpr std::size_t kMaximumImageBytes = 64 * 1024 * 1024;
+void PutU64(std::ostream* out, u64 value) {
+  const auto position = out->tellp();
+  if (position < 0 || static_cast<std::uint64_t>(position) > kMaximumImageBytes - 8)
+    throw std::runtime_error("image too large");
+  for (unsigned i = 0; i < 8; ++i) out->put(static_cast<char>(value >> (8 * i)));
 }
-
-bool ParseBool(const std::string& value) {
-  return value == "1" || value == "true";
+u64 ReadU64(std::string_view bytes, std::size_t* offset) {
+  if (*offset > bytes.size() || bytes.size() - *offset < 8)
+    throw std::runtime_error("truncated integer");
+  u64 value = 0;
+  for (unsigned i = 0; i < 8; ++i)
+    value |= static_cast<u64>(static_cast<unsigned char>(bytes[(*offset)++])) << (8 * i);
+  return value;
 }
-
-std::string Escape(const std::string& value) {
-  std::ostringstream out;
-  for (const unsigned char ch : value) {
-    if (ch == '%' || ch == '\n' || ch == '\t' || ch == '=' ||
-        ch == '|' || ch == ';') {
-      out << '%' << std::uppercase << std::hex << std::setw(2) << std::setfill('0')
-          << static_cast<int>(ch) << std::nouppercase << std::dec;
-    } else {
-      out << static_cast<char>(ch);
-    }
-  }
-  return out.str();
+void PutBytes(std::ostream* out, std::string_view value) {
+  if (value.size() > kMaximumImageBytes) throw std::runtime_error("field too large");
+  PutU64(out, value.size());
+  const auto position = out->tellp();
+  if (position < 0 || static_cast<std::uint64_t>(position) > kMaximumImageBytes ||
+      value.size() > kMaximumImageBytes - static_cast<std::uint64_t>(position))
+    throw std::runtime_error("image too large");
+  out->write(value.data(), static_cast<std::streamsize>(value.size()));
 }
-
-int HexValue(char ch) {
-  if (ch >= '0' && ch <= '9') { return ch - '0'; }
-  if (ch >= 'a' && ch <= 'f') { return ch - 'a' + 10; }
-  if (ch >= 'A' && ch <= 'F') { return ch - 'A' + 10; }
-  return -1;
+std::string ReadBytes(std::string_view bytes, std::size_t* offset) {
+  const auto size = ReadU64(bytes, offset);
+  if (size > kMaximumImageBytes || size > bytes.size() - *offset)
+    throw std::runtime_error("truncated field");
+  std::string result(bytes.substr(*offset, size));
+  *offset += size;
+  return result;
 }
-
-std::string Unescape(const std::string& value) {
-  std::string out;
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (value[i] == '%' && i + 2 < value.size()) {
-      const int hi = HexValue(value[i + 1]);
-      const int lo = HexValue(value[i + 2]);
-      if (hi >= 0 && lo >= 0) {
-        out.push_back(static_cast<char>((hi << 4) | lo));
-        i += 2;
-        continue;
-      }
-    }
-    out.push_back(value[i]);
-  }
-  return out;
+bool UuidSlotValid(const std::string& value) {
+  if (value.empty()) return true;
+  if (value.size() != 16) return false;
+  platform::Uuid id{};
+  std::copy(value.begin(), value.end(), id.bytes.begin());
+  return uuid::IsEngineIdentityUuid(id);
+}
+std::string NewCatalogIdentity() {
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto id = uuid::GenerateEngineIdentityV7(platform::UuidKind::object, now);
+  if (!id.ok()) return {};
+  return {reinterpret_cast<const char*>(id.value.value.bytes.data()), 16};
 }
 
 std::string HexBytes(const unsigned char* bytes, std::size_t size) {
@@ -86,94 +93,90 @@ std::string Checksum(const std::string& payload) {
 }
 
 void AddField(std::ostringstream* out, const std::string& key, const std::string& value) {
-  *out << '\t' << key << '=' << Escape(value);
+  if (key.size() >= 5 && key.compare(key.size() - 5, 5, "_uuid") == 0 &&
+      !UuidSlotValid(value)) throw std::runtime_error("invalid UUID16");
+  PutBytes(out, key);
+  PutBytes(out, value);
 }
-
 void AddField(std::ostringstream* out, const std::string& key, u64 value) {
-  AddField(out, key, std::to_string(value));
+  std::ostringstream encoded;
+  PutU64(&encoded, value);
+  AddField(out, key, encoded.str());
 }
-
 void AddField(std::ostringstream* out, const std::string& key, bool value) {
-  AddField(out, key, BoolText(value));
+  AddField(out, key, std::string(1, value ? '\1' : '\0'));
 }
-
-std::map<std::string, std::string> ParseFields(const std::string& line,
-                                               std::string* section) {
+std::map<std::string, std::string> ParseFields(std::string_view bytes,
+    std::size_t* offset, std::string* section) {
+  *section = ReadBytes(bytes, offset);
+  if (section->empty()) throw std::runtime_error("empty section");
   std::map<std::string, std::string> fields;
-  std::stringstream stream(line);
-  std::string part;
-  if (std::getline(stream, part, '\t')) {
-    *section = part;
+  for (;;) {
+    auto key = ReadBytes(bytes, offset);
+    if (key.empty()) return fields;
+    auto value = ReadBytes(bytes, offset);
+    if (!fields.emplace(std::move(key), std::move(value)).second)
+      throw std::runtime_error("duplicate field");
   }
-  while (std::getline(stream, part, '\t')) {
-    const auto eq = part.find('=');
-    if (eq == std::string::npos) { continue; }
-    fields.emplace(part.substr(0, eq), Unescape(part.substr(eq + 1)));
-  }
-  return fields;
 }
-
 u64 U64Field(const std::map<std::string, std::string>& fields, const std::string& key) {
-  const auto it = fields.find(key);
-  if (it == fields.end() || it->second.empty()) { return 0; }
-  return static_cast<u64>(std::stoull(it->second));
+  const auto& bytes = fields.at(key);
+  if (bytes.size() != 8) throw std::runtime_error("integer width");
+  std::size_t offset = 0;
+  return ReadU64(bytes, &offset);
 }
-
 std::string StringField(const std::map<std::string, std::string>& fields,
                         const std::string& key) {
-  const auto it = fields.find(key);
-  return it == fields.end() ? std::string() : it->second;
+  return fields.at(key);
 }
-
 bool BoolField(const std::map<std::string, std::string>& fields, const std::string& key) {
-  return ParseBool(StringField(fields, key));
+  const auto& value = fields.at(key);
+  if (value.size() != 1 || (value[0] != 0 && value[0] != 1))
+    throw std::runtime_error("boolean encoding");
+  return value[0] == 1;
 }
-
 std::string JoinVector(const std::vector<std::string>& values) {
   std::ostringstream out;
-  bool first = true;
-  for (const auto& value : values) {
-    if (!first) { out << '|'; }
-    first = false;
-    out << Escape(value);
-  }
+  PutU64(&out, values.size());
+  for (const auto& value : values) PutBytes(&out, value);
   return out.str();
 }
-
 std::vector<std::string> VectorField(const std::map<std::string, std::string>& fields,
                                      const std::string& key) {
+  const auto& bytes = fields.at(key);
+  std::size_t offset = 0;
+  auto count = ReadU64(bytes, &offset);
+  if (count > (bytes.size() - offset) / 8) throw std::runtime_error("vector count");
   std::vector<std::string> values;
-  std::stringstream stream(StringField(fields, key));
-  std::string part;
-  while (std::getline(stream, part, '|')) {
-    if (!part.empty()) { values.push_back(Unescape(part)); }
+  while (count--) {
+    auto value = ReadBytes(bytes, &offset);
+    if (key == "scope_uuids" && (value.empty() || !UuidSlotValid(value)))
+      throw std::runtime_error("invalid vector UUID16");
+    values.push_back(std::move(value));
   }
+  if (offset != bytes.size()) throw std::runtime_error("vector trailing data");
   return values;
 }
-
 std::string JoinMap(const std::map<std::string, std::string>& values) {
   std::ostringstream out;
-  bool first = true;
-  for (const auto& [key, value] : values) {
-    if (!first) { out << ';'; }
-    first = false;
-    out << Escape(key) << '=' << Escape(value);
-  }
+  PutU64(&out, values.size());
+  for (const auto& [key, value] : values) { PutBytes(&out, key); PutBytes(&out, value); }
   return out.str();
 }
-
 std::map<std::string, std::string> MapField(
-    const std::map<std::string, std::string>& fields,
-    const std::string& key) {
+    const std::map<std::string, std::string>& fields, const std::string& key) {
+  const auto& bytes = fields.at(key);
+  std::size_t offset = 0;
+  auto count = ReadU64(bytes, &offset);
+  if (count > (bytes.size() - offset) / 16) throw std::runtime_error("map count");
   std::map<std::string, std::string> values;
-  std::stringstream stream(StringField(fields, key));
-  std::string part;
-  while (std::getline(stream, part, ';')) {
-    if (part.empty()) { continue; }
-    const auto eq = part.find('=');
-    if (eq == std::string::npos) { continue; }
-    values.emplace(Unescape(part.substr(0, eq)), Unescape(part.substr(eq + 1)));
+  while (count--) {
+    auto name = ReadBytes(bytes, &offset);
+    auto value = ReadBytes(bytes, &offset);
+    if (!values.emplace(std::move(name), std::move(value)).second)
+      throw std::runtime_error("duplicate map key");
   }
+  if (offset != bytes.size()) throw std::runtime_error("map trailing data");
   return values;
 }
 
@@ -262,8 +265,7 @@ void RecordHistory(DurableAgentCatalogImage* image,
                    std::string evidence_uuid,
                    u64 now_microseconds) {
   DurableAgentHistoryRecord record;
-  record.history_uuid = subject_uuid + ":" + event_kind + ":" +
-                        std::to_string(image->retained_history.size() + 1);
+  record.history_uuid = NewCatalogIdentity();
   record.subject_uuid = std::move(subject_uuid);
   record.event_kind = std::move(event_kind);
   record.diagnostic_code = std::move(diagnostic);
@@ -274,7 +276,7 @@ void RecordHistory(DurableAgentCatalogImage* image,
 
 std::string PayloadForImage(const DurableAgentCatalogImage& image) {
   std::ostringstream out;
-  out << "catalog";
+  PutBytes(&out, "catalog");
   AddField(&out, "schema_version", image.schema_version);
   AddField(&out, "source", AgentCatalogStateSourceName(image.source));
   AddField(&out, "durable_catalog_authority",
@@ -301,10 +303,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
            image.authority.fsync_or_checkpoint_evidence);
   AddField(&out, "sidecar_storage", image.authority.sidecar_storage);
   AddField(&out, "in_memory_only", image.authority.in_memory_only);
-  out << '\n';
+  PutBytes(&out, {});
 
   for (const auto& instance : image.instances) {
-    out << "instance";
+    PutBytes(&out, "instance");
     AddField(&out, "instance_uuid", instance.instance_uuid);
     AddField(&out, "agent_type_id", instance.agent_type_id);
     AddField(&out, "policy_uuid", instance.policy_uuid);
@@ -329,10 +331,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "retirement_evidence_uuid", instance.retirement_evidence_uuid);
     AddField(&out, "last_failure_diagnostic_code", instance.last_failure_diagnostic_code);
     AddField(&out, "last_supervision_detail", instance.last_supervision_detail);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& policy : image.policies) {
-    out << "policy";
+    PutBytes(&out, "policy");
     AddField(&out, "policy_uuid", policy.policy_uuid);
     AddField(&out, "policy_name", policy.policy_name);
     AddField(&out, "policy_family", policy.policy_family);
@@ -362,10 +364,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "required_metric_families", JoinVector(policy.required_metric_families));
     AddField(&out, "policy_dependencies", JoinVector(policy.policy_dependencies));
     AddField(&out, "config_fields", JoinMap(policy.config_fields));
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& attachment : image.attachments) {
-    out << "attachment";
+    PutBytes(&out, "attachment");
     AddField(&out, "attachment_uuid", attachment.attachment_uuid);
     AddField(&out, "agent_type_id", attachment.agent_type_id);
     AddField(&out, "policy_family", attachment.policy_family);
@@ -378,10 +380,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "valid", attachment.valid);
     AddField(&out, "diagnostic_code", attachment.diagnostic_code);
     AddField(&out, "evidence_uuid", attachment.evidence_uuid);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& evidence : image.evidence) {
-    out << "evidence";
+    PutBytes(&out, "evidence");
     AddField(&out, "evidence_uuid", evidence.evidence_uuid);
     AddField(&out, "agent_type_id", evidence.agent_type_id);
     AddField(&out, "instance_uuid", evidence.instance_uuid);
@@ -392,6 +394,8 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "policy_generation", evidence.policy_generation);
     AddField(&out, "principal_uuid", evidence.principal_uuid);
     AddField(&out, "rights_used", JoinVector(evidence.rights_used));
+    for (const auto& id : evidence.scope_uuids)
+      if (id.empty() || !UuidSlotValid(id)) throw std::runtime_error("invalid scope UUID16");
     AddField(&out, "scope_uuids", JoinVector(evidence.scope_uuids));
     AddField(&out, "decision_payload_digest", evidence.decision_payload_digest);
     AddField(&out, "result_state", evidence.result_state);
@@ -446,10 +450,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "visibility_authority", evidence.visibility_authority);
     AddField(&out, "recovery_authority", evidence.recovery_authority);
     AddField(&out, "security_authority", evidence.security_authority);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& action : image.actions) {
-    out << "action";
+    PutBytes(&out, "action");
     AddField(&out, "action_uuid", action.action_uuid);
     AddField(&out, "instance_uuid", action.instance_uuid);
     AddField(&out, "owner_uuid", action.owner_uuid);
@@ -476,20 +480,20 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "client_authority", action.client_authority);
     AddField(&out, "reference_authority", action.reference_authority);
     AddField(&out, "sidecar_authority", action.sidecar_authority);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& approval : image.approvals) {
-    out << "approval";
+    PutBytes(&out, "approval");
     AddField(&out, "approval_uuid", approval.approval_uuid);
     AddField(&out, "action_uuid", approval.action_uuid);
     AddField(&out, "principal_uuid", approval.principal_uuid);
     AddField(&out, "approved", approval.approved);
     AddField(&out, "evidence_uuid", approval.evidence_uuid);
     AddField(&out, "approved_at_microseconds", approval.approved_at_microseconds);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& override_record : image.overrides) {
-    out << "override";
+    PutBytes(&out, "override");
     AddField(&out, "override_uuid", override_record.override_uuid);
     AddField(&out, "agent_type_id", override_record.agent_type_id);
     AddField(&out, "scope", override_record.scope);
@@ -497,10 +501,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "expires_at_microseconds", override_record.expires_at_microseconds);
     AddField(&out, "active", override_record.active);
     AddField(&out, "evidence_uuid", override_record.evidence_uuid);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& lease : image.leases) {
-    out << "lease";
+    PutBytes(&out, "lease");
     AddField(&out, "lease_uuid", lease.lease_uuid);
     AddField(&out, "instance_uuid", lease.instance_uuid);
     AddField(&out, "owner_uuid", lease.owner_uuid);
@@ -511,10 +515,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "last_heartbeat_microseconds", lease.last_heartbeat_microseconds);
     AddField(&out, "replay_generation", lease.replay_generation);
     AddField(&out, "evidence_uuid", lease.evidence_uuid);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& reservation : image.resource_reservations) {
-    out << "resource_reservation";
+    PutBytes(&out, "resource_reservation");
     AddField(&out, "reservation_uuid", reservation.reservation_uuid);
     AddField(&out, "reservation_key", reservation.reservation_key);
     AddField(&out, "owner_scope", reservation.owner_scope);
@@ -538,10 +542,10 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "client_authority", reservation.client_authority);
     AddField(&out, "reference_authority", reservation.reference_authority);
     AddField(&out, "benchmark_authority", reservation.benchmark_authority);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& replay : image.replay_records) {
-    out << "replay";
+    PutBytes(&out, "replay");
     AddField(&out, "replay_uuid", replay.replay_uuid);
     AddField(&out, "action_uuid", replay.action_uuid);
     AddField(&out, "instance_uuid", replay.instance_uuid);
@@ -599,29 +603,29 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "memory_authority", replay.memory_authority);
     AddField(&out, "agent_action_authority",
              replay.agent_action_authority);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& health : image.health) {
-    out << "health";
+    PutBytes(&out, "health");
     AddField(&out, "instance_uuid", health.instance_uuid);
     AddField(&out, "health_state", health.health_state);
     AddField(&out, "diagnostic_code", health.diagnostic_code);
     AddField(&out, "evidence_uuid", health.evidence_uuid);
     AddField(&out, "observed_at_microseconds", health.observed_at_microseconds);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& history : image.retained_history) {
-    out << "history";
+    PutBytes(&out, "history");
     AddField(&out, "history_uuid", history.history_uuid);
     AddField(&out, "subject_uuid", history.subject_uuid);
     AddField(&out, "event_kind", history.event_kind);
     AddField(&out, "diagnostic_code", history.diagnostic_code);
     AddField(&out, "evidence_uuid", history.evidence_uuid);
     AddField(&out, "recorded_at_microseconds", history.recorded_at_microseconds);
-    out << '\n';
+    PutBytes(&out, {});
   }
   for (const auto& migration : image.migrations) {
-    out << "migration";
+    PutBytes(&out, "migration");
     AddField(&out, "migration_uuid", migration.migration_uuid);
     AddField(&out, "from_schema_version", migration.from_schema_version);
     AddField(&out, "to_schema_version", migration.to_schema_version);
@@ -631,7 +635,7 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "target_root_digest", migration.target_root_digest);
     AddField(&out, "recorded_at_microseconds",
              migration.recorded_at_microseconds);
-    out << '\n';
+    PutBytes(&out, {});
   }
   return out.str();
 }
@@ -704,12 +708,17 @@ std::string AgentCatalogStateSourceName(AgentCatalogStateSource source) {
 }
 
 std::string SerializeDurableAgentCatalogImage(const DurableAgentCatalogImage& image) {
-  const std::string payload = PayloadForImage(image);
-  std::ostringstream out;
-  out << kDurableCatalogMagic << "\tschema_version=" << kDurableCatalogSchemaVersion
-      << "\tchecksum=" << Checksum(payload) << '\n'
-      << payload;
-  return out.str();
+  try {
+    const std::string payload = PayloadForImage(image);
+    if (payload.size() > kMaximumImageBytes) return {};
+    std::ostringstream out;
+    out.write(kDurableCatalogMagic, 8);
+    PutU64(&out, kDurableCatalogSchemaVersion);
+    const auto digest = Checksum(payload);
+    out.write(digest.data(), digest.size());
+    out.write(payload.data(), payload.size());
+    return out.str();
+  } catch (...) { return {}; }
 }
 
 std::string DurableAgentCatalogRootDigest(DurableAgentCatalogImage image) {
@@ -717,7 +726,7 @@ std::string DurableAgentCatalogRootDigest(DurableAgentCatalogImage image) {
   for (auto& migration : image.migrations) {
     migration.target_root_digest.clear();
   }
-  return Checksum(PayloadForImage(image));
+  try { return Checksum(PayloadForImage(image)); } catch (...) { return {}; }
 }
 
 AgentRuntimeStatus RefreshDurableAgentCatalogAuthorityDigest(
@@ -741,6 +750,8 @@ AgentRuntimeStatus RefreshDurableAgentCatalogAuthorityDigest(
       image->authority.in_memory_only) {
     return AgentError("SB_AGENT_CATALOG.STORAGE_MGA_AUTHORITY_REQUIRED");
   }
+  if (DurableAgentCatalogRootDigest(*image).empty() || !UuidSlotValid(evidence_uuid))
+    return AgentError("SB_AGENT_CATALOG.IMAGE_FIELD_INVALID");
   image->authority.previous_catalog_root_digest =
       image->authority.catalog_root_digest;
   if (!evidence_uuid.empty()) {
@@ -804,10 +815,7 @@ DurableCatalogMigrationResult MigrateDurableAgentCatalogImageForProduction(
   migration.source_root_digest = image.authority.catalog_root_digest.empty()
                                      ? DurableAgentCatalogRootDigest(image)
                                      : image.authority.catalog_root_digest;
-  migration.migration_uuid =
-      "agent_catalog_migration:" +
-      std::to_string(migration.from_schema_version) + "->" +
-      std::to_string(migration.to_schema_version) + ":" + evidence_uuid;
+  migration.migration_uuid = NewCatalogIdentity();
 
   image.schema_version = kDurableCatalogSchemaVersion;
   image.migrations.push_back(migration);
@@ -842,33 +850,27 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
     return result;
   }
 
-  const auto first_newline = encoded.find('\n');
-  if (first_newline == std::string::npos) {
+  if (encoded.size() < 80 || encoded.size() > kMaximumImageBytes + 80) {
     result.status = AgentError("SB_AGENT_CATALOG.IMAGE_HEADER_INVALID");
     return result;
   }
-  std::string section;
-  const auto header = ParseFields(encoded.substr(0, first_newline), &section);
-  const std::string payload = encoded.substr(first_newline + 1);
-  const std::string expected_checksum = StringField(header, "checksum");
-  const u64 header_schema_version = U64Field(header, "schema_version");
-  result.checksum = Checksum(payload);
-  if (section != kDurableCatalogMagic ||
-      header_schema_version > kDurableCatalogSchemaVersion) {
+  std::size_t header_offset = 8;
+  const auto header_schema_version = ReadU64(encoded, &header_offset);
+  if (header_schema_version > kDurableCatalogSchemaVersion) {
     result.status = AgentError("SB_AGENT_CATALOG.SCHEMA_VERSION_UNSUPPORTED");
     return result;
   }
-  if (expected_checksum.empty() || expected_checksum != result.checksum) {
+  const auto payload = encoded.substr(80);
+  result.checksum = Checksum(payload);
+  if (encoded.substr(16, 64) != result.checksum) {
     result.status = AgentError("SB_AGENT_CATALOG.CHECKSUM_MISMATCH");
     return result;
   }
-
-  std::stringstream stream(payload);
-  std::string line;
+  std::size_t offset = 0;
+  std::string section;
   try {
-    while (std::getline(stream, line)) {
-      if (line.empty()) { continue; }
-      auto fields = ParseFields(line, &section);
+    while (offset < payload.size()) {
+      auto fields = ParseFields(payload, &offset, &section);
       if (section == "catalog") {
         result.image.schema_version = U64Field(fields, "schema_version");
         const auto source = StringField(fields, "source");
@@ -1253,7 +1255,10 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
         result.image.migrations.push_back(std::move(migration));
       }
     }
+    if (PayloadForImage(result.image) != payload)
+      throw std::runtime_error("noncanonical catalog image");
   } catch (...) {
+    result.image = {};
     result.status = AgentError("SB_AGENT_CATALOG.IMAGE_FIELD_INVALID");
     return result;
   }

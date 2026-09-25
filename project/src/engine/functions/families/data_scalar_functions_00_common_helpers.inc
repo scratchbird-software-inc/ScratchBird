@@ -955,7 +955,7 @@ scratchbird::engine::internal_api::EngineRequestContext EngineRequestContextFrom
   out.deterministic_random_u64 = context.deterministic_random_u64;
   out.deterministic_random_u64_present = context.deterministic_random_u64_present;
   out.deterministic_random_bytes_hex = context.deterministic_random_bytes_hex;
-  out.deterministic_uuid_text = context.deterministic_uuid_text;
+  out.deterministic_uuid = context.deterministic_uuid;
   out.last_row_count = context.last_row_count;
   out.last_row_count_present = context.last_row_count_present;
   return out;
@@ -1010,15 +1010,19 @@ std::string NormalizeCatalogToken(std::string value) {
 
 bool PrincipalMatchesCurrentUser(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string_view user_text) {
-  const std::string user = NormalizeCatalogToken(std::string(user_text));
+    const scratchbird::engine::sblr::SblrValue& argument) {
+  if (argument.payload_kind == scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary) {
+    std::vector<std::uint8_t> bytes;
+    return scratchbird::engine::sblr::CopySblrUuidPayload(argument, &bytes) &&
+        !context.user_uuid.is_nil() && argument.uuid_value == context.user_uuid;
+  }
+  const std::string user = NormalizeCatalogToken(ValueAsText(argument));
   if (user.empty()) return false;
   if (user == "current_user" || user == "session_user" || user == "user" ||
       user == "current_principal") {
     return !context.user_uuid.is_nil();
   }
-  const auto parsed = scratchbird::core::uuid::ParseUuid(user);
-  return !context.user_uuid.is_nil() && parsed.ok() && parsed.value == context.user_uuid;
+  return false;
 }
 
 PrivilegeTextRule NormalizePrivilegeText(std::string privilege_text,
@@ -1211,11 +1215,17 @@ ResolvePrivilegePresentedObject(
 std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
     const scratchbird::engine::internal_api::EngineRequestContext& api_context,
-    std::string_view table_identifier,
+    const scratchbird::engine::sblr::SblrValue& argument,
     bool allow_legacy_owner_fallback) {
-  const std::string wanted_text = UnquoteCatalogToken(std::string(table_identifier));
+  const bool binary = argument.payload_kind ==
+      scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary;
+  std::vector<std::uint8_t> bytes;
+  if (binary && (!scratchbird::engine::sblr::CopySblrUuidPayload(argument, &bytes) ||
+                 !scratchbird::core::uuid::IsEngineIdentityUuid(argument.uuid_value)))
+    return std::nullopt;
+  const std::string wanted_text = binary ? std::string{} : UnquoteCatalogToken(ValueAsText(argument));
   const std::string wanted = LowerAscii(wanted_text);
-  if (wanted.empty()) return std::nullopt;
+  if (!binary && wanted.empty()) return std::nullopt;
 
   if (!api_context.database_path.empty()) {
     const auto loaded =
@@ -1223,10 +1233,9 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
     if (loaded.ok) {
       const auto state =
           scratchbird::engine::internal_api::BuildCrudCompatibilityStateFromMga(loaded.state);
-      const auto presented_uuid = scratchbird::core::uuid::ParseUuid(wanted_text);
-      if (const auto table = presented_uuid.ok()
+      if (const auto table = binary
               ? scratchbird::engine::internal_api::FindVisibleCrudTable(
-                    state, presented_uuid.value, api_context.local_transaction_id)
+                    state, argument.uuid_value, api_context.local_transaction_id)
               : std::nullopt) {
         const auto object = ResolvePrivilegeCatalogObject(
             api_context, table->table_uuid, "table");
@@ -1235,6 +1244,7 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
                            : (allow_legacy_owner_fallback ? context.user_uuid
                                                           : scratchbird::engine::sblr::SblrUuid{}));
       }
+      if (binary) return std::nullopt;
       if (const auto resolved = ResolvePrivilegePresentedObject(
               api_context, wanted_text, "table")) {
         if (const auto table =
@@ -1272,7 +1282,16 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
 std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeSchema(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
     const scratchbird::engine::internal_api::EngineRequestContext& api_context,
-    std::string_view schema_identifier) {
+    const scratchbird::engine::sblr::SblrValue& argument) {
+  if (argument.payload_kind == scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary) {
+    std::vector<std::uint8_t> bytes;
+    if (!scratchbird::engine::sblr::CopySblrUuidPayload(argument, &bytes) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(argument.uuid_value)) return std::nullopt;
+    const auto object = ResolvePrivilegeCatalogObject(api_context, argument.uuid_value, "schema");
+    if (!object) return std::nullopt;
+    return PrivilegeObjectDescriptor{object->object_uuid, {}, "schema", object->owner_principal_uuid, {}};
+  }
+  const auto schema_identifier = ValueAsText(argument);
   if (const auto object = ResolvePrivilegeCatalogObject(
           api_context, schema_identifier, "schema")) {
     return PrivilegeObjectDescriptor{object->object_uuid,
@@ -1302,27 +1321,28 @@ std::string NormalizeFunctionPrivilegeName(std::string value) {
 
 std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeFunction(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string_view function_identifier) {
+    const scratchbird::engine::sblr::SblrValue& argument) {
+  const bool binary = argument.payload_kind == scratchbird::engine::sblr::SblrValuePayloadKind::uuid_binary;
+  std::vector<std::uint8_t> bytes;
+  if (binary && !scratchbird::engine::sblr::CopySblrUuidPayload(argument, &bytes)) return std::nullopt;
   struct FunctionBuiltin {
     std::string_view builtin_id;
-    std::string_view builtin_uuid;
+    scratchbird::core::platform::Uuid builtin_uuid;
     std::string_view canonical_name;
   };
   static constexpr std::array<FunctionBuiltin, 4> kPrivilegeFunctions{{
-      {"sb.scalar.has_table_privilege", "019dffbb-f000-7da2-9e38-d4654d06dc78", "has_table_privilege"},
-      {"sb.scalar.has_column_privilege", "019dffbb-f000-7437-a6e4-cbb9d1d75a44", "has_column_privilege"},
-      {"sb.scalar.has_function_privilege", "019dffbb-f000-7e3a-a0b9-7c75989b7e24", "has_function_privilege"},
-      {"sb.scalar.has_schema_privilege", "019dffbb-f000-721e-9b45-dd414479d540", "has_schema_privilege"},
+      {"sb.scalar.has_table_privilege", {{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7d,0xa2,0x9e,0x38,0xd4,0x65,0x4d,0x06,0xdc,0x78}}, "has_table_privilege"},
+      {"sb.scalar.has_column_privilege", {{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x74,0x37,0xa6,0xe4,0xcb,0xb9,0xd1,0xd7,0x5a,0x44}}, "has_column_privilege"},
+      {"sb.scalar.has_function_privilege", {{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7e,0x3a,0xa0,0xb9,0x7c,0x75,0x98,0x9b,0x7e,0x24}}, "has_function_privilege"},
+      {"sb.scalar.has_schema_privilege", {{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x72,0x1e,0x9b,0x45,0xdd,0x41,0x44,0x79,0xd5,0x40}}, "has_schema_privilege"},
   }};
 
-  const std::string wanted = NormalizeFunctionPrivilegeName(std::string(function_identifier));
-  if (wanted.empty()) return std::nullopt;
+  const std::string wanted = binary ? std::string{} : NormalizeFunctionPrivilegeName(ValueAsText(argument));
+  if (!binary && wanted.empty()) return std::nullopt;
   for (const auto& function : kPrivilegeFunctions) {
-    if (wanted == function.builtin_id || wanted == function.canonical_name ||
-        wanted == LowerAscii(std::string(function.builtin_uuid))) {
-      const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(function.builtin_uuid));
-      if (!parsed.ok()) return std::nullopt;
-      return PrivilegeObjectDescriptor{parsed.value,
+    if ((binary && argument.uuid_value == function.builtin_uuid) ||
+        (!binary && (wanted == function.builtin_id || wanted == function.canonical_name))) {
+      return PrivilegeObjectDescriptor{function.builtin_uuid,
                                        std::string(function.builtin_id),
                                        "function",
                                        context.user_uuid,
@@ -1391,7 +1411,7 @@ bool PrivilegePrincipalAllowed(const FunctionCallRequest& request,
   if (!has_user_arg) return !request.context.sblr_context.user_uuid.is_nil();
   return PrincipalMatchesCurrentUser(
       request.context.sblr_context,
-      ValueAsText(request.arguments[user_arg_index].value));
+      request.arguments[user_arg_index].value);
 }
 
 std::string JsonArrayFromTextValues(const std::vector<std::string>& values) {

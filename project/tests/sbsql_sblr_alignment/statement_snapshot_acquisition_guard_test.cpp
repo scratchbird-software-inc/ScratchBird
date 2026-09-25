@@ -57,7 +57,8 @@ mga::SnapshotVectorResult Publish() {
 }
 bool Unknown(const platform::TypedUuid& id) {
   const auto resolved = mga::ResolvePublishedSnapshotVector(id);
-  return !resolved.ok() && resolved.diagnostic.message_key == "transaction.snapshot_vector.unknown";
+  return !resolved.ok() && resolved.diagnostic.message_key == "transaction.snapshot_vector.unknown" &&
+         resolved.diagnostic.remediation_hint.empty();
 }
 void EarlyReturn(const platform::TypedUuid& id, unsigned stop) {
   Guard guard(id);
@@ -100,6 +101,10 @@ void Cases() {
     mga::ReleasePublishedSnapshotVector(id);
     Check(pin.Resolve().ok(), "normal receipt retirement revoked a retained result pin");
     Check(!mga::RetainPublishedSnapshotVector(id).valid(), "retired publication admitted a new pin");
+    const auto retired = mga::ResolvePublishedSnapshotVector(id);
+    Check(!retired.ok() && retired.diagnostic.message_key == "transaction.snapshot_vector.revoked" &&
+              retired.diagnostic.remediation_hint.empty(),
+          "retired snapshot emitted a text UUID or lost its refusal diagnostic");
     pin.Release();
     Check(Unknown(id), "normal last-pin release leaked publication");
   }

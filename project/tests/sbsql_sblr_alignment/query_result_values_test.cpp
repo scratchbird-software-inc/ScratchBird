@@ -38,13 +38,20 @@ struct Vector {
 // Independent fixed identities and binary values; no registry/encoder lookup
 // participates in these expected values. These are synthetic internal contexts,
 // not receipt issuance, public-route or all-datatype acceptance evidence.
-const std::array<Vector, 6> vectors{{
+const std::array<Vector, 12> vectors{{
   {scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), "datatype.boolean.u8.v1", dt::CanonicalTypeId::boolean, 1, "true", {1}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717"), "datatype.int32.le.v1", dt::CanonicalTypeId::int32, 4, "-2147483648", {0,0,0,128}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"), "datatype.int64.le.v1", dt::CanonicalTypeId::int64, 8, "-9223372036854775808", {0,0,0,0,0,0,0,128}},
   {scratchbird::tests::FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d713"), "datatype.decimal.base1e9.le.v1", dt::CanonicalTypeId::decimal, 24, "-12.34", {130,4,1,0,210,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715"), "datatype.int128.le.v1", dt::CanonicalTypeId::int128, 16, "-170141183460469231731687303715884105728", {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,128}},
-  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719"), "datatype.text.utf8.v1", dt::CanonicalTypeId::character, 0, std::string("9;=\0é",7), {57,59,61,0,195,169,0}}
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719"), "datatype.text.utf8.v1", dt::CanonicalTypeId::character, 0, std::string("9;=\0é",7), {57,59,61,0,195,169,0}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d731"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d732"), "datatype.real64.ieee754.le.v1", dt::CanonicalTypeId::real64, 8, "1.5", {0,0,0,0,0,0,248,63}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d734"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d735"), "datatype.uuid.binary16.v1", dt::CanonicalTypeId::uuid, 16, "", {0,124,10,59,61,255,0,0,0,0,0,0,0,0,0,0}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d737"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d738"), "datatype.geometry.sbp1.v1", dt::CanonicalTypeId::geometry, 0, "", {'S','B','P','1',1,2,0,0,63,240,0,0,0,0,0,0,64,0,0,0,0,0,0,0}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73a"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73b"), "datatype.uint64.le.v1", dt::CanonicalTypeId::uint64, 8, "18446744073709551615", {255,255,255,255,255,255,255,255}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73d"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73e"), "datatype.json.utf8.v1", dt::CanonicalTypeId::json_document, 0, "[true,null]", {'[','t','r','u','e',',','n','u','l','l',']'}},
+  {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d740"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d741"), "datatype.list.text.framed.v1", dt::CanonicalTypeId::list, 0, std::string("SBTL0001\x02\x00\x00\x00\x01\x03\x00\x00\x00;]\0\x00\x00\x00\x00\x00",25), {'S','B','T','L','0','0','0','1',2,0,0,0,1,3,0,0,0,';',']',0,0,0,0,0,0}}
+
 }};
 struct Fixture {
   api::EngineRequestContext context;
@@ -56,12 +63,13 @@ struct Fixture {
     context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000001001");
     context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000001002");
     context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-    context.datatype_catalog_generation = context.datatype_registry_generation = 1;
+    if (type >= 6) context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702");
+    context.datatype_catalog_generation = context.datatype_registry_generation = type >= 6 ? 2 : 1;
     context.maximum_typed_result_transport_bytes_per_packet = 65536;
     metadata->statement_receipt_uuid = Bytes(context.statement_receipt_uuid);
     metadata->statement_snapshot_uuid = Bytes(context.statement_snapshot_uuid);
     metadata->datatype_catalog_snapshot_uuid = Bytes(context.datatype_catalog_snapshot_uuid);
-    metadata->datatype_catalog_generation = metadata->datatype_registry_generation = 1;
+    metadata->datatype_catalog_generation = metadata->datatype_registry_generation = context.datatype_catalog_generation;
     const auto& v = vectors[type];
     for (std::size_t i = 0; i < columns; ++i) {
       api::EngineQueryResultColumnV1 c;
@@ -106,7 +114,52 @@ void Reject(std::size_t type, Mutation mutation, const char* code = "DATATYPE.DE
 }
 
 int main() try {
-  constexpr std::size_t expected = 6 * 2 * 2 * 3 * 3;
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    dt::DatatypeBinaryValue value;
+    value.type_id = dt::CanonicalTypeId::geometry;
+    value.payload = vectors[8].bytes;
+    if (mutation == 0) value.payload.pop_back();
+    if (mutation == 1) value.payload.push_back(0);
+    if (mutation == 2) value.payload[6] = 1;
+    if (mutation == 3) { value.payload[8] = 0x7f; value.payload[9] = 0xf0; }
+    if (mutation == 4) { value.payload[8] = 0xff; value.payload[9] = 0xf8; }
+    if (mutation == 5) { std::fill(value.payload.begin()+8,value.payload.begin()+16,0); value.payload[8] = 0x80; }
+    Check(!dt::ValidateDatatypeBinaryValue(value).ok(), "malformed SBP1 refused at binary codec boundary");
+  }
+  // Independent malformed structured payloads, including ambiguity, UTF8,
+  // bounds and depth. Rejection must precede any typed row publication.
+  for (const auto& json : {"", "[1,]", "01", "1.", "1e+", "{x:1}", "true false", "\"\\uD800\"", "\"\\uDC00\"", "[NaN]"}) {
+    Fixture f(10); f.Value().encoded_value = json;
+    Check(!f.Run(), "malformed JSON refused");
+  }
+  for (const auto& json : {"null", "-1.2e+3", " {\"x\": [true, false]} ", "\"\\uD834\\uDD1E\""}) {
+    Fixture f(10); f.Value().encoded_value = json;
+    Check(f.Run(), "valid JSON grammar admitted");
+  }
+  {
+    Fixture f(10); f.Value().encoded_value = std::string(257,'[')+"0"+std::string(257,']');
+    Check(!f.Run(), "JSON nesting bound enforced");
+    f.Value().encoded_value = std::string("\"\xc0\x80\"",4);
+    Check(!f.Run(), "JSON noncanonical UTF8 refused");
+  }
+  for (std::size_t n = 0; n < vectors[11].bytes.size(); ++n) {
+    Fixture f(11,1,1,true); f.Value().binary_value.resize(n);
+    Check(!f.Run(), "every text-list truncation refused");
+  }
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    Fixture f(11,1,1,true); auto& bytes = f.Value().binary_value;
+    if (mutation == 0) bytes.push_back(0);
+    if (mutation == 1) bytes[8] = 255;
+    if (mutation == 2) bytes[12] = 2;
+    if (mutation == 3) bytes[13] = 255;
+    if (mutation == 4) bytes[17] = 255;
+    Check(!f.Run(), "malformed text-list state/bounds/UTF8 refused");
+  }
+  for (const auto text : {"-1", "18446744073709551616", "1x"}) {
+    Fixture f(9); f.Value().encoded_value = text;
+    Check(!f.Run(), "UINT64 overflow or malformed value refused");
+  }
+  constexpr std::size_t expected = 10 * 2 * 2 * 3 * 3 + 2 * 2 * 3 * 3;
   std::cout << "expected_value_tuples=" << expected << '\n';
   std::size_t observed = 0;
   for (std::size_t type = 0; type < vectors.size(); ++type)
@@ -114,6 +167,7 @@ int main() try {
   for (bool null : {false, true})
   for (std::size_t rows : {0U,1U,3U})
   for (std::size_t columns : {1U,2U,4U}) {
+    if ((type == 7 || type == 8) && !binary) continue;  // Binary string carriers are checked separately below.
     Fixture f(type, rows, columns, binary, null);
     Check(f.Run(), f.detail);
     const auto owned = f.shape.query_values;
@@ -132,7 +186,7 @@ int main() try {
     descriptor.descriptor_uuid = Bytes(scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002001"));
     descriptor.descriptor_generation = 1;
     descriptor.datatype_catalog_snapshot_uuid = f.metadata->datatype_catalog_snapshot_uuid;
-    descriptor.datatype_catalog_generation = descriptor.datatype_registry_generation = 1;
+    descriptor.datatype_catalog_generation = descriptor.datatype_registry_generation = f.context.datatype_catalog_generation;
     for (const auto& c : f.metadata->columns) descriptor.columns.push_back(c.transport);
     const auto encoded_descriptor = wire::EncodeTypedResultRowDescriptor(descriptor);
     Check(encoded_descriptor.ok(), "all six registry codec widths encode including DECIMAL");
@@ -316,6 +370,29 @@ int main() try {
     value.payload[3] = 1;
     Check(!dt::EncodeDatatypeBinaryValue(value).ok(), "decimal reserved byte rejected by generic envelope");
   }
+  for (const std::size_t type : {7U, 8U}) {
+    Fixture f(type, 1, 1, true);
+    Check(f.Run(), "binary-only datatype baseline");
+    f.Value().binary_value.clear();
+    f.Value().encoded_value.assign(vectors[type].bytes.begin(), vectors[type].bytes.end());
+    Check(f.Run() && f.shape.query_values->rows[0].cells[0].canonical_payload == vectors[type].bytes,
+          "retained binary string carrier preserves exact UUID/geometry bytes");
+    f.Value().encoded_value = type == 7 ? "019d0000-0000-7000-8000-00000000d734" : "POINT(1 2)";
+    Check(!f.Run() && !f.shape.query_values, "UUID/geometry text carrier refused atomically");
+    f.Value().encoded_value.clear(); f.Value().binary_value = vectors[type].bytes;
+    f.Value().binary_value.pop_back();
+    Check(!f.Run(), "truncated binary datatype payload refused");
+    f.Value().binary_value = vectors[type].bytes;
+    f.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+    f.context.datatype_catalog_generation = f.context.datatype_registry_generation = 1;
+    Check(!f.Run(), "successor value cannot cross predecessor cohort");
+  }
+  { Fixture f(8, 1, 1, true); f.Value().binary_value[6] = 1;
+    Check(!f.Run(), "geometry reserved byte refuses"); }
+  { Fixture f(8, 1, 1, true); f.Value().binary_value[8] = 127; f.Value().binary_value[9] = 240;
+    Check(!f.Run(), "nonfinite geometry coordinate refuses"); }
+  { Fixture f(7, 1, 1, true); f.Value().binary_value.assign(16, 0);
+    Check(f.Run(), "UUID value nil is distinct from forbidden nil system identity"); }
   std::cout << "PASS tuples=" << observed << " checks=" << checks << '\n';
   return 0;
 } catch (const std::exception& e) {

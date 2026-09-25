@@ -330,7 +330,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
   }
 
   update_wire::TypedUpdateDatatypeAuthorityVector datatypes;
-  datatypes.identity.vector_uuid = update_wire::kTypedUpdateDatatypeSnapshotUuid;
+  datatypes.identity.vector_uuid = request.context.datatype_catalog_snapshot_uuid.bytes;
   datatypes.identity.vector_generation =
       descriptor.datatype_registry_generation;
   datatypes.identity.owner_descriptor_uuid = descriptor.descriptor_uuid;

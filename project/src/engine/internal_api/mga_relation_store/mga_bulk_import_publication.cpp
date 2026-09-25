@@ -16,6 +16,8 @@
 
 namespace scratchbird::engine::internal_api {
 namespace {
+// SEARCH_KEY: SB_ENGINE_MGA_BULK_IMPORT_PUBLICATION_IMPLEMENTATION_AUTHORITY
+// Owns the binary bulk-import companion publication records. Transaction visibility and finality remain with MGA.
 namespace binary=bulk_import_binary;
 namespace disk=storage::disk;
 using binary::Bytes;using binary::Sha;using binary::Valid;using binary::Nonzero;

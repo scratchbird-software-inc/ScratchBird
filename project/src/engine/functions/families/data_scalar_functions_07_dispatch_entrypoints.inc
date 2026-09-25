@@ -582,17 +582,17 @@
 
   if (id == "sb.uuid.generate_v4") {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "uuid_generate_v4 expects no arguments");
-    if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+    if (request.context.sblr_context.deterministic_uuid.has_value()) {
+      return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(*request.context.sblr_context.deterministic_uuid)});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV4Text())});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV4())});
   }
 
   if (id == "data.scalar.uuid_generate" || id == "sb.fn.data.scalar.sb_uuid_generate" ||
       id == "sb.uuid.v4") {
     if (request.arguments.size() > 1) return RefuseFunctionInvalidInput(request, "uuid_generate expects optional version");
-    if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+    if (request.context.sblr_context.deterministic_uuid.has_value()) {
+      return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(*request.context.sblr_context.deterministic_uuid)});
     }
     std::int64_t version = 4;
     if (request.arguments.size() == 1) {
@@ -602,18 +602,18 @@
       }
       version = request.arguments[0].value.int64_value;
     }
-    if (version == 4) return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV4Text())});
-    if (version == 1) return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV1Text())});
-    if (version == 7) return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV7Text())});
+    if (version == 4) return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV4())});
+    if (version == 1) return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV1())});
+    if (version == 7) return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV7())});
     return RefuseFunctionInvalidInput(request, "uuid_generate supports versions 1, 4, and 7 only");
   }
 
   if (id == "sb.uuid.generate_v1") {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "uuid_generate_v1 expects no arguments");
-    if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+    if (request.context.sblr_context.deterministic_uuid.has_value()) {
+      return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(*request.context.sblr_context.deterministic_uuid)});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV1Text())});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV1())});
   }
 
   if (id == "sb.uuid.generate_v3" || id == "sb.uuid.generate_v5") {
@@ -623,63 +623,63 @@
     if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
       return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
     }
-    const auto namespace_uuid = scratchbird::core::uuid::ParseUuid(ValueAsText(request.arguments[0].value));
-    if (!namespace_uuid.ok()) {
-      return RefuseFunctionInvalidInput(request, "uuid_generate_v3/v5 expects canonical namespace UUID text");
+    std::vector<std::uint8_t> namespace_bytes;
+    if (!sblr::CopySblrUuidPayload(request.arguments[0].value, &namespace_bytes)) {
+      return RefuseFunctionInvalidInput(request, "uuid_generate_v3/v5 expects a binary namespace UUID");
     }
+    const auto namespace_uuid = request.arguments[0].value.uuid_value;
     const auto name = ValueAsText(request.arguments[1].value);
     const auto generated = id == "sb.uuid.generate_v3"
-                               ? scratchbird::core::uuid::GenerateCompatibilityNameBasedV3(namespace_uuid.value, name)
-                               : scratchbird::core::uuid::GenerateCompatibilityNameBasedV5(namespace_uuid.value, name);
+                               ? scratchbird::core::uuid::GenerateCompatibilityNameBasedV3(namespace_uuid, name)
+                               : scratchbird::core::uuid::GenerateCompatibilityNameBasedV5(namespace_uuid, name);
     if (!generated.ok()) {
       return RefuseFunctionInvalidInput(request, "uuid_generate_v3/v5 could not generate a compatibility UUID");
     }
     return MakeFunctionSuccess(
         request,
-        {MakeTextValue("uuid", scratchbird::core::uuid::UuidToString(generated.value))});
+        {sblr::MakeSblrUuidValue(generated.value)});
   }
 
   if (id == "sb.uuid.v1") {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "uuid_v1 expects no arguments");
-    if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+    if (request.context.sblr_context.deterministic_uuid.has_value()) {
+      return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(*request.context.sblr_context.deterministic_uuid)});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV1Text())});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV1())});
   }
 
   if (id == "sb.uuid.v7") {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "uuid_v7 expects no arguments");
-    if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+    if (request.context.sblr_context.deterministic_uuid.has_value()) {
+      return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(*request.context.sblr_context.deterministic_uuid)});
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", RandomUuidV7Text())});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(RandomUuidV7())});
   }
 
   if (id == "sb.uuid.nil") {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "uuid_nil expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", "00000000-0000-0000-0000-000000000000")});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue({})});
   }
 
   if (id == "sb.uuid.version") {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "uuid_version expects one UUID argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});
-    std::string canonical;
-    if (!CanonicalizeUuidText(ValueAsText(request.arguments[0].value), &canonical)) {
-      return RefuseFunctionInvalidInput(request, "uuid_version expects canonical UUID text");
+    std::vector<std::uint8_t> bytes;
+    if (!sblr::CopySblrUuidPayload(request.arguments[0].value, &bytes)) {
+      return RefuseFunctionInvalidInput(request, "uuid_version expects a binary UUID");
     }
-    const int version = HexValue(canonical[14]);
-    if (version < 0) return RefuseFunctionInvalidInput(request, "uuid_version expects canonical UUID text");
+    const int version = bytes[6] >> 4;
     return MakeFunctionSuccess(request, {MakeInt64Value("int64", version)});
   }
 
   if (id == "sb.uuid.timestamp") {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "uuid_timestamp expects one UUID argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("timestamp_tz")});
-    std::array<std::uint8_t, 16> bytes{};
-    if (!CanonicalUuidBytes(ValueAsText(request.arguments[0].value), &bytes)) {
-      return RefuseFunctionInvalidInput(request, "uuid_timestamp expects canonical UUID text");
+    std::vector<std::uint8_t> bytes;
+    if (!sblr::CopySblrUuidPayload(request.arguments[0].value, &bytes)) {
+      return RefuseFunctionInvalidInput(request, "uuid_timestamp expects a binary UUID");
     }
-    const auto timestamp = UuidEmbeddedTimestampText(bytes);
+    const auto timestamp = UuidEmbeddedTimestampText(request.arguments[0].value.uuid_value.bytes);
     if (!timestamp.has_value()) {
       return RefuseFunctionInvalidInput(request, "uuid_timestamp supports UUID versions 1 and 7 only");
     }

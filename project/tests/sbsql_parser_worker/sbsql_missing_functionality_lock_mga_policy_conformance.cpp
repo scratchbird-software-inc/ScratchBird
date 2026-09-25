@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
@@ -196,6 +197,12 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
   create.creation_unix_epoch_millis = 1779810110002;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "lock_fixture_owner";
+  create.require_bootstrap_principal = true;
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -215,7 +222,10 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& path,
   context.database_path = path.string();
   context.database_uuid = database_uuid;
   context.session_uuid = std::move(session_uuid);
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011202");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "Gate 011 durable bootstrap owner unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000011001");
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
@@ -476,8 +486,8 @@ void RequireTableLockRoutes(const std::filesystem::path& path,
           "Gate 011 refused table lock changed finality");
 
   auto fence_context = context;
-  fence_context.trace_tags.push_back("right:CATALOG_MUTATE");
-  fence_context.trace_tags.push_back("engine_owned_ddl_admission_fence_authorized");
+  // Caller text tags cannot confer engine-owned catalog mutation authority.
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(fence_context);
   const auto fence_result =
       LockTableDirect(fence_context, "accounts", "write_or_exclusive", true);
   Require(fence_result.ok, "Gate 011 authorized engine-owned fence was refused");
@@ -713,6 +723,8 @@ sblr::SblrResult RunFunction(const fn::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<SblrValue> values) {
   fn::FunctionCallRequest request;
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;

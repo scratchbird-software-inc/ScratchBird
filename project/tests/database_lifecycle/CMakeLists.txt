@@ -780,6 +780,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_plan_stability_statistics_lifecycle_gate PRIVATE cxx_std_20)
   target_link_libraries(dpc_plan_stability_statistics_lifecycle_gate
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
@@ -1470,6 +1471,7 @@ if(TARGET sb_storage_database)
     target_compile_features(database_lifecycle_cloud_storage_emulator_conformance PRIVATE cxx_std_23)
     target_link_libraries(database_lifecycle_cloud_storage_emulator_conformance
       PRIVATE
+        sb_core_hash
         sb_core_metrics
         sb_core_platform
         sb_core_uuid
@@ -2174,6 +2176,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_secondary_index_delta_write_path_gate PRIVATE cxx_std_23)
   target_link_libraries(dpc_secondary_index_delta_write_path_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -2202,6 +2205,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(transactional_index_lifecycle_matrix_gate PRIVATE cxx_std_23)
   target_link_libraries(transactional_index_lifecycle_matrix_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -2223,6 +2227,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_secondary_index_delta_overlay_lookup_gate PRIVATE cxx_std_23)
   target_link_libraries(dpc_secondary_index_delta_overlay_lookup_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -2243,6 +2248,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_secondary_index_delta_merge_agent_gate PRIVATE cxx_std_23)
   target_link_libraries(dpc_secondary_index_delta_merge_agent_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -2263,6 +2269,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_secondary_index_delta_recovery_repair_gate PRIVATE cxx_std_23)
   target_link_libraries(dpc_secondary_index_delta_recovery_repair_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -2283,6 +2290,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(dpc_secondary_index_garbage_cleanup_agent_gate PRIVATE cxx_std_23)
   target_link_libraries(dpc_secondary_index_garbage_cleanup_agent_gate
     PRIVATE
+      sb_engine
       sb_core_index
       sb_core_uuid
       sb_engine_internal_api
@@ -3559,6 +3567,11 @@ set_tests_properties(database_lifecycle_current_core_datatype_comparison_cast_ga
   LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;DEFER-DPE-COMPARISON-KEYS;DEFER-DPE-CAST-STORAGE;CURRENT-CORE-DATATYPE-COMPARISON-KEYS;CURRENT-CORE-DATATYPE-CAST-STORAGE;CURRENT-CORE-DATATYPE-DISPLAY-BOUNDARY;CURRENT-CORE-DATATYPE-LOCALE-COLLATION;CURRENT-CORE-DATATYPE-NONSCALAR-OPERATORS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
+add_test(NAME database_lifecycle_binary_uuid_operations
+  COMMAND database_lifecycle_current_core_datatype_comparison_cast_gate --binary-uuid-only)
+set_tests_properties(database_lifecycle_binary_uuid_operations PROPERTIES
+  LABELS "binary_uuid;datatype_codec;component_regression")
+
   add_executable(database_lifecycle_current_core_datatype_metrics_redaction_gate
     current_core_datatype_metrics_redaction_gate.cpp
   )
@@ -4560,6 +4573,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(database_lifecycle_constraint_dml_enforcement_conformance PRIVATE cxx_std_23)
   target_link_libraries(database_lifecycle_constraint_dml_enforcement_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
@@ -5829,6 +5843,14 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   )
   set_tests_properties(database_lifecycle_observability_conformance PROPERTIES
     LABELS "database_lifecycle_observability;database_lifecycle_supportability_evidence;DBLC_P15_OBSERVABILITY_COMPLETE;ELER-107;ELER-GATE-107;database_lifecycle;operational_readiness;mga_transaction_regression"
+  )
+
+  add_test(
+    NAME database_lifecycle_binary_observation_conformance
+    COMMAND database_lifecycle_observability_conformance --binary-observation-only
+  )
+  set_tests_properties(database_lifecycle_binary_observation_conformance PROPERTIES
+    LABELS "binary_uuid;storage_codec;server_observability;component_regression"
   )
 
   add_executable(database_lifecycle_config_policy_security_provider_conformance

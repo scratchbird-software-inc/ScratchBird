@@ -247,6 +247,7 @@ struct QowProjectionExpressionBuildStateV1 {
   std::vector<bool> shareable;
   std::vector<std::uint32_t> root_expression_ids;
   std::size_t function_identity_count = 0;
+  std::size_t uuid_literal_count = 0;
 };
 
 bool QowReadProjectionExpressionV1(
@@ -307,6 +308,25 @@ bool QowReadProjectionExpressionV1(
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
   expression->is_null = is_null == "true" || is_null == "1";
+  const EngineUuid* uuid_literal = nullptr;
+  for (const auto& binding : request.projection.uuid_literals) {
+    if (binding.first != prefix) continue;
+    if (uuid_literal) return refuse("uuid_literal", "duplicate binary UUID literal");
+    uuid_literal = &binding.second;
+  }
+  if (uuid_literal) {
+    if (expression->expression_kind != "literal" || expression->type_name != "uuid" ||
+        expression->is_null || !expression->encoded_value.empty())
+      return refuse("uuid_literal", "binary UUID literal conflicts with its expression descriptor");
+    for (const auto& option : request.option_envelopes)
+      if (std::string_view(option).starts_with(prefix + "value:"))
+        return refuse("uuid_literal", "UUID literal cannot also have a text value carrier");
+    expression->binary_value.assign(uuid_literal->bytes.begin(), uuid_literal->bytes.end());
+    ++graph->uuid_literal_count;
+  } else if (expression->expression_kind == "literal" && expression->type_name == "uuid" &&
+             !expression->is_null) {
+    return refuse("uuid_literal", "UUID scalar literal requires exactly 16 binary bytes");
+  }
   expression->function_id =
       QowProjectionOptionValueV1(request, prefix + "function_id:");
   expression->operator_id =
@@ -458,6 +478,8 @@ bool QowReadCanonicalProjectionExpressionsV1(
     graph.root_expression_ids.push_back(root_id);
     expressions->push_back(std::move(expression));
   }
+  if (graph.uuid_literal_count != request.projection.uuid_literals.size())
+    return refuse("uuid_literal", "projection contains an unused UUID literal binding");
   if (graph.function_identity_count != request.projection.function_identities.size())
     return refuse("function_uuid", "projection contains an unused function identity binding");
   if (!QowValidateCanonicalExpressionGraphV1(

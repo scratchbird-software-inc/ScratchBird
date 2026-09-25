@@ -76,16 +76,63 @@ opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input
 bool KeyIncludesRequiredDimensionsAndParameterSensitivity() {
   const auto input = BaseInput();
   const std::string key = opt::BuildOptimizerPlanCacheKey(input);
-  return Require(key.find("catalog_stats=") != std::string::npos, "catalog stats digest missing from key") &&
-         Require(key.find("security_policy=") != std::string::npos, "security policy digest missing from key") &&
-         Require(key.find("redaction_route=") != std::string::npos, "redaction route digest missing from key") &&
-         Require(key.find("param_shape=") != std::string::npos, "parameter shape digest missing from key") &&
-         Require(key.find("memory_grant_class=") != std::string::npos, "memory grant class missing from key") &&
-         Require(key.find("memory_grant=") != std::string::npos, "memory grant digest missing from key") &&
-         Require(key.find("compatibility_epoch=") != std::string::npos, "compatibility epoch missing from key") &&
-         Require(key.find("format_compatibility_epoch=") != std::string::npos,
-                 "format compatibility epoch missing from key") &&
-         Require(key.find("route_epoch=") != std::string::npos, "route epoch missing from key");
+  if (!Require(!key.empty(), "binary plan cache key is empty")) return false;
+  // Binding is observable through cache-key sensitivity, not display labels.
+  {
+    auto changed = input;
+    changed.catalog_stats_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "catalog_stats_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.security_policy_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "security_policy_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.redaction_route_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "redaction_route_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.parameter_shape_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "parameter_shape_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.memory_grant_class += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "memory_grant_class omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.memory_grant_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "memory_grant_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    ++changed.compatibility_epoch;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "compatibility_epoch omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    ++changed.format_compatibility_epoch;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "format_compatibility_epoch omitted from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    ++changed.route_epoch;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "route_epoch omitted from binary key")) return false;
+  }
+  return true;
 }
 
 bool ParameterAndMemoryShapesDoNotReuseKeys() {
@@ -250,10 +297,10 @@ bool DeterministicInvalidationCoversRequiredSurfaces() {
       {{"memory_grant_policy_change", {}, 200}, "SB_OPTIMIZER_PLAN_CACHE_MEMORY_GRANT_MISMATCH"},
       {{"compatibility_epoch", {}, 200}, "SB_OPTIMIZER_PLAN_CACHE_STALE_EPOCH"},
       {{"format_change", {}, 200}, "SB_OPTIMIZER_PLAN_CACHE_STALE_EPOCH"},
-      {{"catalog_alter", "rel.customer", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
-      {{"index_change", "idx.customer_id", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
-      {{"function_change", "fn.mask_email", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
-      {{"filespace_profile_change", "filespace.hot", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+      {{"catalog_alter", scratchbird::tests::FixtureUuid(1275, 1), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+      {{"index_change", scratchbird::tests::FixtureUuid(1275, 3), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+      {{"function_change", scratchbird::tests::FixtureUuid(1275, 2), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+      {{"filespace_profile_change", scratchbird::tests::FixtureUuid(1275, 4), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
       {{"unrecognized_odf024_event", {}, 200}, "SB_OPTIMIZER_PLAN_CACHE_UNKNOWN_INVALIDATION_KIND"},
   };
 
@@ -264,7 +311,7 @@ bool DeterministicInvalidationCoversRequiredSurfaces() {
   opt::OptimizerPlanCache cache;
   const auto base = BaseInput();
   cache.Put(CachedPlan(base));
-  const auto unrelated = cache.InvalidateWithEvidence({"index_change", "idx.unrelated", 201});
+  const auto unrelated = cache.InvalidateWithEvidence({"index_change", scratchbird::tests::FixtureUuid(1275, 5), 201});
   const auto lookup = cache.Lookup(base);
   return Require(unrelated.invalidated_count == 0, "unrelated dependency invalidated the plan") &&
          Require(lookup.hit, "unrelated dependency prevented cache hit");

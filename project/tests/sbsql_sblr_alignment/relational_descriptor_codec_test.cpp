@@ -1956,7 +1956,7 @@ void TestDmlRegistryBinaryProjection() {
   Require(!p::TypedUuid(Id(3), nullptr), "DML UUID conversion accepted null output");
   api::EngineRequestContext context;
   const auto rows = d::CurrentDatatypeTypeCodecIdentityRowsV1();
-  Require(rows.size() == 6, "DML datatype projection inventory changed without oracle update");
+  Require(rows.size() == 18, "six predecessor plus twelve successor datatype rows");
   const auto state = [](const w::TypedUpdateDatatypeAuthorityRecord& v) {
     return std::tie(v.exact_bytes, v.datatype_ordinal, v.datatype_identity_code, v.null_encoding_code,
         v.byte_order_code, v.is_signed, v.descriptor_uuid, v.descriptor_generation,
@@ -1972,6 +1972,11 @@ void TestDmlRegistryBinaryProjection() {
     p::DatatypeReference reference{row.descriptor_uuid.bytes, row.descriptor_generation,
         row.type_uuid.bytes, row.type_generation, row.codec_id, row.codec_version, row.codec_generation};
     w::TypedUpdateDatatypeAuthorityRecord out;
+    if (row.datatype_identity_code == 0 && row.canonical_name != "text") {
+      Require(!p::BuildDatatypeRecord(context, reference, &out),
+              "new query codecs must not invent a closed DUDR datatype code");
+      continue;
+    }
     Require(p::BuildDatatypeRecord(context, reference, &out), "live binary datatype projection failed");
     Require(out.descriptor_uuid == reference.descriptor_uuid && out.type_uuid == reference.type_uuid &&
         out.datatype_snapshot_uuid == context.datatype_catalog_snapshot_uuid.bytes &&

@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -78,11 +81,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  platform::Uuid primary_key_uuid;
   platform::Uuid table_uuid;
   platform::Uuid index_uuid;
   platform::u64 salt = 48000;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -152,23 +159,15 @@ void RequirePolicyEvidence(const api::EngineApiResult& result,
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -199,7 +198,14 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "optimizer_deficiency_odf_048";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  api::CatalogColumnMetadata key;
+  key.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  key.identities = {{"candidate_key_constraint_uuid", fixture.primary_key_uuid},
+                    {"support_uuid", fixture.index_uuid}};
+  std::string key_metadata;
+  Require(api::EncodeCatalogColumnMetadata(key, &key_metadata),
+          "ODF-048 primary key metadata encoding failed");
+  table.columns.push_back({"id", std::move(key_metadata)});
   table.columns.push_back({"note", "canonical=character"});
   return table;
 }
@@ -232,32 +238,37 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + fixture.salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-048 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.primary_key_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 12);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
   fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
 
   auto metadata = Begin(fixture, "odf048-metadata");
-  Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(metadata, Table(fixture, metadata),
+          {"character", "character"}, {UniqueIdIndex(fixture, metadata)}).error,
           "ODF-048 table metadata append failed");
   Require(!api::AppendMgaIndexMetadata(metadata, UniqueIdIndex(fixture, metadata)).error,
           "ODF-048 index metadata append failed");
   Commit(metadata);
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf048-session"));
   return fixture;
 }
 
-api::EngineInsertRowsRequest InsertRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::string id,
     std::string policy_option) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), "payload-note"));
@@ -268,13 +279,13 @@ api::EngineInsertRowsRequest InsertRequest(
   return request;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows,
     std::string policy_option) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -294,13 +305,13 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   return request;
 }
 
-api::EngineExecuteNativeBulkIngestRequest NativeBulkRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> NativeBulkRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows,
     std::string policy_option) {
-  api::EngineExecuteNativeBulkIngestRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
@@ -318,10 +329,8 @@ api::EngineExecuteNativeBulkIngestRequest NativeBulkRequest(
 
 template <typename TRequest>
 void SetNoSqlWriteRequest(TRequest* request,
-                          const api::EngineRequestContext& context,
                           platform::Uuid object_uuid,
                           std::string policy_option) {
-  request->context = context;
   request->target_object.uuid = std::move(object_uuid);
   request->target_object.object_kind = "nosql_object";
   request->localized_names.push_back({"en", "primary", {}, "odf048", true});
@@ -445,49 +454,49 @@ void ExerciseDmlPolicies(const Fixture& fixture,
 
 void ExerciseNoSqlPolicies(const Fixture& fixture,
                            const api::EngineRequestContext& context) {
-  api::EngineKeyValuePutRequest kv;
+  scratchbird::tests::FixtureEngineRequest<api::EngineKeyValuePutRequest> kv(
+      *fixture.session, context);
   SetNoSqlWriteRequest(&kv,
-                       context,
                        NewNativeUuid(platform::UuidKind::object, fixture.salt + 200),
                        "write_result_policy=return_none");
   RequireReturnNone(api::EngineKeyValuePut(kv));
 
-  api::EngineDocumentInsertRequest document_insert;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDocumentInsertRequest> document_insert(
+      *fixture.session, context);
   SetNoSqlWriteRequest(
       &document_insert,
-      context,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 201),
       "result_payload_policy=ids_only");
   RequireIdsOnly(api::EngineDocumentInsert(document_insert));
 
-  api::EngineDocumentUpdateRequest document_update;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDocumentUpdateRequest> document_update(
+      *fixture.session, context);
   SetNoSqlWriteRequest(
       &document_update,
-      context,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 202),
       "write_result_policy=changed_fields");
   RequireChangedFields(api::EngineDocumentUpdate(document_update));
 
-  api::EngineVectorWriteRequest vector_write;
+  scratchbird::tests::FixtureEngineRequest<api::EngineVectorWriteRequest> vector_write(
+      *fixture.session, context);
   SetNoSqlWriteRequest(
       &vector_write,
-      context,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 203),
       "write_result_policy=summary_only");
   RequireSummaryOnly(api::EngineVectorWrite(vector_write), 1);
 
-  api::EngineGraphWriteRequest graph_write;
+  scratchbird::tests::FixtureEngineRequest<api::EngineGraphWriteRequest> graph_write(
+      *fixture.session, context);
   SetNoSqlWriteRequest(
       &graph_write,
-      context,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 204),
       "write_result_policy=full_payload");
   RequireFullPayload(api::EngineGraphWrite(graph_write));
 
-  api::EngineTimeSeriesAppendRequest time_series;
+  scratchbird::tests::FixtureEngineRequest<api::EngineTimeSeriesAppendRequest> time_series(
+      *fixture.session, context);
   SetNoSqlWriteRequest(
       &time_series,
-      context,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 205),
       "odf048.write_result_policy=ids_only");
   RequireIdsOnly(api::EngineTimeSeriesAppend(time_series));
@@ -496,6 +505,11 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf048_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf048_statement_fixture").ok(),
+          "ODF-048 memory configuration failed");
   auto fixture = MakeFixture();
   auto context = Begin(fixture, "odf048-write-result-policies");
   ExerciseDmlPolicies(fixture, context);

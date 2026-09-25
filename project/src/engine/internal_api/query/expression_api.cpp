@@ -52,6 +52,14 @@ bool QowCanonicalComparableEncodingV1(
   namespace dt = scratchbird::core::datatypes;
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
+  if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::binary) {
+    if (!value.binary_value.empty() && !value.encoded_value.empty()) return false;
+    const auto size = value.binary_value.empty() ? value.encoded_value.size() : value.binary_value.size();
+    if (type_id == dt::CanonicalTypeId::uuid && size != 16) return false;
+    if (value.binary_value.empty()) *encoded_value = value.encoded_value;
+    else encoded_value->assign(reinterpret_cast<const char*>(value.binary_value.data()), size);
+    return true;
+  }
   if (value.binary_value.empty()) {
     if (value.encoded_value.empty()) return false;
     *encoded_value = value.encoded_value;
@@ -132,18 +140,6 @@ bool QowApplyCanonicalBoundedRealV1(
   return true;
 }
 
-bool QowCanonicalUuidV1(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
 
 std::string QowCanonicalDescriptorFieldV1(const std::string& descriptor,
                                           const std::string& key) {
@@ -413,6 +409,12 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   dt::DatatypeCastRequest request;
   request.value.type_id = source_type;
   request.value.encoded_value = input_value.encoded_value;
+  if (!input_value.isSqlNull() &&
+      (source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary) &&
+      !QowCanonicalComparableEncodingV1(input_value, source_type, &request.value.encoded_value)) {
+    *refusal_detail = "canonical coercion operand encoding is invalid";
+    return false;
+  }
   request.value.is_null = input_value.isSqlNull();
   request.target_type_id = target_type;
   request.explicit_cast = explicit_cast;
@@ -1009,11 +1011,9 @@ bool QowEvaluateCanonicalComparisonTruthV1(
   }
   if (comparison_type ==
       scratchbird::core::datatypes::CanonicalTypeId::character) {
-    const std::string left_collation = QowCanonicalDescriptorFieldV1(
-        left_value.descriptor.encoded_descriptor, "collation_uuid");
-    const std::string right_collation = QowCanonicalDescriptorFieldV1(
-        right_value.descriptor.encoded_descriptor, "collation_uuid");
-    if (!QowCanonicalUuidV1(left_collation) ||
+    const auto& left_collation = left_value.descriptor.collation_uuid;
+    const auto& right_collation = right_value.descriptor.collation_uuid;
+    if (!core::uuid::IsEngineIdentityUuid(left_collation) ||
         left_collation != right_collation) {
       *refusal_detail =
           "character comparison descriptors have mismatched collation authority";
@@ -1230,19 +1230,22 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
         numeric.comparison < 0 ? -1 : (numeric.comparison > 0 ? 1 : 0);
     return true;
   }
-  const auto validate = [type_id](const EngineTypedValue& value) {
+  std::string left_encoded, right_encoded;
+  if (!QowCanonicalComparableEncodingV1(left_value, type_id, &left_encoded) ||
+      !QowCanonicalComparableEncodingV1(right_value, type_id, &right_encoded)) {
+    *refusal_detail = "canonical comparison operand encoding is invalid";
+    return false;
+  }
+  const auto validate = [type_id](const std::string& bytes) {
     dt::DatatypeCastRequest request;
     request.value.type_id = type_id;
-    if (!QowCanonicalComparableEncodingV1(
-            value, type_id, &request.value.encoded_value)) {
-      return dt::DatatypeCastResult{};
-    }
+    request.value.encoded_value = bytes;
     request.target_type_id = type_id;
     request.explicit_cast = true;
     return dt::CastDatatypeValue(request);
   };
-  const auto left_checked = validate(left_value);
-  const auto right_checked = validate(right_value);
+  const auto left_checked = validate(left_encoded);
+  const auto right_checked = validate(right_encoded);
   if (!left_checked.ok() || !right_checked.ok()) {
     *refusal_detail = "canonical comparison operand encoding is invalid";
     return false;
@@ -1549,15 +1552,9 @@ bool QowEvaluateCanonicalTypedExpressionV1(
       return true;
     }
     case EngineCanonicalExpressionOperation::text_concat: {
-      const auto left_collation = QowCanonicalDescriptorFieldV1(
-          request.left_value.descriptor.encoded_descriptor,
-          "collation_uuid");
-      const auto right_collation = QowCanonicalDescriptorFieldV1(
-          request.right_value.descriptor.encoded_descriptor,
-          "collation_uuid");
-      const auto result_collation = QowCanonicalDescriptorFieldV1(
-          request.result_descriptor.encoded_descriptor,
-          "collation_uuid");
+      const auto& left_collation = request.left_value.descriptor.collation_uuid;
+      const auto& right_collation = request.right_value.descriptor.collation_uuid;
+      const auto& result_collation = request.result_descriptor.collation_uuid;
       if (!QowCanonicalDescriptorIdentityV1(request.left_value.descriptor) ||
           !QowCanonicalDescriptorIdentityV1(request.right_value.descriptor) ||
           !QowCanonicalDescriptorIdentityV1(request.result_descriptor) ||
@@ -1570,7 +1567,7 @@ bool QowEvaluateCanonicalTypedExpressionV1(
           dt::CanonicalTypeIdFromStableName(
               request.result_descriptor.canonical_type_name) !=
               dt::CanonicalTypeId::character ||
-          !QowCanonicalUuidV1(left_collation) ||
+          !core::uuid::IsEngineIdentityUuid(left_collation) ||
           left_collation != right_collation ||
           left_collation != result_collation ||
           !canonical_value_state(request.left_value) ||
@@ -1606,15 +1603,11 @@ bool QowEvaluateCanonicalTypedExpressionV1(
                  value.encoded_value.empty() &&
                  value.binary_value.empty()));
       };
-      const auto left_collation = QowCanonicalDescriptorFieldV1(
-          request.left_value.descriptor.encoded_descriptor,
-          "collation_uuid");
-      const auto right_collation = QowCanonicalDescriptorFieldV1(
-          request.right_value.descriptor.encoded_descriptor,
-          "collation_uuid");
+      const auto& left_collation = request.left_value.descriptor.collation_uuid;
+      const auto& right_collation = request.right_value.descriptor.collation_uuid;
       if (!canonical_text(request.left_value) ||
           !canonical_text(request.right_value) ||
-          !QowCanonicalUuidV1(left_collation) ||
+          !core::uuid::IsEngineIdentityUuid(left_collation) ||
           left_collation != right_collation ||
           !request.bound_text_authority) {
         *refusal_detail =

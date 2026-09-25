@@ -334,9 +334,11 @@ SecondaryIndexMergeResult MergeSecondaryIndexDeltas(SecondaryIndexDeltaMergeLedg
     switch (delta.delta_kind) {
       case SecondaryIndexDeltaKind::insert:
       case SecondaryIndexDeltaKind::update_after:
-        if (AddBaseEntryIfMissing(base_entries, delta)) {
-          ++merged_count;
-        }
+        // Count applied ledger records, including an already-present exact
+        // entry. Replay is idempotent physically but still reconciles this
+        // eligible delta, just as an already-absent delete does below.
+        (void)AddBaseEntryIfMissing(base_entries, delta);
+        ++merged_count;
         break;
       case SecondaryIndexDeltaKind::delete_row:
       case SecondaryIndexDeltaKind::update_before:

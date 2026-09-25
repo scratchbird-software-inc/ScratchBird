@@ -59,26 +59,16 @@ std::vector<std::uint8_t> RandomBytes(std::size_t byte_count) {
   return out;
 }
 
-std::string UuidBytesToCanonicalText(const std::vector<std::uint8_t>& bytes) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t i = 0; i < bytes.size(); ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-    out.push_back(kHex[(bytes[i] >> 4) & 0x0f]);
-    out.push_back(kHex[bytes[i] & 0x0f]);
-  }
-  return out;
-}
-
-std::string RandomUuidV4Text() {
+scratchbird::core::platform::Uuid RandomUuidV4() {
   auto bytes = RandomBytes(16);
   bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fu) | 0x40u);
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fu) | 0x80u);
-  return UuidBytesToCanonicalText(bytes);
+  scratchbird::core::platform::Uuid value;
+  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
+  return value;
 }
 
-std::string RandomUuidV1Text() {
+scratchbird::core::platform::Uuid RandomUuidV1() {
   auto bytes = RandomBytes(16);
   const std::uint64_t unix_ns = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -94,10 +84,12 @@ std::string RandomUuidV1Text() {
   bytes[7] = static_cast<std::uint8_t>((uuid_ts_100ns >> 48) & 0xff);
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fu) | 0x80u);
   bytes[10] = static_cast<std::uint8_t>(bytes[10] | 0x01u);
-  return UuidBytesToCanonicalText(bytes);
+  scratchbird::core::platform::Uuid value;
+  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
+  return value;
 }
 
-std::string RandomUuidV7Text() {
+scratchbird::core::platform::Uuid RandomUuidV7() {
   auto bytes = RandomBytes(16);
   const std::uint64_t unix_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -110,14 +102,9 @@ std::string RandomUuidV7Text() {
   bytes[5] = static_cast<std::uint8_t>(unix_ms & 0xff);
   bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fu) | 0x70u);
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fu) | 0x80u);
-  return UuidBytesToCanonicalText(bytes);
-}
-
-bool CanonicalUuidBytes(const std::string& text, std::array<std::uint8_t, 16>* bytes) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  if (!parsed.ok()) return false;
-  *bytes = parsed.value.bytes;
-  return true;
+  scratchbird::core::platform::Uuid value;
+  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
+  return value;
 }
 
 std::string FormatUnixMillisUtcTimestamp(std::uint64_t unix_epoch_millis) {

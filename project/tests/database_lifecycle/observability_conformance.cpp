@@ -1,3 +1,5 @@
+#include "wire/binary_status_packet.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,6 +17,7 @@ using scratchbird::tests::BinaryFixtureIdentity;
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/metrics_api.hpp"
 #include "security/audit_api.hpp"
+#include "behavior_support/api_behavior_record_codec.hpp"
 #include "server_agent_runtime.hpp"
 #include "server_observability.hpp"
 
@@ -144,6 +147,18 @@ void TestDiagnosticShapes() {
           "public diagnostic vector leaked protected material");
 
   const auto private_vector = server::ToPrivateMessageVectorJsonLine(diagnostic);
+  std::vector<scratchbird::wire::public_result::Field> identity_fields;
+  Require(scratchbird::wire::binary_status::Decode(private_vector, &identity_fields),
+          "private diagnostics are not binary status frames");
+  Require(std::count_if(identity_fields.begin(), identity_fields.end(), [&](const auto& field) {
+      return field.kind == scratchbird::wire::public_result::Kind::uuid &&
+             field.value == diagnostic.database_uuid;
+    }) == 2, "private diagnostic correlation/field UUID16 atoms were altered");
+  auto invalid = diagnostic;
+  invalid.database_uuid = "019e150f-0000-7000-8000-000000000015";
+  Require(server::ToPrivateMessageVectorJsonLine(invalid).empty(),
+          "server private diagnostic converted text UUID");
+
   Require(Contains(private_vector, "\"visibility\":\"private\""),
           "private diagnostic vector missing private shape");
   Require(Contains(private_vector, diagnostic.database_uuid),
@@ -174,6 +189,13 @@ void TestServerLifecycleObservability(const std::filesystem::path& temp_dir) {
   success.state_after = "created";
   const auto recorded = server::RecordServerLifecycleObservability(&observability, success);
   Require(recorded.recorded, "lifecycle success observability was not recorded");
+  const auto before_invalid = observability.lifecycle_events.size();
+  auto invalid_identity = success;
+  invalid_identity.database_uuid = "019e150f-0000-7000-8000-000000000015";
+  Require(!server::RecordServerLifecycleObservability(&observability, invalid_identity).recorded &&
+              observability.lifecycle_events.size() == before_invalid,
+          "text UUID lifecycle event was accepted or partially recorded");
+
   Require(!recorded.audit_event_uuid.empty(), "lifecycle success missing audit event UUID");
   Require(!recorded.cache_marker_uuid.empty(), "lifecycle success missing cache invalidation marker");
   Require(observability.cache_invalidation_markers.size() == 1,
@@ -204,7 +226,43 @@ void TestServerLifecycleObservability(const std::filesystem::path& temp_dir) {
           "lifecycle operation metric missing from server snapshot");
 }
 
-void TestEngineMetricsAndAudit(const std::filesystem::path& temp_dir) {
+void TestEngineAudit(const std::filesystem::path& temp_dir) {
+  api::EngineEmitLifecycleAuditEventRequest audit;
+  audit.context = EngineContext(temp_dir);
+  audit.operation_key = "repair_database";
+  audit.outcome = "repaired";
+  audit.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
+  audit.cache_invalidation_recorded = true;
+  audit.cache_marker_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000020"));
+  const auto audit_result = api::EngineEmitLifecycleAuditEvent(audit);
+  if (!audit_result.ok) {
+    for (const auto& diagnostic : audit_result.diagnostics)
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+  }
+  Require(audit_result.ok, "engine lifecycle audit emission failed");
+  Require(audit_result.emitted && audit_result.redacted && audit_result.cache_marker_linked,
+          "engine lifecycle audit evidence flags incomplete");
+  std::ifstream evidence(audit.context.database_path + ".sb.api_events.v2", std::ios::binary);
+  api::ApiBehaviorRecord stored;
+  Require(api::ReadApiBehaviorRecord(evidence, &stored), "binary audit evidence unreadable");
+  namespace packet = scratchbird::wire::public_result;
+  const auto correlation = packet::Find(stored.payload, "correlation_uuid");
+  const auto marker = packet::Find(stored.payload, "cache_marker_uuid");
+  Require(stored.operation_id == "security.emit_lifecycle_audit_event" &&
+              correlation && correlation->kind == packet::Kind::uuid &&
+              correlation->value == audit.correlation_uuid &&
+              marker && marker->kind == packet::Kind::uuid &&
+              marker->value == audit.cache_marker_uuid,
+          "audit UUID fields lost binary framing");
+  const auto before = ReadFile(audit.context.database_path + ".sb.api_events.v2");
+  audit.correlation_uuid = "019e150f-0000-7000-8000-000000000019";
+  Require(!api::EngineEmitLifecycleAuditEvent(audit).ok &&
+              ReadFile(audit.context.database_path + ".sb.api_events.v2") == before,
+          "text audit identity accepted or partially persisted");
+
+}
+
+void TestEngineMetrics(const std::filesystem::path& temp_dir) {
   api::EngineRecordLifecycleMetricRequest metric;
   metric.context = EngineContext(temp_dir);
   metric.operation_key = "repair_database";
@@ -218,18 +276,6 @@ void TestEngineMetricsAndAudit(const std::filesystem::path& temp_dir) {
   Require(metric_result.metric_recorded, "engine lifecycle metric flag missing");
   Require(metric_result.cache_invalidation_recorded,
           "engine lifecycle cache invalidation metric flag missing");
-
-  api::EngineEmitLifecycleAuditEventRequest audit;
-  audit.context = EngineContext(temp_dir);
-  audit.operation_key = "repair_database";
-  audit.outcome = "repaired";
-  audit.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
-  audit.cache_invalidation_recorded = true;
-  audit.cache_marker_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000020"));
-  const auto audit_result = api::EngineEmitLifecycleAuditEvent(audit);
-  Require(audit_result.ok, "engine lifecycle audit emission failed");
-  Require(audit_result.emitted && audit_result.redacted && audit_result.cache_marker_linked,
-          "engine lifecycle audit evidence flags incomplete");
 
   api::EngineSysMetricsCurrentRequest current;
   current.context = EngineContext(temp_dir);
@@ -276,7 +322,8 @@ void TestIparProjectionSourceAdapters(const std::filesystem::path& temp_dir) {
     if (counter.metric_path == "sys.metrics.ipar.script.prepared_descriptor_hits" &&
         counter.metric_id == "IPAR-M001" &&
         counter.value == 17 &&
-        Contains(counter.label_summary, "script_id=SBDFS-020")) {
+        Contains(scratchbird::cli::RenderBinaryStatus(counter.label_summary).value_or(""),
+                 "\"script_id\":\"SBDFS-020\"")) {
       found_counter = true;
     }
   }
@@ -367,11 +414,14 @@ void TestParserRendering() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool binary_only = argc == 2 && std::string_view(argv[1]) == "--binary-observation-only";
+  Require(argc == 1 || binary_only, "unknown observation test mode");
   const auto temp_dir = MakeTempDir();
   TestDiagnosticShapes();
   TestServerLifecycleObservability(temp_dir);
-  TestEngineMetricsAndAudit(temp_dir);
+  TestEngineAudit(temp_dir);
+  if (!binary_only) TestEngineMetrics(temp_dir);
   TestIparProjectionSourceAdapters(temp_dir);
   TestParserRendering();
   std::filesystem::remove_all(temp_dir);

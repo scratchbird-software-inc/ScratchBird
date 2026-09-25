@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_window_registration.hpp"
+#include "canonical_query_window_order_binding.hpp"
 
 #include "canonical_query_physical_registration.hpp"
 #include "canonical_query_runtime_memory_support.hpp"
@@ -253,27 +254,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
             deterministic_order_evidence_uuid;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
-        if (order_term.column >= input_batch.columns.size() ||
-            node.required_property_uuids.size() != 1) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term binding is unresolved";
+        if (!BindCanonicalWindowOrderRequest(
+                request, *execution_dag, node, input_batch, &step.diagnostic))
           return step;
-        }
-        request.order_term_binding_receipt =
-            exec::CanonicalWindowOrderBindingReceipt::Issue(
-                *execution_dag, node.physical_node_id,
-                input_batch.columns[order_term.column], order_term,
-                node.required_property_uuids.front(), request.mga_authority,
-                node.memory_bytes_required);
-        if (!request.order_term_binding_receipt) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term receipt admission failed";
-          return step;
-        }
-        request.order_term_binding_evidence_uuid =
-            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorNtile(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -413,27 +396,9 @@ MakeLivePeerRankingRegistration(
         request.maximum_peer_comparisons = maximum_peer_comparisons;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
-        if (order_term.column >= input_batch.columns.size() ||
-            node.required_property_uuids.size() != 1) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term binding is unresolved";
+        if (!BindCanonicalWindowOrderRequest(
+                request, *execution_dag, node, input_batch, &step.diagnostic))
           return step;
-        }
-        request.order_term_binding_receipt =
-            exec::CanonicalWindowOrderBindingReceipt::Issue(
-                *execution_dag, node.physical_node_id,
-                input_batch.columns[order_term.column], order_term,
-                node.required_property_uuids.front(), request.mga_authority,
-                node.memory_bytes_required);
-        if (!request.order_term_binding_receipt) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term receipt admission failed";
-          return step;
-        }
-        request.order_term_binding_evidence_uuid =
-            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorPeerRanking(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -595,27 +560,9 @@ MakeLiveNavigationWindowRegistration(
             maximum_effective_row_references;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
-        if (order_term.column >= input_batch.columns.size() ||
-            node.required_property_uuids.size() != 1) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term binding is unresolved";
+        if (!BindCanonicalWindowOrderRequest(
+                request, *execution_dag, node, input_batch, &step.diagnostic))
           return step;
-        }
-        request.order_term_binding_receipt =
-            exec::CanonicalWindowOrderBindingReceipt::Issue(
-                *execution_dag, node.physical_node_id,
-                input_batch.columns[order_term.column], order_term,
-                node.required_property_uuids.front(), request.mga_authority,
-                node.memory_bytes_required);
-        if (!request.order_term_binding_receipt) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term receipt admission failed";
-          return step;
-        }
-        request.order_term_binding_evidence_uuid =
-            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorNavigationWindow(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -777,27 +724,9 @@ MakeLiveAggregateWindowRegistration(
         request.maximum_transition_count = maximum_transition_count;
         request.mga_authority = BuildCanonicalExecutionMgaAuthority(
             mga_context, *execution_dag);
-        if (order_term.column >= input_batch.columns.size() ||
-            node.required_property_uuids.size() != 1) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term binding is unresolved";
+        if (!BindCanonicalWindowOrderRequest(
+                request, *execution_dag, node, input_batch, &step.diagnostic))
           return step;
-        }
-        request.order_term_binding_receipt =
-            exec::CanonicalWindowOrderBindingReceipt::Issue(
-                *execution_dag, node.physical_node_id,
-                input_batch.columns[order_term.column], order_term,
-                node.required_property_uuids.front(), request.mga_authority,
-                node.memory_bytes_required);
-        if (!request.order_term_binding_receipt) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
-          step.diagnostic.detail = "window order-term receipt admission failed";
-          return step;
-        }
-        request.order_term_binding_evidence_uuid =
-            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorAggregateWindow(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {

@@ -62,7 +62,36 @@ void Exact(const sb::NativeDescriptorBindingInput& d, const Expected& row) {
 }
 int main() {
   std::cout << "EXPECTED statement_profiles=384 literal_profiles=12 registry_rows=6\n";
-  Check(dt::CurrentDatatypeTypeCodecIdentityRowsV1().size() == 6, "fixed registry population");
+  Check(dt::CurrentDatatypeTypeCodecIdentityRowsV1().size() == 18, "six immutable plus twelve successor rows");
+  const std::array<Expected, 6> extension{{
+      {Fixed(0xd731), Fixed(0xd732), "datatype.real64.ieee754.le.v1"},
+      {Fixed(0xd734), Fixed(0xd735), "datatype.uuid.binary16.v1"},
+      {Fixed(0xd737), Fixed(0xd738), "datatype.geometry.sbp1.v1"},
+      {Fixed(0xd73a), Fixed(0xd73b), "datatype.uint64.le.v1"},
+      {Fixed(0xd73d), Fixed(0xd73e), "datatype.json.utf8.v1"},
+      {Fixed(0xd740), Fixed(0xd741), "datatype.list.text.framed.v1"}}};
+  for (const auto& row : extension) {
+    Check(!dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 1, 1, row.descriptor, 1).ok,
+          "successor type must not appear in immutable predecessor");
+    const auto found = dt::LookupDatatypeTypeCodecIdentityV1(Fixed(0xd702), 2, 2, row.descriptor, 1);
+    Check(found.ok && found.row.type_uuid == row.type && found.row.codec_id == row.codec,
+          "successor exact independent type identity");
+    Check(!dt::LookupDatatypeTypeCodecIdentityV1(Fixed(0xd702), 1, 2, row.descriptor, 1).ok &&
+          !dt::LookupDatatypeTypeCodecIdentityV1(Fixed(0xd702), 2, 1, row.descriptor, 1).ok,
+          "mixed successor generations refuse");
+    auto c = Context(); c.literal_catalog_snapshot_uuid = Fixed(0xd702); c.literal_catalog_generation = 2;
+    auto d = Descriptor(row, true);
+    ipc::ParserStatementContext::DescriptorProfile profile;
+    profile.slot = 0; profile.profile_kind = 1; profile.descriptor_uuid = binding;
+    profile.type_uuid = row.type; profile.nullable = true;
+    c.descriptor_profiles.push_back(profile);
+    Check(sb::PreserveNativeDescriptorAuthority(&d, c) && d.codec_id == row.codec &&
+          d.datatype_catalog_snapshot_uuid == Fixed(0xd702) &&
+          d.datatype_catalog_generation == 2 && d.datatype_registry_generation == 2,
+          "successor native binding retains actual receipt cohort");
+    d.datatype_registry_generation = 1;
+    Check(!sb::PreserveNativeDescriptorAuthority(&d, c), "cross-cohort complete descriptor refuses");
+  }
   for (const auto& row : expected) {
     const auto lookup = dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 1, 1, row.descriptor, 1);
     Check(lookup.ok && lookup.row.type_uuid == row.type && lookup.row.codec_id == row.codec,
@@ -228,6 +257,6 @@ int main() {
       Check(!sb::MatchesNativeNumericDescriptorRecord(altered,numeric),"missing binary numeric authority value refuses");
     }
   }
-  Check(checks == 6441, "fixed assertion population");
+  Check(checks == 6456 + 3 * 5, "fixed assertion population including three added registry types");
   std::cout << "PASS checks=" << checks << "; component projection only; not runtime admission\n";
 }

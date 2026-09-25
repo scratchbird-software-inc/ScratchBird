@@ -142,6 +142,9 @@ int main() {
   functions::FunctionCallRequest function_request;
   function_request.context.function_id =
       "sb.scalar.has_function_privilege";
+  const auto* function = package.registry.Lookup(function_request.context.function_id);
+  Require(function != nullptr, "visibility fixture function registration missing");
+  function_request.context.function_uuid = function->function_uuid;
   function_request.context.security_allowed = true;
   function_request.context.policy_allowed = true;
   function_request.context.dependency_available = true;

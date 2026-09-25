@@ -15,6 +15,7 @@
 #include "index_key_encoding.hpp"
 #include "index_route_capability.hpp"
 #include "join_planner_full.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "late_materialization_covering_scan_runtime.hpp"
 #include "late_materialization_executor.hpp"
 #include "parallel_physical_pipeline.hpp"
@@ -361,24 +362,24 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
           "merge join produced unexpected row count");
 
   const auto graph = opt::BuildJoinGraph(
-      {opt::JoinRelationNode{.relation_uuid = "rel.orders",
+      {opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 1),
                              .estimated_rows = 1000},
-       opt::JoinRelationNode{.relation_uuid = "rel.customers",
+       opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
                              .estimated_rows = 100},
-       opt::JoinRelationNode{.relation_uuid = "rel.countries",
+       opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 3),
                              .estimated_rows = 10,
                              .order_preserving_required = true}},
       {opt::JoinPredicateEdge{
-           .left_relation_uuid = "rel.orders",
-           .right_relation_uuid = "rel.customers",
+           .left_relation_uuid = scratchbird::tests::FixtureUuid(220221, 1),
+           .right_relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
            .predicate_kind = "orders.customer_id=customers.id",
            .semantic_kind = opt::JoinSemanticKind::kInner,
            .predicate_count = 1,
            .equality = true,
            .selectivity = 0.02},
        opt::JoinPredicateEdge{
-           .left_relation_uuid = "rel.customers",
-           .right_relation_uuid = "rel.countries",
+           .left_relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
+           .right_relation_uuid = scratchbird::tests::FixtureUuid(220221, 3),
            .predicate_kind = "customers.country_id=countries.id",
            .semantic_kind = opt::JoinSemanticKind::kInner,
            .predicate_count = 1,

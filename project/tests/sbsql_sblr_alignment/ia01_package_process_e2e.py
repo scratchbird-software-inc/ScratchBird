@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from binary_observation_client import read_trace_evidence
 
 
 PASSWORD = "ScratchBird-E2E-2026!"
@@ -149,9 +150,7 @@ def run_client(args: argparse.Namespace, database: Path, port: int,
 def require_package_evidence(paths: tuple[Path, ...]) -> None:
     for path in paths:
         wait_path(path)
-    audit = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace") for path in paths
-    )
+    audit = read_trace_evidence(paths)
     required = (
         "sblr_opcode_stream_admitted",
         "engine.op.package_begin",

@@ -152,11 +152,11 @@ agents::DurableAgentCatalogImage CatalogImage() {
 
 std::string RewriteHeaderSchemaVersion(std::string encoded,
                                         const std::string& replacement) {
-  const std::string token = "schema_version=1";
-  const auto pos = encoded.find(token);
-  Require(pos != std::string::npos,
-          "schema version token missing from durable catalog header");
-  encoded.replace(pos, token.size(), "schema_version=" + replacement);
+  Require(encoded.size() >= 80 && encoded.substr(0, 8) == "SBADC002",
+          "binary catalog header missing");
+  const auto version = static_cast<std::uint64_t>(std::stoull(replacement));
+  for (unsigned i = 0; i < 8; ++i)
+    encoded[8 + i] = static_cast<char>(version >> (8 * i));
   return encoded;
 }
 

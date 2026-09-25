@@ -8,6 +8,7 @@
 
 #include "dml/transactional_index_provider.hpp"
 #include "dml/test_optimization_profile.hpp"
+#include "dml/index_apply_locality_bridge.hpp"
 
 #include "api_diagnostics.hpp"
 #include "index_family_registry.hpp"
@@ -277,13 +278,59 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntries(
                       entry_kind == "insert" ? "PrepareInsertEntry"
                                              : "PrepareRetireEntry",
                       &result.evidence);
+  // Admit the complete mutation set before planning or appending any prefix.
+  // Planning changes candidate-access locality only; MGA inventory still owns
+  // visibility and finality, and callers retain retire-before-insert ordering.
+  std::vector<MgaExactIndexEntryAppendBatch> batches;
+  batches.reserve(requests.size());
   for (const auto& request : requests) {
-    auto prepared = entry_kind == "insert" ? PrepareInsertEntry(request)
-                                            : PrepareRetireEntry(request);
-    if (!prepared.ok) return prepared;
-    result.prepared_insert_count += prepared.prepared_insert_count;
-    result.prepared_retire_count += prepared.prepared_retire_count;
+    if (entry_kind == "retire" && request.predecessor_version_uuid.is_nil()) {
+      return Failure(context_, &request.index, "PrepareRetireEntry",
+                     Refuse("INDEX.TRANSACTIONAL_PROVIDER.PREDECESSOR_REQUIRED",
+                            "index.transactional_provider.predecessor_required",
+                            "retire mutation must name the predecessor row version"));
+    }
+    if (!IsAdmittedMgaTransactionalIndexFamily(request.index)) {
+      return Failure(context_, &request.index, entry_kind,
+                     Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_ADMITTED",
+                            "index.transactional_provider.family_not_admitted",
+                            "family=" + ResolvedFamily(request.index)));
+    }
+    if (append_context_ == nullptr ||
+        DmlTransactionalIndexMutationIdentity(context_, request, entry_kind).empty()) {
+      return Failure(context_, &request.index, entry_kind,
+                     Refuse("INDEX.TRANSACTIONAL_PROVIDER.IDENTITY_INCOMPLETE",
+                            "index.transactional_provider.identity_incomplete",
+                            "transaction, index generation, row/version, physical relation, and key identity are required"));
+    }
+    if (request.key_value.empty()) {
+      return Failure(context_, &request.index, entry_kind,
+                     MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid"));
+    }
+    MgaExactIndexEntryAppendBatch batch;
+    batch.index = request.index;
+    batch.table_uuid = request.table_uuid;
+    batch.entry_kind = entry_kind;
+    batch.entries.push_back({request.key_value, request.payload_value,
+                             request.row_uuid, request.version_uuid});
+    batches.push_back(std::move(batch));
   }
+  const auto plan = PlanLocalityAwareExactIndexApplyBatches(batches);
+  if (plan.diagnostic.error) {
+    return Failure(context_, nullptr, entry_kind, plan.diagnostic);
+  }
+  if (!requests.empty()) {
+    const auto appended = append_context_->AppendExactIndexEntryBatches(plan.batches);
+    if (appended.error) return Failure(context_, nullptr, entry_kind, appended);
+    if (dml::TestScanScalarProfile()) {
+      const auto flushed = append_context_->FlushIndexEntries();
+      if (flushed.error) return Failure(context_, nullptr, entry_kind, flushed);
+      dml::RecordTestOptimizationBranch("index_scalar_flush");
+    }
+  }
+  result.prepared_insert_count = entry_kind == "insert" ? requests.size() : 0;
+  result.prepared_retire_count = entry_kind == "retire" ? requests.size() : 0;
+  AddLocalityAwareIndexApplyEvidence(plan, &result.evidence);
   result.evidence.push_back({"transactional_index_prepared_insert_count",
                              std::to_string(result.prepared_insert_count)});
   result.evidence.push_back({"transactional_index_prepared_retire_count",

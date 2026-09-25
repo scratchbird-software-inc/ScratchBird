@@ -67,6 +67,7 @@ separate reviewed change after the affected route has an isolated test gate.
 | `canonical_query_set_registration.cpp` | Binary set-operation registration and execution/memory receipt validation over two bounded, already-materialized typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_set_composition.cpp` | Admitted object-free binary and nested set-operation coordination, bounded planning inputs, physical-DAG assembly, and result publication requests | Snapshot construction, transaction finality, storage reads, parser lowering, public route selection |
 | `canonical_query_sort_registration.cpp` | Expression-key materialization, exact sort-key receipt issuance, and expression-aware SORT registration over one bounded typed input | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_window_order_binding.cpp` | Shared window order validation and delegation to the existing immutable executor receipt issuer | Optimizer publication, storage reads or writes, snapshot construction, transaction finality |
 | `canonical_query_window_registration.cpp` | Bounded window physical registrations for row numbering, peer ranking/distribution, bucketing, navigation, and aggregate frames | Snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_scalar_support.cpp` | Canonical UUID validation/derivation, scalar equality-key normalization, and exact `int64` wire decoding | Catalog-bound comparison, descriptor construction, provider execution, transaction state |
 | `canonical_query_descriptor_support.cpp` | Exact descriptor/result-shape comparison, encoded descriptor-field lookup, and result-nullability projection | Catalog lookup, persisted descriptor authorization, descriptor construction, transaction state |
@@ -972,8 +973,8 @@ composition module is 2,528 lines and 127,548 bytes.
 The clean benchmark-profile closure links both the contract-only and
 production SBLR libraries. The focused RCP-078 direct search execution and
 production query-route tests provide route evidence. The source-authority gate
-now tracks thirty-one modules and applies the model-family finality/parser/WAL
-boundary to time-series, vector, and search alike. Build, focused test,
+now tracks thirty-one modules. Time-series, vector, and search must not own
+transaction finality or parser execution; WAL must not supply recovery authority. Build, focused test,
 source-authority, MGA-policy, instrumentation, and diff evidence is retained
 in `/tmp/scratchbird-canonical-query-stage5c-*.log`.
 
@@ -992,8 +993,8 @@ composition module is 2,396 lines and 119,306 bytes.
 The clean benchmark-profile closure links both the contract-only and
 production SBLR libraries. The focused RCP-075 direct key-value execution and
 production query-route tests provide route evidence. The source-authority gate
-now tracks thirty-two modules and applies the model-family
-finality/parser/WAL boundary to time-series, vector, search, and key-value.
+now tracks thirty-two modules. Time-series, vector, search, and key-value must not
+own transaction finality or parser execution; WAL must not supply recovery authority.
 Build, focused test, source-authority, MGA-policy, instrumentation, and diff
 evidence is retained in `/tmp/scratchbird-canonical-query-stage5d-*.log`.
 
@@ -1011,9 +1012,9 @@ composition module is 2,756 lines and 139,015 bytes.
 The clean benchmark-profile closure links both the contract-only and
 production SBLR libraries. The focused RCP-074 direct graph execution and
 production query-route tests provide route evidence. The source-authority gate
-now tracks thirty-three modules and applies the model-family
-finality/parser/WAL boundary to time-series, vector, search, key-value, and
-graph. Build, focused test, source-authority, MGA-policy, instrumentation, and
+now tracks thirty-three modules. Time-series, vector, search, key-value, and graph
+must not own transaction finality or parser execution; WAL must not supply
+recovery authority. Build, focused test, source-authority, MGA-policy, instrumentation, and
 diff evidence is retained in `/tmp/scratchbird-canonical-query-stage5e-*.log`.
 
 The sixth and final Stage 5 slice moves the complete production document
@@ -1031,8 +1032,9 @@ bytes.
 The clean benchmark-profile closure links both the contract-only and
 production SBLR libraries. The focused RCP-073 direct document execution,
 production query-route, and collection-isolation tests provide route evidence.
-The source-authority gate now tracks thirty-four modules and applies the
-model-family finality/parser/WAL boundary to all six Stage 5 family modules.
+The source-authority gate now tracks thirty-four modules. All six Stage 5 family
+modules must not own transaction finality or parser execution. WAL must not
+supply recovery authority.
 Build, focused test, source-authority, MGA-policy, instrumentation, and diff
 evidence is retained in `/tmp/scratchbird-canonical-query-stage5f-*.log`.
 
@@ -1057,8 +1059,8 @@ installed before exercising contextual-TEXT literal independence.
 
 At the end of Stage 6a, captured cross-family multi-leg composition and its
 RCP-079/RCP-080 evidence remained outstanding. The source authority gate then
-tracked thirty-five modules and applied the model-family
-finality/parser/WAL boundary to the spatial/columnar module as well.
+tracked thirty-five modules. The spatial/columnar module must not own transaction
+finality or parser execution; WAL must not supply recovery authority.
 
 The second Stage 6 slice moves captured model-source legs, exact result
 descriptor preflight and rebinding, ASOF registrations, bounded multi-leg DAG
@@ -1168,3 +1170,37 @@ Each stage should be reviewable as one authority move. If a proposed extraction
 requires broad access to unrelated private types, first create a narrow
 internal contract and stop; do not expose the monolith's anonymous namespace as
 a general-purpose API merely to make the move compile.
+
+### Binary UUID source-size baseline
+
+The size-only limits were reviewed against the pre-conversion baseline
+`409b5b068`. Native UUID parameters, containers, identity validation, and
+inline-memory accounting replace text carriers. Window and grouped-aggregate
+preparation admit binary catalog identities separately from textual descriptor
+qualifiers. Object-free planning now checks issuance failure, and the DAG keeps
+the issued profile identity owner alive. Pivot and time-series composition use
+retained native identities and binary result cells. These changes do not move
+transaction finality out of MGA.
+
+Duplicated window order validation was extracted into
+`canonical_query_window_order_binding.cpp`; it calls the existing executor
+receipt issuer and preserves both refusal diagnostics. Registration limits are
+tightened after extraction. The table records exact reviewed size limits; all
+module enrollment and forbidden-authority checks remain enabled. This source
+check is not runtime correctness or feature-completion evidence.
+
+| Module | Previous lines | Current limit | Previous bytes | Current limit |
+|---|---:|---:|---:|---:|
+| `canonical_query_window_preparation.cpp` | 1255 | 1255 | 59764 | 59950 |
+| `canonical_query_grouped_aggregate_preparation.cpp` | 1599 | 1599 | 75454 | 75496 |
+| `canonical_query_correlated_registration.cpp` | 893 | 893 | 40698 | 40718 |
+| `canonical_query_filter_registration.cpp` | 383 | 383 | 18148 | 18166 |
+| `canonical_query_object_free_profile.cpp` | 250 | 256 | 11934 | 12200 |
+| `canonical_query_pivot_composition.cpp` | 1574 | 1575 | 72281 | 72281 |
+| `canonical_query_predicate_support.cpp` | 428 | 428 | 18613 | 18674 |
+| `canonical_query_recursive_registration.cpp` | 971 | 971 | 43851 | 43873 |
+| `canonical_query_set_registration.cpp` | 279 | 279 | 12709 | 12719 |
+| `canonical_query_runtime_memory_support.cpp` | 428 | 428 | 15678 | 15702 |
+| `canonical_query_time_series_composition.cpp` | 4783 | 4784 | 242149 | 242149 |
+| `canonical_query_window_registration.cpp` | 804 | 794 | 39236 | 38866 |
+| `canonical_relational_dag_planner.cpp` | 107 | 108 | 4395 | 4493 |

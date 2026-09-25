@@ -133,6 +133,9 @@ bool PreserveCanonicalQueryResultMetadataV1(
     if (shape->columns.size() > 16384)
       return refuse("query output column limit exceeded", "RESOURCE.BUDGET_EXCEEDED");
 
+    if (!shape->null_extended_columns.empty() &&
+        shape->null_extended_columns.size() != shape->columns.size())
+      return refuse("executed null-extension schema has a different column count");
     std::map<std::uint32_t, const api::RelationalTypeDescriptor*> descriptors;
     for (const auto& descriptor : dag.descriptors)
       if (descriptor.descriptor_id == 0 ||
@@ -216,6 +219,8 @@ bool PreserveCanonicalQueryResultMetadataV1(
           transport.nullability = wire::TypedResultNullability::unknown; break;
         default: return refuse("query output nullability is invalid");
       }
+      if (!shape->null_extended_columns.empty() && shape->null_extended_columns[published])
+        transport.nullability = wire::TypedResultNullability::nullable;
       transport.descriptor_generation = identity->descriptor_generation;
       transport.type_generation = identity->type_generation;
       transport.canonical_type_id = static_cast<dt::CanonicalTypeId>(identity->canonical_binary_type_code);

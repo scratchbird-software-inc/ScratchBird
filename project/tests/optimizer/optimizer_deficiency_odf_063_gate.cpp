@@ -9,6 +9,9 @@
 
 #include "dml/hot_cold_row_split_api.hpp"
 #include "hot_cold_row_split.hpp"
+#include "payload_binary_codec.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "nosql/document_api.hpp"
 #include "nosql/graph_api.hpp"
 #include "nosql/key_value_api.hpp"
@@ -164,8 +167,13 @@ void StorageSplitMaterializeAndUpdate() {
             "ODF-063 cold descriptor did not scope generations to row identity");
     Require(cold.descriptor.generation != 0,
             "ODF-063 cold descriptor did not carry generation");
-    Require(cold.descriptor_text.rfind("SB_LARGE_PAYLOAD_DESCRIPTOR_V1", 0) == 0,
-            "ODF-063 cold field did not serialize an ODF-062 descriptor");
+    const auto decoded = page::ParseLargePayloadDescriptor(cold.descriptor_text);
+    Require(decoded.has_value() &&
+                decoded->owner_object_uuid.value == cold.descriptor.owner_object_uuid.value &&
+                decoded->generation_scope_uuid.value == cold.descriptor.generation_scope_uuid.value &&
+                decoded->overflow_value_uuid.value == cold.descriptor.overflow_value_uuid.value &&
+                decoded->generation == cold.descriptor.generation,
+            "ODF-063 cold field did not preserve the binary ODF-062 descriptor");
   }
 
   page::HotColdRowMaterializeRequest materialize;
@@ -294,36 +302,35 @@ void DmlHelperRoutesThroughSplitModel() {
           "ODF-063 DML update helper did not retire old cold descriptor");
 }
 
-api::EngineRequestContext NoSqlContext(const Ids& ids,
-                                       const std::string& database_path,
-                                       platform::u64 request_ordinal) {
-  scratchbird::storage::database::DatabaseCreateConfig create;
-  create.path = database_path;
-  create.database_uuid = ids.database_uuid;
-  create.filespace_uuid = ids.filespace_uuid;
-  create.page_size = 16384;
-  create.creation_unix_epoch_millis = 1779621000000ull;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(), "ODF-063 database creation failed");
-  api::EngineBeginTransactionRequest begin;
-  begin.context.database_path = database_path;
-  begin.context.database_uuid = ids.database_uuid.value;
-  begin.context.request_id = "odf063-" + std::to_string(request_ordinal);
-  begin.context.principal_uuid = NewUuid(platform::UuidKind::principal, 601).value;
-  begin.context.session_uuid = NewUuid(platform::UuidKind::object, 602).value;
-  begin.context.security_context_present = true;
-  begin.isolation_level = "read_committed";
-  begin.transaction_policy_profile.encoded_profiles = {
-      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
-  const auto begun = api::EngineBeginTransaction(begin);
-  Require(begun.ok && begun.local_transaction_id != 0, "ODF-063 engine begin failed");
-  auto context = begin.context;
-  context.transaction_uuid = begun.transaction_uuid;
-  context.local_transaction_id = begun.local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
-  return context;
-}
+struct NoSqlFixture {
+  api::EngineRequestContext context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  NoSqlFixture(const Ids& ids, const std::string& database_path,
+               platform::u64 request_ordinal) {
+    scratchbird::storage::database::DatabaseCreateConfig create;
+    create.path = database_path;
+    create.database_uuid = ids.database_uuid;
+    create.filespace_uuid = ids.filespace_uuid;
+    create.page_size = 16384;
+    create.creation_unix_epoch_millis = 1779621000000ull;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+            "ODF-063 database creation failed");
+    context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    context.request_id = "odf063-" + std::to_string(request_ordinal);
+    session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
+    api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    begin.transaction_policy_profile.encoded_profiles = {
+        "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
+    const auto begun = api::EngineBeginTransaction(begin);
+    Require(begun.ok && begun.local_transaction_id != 0, "ODF-063 engine begin failed");
+    context.transaction_uuid = begun.transaction_uuid;
+    context.local_transaction_id = begun.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  }
+};
 
 void Rollback(const api::EngineRequestContext& context) {
   api::EngineRollbackTransactionRequest rollback;
@@ -350,11 +357,43 @@ void AddNoSqlSplitOptions(TRequest* request,
 
 void RequireNoSqlHotColdPayload(const api::EngineApiResult& result,
                                 const std::string& payload_field,
-                                const std::string& cold_body) {
+                                const std::string& cold_body,
+                                const Ids& ids, const api::EngineRequestContext& context) {
+  if (!result.ok && !result.diagnostics.empty())
+    std::cerr << result.diagnostics.front().code << ':' << result.diagnostics.front().detail << '\n';
   Require(result.ok, "ODF-063 NoSQL split API call failed");
   const auto payload = RowField(result, payload_field);
-  Require(payload.rfind("SB_HOT_COLD_ROW_HEAD_V1", 0) == 0,
-          "ODF-063 NoSQL surface did not persist hot/cold row head");
+  Require(payload.starts_with("SBHCR002"), "ODF-063 binary hot/cold row head missing");
+  page::payload_binary::Reader reader{std::string_view(payload).substr(8)};
+  platform::TypedUuid row, owner, transaction;
+  platform::u64 creator = 0, version = 0, hot_count = 0, cold_count = 0;
+  std::string hot_class, cold_class;
+  Require(reader.Uuid(row) && reader.Uuid(owner) && reader.Uuid(transaction) &&
+              row.kind == ids.owner_object_uuid.kind && row.value == ids.owner_object_uuid.value &&
+              uuid::IsEngineIdentityUuid(row.value) &&
+              owner.kind == platform::UuidKind::object && owner.value == ids.owner_object_uuid.value &&
+              transaction.kind == platform::UuidKind::transaction && transaction.value == context.transaction_uuid &&
+              reader.U64(creator) && creator == context.local_transaction_id &&
+              reader.U64(version) && version != 0 &&
+              reader.String(hot_class) && hot_class == "hot_row" &&
+              reader.String(cold_class) && cold_class == "cold_row" &&
+              reader.U64(hot_count) && hot_count <= 65536,
+          "ODF-063 binary hot/cold row native authority fields mismatch");
+  for (platform::u64 i = 0; i < hot_count; ++i) {
+    std::string name, value;
+    Require(reader.String(name) && reader.String(value), "ODF-063 hot field framing mismatch");
+  }
+  Require(reader.U64(cold_count) && cold_count != 0 && cold_count <= 65536,
+          "ODF-063 cold descriptor count mismatch");
+  for (platform::u64 i = 0; i < cold_count; ++i) {
+    std::string name, encoded;
+    Require(reader.String(name) && reader.String(encoded), "ODF-063 cold field framing mismatch");
+    const auto descriptor = page::ParseLargePayloadDescriptor(encoded);
+    Require(descriptor && descriptor->owner_object_uuid.value == owner.value &&
+                descriptor->generation_scope_uuid.value == row.value && descriptor->generation != 0,
+            "ODF-063 nested cold descriptor native identity mismatch");
+  }
+  Require(reader.cursor == reader.bytes.size(), "ODF-063 trailing unframed hot/cold row bytes");
   Require(payload.find(cold_body.substr(0, 64)) == std::string::npos,
           "ODF-063 NoSQL hot head leaked full cold payload");
   Require(EvidenceContains(result.evidence, "hot_cold_split_routed", "true"),
@@ -384,65 +423,59 @@ void NoSqlSurfacesRouteThroughSplitModel() {
 
   {
     const std::string path = base_path + "_kv.sbdb";
-    api::EngineKeyValuePutRequest request;
-    request.context = NoSqlContext(ids, path, 77);
+    NoSqlFixture fixture(ids, path, 77);
+    scratchbird::tests::FixtureEngineRequest<api::EngineKeyValuePutRequest> request(*fixture.session, fixture.context);
     AddNoSqlSplitOptions(&request, ids, "key_value", body);
     const auto result = api::EngineKeyValuePut(request);
-    RequireNoSqlHotColdPayload(result, "payload", body);
+    RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
     Rollback(request.context);
-    std::remove(path.c_str());
-    std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_doc.sbdb";
-    api::EngineDocumentInsertRequest request;
-    request.context = NoSqlContext(ids, path, 78);
+    NoSqlFixture fixture(ids, path, 78);
+    scratchbird::tests::FixtureEngineRequest<api::EngineDocumentInsertRequest> request(*fixture.session, fixture.context);
     AddNoSqlSplitOptions(&request, ids, "document", body);
     const auto result = api::EngineDocumentInsert(request);
-    RequireNoSqlHotColdPayload(result, "payload", body);
+    RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
     Rollback(request.context);
-    std::remove(path.c_str());
-    std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_vector.sbdb";
-    api::EngineVectorWriteRequest request;
-    request.context = NoSqlContext(ids, path, 79);
+    NoSqlFixture fixture(ids, path, 79);
+    scratchbird::tests::FixtureEngineRequest<api::EngineVectorWriteRequest> request(*fixture.session, fixture.context);
     AddNoSqlSplitOptions(&request, ids, "vector", body);
     const auto result = api::EngineVectorWrite(request);
-    RequireNoSqlHotColdPayload(result, "payload", body);
+    RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
     Rollback(request.context);
-    std::remove(path.c_str());
-    std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_graph.sbdb";
-    api::EngineGraphWriteRequest request;
-    request.context = NoSqlContext(ids, path, 80);
+    NoSqlFixture fixture(ids, path, 80);
+    scratchbird::tests::FixtureEngineRequest<api::EngineGraphWriteRequest> request(*fixture.session, fixture.context);
     AddNoSqlSplitOptions(&request, ids, "graph", body);
     const auto result = api::EngineGraphWrite(request);
-    RequireNoSqlHotColdPayload(result, "payload", body);
+    RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
     Rollback(request.context);
-    std::remove(path.c_str());
-    std::remove((path + ".sb.api_events").c_str());
   }
   {
     const std::string path = base_path + "_search.sbdb";
-    api::EngineSearchQueryRequest request;
-    request.context = NoSqlContext(ids, path, 81);
+    NoSqlFixture fixture(ids, path, 81);
+    scratchbird::tests::FixtureEngineRequest<api::EngineSearchQueryRequest> request(*fixture.session, fixture.context);
     request.target_object.uuid = ids.owner_object_uuid.value;
     AddNoSqlSplitOptions(&request, ids, "search", body);
     const auto result = api::EngineSearchQuery(request);
-    RequireNoSqlHotColdPayload(result, "payload", body);
+    RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
     Rollback(request.context);
-    std::remove(path.c_str());
-    std::remove((path + ".sb.api_events").c_str());
   }
 }
 
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf063_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf063_statement_fixture").ok(), "ODF-063 memory configuration failed");
   StorageSplitMaterializeAndUpdate();
   DmlHelperRoutesThroughSplitModel();
   NoSqlSurfacesRouteThroughSplitModel();

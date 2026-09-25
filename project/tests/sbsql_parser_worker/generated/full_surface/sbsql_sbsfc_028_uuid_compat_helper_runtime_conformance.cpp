@@ -55,8 +55,12 @@ bool HasDiagnostic(const scratchbird::engine::sblr::SblrResult& result, std::str
 scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::string function_id,
                                           std::vector<SblrValue> values,
-                                          std::string deterministic_uuid = {}) {
+                                          std::optional<scratchbird::core::platform::Uuid> deterministic_uuid = {}) {
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -64,7 +68,7 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuid(1156, 19);
   request.context.sblr_context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 20);
   request.context.sblr_context.transaction_context_present = true;
-  request.context.sblr_context.deterministic_uuid_text = std::move(deterministic_uuid);
+  request.context.sblr_context.deterministic_uuid = std::move(deterministic_uuid);
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});
   }
@@ -80,30 +84,32 @@ bool ExpectOkScalar(const scratchbird::engine::sblr::SblrResult& result, std::st
   return true;
 }
 
-bool IsCanonicalUuid(std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-    const char ch = value[i];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
-  }
-  return true;
-}
-
 bool ExpectUuidVersion(std::string_view case_id,
                        const scratchbird::engine::sblr::SblrResult& result,
                        char version) {
   if (!ExpectOkScalar(result, case_id)) return false;
   const auto& value = result.scalar_values.front();
   if (value.is_null || value.descriptor_id != "uuid" ||
-      value.payload_kind != SblrValuePayloadKind::uuid_text ||
-      value.text_value != value.encoded_value ||
-      !IsCanonicalUuid(value.text_value) ||
-      value.text_value[14] != version) {
+      value.payload_kind != SblrValuePayloadKind::uuid_binary ||
+      !value.text_value.empty() || !value.encoded_value.empty() ||
+      !value.binary_value.empty() ||
+      (value.uuid_value.bytes[6] >> 4) != version - '0' ||
+      (value.uuid_value.bytes[8] & 0xc0) != 0x80) {
     std::cerr << case_id << ": expected canonical UUID version " << version << "\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectUuid(std::string_view case_id,
+                const scratchbird::engine::sblr::SblrResult& result,
+                const scratchbird::core::platform::Uuid& expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  const auto& value = result.scalar_values.front();
+  std::vector<std::uint8_t> bytes;
+  if (!scratchbird::engine::sblr::CopySblrUuidPayload(value, &bytes) ||
+      value.uuid_value != expected) {
+    std::cerr << case_id << ": expected exact binary UUID without text mirrors\n";
     return false;
   }
   return true;
@@ -188,26 +194,23 @@ int main() {
   ok = ExpectUuidVersion("uuid_generate_v4_random",
                          Run(registry, "sb.uuid.generate_v4", {}),
                          '4') && ok;
-  ok = ExpectText("uuid_generate_v1_deterministic",
+  ok = ExpectUuid("uuid_generate_v1_deterministic",
                   Run(registry, "sb.uuid.generate_v1", {},
-                      "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
-                  "uuid",
-                  "6ba7b810-9dad-11d1-80b4-00c04fd430c8") && ok;
-  ok = ExpectText("uuid_generate_v4_deterministic",
+                      scratchbird::tests::FixtureUuidLiteral("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
+                  scratchbird::tests::FixtureUuidLiteral("6ba7b810-9dad-11d1-80b4-00c04fd430c8")) && ok;
+  ok = ExpectUuid("uuid_generate_v4_deterministic",
                   Run(registry, "sb.uuid.generate_v4", {},
-                      "550e8400-e29b-41d4-a716-446655440000"),
-                  "uuid",
-                  "550e8400-e29b-41d4-a716-446655440000") && ok;
+                      scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")),
+                  scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")) && ok;
   ok = ExpectFailure("uuid_generate_v1_arity",
                      Run(registry, "sb.uuid.generate_v1", {TextValue("extra")}),
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
-  ok = ExpectText("uuid_generate_v3_dns_example",
+  ok = ExpectUuid("uuid_generate_v3_dns_example",
                   Run(registry, "sb.uuid.generate_v3",
-                      {TextValue("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "uuid"),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
                        TextValue("www.example.com")}),
-                  "uuid",
-                  "5df41881-3aed-3515-88a7-2f4a814cf09e") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("5df41881-3aed-3515-88a7-2f4a814cf09e")) && ok;
   ok = ExpectNull("uuid_generate_v3_null",
                   Run(registry, "sb.uuid.generate_v3",
                       {NullValue("uuid"), TextValue("www.example.com")}),
@@ -225,12 +228,11 @@ int main() {
                      Run(registry, "sb.uuid.generate_v4", {TextValue("extra")}),
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
-  ok = ExpectText("uuid_generate_v5_dns_example",
+  ok = ExpectUuid("uuid_generate_v5_dns_example",
                   Run(registry, "sb.uuid.generate_v5",
-                      {TextValue("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "uuid"),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
                        TextValue("www.example.com")}),
-                  "uuid",
-                  "2ed6657d-e927-568b-95e1-2665a8aea6a2") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("2ed6657d-e927-568b-95e1-2665a8aea6a2")) && ok;
   ok = ExpectNull("uuid_generate_v5_null",
                   Run(registry, "sb.uuid.generate_v5",
                       {NullValue("uuid"), TextValue("www.example.com")}),
@@ -245,10 +247,9 @@ int main() {
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
 
-  ok = ExpectText("uuid_nil",
+  ok = ExpectUuid("uuid_nil",
                   Run(registry, "sb.uuid.nil", {}),
-                  "uuid",
-                  "00000000-0000-0000-0000-000000000000") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000")) && ok;
   ok = ExpectFailure("uuid_nil_arity",
                      Run(registry, "sb.uuid.nil", {TextValue("extra")}),
                      SblrStatusCode::execution_failed,
@@ -256,15 +257,15 @@ int main() {
 
   ok = ExpectInt64("uuid_version_v1",
                    Run(registry, "sb.uuid.version",
-                       {TextValue("6ba7b810-9dad-11d1-80b4-00c04fd430c8", "uuid")}),
+                       {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))}),
                    1) && ok;
   ok = ExpectInt64("uuid_version_v4",
                    Run(registry, "sb.uuid.version",
-                       {TextValue("550e8400-e29b-41d4-a716-446655440000", "uuid")}),
+                       {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000"))}),
                    4) && ok;
   ok = ExpectInt64("uuid_version_nil",
                    Run(registry, "sb.uuid.version",
-                       {TextValue("00000000-0000-0000-0000-000000000000", "uuid")}),
+                       {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000000"))}),
                    0) && ok;
   ok = ExpectNull("uuid_version_null",
                   Run(registry, "sb.uuid.version", {NullValue("uuid")}),
@@ -280,12 +281,12 @@ int main() {
 
   ok = ExpectText("uuid_timestamp_v1",
                   Run(registry, "sb.uuid.timestamp",
-                      {TextValue("968b8080-a91b-11ee-8abc-0123456789ab", "uuid")}),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("968b8080-a91b-11ee-8abc-0123456789ab"))}),
                   "timestamp_tz",
                   "2024-01-02T03:04:05Z") && ok;
   ok = ExpectText("uuid_timestamp_v7",
                   Run(registry, "sb.uuid.timestamp",
-                      {TextValue("019e176c-2968-7abc-8def-0123456789ab", "uuid")}),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019e176c-2968-7abc-8def-0123456789ab"))}),
                   "timestamp_tz",
                   "2026-05-11T14:23:45Z") && ok;
   ok = ExpectNull("uuid_timestamp_null",
@@ -297,7 +298,7 @@ int main() {
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
   ok = ExpectFailure("uuid_timestamp_unsupported_version",
                      Run(registry, "sb.uuid.timestamp",
-                         {TextValue("550e8400-e29b-41d4-a716-446655440000", "uuid")}),
+                         {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000"))}),
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
   ok = ExpectFailure("uuid_timestamp_arity",

@@ -29,18 +29,18 @@ using scratchbird::engine::sblr::SblrResult;
 using scratchbird::engine::sblr::SblrValue;
 using scratchbird::engine::sblr::SblrValuePayloadKind;
 
-constexpr std::string_view kDatabaseUuid = "019f0000-0000-7000-8000-000000033301";
-constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000033302";
-constexpr std::string_view kUserUuid = "019f0000-0000-7000-8000-000000033303";
-constexpr std::string_view kRoleUuid = "019f0000-0000-7000-8000-000000033304";
-constexpr std::string_view kNodeUuid = "019f0000-0000-7000-8000-000000033305";
-constexpr std::string_view kSessionUuid = "019f0000-0000-7000-8000-000000033306";
-constexpr std::string_view kTransactionUuid = "019f0000-0000-7000-8000-000000033307";
-constexpr std::string_view kStatementUuid = "019f0000-0000-7000-8000-000000033308";
-constexpr std::string_view kSecuritySnapshotUuid = "019f0000-0000-7000-8000-000000033309";
-constexpr std::string_view kDiagnosticUuid = "019f0000-0000-7000-8000-000000033310";
-constexpr std::string_view kParserProfileUuid = "019f0000-0000-7000-8000-000000033311";
-constexpr std::string_view kClientProtocolUuid = "019f0000-0000-7000-8000-000000033312";
+constexpr char kDatabaseUuid[] = "019f0000-0000-7000-8000-000000033301";
+constexpr char kSchemaUuid[] = "019f0000-0000-7000-8000-000000033302";
+constexpr char kUserUuid[] = "019f0000-0000-7000-8000-000000033303";
+constexpr char kRoleUuid[] = "019f0000-0000-7000-8000-000000033304";
+constexpr char kNodeUuid[] = "019f0000-0000-7000-8000-000000033305";
+constexpr char kSessionUuid[] = "019f0000-0000-7000-8000-000000033306";
+constexpr char kTransactionUuid[] = "019f0000-0000-7000-8000-000000033307";
+constexpr char kStatementUuid[] = "019f0000-0000-7000-8000-000000033308";
+constexpr char kSecuritySnapshotUuid[] = "019f0000-0000-7000-8000-000000033309";
+constexpr char kDiagnosticUuid[] = "019f0000-0000-7000-8000-000000033310";
+constexpr char kParserProfileUuid[] = "019f0000-0000-7000-8000-000000033311";
+constexpr char kClientProtocolUuid[] = "019f0000-0000-7000-8000-000000033312";
 
 SblrValue TextValue(std::string descriptor, std::string input) {
   SblrValue value;
@@ -58,6 +58,10 @@ SblrResult Run(const FunctionRegistry& registry,
                std::string function_id,
                std::vector<SblrValue> values = {}) {
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -91,6 +95,18 @@ bool ExpectOkScalar(const SblrResult& result, std::string_view case_id) {
   if (!result.ok() || result.scalar_values.size() != 1 ||
       result.mutation_attempted || result.mutation_committed) {
     std::cerr << case_id << ": expected one successful non-mutating scalar result\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectUuid(std::string_view case_id, const SblrResult& result,
+                const scratchbird::core::platform::Uuid& expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  std::vector<std::uint8_t> actual;
+  if (!scratchbird::engine::sblr::CopySblrUuidPayload(result.scalar_values.front(), &actual) ||
+      actual != std::vector<std::uint8_t>(expected.bytes.begin(), expected.bytes.end())) {
+    std::cerr << case_id << ": expected exact binary UUID payload\n";
     return false;
   }
   return true;
@@ -152,28 +168,28 @@ int main() {
   const auto& registry = package.registry;
   bool ok = true;
 
-  ok = ExpectText("SBSFC033-catalog-object-owner-bare",
+  ok = ExpectUuid("SBSFC033-catalog-object-owner-bare",
                   Run(registry, "sb.scalar.catalog_object_owner", {}),
-                  "uuid", kUserUuid) && ok;
-  ok = ExpectText("SBSFC033-catalog-object-owner-uuid",
+                  scratchbird::tests::FixtureUuidLiteral(kUserUuid)) && ok;
+  ok = ExpectUuid("SBSFC033-catalog-object-owner-uuid",
                   Run(registry, "sb.scalar.catalog_object_owner",
-                      {TextValue("uuid", std::string(kSchemaUuid))}),
-                  "uuid", kUserUuid) && ok;
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral(kSchemaUuid))}),
+                  scratchbird::tests::FixtureUuidLiteral(kUserUuid)) && ok;
 
-  ok = ExpectText("SBSFC033-catalog-object-uuid-bare",
+  ok = ExpectUuid("SBSFC033-catalog-object-uuid-bare",
                   Run(registry, "sb.scalar.catalog_object_uuid", {}),
-                  "uuid", kDatabaseUuid) && ok;
-  ok = ExpectText("SBSFC033-catalog-object-uuid-name-class",
+                  scratchbird::tests::FixtureUuidLiteral(kDatabaseUuid)) && ok;
+  ok = ExpectUuid("SBSFC033-catalog-object-uuid-name-class",
                   Run(registry, "sb.scalar.catalog_object_uuid",
                       {TextValue("character", "current_schema"), TextValue("character", "schema")}),
-                  "uuid", kSchemaUuid) && ok;
+                  scratchbird::tests::FixtureUuidLiteral(kSchemaUuid)) && ok;
 
   ok = ExpectText("SBSFC033-catalog-object-name-bare",
                   Run(registry, "sb.scalar.catalog_object_name", {}),
                   "character", "current_database") && ok;
   ok = ExpectText("SBSFC033-catalog-object-name-uuid",
                   Run(registry, "sb.scalar.catalog_object_name",
-                      {TextValue("uuid", std::string(kSchemaUuid))}),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral(kSchemaUuid))}),
                   "character", "current_schema") && ok;
 
   ok = ExpectText("SBSFC033-catalog-object-class-bare",
@@ -181,12 +197,12 @@ int main() {
                   "character", "database") && ok;
   ok = ExpectText("SBSFC033-catalog-object-class-uuid",
                   Run(registry, "sb.scalar.catalog_object_class",
-                      {TextValue("uuid", std::string(kRoleUuid))}),
+                      {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral(kRoleUuid))}),
                   "character", "role") && ok;
 
-  ok = ExpectText("SBSFC033-descriptor-snapshot-id",
+  ok = ExpectUuid("SBSFC033-descriptor-snapshot-id",
                   Run(registry, "sb.scalar.descriptor_snapshot_id", {}),
-                  "uuid", kSecuritySnapshotUuid) && ok;
+                  scratchbird::tests::FixtureUuidLiteral(kSecuritySnapshotUuid)) && ok;
 
   ok = ExpectText(
            "SBSFC033-execution-type-descriptor",
@@ -207,7 +223,7 @@ int main() {
   ok = ExpectText(
            "SBSFC033-column-descriptor-table-column",
            Run(registry, "sb.scalar.column_descriptor",
-               {TextValue("uuid", std::string(kDatabaseUuid)), TextValue("character", "database_uuid")}),
+               {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral(kDatabaseUuid)), TextValue("character", "database_uuid")}),
            "json_document",
            "{\"descriptor_kind\":\"column_descriptor\","
            "\"table_uuid\":\"019f0000-0000-7000-8000-000000033301\","

@@ -205,12 +205,24 @@ void CoreRecordAndPendingEvidenceStayInactive() {
           "the SECURITY ALTER POLICY bind request was marked success-only");
   Require(contains(core.success_only_pairs, 743, 7756),
           "the SECURITY ALTER POLICY bind result lacks success-only role");
+  {
+    auto legacy = core.candidate_activation_records.front();
+    legacy.record_version = 1;
+    Require(profile::SerializeActivationRecordV1(legacy).empty(), "legacy activation text record was admitted");
+    auto invalid = core.candidate_activation_records.front();
+    invalid.activation_set_uuid = {};
+    Require(profile::SerializeActivationRecordV1(invalid).empty(), "nil activation identity was admitted");
+    invalid = core.candidate_activation_records.front(); invalid.approved_profile_id.assign(65536,'a');
+    Require(profile::SerializeActivationRecordV1(invalid).empty(), "oversized activation label was admitted");
+  }
   for (const auto& record : core.candidate_activation_records) {
-    Require(!record.exact_nul_serialization.empty() &&
-                record.exact_nul_serialization.back() == 0 &&
+    Require(record.exact_nul_serialization.size() >= 88 &&
+                std::string(record.exact_nul_serialization.begin(), record.exact_nul_serialization.begin()+8) == "SBPACT02" &&
+                record.exact_nul_serialization[8] == 2 &&
+                std::equal(record.activation_set_uuid.begin(),record.activation_set_uuid.end(),record.exact_nul_serialization.begin()+20) &&
                 record.exact_nul_serialization ==
                     profile::SerializeActivationRecordV1(record),
-            "activation record NUL serialization drifted");
+            "activation record binary framing/UUID slot drifted");
   }
 
   const auto pending = profile::CorePendingPrivateNarrowEvidenceV1();

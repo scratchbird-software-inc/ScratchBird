@@ -9,6 +9,7 @@
 #pragma once
 
 #include "agent_package_provenance.hpp"
+#include "agent_binary_identity_fixture.hpp"
 
 #include <string>
 #include <utility>
@@ -47,15 +48,14 @@ PageProviderPackageProvenance(const std::string& uuid_prefix =
     agents::AgentPackageProvenanceRecord record;
     record.subject_kind = subject.first;
     record.subject_id = subject.second;
-    record.package_uuid = uuid_prefix + std::to_string(index);
+    record.package_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":package_uuid:" + (uuid_prefix + std::to_string(index)));
     record.package_version = "1.0." + std::to_string(index);
     record.package_version_ordinal = 100;
     record.package_digest = DigestHex(static_cast<char>('1' + index));
     record.signature_algorithm = "ed25519";
     record.signature_digest = DigestHex(static_cast<char>('4' + index));
     record.signature_verified = true;
-    record.signature_evidence_uuid =
-        "signature-evidence-" + std::to_string(index);
+    record.signature_evidence_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":signature_evidence_uuid:" + ("signature-evidence-" + std::to_string(index)));
     record.signer_identity = "scratchbird-release-signing";
     record.signer_key_id = "release-key-v1";
     record.signer_policy_id = bundle.policy.policy_id;
@@ -63,20 +63,17 @@ PageProviderPackageProvenance(const std::string& uuid_prefix =
     record.sbom_present = true;
     record.sbom_format = "spdx-2.3";
     record.sbom_digest = DigestHex(static_cast<char>('7' + index));
-    record.sbom_evidence_uuid = "sbom-evidence-" + std::to_string(index);
+    record.sbom_evidence_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":sbom_evidence_uuid:" + ("sbom-evidence-" + std::to_string(index)));
     record.sandbox_profile_id = "agent-bounded-local";
     record.sandbox_profile_digest = DigestHex(static_cast<char>('a' + index));
-    record.sandbox_evidence_uuid =
-        "sandbox-evidence-" + std::to_string(index);
+    record.sandbox_evidence_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":sandbox_evidence_uuid:" + ("sandbox-evidence-" + std::to_string(index)));
     record.revocation_status =
         agents::AgentPackageRevocationStatus::not_revoked;
     record.revocation_checked = true;
     record.revocation_generation = 10 + index;
-    record.revocation_evidence_uuid =
-        "revocation-evidence-" + std::to_string(index);
+    record.revocation_evidence_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":revocation_evidence_uuid:" + ("revocation-evidence-" + std::to_string(index)));
     record.production_package = true;
-    record.provenance_evidence_uuid =
-        "package-provenance-evidence-" + std::to_string(index);
+    record.provenance_evidence_uuid = scratchbird::tests::FixtureIdentityForLabel("package_fixture:" + uuid_prefix + ":provenance_evidence_uuid:" + ("package-provenance-evidence-" + std::to_string(index)));
     agents::FinalizeAgentPackageProvenanceDigest(&record);
     bundle.records.push_back(std::move(record));
     ++index;

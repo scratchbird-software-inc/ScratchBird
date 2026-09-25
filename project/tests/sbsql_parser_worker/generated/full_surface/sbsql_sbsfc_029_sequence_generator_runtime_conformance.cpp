@@ -1,4 +1,5 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/registered_sequence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -75,6 +76,10 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::string function_id,
                                           std::vector<SblrValue> values) {
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -135,6 +140,16 @@ bool ExpectFailure(std::string_view case_id,
 }  // namespace
 
 int main() {
+  scratchbird::tests::RegisterSequenceFixtures({
+      "SBSFC029_gen",
+      "SBSFC029_gen_zero",
+      "SBSFC029_seq_curr",
+      "SBSFC029_seq_curr_undefined",
+      "SBSFC029_seq_next",
+      "SBSFC029_seq_set_bad_bool",
+      "SBSFC029_seq_set_false",
+      "SBSFC029_seq_set_null",
+      "SBSFC029_seq_set_true"}, 2929);
   const auto package = BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;
   bool ok = true;

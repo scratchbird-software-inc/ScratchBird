@@ -50,6 +50,7 @@ MgaIndexEntryAppendBatch EmptyLike(const MgaIndexEntryAppendBatch& source) {
   MgaIndexEntryAppendBatch batch;
   batch.index = source.index;
   batch.table_uuid = source.table_uuid;
+  batch.entry_kind = source.entry_kind;
   return batch;
 }
 
@@ -58,6 +59,7 @@ MgaExactIndexEntryAppendBatch EmptyLike(
   MgaExactIndexEntryAppendBatch batch;
   batch.index = source.index;
   batch.table_uuid = source.table_uuid;
+  batch.entry_kind = source.entry_kind;
   return batch;
 }
 

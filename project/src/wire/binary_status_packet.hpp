@@ -10,6 +10,12 @@ namespace scratchbird::wire::binary_status {
 // transport. UUID fragments are always native 16-byte atoms; only a client
 // display renderer may turn them into hexadecimal UUID text.
 inline constexpr std::string_view kContract = "binary_status_json.v1";
+struct Text {
+  std::string value;
+};
+inline std::ostream& operator<<(std::ostream& out, const Text& text) {
+  return out << text.value;
+}
 struct Identity {
   std::string bytes;
   explicit Identity(const core::platform::Uuid& id)
@@ -39,6 +45,9 @@ class Stream {
     pending_.str(""); pending_.clear();
   }
  public:
+  Stream& operator<<(const Text& text) {
+    pending_ << text.value; return *this;
+  }
   Stream& operator<<(const Identity& id) {
     Flush();fields_.push_back({"uuid",public_result::Kind::uuid,id.bytes});return *this;
   }

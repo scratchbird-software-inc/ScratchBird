@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "secondary_index_delta_overlay.hpp"
+#include "secondary_index_garbage_cleanup.hpp"
 #include "uuid.hpp"
 
 #include <iostream>
@@ -177,7 +178,7 @@ int main() {
   unique_request.index_kind = SecondaryIndexKind::unique;
   const auto unique_refusal = BuildSecondaryIndexDeltaOverlay(&overlay_ledger, base_entries, delta_ledger, unique_request);
   ok &= Require(!unique_refusal.ok(), "unique deferred overlay refused");
-  ok &= Require(unique_refusal.diagnostic.diagnostic_code == "secondary_index_overlay_unique_deferred_forbidden",
+  ok &= Require(unique_refusal.diagnostic.diagnostic_code == "INDEX.UNIQUE_DEFERRAL.FORBIDDEN",
                 "unique deferred diagnostic");
 
   SecondaryIndexDeltaLedger bad_delta_ledger;
@@ -193,6 +194,52 @@ int main() {
   ok &= Require(!bad_cleanup.ok(), "missing cleanup horizon refused");
   ok &= Require(bad_cleanup.diagnostic.diagnostic_code == "secondary_index_overlay_missing_cleanup_horizon",
                 "missing cleanup horizon diagnostic");
+
+  // Pure index algorithm checks: every variable identity bit participates in
+  // lookup, including zero and delimiter bytes. These inputs do not publish
+  // storage or establish a production MGA cleanup horizon.
+  auto binary_base = Base(fixture, 6500, std::string("\0|\x1f:k", 5), 10);
+  binary_base.row_uuid.value.bytes = {0x01, 0x00, 0x1f, 0x7c, 0xff, 0x00,
+      0x70, 0x00, 0x80, 0x00, 0x3a, 0x00, 0x00, 0x00, 0x00, 0x01};
+  std::vector<SecondaryIndexBaseEntry> binary_entries{binary_base};
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    if ((bit / 8 == 6 && bit % 8 >= 4) ||
+        (bit / 8 == 8 && bit % 8 >= 6)) continue; // RFC version/variant
+    auto entry = binary_base;
+    entry.row_uuid.value.bytes[bit / 8] ^= static_cast<unsigned char>(1u << (bit % 8));
+    binary_entries.push_back(entry);
+  }
+  SecondaryIndexDeltaLedger binary_delta;
+  const auto binary_overlay = BuildSecondaryIndexDeltaOverlay(
+      &overlay_ledger, binary_entries, binary_delta, Request(fixture));
+  ok &= Require(binary_overlay.ok() && binary_overlay.entries.size() == 123,
+                "binary row identities must not collide or truncate at delimiters");
+  binary_delta.deltas.push_back(Delta(fixture, SecondaryIndexDeltaKind::delete_row,
+      binary_entries[1].row_uuid, binary_entries[1].key_payload, false, 42, true));
+  const auto deleted_binary = BuildSecondaryIndexDeltaOverlay(
+      &overlay_ledger, binary_entries, binary_delta, Request(fixture));
+  ok &= Require(deleted_binary.ok() && deleted_binary.entries.size() == 122,
+                "binary delta deletion must remove exactly one row/key identity");
+  for (const auto& entry : deleted_binary.entries)
+    ok &= Require(entry.row_uuid.value != binary_entries[1].row_uuid.value,
+                  "deleted binary row remained visible");
+  SecondaryIndexGarbageCleanupRequest cleanup;
+  cleanup.index_uuid = fixture.index_uuid;
+  cleanup.table_uuid = fixture.table_uuid;
+  cleanup.base_entries = binary_entries;
+  cleanup.cleanup_horizon_authoritative = true;
+  cleanup.authoritative_cleanup_horizon_local_transaction_id = 50;
+  for (const auto& entry : binary_entries)
+    cleanup.table_snapshot.push_back({entry.index_uuid, entry.table_uuid,
+        entry.row_uuid, entry.version_uuid, entry.key_payload, false});
+  const auto matching = RunSecondaryIndexGarbageCleanupBatch(cleanup);
+  ok &= Require(matching.ok() && matching.validation_before_ok && matching.validation_after_ok,
+                "binary garbage-cleanup comparison rejected equal snapshots");
+  cleanup.table_snapshot[0].version_uuid.value.bytes[15] ^= 1;
+  const auto mismatched = RunSecondaryIndexGarbageCleanupBatch(cleanup);
+  ok &= Require(!mismatched.ok() && !mismatched.validation_before_ok &&
+      mismatched.diagnostic.diagnostic_code == "INDEX_GARBAGE_CLEANUP.VALIDATION_REFUSED",
+      "garbage cleanup ignored a binary version identity mismatch");
 
   return ok ? 0 : 1;
 }

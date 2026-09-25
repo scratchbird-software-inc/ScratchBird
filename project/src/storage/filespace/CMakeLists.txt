@@ -26,3 +26,6 @@ add_library(sb_storage_filespace
 target_compile_features(sb_storage_filespace PUBLIC cxx_std_17)
 target_include_directories(sb_storage_filespace PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sb_storage_filespace PUBLIC sb_core_platform sb_core_uuid sb_core_metrics sb_storage_disk)
+
+# Binary cloud manifest integrity and one-way native identity path keys.
+target_link_libraries(sb_storage_filespace PRIVATE sb_core_hash)

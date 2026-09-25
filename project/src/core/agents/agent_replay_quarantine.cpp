@@ -9,6 +9,7 @@
 #include "agent_replay_quarantine.hpp"
 
 #include "agent_commercial_evidence.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -260,11 +261,10 @@ AgentRuntimeStatus ValidateCaptureAgainstCatalog(
 }
 
 void AppendReplayHistory(DurableAgentCatalogImage* catalog,
-                         const DurableAgentReplayRecord& replay) {
+                         const DurableAgentReplayRecord& replay,
+                         std::string history_uuid) {
   DurableAgentHistoryRecord history;
-  history.history_uuid =
-      replay.replay_uuid + ":replay:" +
-      std::to_string(catalog->retained_history.size() + 1);
+  history.history_uuid = std::move(history_uuid);
   history.subject_uuid = replay.action_uuid;
   history.event_kind =
       std::string("agent_replay_") + DurableAgentReplayStateName(replay.state);
@@ -598,6 +598,14 @@ AgentReplayControlResult ApplyAgentReplayControl(
     return result;
   }
 
+  const auto history_identity = uuid::GenerateEngineIdentityV7(
+      platform::UuidKind::object, request.now_microseconds / 1000);
+  if (!history_identity.ok()) {
+    result.status = AgentError("SB_AGENT_REPLAY.IDENTITY_UNAVAILABLE");
+    return result;
+  }
+  std::string history_uuid(
+      reinterpret_cast<const char*>(history_identity.value.value.bytes.data()), 16);
   DurableAgentReplayRecord replay;
   replay.replay_uuid = replay_uuid;
   replay.action_uuid = action->action_uuid;
@@ -684,7 +692,7 @@ AgentReplayControlResult ApplyAgentReplayControl(
   result.action_record = *action;
   result.replay_record = replay;
   request.catalog->replay_records.push_back(replay);
-  AppendReplayHistory(request.catalog, replay);
+  AppendReplayHistory(request.catalog, replay, std::move(history_uuid));
   const auto refreshed =
       RefreshDurableAgentCatalogAuthorityDigest(request.catalog,
                                                 request.evidence_uuid);

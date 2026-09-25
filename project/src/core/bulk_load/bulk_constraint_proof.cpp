@@ -355,6 +355,7 @@ BulkConstraintProofResult ProveUniqueConstraints(
     AddEvidence(&result, "bulk_unique_proof_persisted_conflict_absent",
                 "true");
     for (const auto& proof : request.unique_proofs) {
+      AddEvidence(&result, "bulk_unique_preflight_index", proof.index_uuid);
       AddEvidence(&result, "constraint_proof_store",
                   proof.index_uuid);
       AddEvidence(&result, "constraint_proof_hit",

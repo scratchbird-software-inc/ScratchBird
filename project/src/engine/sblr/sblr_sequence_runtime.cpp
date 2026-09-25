@@ -159,9 +159,6 @@ bool BindSblrSequenceArgumentIdentity(const SblrValue& argument,
          argument.text_value != argument.encoded_value)) return false;
     name = argument.text_value.empty() ? argument.encoded_value : argument.text_value;
     if (name.empty()) return false;
-    const auto parsed = scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-        scratchbird::core::platform::UuidKind::object, name);
-    if (parsed.ok()) { identity = parsed.value.value; name.clear(); }
   } else {
     return false;
   }

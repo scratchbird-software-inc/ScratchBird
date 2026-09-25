@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -294,6 +295,9 @@ struct EngineProjectionEnvelope {
   // Expression occurrence paths, not object names. Executable identities stay
   // binary through binding; a function display/profile label is not authority.
   std::vector<std::pair<std::string, EngineUuid>> function_identities;
+  // UUID scalar literals retain all 128 data bits (including nil/non-v7).
+  // Paths identify expression occurrences; these values confer no authority.
+  std::vector<std::pair<std::string, EngineUuid>> uuid_literals;
 };
 
 struct EngineOrderingEnvelope {
@@ -321,6 +325,9 @@ struct EngineResultShape {
   std::string result_kind;
   std::vector<EngineDescriptor> columns;
   std::vector<EngineRowValue> rows;
+  // Engine-derived outer-join widening, retained from validated execution.
+  // Empty means the admitted descriptors already express output nullability.
+  std::vector<bool> null_extended_columns;
   // Frozen by canonical query dispatch from the validated output bindings,
   // never reconstructed from row text or the first non-NULL value.
   std::shared_ptr<const EngineQueryResultMetadataV1> query_metadata;
@@ -486,7 +493,7 @@ struct EngineRequestContext {
   std::string current_timestamp;
   std::string current_monotonic_ns;
   std::string deterministic_random_bytes_hex;
-  std::string deterministic_uuid_text;
+  std::optional<scratchbird::core::platform::Uuid> deterministic_uuid;
   EngineApiU64 deterministic_random_u64 = 0;
   bool deterministic_random_u64_present = false;
   bool security_context_present = false;

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "core/datatypes/admitted_datatype_cohort.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 
 #include "api_diagnostics.hpp"
@@ -414,8 +415,9 @@ bool BuildMgaContextualTextProjectionMaterialV2(
   const bool catalog_context_exact =
       CanonicalNonNilMigrationUuid(
           context.datatype_catalog_snapshot_uuid) &&
-      context.datatype_catalog_generation == 1 &&
-      context.datatype_registry_generation == 1 &&
+      core::datatypes::IsAdmittedDatatypeCohort(
+          context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+          context.datatype_registry_generation) &&
       CopyContextualUuidV2(
           context.datatype_catalog_snapshot_uuid,
           &output->public_projection.catalog_snapshot_uuid);

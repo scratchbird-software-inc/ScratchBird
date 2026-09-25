@@ -1,4 +1,5 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/projection_uuid_literal_checks.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -49,8 +50,13 @@ constexpr const char* kVersionA = "019f4400-0000-7000-8000-000000000301";
 constexpr const char* kVersionB = "019f4400-0000-7000-8000-000000000302";
 constexpr const char* kUnknownTable = "019f4400-0000-7000-8000-000000000999";
 constexpr std::uint64_t kExpectedVisibleRows = 2;
-constexpr std::uint64_t kExpectedRowStoreBytes = 728;
-constexpr std::uint64_t kExpectedTableSizeWithIndexes = 1538;
+// Independent accounting of the fixture's documented relation-size estimate:
+// one table (196), two row versions (220 each), one index (228), and two
+// index entries (191 each). Each identity occupies 16 bytes, including nil.
+// These estimates describe retained metadata/value payloads, not page sizes.
+constexpr std::uint64_t kExpectedRowStoreBytes = 196 + 2 * 220;
+constexpr std::uint64_t kExpectedTableSizeWithIndexes =
+    kExpectedRowStoreBytes + 228 + 2 * 191;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -225,6 +231,10 @@ sblr::SblrResult RunFunction(const functions::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<SblrValue> values) {
   functions::FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -285,7 +295,13 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
     const auto prefix = "projection_0_arg_" + std::to_string(index) + "_";
     envelope.operands.push_back({"text", prefix + "name", arguments[index].name});
     envelope.operands.push_back({"text", prefix + "type", arguments[index].type_name});
-    envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
+    if (arguments[index].type_name == "uuid" && !arguments[index].is_null) {
+      Require(arguments[index].encoded_value.empty(), "UUID projection fixture has a text mirror");
+      envelope.operands.push_back(scratchbird::tests::sbsql::UuidProjectionOperandForTest(
+          prefix + "value", arguments[index].binary_value));
+    } else {
+      envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
+    }
     envelope.operands.push_back({"text", prefix + "is_null", arguments[index].is_null ? "true" : "false"});
   }
   return scratchbird::tests::sbsql::CanonicalizeProjectionEnvelopeForTest(
@@ -328,14 +344,14 @@ int main() {
 
   const auto package = functions::BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;
-  bool ok = true;
+  bool ok = scratchbird::tests::CheckProjectionUuidLiteralCarriers();
 
   ok = ExpectUint64("SBSFC044-relation-row-estimate-catalog",
                     RunFunction(registry, context, "sb.scalar.relation_row_estimate", {}),
                     kExpectedVisibleRows) && ok;
   ok = ExpectUint64("SBSFC044-relation-row-estimate-table",
                     RunFunction(registry, context, "sb.scalar.relation_row_estimate",
-                                {TextValue("uuid", kTableUuid)}),
+                                {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101"))}),
                     kExpectedVisibleRows) && ok;
   ok = ExpectNull("SBSFC044-relation-row-estimate-null",
                   RunFunction(registry, context, "sb.scalar.relation_row_estimate",
@@ -343,18 +359,18 @@ int main() {
                   "uint64") && ok;
   ok = ExpectNull("SBSFC044-relation-row-estimate-unknown",
                   RunFunction(registry, context, "sb.scalar.relation_row_estimate",
-                              {TextValue("uuid", kUnknownTable)}),
+                              {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000999"))}),
                   "uint64") && ok;
   ok = ExpectUint64("SBSFC044-table-size-catalog",
                     RunFunction(registry, context, "sb.scalar.table_size", {}),
                     kExpectedTableSizeWithIndexes) && ok;
   ok = ExpectUint64("SBSFC044-table-size-table-default",
                     RunFunction(registry, context, "sb.scalar.table_size",
-                                {TextValue("uuid", kTableUuid)}),
+                                {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101"))}),
                     kExpectedTableSizeWithIndexes) && ok;
   ok = ExpectUint64("SBSFC044-table-size-table-no-indexes",
                     RunFunction(registry, context, "sb.scalar.table_size",
-                                {TextValue("uuid", kTableUuid), BooleanValue(false)}),
+                                {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101")), BooleanValue(false)}),
                     kExpectedRowStoreBytes) && ok;
   ok = ExpectNull("SBSFC044-table-size-null-table",
                   RunFunction(registry, context, "sb.scalar.table_size",
@@ -362,27 +378,25 @@ int main() {
                   "uint64") && ok;
   ok = ExpectNull("SBSFC044-table-size-null-include-indexes",
                   RunFunction(registry, context, "sb.scalar.table_size",
-                              {TextValue("uuid", kTableUuid), NullValue("boolean")}),
+                              {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101")), NullValue("boolean")}),
                   "uint64") && ok;
   ok = ExpectNull("SBSFC044-table-size-unknown",
                   RunFunction(registry, context, "sb.scalar.table_size",
-                              {TextValue("uuid", kUnknownTable)}),
+                              {sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000999"))}),
                   "uint64") && ok;
 
   ok = ExpectProjectionUint64(
            "SBSFC044-relation-row-estimate-projection",
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.relation_row_estimate",
-                                                           {api::EngineProjectionFunctionArgument{
-                                                               "table_uuid", "uuid", kTableUuid, false}}),
+                                                           {scratchbird::tests::sbsql::UuidProjectionArgumentForTest("table_uuid", scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101"))}),
                                         api::EngineApiRequest{}}),
            kExpectedVisibleRows) && ok;
   ok = ExpectProjectionUint64(
            "SBSFC044-table-size-projection-no-indexes",
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.table_size",
-                                                           {api::EngineProjectionFunctionArgument{
-                                                                "table_uuid", "uuid", kTableUuid, false},
+                                                           {scratchbird::tests::sbsql::UuidProjectionArgumentForTest("table_uuid", scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101")),
                                                             api::EngineProjectionFunctionArgument{
                                                                 "include_indexes", "boolean", "false", false}}),
                                         api::EngineApiRequest{}}),

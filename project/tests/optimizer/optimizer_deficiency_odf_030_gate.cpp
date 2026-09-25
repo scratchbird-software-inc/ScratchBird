@@ -175,6 +175,31 @@ bool AcceptedKindsAreClassified() {
   return true;
 }
 
+bool EpochSubstitutionsAreRefused() {
+  using Request = dml::DmlTargetAccessPlanRequest;
+  struct EpochCase {
+    std::uint64_t Request::* observed;
+    const char* diagnostic;
+  };
+  const EpochCase cases[] = {
+      {&Request::observed_catalog_epoch, "stale catalog epoch"},
+      {&Request::observed_security_epoch, "stale security epoch"},
+      {&Request::observed_policy_epoch, "stale policy epoch"},
+      {&Request::observed_stats_epoch, "stale stats epoch"}};
+  for (const auto& item : cases) {
+    for (const int direction : {-1, 1}) {
+      auto request = BaseRequest();
+      request.predicate_kind = "row_uuid_eq";
+      request.row_uuid = Id(3);
+      request.*item.observed += direction;
+      const auto plan = dml::BuildDmlTargetAccessPlan(request);
+      if (!Require(!plan.ok && Has(plan.diagnostics, item.diagnostic),
+                   "substituted epoch reached a DML access plan")) return false;
+    }
+  }
+  return true;
+}
+
 bool UnsafeRoutesRefuseWithExactDiagnostics() {
   {
     auto request = BaseRequest();
@@ -267,6 +292,7 @@ bool EvidenceHasNoRuntimeDocDependency() {
 
 int main() {
   if (!AcceptedKindsAreClassified()) return 1;
+  if (!EpochSubstitutionsAreRefused()) return 1;
   if (!UnsafeRoutesRefuseWithExactDiagnostics()) return 1;
   if (!EvidenceHasNoRuntimeDocDependency()) return 1;
   return 0;

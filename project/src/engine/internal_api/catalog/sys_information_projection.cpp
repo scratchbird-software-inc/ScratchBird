@@ -2509,7 +2509,7 @@ const std::vector<SysInformationProjectionDefinition>& BuiltinSysInformationProj
                   Column("metric_unit", "text"),
                   Column("value", "uint64"),
                   Column("sample_count", "uint64"),
-                  Column("label_summary", "text", true),
+                  Column("label_summary", "binary", true),
                   Column("producer", "text", true),
                   Column("source_state", "text")},
                  {SysInformationSourceKind::ipar_metric_counter,
@@ -4014,7 +4014,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "metric_unit", counter.metric_unit);
       AddField(&row, "value", std::to_string(counter.value));
       AddField(&row, "sample_count", std::to_string(counter.sample_count));
-      AddField(&row, "label_summary", counter.label_summary);
+      AddField(&row, "label_summary", SysInformationBinaryValue{counter.label_summary});
       AddField(&row, "producer", counter.producer);
       AddField(&row, "source_state", counter.source_state);
       result.rows.push_back(std::move(row));

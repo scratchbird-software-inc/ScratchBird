@@ -1815,6 +1815,7 @@ target_compile_features(optimizer_deficiency_odf_031_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_031_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1835,6 +1836,7 @@ target_compile_features(optimizer_deficiency_odf_032_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_032_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1855,6 +1857,7 @@ target_compile_features(optimizer_deficiency_odf_033_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_033_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1915,6 +1918,7 @@ target_compile_features(optimizer_deficiency_odf_036_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_036_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1935,6 +1939,7 @@ target_compile_features(optimizer_deficiency_odf_037_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_037_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1955,6 +1960,7 @@ target_compile_features(optimizer_deficiency_odf_038_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_038_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1975,6 +1981,7 @@ target_compile_features(optimizer_deficiency_odf_039_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_039_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -1995,6 +2002,7 @@ target_compile_features(optimizer_deficiency_odf_040_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_040_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2015,6 +2023,7 @@ target_compile_features(optimizer_deficiency_odf_041_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_041_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2035,6 +2044,7 @@ target_compile_features(optimizer_deficiency_odf_042_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_042_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2055,6 +2065,7 @@ target_compile_features(optimizer_deficiency_odf_043_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_043_gate
   PRIVATE
+    sb_engine
     sb_core_index
     sb_core_uuid
     sb_engine_internal_api
@@ -2076,6 +2087,7 @@ target_compile_features(optimizer_deficiency_odf_044_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_044_gate
   PRIVATE
+    sb_engine
     sb_core_index
     sb_core_uuid
     sb_engine_internal_api
@@ -2117,6 +2129,7 @@ target_compile_features(optimizer_deficiency_odf_046_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_046_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2137,6 +2150,7 @@ target_compile_features(optimizer_deficiency_odf_047_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_047_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2157,6 +2171,7 @@ target_compile_features(optimizer_deficiency_odf_048_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_048_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2217,6 +2232,7 @@ target_compile_features(optimizer_deficiency_odf_050_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_050_gate
   PRIVATE
+    sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_database
@@ -2454,6 +2470,7 @@ target_compile_features(optimizer_deficiency_odf_063_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_063_gate
   PRIVATE
+      sb_engine
     sb_core_uuid
     sb_engine_internal_api
     sb_storage_page

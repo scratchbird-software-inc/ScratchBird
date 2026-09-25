@@ -89,7 +89,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
   if (references.empty() || references.size() > 2)
     return refuse("DATATYPE.DESCRIPTOR.INVALID", "predicate_datatype_count");
   auto& datatypes = result.datatypes;
-  datatypes.identity.vector_uuid = wire::kTypedUpdateDatatypeSnapshotUuid;
+  datatypes.identity.vector_uuid = context.datatype_catalog_snapshot_uuid.bytes;
   datatypes.identity.vector_generation = descriptor.datatype_registry_generation;
   datatypes.identity.owner_descriptor_uuid = descriptor.descriptor_uuid;
   datatypes.identity.owner_descriptor_generation = descriptor.descriptor_generation;

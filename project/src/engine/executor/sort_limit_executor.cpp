@@ -716,6 +716,8 @@ bool CompareOrderValues(
         const auto compared = dt::CompareDatatypeValues(request);
         if (!compared.ok()) {
           *refusal_detail = compared.diagnostic.diagnostic_code;
+          for (const auto& argument : compared.diagnostic.arguments)
+            if (argument.key == "detail") *refusal_detail += ":" + argument.value;
           return false;
         }
         *comparison = compared.comparison;
@@ -1142,7 +1144,17 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
   }
   std::size_t sort_key_bound = 0;
   std::size_t numeric_backend_workspace_bound = 0;
-  if (type_id == dt::CanonicalTypeId::character) {
+  if (type_id == dt::CanonicalTypeId::character &&
+      term.text_seed.comparison_profile == scratchbird::core::resources::CollationProfile::utf8_binary) {
+    // TextComparisonCohort carries three binary UUIDs and three u64 epochs/
+    // profile values after its three-byte discriminator, independent of names.
+    sort_key_bound = payload_bytes;
+    if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 3 + 3 * 16 + 3 * 8)) {
+      plan.diagnostic = Refusal("QOW-DIAG-QRY-010-EQUALITY-KEY-REFUSAL-V1",
+                                "binary character equality-key size overflowed");
+      return plan;
+    }
+  } else if (type_id == dt::CanonicalTypeId::character) {
     sort_key_bound = doubled_payload;
     if (!CheckedEqualityKeySizeAdd(&sort_key_bound, 32) ||
         !CheckedEqualityKeySizeAdd(

@@ -12,6 +12,7 @@
 #include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
 
+#include "core/datatypes/admitted_datatype_cohort.hpp"
 #include <algorithm>
 #include <string>
 #include <utility>
@@ -22,9 +23,6 @@ namespace {
 namespace datatypes = scratchbird::core::datatypes;
 namespace uuid = scratchbird::core::uuid;
 namespace sblr = scratchbird::engine::sblr;
-
-constexpr EngineUuid kCatalogSnapshotUuid =
-    EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
 
 EngineApiDiagnostic Diagnostic(std::string code,
                                std::string key,
@@ -103,10 +101,8 @@ bool LiveContextAdmitted(const EngineRequestContext& context) {
          ExactNonNilUuid(context.statement_uuid) &&
          ExactNonNilUuid(context.statement_receipt_uuid) &&
          ExactNonNilUuid(context.statement_snapshot_uuid) &&
-         context.datatype_catalog_snapshot_uuid ==
-             kCatalogSnapshotUuid &&
-         context.datatype_catalog_generation == 1 &&
-         context.datatype_registry_generation == 1;
+         datatypes::IsAdmittedDatatypeCohort(context.datatype_catalog_snapshot_uuid,
+             context.datatype_catalog_generation, context.datatype_registry_generation);
 }
 
 bool ExactBuiltinEqualitySnapshot(

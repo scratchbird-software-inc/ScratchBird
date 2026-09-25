@@ -7231,6 +7231,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   mark_update_phase("descriptor_and_batch_context");
 
   auto result = MakeCrudSuccessResult<EngineUpdateRowsResult>(request.context, "dml.update_rows");
+  result.transaction_uuid = request.context.transaction_uuid;
+  result.local_transaction_id = request.context.local_transaction_id;
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
                          loaded.evidence.end());
@@ -7499,6 +7501,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const EngineUuid version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
+    row_record.creator_transaction_uuid = request.context.transaction_uuid;
     row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = version_uuid;
@@ -7510,6 +7513,55 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     row_record.values = std::move(values);
     auto index_key_states =
         BuildStagedUpdateIndexKeyStates(batch_context, row, row_record.values);
+    const bool retain_stage_logical_values =
+        !suppress_payload_rows || executable_trigger_descriptors_present ||
+        update_toast_required ||
+        UpdatePlanHasMaintainableIndexWork(batch_context);
+    std::vector<std::pair<std::string, std::string>> stage_logical_values;
+    if (retain_stage_logical_values) {
+      stage_logical_values = row_record.values;
+    }
+    staged_update_rows.push_back({std::move(row_record),
+                                  row,
+                                  std::move(stage_logical_values),
+                                  {},
+                                  std::move(index_key_states),
+                                  encoded_bytes,
+                                  update_toast_required});
+    if (UpdateMutationWindowActive(effective_request) &&
+        static_cast<EngineApiU64>(staged_update_rows.size()) >=
+            effective_request.limit) {
+      break;
+    }
+  }
+  if (UpdateMutationWindowActive(effective_request)) {
+    result.evidence.push_back({"mutation_row_window_qualified_rows_seen",
+                               std::to_string(mutation_window_qualified_rows_seen)});
+    result.evidence.push_back({"mutation_row_window_skipped_rows",
+                               std::to_string(mutation_window_skipped_rows)});
+    result.evidence.push_back({"mutation_row_window_applied_rows",
+                               std::to_string(staged_update_rows.size())});
+  }
+  if (no_effect_count != 0) {
+    result.evidence.push_back(
+        {"dml_update_rows_no_effect_count", std::to_string(no_effect_count)});
+  }
+  mark_update_phase("stage_update_rows");
+
+  auto hot_append_context = relation_store.OpenHotAppendContext();
+  if (!staged_update_rows.empty()) {
+    std::vector<CrudRowVersionRecord*> prepared_rows;
+    prepared_rows.reserve(staged_update_rows.size());
+    for (auto& staged : staged_update_rows) prepared_rows.push_back(&staged.row_record);
+    const auto prepared = hot_append_context.PrepareRowVersionSequences(prepared_rows);
+    if (prepared.error) {
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+          request.context, "dml.update_rows", prepared);
+    }
+  }
+  for (auto& staged : staged_update_rows) {
+    const auto& row = staged.original_row;
+    const auto& row_record = staged.row_record;
     auto hot_plus_decision = BuildHotPlusDecisionForStagedUpdate(
         request,
         hot_plus_inventory.inventory,
@@ -7517,9 +7569,9 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         row,
         row_record,
         row_record.values,
-        &index_key_states,
-        encoded_bytes,
-        update_toast_required,
+        &staged.index_key_states,
+        staged.encoded_bytes,
+        staged.toast_required,
         hot_update_shape_enabled);
     if (!hot_plus_decision.ok) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -7534,7 +7586,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                               row,
                                               row_record.values,
                                               hot_plus_decision.decision,
-                                              &index_key_states);
+                                              &staged.index_key_states);
     hot_update_counters.exact_secondary_churn_avoided += unaffected_avoided;
     hot_update_counters.index_churn_avoided += unaffected_avoided;
     const std::string hot_plus_decision_name =
@@ -7573,40 +7625,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                      "proof",
                      hot_plus_decision_name);
     }
-    const bool retain_stage_logical_values =
-        !suppress_payload_rows || executable_trigger_descriptors_present ||
-        update_toast_required ||
-        UpdatePlanHasMaintainableIndexWork(batch_context);
-    std::vector<std::pair<std::string, std::string>> stage_logical_values;
-    if (retain_stage_logical_values) {
-      stage_logical_values = row_record.values;
-    }
-    staged_update_rows.push_back({std::move(row_record),
-                                  row,
-                                  std::move(stage_logical_values),
-                                  std::move(hot_plus_decision.decision),
-                                  std::move(index_key_states),
-                                  encoded_bytes,
-                                  update_toast_required});
-    if (UpdateMutationWindowActive(effective_request) &&
-        static_cast<EngineApiU64>(staged_update_rows.size()) >=
-            effective_request.limit) {
-      break;
-    }
+    staged.hot_plus_decision = std::move(hot_plus_decision.decision);
   }
-  if (UpdateMutationWindowActive(effective_request)) {
-    result.evidence.push_back({"mutation_row_window_qualified_rows_seen",
-                               std::to_string(mutation_window_qualified_rows_seen)});
-    result.evidence.push_back({"mutation_row_window_skipped_rows",
-                               std::to_string(mutation_window_skipped_rows)});
-    result.evidence.push_back({"mutation_row_window_applied_rows",
-                               std::to_string(staged_update_rows.size())});
-  }
-  if (no_effect_count != 0) {
-    result.evidence.push_back(
-        {"dml_update_rows_no_effect_count", std::to_string(no_effect_count)});
-  }
-  mark_update_phase("stage_update_rows");
 
   if (!staged_update_rows.empty()) {
     if (descriptor_atomic_execution &&
@@ -7674,7 +7694,6 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     }
     mark_update_phase("persist_large_values");
 
-    auto hot_append_context = relation_store.OpenHotAppendContext();
     std::vector<std::uint64_t> written_event_sequences;
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         effective_request.context,
@@ -8034,6 +8053,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
 
   auto result = MakeCrudSuccessResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows");
+  result.transaction_uuid = effective_request.context.transaction_uuid;
+  result.local_transaction_id = effective_request.context.local_transaction_id;
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
                          loaded.evidence.end());
@@ -8150,6 +8171,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     AddDeleteTrace(&batch_context, "delete.row.tombstone", "write", row.row_uuid);
     CrudRowVersionRecord row_record;
     row_record.creator_tx = effective_request.context.local_transaction_id;
+    row_record.creator_transaction_uuid = effective_request.context.transaction_uuid;
     row_record.table_uuid = effective_request.target_table.uuid;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = GenerateCrudEngineUuid("row");

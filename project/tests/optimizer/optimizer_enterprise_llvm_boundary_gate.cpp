@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <utility>
 
 namespace native = scratchbird::engine::native_compile;
 
@@ -155,6 +157,47 @@ void TestForbiddenAuthorityInputsRefuse() {
           "protocol/client authority was accepted by LLVM compile boundary");
 }
 
+void TestRejectedInputsCannotFallback() {
+  const std::vector<std::pair<std::string, std::string>> rejected{
+      {"sql:SELECT 1", "sql_compile_forbidden"},
+      {"sblr:parser_ast:expr", "parser_authority_forbidden"},
+      {"sblr:reference_plan:predicate", "reference_authority_forbidden"},
+      {"sblr:protocol_frame:predicate", "protocol_or_client_authority_forbidden"},
+      {"engine_ir:predicate", "engine_ir_validation_required"},
+      {"sblr:catalog_security:predicate", "authority_check_forbidden"},
+      {"sblr:mga_visibility:predicate", "mga_visibility_forbidden"},
+      {"sblr:dml_mutation:commit", "mutation_side_effect_forbidden"},
+      {"sblr:cluster:udr_call", "cluster_operation_forbidden_noncluster"},
+      {"unclassified", "sblr_or_engine_ir_required"},
+      {"", "module_payload_required"}};
+  for (const auto* payload : {"sblr:udr_call", "sblr:logging_function"}) {
+    auto request = BaseRequest();
+    request.module_payload = payload;
+    request.allow_interpreter_fallback = true;
+    request.simulate_backend_unavailable = true;
+    const auto result = native::CompileNativeUnit(request);
+    Require(result.ok && result.fallback_used &&
+                result.effective_mode == native::NativeCompileEffectiveMode::interpreter,
+            "admitted interpreter-only operation lost fallback eligibility");
+  }
+  for (const auto& [payload, reason] : rejected) {
+    for (const auto* profile : {"native_compile.jit_optional", "native_compile.disabled"}) {
+      for (const bool unavailable : {false, true}) {
+        auto request = BaseRequest();
+        request.module_payload = payload;
+        request.policy_profiles = {profile};
+        request.allow_interpreter_fallback = true;
+        request.simulate_backend_unavailable = unavailable;
+        const auto result = native::CompileNativeUnit(request);
+        Require(!result.ok && !result.fallback_used &&
+                    result.effective_mode == native::NativeCompileEffectiveMode::refused &&
+                    result.diagnostic_detail == reason && !result.llvm_memory_reserved,
+                "rejected native input reached memory admission or interpreter fallback");
+      }
+    }
+  }
+}
+
 void TestEngineIrRequiresValidation() {
   auto unvalidated = BaseRequest();
   unvalidated.module_payload = "engine_ir:predicate:col_i32_gt_const";
@@ -182,6 +225,7 @@ int main() {
   TestRequiredUnavailableRefuses();
   TestUnavailableSimulationRequiresFixture();
   TestForbiddenAuthorityInputsRefuse();
+  TestRejectedInputsCannotFallback();
   TestEngineIrRequiresValidation();
   std::cout << "optimizer enterprise LLVM boundary gate passed\n";
   return 0;

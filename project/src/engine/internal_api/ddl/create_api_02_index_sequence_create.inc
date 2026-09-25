@@ -478,8 +478,12 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         canonical_type_id ==
             scratchbird::core::datatypes::CanonicalTypeId::decimal ||
         canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::character;
-    // Fresh descriptors for the six manifest-admitted scalar rows are issued
+            scratchbird::core::datatypes::CanonicalTypeId::character ||
+        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::uint64 ||
+        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::real64 ||
+        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::uuid ||
+        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::geometry;
+    // Fresh descriptors for the manifest-admitted datatype rows are issued
     // only from the exact datatype receipt carried by this DDL request. Other
     // canonical types retain their existing catalog projection and cannot be
     // inferred into this registry from a name, width, enum, or random UUID.
@@ -510,8 +514,8 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       engine_type_uuid = identity.row.type_uuid;
     }
     // Validate the supplied binary binding against the catalog that owns this
-    // datatype. The six-row scalar codec registry is not the complete builtin
-    // catalog: UUID and other admitted builtin types retain their catalog row.
+    // datatype. The codec registry is not the complete builtin
+    // catalog; unregistered types cannot acquire codec authority by inference.
     const auto descriptor_generation = persist_full_registry_tuple
         ? identity.row.descriptor_generation
         : type_row.manifest.descriptor_rows.front().descriptor_epoch;

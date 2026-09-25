@@ -12,6 +12,8 @@
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "dml/select_api.hpp"
 #include "dml/delete_predicate_binding.hpp"
 #include "dml/delete_effect_authority_provider.hpp"
@@ -27,6 +29,7 @@
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
@@ -419,6 +422,25 @@ api::EngineIndexDefinition UniqueIdIndex() {
   return index;
 }
 
+void BindColumnDatatype(api::EngineColumnDefinition* column) {
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "column fixture datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
+      dt::CanonicalTypeIdFromStableName(column->descriptor.canonical_type_name));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "column fixture datatype missing from catalog");
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  Require(binding.ok, "column fixture datatype codec binding unavailable");
+  column->descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column->descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column->descriptor.type_uuid = binding.row.type_uuid;
+}
+
 api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
@@ -430,6 +452,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
+  BindColumnDatatype(&column);
   return column;
 }
 
@@ -439,6 +462,7 @@ api::EngineColumnDefinition JoinColumn(std::uint32_t ordinal, std::string name) 
       FixtureIdentity(0x500 + ordinal);
   column.descriptor.descriptor_uuid =
       FixtureIdentity(0x600 + ordinal);
+  BindColumnDatatype(&column);
   return column;
 }
 
@@ -446,16 +470,16 @@ api::EngineColumnDefinition QueryPlanInt64Column(std::uint32_t ordinal,
                                                  std::string name,
                                                  api::EngineUuid column_uuid,
                                                  api::EngineUuid descriptor_uuid) {
-  (void)descriptor_uuid;
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
-  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
+  column.descriptor.descriptor_uuid = descriptor_uuid;
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
   column.descriptor.encoded_descriptor =
-      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "int64"}, {"nullable", "false"}}, {{"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712")}, {"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711")}}});
+      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "int64"}, {"nullable", "false"}}, {}});
+  BindColumnDatatype(&column);
   return column;
 }
 
@@ -471,6 +495,7 @@ api::EngineColumnDefinition QueryPlanBoolColumn(std::uint32_t ordinal,
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "boolean";
   column.descriptor.encoded_descriptor = "type=boolean";
+  BindColumnDatatype(&column);
   return column;
 }
 
@@ -3831,16 +3856,25 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   api::EngineColumnDefinition text_column;
   text_column.names.push_back(Name("payload"));
   text_column.nullable = true;
+  text_column.requested_column_uuid = FixtureIdentity(0xe10);
+  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe20);
+  text_column.descriptor.charset_uuid = charset.resource_descriptor.resource_uuid;
+  text_column.descriptor.collation_uuid = charset.resource_descriptor.default_collation_uuid;
   text_column.descriptor.descriptor_kind = "scalar";
   text_column.descriptor.canonical_type_name = "text";
   text_column.descriptor.encoded_descriptor =
       scratchbird::tests::NativeCatalogColumnFixture({{{"type", "text"}, {"character_length", "256"}}, {{"charset_uuid", charset.resource_descriptor.resource_uuid}, {"collation_uuid", charset.resource_descriptor.default_collation_uuid}}});
+  BindColumnDatatype(&text_column);
   table_request.columns.push_back(text_column);
   text_column.ordinal = 1;
+  text_column.requested_column_uuid = FixtureIdentity(0xe11);
+  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe21);
   text_column.names = {Name("required_payload")};
   text_column.nullable = false;
   table_request.columns.push_back(text_column);
   text_column.ordinal = 2;
+  text_column.requested_column_uuid = FixtureIdentity(0xe12);
+  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe22);
   text_column.names = {Name("wide_payload")};
   text_column.nullable = true;
   text_column.descriptor.encoded_descriptor =
@@ -4875,6 +4909,36 @@ void VerifyTypedUpdateDescriptorContract(
   resource_lookup.descriptor_generation = bound.descriptor_ref.descriptor_generation;
   resource_lookup.structural_occurrence_id = 1;
   const auto resource_inspection = api::InspectMgaDmlUpdateDurableOperationForTestingV1(context, resource_lookup);
+  // A filesystem key is not descriptor authority. A valid authenticated frame
+  // moved under another native identity must not become that descriptor.
+  {
+    namespace durable = api::mga_update_durable_detail;
+    api::MgaDmlUpdateDurableOperationIdentityV1 path_identity;
+    path_identity.descriptor_uuid = resource_lookup.descriptor_uuid;
+    const auto original_path = durable::DmlUpdateDurableDescriptorPath(context, path_identity);
+    auto other_lookup = resource_lookup;
+    other_lookup.descriptor_uuid.bytes.back() ^= 0x80;
+    path_identity.descriptor_uuid = other_lookup.descriptor_uuid;
+    const auto other_path = durable::DmlUpdateDurableDescriptorPath(context, path_identity);
+    Require(!original_path.empty() && !other_path.empty() &&
+                !std::filesystem::exists(other_path), "durable rename fixture invalid");
+    std::filesystem::rename(original_path, other_path);
+    const auto wrong_identity = api::InspectMgaDmlUpdateDurableOperationForTestingV1(
+        context, other_lookup);
+    const auto wrong_recovery = api::RecoverMgaDmlUpdateDurableOperationChainV1(
+        context, other_lookup);
+    Require(wrong_identity.outcome == api::MgaDmlUpdateDurableOperationOutcomeV1::stale &&
+                wrong_identity.journal.empty() && !wrong_recovery.ok() &&
+                !wrong_recovery.validated_handle.valid(),
+            "renamed descriptor file supplied another binary identity");
+    Require(!api::CorruptMgaDmlUpdateDurableExtentByteForTestingV1(
+                context, other_lookup, 0, 1),
+            "test lookup authenticated a renamed descriptor");
+    std::filesystem::rename(other_path, original_path);
+    Require(api::InspectMgaDmlUpdateDurableOperationForTestingV1(context, resource_lookup)
+                .outcome == api::MgaDmlUpdateDurableOperationOutcomeV1::committed,
+            "original descriptor identity did not recover after restoring path");
+  }
   update_wire::TypedUpdateResourceBudgetCarrier durable_budget;
   update_wire::TypedUpdateCarrierError resource_error;
   Require(update_wire::DecodeAndValidateTypedUpdateResourceBudget(

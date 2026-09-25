@@ -16,6 +16,9 @@ CMAKE = SBLR_ROOT / "CMakeLists.txt"
 AUTHORITY = SBLR_ROOT / "CANONICAL_QUERY_EXECUTION_AUTHORITY.md"
 
 MODULES = {
+    "canonical_query_window_order_binding.cpp": (
+        40, 2_000, "SB_ENGINE_CANONICAL_QUERY_WINDOW_ORDER_BINDING_AUTHORITY", 2,
+    ),
     "canonical_query_execute.cpp": (
         465,
         21_614,
@@ -60,7 +63,7 @@ MODULES = {
     ),
     "canonical_query_window_preparation.cpp": (
         1_255,
-        59_764,
+        59_950,
         "SB_ENGINE_CANONICAL_QUERY_WINDOW_PREPARATION_AUTHORITY",
         2,
     ),
@@ -72,7 +75,7 @@ MODULES = {
     ),
     "canonical_query_grouped_aggregate_preparation.cpp": (
         1_599,
-        75_454,
+        75_496,
         "SB_ENGINE_CANONICAL_QUERY_GROUPED_AGGREGATE_PREPARATION_AUTHORITY",
         2,
     ),
@@ -90,13 +93,13 @@ MODULES = {
     ),
     "canonical_query_correlated_registration.cpp": (
         893,
-        40_698,
+        40_718,
         "SB_ENGINE_CANONICAL_QUERY_CORRELATED_REGISTRATION_AUTHORITY",
         2,
     ),
     "canonical_query_filter_registration.cpp": (
         383,
-        18_148,
+        18_166,
         "SB_ENGINE_CANONICAL_QUERY_FILTER_REGISTRATION_AUTHORITY",
         2,
     ),
@@ -137,8 +140,8 @@ MODULES = {
         2,
     ),
     "canonical_query_object_free_profile.cpp": (
-        250,
-        11_934,
+        256,
+        12_200,
         "SB_ENGINE_CANONICAL_QUERY_OBJECT_FREE_PROFILE_AUTHORITY",
         2,
     ),
@@ -155,14 +158,14 @@ MODULES = {
         2,
     ),
     "canonical_query_pivot_composition.cpp": (
-        1_574,
+        1_575,
         72_281,
         "SB_ENGINE_CANONICAL_QUERY_PIVOT_COMPOSITION_AUTHORITY",
         2,
     ),
     "canonical_query_predicate_support.cpp": (
         428,
-        18_613,
+        18_674,
         "SB_ENGINE_CANONICAL_QUERY_PREDICATE_SUPPORT_AUTHORITY",
         2,
     ),
@@ -174,7 +177,7 @@ MODULES = {
     ),
     "canonical_query_recursive_registration.cpp": (
         971,
-        43_851,
+        43_873,
         "SB_ENGINE_CANONICAL_QUERY_RECURSIVE_REGISTRATION_AUTHORITY",
         2,
     ),
@@ -186,7 +189,7 @@ MODULES = {
     ),
     "canonical_query_set_registration.cpp": (
         279,
-        12_709,
+        12_719,
         "SB_ENGINE_CANONICAL_QUERY_SET_REGISTRATION_AUTHORITY",
         2,
     ),
@@ -203,8 +206,8 @@ MODULES = {
         2,
     ),
     "canonical_query_window_registration.cpp": (
-        804,
-        39_236,
+        794,
+        38_866,
         "SB_ENGINE_CANONICAL_QUERY_WINDOW_REGISTRATION_AUTHORITY",
         2,
     ),
@@ -228,7 +231,7 @@ MODULES = {
     ),
     "canonical_query_runtime_memory_support.cpp": (
         428,
-        15_678,
+        15_702,
         "SB_ENGINE_CANONICAL_QUERY_RUNTIME_MEMORY_SUPPORT_AUTHORITY",
         2,
     ),
@@ -239,7 +242,7 @@ MODULES = {
         1,
     ),
     "canonical_query_time_series_composition.cpp": (
-        4_783,
+        4_784,
         242_149,
         "SB_ENGINE_CANONICAL_QUERY_TIME_SERIES_COMPOSITION_AUTHORITY",
         1,
@@ -360,6 +363,7 @@ def main() -> int:
     for receipt_support in (
         "canonical_query_runtime_observation_support.cpp",
         "canonical_query_filter_predicate_receipt.cpp",
+        "canonical_query_window_order_binding.cpp",
         "canonical_query_persisted_descriptor_authority.cpp",
     ):
         if (f"  {receipt_support}\n" not in production_sources or
@@ -916,7 +920,7 @@ def main() -> int:
         failures.append("missing focused canonical relational DAG planner")
     else:
         planner = planner_path.read_text(encoding="utf-8")
-        if len(planner.splitlines()) > 107 or len(planner.encode()) > 4_395:
+        if len(planner.splitlines()) > 108 or len(planner.encode()) > 4_493:
             failures.append("canonical relational DAG planner exceeds its ratchet")
         if planner.count(
             "SB_ENGINE_CANONICAL_RELATIONAL_DAG_PLANNER_AUTHORITY"

@@ -174,7 +174,7 @@ struct Fixture {
   platform::TypedUuid spatial_crs_uuid;
   std::uint64_t resource_epoch = 1;
   api::EngineUuid utf8_charset_uuid;
-  api::EngineUuid utf8_default_collation_uuid;
+  api::EngineUuid utf8_binary_collation_uuid;
   std::uint64_t salt = 0;
 
   Fixture() = default;
@@ -195,8 +195,8 @@ struct Fixture {
         spatial_crs_uuid(other.spatial_crs_uuid),
         resource_epoch(other.resource_epoch),
         utf8_charset_uuid(std::move(other.utf8_charset_uuid)),
-        utf8_default_collation_uuid(
-            std::move(other.utf8_default_collation_uuid)),
+        utf8_binary_collation_uuid(
+            std::move(other.utf8_binary_collation_uuid)),
         salt(other.salt) {
     other.directory.clear();
   }
@@ -278,11 +278,17 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
           created.state.resource_seed_catalog, "UTF8");
       utf8 != nullptr) {
     fixture.utf8_charset_uuid = utf8->resource_uuid;
-    fixture.utf8_default_collation_uuid = utf8->default_collation_uuid;
+    // Use the admitted native comparison recipe explicitly. Imported donor
+    // defaults remain metadata until their own recipes are implemented.
+    const auto* binary = resources::FindResourceSeedCollation(
+        created.state.resource_seed_catalog, "SB_UTF8_BINARY");
+    if (binary != nullptr && binary->charset_uuid == utf8->resource_uuid &&
+        binary->comparison_profile == resources::CollationProfile::utf8_binary)
+      fixture.utf8_binary_collation_uuid = binary->resource_uuid;
   }
   if (credentialed_full_route) {
     Require(!fixture.utf8_charset_uuid.is_nil() &&
-                !fixture.utf8_default_collation_uuid.is_nil(),
+                !fixture.utf8_binary_collation_uuid.is_nil(),
             "statement-context UTF8 resource authority is unavailable");
   }
   if (!credentialed_full_route) {
@@ -488,7 +494,7 @@ api::EngineLocalizedName PrimaryName(std::string name) {
 api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   if (stable_name == "int64") {
     const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1,
+        scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702"), 2, 2,
         scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), 1);
     Require(identity.ok && !identity.row.type_uuid.is_nil(),
             "int64 type-codec identity is unavailable");
@@ -503,9 +509,9 @@ api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
               found->descriptor_uuid.valid(),
           "required core datatype descriptor is unavailable");
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, found->descriptor_uuid.value, found->descriptor_epoch);
-  // The six-row scalar codec registry is a subset of the builtin catalog.
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702"),
+      2, 2, found->descriptor_uuid.value, found->descriptor_epoch);
+  // The versioned datatype codec registry is a subset of the builtin catalog.
   // Other builtin types use their actual manifest identity, as DDL does.
   return identity.ok ? identity.row.type_uuid : found->descriptor_uuid.value;
 }
@@ -1422,7 +1428,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     return scratchbird::tests::NativeCatalogColumnFixture({
         {{"type", "text"}, {"character_length", "256"}},
         {{"charset_uuid", fixture->utf8_charset_uuid},
-         {"collation_uuid", fixture->utf8_default_collation_uuid}}});
+         {"collation_uuid", fixture->utf8_binary_collation_uuid}}});
   };
 
   api::EngineCreateSchemaRequest schema;
@@ -1868,6 +1874,32 @@ std::string ScalarResultText(std::string_view packet) {
       std::vector<result::Field> nested;
       Require(result::Decode(field.value, &nested), "result record is not canonical binary framing");
       for (const auto& value : nested) {
+        if (value.kind == result::Kind::bytes && value.value.starts_with("SBTL0001")) {
+          const auto& bytes = value.value;
+          Require(bytes.size() >= 12, "list result header truncated");
+          const auto u32 = [&](std::size_t at) {
+            Require(bytes.size()-at >= 4, "list result length truncated");
+            std::uint32_t n = 0;
+            for (unsigned i = 0; i < 4; ++i) n |= static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[at+i])) << (8*i);
+            return n;
+          };
+          std::size_t at = 12;
+          scalar += value.name + "=list[";
+          const auto count = u32(8);
+          Require(count <= (bytes.size()-12)/5, "list result count invalid");
+          for (std::uint32_t i = 0; i < count; ++i) {
+            Require(bytes.size()-at >= 5, "list result cell truncated");
+            const auto state = static_cast<unsigned char>(bytes[at++]);
+            const auto size = u32(at); at += 4;
+            Require(state <= 1 && (state != 0 || size == 0) && size <= bytes.size()-at, "list result cell invalid");
+            if (i) scalar += ';';
+            scalar += state ? "text:" + bytes.substr(at,size) : "NULL";
+            at += size;
+          }
+          Require(at == bytes.size(), "list result trailing bytes");
+          scalar += "];";
+          continue;
+        }
         if (value.kind != result::Kind::text) continue;
         scalar += field.kind == result::Kind::evidence
             ? "evidence=" + value.name + ":" + value.value + "\n"
@@ -1987,6 +2019,10 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         PrintMessages(mixed_model_join.messages);
         std::cerr << mixed_model_join.server_result_payload << '\n';
       }
+      if (mixed_model_join.accepted)
+        std::cerr << "mixed spatial/columnar rows=" << mixed_model_join.server_row_count
+                  << " operation=" << mixed_model_join.server_operation_id << '\n'
+                  << ScalarResultText(mixed_model_join.server_result_payload) << '\n';
       Require(
           mixed_model_join.accepted &&
               mixed_model_join.server_operation_id == "query.execute" &&

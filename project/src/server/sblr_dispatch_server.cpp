@@ -5789,12 +5789,18 @@ std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
     if (!value.is_null && (type == "uuid" || type == "uuid16")) {
-      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
-        throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      if (value.binary_value.empty()) {
+        // Legacy retained columnar values carry raw UUID16 in std::string.
+        if (bytes.size() != 16)
+          throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      } else {
+        if (!bytes.empty() || value.binary_value.size() != 16)
+          throw std::invalid_argument("public_result_uuid_carrier_invalid");
+        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
+      }
       kind = public_result::Kind::uuid;
-      bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
     }
-    else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
+    else if (type == "bytea" || type == "binary" || type == "varbinary" || type == "list<text nullable>") kind = public_result::Kind::bytes;
     fields.push_back({name, kind, std::move(bytes)});
   }
   return ResultRecord(std::move(fields));

@@ -330,8 +330,8 @@ std::array<std::uint8_t, 16> ExecuteCursor(ServerSessionRegistry* registry,
   return *cursor_uuid;
 }
 
-std::string UuidText(const std::array<std::uint8_t, 16>& value) {
-  return scratchbird::server::UuidBytesToText(value);
+std::string IdentityBytes(const std::array<std::uint8_t, 16>& value) {
+  return {reinterpret_cast<const char*>(value.data()), value.size()};
 }
 
 scratchbird::server::ServerRequestRecord RequireRequest(
@@ -428,7 +428,7 @@ void TestCancelAndFinalityManagement(const HostedEngineState& engine_state,
                                       cursor_uuid,
                                       ServerRequestLifecycleState::kCursorOpen,
                                       "DBLC-013G cancellable request missing");
-  const std::string finality_token = UuidText(request.finality_token_uuid);
+  const std::string finality_token = IdentityBytes(request.finality_token_uuid);
   HostedEngineState mutable_engine_state = engine_state;
   auto context = ManagementContext(config, artifacts, &mutable_engine_state, registry, coordinator);
 

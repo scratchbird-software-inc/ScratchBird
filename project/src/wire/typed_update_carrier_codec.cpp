@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../core/datatypes/admitted_datatype_cohort.hpp"
 #include "typed_update_carrier_codec.hpp"
 
 #include "hash_digest.hpp"
@@ -3773,9 +3774,9 @@ bool ValidateDatatypeAuthorityRecord(
       record.byte_order_code != spec->byte_order ||
       record.is_signed != spec->is_signed ||
       record.representation_code != spec->representation ||
-      record.datatype_snapshot_uuid != kTypedUpdateDatatypeSnapshotUuid ||
-      record.datatype_catalog_generation != 1 ||
-      record.datatype_registry_generation != 1) {
+      !core::datatypes::IsAdmittedDatatypeCohort(
+          record.datatype_snapshot_uuid, record.datatype_catalog_generation,
+          record.datatype_registry_generation)) {
     return Fail(error,
                 TypedUpdateCarrierErrorCode::datatype_authority_invalid,
                 kUpdateFailed, carrier, "registry_row", record_index,
@@ -4162,8 +4163,9 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
                 kUpdateFailed, carrier, "TEXT_row", 0,
                 "DUDV v2 requires exactly one TEXT authority row");
   }
-  if (value.identity.vector_uuid != kTypedUpdateDatatypeSnapshotUuid ||
-      value.identity.vector_generation != 1 ||
+  if (!core::datatypes::IsAdmittedDatatypeCohort(
+          value.identity.vector_uuid, value.identity.vector_generation,
+          value.identity.vector_generation) ||
       !RequireSecurityUuidGeneration(
           value.identity.owner_descriptor_uuid,
           value.identity.owner_descriptor_generation, carrier,
@@ -4185,6 +4187,14 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
       return false;
     }
     records.insert(records.end(), record.begin(), record.end());
+  }
+  if (std::any_of(value.records.begin(), value.records.end(), [&](const auto& row) {
+        return row.datatype_snapshot_uuid != value.identity.vector_uuid ||
+               row.datatype_registry_generation != value.identity.vector_generation;
+      })) {
+    return Fail(error, TypedUpdateCarrierErrorCode::datatype_authority_invalid,
+                kUpdateFailed, carrier, "record_cohort", 0,
+                "DUDV records do not belong to their exact vector cohort");
   }
   if (!ValidateDatatypeAuthorityOrdering(value.records, error)) {
     return false;
@@ -4253,8 +4263,9 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
   value.identity.owner_descriptor_generation =
       LoadLittle64(encoded.data() + 56);
   value.identity.vector_sha256 = LoadHash(encoded, 72);
-  if (value.identity.vector_uuid != kTypedUpdateDatatypeSnapshotUuid ||
-      value.identity.vector_generation != 1 ||
+  if (!core::datatypes::IsAdmittedDatatypeCohort(
+          value.identity.vector_uuid, value.identity.vector_generation,
+          value.identity.vector_generation) ||
       !RequireSecurityUuidGeneration(
           value.identity.owner_descriptor_uuid,
           value.identity.owner_descriptor_generation, carrier,
@@ -4277,6 +4288,14 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
       return false;
     }
     value.records.push_back(std::move(record));
+  }
+  if (std::any_of(value.records.begin(), value.records.end(), [&](const auto& row) {
+        return row.datatype_snapshot_uuid != value.identity.vector_uuid ||
+               row.datatype_registry_generation != value.identity.vector_generation;
+      })) {
+    return Fail(error, TypedUpdateCarrierErrorCode::datatype_authority_invalid,
+                kUpdateFailed, carrier, "record_cohort", 0,
+                "DUDV records do not belong to their exact vector cohort");
   }
   if (!ValidateDatatypeAuthorityOrdering(value.records, error)) {
     return false;
@@ -5705,8 +5724,9 @@ bool ValidateTypedUpdateDatatypeOperatorAuthority(
     }
   }
 
-  if (datatypes.identity.vector_uuid !=
-          kTypedUpdateDatatypeSnapshotUuid ||
+  if (!core::datatypes::IsAdmittedDatatypeCohort(
+          datatypes.identity.vector_uuid, datatypes.identity.vector_generation,
+          datatypes.identity.vector_generation) ||
       datatypes.identity.vector_generation !=
           descriptor.datatype_registry_generation ||
       datatypes.identity.owner_descriptor_uuid !=

@@ -681,7 +681,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           "global real64 aggregate result core datatype cohort is incomplete";
       return result;
     }
-    core_real64_result_type_uuid = real64_type->descriptor_uuid.value;
+    core_real64_result_type_uuid = ExactCanonicalCoreDatatypeTypeUuidV1("real64");
     if (core_real64_result_type_uuid.is_nil()) {
       result.detail =
           "global real64 aggregate result core datatype identity is unavailable";

@@ -251,8 +251,8 @@ scratchbird::engine::internal_api::EngineUuid ExactCoreAggregateTypeUuid(
   const auto identity = scratchbird::core::datatypes::
       LookupDatatypeTypeCodecIdentityV1(
           scratchbird::core::platform::Uuid{{
-              0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
-          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+              0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x02}},
+          2, 2, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid
                      : scratchbird::engine::internal_api::EngineUuid{};
@@ -2180,6 +2180,19 @@ bool PlanCanonicalAggregateFinalization(
     plan->output_bytes = 1;
     return true;
   }
+  if (function == CanonicalAggregateFunction::array_agg &&
+      request.result_column.descriptor.canonical_type_name == "list<text nullable>") {
+    plan->output_bytes = 12;
+    if (state.collection_values.size() > std::numeric_limits<std::uint32_t>::max()) return refuse_overflow();
+    for (const auto& value : state.collection_values) {
+      const bool null = value.state == EngineValueState::sql_null;
+      if ((!null && (scratchbird::core::datatypes::CanonicalTypeIdFromStableName(value.descriptor.canonical_type_name) != scratchbird::core::datatypes::CanonicalTypeId::character || !value.binary_value.empty())) ||
+          !CheckedAggregateFinalizationAdd(&plan->output_bytes, 5) ||
+          (!null && !CheckedAggregateFinalizationAdd(&plan->output_bytes, value.encoded_value.size())) ||
+          plan->output_bytes > 16777216) return refuse_overflow();
+    }
+    return true;
+  }
   if (function == CanonicalAggregateFunction::array_agg) {
     plan->output_bytes = 6;
     for (std::size_t index = 0; index < state.collection_values.size();
@@ -2396,6 +2409,23 @@ EngineTypedValue FinalizeCanonicalAggregateCoreUnchecked(
     }
     return AggregateValue(request.result_column,
                           std::to_string(state.non_null_count));
+  }
+  if (function == CanonicalAggregateFunction::array_agg &&
+      request.result_column.descriptor.canonical_type_name == "list<text nullable>") {
+    if (state.transition_count == 0) return AggregateNull(request.result_column);
+    std::string encoded = "SBTL0001";
+    encoded.reserve(plan.output_bytes);
+    const auto append_u32 = [&](std::uint32_t number) {
+      for (unsigned i = 0; i < 4; ++i) encoded.push_back(static_cast<char>(number >> (8*i)));
+    };
+    append_u32(static_cast<std::uint32_t>(state.collection_values.size()));
+    for (const auto& value : state.collection_values) {
+      const bool null = value.state == EngineValueState::sql_null;
+      encoded.push_back(null ? 0 : 1);
+      append_u32(null ? 0 : static_cast<std::uint32_t>(value.encoded_value.size()));
+      if (!null) encoded += value.encoded_value;
+    }
+    return AggregateValue(request.result_column, std::move(encoded));
   }
   if (function == CanonicalAggregateFunction::array_agg) {
     if (state.transition_count == 0) return AggregateNull(request.result_column);

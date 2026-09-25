@@ -151,39 +151,6 @@ bool BitmapZero(const CapabilityBitmapV1& bitmap) {
                      [](byte octet) { return octet == 0; });
 }
 
-std::string UuidText(const UuidV1& uuid) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(36);
-  for (std::size_t index = 0; index < uuid.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      result.push_back('-');
-    }
-    result.push_back(kHex[(uuid[index] >> 4u) & 0x0fu]);
-    result.push_back(kHex[uuid[index] & 0x0fu]);
-  }
-  return result;
-}
-
-std::string HashText(const Hash256V1& hash) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(64);
-  for (const auto octet : hash) {
-    result.push_back(kHex[(octet >> 4u) & 0x0fu]);
-    result.push_back(kHex[octet & 0x0fu]);
-  }
-  return result;
-}
-
-std::string Decimal(std::uint64_t value) {
-  std::array<char, 32> buffer{};
-  const auto [end, error] =
-      std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
-  if (error != std::errc{}) return {};
-  return std::string(buffer.data(), end);
-}
-
 bool ActivationTextValueValid(std::string_view value) {
   return !value.empty() &&
          std::all_of(value.begin(), value.end(), [](unsigned char octet) {
@@ -264,32 +231,28 @@ bool PairIn(const std::vector<PairV1>& values, PairV1 pair) {
 
 std::vector<byte> SerializeActivationRecordV1(
     const ActivationRecordV1& record) {
-  const std::array<std::string, 12> fields{{
-      Decimal(record.record_version),
-      Decimal(record.protocol_major),
-      Decimal(record.protocol_minor),
-      Decimal(record.pair.message_code),
-      Decimal(record.pair.payload_schema_id),
-      record.admission_state,
-      UuidText(record.activation_set_uuid),
-      record.approved_profile_id,
-      HashText(record.registry_snapshot_sha256),
-      record.layout_authority_id,
-      record.conformance_corpus_id,
-      record.implementation_evidence_id,
-  }};
-  if (std::any_of(fields.begin(), fields.end(), [](const auto& field) {
-        return !ActivationTextValueValid(field);
-      })) {
-    return {};
-  }
-  std::vector<byte> result;
-  std::size_t reserve = fields.size();
-  for (const auto& field : fields) reserve += field.size();
-  result.reserve(reserve);
-  for (const auto& field : fields) {
-    result.insert(result.end(), field.begin(), field.end());
-    result.push_back(0);
+  // Profile V1 uses the binary activation-record successor. Historical NUL
+  // text records are not converted or accepted as active records.
+  const std::array<std::string_view, 5> labels{{record.admission_state,
+      record.approved_profile_id, record.layout_authority_id,
+      record.conformance_corpus_id, record.implementation_evidence_id}};
+  if (record.record_version != 2 || !UuidVersion7(record.activation_set_uuid) ||
+      !AnyNonzero(record.registry_snapshot_sha256) ||
+      std::any_of(labels.begin(), labels.end(), [](const auto label) {
+        return label.size() > 65535 || !ActivationTextValueValid(label);
+      })) return {};
+  std::vector<byte> result{'S','B','P','A','C','T','0','2'};
+  const auto append = [&](std::uint64_t value, unsigned width) {
+    for (unsigned i=0;i<width;++i) result.push_back(static_cast<byte>(value>>(8*i)));
+  };
+  append(record.record_version,2); append(record.protocol_major,2);
+  append(record.protocol_minor,2); append(record.pair.message_code,2);
+  append(record.pair.payload_schema_id,4);
+  result.insert(result.end(),record.activation_set_uuid.begin(),record.activation_set_uuid.end());
+  result.insert(result.end(),record.registry_snapshot_sha256.begin(),record.registry_snapshot_sha256.end());
+  for (const auto label : labels) {
+    append(label.size(),4);
+    result.insert(result.end(),label.begin(),label.end());
   }
   return result;
 }
@@ -422,7 +385,7 @@ ProfileDiagnosticV1 ValidateCorePrivateNarrowProfileRecordV1(
        index < record.candidate_activation_records.size(); ++index) {
     const auto& activation = record.candidate_activation_records[index];
     const auto [layout, corpus] = AuthorityFor(kRequiredPairs[index]);
-    if (activation.record_version != 1 ||
+    if (activation.record_version != 2 ||
         activation.protocol_major != kProtocolMajorV1 ||
         activation.protocol_minor != kProtocolMinorV1 ||
         activation.pair != kRequiredPairs[index] ||
@@ -437,13 +400,10 @@ ProfileDiagnosticV1 ValidateCorePrivateNarrowProfileRecordV1(
             record.implementation_evidence_id ||
         activation.exact_nul_serialization.empty() ||
         activation.exact_nul_serialization !=
-            SerializeActivationRecordV1(activation) ||
-        activation.exact_nul_serialization.back() != 0 ||
-        std::count(activation.exact_nul_serialization.begin(),
-                   activation.exact_nul_serialization.end(), 0) != 12) {
+            SerializeActivationRecordV1(activation)) {
       return Error(ProfileValidationStatusV1::activation_record_invalid,
                    kActivationInvalid, "candidate_activation_records",
-                   "activation_record_or_nul_serialization_drifted");
+                   "activation_record_or_binary_serialization_drifted");
     }
   }
   return Ok();

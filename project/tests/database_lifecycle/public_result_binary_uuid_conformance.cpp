@@ -2,6 +2,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "wire/public_result_packet.hpp"
+#include "../support/client_public_result_display.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -82,5 +83,35 @@ int main() {
     try { (void)status::Identity(std::string_view(invalid)); } catch(const std::invalid_argument&) { refused=true; }
     CHECK(refused);
   }
+  // Exercise the process CLIENT renderer with delimiter-bearing UUID bytes,
+  // nested rows, full-width numbers and malformed framing at every boundary.
+  const auto display = scratchbird::tests::DisplayPublicResultPacket(row_packet);
+  CHECK(display.find("object_uuid=" + uuid_text) != std::string::npos);
+  CHECK(display.find(uuid) == std::string::npos);
+  const auto rejects_display = [](std::string_view bytes) {
+    try { (void)scratchbird::tests::DisplayPublicResultPacket(bytes); }
+    catch (const std::invalid_argument&) { return true; }
+    return false;
+  };
+  for (std::size_t n=0; n<row_packet.size(); ++n)
+    CHECK(rejects_display(std::string_view(row_packet).substr(0,n)));
+  CHECK(rejects_display(row_packet + "x"));
+  CHECK(rejects_display(malformed));
+  CHECK(packet::Encode(std::vector<packet::Field>{
+      {"row[0]", packet::Kind::row, row_packet},
+      {"count", packet::Kind::unsigned_integer, packet::Unsigned(UINT64_MAX)}}, &encoded));
+  const auto row_display = scratchbird::tests::DisplayPublicResultPacket(encoded);
+  CHECK(row_display.find("row[0]=object_uuid=" + uuid_text + ";name=") == 0);
+  CHECK(row_display.find("count=18446744073709551615") != std::string::npos);
+  CHECK(packet::Encode(std::vector<packet::Field>{
+      {"row[0]", packet::Kind::row, row_packet + "x"}}, &encoded));
+  CHECK(rejects_display(encoded));
+  auto deeply_nested = row_packet;
+  for (unsigned i=0; i<3; ++i) {
+    CHECK(packet::Encode(std::vector<packet::Field>{
+        {"row[0]", packet::Kind::row, deeply_nested}}, &encoded));
+    deeply_nested = encoded;
+  }
+  CHECK(rejects_display(deeply_nested));
   std::cout << "public result binary UUID codec: PASS\n";
 }

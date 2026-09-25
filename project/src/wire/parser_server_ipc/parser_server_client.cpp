@@ -1199,8 +1199,6 @@ bool ValidatePublicRelationDatatypeIdentityV3(
           column.datatype_descriptor_generation);
   if (!authority.ok) return false;
   const auto& row = authority.row;
-  const bool exact_variable_width_text = scratchbird::core::datatypes::
-      IsExactCanonicalTextTypeCodecIdentityV1(row);
   return row.catalog_snapshot_uuid ==
              snapshot_uuid &&
          row.catalog_generation == descriptor.datatype_catalog_generation &&
@@ -1216,7 +1214,7 @@ bool ValidatePublicRelationDatatypeIdentityV3(
          row.canonical_value_bytes ==
              column.datatype_canonical_value_bytes &&
          row.null_encoding_code == column.datatype_null_encoding &&
-         (row.canonical_value_bytes != 0 || exact_variable_width_text) &&
+         (row.canonical_value_bytes != 0 || row.canonical_value_variable_width) &&
          (row.null_encoding_code == 1 || row.null_encoding_code == 2);
 }
 
@@ -1489,10 +1487,10 @@ bool ReadIdentityUuid(const std::vector<std::uint8_t>& data,
       data, offset, out, allow_nil);
 }
 
-std::string UuidToText(const std::array<std::uint8_t, 16>& uuid);
+std::string IdentityBytes(const std::array<std::uint8_t, 16>& uuid);
 bool UuidPresent(const std::array<std::uint8_t, 16>& uuid);
 bool EngineIdentityUuidValid(const std::array<std::uint8_t, 16>& uuid);
-std::string OptionalUuidToText(const std::array<std::uint8_t, 16>& uuid);
+std::string OptionalIdentityBytes(const std::array<std::uint8_t, 16>& uuid);
 void AddDiagnostic(
     MessageVectorSet* messages,
     std::string code,
@@ -1947,16 +1945,8 @@ std::array<std::uint8_t, 16> MakeUuidV7Bytes() {
   return uuid;
 }
 
-std::string UuidToText(const std::array<std::uint8_t, 16>& uuid) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t i = 0; i < uuid.size(); ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-    out.push_back(kHex[(uuid[i] >> 4u) & 0x0fu]);
-    out.push_back(kHex[uuid[i] & 0x0fu]);
-  }
-  return out;
+std::string IdentityBytes(const std::array<std::uint8_t, 16>& uuid) {
+  return {reinterpret_cast<const char*>(uuid.data()), uuid.size()};
 }
 
 bool UuidPresent(const std::array<std::uint8_t, 16>& uuid) {
@@ -1970,8 +1960,8 @@ bool EngineIdentityUuidValid(const std::array<std::uint8_t, 16>& uuid) {
       scratchbird::core::platform::Uuid{uuid});
 }
 
-std::string OptionalUuidToText(const std::array<std::uint8_t, 16>& uuid) {
-  return UuidPresent(uuid) ? UuidToText(uuid) : std::string{};
+std::string OptionalIdentityBytes(const std::array<std::uint8_t, 16>& uuid) {
+  return UuidPresent(uuid) ? IdentityBytes(uuid) : std::string{};
 }
 
 
@@ -5383,7 +5373,7 @@ SbpsClient::SbpsClient(std::string endpoint)
     : endpoint_(std::move(endpoint)),
       channel_state_(std::make_unique<SbpsClientChannelState>()) {
   channel_state_->dedicated_v2_socket_cache_key =
-      endpoint_ + "|sbps-v2-client|" + UuidToText(MakeUuidV7Bytes());
+      endpoint_ + "|sbps-v2-client|" + IdentityBytes(MakeUuidV7Bytes());
   channel_state_->stable_baseline_hello_payload =
       EncodeBuiltInHelloPayload();
   channel_state_->stable_v2_hello_payload = EncodeBuiltInHelloPayload(true);
@@ -6664,8 +6654,8 @@ ServerStatementContextResult SbpsClient::AcquireParameterStatementContext(
             std::to_string(response.payload.size()) +
             ", extension_offset=" +
             std::to_string(diagnostic_extension_offset) +
-            ", wire_prepared_uuid=" +
-            OptionalUuidToText(diagnostic_prepared_uuid) + ").");
+            ").", "parser_server_ipc.sbps_client",
+        {{"wire_prepared_uuid", OptionalIdentityBytes(diagnostic_prepared_uuid)}});
     result.context = {};
     return result;
   }

@@ -89,9 +89,9 @@ struct SblrSequenceOptimizerMetadata {
   std::string descriptor_rule = "sequence descriptor";
 };
 
-// Explicit function-argument boundary. A UUID value stays binary; a textual
-// UUID is parsed once and a name remains a separate alias hint. This does not
-// register a name or confer storage/transaction authority.
+// Explicit function-argument boundary. UUID values stay binary; text only
+// selects a previously registered name in a separate alias namespace. This
+// does not parse UUID text, register names, or confer transaction authority.
 bool BindSblrSequenceArgumentIdentity(const SblrValue& argument,
                                       SblrSequenceRequest* request);
 

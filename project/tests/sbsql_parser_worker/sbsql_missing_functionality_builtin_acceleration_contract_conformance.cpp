@@ -119,6 +119,8 @@ sblr::SblrResult RunFunction(const fn::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<sblr::SblrValue> values = {}) {
   fn::FunctionCallRequest request;
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;

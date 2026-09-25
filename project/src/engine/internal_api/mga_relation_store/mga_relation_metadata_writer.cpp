@@ -140,6 +140,14 @@ EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
+bool TableColumnMetadataAdmissible(const CrudTableRecord& table) {
+  for (const auto& [name, bytes] : table.columns) {
+    CatalogColumnMetadata fields;
+    if (!AdmitCatalogColumnMetadata(bytes, &fields)) return false;
+  }
+  return true;
+}
+
 using MetadataFieldValue = std::variant<std::string, EngineUuid>;
 using MetadataFieldMap = std::map<std::string, MetadataFieldValue>;
 std::optional<MetadataFieldMap> StrictMetadataFields(const std::string& bytes,
@@ -195,6 +203,9 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
   const auto authority = ValidateMgaMutatingTransactionAuthorityForStoreModule(
       context, "mga.relation_metadata.table_create");
   if (authority.error) { return authority; }
+  if (!TableColumnMetadataAdmissible(table)) {
+    return MakeInvalidRequestDiagnostic("mga.relation_metadata", "column_metadata_invalid");
+  }
   CrudTableRecord writable = table;
   writable.creator_tx = context.local_transaction_id;
   const auto reservation = ReserveEventSequenceRange(
@@ -248,6 +259,9 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
         kOperation, "table_identity_or_columns_invalid");
   }
 
+  if (!TableColumnMetadataAdmissible(table)) {
+    return MakeInvalidRequestDiagnostic(kOperation, "column_metadata_invalid");
+  }
   std::vector<std::string> allocator_lines;
   const auto reservation = ReserveEventSequenceRange(
       context, "relation_metadata", MetadataStorePath(context), 1,

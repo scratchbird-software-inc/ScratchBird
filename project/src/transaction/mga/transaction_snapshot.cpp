@@ -31,7 +31,6 @@ using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::GenerateDurableEngineIdentityV7;
-using scratchbird::core::uuid::UuidToString;
 
 Status SnapshotOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::transaction_mga};
@@ -499,17 +498,17 @@ SnapshotVectorResult ResolvePublishedSnapshotVector(
   if (found == SnapshotVectorRegistry().end()) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-UNKNOWN",
-        "transaction.snapshot_vector.unknown", UuidToString(snapshot_uuid.value));
+        "transaction.snapshot_vector.unknown");
   }
   if (found->second->revoked || found->second->publication_released) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-REVOKED",
-        "transaction.snapshot_vector.revoked", UuidToString(snapshot_uuid.value));
+        "transaction.snapshot_vector.revoked");
   }
   if (!SnapshotVectorStructurallyComplete(found->second->descriptor)) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-INCOMPLETE",
-        "transaction.snapshot_vector.incomplete", UuidToString(snapshot_uuid.value));
+        "transaction.snapshot_vector.incomplete");
   }
   SnapshotVectorResult result;
   result.status = SnapshotOkStatus();

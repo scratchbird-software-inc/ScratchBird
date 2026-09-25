@@ -1902,11 +1902,9 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
       result.evidence.push_back(
           {"insert_runtime_security_recheck", evidence.evidence_id});
     }
-    if (evidence.evidence_kind == "constraint_proof_store" &&
-        StartsWith(InsertEvidenceText(evidence.evidence_id), "unique_preflight:")) {
-      result.evidence.push_back(
-          {"constraint_key_unique_preflight",
-           InsertEvidenceText(evidence.evidence_id).substr(std::string("unique_preflight:").size())});
+    if (evidence.evidence_kind == "bulk_unique_preflight_index") {
+      if (const auto* index = std::get_if<EngineUuid>(&evidence.evidence_id))
+        result.evidence.push_back({"constraint_key_unique_preflight", *index});
     }
   }
   bool direct_unique_conflict = false;

@@ -7,6 +7,9 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 namespace api = scratchbird::engine::internal_api;
 namespace codec = api::mga_update_durable_detail;
@@ -107,6 +110,46 @@ int main() {
             "different binary context identity matched");
     }
   }
+  const auto file_key = [](const Uuid& uuid) {
+    const std::string domain = "SB_MGA_UPDATE_FILE_KEY_V2";
+    std::vector<unsigned char> material(domain.begin(), domain.end());
+    material.insert(material.end(), uuid.bytes.begin(), uuid.bytes.end());
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    Check(SHA256(material.data(), material.size(), digest.data()) != nullptr,
+          "independent filename digest failed");
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    for (const auto byte : digest) {
+      result.push_back(hex[byte >> 4]);
+      result.push_back(hex[byte & 15]);
+    }
+    return result;
+  };
+  const auto expected = context.database_path + ".sb.mga_durable_operations/" +
+      file_key(original.identity.descriptor_uuid) + ".duop";
+  Check(codec::DmlUpdateDurableDescriptorPath(context, original.identity) == expected,
+        "descriptor path is not derived from raw16 digest");
+  const auto savepoint_uuid = original.identity.operation_uuid;
+  Check(codec::DmlUpdateDurableSavepointPath(context, savepoint_uuid) ==
+            context.database_path + ".sb.mga_update_statement_savepoints.v1/" +
+                file_key(savepoint_uuid) + ".dups",
+        "savepoint path is not derived from raw16 digest");
+  Check(codec::DmlUpdateDurableSavepointPath(context, {}).empty(),
+        "nil savepoint identity acquired a filename");
+  const auto empty_read = codec::DmlUpdateDurableLoadFrames("");
+  Check(!empty_read.ok && !empty_read.missing,
+        "empty path was treated as absent durable evidence");
+  {
+    codec::DmlUpdateDurableFileLock empty_lock("");
+    Check(!empty_lock.ok(), "empty path acquired a file lock");
+  }
+  Check(EVP_set_default_properties(nullptr, "provider=sb_missing_update_test") == 1,
+        "hash provider fault setup failed");
+  const auto bad_descriptor = codec::DmlUpdateDurableDescriptorPath(context, original.identity);
+  const auto bad_savepoint = codec::DmlUpdateDurableSavepointPath(context, savepoint_uuid);
+  Check(EVP_set_default_properties(nullptr, "") == 1, "hash provider restore failed");
+  Check(bad_descriptor.empty() && bad_savepoint.empty(),
+        "hash failure yielded usable durable identity paths");
   auto savepoint = original;
   savepoint.kind = codec::DmlUpdateDurableFrameKindV1::statement_savepoint;
   savepoint.identity.validated_durable_handle_uuid = {};

@@ -701,7 +701,7 @@
       const auto table = ResolvePrivilegeTable(
           request.context.sblr_context,
           api_context,
-          ValueAsText(request.arguments[table_index].value),
+          request.arguments[table_index].value,
           request.context.engine_request_context == nullptr);
       if (table) {
         const auto privilege = NormalizePrivilegeText(
@@ -742,7 +742,7 @@
       const auto table = ResolvePrivilegeTable(
           request.context.sblr_context,
           api_context,
-          ValueAsText(request.arguments[table_index].value),
+          request.arguments[table_index].value,
           request.context.engine_request_context == nullptr);
       if (table && PrivilegeTableHasColumn(*table, ValueAsText(request.arguments[column_index].value))) {
         const auto privilege = NormalizePrivilegeText(
@@ -781,7 +781,7 @@
           EngineRequestContextForFunction(request, &fallback_context);
       const auto function = ResolvePrivilegeFunction(
           request.context.sblr_context,
-          ValueAsText(request.arguments[function_index].value));
+          request.arguments[function_index].value);
       if (function) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "function");
@@ -820,7 +820,7 @@
       const auto schema = ResolvePrivilegeSchema(
           request.context.sblr_context,
           api_context,
-          ValueAsText(request.arguments[schema_index].value));
+          request.arguments[schema_index].value);
       if (schema) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "schema");

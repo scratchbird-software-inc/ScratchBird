@@ -3,6 +3,7 @@
 
 // CSC-TEST-002337: explicit authenticated SOURCE_MAP process client.
 #include "common/common.hpp"
+#include "../support/client_public_result_display.hpp"
 #include "engine/sblr/sblr_stmt_execute_runtime.hpp"
 #include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
 #include "engine/sblr/sblr_stmt_free_runtime.hpp"
@@ -94,12 +95,12 @@ int main(int argc, char** argv) {
           projected.server_operation_id == "query.evaluate_projection" &&
           projected.server_cursor_uuid.is_nil() &&
           projected.server_row_count == 1 &&
-          projected.server_result_payload.find(
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(
               "operation_id=query.evaluate_projection") !=
               std::string::npos &&
-          projected.server_result_payload.find(expected_row) !=
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(expected_row) !=
               std::string::npos &&
-          projected.server_result_payload.find(expected_metadata) !=
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(expected_metadata) !=
               std::string::npos &&
           projected.sblr_payload.find("security.evaluate_visibility") ==
               std::string::npos &&
@@ -194,12 +195,12 @@ int main(int argc, char** argv) {
           projected.server_operation_id == "query.evaluate_projection" &&
           projected.server_cursor_uuid.is_nil() &&
           projected.server_row_count == 1 &&
-          projected.server_result_payload.find(
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(
               "operation_id=query.evaluate_projection") !=
               std::string::npos &&
-          projected.server_result_payload.find(expected_row) !=
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(expected_row) !=
               std::string::npos &&
-          projected.server_result_payload.find(expected_metadata) !=
+          scratchbird::tests::DisplayPublicResultPacket(projected.server_result_payload).find(expected_metadata) !=
               std::string::npos &&
           projected.sblr_payload.find("security.evaluate_policy") ==
               std::string::npos &&
@@ -367,12 +368,12 @@ int main(int argc, char** argv) {
           !observed.outcome_unknown && !observed.messages.has_errors() &&
           observed.server_operation_id == "security.policy.show" &&
           observed.server_row_count == 1 &&
-          observed.server_result_payload.find(
+          scratchbird::tests::DisplayPublicResultPacket(observed.server_result_payload).find(
               "policy_uuid=" + std::string(kPolicyUuid)) !=
               std::string::npos &&
-          observed.server_result_payload.find("lifecycle_state=active") !=
+          scratchbird::tests::DisplayPublicResultPacket(observed.server_result_payload).find("lifecycle_state=active") !=
               std::string::npos &&
-          observed.server_result_payload.find(generation_marker) !=
+          scratchbird::tests::DisplayPublicResultPacket(observed.server_result_payload).find(generation_marker) !=
               std::string::npos;
       auto ended = session.RunPipeline("ROLLBACK TRANSACTION", true);
       if (!exact_observer || !ended.accepted || ended.messages.has_errors()) {
@@ -656,9 +657,9 @@ int main(int argc, char** argv) {
           "row[0]=key_a=" + std::to_string(expected_value);
       if (!fetched.accepted || fetched.row_count != 1 ||
           !fetched.end_of_cursor ||
-          fetched.row_packet.find(expected_row) == std::string::npos) {
+          scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find(expected_row) == std::string::npos) {
         std::cerr << "statement_boundary_fetch_failed row_packet="
-                  << fetched.row_packet << '\n';
+                  << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
         return false;
       }
       return true;
@@ -3647,19 +3648,19 @@ END;)SBSQL";
     const bool exact_nested_result =
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
         !fetched.row_packet.empty() &&
-        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("operation_id=engine.op.stmt_execute") !=
             std::string::npos &&
-        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
-        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
             std::string::npos;
     if (!exact_nested_result) {
       std::cerr << "CSC-TEST-003577 STMT_EXECUTE nested_result_failed"
                 << " accepted=" << fetched.accepted
                 << " row_count=" << fetched.row_count
                 << " end_of_cursor=" << fetched.end_of_cursor
-                << " row_packet=" << fetched.row_packet << '\n';
+                << " row_packet=" << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
       for (const auto& diagnostic : fetched.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
@@ -3716,20 +3717,20 @@ END;)SBSQL";
     const bool exact_nested_result =
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
         !fetched.row_packet.empty() &&
-        fetched.row_packet.find(
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find(
             "operation_id=engine.op.stmt_execute_direct") !=
             std::string::npos &&
-        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
-        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
             std::string::npos;
     if (!exact_nested_result) {
       std::cerr << "CSC-TEST-003581 STMT_EXECUTE_DIRECT nested_result_failed"
                 << " accepted=" << fetched.accepted
                 << " row_count=" << fetched.row_count
                 << " end_of_cursor=" << fetched.end_of_cursor
-                << " row_packet=" << fetched.row_packet << '\n';
+                << " row_packet=" << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
       for (const auto& diagnostic : fetched.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
@@ -3841,20 +3842,20 @@ END;)SBSQL";
     const bool exact_typed_result =
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
         !fetched.row_packet.empty() &&
-        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("operation_id=engine.op.stmt_execute") !=
             std::string::npos &&
-        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        fetched.row_packet.find("row[0]=key_a=7") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=7") !=
             std::string::npos &&
-        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
             std::string::npos;
     if (!exact_typed_result) {
       std::cerr << "CSC-TEST-003593 PARAMETER_BIND typed_result_failed"
                 << " accepted=" << fetched.accepted
                 << " row_count=" << fetched.row_count
                 << " end_of_cursor=" << fetched.end_of_cursor
-                << " row_packet=" << fetched.row_packet << '\n';
+                << " row_packet=" << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
       for (const auto& diagnostic : fetched.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
@@ -3909,22 +3910,22 @@ END;)SBSQL";
     const bool exact_typed_result =
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
         !fetched.row_packet.empty() &&
-        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("operation_id=engine.op.stmt_execute") !=
             std::string::npos &&
-        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        fetched.row_packet.find("row[0]=key_a=7;amount=") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=7;amount=") !=
             std::string::npos &&
-        fetched.row_packet.find(
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find(
             "row_meta[0]=key_a:int64:not_null;amount:int64:null") !=
             std::string::npos &&
-        fetched.row_packet.find("<NULL>") == std::string::npos;
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("<NULL>") == std::string::npos;
     if (!exact_typed_result) {
       std::cerr << "CSC-TEST-005775 PARAMETER_BIND_MULTI_NULLABLE "
                    "typed_result_failed accepted="
                 << fetched.accepted << " row_count=" << fetched.row_count
                 << " end_of_cursor=" << fetched.end_of_cursor
-                << " row_packet=" << fetched.row_packet << '\n';
+                << " row_packet=" << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
       for (const auto& diagnostic : fetched.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
@@ -4032,7 +4033,7 @@ END;)SBSQL";
           break;
         }
         fetched_rows += page.row_count;
-        fetched_packets.append(page.row_packet);
+        fetched_packets.append(scratchbird::tests::DisplayPublicResultPacket(page.row_packet));
         fetched_to_end = page.end_of_cursor;
         fetched = std::move(page);
       }
@@ -4635,17 +4636,17 @@ END;)SBSQL";
         session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
     const bool exact_row =
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
-        fetched.row_packet.find("operation_id=query.execute") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("operation_id=query.execute") !=
             std::string::npos &&
-        fetched.row_packet.find("row[0]=key_a=1") != std::string::npos &&
-        fetched.row_packet.find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
             std::string::npos;
     if (!exact_row) {
       std::cerr << "CSC-TEST-003601 QUERY_EXECUTE row_result_failed"
                 << " accepted=" << fetched.accepted
                 << " row_count=" << fetched.row_count
                 << " end_of_cursor=" << fetched.end_of_cursor
-                << " row_packet=" << fetched.row_packet << '\n';
+                << " row_packet=" << scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet) << '\n';
       for (const auto& diagnostic : fetched.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }

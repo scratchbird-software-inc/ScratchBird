@@ -260,6 +260,26 @@ void ExerciseProvenanceValidator() {
   Require(accepted.accepted && !accepted.bundle_digest.empty(),
           "CEIC-080 valid package provenance refused");
 
+  Require(bundle.records[0].package_uuid.size() == 16 &&
+              accepted.evidence_rows[0].starts_with("SBPKE002"),
+          "provenance identities/evidence are not binary framed");
+  auto text_identity = bundle;
+  text_identity.records[0].package_uuid = "019f0804-0000-7000-8000-000000000080";
+  agents::FinalizeAgentPackageProvenanceDigest(&text_identity.records[0]);
+  Require(!agents::ValidateAgentPackageProvenanceBundle(text_identity).accepted,
+          "human-readable package UUID admitted as system identity");
+  auto short_identity = bundle;
+  short_identity.records[0].signature_evidence_uuid.resize(15);
+  agents::FinalizeAgentPackageProvenanceDigest(&short_identity.records[0]);
+  Require(!agents::ValidateAgentPackageProvenanceBundle(short_identity).accepted,
+          "truncated evidence UUID admitted");
+  auto delimiter_left = bundle.records[0], delimiter_right = bundle.records[0];
+  delimiter_left.subject_id = "a\nb"; delimiter_left.package_version = "c";
+  delimiter_right.subject_id = "a"; delimiter_right.package_version = "b\nc";
+  Require(agents::ComputeAgentPackageProvenanceDigest(delimiter_left) !=
+              agents::ComputeAgentPackageProvenanceDigest(delimiter_right),
+          "provenance fields lost binary boundaries");
+
   auto missing_signature = bundle;
   missing_signature.records[0].signature_verified = false;
   agents::FinalizeAgentPackageProvenanceDigest(&missing_signature.records[0]);
@@ -345,7 +365,7 @@ void ExerciseProvenanceValidator() {
       true;
   cluster_with_external_provider.records[1]
       .external_cluster_provider_evidence_uuid =
-      "external-cluster-provider-evidence";
+      scratchbird::tests::FixtureIdentityForLabel("external-cluster-provider-evidence");
   agents::FinalizeAgentPackageProvenanceDigest(
       &cluster_with_external_provider.records[1]);
   status =

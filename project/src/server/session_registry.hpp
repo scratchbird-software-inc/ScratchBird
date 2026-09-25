@@ -898,7 +898,6 @@ const char* ServerChannelStateName(ServerChannelState state);
 const char* ServerRequestLifecycleStateName(ServerRequestLifecycleState state);
 const char* ServerDriverTransactionEventName(ServerDriverTransactionEvent event);
 const char* ServerTransactionPressureActionName(ServerTransactionPressureAction action);
-std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid);
 // Shape validation only; live transaction inventory membership and session
 // ownership are checked independently by the transaction owner.
 inline bool IsCompleteEngineTransactionIdentity(

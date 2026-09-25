@@ -428,6 +428,7 @@ add_library(sb_engine_internal_api
   dml/delete_api.cpp
   dml/delete_batch.cpp
   dml/direct_bulk_append_cache.cpp
+  dml/direct_bulk_index_cache_projection.cpp
   dml/direct_bulk_generated_projection.cpp
   dml/direct_bulk_ordered_ingest.cpp
   dml/direct_bulk_typed_row_codec.cpp
@@ -509,6 +510,8 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
   mga_relation_store/mga_relation_state_sweep.cpp
   mga_relation_store/mga_relation_metadata_store.cpp
+  mga_relation_store/mga_metadata_migration_fingerprint.cpp
+  mga_relation_store/mga_constraint_batch_fingerprint.cpp
   mga_relation_store/mga_relation_metadata_writer.cpp
   mga_relation_store/mga_relation_statistics.cpp
   mga_relation_store/mga_row_codec.cpp
@@ -516,6 +519,8 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_row_version_reader.cpp
   mga_relation_store/mga_row_version_writer.cpp
   mga_relation_store/mga_savepoint_store.cpp
+  mga_relation_store/mga_savepoint_marker_replay.cpp
+  mga_relation_store/mga_savepoint_bounded_read.cpp
   mga_relation_store/mga_savepoint_marker_codec.cpp
   mga_relation_store/mga_secondary_index_coordination.cpp
   mga_relation_store/mga_update_durable_frame_store.cpp

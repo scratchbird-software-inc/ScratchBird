@@ -12,6 +12,9 @@ INTERNAL_API = PROJECT_ROOT / "src" / "engine" / "internal_api"
 CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
+    "mga_relation_store/mga_constraint_batch_fingerprint.cpp": (
+        115, 6_000, "SB_ENGINE_MGA_CONSTRAINT_BATCH_FINGERPRINT_IMPLEMENTATION_AUTHORITY",
+    ),
     "mga_relation_store/mga_relation_store.cpp": (
         3_100,
         130_000,
@@ -42,9 +45,14 @@ MODULES = {
         23_000,
         "SB_ENGINE_MGA_LARGE_VALUE_STORE_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_metadata_migration_fingerprint.cpp": (
+        310,
+        16_000,
+        "SB_ENGINE_MGA_METADATA_MIGRATION_FINGERPRINT_IMPLEMENTATION_AUTHORITY",
+    ),
     "mga_relation_store/mga_relation_metadata_store.cpp": (
-        2_050,
-        96_000,
+        1_700,
+        86_000,
         "SB_ENGINE_MGA_RELATION_METADATA_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_relation_metadata_writer.cpp": (
@@ -67,9 +75,19 @@ MODULES = {
         92_000,
         "SB_ENGINE_MGA_ROW_VERSION_WRITER_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_savepoint_bounded_read.cpp": (
+        230,
+        11_000,
+        "SB_ENGINE_MGA_SAVEPOINT_BOUNDED_READ_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_savepoint_marker_replay.cpp": (
+        280,
+        12_000,
+        "SB_ENGINE_MGA_SAVEPOINT_MARKER_REPLAY_IMPLEMENTATION_AUTHORITY",
+    ),
     "mga_relation_store/mga_savepoint_store.cpp": (
-        600,
-        25_000,
+        450,
+        20_000,
         "SB_ENGINE_MGA_SAVEPOINT_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
@@ -121,6 +139,11 @@ MODULES = {
         9_000,
         390_000,
         "SB_ENGINE_DIRECT_PHYSICAL_BULK_APPEND_COORDINATOR",
+    ),
+    "dml/direct_bulk_index_cache_projection.cpp": (
+        100,
+        4_500,
+        "SB_ENGINE_DIRECT_BULK_INDEX_CACHE_PROJECTION_IMPLEMENTATION_AUTHORITY",
     ),
     "dml/direct_bulk_append_cache.cpp": (
         550,
@@ -178,6 +201,22 @@ FORBIDDEN_BY_MODULE = {
         "FinalizePhysicalMgaCowTransaction",
         "AppendMgaRowVersion",
     ),
+    "mga_relation_store/mga_metadata_migration_fingerprint.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "AppendLine",
+        "ofstream",
+    ),
+    "mga_relation_store/mga_constraint_batch_fingerprint.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "AppendLine",
+        "ofstream",
+    ),
     "mga_relation_store/mga_relation_metadata_store.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
@@ -210,7 +249,26 @@ FORBIDDEN_BY_MODULE = {
         "OverlayMgaTransactionAuthority",
         "LoadLocalTransactionInventoryFromDatabase",
     ),
+    "mga_relation_store/mga_savepoint_bounded_read.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "LoadLocalTransactionInventoryFromDatabase",
+        "AppendMarker",
+    ),
+    "mga_relation_store/mga_savepoint_marker_replay.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "LoadLocalTransactionInventoryFromDatabase",
+        "AppendMarker",
+    ),
     "mga_relation_store/mga_savepoint_store.cpp": (
+        "EncodeCrudText",
+        "DecodeCrudTextLocal",
+        "JoinLine",
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
@@ -271,6 +329,13 @@ FORBIDDEN_BY_MODULE = {
     "dml/direct_physical_bulk_append.cpp": (
         "ExecuteInsertPhysicalIntegration",
         "PersistLocalTransactionInventory",
+    ),
+    "dml/direct_bulk_index_cache_projection.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "ofstream",
     ),
     "dml/direct_bulk_append_cache.cpp": (
         "PersistLocalTransactionInventory",

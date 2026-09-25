@@ -19,6 +19,7 @@ namespace scratchbird::storage::filespace {
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;
 using scratchbird::core::platform::TypedUuid;
+using scratchbird::core::platform::Uuid;
 using scratchbird::core::platform::byte;
 using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
@@ -62,7 +63,7 @@ struct CloudFilespaceObjectRef {
 
 struct CloudFilespaceSnapshotRequest {
   CloudFilespaceBinding binding;
-  std::string snapshot_uuid;
+  Uuid snapshot_uuid;
   bool lifecycle_coordinated = false;
   bool attach_admission_fenced = false;
   bool write_admission_fenced = false;
@@ -72,7 +73,7 @@ struct CloudFilespaceSnapshotRequest {
 };
 
 struct CloudFilespaceSnapshot {
-  std::string snapshot_uuid;
+  Uuid snapshot_uuid;
   std::string snapshot_path;
   std::string manifest_path;
   bool database_consistent = false;

@@ -1455,7 +1455,7 @@ api::EngineRequestContext EngineContext() {
   context.current_monotonic_ns = "123456789";
   context.deterministic_random_u64 = 1ull << 63;
   context.deterministic_random_u64_present = true;
-  context.deterministic_uuid_text = "550e8400-e29b-41d4-a716-446655440000";
+  context.deterministic_uuid = scratchbird::core::platform::Uuid{{0x55,0x0e,0x84,0x00,0xe2,0x9b,0x41,0xd4,0xa7,0x16,0x44,0x66,0x55,0x44,0x00,0x00}};
   context.security_context_present = true;
   context.catalog_generation_id = 11;
   context.security_epoch = 7;

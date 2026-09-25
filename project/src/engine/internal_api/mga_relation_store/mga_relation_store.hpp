@@ -642,6 +642,10 @@ class MgaRelationHotAppendContext {
   MgaRelationHotAppendContext(MgaRelationHotAppendContext&&) noexcept;
   MgaRelationHotAppendContext& operator=(MgaRelationHotAppendContext&&) noexcept;
 
+  // Reserve exact allocator-owned sequences before metadata proof evaluation.
+  // The next mutable append must consume these same version identities in order.
+  EngineApiDiagnostic PrepareRowVersionSequences(
+      std::span<CrudRowVersionRecord* const> rows);
   EngineApiDiagnostic AppendRowVersions(
       std::vector<CrudRowVersionRecord>* rows,
       std::vector<std::uint64_t>* written_event_sequences);

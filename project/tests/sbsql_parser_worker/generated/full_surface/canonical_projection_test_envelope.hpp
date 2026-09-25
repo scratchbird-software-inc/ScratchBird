@@ -11,6 +11,9 @@
 #include "../../../support/binary_uuid_fixture.hpp"
 #include "sblr/sblr_engine_envelope.hpp"
 #include "sblr/sblr_opcode_registry.hpp"
+#include "registry/function_seed_registry.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
+#include "query/projection_api.hpp"
 
 #include <cstdint>
 #include <stdexcept>
@@ -18,6 +21,35 @@
 #include <utility>
 
 namespace scratchbird::tests::sbsql {
+
+inline engine::internal_api::EngineProjectionFunctionArgument UuidProjectionArgumentForTest(
+    std::string name, const core::platform::Uuid& uuid) {
+  engine::internal_api::EngineProjectionFunctionArgument value;
+  value.name = std::move(name);
+  value.type_name = "uuid";
+  value.binary_value.assign(uuid.bytes.begin(), uuid.bytes.end());
+  return value;
+}
+inline engine::sblr::SblrOperand UuidProjectionOperandForTest(
+    std::string name, const std::vector<std::uint8_t>& bytes) {
+  if (bytes.size() != 16) throw std::logic_error("UUID literal requires binary16");
+  namespace dt = core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!catalog.ok()) throw std::logic_error("Core datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::uuid);
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
+    throw std::logic_error("Core UUID descriptor unavailable");
+  engine::sblr::SblrOperand operand;
+  operand.name = std::move(name);
+  operand.type = "uuid";
+  operand.value_kind = engine::sblr::SblrValueKind::literal_typed;
+  const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+  operand.value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+  operand.value_body.resize(24, 0);
+  operand.value_body[16] = 16;
+  operand.value_body.insert(operand.value_body.end(), bytes.begin(), bytes.end());
+  return operand;
+}
 
 inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest(
     engine::sblr::SblrOperationEnvelope envelope) {
@@ -30,7 +62,7 @@ inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest
   envelope.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f001");
   envelope.registry_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-00000000f002");
 
-  std::string_view function_id;
+  std::string function_id;
   std::size_t function_argument_count = 0;
   bool result_type_present = false;
   for (const auto& operand : envelope.operands) {
@@ -101,6 +133,11 @@ inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest
 
   for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
     auto& operand = envelope.operands[index];
+    if (operand.type == "uuid" && !operand.value_body.empty()) {
+      operand.ordinal = static_cast<std::uint32_t>(index + 1);
+      if (!operand.value.empty()) throw std::logic_error("UUID fixture has a text mirror");
+      continue;
+    }
     const auto value = std::move(operand.value);
     operand.ordinal = static_cast<std::uint32_t>(index + 1);
     operand.value_kind = engine::sblr::SblrValueKind::literal_typed;
@@ -124,6 +161,17 @@ inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest
       operand.value_body[24 + byte] = static_cast<std::uint8_t>(value[byte]);
     }
   }
+  static const auto functions = engine::functions::BuildStandardFunctionSeedPackage();
+  const auto* function = functions.registry.Lookup(function_id);
+  if (!function) throw std::logic_error("projection fixture function is not registered");
+  engine::sblr::SblrOperand identity;
+  identity.ordinal = envelope.operands.size() + 1;
+  identity.name = "projection_0_function_uuid";
+  identity.type = "uuid";
+  identity.value_kind = engine::sblr::SblrValueKind::uuid_ref;
+  identity.value_body.assign(function->function_uuid.bytes.begin(),
+                             function->function_uuid.bytes.end());
+  envelope.operands.push_back(std::move(identity));
   return envelope;
 }
 

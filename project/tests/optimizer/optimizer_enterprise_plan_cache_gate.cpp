@@ -129,14 +129,23 @@ bool EnterpriseKeyRequiresEveryReuseDimension() {
     return false;
   }
   const auto key = opt::BuildOptimizerPlanCacheKey(input);
-  if (!Require(key.find("optimizer_controls=") != std::string::npos,
-               "normalized controls missing from key")) return false;
-  if (!Require(key.find("memory_feedback_generation=5109") != std::string::npos,
-               "memory feedback generation missing from key")) return false;
-  if (!Require(key.find("route_cap=sha256:route-capability-local-index-v51") !=
-                   std::string::npos,
-               "route capability digest missing from key")) {
-    return false;
+  {
+    auto changed = input;
+    changed.normalized_optimizer_controls_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "normalized_optimizer_controls_digest missing from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    ++changed.memory_feedback_generation;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "memory_feedback_generation missing from binary key")) return false;
+  }
+  {
+    auto changed = input;
+    changed.route_capability_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "route_capability_digest missing from binary key")) return false;
   }
 
   auto missing_bind = input;

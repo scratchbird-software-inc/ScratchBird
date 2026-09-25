@@ -1,3 +1,4 @@
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -132,6 +133,17 @@ void TestServerSupportabilityLifecycle(const std::filesystem::path& temp_dir) {
 
   const auto flush = server::FlushServerObservability(&observability, "shutdown token=secret-token");
   Require(flush.flushed, "supportability flush did not persist all evidence files");
+  const auto audit_bytes = ReadFile(observability.audit_path);
+  Require(audit_bytes.starts_with("SBOBS002"), "audit log has no binary record framing");
+  Require(scratchbird::cli::RenderBinaryObservationLog(audit_bytes).has_value(),
+          "client could not decode complete audit record stream");
+  Require(!scratchbird::cli::RenderBinaryObservationLog(audit_bytes.substr(0, audit_bytes.size() - 1)),
+          "client admitted truncated audit record stream");
+  auto oversized = audit_bytes;
+  oversized.replace(8, 8, 8, static_cast<char>(0xff));
+  Require(!scratchbird::cli::RenderBinaryObservationLog(oversized),
+          "client admitted overflowing audit frame length");
+
   Require(flush.diagnostic_code == "SUPPORTABILITY.FLUSH_COMPLETE",
           "supportability flush diagnostic mismatch");
   Require(Contains(ReadFile(observability.audit_path), "supportability_flush"),
@@ -147,6 +159,18 @@ void TestServerSupportabilityLifecycle(const std::filesystem::path& temp_dir) {
   Require(export_result.diagnostic_code == "OPS.SUPPORT_BUNDLE.EXPORT_COMPLETE",
           "support bundle export diagnostic mismatch");
   const auto& descriptor = export_result.records_json;
+  std::vector<scratchbird::wire::public_result::Field> fields;
+  Require(scratchbird::wire::binary_status::Decode(descriptor, &fields),
+          "support bundle descriptor is not framed binary status");
+  Require(export_result.bundle_uuid.size() == 16,
+          "support bundle identity is not UUID16");
+  Require(std::count_if(fields.begin(), fields.end(), [&](const auto& field) {
+      return field.kind == scratchbird::wire::public_result::Kind::uuid &&
+             field.value == export_result.bundle_uuid;
+    }) == 1, "support bundle identity was escaped or lost in transport");
+  Require(scratchbird::cli::RenderBinaryStatus(descriptor).has_value(),
+          "client could not render support bundle descriptor");
+
   Require(Contains(descriptor, "\"redaction_state\":\"redacted\""),
           "support bundle descriptor missing redaction state");
   Require(Contains(descriptor, "\"bundle_ref\":\"[path-redacted]\""),
@@ -165,13 +189,17 @@ void TestServerSupportabilityLifecycle(const std::filesystem::path& temp_dir) {
   std::size_t bundle_count = 0;
   std::filesystem::path bundle_path;
   for (const auto& entry : std::filesystem::directory_iterator(observability.support_bundle_dir)) {
-    if (entry.path().extension() == ".json") {
+    if (entry.path().extension() == ".sbobs" &&
+        entry.path().filename().string().starts_with("bundle_")) {
       ++bundle_count;
       bundle_path = entry.path();
     }
   }
   Require(bundle_count == 1, "support bundle export did not create exactly one bundle");
   const auto bundle = ReadFile(bundle_path);
+  Require(scratchbird::cli::RenderBinaryObservationLog(bundle).has_value(),
+          "client could not decode binary support bundle");
+
   Require(Contains(bundle, "\"forbidden_fields_absent\":true"),
           "support bundle omitted forbidden-field evidence");
   Require(Contains(bundle, "\"ratio\":100"),
@@ -212,6 +240,9 @@ void TestServerSupportabilityLifecycle(const std::filesystem::path& temp_dir) {
   const auto failed_export =
       server::ExportServerSupportBundle(blocked, config, artifacts, engine, sessions, parser_registry, listeners);
   Require(!failed_export.ok, "support bundle export succeeded after evidence write failure");
+  Require(scratchbird::wire::binary_status::Decode(failed_export.records_json, &fields) &&
+          scratchbird::cli::RenderBinaryStatus(failed_export.records_json).has_value(),
+          "failed support bundle response lost binary observation framing");
   Require(blocked.support_bundle_export_uuids.empty(),
           "failed support bundle export recorded a visible export UUID");
 }

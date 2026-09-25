@@ -2195,6 +2195,7 @@ if(TARGET sb_core_uuid AND TARGET sb_engine_internal_api AND TARGET sb_storage_d
   target_link_libraries(
     optimizer_deficiency_odf_111_gate
     PRIVATE
+      sb_engine
       sb_core_uuid
       sb_engine_internal_api
       sb_storage_database
@@ -2222,6 +2223,7 @@ if(TARGET sb_core_uuid AND TARGET sb_engine_internal_api AND TARGET sb_engine_sb
   target_link_libraries(
     optimizer_deficiency_odf_112_gate
     PRIVATE
+      sb_engine
       sb_core_uuid
       sb_engine_internal_api
       sb_engine_sblr

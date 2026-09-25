@@ -141,8 +141,8 @@ internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          internal_api::EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
-          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          internal_api::EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x02}},
+          2, 2, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : internal_api::EngineUuid{};
 }

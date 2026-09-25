@@ -8,9 +8,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "../../wire/binary_observation_log.hpp"
 #include "native_row_field.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "sblr_bound_object_identity.hpp"
+#include "sblr_projection_uuid_literals.hpp"
 #include "sblr_projection_value_runtime.hpp"
 
 #include <stdexcept>
@@ -195,6 +197,25 @@ struct TypedPlanOperationDecodeResult {
   std::string detail;
 };
 
+void WriteSblrBinaryEvidenceTrace(
+    const char* trace_path, std::string_view layer,
+    const std::vector<api::EngineEvidenceReference>& evidence,
+    std::size_t begin) {
+  namespace status = scratchbird::wire::binary_status;
+  status::Stream record;
+  record << "layer=" << status::Text{std::string(layer)};
+  for (std::size_t i = begin; i < evidence.size(); ++i) {
+    record << '\t' << status::Text{evidence[i].evidence_kind} << '=';
+    if (const auto* identity = std::get_if<api::EngineUuid>(&evidence[i].evidence_id))
+      record << status::Identity(*identity);
+    else if (const auto* text = std::get_if<std::string>(&evidence[i].evidence_id))
+      record << status::Text{*text};
+  }
+  record << "\tparent_consumption=admitted_after_evidence"
+            "\tparent_success_barrier=passed\n";
+  status::AppendObservation(std::string(trace_path) + ".sbobs", record.str());
+}
+
 void WriteSblrLiteralEvidenceTrace(
     const std::vector<api::EngineEvidenceReference>& evidence,
     const std::size_t begin) {
@@ -202,6 +223,7 @@ void WriteSblrLiteralEvidenceTrace(
   const char* trace_path =
       std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
   if (trace_path == nullptr || *trace_path == '\0') return;
+  WriteSblrBinaryEvidenceTrace(trace_path, "literal_executor", evidence, begin);
   std::ofstream out(trace_path, std::ios::app | std::ios::binary);
   if (!out) return;
   out << "layer=literal_executor";
@@ -220,6 +242,7 @@ void WriteSblrParameterEvidenceTrace(
   const char* trace_path =
       std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
   if (trace_path == nullptr || *trace_path == '\0') return;
+  WriteSblrBinaryEvidenceTrace(trace_path, "parameter_executor", evidence, begin);
   std::ofstream out(trace_path, std::ios::app | std::ios::binary);
   if (!out) return;
   out << "layer=parameter_executor";
@@ -5229,7 +5252,9 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     // the target. Keep the remaining roles in their typed envelope; never
     // convert them into empty or textual option-envelope identities.
     if (IsBoundObjectIdentityRole(operand.name) || IsRelatedObjectIdentityRole(operand.name) ||
-        IsProjectionFunctionIdentityRole(operand.name)) continue;
+        (IsProjectionFunctionIdentityRole(operand.name) ||
+         (request.envelope.operation_id == "query.evaluate_projection" &&
+          IsProjectionUuidLiteral(operand)))) continue;
     auto operand_value = OperandExecutionValue(operand);
     const bool binary_row = operand.type.starts_with("row_field_binary16.") ||
                             operand.type.starts_with("row_null_field_binary16.");
@@ -7726,7 +7751,7 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
   out.deterministic_random_u64_present =
       context.deterministic_random_u64_present;
   out.deterministic_random_bytes_hex = context.deterministic_random_bytes_hex;
-  out.deterministic_uuid_text = context.deterministic_uuid_text;
+  out.deterministic_uuid = context.deterministic_uuid;
   out.security_context_present = context.security_context_present;
   out.current_sqlstate = context.current_sqlstate;
   out.current_diagnostic_uuid = context.current_diagnostic_uuid;
@@ -8983,8 +9008,8 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
       request.context.deterministic_random_u64_present;
   function_request.context.sblr_context.deterministic_random_bytes_hex =
       request.context.deterministic_random_bytes_hex;
-  function_request.context.sblr_context.deterministic_uuid_text =
-      request.context.deterministic_uuid_text;
+  function_request.context.sblr_context.deterministic_uuid =
+      request.context.deterministic_uuid;
   function_request.context.sblr_context.security_context_present =
       request.context.security_context_present;
   function_request.context.sblr_context.current_sqlstate = request.context.current_sqlstate;
@@ -9193,7 +9218,7 @@ api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& r
   api::EngineApiRequest base = BaseApiRequest(request);
   EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.update_predicate = std::move(base.predicate);
+  typed.update_predicate = std::exchange(base.predicate, api::EnginePredicateEnvelope{});
   typed.assignments = std::move(base.assignments);
   typed.limit = DispatchOptionU64(base, "limit:");
   typed.offset = DispatchOptionU64(base, "offset:");
@@ -9248,7 +9273,7 @@ api::EngineMergeRowsRequest TypedMergeRowsRequest(const SblrDispatchRequest& req
   api::EngineApiRequest base = BaseApiRequest(request);
   EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.match_predicate = std::move(base.predicate);
+  typed.match_predicate = std::exchange(base.predicate, api::EnginePredicateEnvelope{});
   typed.input_rows = std::move(base.rows);
   typed.update_assignments = std::move(base.assignments);
   typed.merge_surface_variant = api::SecurityOptionValue(base, "dml_surface_variant:");
@@ -10734,6 +10759,18 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         "engine.sblr.dispatch.bound_object_identity_invalid", detail);
     return result;
   }
+  if (request.envelope.operation_id == "query.evaluate_projection" &&
+      !ProjectSblrUuidLiterals(request.envelope, &request.api_request, &identity_failure)) {
+    if (identity_failure == SblrIdentityProjectionFailure::allocation_failed) {
+      result.resource_exhausted = true;
+      return result;
+    }
+    constexpr const char* detail = "Projection UUID literals require a unique Core-typed binary16 body";
+    result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
+    result.api_result = FailureResult(request.context, request.envelope.operation_id,
+        "SBLR.OPERAND_INVALID", "engine.sblr.dispatch.uuid_literal_invalid", detail);
+    return result;
+  }
   // SOURCE_MAP is local-observed even in a cluster-scoped package. Validate
   // its reference before the executor indexes the operand or hashes evidence.
   // Receipt ownership and availability are separately checked by public
@@ -11034,6 +11071,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       if (materialize_query_slots && HasNativeRelationalPayload(operand)) {
         continue;
       }
+      // ProjectSblrBoundTargetIdentity has already validated and copied the
+      // exact binary function cohort. Never materialize those UUIDs as text.
+      if (request.envelope.operation_id == "query.evaluate_projection" &&
+          (IsProjectionFunctionIdentityRole(operand.name) ||
+         (request.envelope.operation_id == "query.evaluate_projection" &&
+          IsProjectionUuidLiteral(operand)))) continue;
       if (operand.value_kind != SblrValueKind::literal_typed ||
           operand.value_body.size() < 24) {
         const std::string detail =

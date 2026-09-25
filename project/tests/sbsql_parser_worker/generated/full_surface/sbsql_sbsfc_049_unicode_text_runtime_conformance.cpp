@@ -81,6 +81,10 @@ sblr::SblrResult RunFunction(const functions::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<SblrValue> values) {
   functions::FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -284,6 +288,27 @@ int main() {
                          "form", "character", "NFC", false}}),
                 api::EngineApiRequest{}}),
            ComposedEAcute()) && ok;
+
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    auto malformed = ProjectionEnvelope("sb.scalar.normalize_text_form",
+        {{"text", "character", DecomposedEAcute(), false},
+         {"form", "character", "NFC", false}});
+    auto& identity = malformed.operands.back();
+    if (mutation == 0) identity.value_body.pop_back();
+    if (mutation == 1) identity.value_body.assign(16, 0);
+    if (mutation == 2) {
+      auto duplicate = identity;
+      duplicate.ordinal = malformed.operands.size() + 1;
+      malformed.operands.push_back(std::move(duplicate));
+    }
+    if (mutation == 3) identity.value_kind = sblr::SblrValueKind::literal_typed;
+    const auto rejected = sblr::DispatchSblrOperation(
+        {ProjectionContext(), std::move(malformed), api::EngineApiRequest{}});
+    if (rejected.api_result.ok) {
+      std::cerr << "malformed projection function identity was accepted: " << mutation << "\n";
+      ok = false;
+    }
+  }
 
   if (!ok) return 1;
   std::cout << "sbsql_sbsfc_049_unicode_text_runtime_conformance=passed\n";

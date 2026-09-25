@@ -1,4 +1,5 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/published_mga_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -14,6 +15,7 @@
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
 #include "canonical_projection_test_envelope.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -69,7 +71,7 @@ void CleanupDatabase(const std::filesystem::path& path) {
   std::filesystem::remove(path.string() + ".sb.mga_savepoints");
 }
 
-scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
+db::DatabaseLifecycleState CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -87,7 +89,7 @@ scratchbird::core::platform::Uuid CreateMinimalDatabase(const std::filesystem::p
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC045 database create failed");
-  return create.database_uuid.value;
+  return created.state;
 }
 
 api::EngineRequestContext BaseContext(const std::filesystem::path& path,
@@ -127,12 +129,22 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
   return context;
 }
 
-void SeedPrivilegeFixture(const api::EngineRequestContext& context) {
+void SeedPrivilegeFixture(api::EngineRequestContext& context) {
+  api::EngineCatalogCreateObjectRequest schema;
+  schema.context = context;
+  schema.target_object.uuid = context.current_schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "current_schema", true});
+  const auto published = api::EngineCatalogCreateObject(schema);
+  for (const auto& diagnostic : published.diagnostics)
+    if (!published.ok) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(published.ok, "SBSFC045 schema catalog publication failed");
   api::CrudTableRecord table;
   table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101");
   table.default_name = "sbsfc045_privilege_target";
   table.columns = {{"id", "type=int64"}, {"note", "type=character"}};
-  const auto diagnostic = api::AppendMgaTableMetadata(context, table);
+  const auto diagnostic = scratchbird::tests::PublishMgaTableFixture(
+      context, table, {"int64", "character"});
   Require(!diagnostic.error, "SBSFC045 table metadata append failed");
 }
 
@@ -179,6 +191,10 @@ sblr::SblrResult RunFunction(const functions::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<SblrValue> values) {
   functions::FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -241,7 +257,13 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
     const auto prefix = "projection_0_arg_" + std::to_string(index) + "_";
     envelope.operands.push_back({"text", prefix + "name", arguments[index].name});
     envelope.operands.push_back({"text", prefix + "type", arguments[index].type_name});
-    envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
+    if (arguments[index].type_name == "uuid" && !arguments[index].is_null) {
+      Require(arguments[index].encoded_value.empty(), "UUID projection fixture has a text mirror");
+      envelope.operands.push_back(scratchbird::tests::sbsql::UuidProjectionOperandForTest(
+          prefix + "value", arguments[index].binary_value));
+    } else {
+      envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
+    }
     envelope.operands.push_back({"text", prefix + "is_null", arguments[index].is_null ? "true" : "false"});
   }
   return scratchbird::tests::sbsql::CanonicalizeProjectionEnvelopeForTest(
@@ -279,8 +301,9 @@ bool ExpectProjectionBoolean(std::string_view case_id,
 int main() {
   const auto database_path = TempDatabasePath();
   CleanupDatabase(database_path);
-  const auto database_uuid = CreateMinimalDatabase(database_path);
-  auto context = BeginTransaction(database_path, database_uuid);
+  const auto database = CreateMinimalDatabase(database_path);
+  auto context = BeginTransaction(database_path, database.database_uuid.value);
+  context.default_root_uuid = database.filespace_uuid.value;
   SeedPrivilegeFixture(context);
 
   const auto package = functions::BuildStandardFunctionSeedPackage();
@@ -289,13 +312,13 @@ int main() {
 
   ok = ExpectBoolean("SBSFC045-has-table-privilege-current-owner",
                      RunFunction(registry, context, "sb.scalar.has_table_privilege",
-                                 {TextValue("uuid", kTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "SELECT")}),
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-table-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_table_privilege",
-                                 {TextValue("uuid", kPrincipalUuid),
-                                  TextValue("uuid", kTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                  scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "UPDATE")}),
                      true) && ok;
   ok = ExpectNull("SBSFC045-has-table-privilege-null",
@@ -304,32 +327,32 @@ int main() {
                   "boolean") && ok;
   ok = ExpectBoolean("SBSFC045-has-table-privilege-unknown",
                      RunFunction(registry, context, "sb.scalar.has_table_privilege",
-                                 {TextValue("uuid", kUnknownTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000999")),
                                   TextValue("character", "SELECT")}),
                      false) && ok;
 
   ok = ExpectBoolean("SBSFC045-has-column-privilege-current-owner",
                      RunFunction(registry, context, "sb.scalar.has_column_privilege",
-                                 {TextValue("uuid", kTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "id"),
                                   TextValue("character", "SELECT")}),
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-column-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_column_privilege",
-                                 {TextValue("uuid", kPrincipalUuid),
-                                  TextValue("uuid", kTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                  scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "note"),
                                   TextValue("character", "UPDATE")}),
                      true) && ok;
   ok = ExpectNull("SBSFC045-has-column-privilege-null",
                   RunFunction(registry, context, "sb.scalar.has_column_privilege",
-                              {TextValue("uuid", kTableUuid),
+                              {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                NullValue("character"),
                                TextValue("character", "SELECT")}),
                   "boolean") && ok;
   ok = ExpectBoolean("SBSFC045-has-column-privilege-unknown-column",
                      RunFunction(registry, context, "sb.scalar.has_column_privilege",
-                                 {TextValue("uuid", kTableUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "missing_column"),
                                   TextValue("character", "SELECT")}),
                      false) && ok;
@@ -341,7 +364,7 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-function-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_function_privilege",
-                                 {TextValue("uuid", kPrincipalUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
                                   TextValue("character", "sb.scalar.has_table_privilege"),
                                   TextValue("character", "EXECUTE")}),
                      true) && ok;
@@ -362,8 +385,8 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-schema-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_schema_privilege",
-                                 {TextValue("uuid", kPrincipalUuid),
-                                  TextValue("uuid", kSchemaUuid),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                  scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000004")),
                                   TextValue("character", "CREATE")}),
                      true) && ok;
   ok = ExpectNull("SBSFC045-has-schema-privilege-null",
@@ -381,8 +404,7 @@ int main() {
            "SBSFC045-has-table-privilege-projection",
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.has_table_privilege",
-                                                           {api::EngineProjectionFunctionArgument{
-                                                                "table_uuid", "uuid", kTableUuid, false},
+                                                           {scratchbird::tests::sbsql::UuidProjectionArgumentForTest("table_uuid", scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                                             api::EngineProjectionFunctionArgument{
                                                                 "privilege", "character", "SELECT", false}}),
                                         api::EngineApiRequest{}}),
@@ -391,8 +413,7 @@ int main() {
            "SBSFC045-has-column-privilege-projection",
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.has_column_privilege",
-                                                           {api::EngineProjectionFunctionArgument{
-                                                                "table_uuid", "uuid", kTableUuid, false},
+                                                           {scratchbird::tests::sbsql::UuidProjectionArgumentForTest("table_uuid", scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                                             api::EngineProjectionFunctionArgument{
                                                                 "column_name", "character", "id", false},
                                                             api::EngineProjectionFunctionArgument{

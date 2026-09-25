@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/import_execution_api.hpp"
@@ -87,11 +90,14 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   platform::Uuid table_uuid;
   platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -151,23 +157,15 @@ void AssertNoRuntimeDocLeaks(const std::vector<api::EngineEvidenceReference>& ev
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 44;
-  context.security_epoch = 45;
-  context.resource_epoch = 46;
-  context.name_resolution_epoch = 47;
   return context;
 }
 
@@ -232,34 +230,38 @@ Fixture MakeFixture(std::string name, platform::u64 salt, bool with_index) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueSeed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-044 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf044-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(metadata, Table(fixture, metadata),
+                          {"character", "character"}, with_index ? std::vector<api::CrudIndexRecord>{IdIndex(fixture, metadata)} : std::vector<api::CrudIndexRecord>{}),
                       "ODF-044 table metadata append failed");
   if (with_index) {
     RequireDiagnosticOk(api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata)),
                         "ODF-044 index metadata append failed");
   }
   Commit(metadata);
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf044-session"));
   return fixture;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows,
     bool sorted_build) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -373,8 +375,8 @@ void CreateIndexBackfillsWithSortedExactBuild() {
   auto ddl_context = Begin(fixture, "odf044-create-index");
   const platform::Uuid city_index_uuid =
       NewNativeUuid(platform::UuidKind::object, 44250);
-  api::EngineCreateIndexRequest request;
-  request.context = ddl_context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineCreateIndexRequest> request(
+      *fixture.session, ddl_context);
   request.target_object.uuid = fixture.table_uuid;
   request.target_object.object_kind = "table";
   api::EngineIndexDefinition definition;
@@ -422,6 +424,11 @@ void CreateIndexBackfillsWithSortedExactBuild() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf044_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf044_statement_fixture").ok(),
+          "ODF-044 memory policy configuration failed");
   CoreBuilderSortsAndRefusesUniqueDuplicates();
   DirectBulkUsesSortedExactIndexBuild();
   CreateIndexBackfillsWithSortedExactBuild();

@@ -25,21 +25,21 @@ agents::AgentActionRequest Action(const std::string& uuid) {
   agents::AgentActionRequest action;
   action.action_uuid = uuid;
   action.agent_type_id = "page_allocation_manager";
-  action.instance_uuid = "019f0770-0000-7000-8000-000000000010";
+  action.instance_uuid = std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x10", 16);
   action.actuator_id = "page_manager";
   action.operation_id = "preallocate_page_family";
   action.idempotency_key = "ceic-077:" + uuid;
   action.inputs["metric_digest"] = "sha256:metric-digest-ceic-077";
-  action.inputs["scope_uuid"] = "019f0770-0000-7000-8000-000000000011";
+  action.inputs["scope_uuid"] = std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x11", 16);
   return action;
 }
 
 agents::AgentActionAuthorityProvenance Authority() {
   agents::AgentActionAuthorityProvenance authority;
   authority.source = agents::AgentActionAuthoritySource::operator_request;
-  authority.principal_uuid = "019f0770-0000-7000-8000-000000000020";
-  authority.scope_uuid = "019f0770-0000-7000-8000-000000000021";
-  authority.provenance_evidence_uuid = "019f0770-0000-7000-8000-000000000022";
+  authority.principal_uuid = std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x20", 16);
+  authority.scope_uuid = std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x21", 16);
+  authority.provenance_evidence_uuid = std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x22", 16);
   authority.operator_authority = true;
   authority.rights = {"OBS_AGENT_CONTROL"};
   return authority;
@@ -57,14 +57,14 @@ agents::CommercialAgentEvidenceBuildRequest BuildRequest(
   request.input_evidence_digest = "sha256:input-evidence:" + action_uuid;
   request.input_metric_digest = "sha256:metric-digest-ceic-077";
   request.policy_generation = 77;
-  request.scope_uuids = {"019f0770-0000-7000-8000-000000000030"};
+  request.scope_uuids = {std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x30", 16)};
   request.decision_payload = "ceic-077-decision-payload:" + action_uuid;
   request.result_state = "completed";
   request.diagnostic_code = "SB_AGENT_ACTION.OUTCOME_VERIFIED";
   request.redaction_class = redaction_class;
   request.retention_class = "audit";
   request.outcome_verification_evidence_uuid =
-      "019f0770-0000-7000-8000-000000000040";
+      std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x40", 16);
   request.previous_tamper_digest = previous_tamper_digest;
   request.tamper_key_id = "agent-evidence-ledger-key-v1";
   request.tamper_key_provenance = "engine_local_protected_hmac_key";
@@ -99,9 +99,9 @@ agents::AgentRuntimeContext SupportContext() {
 
 void TestValidPolicyAndChainContinuity() {
   auto first = agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000060"));
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x60", 16)));
   auto second = agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000061",
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x61", 16),
                    first.tamper_chain_digest));
 
   const auto first_validation =
@@ -134,14 +134,14 @@ void TestDurableCatalogRoundTripPreservesKeyPolicyFields() {
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
   image.authority.mga_transaction_uuid =
-      "019f0770-0000-7000-8000-000000000070";
+      std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x70", 16);
   image.authority.transaction_generation = 77;
   image.authority.evidence_uuid =
-      "019f0770-0000-7000-8000-000000000071";
+      std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x71", 16);
   image.authority.database_uuid =
-      "019f0770-0000-7000-8000-000000000072";
+      std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x72", 16);
   image.authority.catalog_storage_uuid =
-      "019f0770-0000-7000-8000-000000000073";
+      std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x73", 16);
   image.authority.storage_commit_evidence_uuid =
       image.authority.evidence_uuid;
   image.authority.catalog_generation = 77;
@@ -151,7 +151,7 @@ void TestDurableCatalogRoundTripPreservesKeyPolicyFields() {
   image.authority.fsync_or_checkpoint_evidence = true;
 
   image.evidence.push_back(agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000074")));
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x74", 16))));
   const auto refresh = agents::RefreshDurableAgentCatalogAuthorityDigest(
       &image, image.authority.evidence_uuid);
   Require(refresh.ok, "catalog digest refresh failed");
@@ -176,7 +176,7 @@ void TestDurableCatalogRoundTripPreservesKeyPolicyFields() {
 }
 
 void TestTestKeyAndExportedKeyRefusal() {
-  auto request = BuildRequest("019f0770-0000-7000-8000-000000000062");
+  auto request = BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x62", 16));
   request.tamper_key_id = "agent-evidence-ledger-test-key-v1";
   request.tamper_key_provenance = "test_fixture_hmac_key";
   request.test_key_material = true;
@@ -188,7 +188,7 @@ void TestTestKeyAndExportedKeyRefusal() {
                   "SB_AGENT_COMMERCIAL_EVIDENCE.PRODUCTION_KEY_REFUSED",
           "test key material was accepted");
 
-  request = BuildRequest("019f0770-0000-7000-8000-000000000063");
+  request = BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x63", 16));
   request.key_material_exported = true;
   evidence = agents::BuildCommercialAgentEvidence(request);
   validation = agents::ValidateCommercialAgentEvidence(evidence);
@@ -199,7 +199,7 @@ void TestTestKeyAndExportedKeyRefusal() {
 }
 
 void TestRotationWindowAndResidencyRefusal() {
-  auto request = BuildRequest("019f0770-0000-7000-8000-000000000064");
+  auto request = BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x64", 16));
   request.created_at_microseconds = 1000;
   request.tamper_key_not_before_microseconds = 2000;
   auto evidence = agents::BuildCommercialAgentEvidence(request);
@@ -209,7 +209,7 @@ void TestRotationWindowAndResidencyRefusal() {
                   "SB_AGENT_COMMERCIAL_EVIDENCE.KEY_NOT_YET_VALID",
           "pre-rotation evidence was accepted");
 
-  request = BuildRequest("019f0770-0000-7000-8000-000000000065");
+  request = BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x65", 16));
   request.key_residency_class = "external_unattested";
   evidence = agents::BuildCommercialAgentEvidence(request);
   auto policy = agents::DefaultCommercialAgentEvidenceKeyPolicy();
@@ -224,7 +224,7 @@ void TestRotationWindowAndResidencyRefusal() {
 }
 
 void TestLegalHoldAndRetention() {
-  auto request = BuildRequest("019f0770-0000-7000-8000-000000000066");
+  auto request = BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x66", 16));
   request.retention_class = "legal_hold";
   request.legal_hold_active = true;
   auto evidence = agents::BuildCommercialAgentEvidence(request);
@@ -245,7 +245,7 @@ void TestLegalHoldAndRetention() {
 
 void TestProtectedViewSuppressesBeforeAndAfterBuffering() {
   auto evidence = agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000067",
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x67", 16),
                    "scratchbird-agent-evidence-ledger-genesis",
                    "protected_material"));
   Require(evidence.redaction_applied_before_buffering,
@@ -277,9 +277,9 @@ void TestProtectedViewSuppressesBeforeAndAfterBuffering() {
 
 void TestBrokenChainRefusal() {
   auto first = agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000068"));
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x68", 16)));
   auto second = agents::BuildCommercialAgentEvidence(
-      BuildRequest("019f0770-0000-7000-8000-000000000069",
+      BuildRequest(std::string("\x01\x9f\x07\x70\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x69", 16),
                    "wrong-previous-digest"));
 
   agents::CommercialAgentEvidenceChainValidationRequest chain;

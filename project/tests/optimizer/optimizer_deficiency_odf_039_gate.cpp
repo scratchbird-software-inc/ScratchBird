@@ -13,7 +13,10 @@
 #include "dml/insert_api.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/mga_relation_read_view.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -148,6 +151,11 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  platform::Uuid parent_key_uuid;
+  platform::Uuid child_key_uuid;
+  platform::Uuid foreign_key_uuid;
   platform::Uuid parent_table_uuid;
   platform::Uuid child_table_uuid;
   platform::Uuid parent_index_uuid;
@@ -156,6 +164,7 @@ struct Fixture {
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -163,23 +172,15 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 100;
-  context.security_epoch = 200;
-  context.resource_epoch = 300;
-  context.name_resolution_epoch = 400;
   return context;
 }
 
@@ -206,13 +207,26 @@ void Commit(const api::EngineRequestContext& context) {
 }
 
 std::string IdentityColumnMetadata(std::string key, const platform::Uuid& identity,
-                                   bool foreign_key) {
+                                   bool foreign_key, const Fixture& fixture) {
   api::CatalogColumnMetadata fields;
   fields.text.emplace("canonical", "character");
   fields.identities.emplace(std::move(key), identity);
-  if (foreign_key) fields.text.emplace("referenced_column", "id");
+  if (foreign_key) {
+    fields.text.emplace("referenced_column", "id");
+    fields.identities.emplace("constraint_uuid", fixture.foreign_key_uuid);
+  }
   std::string bytes;
   Require(api::EncodeCatalogColumnMetadata(fields, &bytes), "column metadata encoding failed");
+  return bytes;
+}
+
+std::string PrimaryKeyMetadata(const platform::Uuid& constraint,
+                               const platform::Uuid& support) {
+  api::CatalogColumnMetadata fields;
+  fields.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  fields.identities = {{"candidate_key_constraint_uuid", constraint}, {"support_uuid", support}};
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(fields, &bytes), "ODF-039 key encoding failed");
   return bytes;
 }
 
@@ -222,7 +236,7 @@ api::CrudTableRecord ParentTable(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.parent_table_uuid;
   table.default_name = "odf039_parent";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  table.columns.push_back({"id", PrimaryKeyMetadata(fixture.parent_key_uuid, fixture.parent_index_uuid)});
   return table;
 }
 
@@ -232,12 +246,12 @@ api::CrudTableRecord ChildTable(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.child_table_uuid;
   table.default_name = "odf039_child";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  table.columns.push_back({"id", PrimaryKeyMetadata(fixture.child_key_uuid, fixture.child_index_uuid)});
   table.columns.push_back({"parent_id",
-                           IdentityColumnMetadata("referenced_table_uuid", fixture.parent_table_uuid, true)});
+                           IdentityColumnMetadata("referenced_table_uuid", fixture.parent_table_uuid, true, fixture)});
   table.columns.push_back({"nn", "canonical=character;not_null=true"});
   table.columns.push_back({"code", "canonical=character;check=length_gte:2"});
-  table.columns.push_back({"dom", IdentityColumnMetadata("domain_uuid", fixture.domain_uuid, false)});
+  table.columns.push_back({"dom", IdentityColumnMetadata("domain_uuid", fixture.domain_uuid, false, fixture)});
   return table;
 }
 
@@ -264,9 +278,16 @@ api::DomainRecord Domain(const Fixture& fixture,
   record.creator_tx = context.local_transaction_id;
   record.domain_uuid = fixture.domain_uuid;
   record.catalog_row_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 50);
-  record.schema_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 51);
+  record.schema_uuid = context.current_schema_uuid;
   record.default_name = "odf039_domain";
-  record.base_descriptor_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 52);
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "ODF-039 datatype catalog missing");
+  const auto datatype = dt::LookupDatatypeCatalogRow(manifest.manifest,
+      dt::CanonicalTypeIdFromStableName("character"));
+  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
+          "ODF-039 character descriptor missing");
+  record.base_descriptor_uuid = datatype.manifest.descriptor_rows.front().descriptor_uuid.value;
   record.base_descriptor_kind = "scalar";
   record.base_canonical_type_name = "character";
   record.base_encoded_descriptor = "canonical=character";
@@ -290,13 +311,16 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-039 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.parent_key_uuid = NewNativeUuid(platform::UuidKind::object, salt + 15);
+  fixture.child_key_uuid = NewNativeUuid(platform::UuidKind::object, salt + 16);
+  fixture.foreign_key_uuid = NewNativeUuid(platform::UuidKind::object, salt + 17);
   fixture.parent_table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.child_table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
   fixture.parent_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
@@ -304,9 +328,14 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   fixture.domain_uuid = NewNativeUuid(platform::UuidKind::object, salt + 14);
 
   auto context = Begin(fixture, "odf039-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, ParentTable(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(context, ParentTable(fixture, context),
+          {"character"}, {UniqueIndex(fixture.parent_index_uuid, fixture.parent_table_uuid, "id", context)}),
                       "ODF-039 parent table metadata append failed");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, ChildTable(fixture, context)),
+  RequireDiagnosticOk(api::AppendDomainEvent(context,
+                                             api::MakeDomainCreateEvent(Domain(fixture, context))),
+                      "ODF-039 domain metadata append failed");
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(context, ChildTable(fixture, context),
+          {"character", "character", "character", "character", "character"}, {UniqueIndex(fixture.child_index_uuid, fixture.child_table_uuid, "id", context)}),
                       "ODF-039 child table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -322,10 +351,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                                       "id",
                                       context)),
                       "ODF-039 child index metadata append failed");
-  RequireDiagnosticOk(api::AppendDomainEvent(context,
-                                             api::MakeDomainCreateEvent(Domain(fixture, context))),
-                      "ODF-039 domain metadata append failed");
   Commit(context);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf039-session"));
   return fixture;
 }
 
@@ -333,12 +362,15 @@ api::EngineInsertRowsResult InsertRows(const Fixture& fixture,
                                        const api::EngineRequestContext& context,
                                        const platform::Uuid&table_uuid,
                                        std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   request.estimated_row_count = request.input_rows.size();
+  // This gate exercises the ordinary row-constraint proof cache. Bulk proof
+  // publication has separate coverage and bypasses this cache by design.
+  request.option_envelopes.push_back("direct_physical_insert=disabled");
   return api::EngineInsertRows(request);
 }
 
@@ -443,6 +475,9 @@ void StaleContextRefusesProofReuse() {
   auto fixture = MakeFixture("stale", 40000);
   SeedParent(fixture);
   auto context = Begin(fixture, "odf039-stale");
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> retained(
+      *fixture.session, context);
+  context = retained.context;
   const auto state = LoadFixtureCrudState(context);
   const auto table = VisibleChildTable(state, fixture, context);
   const auto values =
@@ -459,18 +494,34 @@ void StaleContextRefusesProofReuse() {
                                                             "insert",
                                                             &cache);
     Require(first.ok, "ODF-039 initial direct validation failed");
-    const auto second = api::ValidateImmediateRowConstraints(stale_context,
+    const auto raw_uuid = [](const platform::Uuid& uuid) {
+      return std::string(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
+    };
+    const auto proof_identity = api::EncodeMgaMetadataFields({
+        "constraint.foreign.proof.v2", raw_uuid(fixture.foreign_key_uuid),
+        raw_uuid(fixture.parent_index_uuid), "p1"});
+    Require(api::FindConstraintDmlProofPayload(&cache, context,
+                "foreign_key_parent_exists", proof_identity).has_value(),
+            "ODF-039 actual parent validation did not cache its native proof");
+    // Altered epochs are cache-miss inputs, not valid engine admission receipts.
+    std::vector<api::EngineEvidenceReference> refused_evidence;
+    Require(!api::FindConstraintDmlProofPayload(&cache, stale_context,
+                 "foreign_key_parent_exists", proof_identity, &refused_evidence).has_value(),
+            "ODF-039 stale-context FK proof was reused");
+    Require(EvidenceContains(refused_evidence, "constraint_proof_refusal", expected),
+            "ODF-039 stale-context proof refusal evidence missing");
+    Require(!EvidenceContains(refused_evidence, "constraint_proof_hit", "foreign_key_parent_exists:"),
+            "ODF-039 stale-context emitted a proof hit");
+    const auto second = api::ValidateImmediateRowConstraints(context,
                                                              state,
                                                              table,
                                                              scratchbird::tests::FixtureUuid(39, 1),
                                                              values,
                                                              "insert",
                                                              &cache);
-    Require(second.ok, "ODF-039 stale-context validation should still validate directly");
-    Require(EvidenceContains(second.evidence, "constraint_proof_refusal", expected),
-            "ODF-039 stale-context proof refusal evidence missing");
-    Require(!EvidenceContains(second.evidence, "constraint_proof_hit", "foreign_key_parent_exists:"),
-            "ODF-039 stale-context FK proof was reused");
+    Require(second.ok && EvidenceContains(second.evidence,
+                "constraint_proof_hit", "foreign_key_parent_exists:"),
+            "ODF-039 stale lookup damaged valid authenticated proof reuse");
   };
 
   auto stale_catalog = context;
@@ -501,9 +552,18 @@ void FailuresRemainFailClosed() {
           "ODF-039 FK diagnostic code drifted");
   Require(FirstKey(missing_parent) == "constraint.foreign_key.violation",
           "ODF-039 FK diagnostic key drifted");
-  Require(FirstDetail(missing_parent).find("detail=referenced_parent_key_missing") !=
-              std::string::npos,
-          "ODF-039 FK diagnostic detail drifted");
+  bool parent_missing = false;
+  bool native_constraint = false;
+  bool native_owner = false;
+  for (const auto& field : missing_parent.diagnostics.front().fields) {
+    if (field.key == "violation_kind" && field.value == "parent_missing") parent_missing = true;
+  }
+  for (const auto& [key, identity] : missing_parent.diagnostics.front().identity_fields) {
+    if (key == "constraint_uuid" && identity == fixture.foreign_key_uuid) native_constraint = true;
+    if (key == "owner_object_uuid" && identity == fixture.child_table_uuid) native_owner = true;
+  }
+  Require(parent_missing && native_constraint && native_owner,
+          "ODF-039 FK structured reason or native diagnostic identity drifted");
 
   const auto null_nn = InsertRows(
       fixture,
@@ -554,6 +614,11 @@ void EvidenceHasNoRuntimeDocDependency() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf039_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf039_statement_fixture").ok(),
+          "ODF-039 memory configuration failed");
   RepeatedInsertReusesProofs();
   StaleContextRefusesProofReuse();
   FailuresRemainFailClosed();

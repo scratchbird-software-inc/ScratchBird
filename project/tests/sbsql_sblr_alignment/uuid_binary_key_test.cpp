@@ -36,6 +36,16 @@ using Clock = std::chrono::steady_clock;
 #define NOINLINE __attribute__((noinline))
 #endif
 
+template<class T>
+concept AcceptsShortTextUuid = requires { T{"rel.customer"}; };
+struct NativeUuidMember { Uuid identity; };
+static_assert(!AcceptsShortTextUuid<Uuid>);
+static_assert(!AcceptsShortTextUuid<NativeUuidMember>);
+static_assert(!std::is_constructible_v<Uuid, const char*>);
+static_assert(!std::is_constructible_v<Uuid, std::string_view>);
+constexpr Uuid kNativeBytes{{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,255}};
+static_assert(kNativeBytes.bytes.front() == 0 && kNativeBytes.bytes.back() == 255);
+static_assert(Uuid{}.is_nil());
 static_assert(sizeof(Uuid) == 16);
 static_assert(std::is_standard_layout_v<Uuid> && std::is_trivially_copyable_v<Uuid>);
 using EngineUuid = scratchbird::engine::internal_api::EngineUuid;
@@ -783,7 +793,9 @@ void CatalogIdentityContract() {
       {registered(0x11),registered(0x12)}, {decimal,registered(0x13)},
       {registered(0x14),registered(0x15)}, {registered(0x18),registered(0x19)}}};
   const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
-  Require(rows.size() == expected.size(), "registry population changed without an admitted oracle");
+  Require(std::ranges::count_if(rows, [&](const auto& row) {
+      return row.catalog_snapshot_uuid == snapshot && row.catalog_generation == 1 && row.registry_generation == 1;
+    }) == expected.size(), "immutable V1 registry population changed");
   for (const auto& [descriptor,type] : expected) {
     const auto result = dt::LookupDatatypeTypeCodecIdentityV1(snapshot,1,1,descriptor,1);
     Require(result.ok && result.row.catalog_snapshot_uuid == snapshot &&

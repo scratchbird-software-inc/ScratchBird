@@ -466,6 +466,14 @@ void BulkConstraintProofPathUsesSortedUniqueEvidence() {
   accepted.unique_proofs[0].incoming_keys_presorted = true;
   const auto accepted_result = bulk::ProveBulkConstraints(accepted);
   Require(accepted_result.ok(), "bulk constraint proof accepted case failed");
+  const auto binary_proof = std::find_if(
+      accepted_result.evidence.begin(), accepted_result.evidence.end(),
+      [](const auto& item) { return item.evidence_kind == "bulk_unique_preflight_index"; });
+  Require(binary_proof != accepted_result.evidence.end() &&
+              std::holds_alternative<platform::Uuid>(binary_proof->evidence_id) &&
+              std::get<platform::Uuid>(binary_proof->evidence_id) ==
+                  accepted.unique_proofs[0].index_uuid,
+          "unique proof lost its typed binary backing-index identity");
   Require(HasBulkEvidence(accepted_result.evidence,
                           "bulk_unique_proof_incoming_presorted",
                           "true"),

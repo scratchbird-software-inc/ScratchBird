@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/import_execution_api.hpp"
@@ -74,11 +77,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   platform::Uuid table_uuid;
   platform::Uuid index_uuid;
+  platform::Uuid primary_key_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -204,24 +211,17 @@ bool HasFallbackReason(const api::EngineDmlSummaryCounters& summary,
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
-                                      std::string request_id) {
-  api::EngineRequestContext context;
+                                      std::string request_id,
+                                      bool security_context_present = true) {
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
-  context.security_context_present = true;
+  context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -258,7 +258,14 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "optimizer_deficiency_odf_038";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  api::CatalogColumnMetadata key;
+  key.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  key.identities = {{"candidate_key_constraint_uuid", fixture.primary_key_uuid},
+                    {"support_uuid", fixture.index_uuid}};
+  std::string key_metadata;
+  Require(api::EncodeCatalogColumnMetadata(key, &key_metadata),
+          "ODF-038 binary primary key metadata encoding failed");
+  table.columns.push_back({"id", std::move(key_metadata)});
   table.columns.push_back({"note", "canonical=character"});
   return table;
 }
@@ -292,22 +299,28 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + fixture.salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-038 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 10);
   fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 11);
+  fixture.primary_key_uuid = NewNativeUuid(platform::UuidKind::object, fixture.salt + 12);
 
   auto metadata = Begin(fixture, "odf038-metadata");
-  Require(!api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(
+              metadata, Table(fixture, metadata), {"character", "character"},
+              {UniqueIdIndex(fixture, metadata)}).error,
           "ODF-038 table metadata append failed");
   Require(!api::AppendMgaIndexMetadata(metadata, UniqueIdIndex(fixture, metadata)).error,
           "ODF-038 index metadata append failed");
   Commit(metadata);
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf038-session"));
   return fixture;
 }
 
@@ -332,8 +345,8 @@ api::EngineInsertRowsResult InsertRows(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
@@ -346,8 +359,8 @@ api::EngineInsertRowsResult InsertRows(
 api::EngineInsertRowsResult RefusedInsertPageReservationDisabled(
     const Fixture& fixture,
     const api::EngineRequestContext& context) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row("refused-1", "should-not-write"));
@@ -362,8 +375,8 @@ api::EngineUpdateRowsResult UpdateNote(
     const api::EngineRequestContext& context,
     std::string id,
     std::string note) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
@@ -376,8 +389,8 @@ api::EngineDeleteRowsResult DeleteById(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::string id) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = EqualsPredicate("id", std::move(id));
@@ -389,8 +402,8 @@ api::EngineExecuteImportRowsResult ImportRows(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -456,6 +469,9 @@ void TestDmlSummaryCounters() {
   const auto deleted = DeleteById(fixture, context, "insert-2");
   RequireOk(deleted, "ODF-038 delete failed");
   Require(deleted.deleted_count == 1, "ODF-038 delete count changed");
+  Require(deleted.transaction_uuid == context.transaction_uuid &&
+              deleted.local_transaction_id == context.local_transaction_id,
+          "ODF-038 delete result lost its native transaction identity");
   Require(deleted.dml_summary.rows_changed == 1,
           "ODF-038 delete rows changed summary mismatch");
   Require(deleted.dml_summary.visible_rows_scanned == 1,
@@ -521,9 +537,100 @@ void TestDmlSummaryCounters() {
   Rollback(context);
 }
 
+void TestUpdateFromCommittedCreator() {
+  auto fixture = MakeFixture();
+  auto creator = Begin(fixture, "odf038-committed-creator");
+  RequireOk(InsertRows(fixture, creator, {Row("committed", "before")}),
+            "ODF-038 committed creator seed failed");
+  Commit(creator);
+  auto updater = Begin(fixture, "odf038-new-creator");
+  Require(updater.transaction_uuid != creator.transaction_uuid,
+          "ODF-038 update did not obtain a distinct transaction");
+  const auto updated = UpdateNote(fixture, updater, "committed", "after");
+  RequireOk(updated, "ODF-038 committed creator update failed");
+  Require(updated.updated_count == 1 && updated.transaction_uuid == updater.transaction_uuid &&
+              updated.local_transaction_id == updater.local_transaction_id,
+          "ODF-038 update creator identity or row count changed");
+  const auto loaded = api::LoadMgaRelationStoreStateForMutationTarget(
+      updater, fixture.table_uuid);
+  Require(loaded.ok, "ODF-038 updated versions could not be loaded");
+  bool saw_creator = false, saw_updater = false;
+  for (const auto& row : loaded.state.row_versions) {
+    if (row.creator_tx == creator.local_transaction_id) {
+      Require(row.creator_transaction_uuid == creator.transaction_uuid,
+              "ODF-038 decoded committed creator identity changed");
+      saw_creator = true;
+    }
+    if (row.creator_tx == updater.local_transaction_id) {
+      Require(row.creator_transaction_uuid == updater.transaction_uuid &&
+                  row.sequence > row.previous_sequence && row.previous_sequence != 0,
+              "ODF-038 update lost its exact creator or allocated lineage sequence");
+      saw_updater = true;
+    }
+  }
+  Require(saw_creator && saw_updater, "ODF-038 creator lineage was not retained");
+  Commit(updater);
+}
+
+void TestPreparedRowSequenceIdentity() {
+  auto fixture = MakeFixture();
+  const auto context = Begin(fixture, "odf038-prepared-row-sequence");
+  std::vector<api::CrudRowVersionRecord> rows(2);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    auto& row = rows[i];
+    row.creator_tx = context.local_transaction_id;
+    row.creator_transaction_uuid = context.transaction_uuid;
+    row.table_uuid = fixture.table_uuid;
+    row.row_uuid = NewNativeUuid(platform::UuidKind::row, 300 + i);
+    row.version_uuid = NewNativeUuid(platform::UuidKind::row, 400 + i);
+    row.values = {{"id", "prepared-" + std::to_string(i)}, {"note", "value"}};
+  }
+  api::MgaRelationHotAppendContext append(context);
+  std::vector<api::CrudRowVersionRecord*> pointers{&rows[0], &rows[1]};
+  Require(!append.PrepareRowVersionSequences(pointers).error,
+          "ODF-038 exact sequence reservation failed");
+  const auto first = rows[0].sequence;
+  Require(first != 0 && rows[1].sequence == first + 1,
+          "ODF-038 reservation did not allocate a contiguous range");
+  Require(append.PrepareRowVersionSequences(pointers).error,
+          "ODF-038 outstanding sequence reservation was replaced");
+  std::vector<std::uint64_t> written;
+  Require(append.AppendRowVersionsReadOnly(rows).error,
+          "ODF-038 read-only append bypassed prepared version identity");
+  std::vector<std::vector<std::pair<std::string, std::string>>> values;
+  for (const auto& row : rows) values.push_back(row.values);
+  Require(append.AppendRowVersions(&rows, &values, &written).error,
+          "ODF-038 alternate value append bypassed prepared version identity");
+  auto wrong_count = rows;
+  wrong_count.pop_back();
+  Require(append.AppendRowVersions(&wrong_count, &written).error,
+          "ODF-038 partial reservation consumption was admitted");
+  auto wrong_identity = rows;
+  wrong_identity[0].version_uuid = NewNativeUuid(platform::UuidKind::row, 500);
+  Require(append.AppendRowVersions(&wrong_identity, &written).error,
+          "ODF-038 substituted version identity was admitted");
+  auto wrong_sequence = rows;
+  ++wrong_sequence[0].sequence;
+  Require(append.AppendRowVersions(&wrong_sequence, &written).error,
+          "ODF-038 substituted version sequence was admitted");
+  Require(!append.AppendRowVersions(&rows, &written).error &&
+              written == std::vector<std::uint64_t>{first, first + 1} &&
+              rows[0].sequence == first && rows[1].sequence == first + 1,
+          "ODF-038 append reassigned or lost reserved sequence identities");
+  Require(!append.FlushRowVersions().error, "ODF-038 prepared row flush failed");
+  Rollback(context);
+}
+
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf038_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf038_statement_fixture").ok(),
+          "ODF-038 memory policy configuration failed");
+  TestPreparedRowSequenceIdentity();
   TestDmlSummaryCounters();
+  TestUpdateFromCommittedCreator();
   return EXIT_SUCCESS;
 }

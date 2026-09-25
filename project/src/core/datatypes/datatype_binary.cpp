@@ -9,6 +9,7 @@
 #include "datatype_binary.hpp"
 #include "datatype_binary_view.hpp"
 #include "canonical_utf8.hpp"
+#include "structured_value_codec.hpp"
 #include "sbl_numeric.hpp"
 
 #include "hash_digest.hpp"
@@ -618,6 +619,29 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
       !ValidateCanonicalUtf8(value.payload_data, value.payload_bytes)) {
     return BinaryViewError("CTB.TEXT.INVALID_ENCODING",
                        "datatype.binary.text_payload_noncanonical");
+  }
+
+  if (value.type_id == CanonicalTypeId::geometry && !value.payload_is_toast_reference) {
+    // The admitted geometry codec is exactly one finite 2D SBP1 point.
+    constexpr std::array<byte, 8> prefix{'S','B','P','1',1,2,0,0};
+    bool valid = value.payload_bytes == 24 &&
+        std::equal(prefix.begin(), prefix.end(), value.payload_data);
+    if (valid) {
+      for (std::size_t offset : {8U, 16U}) {
+        u64 bits = 0;
+        for (unsigned i = 0; i < 8; ++i) bits = (bits << 8) | value.payload_data[offset+i];
+        if ((bits & 0x7ff0000000000000ull) == 0x7ff0000000000000ull ||
+            bits == 0x8000000000000000ull) valid = false;
+      }
+    }
+    if (!valid) return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID", "datatype.binary.geometry_payload_noncanonical");
+  }
+
+  if (!value.payload_is_toast_reference &&
+      (value.type_id == CanonicalTypeId::json_document || value.type_id == CanonicalTypeId::list)) {
+    const std::string_view payload(value.payload_bytes ? reinterpret_cast<const char*>(value.payload_data) : "", value.payload_bytes);
+    if (!(value.type_id == CanonicalTypeId::json_document ? ValidateJsonValue(payload) : ValidateTextListValue(payload)))
+      return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID", "datatype.binary.structured_payload_noncanonical");
   }
 
   if (value.payload_is_toast_reference && !layout.layout.may_overflow_to_toast) {

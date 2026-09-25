@@ -225,7 +225,7 @@ agents::AgentActuatorProviderDescriptor Provider(bool live = true,
   provider.real_subsystem_handler = live;
   provider.subsystem_handler_id = "storage.page.preallocate_page_family";
   provider.handler_provenance = "unit_real_subsystem_handler";
-  provider.handler_evidence_uuid = "provider-evidence-preallocate";
+  provider.handler_evidence_uuid = FixtureIdentityForLabel("provider-evidence-preallocate");
   provider.idempotent = true;
   provider.supports_retry = true;
   provider.supports_rollback_compensation = compensation;
@@ -250,7 +250,7 @@ agents::AgentActuatorProviderRegistry Registry(int* dispatch_count = nullptr) {
         if (request.dry_run) {
           result.status = {true, "SB_AGENT_ACTION.DRY_RUN_ONLY", request.action.action_uuid};
           result.outcome_verified = true;
-          result.verification_evidence_uuid = "dry-run-verification";
+          result.verification_evidence_uuid = FixtureIdentityForLabel("dry-run-verification");
           return result;
         }
         result.dispatched = true;
@@ -265,7 +265,7 @@ agents::AgentActuatorProviderRegistry Registry(int* dispatch_count = nullptr) {
           result.compensation_evidence_uuid =
               BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000092"));
         }
-        result.verification_evidence_uuid = "live-verification";
+        result.verification_evidence_uuid = FixtureIdentityForLabel("live-verification");
         result.status = result.outcome_verified
                             ? agents::AgentRuntimeStatus{
                                   true, "SB_AGENT_ACTION.OUTCOME_VERIFIED",
@@ -455,7 +455,7 @@ void TestProviderRefusals() {
                           result.dispatched = true;
                           result.mutation_attempted = true;
                           result.outcome_verified = true;
-                          result.verification_evidence_uuid = "bypass";
+                          result.verification_evidence_uuid = FixtureIdentityForLabel("bypass");
                           return result;
                         })
               .ok,
@@ -480,7 +480,7 @@ void TestProviderRefusals() {
                     result.status = {true, "SB_AGENT_ACTION.OUTCOME_VERIFIED",
                                      request.action.action_uuid};
                     result.outcome_verified = true;
-                    result.verification_evidence_uuid = "fake-success";
+                    result.verification_evidence_uuid = FixtureIdentityForLabel("fake-success");
                     return result;
                   })
               .ok,
@@ -514,7 +514,7 @@ void TestDryRunNoLiveDispatch() {
       Dispatch(&catalog, &registry, OperatorAuthority(),
                Action(BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019f0200-0000-7000-8000-000000000042")), "idem-dry-run",
                       true));
-  Require(result.status.ok, "dry-run dispatch was refused");
+  Require(result.status.ok, "dry-run dispatch was refused: " + result.status.diagnostic_code);
   Require(result.dry_run, "dry-run result flag missing");
   Require(!result.provider_dispatched, "dry-run performed live dispatch");
   Require(dispatch_count == 0, "dry-run incremented live dispatch count");
@@ -604,7 +604,7 @@ void TestCatalogRoundTripIncludesActionExecutionFields() {
               "page_manager:preallocate_page_family",
           "provider id did not round-trip");
   Require(decoded.image.actions.front().verification_evidence_uuid ==
-              "live-verification",
+              FixtureIdentityForLabel("live-verification"),
           "verification evidence did not round-trip");
 }
 

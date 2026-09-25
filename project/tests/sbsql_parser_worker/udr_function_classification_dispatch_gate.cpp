@@ -50,6 +50,7 @@ bool IsMissingHandlerDiagnostic(const sblr::SblrRuntimeDiagnostic& diagnostic) {
 functions::FunctionCallRequest RequestFor(const functions::FunctionRegistryEntry& entry) {
   functions::FunctionCallRequest request;
   request.context.function_id = entry.function_id;
+  request.context.function_uuid = entry.function_uuid;
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
@@ -70,8 +71,8 @@ functions::FunctionCallRequest RequestFor(const functions::FunctionRegistryEntry
   request.context.sblr_context.deterministic_random_u64_present = true;
   request.context.sblr_context.deterministic_random_bytes_hex =
       "00112233445566778899aabbccddeeff";
-  request.context.sblr_context.deterministic_uuid_text =
-      "019f9000-0000-7000-8000-000000000001";
+  request.context.sblr_context.deterministic_uuid =
+      scratchbird::core::platform::Uuid{{0x01,0x9f,0x90,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01}};
   return request;
 }
 

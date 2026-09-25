@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "agent_binary_identity_fixture.hpp"
 #include "agent_replay_quarantine.hpp"
 #include "agent_action_dispatch.hpp"
 #include "agent_commercial_evidence.hpp"
@@ -31,10 +32,10 @@ void Require(bool condition, const std::string& message) {
 agents::AgentActionAuthorityProvenance Authority() {
   agents::AgentActionAuthorityProvenance authority;
   authority.source = agents::AgentActionAuthoritySource::sealed_internal_bootstrap;
-  authority.principal_uuid = "019f0810-0000-7000-8000-000000000020";
-  authority.scope_uuid = "019f0810-0000-7000-8000-000000000021";
+  authority.principal_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x20", 16);
+  authority.scope_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x21", 16);
   authority.provenance_evidence_uuid =
-      "019f0810-0000-7000-8000-000000000022";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x22", 16);
   authority.rights = {"OBS_AGENT_CONTROL"};
   authority.sealed_bootstrap_authority = true;
   return authority;
@@ -42,16 +43,16 @@ agents::AgentActionAuthorityProvenance Authority() {
 
 agents::AgentActionRequest Action() {
   agents::AgentActionRequest action;
-  action.action_uuid = "019f0810-0000-7000-8000-000000000040";
+  action.action_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x40", 16);
   action.agent_type_id = "page_allocation_manager";
-  action.instance_uuid = "019f0810-0000-7000-8000-000000000011";
+  action.instance_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x11", 16);
   action.actuator_id = "page_manager";
   action.operation_id = "preallocate_page_family";
   action.idempotency_key = "ceic081-page-preallocate";
   action.dry_run = false;
-  action.inputs["evidence_uuid"] = "019f0810-0000-7000-8000-000000000030";
+  action.inputs["evidence_uuid"] = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x30", 16);
   action.inputs["metric_digest"] = "sha256:ceic081-observed-metric-digest";
-  action.inputs["scope_uuid"] = "019f0810-0000-7000-8000-000000000021";
+  action.inputs["scope_uuid"] = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x21", 16);
   return action;
 }
 
@@ -65,16 +66,16 @@ agents::DurableAgentCatalogImage CatalogImage() {
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
   image.authority.mga_transaction_uuid =
-      "019f0810-0000-7000-8000-0000000000aa";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xaa", 16);
   image.authority.transaction_generation = 1;
   image.authority.evidence_uuid =
-      "019f0810-0000-7000-8000-0000000000ab";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xab", 16);
   image.authority.database_uuid =
-      "019f0810-0000-7000-8000-0000000000ac";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xac", 16);
   image.authority.catalog_storage_uuid =
-      "019f0810-0000-7000-8000-0000000000ad";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xad", 16);
   image.authority.storage_commit_evidence_uuid =
-      "019f0810-0000-7000-8000-0000000000ae";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xae", 16);
   image.authority.local_transaction_id = 81;
   image.authority.storage_catalog_record_evidence = true;
   image.authority.transaction_inventory_bound = true;
@@ -83,7 +84,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
   agents::AgentInstanceRecord instance;
   instance.instance_uuid = action.instance_uuid;
   instance.agent_type_id = action.agent_type_id;
-  instance.policy_uuid = "019f0810-0000-7000-8000-000000000012";
+  instance.policy_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x12", 16);
   instance.scope = "database/filespace/page_family/page_type";
   instance.state = agents::AgentLifecycleState::registered;
   instance.run_generation = 1;
@@ -106,7 +107,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
   image.policies.push_back(policy);
 
   agents::AgentPolicyAttachmentRecord attachment;
-  attachment.attachment_uuid = "019f0810-0000-7000-8000-000000000071";
+  attachment.attachment_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x71", 16);
   attachment.agent_type_id = action.agent_type_id;
   attachment.policy_family = policy.policy_family;
   attachment.policy_uuid = policy.policy_uuid;
@@ -117,7 +118,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
   attachment.active = true;
   attachment.valid = true;
   attachment.diagnostic_code = "SB_AGENT_POLICY_ATTACHMENT.CEIC081";
-  attachment.evidence_uuid = "019f0810-0000-7000-8000-000000000072";
+  attachment.evidence_uuid = std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x72", 16);
   image.attachments.push_back(attachment);
 
   const std::string action_digest = agents::AgentActionInputEvidenceDigest(action);
@@ -134,7 +135,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
   evidence_request.result_state = "completed";
   evidence_request.diagnostic_code = "SB_AGENT_ACTION.OUTCOME_VERIFIED";
   evidence_request.outcome_verification_evidence_uuid =
-      "019f0810-0000-7000-8000-000000000031";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x31", 16);
   evidence_request.created_at_microseconds = 1810000000000000ull;
   evidence_request.tamper_key_id = "agent-evidence-ledger-key-v1";
   evidence_request.tamper_key_provenance = "engine_local_protected_hmac_key";
@@ -174,7 +175,7 @@ agents::DurableAgentCatalogImage CatalogImage() {
 
   agents::DurableAgentResourceReservationRecord reservation;
   reservation.reservation_uuid =
-      "019f0810-0000-7000-8000-000000000081";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x81", 16);
   reservation.reservation_key =
       "action_dispatch:page_allocation_manager:" + action.idempotency_key;
   reservation.owner_scope = authority.principal_uuid;
@@ -188,13 +189,13 @@ agents::DurableAgentCatalogImage CatalogImage() {
   reservation.worker_slots = 1;
   reservation.overhead_microseconds = 1000;
   reservation.evidence_uuid =
-      "019f0810-0000-7000-8000-000000000082";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x82", 16);
   reservation.release_evidence_uuid = evidence.evidence_uuid;
   reservation.release_reason = "completed";
   image.resource_reservations.push_back(reservation);
 
   const auto refreshed = agents::RefreshDurableAgentCatalogAuthorityDigest(
-      &image, "019f0810-0000-7000-8000-0000000000af");
+      &image, std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\xaf", 16));
   Require(refreshed.ok, "CEIC-081 catalog digest refresh failed: " +
                             refreshed.diagnostic_code);
   Require(agents::ValidateDurableAgentCatalogForProduction(image).ok,
@@ -229,7 +230,7 @@ agents::AgentReplayControlRequest ReplayRequest(
   request.capture = std::move(capture);
   request.package_provenance = package;
   request.evidence_uuid =
-      "019f0810-0000-7000-8000-0000000001" + suffix;
+      scratchbird::tests::FixtureIdentityForLabel("replay-evidence-" + suffix);
   request.now_microseconds = 1810000000001000ull + suffix.size();
   request.max_retry_count = 3;
   request.retry_after_microseconds = 5000;
@@ -281,7 +282,7 @@ void TestReplayRetryCompensationAndQuarantineAreDurableAndIdempotent() {
                     package,
                     "03");
   compensation.compensation_evidence_uuid =
-      "019f0810-0000-7000-8000-0000000002c3";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x02\xc3", 16);
   result = agents::ApplyAgentReplayControl(compensation);
   Require(result.status.ok && result.compensation_recorded,
           "CEIC-081 compensation record failed");
@@ -304,7 +305,7 @@ void TestReplayRetryCompensationAndQuarantineAreDurableAndIdempotent() {
 
   auto release = release_without_review;
   release.review_evidence_uuid =
-      "019f0810-0000-7000-8000-0000000002d4";
+      std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x02\xd4", 16);
   result = agents::ApplyAgentReplayControl(release);
   Require(result.status.ok && result.quarantine_released,
           "CEIC-081 quarantine release with review failed");
@@ -409,14 +410,14 @@ void TestDigestAndAuthorityFailuresFailClosed() {
 
   auto stale_catalog_image = image;
   stale_catalog_image.health.push_back(
-      {"019f0810-0000-7000-8000-000000000011",
+      {std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x11", 16),
        "observed",
        "SB_AGENT_HEALTH.CEIC081",
-       "019f0810-0000-7000-8000-000000000099",
+       std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x99", 16),
        1810000000000900ull});
   Require(agents::RefreshDurableAgentCatalogAuthorityDigest(
               &stale_catalog_image,
-              "019f0810-0000-7000-8000-00000000009a")
+              std::string("\x01\x9f\x08\x10\x00\x00\x70\x00\x80\x00\x00\x00\x00\x00\x00\x9a", 16))
               .ok,
           "CEIC-081 stale catalog setup failed");
   auto stale_catalog = ReplayRequest(

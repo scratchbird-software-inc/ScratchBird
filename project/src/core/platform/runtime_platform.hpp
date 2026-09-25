@@ -255,6 +255,13 @@ enum class UuidKind : u8 {
 struct Uuid {
   std::array<byte, 16> bytes{};
 
+  // Non-aggregate construction prevents a short string literal from silently
+  // becoming an ASCII-padded identity through unsigned-byte brace elision.
+  // UUID values still preserve every possible 128-bit pattern; engine identity
+  // policy is checked separately at the authority boundary.
+  constexpr Uuid() noexcept = default;
+  constexpr Uuid(std::array<byte, 16> value) noexcept : bytes(value) {}
+
   constexpr bool is_nil() const noexcept {
     for (byte value : bytes) {
       if (value != 0) {

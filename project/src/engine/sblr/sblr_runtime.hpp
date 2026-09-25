@@ -200,7 +200,7 @@ struct SblrExecutionContext {
   std::string current_monotonic_ns;
   std::uint64_t deterministic_random_u64 = 0;
   std::string deterministic_random_bytes_hex;
-  std::string deterministic_uuid_text;
+  std::optional<scratchbird::core::platform::Uuid> deterministic_uuid;
   std::string current_sqlstate;
   std::string current_diagnostic_id;
   SblrUuid current_diagnostic_uuid;

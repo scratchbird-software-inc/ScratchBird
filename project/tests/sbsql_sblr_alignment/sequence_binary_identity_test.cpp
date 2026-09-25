@@ -99,8 +99,13 @@ int main() {
   Require(!s::BindSblrSequenceArgumentIdentity(argument, &request) && request.sequence_uuid == first,
           "conflicting sequence argument changed request");
   argument = Text(scratchbird::core::uuid::UuidToString(second));
-  Require(s::BindSblrSequenceArgumentIdentity(argument, &request) && request.sequence_uuid == second &&
-              request.sequence_name_hint.empty(), "text UUID boundary did not parse once to native identity");
+  Require(s::BindSblrSequenceArgumentIdentity(argument, &request) && request.sequence_uuid.is_nil() &&
+              request.sequence_name_hint == argument.text_value &&
+              !s::CurrentSblrSequenceValue(&registry, request).ok(),
+          "UUID-shaped text acquired binary sequence authority");
+  Require(s::RegisterSblrSequenceAlias(&registry, second, argument.text_value, context).ok() &&
+              Number(s::CurrentSblrSequenceValue(&registry, request)) == 20,
+          "explicitly registered UUID-shaped name lost alias semantics");
   argument = Text(embedded_zero_name);
   Require(s::BindSblrSequenceArgumentIdentity(argument, &request) && request.sequence_uuid.is_nil() &&
               request.sequence_name_hint == embedded_zero_name &&

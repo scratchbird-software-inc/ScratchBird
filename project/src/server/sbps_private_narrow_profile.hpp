@@ -56,7 +56,7 @@ struct PairV1 {
 };
 
 struct ActivationRecordV1 {
-  std::uint16_t record_version = 1;
+  std::uint16_t record_version = 2;
   std::uint16_t protocol_major = 1;
   std::uint16_t protocol_minor = 0;
   PairV1 pair;
@@ -67,6 +67,7 @@ struct ActivationRecordV1 {
   std::string layout_authority_id;
   std::string conformance_corpus_id;
   std::string implementation_evidence_id;
+  // Legacy member spelling retained for source compatibility; bytes are SBPACT02.
   std::vector<byte> exact_nul_serialization;
 };
 

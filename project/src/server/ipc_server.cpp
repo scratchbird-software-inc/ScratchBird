@@ -2146,7 +2146,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           datatype_identity.row.codec_version == 0 ||
           datatype_identity.row.codec_generation == 0 ||
           (datatype_identity.row.canonical_value_bytes == 0 &&
-           !exact_variable_width_text) ||
+           !datatype_identity.row.canonical_value_variable_width) ||
           (datatype_identity.row.null_encoding_code != 1 &&
            datatype_identity.row.null_encoding_code != 2)) {
         result.diagnostic = PsRelationProjectionDiagnostic(
@@ -3829,7 +3829,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       IncrementServerMetric(observability,
                             "sys.metrics.ipc.parser_server.channel.open_total",
                             1,
-                            {{"parser_family_uuid", "unknown"}, {"outcome", "rejected"}});
+                            {{"parser_family", "unknown"}, {"outcome", "rejected"}});
       RecordServerAuditEvent(observability,
                              "server.parser.hello",
                              "rejected",
@@ -3847,7 +3847,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       IncrementServerMetric(observability,
                             "sys.metrics.ipc.parser_server.channel.open_total",
                             1,
-                            {{"parser_family_uuid", "unknown"}, {"outcome", "rejected"}});
+                            {{"parser_family", "unknown"}, {"outcome", "rejected"}});
       RecordServerAuditEvent(observability,
                              "server.parser.hello",
                              "rejected",
@@ -3904,7 +3904,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       IncrementServerMetric(observability,
                             "sys.metrics.ipc.parser_server.channel.open_total",
                             1,
-                            {{"parser_family_uuid", "registry"}, {"outcome", "rejected"}});
+                            {{"parser_family", "registry"}, {"outcome", "rejected"}});
       RecordServerAuditEvent(observability,
                              "server.parser.hello",
                              "rejected",
@@ -3915,7 +3915,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.channel.open_total",
                           1,
-                          {{"parser_family_uuid", "accepted"}, {"outcome", "accepted"}});
+                          {{"parser_family", "accepted"}, {"outcome", "accepted"}});
     RecordServerAuditEvent(observability,
                            "server.parser.hello",
                            "accepted",

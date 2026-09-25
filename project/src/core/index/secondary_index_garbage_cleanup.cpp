@@ -73,14 +73,19 @@ bool RelevantDelta(const SecondaryIndexGarbageCleanupRequest& request,
 }
 
 std::string UuidKey(const TypedUuid& value) {
-  return std::to_string(static_cast<u32>(value.kind)) + ":" +
-         scratchbird::core::uuid::UuidToString(value.value);
+  // The kind tag and UUID have fixed binary widths (4 + 16 bytes).
+  std::string key(4, '\0');
+  for (unsigned i = 0; i < 4; ++i)
+    key[i] = static_cast<char>(static_cast<u32>(value.kind) >> (8 * i));
+  key.append(reinterpret_cast<const char*>(value.value.bytes.data()),
+             value.value.bytes.size());
+  return key;
 }
 
 std::string EntryKey(const TypedUuid& row_uuid,
                      const TypedUuid& version_uuid,
                      const std::string& key_payload) {
-  return UuidKey(row_uuid) + "|" + UuidKey(version_uuid) + "|" + key_payload;
+  return UuidKey(row_uuid) + UuidKey(version_uuid) + key_payload;
 }
 
 std::string EntryKey(const SecondaryIndexBaseEntry& entry) {

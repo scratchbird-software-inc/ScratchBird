@@ -26,15 +26,8 @@ ServerDiagnostic AdmissionDiagnostic(std::string code,
                           std::move(fields)};
 }
 
-std::string HexUuid(const std::array<std::uint8_t, 16>& uuid) {
-  static constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(32);
-  for (auto byte : uuid) {
-    out.push_back(hex[(byte >> 4u) & 0x0fu]);
-    out.push_back(hex[byte & 0x0fu]);
-  }
-  return out;
+std::string IdentityBytes(const std::array<std::uint8_t, 16>& uuid) {
+  return {reinterpret_cast<const char*>(uuid.data()), uuid.size()};
 }
 
 }  // namespace
@@ -65,8 +58,8 @@ ParserAdmissionResult AdmitParserPreauthForListener(const ParserPackageRegistry&
   }
   result.admitted = true;
   result.outcome = "accepted";
-  result.parser_channel_uuid = HexUuid(sbps::MakeUuidV7Bytes());
-  result.session_uuid = HexUuid(sbps::MakeUuidV7Bytes());
+  result.parser_channel_uuid = IdentityBytes(sbps::MakeUuidV7Bytes());
+  result.session_uuid = IdentityBytes(sbps::MakeUuidV7Bytes());
   return result;
 }
 

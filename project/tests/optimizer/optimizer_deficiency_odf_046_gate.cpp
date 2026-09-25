@@ -9,6 +9,8 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/import_execution_api.hpp"
@@ -88,11 +90,16 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  platform::Uuid primary_key_uuid;
+  platform::Uuid foreign_key_uuid;
   platform::Uuid table_uuid;
   platform::Uuid id_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -163,23 +170,15 @@ void AssertNoPhysicalAppendEvidence(const api::EngineApiResult& result) {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 46;
-  context.security_epoch = 47;
-  context.resource_epoch = 48;
-  context.name_resolution_epoch = 49;
   return context;
 }
 
@@ -211,11 +210,14 @@ void Rollback(const api::EngineRequestContext& context) {
 }
 
 std::string IdentityColumnMetadata(std::string key, const platform::Uuid& identity,
-                                   bool foreign_key) {
+                                   bool foreign_key, const Fixture& fixture) {
   api::CatalogColumnMetadata fields;
   fields.text.emplace("canonical", "character");
   fields.identities.emplace(std::move(key), identity);
-  if (foreign_key) fields.text.emplace("referenced_column", "id");
+  if (foreign_key) {
+    fields.text.emplace("referenced_column", "id");
+    fields.identities.emplace("constraint_uuid", fixture.foreign_key_uuid);
+  }
   std::string bytes;
   Require(api::EncodeCatalogColumnMetadata(fields, &bytes), "column metadata encoding failed");
   return bytes;
@@ -227,9 +229,16 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "odf046_bulk_proof";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  api::CatalogColumnMetadata key;
+  key.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  key.identities = {{"candidate_key_constraint_uuid", fixture.primary_key_uuid},
+                    {"support_uuid", fixture.id_index_uuid}};
+  std::string key_metadata;
+  Require(api::EncodeCatalogColumnMetadata(key, &key_metadata),
+          "ODF-046 primary key metadata encoding failed");
+  table.columns.push_back({"id", std::move(key_metadata)});
   table.columns.push_back({"parent_id",
-                           IdentityColumnMetadata("referenced_table_uuid", fixture.table_uuid, true)});
+                           IdentityColumnMetadata("referenced_table_uuid", fixture.table_uuid, true, fixture)});
   table.columns.push_back({"note", "canonical=character;not_null=true"});
   return table;
 }
@@ -263,32 +272,38 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueSeed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-046 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.primary_key_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
+  fixture.foreign_key_uuid = NewNativeUuid(platform::UuidKind::object, salt + 13);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "odf046-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, Table(fixture, metadata)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(metadata, Table(fixture, metadata),
+          {"character", "character", "character"}, {IdIndex(fixture, metadata)}),
                       "ODF-046 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(metadata,
                                                   IdIndex(fixture, metadata)),
                       "ODF-046 index metadata append failed");
   Commit(metadata);
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf046-session"));
   return fixture;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -308,12 +323,12 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   return request;
 }
 
-api::EngineExecuteNativeBulkIngestRequest NativeRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> NativeRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteNativeBulkIngestRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
@@ -330,8 +345,8 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
 
 api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
@@ -530,8 +545,8 @@ void HistoricalIndexEntriesAreMGARecheckedBeforeConflict() {
   Commit(seed_context);
 
   auto delete_context = Begin(fixture, "odf046-historical-delete");
-  api::EngineDeleteRowsRequest delete_request;
-  delete_request.context = delete_context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> delete_request(
+      *fixture.session, delete_context);
   delete_request.target_table.uuid = fixture.table_uuid;
   delete_request.target_table.object_kind = "table";
   delete_request.delete_predicate = EqualsPredicate("id", "reusable");
@@ -558,6 +573,11 @@ void HistoricalIndexEntriesAreMGARecheckedBeforeConflict() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf046_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf046_statement_fixture").ok(),
+          "ODF-046 memory configuration failed");
   AcceptedStrictCopyAndNativeUseProofs();
   DuplicateBatchUniqueRefusesBeforeAppend();
   PersistedUniqueConflictRefusesBeforeAppend();

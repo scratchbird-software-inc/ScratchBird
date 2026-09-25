@@ -12,6 +12,7 @@
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
 #include "canonical_projection_test_envelope.hpp"
+#include "../../../support/mga_transaction_fixture.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -74,6 +75,10 @@ sblr::SblrResult RunFunction(const functions::FunctionRegistry& registry,
                              std::string function_id,
                              std::vector<SblrValue> values) {
   functions::FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -187,7 +192,8 @@ api::EngineRequestContext ProjectionContext() {
   context.principal_uuid = kPrincipalUuid;
   context.application_name = "sbsfc047-advisory-lock";
   context.security_context_present = true;
-  return context;
+  static scratchbird::tests::MgaTransactionFixture transaction(context);
+  return transaction.context;
 }
 
 bool ExpectProjectionBoolean(std::string_view case_id,

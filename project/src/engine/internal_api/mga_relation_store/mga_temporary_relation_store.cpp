@@ -168,39 +168,6 @@ EngineApiDiagnostic AppendTemporaryRowTombstones(
   return OkDiagnostic();
 }
 
-std::vector<std::string> SplitTabs(const std::string& line) {
-  std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const auto tab = line.find('\t', start);
-    if (tab == std::string::npos) {
-      fields.push_back(line.substr(start));
-      break;
-    }
-    fields.push_back(line.substr(start, tab - start));
-    start = tab + 1;
-  }
-  return fields;
-}
-
-std::string JoinLine(const std::vector<std::string>& fields) {
-  std::string line;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) line.push_back('\t');
-    line += fields[index];
-  }
-  return line;
-}
-
-bool AppendLine(const std::string& path, const std::string& line) {
-  if (path.empty()) return false;
-  std::ofstream output(path, std::ios::app | std::ios::binary);
-  if (!output) return false;
-  output << line << '\n';
-  output.flush();
-  return static_cast<bool>(output);
-}
-
 std::uint64_t ParseU64(const std::string& text,
                        const std::uint64_t fallback = 0) {
   if (text.empty()) return fallback;

@@ -7,6 +7,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 #include "api_types.hpp"
 #include "catalog/descriptor_mutation_api.hpp"
 #include "database_lifecycle.hpp"
@@ -113,8 +115,8 @@ api::EngineUuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
 api::EngineTypedValue TextValue(std::string value) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.descriptor.encoded_descriptor = "canonical=text";
+  typed.descriptor.canonical_type_name = "character";
+  typed.descriptor.encoded_descriptor = "canonical=character";
   typed.encoded_value = std::move(value);
   return typed;
 }
@@ -240,11 +242,14 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     if (std::uncaught_exceptions() != 0) {
       std::cerr << "failed_family_artifacts=" << dir << '\n';
       return;
@@ -256,23 +261,15 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -349,13 +346,13 @@ Fixture MakeFixture(const FamilyCase& test_case, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), family, "database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
 
@@ -364,23 +361,30 @@ Fixture MakeFixture(const FamilyCase& test_case, platform::u64 salt) {
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "transactional_index_matrix_" + family;
-  table.columns.push_back({"key_value", "canonical=text"});
-  table.columns.push_back({"payload", "canonical=text"});
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, table),
+  table.columns.push_back({"key_value", "canonical=character"});
+  table.columns.push_back({"payload", "canonical=character"});
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+                          context, table, {"character", "character"},
+                          {IndexRecord(fixture, test_case, context)}),
                       family, "table metadata append failed");
   RequireDiagnosticOk(
       api::AppendMgaIndexMetadata(context,
                                   IndexRecord(fixture, test_case, context)),
       family, "index metadata append failed");
   Commit(context, family);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "matrix-session"));
   return fixture;
 }
 
-api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
+api::EngineApiResult DispatchDml(const Fixture& fixture,
+                                 const api::EngineRequestContext& context,
                                  std::string operation_id,
                                  std::string opcode,
                                  api::EngineApiRequest request,
                                  bool require_dispatch = true) {
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, context);
   auto envelope =
       sblr::MakeSblrEnvelope(operation_id, opcode, std::string(kSearchKey));
   const auto* registered = sblr::LookupSblrOperation(operation_id);
@@ -393,10 +397,10 @@ api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
   envelope.registry_snapshot_uuid =
       scratchbird::tests::FixtureUuidLiteral("12340000-0000-7000-8000-000000000032");
   envelope.requires_transaction_context = true;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = operation_id;
   sblr::SblrDispatchRequest dispatch;
-  dispatch.context = context;
+  dispatch.context = statement.context;
   dispatch.envelope = std::move(envelope);
   dispatch.api_request = std::move(request);
   auto result = sblr::DispatchSblrOperation(std::move(dispatch));
@@ -417,7 +421,7 @@ api::EngineApiResult Insert(const Fixture& fixture,
   request.target_object.object_kind = "table";
   request.rows.push_back(
       Row(std::move(row_uuid), std::move(key), std::move(payload)));
-  return DispatchDml(context, "dml.insert_rows", "SBLR_DML_INSERT_ROWS",
+  return DispatchDml(fixture, context, "dml.insert_rows", "SBLR_DML_INSERT_ROWS",
                      std::move(request));
 }
 
@@ -432,7 +436,7 @@ api::EngineApiResult Update(const Fixture& fixture,
   request.predicate.predicate_kind = "row_uuid_match";
   request.predicate.row_uuid = row_uuid;
   request.assignments.push_back({"key_value", TextValue(std::move(key))});
-  return DispatchDml(context, "dml.update_rows", "SBLR_DML_UPDATE_ROWS",
+  return DispatchDml(fixture, context, "dml.update_rows", "SBLR_DML_UPDATE_ROWS",
                      std::move(request));
 }
 
@@ -446,7 +450,7 @@ api::EngineApiResult Delete(const Fixture& fixture,
   request.predicate.predicate_kind = "row_uuid_match";
   request.predicate.row_uuid = row_uuid;
   request.option_envelopes.push_back("delete_mode:tombstone_only");
-  return DispatchDml(context, "dml.delete_rows", "SBLR_DML_DELETE_ROWS",
+  return DispatchDml(fixture, context, "dml.delete_rows", "SBLR_DML_DELETE_ROWS",
                      std::move(request));
 }
 
@@ -764,6 +768,44 @@ void ValidateMutationAdmissionRefusals() {
     return result;
   };
   {
+    auto writer = Begin(fixture, "admission-index-batch");
+    const auto state = LoadState(writer, "admission");
+    const auto rows = api::VisibleMgaRowsForContext(state, fixture.table_uuid, writer);
+    Require(rows.size() == 1, "admission", "batch refusal baseline row missing");
+    api::MgaRelationHotAppendContext append(writer);
+    api::MgaTransactionalIndexProvider provider(writer, &append);
+    api::DmlTransactionalIndexEntryRequest valid;
+    valid.index = FindIndex(state, fixture, "admission");
+    valid.table_uuid = fixture.table_uuid;
+    valid.row_uuid = rows.front().row_uuid;
+    valid.version_uuid = rows.front().version_uuid;
+    valid.predecessor_version_uuid = rows.front().version_uuid;
+    valid.key_value = test_case.old_key;
+    const auto before = durable_bytes();
+    for (const bool retire : {false, true}) {
+      for (const int invalid_field : {0, 1, 2, 3}) {
+        auto invalid = valid;
+        if (invalid_field == 0) invalid.version_uuid = {};
+        if (invalid_field == 1) invalid.index.family = "policy_blocked";
+        if (invalid_field == 2) invalid.table_uuid = {};
+        if (invalid_field == 3) invalid.key_value.clear();
+        const auto rejected = retire ? provider.PrepareRetireEntries({valid, invalid})
+                                     : provider.PrepareInsertEntries({valid, invalid});
+        Require(!rejected.ok, "admission", "invalid index batch suffix was accepted");
+        RequireDiagnosticOk(append.FlushIndexEntries(), "admission", "batch refusal flush failed");
+        Require(durable_bytes() == before, "admission",
+                "invalid index batch suffix appended a valid prefix");
+      }
+    }
+    auto missing_predecessor = valid;
+    missing_predecessor.predecessor_version_uuid = {};
+    Require(!provider.PrepareRetireEntries({valid, missing_predecessor}).ok,
+            "admission", "retire batch without predecessor was accepted");
+    RequireDiagnosticOk(append.FlushIndexEntries(), "admission", "retire refusal flush failed");
+    Require(durable_bytes() == before, "admission", "retire refusal appended a prefix");
+    Rollback(writer, "admission");
+  }
+  {
     auto serializable = Begin(fixture, "admission-serializable", "serializable");
     RequireDiagnosticOk(api::CreateMgaSavepointMarker(serializable, "serializable_outer"),
                         "admission", "serializable boundary create failed");
@@ -788,12 +830,22 @@ void ValidateMutationAdmissionRefusals() {
   }
   for (const auto& reference : {std::string("foreign_key=legacy_table:key_value"),
                                 std::string("foreign_key=unresolved_reference"),
-                                std::string("referenced_table_uuid=legacy_table")}) {
+                                std::string("referenced_table_uuid=legacy_table"),
+                                std::string("referenced_table_uuid=019f2100-0000-7000-8000-000000000201")}) {
     auto owner = Begin(fixture, "delete-inbound-profile");
     api::CrudTableRecord child;
     child.table_uuid = NewNativeUuid(platform::UuidKind::object, 90404);
     child.default_name = "delete_profile_child";
-    child.columns = {{"key_value", "canonical=text;" + reference}};
+    child.columns = {{"key_value", "canonical=character;" + reference}};
+    if (reference.starts_with("referenced_table_uuid=")) {
+      const auto before = durable_bytes();
+      const auto invalid = api::AppendMgaTableMetadata(owner, child);
+      Require(invalid.error && invalid.detail.find("column_metadata_invalid") != std::string::npos &&
+                  durable_bytes() == before,
+              "admission", "text UUID column metadata reached durable storage");
+      Rollback(owner, "admission");
+      continue;
+    }
     RequireDiagnosticOk(api::AppendMgaTableMetadata(owner, child), "admission", "inbound fixture metadata failed");
     auto state = LoadState(owner, "admission");
     const auto target = api::FindVisibleMgaTable(state, fixture.table_uuid, owner.local_transaction_id);
@@ -803,7 +855,7 @@ void ValidateMutationAdmissionRefusals() {
             "admission", "DELETE empty-constraint profile ignored a live or unresolvable inbound reference");
     // A historical declaration must not override the exact latest visible
     // metadata version. Keep the original record in the physical history.
-    child.columns = {{"key_value", "canonical=text"}};
+    child.columns = {{"key_value", "canonical=character"}};
     RequireDiagnosticOk(api::AppendMgaTableMetadata(owner, child), "admission", "child replacement metadata failed");
     state = LoadState(owner, "admission");
     RequireDiagnosticOk(api::ValidateDmlDeleteNoInboundConstraintProfileV1(owner, state, *target),
@@ -819,7 +871,7 @@ void ValidateMutationAdmissionRefusals() {
     Require(table.has_value(), "admission", "admission table missing");
     table->creator_tx = metadata.local_transaction_id;
     table->event_sequence = 0;
-    table->columns[0].second = std::string("canonical=text;default=") + effect;
+    table->columns[0].second = std::string("canonical=character;default=") + effect;
     RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, *table), "admission",
                         "default metadata persistence failed");
     Commit(metadata, "admission");
@@ -909,23 +961,8 @@ void ValidateMutationAdmissionRefusals() {
                   !exact_append.FlushIndexEntries().error && durable_bytes() == before,
               "admission", "exact index batch wrote a prefix before refusing an unknown producer");
     }
-    api::EngineSecurityCreateRoleRequest security;
-    security.context = writer;
-    // Component issuer supplies the operation privilege so this test reaches
-    // the mutation boundary, rather than passing on an earlier access denial.
-    auto& authorization = security.context.authorization_context;
-    authorization.present = true;
-    authorization.principal_uuid = writer.principal_uuid;
-    authorization.security_epoch = writer.security_epoch;
-    authorization.policy_epoch = 1;
-    authorization.catalog_generation_id = writer.catalog_generation_id;
-    authorization.effective_subjects.push_back({writer.principal_uuid, "principal"});
-    api::EngineMaterializedAuthorizationGrant admin;
-    admin.subject_uuid = writer.principal_uuid;
-    admin.subject_kind = "principal";
-    admin.right = "SEC_IDENTITY_ADMIN";
-    admin.security_epoch = writer.security_epoch;
-    authorization.grants.push_back(std::move(admin));
+    scratchbird::tests::FixtureEngineRequest<api::EngineSecurityCreateRoleRequest> security(
+        *fixture.session, writer);
     security.role_uuid = NewNativeUuid(platform::UuidKind::object, 90401);
     security.role_name = "savepoint_refused_role";
     const auto security_refused = api::EngineSecurityCreateRole(security);
@@ -963,7 +1000,7 @@ void ValidateMutationAdmissionRefusals() {
       Require(blocked.error && blocked.code == "SBLR.OPERATION_UNSUPPORTED",
               "admission", "unregistered canonical effect bypassed the active boundary");
     }
-    const auto ddl_blocked = DispatchDml(writer, "ddl.create_table", "SBLR_DDL_CREATE_TABLE", {}, false);
+    const auto ddl_blocked = DispatchDml(fixture, writer, "ddl.create_table", "SBLR_DDL_CREATE_TABLE", {}, false);
     Require(!ddl_blocked.ok && !ddl_blocked.diagnostics.empty() &&
                 ddl_blocked.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED" &&
                 durable_bytes() == before,
@@ -1035,6 +1072,11 @@ void ValidateNonAdmittedFamily(const FamilyCase& test_case,
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "transactional_index_matrix_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "transactional_index_matrix_fixture").ok(),
+          "matrix", "memory policy configuration failed");
   Require(kSearchKey == "DML_TRANSACTIONAL_INDEX_LIFECYCLE_MATRIX",
           "matrix", "search key drifted");
   std::size_t admitted = 0;

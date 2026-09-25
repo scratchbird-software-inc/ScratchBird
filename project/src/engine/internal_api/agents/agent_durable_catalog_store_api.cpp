@@ -157,8 +157,6 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
     // This system relation is an engine bootstrap publication. Use the exact
     // bootstrap cohort shared with the receipt issuer, never a registry row
     // selected by enumeration order or a caller-supplied default.
-    if (manifest.manifest.catalog_epoch != kBootstrapDatatypeCatalogGeneration)
-      return ErrorResult("datatype_bootstrap_catalog_generation_mismatch");
     create.context.datatype_catalog_snapshot_uuid = kBootstrapDatatypeCatalogUuid;
     create.context.datatype_catalog_generation = kBootstrapDatatypeCatalogGeneration;
     create.context.datatype_registry_generation = kBootstrapDatatypeRegistryGeneration;
@@ -196,6 +194,12 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
           create.context.datatype_catalog_generation,
           create.context.datatype_registry_generation,
           catalog.descriptor_uuid.value, catalog.descriptor_epoch);
+      // The binary image and uint64 counters retain the existing core-manifest
+      // bindings used by this engine-owned system relation. UUID and TEXT use
+      // the exact admitted descriptor/type/codec tuple; never alias their IDs.
+      if (!codec.ok && type != types::CanonicalTypeId::binary &&
+          type != types::CanonicalTypeId::uint64)
+        return ErrorResult("catalog_column_codec_unavailable");
       if (codec.ok) column.descriptor.type_uuid = codec.row.type_uuid;
       create.table_columns.push_back(std::move(column));
     }
@@ -343,6 +347,7 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   if (!refreshed.ok) { return ErrorResult(refreshed.diagnostic_code); }
 
   const std::string encoded = agents::SerializeDurableAgentCatalogImage(image);
+  if (encoded.empty()) return ErrorResult("SB_AGENT_CATALOG.IMAGE_FIELD_INVALID");
   const EngineUuid row_uuid = previous ? previous->row_uuid : GenerateCrudEngineUuid("row");
   if (row_uuid.is_nil()) return ErrorResult("catalog_row_identity_allocation_failed");
   const std::string storage_linkage =

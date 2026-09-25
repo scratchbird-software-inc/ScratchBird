@@ -60,6 +60,10 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::string function_id,
                                           std::vector<SblrValue> values = {}) {
   FunctionCallRequest request;
+  // The fixture resolves its symbolic test case through the published seed
+  // registry; executable dispatch receives the registry's binary identity.
+  if (const auto* entry = registry.Lookup(function_id))
+    request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
   request.context.policy_allowed = true;
@@ -70,8 +74,8 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   request.context.sblr_context.user_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000001");
   request.context.sblr_context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000002");
   request.context.sblr_context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000003");
-  request.context.sblr_context.deterministic_uuid_text =
-      "550e8400-e29b-41d4-a716-446655440000";
+  request.context.sblr_context.deterministic_uuid =
+      scratchbird::core::platform::Uuid{{0x55,0x0e,0x84,0x00,0xe2,0x9b,0x41,0xd4,0xa7,0x16,0x44,0x66,0x55,0x44,0x00,0x00}};
   request.context.sblr_context.transaction_context_present = true;
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});
@@ -112,6 +116,21 @@ bool ExpectText(std::string_view case_id,
   if (value.is_null || value.text_value != expected || value.descriptor_id != descriptor) {
     std::cerr << case_id << ": expected " << descriptor << " " << expected << ", got "
               << value.descriptor_id << " " << value.text_value << "\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectUuid(std::string_view case_id,
+                const scratchbird::engine::sblr::SblrResult& result,
+                const scratchbird::core::platform::Uuid& expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  const auto& value = result.scalar_values.front();
+  if (value.is_null || value.descriptor_id != "uuid" ||
+      value.payload_kind != SblrValuePayloadKind::uuid_binary ||
+      value.uuid_value != expected || !value.binary_value.empty() ||
+      !value.text_value.empty() || !value.encoded_value.empty()) {
+    std::cerr << case_id << ": expected exact binary UUID without text representation\n";
     return false;
   }
   return true;
@@ -210,30 +229,21 @@ int main() {
                   Run(registry, "sb.temporal.current_time"),
                   "14:23:46",
                   "time") && ok;
-  ok = ExpectText("qualified_current_user",
+  ok = ExpectUuid("qualified_current_user",
                   Run(registry, "sb.session.current_user"),
-                  "019e2f00-0000-7000-8000-000000000001",
-                  "uuid") && ok;
-  ok = ExpectText("qualified_current_catalog",
+                  scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000001")) && ok;
+  ok = ExpectUuid("qualified_current_catalog",
                   Run(registry, "sb.session.current_catalog"),
-                  "019e2f00-0000-7000-8000-000000000002",
-                  "uuid") && ok;
-  ok = ExpectText("qualified_current_schema",
+                  scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000002")) && ok;
+  ok = ExpectUuid("qualified_current_schema",
                   Run(registry, "sb.session.current_schema"),
-                  "019e2f00-0000-7000-8000-000000000003",
-                  "uuid") && ok;
-  ok = ExpectText("uuid_v1_provider",
-                  Run(registry, "sb.uuid.v1"),
-                  "550e8400-e29b-41d4-a716-446655440000",
-                  "uuid") && ok;
-  ok = ExpectText("uuid_v4_provider",
-                  Run(registry, "sb.uuid.v4"),
-                  "550e8400-e29b-41d4-a716-446655440000",
-                  "uuid") && ok;
-  ok = ExpectText("uuid_v7_provider",
-                  Run(registry, "sb.uuid.v7"),
-                  "550e8400-e29b-41d4-a716-446655440000",
-                  "uuid") && ok;
+                  scratchbird::tests::FixtureUuidLiteral("019e2f00-0000-7000-8000-000000000003")) && ok;
+  ok = ExpectUuid("uuid_v1_provider",
+                  Run(registry, "sb.uuid.v1"), scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")) && ok;
+  ok = ExpectUuid("uuid_v4_provider",
+                  Run(registry, "sb.uuid.v4"), scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")) && ok;
+  ok = ExpectUuid("uuid_v7_provider",
+                  Run(registry, "sb.uuid.v7"), scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")) && ok;
 
   ok = ExpectInt64("dow_date_signature",
                    Run(registry, "sb.temporal.dow", {TextValue("date", "2026-05-11")}),

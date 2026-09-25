@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_PRODUCT_DIAGNOSTICS
 
 #include "diagnostics.hpp"
+#include "wire/binary_status_packet.hpp"
 
 #include <cctype>
 #include <new>
@@ -199,7 +200,8 @@ std::string RedactPrivateFieldValue(std::string_view key, const std::string& val
   return PrivateFieldValueRequiresRedaction(key, value) ? "[redacted]" : value;
 }
 
-void WriteMessageVectorHeader(std::ostringstream* out,
+template<class Stream>
+void WriteMessageVectorHeader(Stream* out,
                               const ServerDiagnostic& diagnostic,
                               std::string_view visibility) {
   const auto shape = diagnostic.diagnostic_shape_id.empty()
@@ -208,11 +210,11 @@ void WriteMessageVectorHeader(std::ostringstream* out,
   // Rendering preserves the owning source decision. Code spelling, severity
   // and message text cannot establish policy or transaction finality.
   const bool retryable = diagnostic.retryable;
-  *out << "{\"message_vector\":{\"code\":\"" << EscapeMessageVectorText(diagnostic.code)
-       << "\",\"message_key\":\"" << EscapeMessageVectorText(diagnostic.message_key)
+  *out << "{\"message_vector\":{\"code\":\"" << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(diagnostic.code)}
+       << "\",\"message_key\":\"" << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(diagnostic.message_key)}
        << "\",\"severity\":\"" << SeverityName(diagnostic.severity)
-       << "\",\"safe_message\":\"" << EscapeMessageVectorText(diagnostic.safe_message)
-       << "\",\"diagnostic_shape_id\":\"" << EscapeMessageVectorText(shape)
+       << "\",\"safe_message\":\"" << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(diagnostic.safe_message)}
+       << "\",\"diagnostic_shape_id\":\"" << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(shape)}
        << "\",\"visibility\":\"" << visibility
        << "\",\"redaction_profile\":\"canonical_lifecycle_least_disclosure_v1"
        << "\",\"retryable\":" << (retryable ? "true" : "false")
@@ -236,21 +238,27 @@ std::string ToMessageVectorJsonLine(const ServerDiagnostic& diagnostic) {
       out << ',';
     }
     first = false;
-    out << '"' << EscapeMessageVectorText(field.key) << "\":\""
-        << EscapeMessageVectorText(field.value) << '"';
+    out << '"' << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(field.key)} << "\":\""
+        << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(field.value)} << '"';
   }
   out << "}}}";
   return out.str();
 }
 
 std::string ToPrivateMessageVectorJsonLine(const ServerDiagnostic& diagnostic) {
-  std::ostringstream out;
+  for (const auto* id : {&diagnostic.correlation_uuid, &diagnostic.request_uuid,
+                         &diagnostic.session_uuid, &diagnostic.database_uuid})
+    if (!id->empty() && id->size() != 16) return {};
+  for (const auto& field : diagnostic.fields)
+    if (field.key.ends_with("_uuid") && !field.value.empty() && field.value.size() != 16 &&
+        !PrivateFieldValueRequiresRedaction(field.key, field.value)) return {};
+  scratchbird::wire::binary_status::Stream out;
   WriteMessageVectorHeader(&out, diagnostic, "private");
   out << ",\"correlation\":{\"correlation_uuid\":\""
-      << EscapeMessageVectorText(diagnostic.correlation_uuid)
-      << "\",\"request_uuid\":\"" << EscapeMessageVectorText(diagnostic.request_uuid)
-      << "\",\"session_uuid\":\"" << EscapeMessageVectorText(diagnostic.session_uuid)
-      << "\",\"database_uuid\":\"" << EscapeMessageVectorText(diagnostic.database_uuid)
+      << scratchbird::wire::binary_status::Identity(diagnostic.correlation_uuid)
+      << "\",\"request_uuid\":\"" << scratchbird::wire::binary_status::Identity(diagnostic.request_uuid)
+      << "\",\"session_uuid\":\"" << scratchbird::wire::binary_status::Identity(diagnostic.session_uuid)
+      << "\",\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(diagnostic.database_uuid)
       << "\"},\"fields\":{";
   bool first = true;
   for (const auto& field : diagnostic.fields) {
@@ -258,8 +266,11 @@ std::string ToPrivateMessageVectorJsonLine(const ServerDiagnostic& diagnostic) {
       out << ',';
     }
     first = false;
-    out << '"' << EscapeMessageVectorText(field.key) << "\":\""
-        << EscapeMessageVectorText(RedactPrivateFieldValue(field.key, field.value)) << '"';
+    out << '"' << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(field.key)} << "\":\"";
+    if (field.key.ends_with("_uuid") && !PrivateFieldValueRequiresRedaction(field.key, field.value))
+      out << scratchbird::wire::binary_status::Identity(field.value);
+    else out << scratchbird::wire::binary_status::Text{EscapeMessageVectorText(RedactPrivateFieldValue(field.key, field.value))};
+    out << '"';
   }
   out << "}}}";
   return out.str();

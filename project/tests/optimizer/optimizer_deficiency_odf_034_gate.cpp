@@ -140,14 +140,10 @@ std::filesystem::path RowStorePath(const Fixture& fixture) {
   return fixture.database_path.string() + ".sb.mga_row_versions";
 }
 
-std::filesystem::path IndexStorePath(const Fixture& fixture) {
-  return fixture.database_path.string() + ".sb.mga_index_entries";
-}
-
 std::filesystem::path ScopedIndexStorePath(const Fixture& fixture) {
   api::EngineRequestContext context;
   context.database_path = fixture.database_path.string();
-  return api::MgaScopedRelationPath(context, fixture.table_uuid, ".indexes");
+  return api::MgaScopedRelationPath(context, fixture.table_uuid, ".indexes.sbnx");
 }
 
 std::filesystem::path DeltaLedgerPath(const Fixture& fixture) {
@@ -411,9 +407,8 @@ void IndexBatchUsesOneDurableRange(Fixture& fixture,
   std::sort(observed.begin(), observed.end());
   Require(observed == std::vector<platform::u64>({1, 2}),
           "ODF-034 index batch did not persist contiguous event sequences");
-  Require(std::filesystem::exists(IndexStorePath(fixture)) ||
-              std::filesystem::exists(ScopedIndexStorePath(fixture)),
-          "ODF-034 index store path was not created");
+  Require(std::filesystem::exists(ScopedIndexStorePath(fixture)),
+          "ODF-034 binary scoped index store path was not created");
 }
 
 std::vector<api::EngineEvidenceReference> DeltaLedgerUsesDurableRanges(

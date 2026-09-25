@@ -75,7 +75,7 @@ PUBLIC_REFERENCE_ACQUISITION_METADATA_SHA256: dict[str, str] = {
         "d4643cdc263b74774f6b82d095ddb371fb4c84d9ec16f442f7c0062e31c4fb7d"
     ),
     "firebird/5.0.4/regression/FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv": (
-        "e6791254c8bff660f0759b1ae6ee46f95fe3063f55f4f44227a852652da2f632"
+        "9f6b9633d272d6fca2cf2ebaad8c655f86a17f54d550b9d7fe283f1360514eec"
     ),
     "firebird/5.0.4/regression/FIREBIRD_QA_CANDIDATE_TEST_INDEX.csv": (
         "10fc3e1b3c1831d74c97da80d272e643fcb41cbceb2771275b089a0f0be0644d"

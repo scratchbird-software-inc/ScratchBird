@@ -150,12 +150,27 @@ bool NormalizedControlsAreStableAndParserSafe() {
     return false;
   }
   const auto key = opt::BuildOptimizerPlanCacheKey(left);
-  return Require(key.find("optimizer_controls=") != std::string::npos,
-                 "plan cache key omitted normalized optimizer controls") &&
-         Require(key.find("memory_feedback_generation=737") != std::string::npos,
-                 "plan cache key omitted memory feedback generation") &&
-         Require(key.find("redaction_epoch=733") != std::string::npos,
-                 "plan cache key omitted redaction epoch");
+  if (!Require(key == opt::BuildOptimizerPlanCacheKey(right),
+               "reordered normalized controls changed the binary key")) return false;
+  {
+    auto changed = left;
+    changed.normalized_optimizer_controls_digest += "-changed";
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "normalized_optimizer_controls_digest omitted from binary key")) return false;
+  }
+  {
+    auto changed = left;
+    ++changed.memory_feedback_generation;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "memory_feedback_generation omitted from binary key")) return false;
+  }
+  {
+    auto changed = left;
+    ++changed.redaction_epoch;
+    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
+                 "redaction_epoch omitted from binary key")) return false;
+  }
+  return true;
 }
 
 bool UnsafeControlsAreRejected() {

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../support/binary_uuid_fixture.hpp"
 #include "engine/sblr/canonical_query_result_metadata.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
+#include "query/expression_api.hpp"
 
 #include <array>
 #include <iostream>
@@ -212,6 +214,104 @@ int main() try {
     value.binary_value.push_back(0);
     Check(!f.Run() && !f.shape.query_metadata, "SQL NULL cannot carry bytes");
   }
+  {
+    Fixture f(identities[2], 1, 1);
+    auto& value = f.shape.rows[0].fields[0].second;
+    value.state = api::EngineValueState::sql_null;
+    value.is_null = true;
+    value.encoded_value.clear();
+    f.shape.null_extended_columns = {true};
+    Check(f.Run() && f.shape.query_metadata->columns[0].transport.nullability ==
+        wire::TypedResultNullability::nullable, "engine outer-join widening survives publication");
+    f.shape.null_extended_columns.push_back(true);
+    Check(!f.Run(), "outer-join widening requires exact schema cardinality");
+  }
+  {
+    namespace exec = scratchbird::engine::executor;
+    Fixture f(identities[5], 1, 1);
+    auto value = f.shape.rows[0].fields[0].second;
+    value.descriptor.canonical_type_name = "text";
+    value.descriptor.encoded_descriptor.clear();
+    exec::CanonicalDescriptorOrderTerm term;
+    term.expression_descriptor_id = 1;
+    term.collation_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000009901");
+    value.descriptor.collation_uuid = term.collation_uuid;
+    term.resource_epoch = term.collation_epoch = 1;
+    auto& seed = term.text_seed;
+    seed.active = true;
+    seed.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000009902");
+    seed.charset_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000009903");
+    seed.collation_uuid = term.collation_uuid;
+    seed.resource_epoch = seed.collation_epoch = 1;
+    seed.comparison_profile = scratchbird::core::resources::CollationProfile::utf8_binary;
+    seed.seed_pack_name = "seed"; seed.seed_pack_version = "1";
+    seed.charset_name = "UTF8"; seed.collation_name = "short";
+    // Component recipe only: no claim of a live resource catalog receipt.
+    for (const auto& text : {std::string{}, std::string("a\0;",3)}) {
+      value.encoded_value = text;
+      value.binary_value.clear();
+      const auto plan = exec::PlanCanonicalDescriptorEqualityKey(value, term);
+      const auto key = exec::MakeCanonicalDescriptorEqualityKey(value, term);
+      Check(plan.diagnostic.ok && key.diagnostic.ok &&
+            key.equality_key.size() <= plan.retained_key_bytes,
+            "binary UUID collation cohort exceeded equality-key allocation for short text");
+    }
+  }
+  {
+    api::EngineTypedValue left, right;
+    left.descriptor.descriptor_kind = "scalar";
+    left.descriptor.canonical_type_name = "uuid";
+    left.descriptor.encoded_descriptor = "nullability=non_null";
+    left.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d734");
+    left.descriptor.type_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d735");
+    left.state = api::EngineValueState::value;
+    right = left;
+    const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff",16);
+    left.binary_value.assign(bytes.begin(),bytes.end());
+    right.encoded_value = bytes;
+    int comparison = 99;
+    std::string detail;
+    Check(api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail) && comparison == 0,
+          "binary-vector and retained binary-string UUID carriers did not compare equally");
+    right.encoded_value.back() = '\x7f';
+    Check(api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail) && comparison > 0,
+          "UUID octet ordering drifted");
+    left.binary_value.pop_back();
+    Check(!api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail),
+          "malformed UUID comparison became default-success empty value");
+    left.binary_value.assign(bytes.begin(),bytes.end());
+    left.encoded_value = bytes;
+    Check(!api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail),
+          "ambiguous UUID dual carrier was admitted");
+  }
+  {
+    api::EngineTypedValue left, right;
+    left.descriptor.descriptor_kind = "scalar";
+    left.descriptor.canonical_type_name = "text";
+    left.descriptor.encoded_descriptor = "nullability=non_null";
+    left.descriptor.descriptor_uuid = identities[5].descriptor;
+    left.descriptor.type_uuid = identities[5].type;
+    left.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,1);
+    left.encoded_value = "a"; right = left;
+    api::EngineSqlTruthValue truth;
+    std::string detail;
+    Check(api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,api::EngineComparisonPredicateOperator::equal,&truth,&detail) && truth == api::EngineSqlTruthValue::true_value,
+          "TEXT truth seam lost binary collation identity");
+    right.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,2);
+    Check(!api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,api::EngineComparisonPredicateOperator::equal,&truth,&detail), "mismatched binary collation admitted");
+    left.descriptor.collation_uuid = {}; right.descriptor.collation_uuid = {};
+    Check(!api::QowEvaluateCanonicalComparisonTruthV1(left,right,0,api::EngineComparisonPredicateOperator::equal,&truth,&detail), "absent collation admitted");
+    left.descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,1); right=left;
+    api::EngineCanonicalExpressionEvaluationRequest request;
+    request.consumer = api::EngineCanonicalExpressionConsumer::projection;
+    request.operation = api::EngineCanonicalExpressionOperation::text_concat;
+    request.left_value = left; request.right_value = right;
+    request.result_descriptor = left.descriptor;
+    api::EngineCanonicalExpressionEvaluationResult result;
+    Check(api::QowEvaluateCanonicalTypedExpressionV1(request,&result,&detail) && result.value.encoded_value == "aa", "TEXT concatenation lost binary collation binding");
+    request.result_descriptor.collation_uuid = scratchbird::tests::FixtureUuid(1900,2);
+    Check(!api::QowEvaluateCanonicalTypedExpressionV1(request,&result,&detail), "concatenation accepted mismatched binary collation");
+  }
   for (unsigned state = 2; state <= 7; ++state) {
     Fixture f(identities[2], 1, 1);
     f.shape.rows[0].fields[0].second.state = static_cast<api::EngineValueState>(state);
@@ -312,7 +412,7 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata, "missing ambiguous or cyclic CTE producer refused");
   }
   }
-  Check(checks == 6561, "fixed check population");
+  Check(checks == 6561 + 8 + 5, "fixed check population including binary/outer-join regressions");
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';
   return 0;
 } catch (const std::exception& e) {

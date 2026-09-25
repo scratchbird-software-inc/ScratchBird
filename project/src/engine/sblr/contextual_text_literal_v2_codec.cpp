@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "core/datatypes/admitted_datatype_cohort.hpp"
 #include "contextual_text_literal_v2_codec.hpp"
 
 #include "hash_digest.hpp"
@@ -777,9 +778,9 @@ bool EncodeContextualTextDescriptorV2(
                          value.comparison_contract_generation) ||
       !ValidRequiredPair(value.equality_operation_uuid,
                          value.equality_operation_generation) ||
-      value.datatype_catalog_snapshot_uuid != kDatatypeCatalogUuid ||
-      value.datatype_catalog_generation != 1 ||
-      value.datatype_registry_generation != 1 || value.resource_epoch == 0)
+      !core::datatypes::IsAdmittedDatatypeCohort(
+          value.datatype_catalog_snapshot_uuid, value.datatype_catalog_generation,
+          value.datatype_registry_generation) || value.resource_epoch == 0)
     return Fail(diagnostic, "CTB.TEXT.DESCRIPTOR_INVALID",
                 "SBTLTD02 identity or resource fields are invalid");
   if (((value.flags & 2) != 0) != Nonzero(value.padding_policy_uuid) ||

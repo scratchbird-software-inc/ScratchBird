@@ -382,10 +382,60 @@ void TestReleaseBarrierRecoveryAndContradiction(
                     "contradictory active savepoint plus barrier was accepted");
 }
 
+void TestBinarySavepointFileIdentity(const std::filesystem::path& database_path) {
+  const auto request = Request(database_path);
+  const auto opened = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(request);
+  Require(opened.ok, "binary path savepoint creation failed");
+  const std::filesystem::path directory =
+      database_path.string() + ".sb.mga_update_statement_savepoints.v1";
+  std::filesystem::path original;
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    if (entry.path().extension() == ".dups") {
+      Require(original.empty(), "unexpected duplicate savepoint file");
+      original = entry.path();
+    }
+  }
+  Require(!original.empty() && original.stem().string().size() == 64,
+          "savepoint file does not use an opaque digest key");
+  std::string other_key(64, '0');
+  if (original.stem().string() == other_key) other_key[0] = '1';
+  const auto renamed = directory / (other_key + ".dups");
+  std::filesystem::rename(original, renamed);
+  Require(engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
+          "renamed binary savepoint acquired another filesystem identity");
+  Require(!engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(
+              Recover(request, opened.authority)).ok,
+          "missing canonical savepoint path recovered authority");
+  std::filesystem::rename(renamed, original);
+  const auto recovered = engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(
+      Recover(request, opened.authority));
+  Require(recovered.ok && recovered.authority == opened.authority,
+          "restored binary savepoint did not recover exact authority");
+  std::ifstream input(original, std::ios::binary);
+  std::string bytes((std::istreambuf_iterator<char>(input)), {});
+  input.close();
+  Require(bytes.size() > 352, "binary savepoint frame missing");
+  auto corrupt = bytes;
+  corrupt.back() ^= 1;
+  {
+    std::ofstream output(original, std::ios::binary | std::ios::trunc);
+    output.write(corrupt.data(), static_cast<std::streamsize>(corrupt.size()));
+  }
+  Require(engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
+          "corrupt binary savepoint payload supplied an identity");
+  {
+    std::ofstream output(original, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  Require(!engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
+          "restored binary frame remained invalid");
+}
+
 }  // namespace
 
 int main() {
   TemporaryDirectory temporary;
+  TestBinarySavepointFileIdentity(temporary.path() / "binary_paths.sdb");
   TestFreshIdentityAndStaleRefusals(temporary.path() / "fresh.sdb");
   TestRollbackAndRecovery(temporary.path() / "rollback.sdb");
   TestReleaseBarrierRecoveryAndContradiction(

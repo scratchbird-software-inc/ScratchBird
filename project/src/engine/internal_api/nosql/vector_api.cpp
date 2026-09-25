@@ -519,8 +519,8 @@ EngineUuid ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
-          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x02}},
+          2, 2, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }

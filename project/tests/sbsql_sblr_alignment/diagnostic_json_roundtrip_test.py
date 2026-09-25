@@ -24,6 +24,8 @@ def cases():
                         "literal backslash-n: \\n", "e\u0301", "\U0001f600",
                         "\u2028\u2029", "x" * 4096, '\n"\\\t' * 1024,
                         "e\u0301\U0001f600" * 256)))
+    values += [("packet_magic", "SBRES002"),
+               ("packet_magic_suffix", "SBRES002literal status text")]
     return values
 
 

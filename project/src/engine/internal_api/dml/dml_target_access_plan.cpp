@@ -47,7 +47,8 @@ constexpr const char* kUnsafeSummaryPruning = "unsafe summary pruning";
 constexpr const char* kUnsafeParserReferenceAuthority = "unsafe parser/reference authority";
 
 bool EpochIsStale(std::uint64_t observed, std::uint64_t current) {
-  return current != 0 && observed != 0 && observed < current;
+  // A future claimed epoch is no more authoritative than an older one.
+  return current != 0 && observed != 0 && observed != current;
 }
 
 bool HasPredicateOrAccessDescriptor(const DmlTargetAccessPlanRequest& request) {

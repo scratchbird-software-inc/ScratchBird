@@ -252,13 +252,26 @@ std::string SnapshotMaterial(const SblrParameterSetSnapshot& value,
   if (bytes.empty()) return {};
   return std::string(kDomain) + bytes;
 }
+// Filesystem tokens are domain-separated digests of binary identities. The
+// record retains and validates the actual UUID; a filename is never identity
+// or publication authority and cannot be parsed back into a system UUID.
+std::string IdentityFileKey(const EngineUuid& id) {
+  constexpr std::string_view domain = "SB_PARAMETER_FILE_KEY_V2";
+  std::array<scratchbird::core::platform::byte, domain.size() + 16> material{};
+  std::copy(domain.begin(), domain.end(), material.begin());
+  std::copy(id.bytes.begin(), id.bytes.end(), material.begin() + domain.size());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material.data(), material.size());
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
+}
 std::string StorePath(const EngineRequestContext& context, const EngineUuid& id) {
-  return context.database_path + ".sb.sblr_parameter_set." +
-      scratchbird::core::uuid::UuidToString(id) + ".v1";
+  const auto key = IdentityFileKey(id);
+  return key.empty() ? std::string{} :
+      context.database_path + ".sb.sblr_parameter_set." + key + ".v2";
 }
 std::string BindStorePath(const EngineRequestContext& context, const EngineUuid& id) {
-  return context.database_path + ".sb.sblr_parameter_bind." +
-      scratchbird::core::uuid::UuidToString(id) + ".v1";
+  const auto key = IdentityFileKey(id);
+  return key.empty() ? std::string{} :
+      context.database_path + ".sb.sblr_parameter_bind." + key + ".v2";
 }
 enum class ReadStatus { ok, absent, invalid, io_error };
 #if !defined(_WIN32)
@@ -307,6 +320,7 @@ bool ConfirmBindingBarrier(const std::string& path) {
 #endif
 }
 ReadStatus ReadBounded(const std::string& path, std::size_t limit, std::string* bytes) {
+  if (path.empty()) return ReadStatus::io_error;
 #if defined(_WIN32)
   HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
       OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
@@ -507,7 +521,9 @@ bool DurablePublishBind(const EngineRequestContext& context,
   const auto path = BindStorePath(context, value.parameter_set_descriptor_uuid);
   const auto id = GenerateUuid();
   if (id.is_nil()) return false;
-  const auto temporary = path + ".tmp." + scratchbird::core::uuid::UuidToString(id);
+  const auto temporary_key = IdentityFileKey(id);
+  if (path.empty() || temporary_key.empty()) return false;
+  const auto temporary = path + ".tmp." + temporary_key;
   const auto record = BindRecord(value);
   if (record.empty()) return false;
   // CREATE_NEW / O_EXCL ensures this invocation alone owns the provisional file.
@@ -608,7 +624,7 @@ bool Publish(const EngineRequestContext& context, const SblrParameterSetSnapshot
   // Allocate both frames before the first durable effect.
   const auto evidence = Record(1, value, prior_uuid, prior_generation, reason);
   const auto snapshot = Record(2, value, prior_uuid, prior_generation, reason);
-  return !evidence.empty() && !snapshot.empty() &&
+  return !path.empty() && !evidence.empty() && !snapshot.empty() &&
       DurableAppend(path, evidence, prior_generation == 0, kJournalLimit) &&
       DurableAppend(path, snapshot, false, kJournalLimit);
 }

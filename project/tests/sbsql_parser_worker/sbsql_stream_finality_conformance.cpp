@@ -8,12 +8,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "hash_digest.hpp"
+#include "wire/public_result_packet.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdlib>
@@ -105,10 +107,10 @@ EngineFixture MakeEngineFixture() {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
           .count());
+  static std::uint64_t fixture_sequence = 0;
   fixture.directory = std::filesystem::temp_directory_path() /
-                      ("sb_stream_finality_conformance_" +
-                       scratchbird::server::UuidBytesToText(
-                           sbps::MakeUuidV7Bytes()));
+                      ("sb_stream_finality_conformance_" + std::to_string(now_millis) +
+                       "_" + std::to_string(++fixture_sequence));
   std::error_code directory_error;
   std::filesystem::create_directories(fixture.directory, directory_error);
   Require(!directory_error, "stream finality fixture directory creation failed");
@@ -349,8 +351,19 @@ int main() {
   Require(drain_fetch.accepted && drain_payload.has_value() &&
               drain_payload->row_count == 1 && drain_payload->end_of_cursor,
           "drain stream did not return accepted deterministic finality");
-  Require(Contains(drain_payload->row_packet, "\"stream_finality\"") &&
-              Contains(drain_payload->row_packet, "\"state\":\"drained\"") &&
+  namespace packet = scratchbird::wire::public_result;
+  std::vector<packet::Field> finality_fields;
+  Require(packet::Decode(drain_payload->row_packet, &finality_fields),
+          "drain stream finality packet lost binary framing");
+  const auto has_field = [&](std::string_view name, packet::Kind kind, std::string_view value) {
+    return std::count_if(finality_fields.begin(), finality_fields.end(), [&](const auto& field) {
+      return field.name == name && field.kind == kind && field.value == value;
+    }) == 1;
+  };
+  Require(has_field("contract", packet::Kind::text, "stream_finality.v2") &&
+              has_field("state", packet::Kind::text, "drained") &&
+              has_field("cursor_uuid", packet::Kind::uuid,
+                  std::string_view(reinterpret_cast<const char*>(drain_cursor.data()),16)) &&
               Contains(drain_payload->detail, "\"state\":\"drained\""),
           "drain stream finality packet or metadata is missing");
   registry.sessions_by_uuid

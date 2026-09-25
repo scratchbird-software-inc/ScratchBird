@@ -51,6 +51,20 @@ constexpr std::uint64_t kDmlUpdateDurableMaximumFrameBytes =
 constexpr std::string_view kDmlUpdateDurableFrameEvidenceDomain =
     "ScratchBird.MgaDmlUpdateDurableOperationFrame.V1";
 
+// Filesystem keys are domain-separated digests of binary identities. Identity
+// authority remains the authenticated raw16 fields inside the durable frames.
+std::string DurableIdentityFileKey(const EngineUuid& uuid) {
+  std::array<std::uint8_t, 16> identity{};
+  if (!DmlUpdateDurableUuidBytes(uuid, &identity)) return {};
+  constexpr std::string_view domain = "SB_MGA_UPDATE_FILE_KEY_V2";
+  std::array<std::uint8_t, domain.size() + 16> material{};
+  std::copy(domain.begin(), domain.end(), material.begin());
+  std::copy(identity.begin(), identity.end(), material.begin() + domain.size());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material.data(), material.size());
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest)
+                     : std::string{};
+}
+
 }  // namespace
 
 std::string DmlUpdateDurableOperationStorePath(
@@ -219,14 +233,16 @@ bool DmlUpdateDurableIdentityMatchesContext(
 std::string DmlUpdateDurableDescriptorPath(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationIdentityV1& identity) {
-  return DmlUpdateDurableOperationStorePath(context) + "/" +
-         scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
+  const auto key = DurableIdentityFileKey(identity.descriptor_uuid);
+  if (context.database_path.empty() || key.empty()) return {};
+  return DmlUpdateDurableOperationStorePath(context) + "/" + key + ".duop";
 }
 
 std::string DmlUpdateDurableSavepointPath(
     const EngineRequestContext& context, const EngineUuid& savepoint_uuid) {
-  return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" +
-         scratchbird::core::uuid::UuidToString(savepoint_uuid) + ".dups";
+  const auto key = DurableIdentityFileKey(savepoint_uuid);
+  if (context.database_path.empty() || key.empty()) return {};
+  return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" + key + ".dups";
 }
 
 MgaDmlUpdateDurableSha256V1 DmlUpdateDurableSha256(
@@ -427,6 +443,10 @@ bool DmlUpdateDurableDecodeFrame(
 DmlUpdateDurableFrameLoadV1 DmlUpdateDurableLoadFrames(
     const std::string& path) {
   DmlUpdateDurableFrameLoadV1 result;
+  if (path.empty()) {
+    result.detail = "durable_store_path_invalid";
+    return result;
+  }
   std::ifstream input(path, std::ios::binary);
   if (!input) {
     std::error_code ignored;
@@ -507,6 +527,7 @@ bool DmlUpdateDurableEnsureDirectory(const std::string& directory) {
 
 DmlUpdateDurableFileLock::DmlUpdateDurableFileLock(
     const std::string& data_path) {
+  if (data_path.empty()) return;
   const std::string path = data_path + ".lock";
 #if defined(_WIN32)
   handle_ = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,

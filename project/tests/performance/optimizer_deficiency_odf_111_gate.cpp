@@ -10,6 +10,9 @@
 
 // ODF-111 DML row-location benchmark closure gate.
 
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
@@ -318,12 +321,16 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  api::EngineUuid primary_key_uuid;
   api::EngineUuid table_uuid;
   api::EngineUuid id_index_uuid;
   api::EngineUuid name_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) {
       std::filesystem::remove_all(dir, ignored);
@@ -334,23 +341,15 @@ struct Fixture {
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id,
                                       bool security_context_present = true) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = security_context_present;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 10;
-  context.security_epoch = 20;
-  context.resource_epoch = 30;
-  context.name_resolution_epoch = 40;
   context.trace_tags = {"optimizer_deficiency_odf_111_gate",
                         "benchmark_clean",
                         "mga_transaction_regression"};
@@ -393,7 +392,13 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "odf111_dml_row_location";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
+  api::CatalogColumnMetadata key;
+  key.text = {{"canonical", "character"}, {"primary_key", "true"}};
+  key.identities = {{"candidate_key_constraint_uuid", fixture.primary_key_uuid},
+                    {"support_uuid", fixture.id_index_uuid}};
+  std::string bytes;
+  Require(api::EncodeCatalogColumnMetadata(key, &bytes), "ODF-111 key encoding failed");
+  table.columns.push_back({"id", std::move(bytes)});
   table.columns.push_back({"name", "canonical=character"});
   table.columns.push_back({"note", "canonical=character"});
   table.columns.push_back({"tag", "canonical=character"});
@@ -434,8 +439,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -445,12 +449,17 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(created.ok(), "ODF-111 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.primary_key_uuid = NewIdentity(platform::UuidKind::object, salt + 13);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.name_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "odf111-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(context, Table(fixture, context),
+          {"character", "character", "character", "character"},
+          {Index(fixture, context, fixture.id_index_uuid, "id", true),
+           Index(fixture, context, fixture.name_index_uuid, "name", false)}),
                       "ODF-111 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -461,6 +470,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                           Index(fixture, context, fixture.name_index_uuid, "name", false)),
                       "ODF-111 name index metadata append failed");
   Commit(context);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf111-session"));
   return fixture;
 }
 
@@ -471,8 +483,8 @@ api::EngineInsertRowsResult InsertRows(
     std::string conflict_action = {},
     std::vector<std::string> conflict_update_columns = {},
     std::vector<std::string> options = {}) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
@@ -542,8 +554,8 @@ api::EngineUpdateRowsResult Update(const Fixture& fixture,
                                    api::EnginePredicateEnvelope predicate,
                                    std::string note,
                                    std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = std::move(context);
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = std::move(predicate);
@@ -559,8 +571,8 @@ api::EngineUpdateRowsResult UpdateNameNote(
     std::string name,
     std::string note,
     std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
@@ -574,8 +586,8 @@ api::EngineDeleteRowsResult Delete(const Fixture& fixture,
                                    api::EngineRequestContext context,
                                    api::EnginePredicateEnvelope predicate,
                                    std::vector<std::string> options = {}) {
-  api::EngineDeleteRowsRequest request;
-  request.context = std::move(context);
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = std::move(predicate);
@@ -1157,6 +1169,10 @@ void WriteJsonEvidence(const std::vector<ScenarioEvidence>& scenarios) {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf111_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf111_statement_fixture").ok(), "ODF-111 memory configuration failed");
   std::vector<ScenarioEvidence> scenarios;
   auto update_delete = RunUpdateDeleteScenarios();
   scenarios.insert(scenarios.end(),

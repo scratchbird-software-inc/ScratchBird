@@ -335,6 +335,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
     canonical_query_set_composition.cpp
     canonical_query_sort_registration.cpp
     canonical_query_window_registration.cpp
+    canonical_query_window_order_binding.cpp
     canonical_relational_expression.cpp
     canonical_query_execute.cpp
     canonical_query_json_support.cpp
@@ -399,6 +400,7 @@ add_library(sb_engine_sblr
   canonical_query_set_composition.cpp
   canonical_query_sort_registration.cpp
   canonical_query_window_registration.cpp
+  canonical_query_window_order_binding.cpp
   canonical_relational_expression.cpp
   canonical_query_execute.cpp
   canonical_query_json_support.cpp

@@ -12,6 +12,9 @@
 #include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "dml/mga_relation_read_view.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "row_version.hpp"
 #include "transaction/transaction_api.hpp"
@@ -101,12 +104,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   platform::Uuid table_uuid;
   platform::Uuid id_index_uuid;
   platform::Uuid name_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -114,23 +120,15 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 10;
-  context.security_epoch = 20;
-  context.resource_epoch = 30;
-  context.name_resolution_epoch = 40;
   return context;
 }
 
@@ -200,19 +198,20 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "ODF-050 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewNativeUuid(platform::UuidKind::object, salt + 10);
   fixture.id_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 11);
   fixture.name_index_uuid = NewNativeUuid(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "odf050-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(context, Table(fixture, context),
+                          {"character", "character", "character"}, {Index(fixture, context, fixture.id_index_uuid, "id", true), Index(fixture, context, fixture.name_index_uuid, "name", false)}),
                       "ODF-050 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -223,6 +222,9 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                           Index(fixture, context, fixture.name_index_uuid, "name", false)),
                       "ODF-050 name index metadata append failed");
   Commit(context);
+  fixture.owner_context.current_schema_uuid = context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "odf050-session"));
   return fixture;
 }
 
@@ -240,8 +242,8 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string id,
                                       std::string name,
                                       std::string note) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(
@@ -268,8 +270,8 @@ api::EngineUpdateRowsResult UpdateOne(
     const api::EngineRequestContext& context,
     api::EnginePredicateEnvelope predicate,
     std::vector<std::pair<std::string, api::EngineTypedValue>> assignments) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = std::move(predicate);
@@ -280,8 +282,8 @@ api::EngineUpdateRowsResult UpdateOne(
 api::EngineSelectRowsResult SelectWhere(const Fixture& fixture,
                                         const api::EngineRequestContext& context,
                                         api::EnginePredicateEnvelope predicate) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = std::move(predicate);
@@ -512,6 +514,11 @@ void InvalidHotPlusProofFailsClosed() {
 }  // namespace
 
 int main() {
+  auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf050_statement_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy, "odf050_statement_fixture").ok(),
+          "ODF-050 memory policy configuration failed");
   PageLocalHotKeepsStableRowHead();
   LargeUnchangedKeyUsesStableHeadIndirection();
   KeyChangingUpdateUsesOrdinaryRewrite();

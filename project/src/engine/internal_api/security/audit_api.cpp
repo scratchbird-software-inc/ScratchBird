@@ -9,6 +9,8 @@
 #include "security/audit_api.hpp"
 
 #include "security/security_model.hpp"
+#include "../../../wire/public_result_packet.hpp"
+#include <algorithm>
 
 namespace scratchbird::engine::internal_api {
 
@@ -58,12 +60,42 @@ EngineEmitLifecycleAuditEventResult EngineEmitLifecycleAuditEvent(
   const std::string correlation = request.correlation_uuid.empty()
       ? SecurityOptionValue(request, "correlation_uuid:")
       : request.correlation_uuid;
+  const auto marker = request.cache_marker_uuid.empty()
+      ? SecurityOptionValue(request, "cache_marker_uuid:")
+      : request.cache_marker_uuid;
+  EngineUuid correlation_id, marker_id;
+  const auto decode_identity = [](const std::string& bytes, EngineUuid* id) {
+    if (bytes.empty()) return true;
+    if (bytes.size() != id->bytes.size()) return false;
+    std::copy(bytes.begin(), bytes.end(), id->bytes.begin());
+    return true;
+  };
+  if (!decode_identity(correlation, &correlation_id) ||
+      !decode_identity(marker, &marker_id)) {
+    return SecurityFailure<EngineEmitLifecycleAuditEventResult>(
+        request.context, "security.emit_lifecycle_audit_event",
+        MakeSecurityDiagnostic("SECURITY.AUDIT.EVIDENCE_REQUIRED",
+                               "lifecycle_uuid_requires_binary16"));
+  }
+  namespace packet = scratchbird::wire::public_result;
+  std::string payload;
+  if (!packet::Encode(std::vector<packet::Field>{
+          {"contract", packet::Kind::text, "security.lifecycle_audit.v2"},
+          {"operation", packet::Kind::text, operation},
+          {"outcome", packet::Kind::text, outcome},
+          {"diagnostic_code", packet::Kind::text, diagnostic},
+          {"correlation_uuid", packet::Kind::uuid,
+           std::string(reinterpret_cast<const char*>(correlation_id.bytes.data()), 16)},
+          {"cache_marker_uuid", packet::Kind::uuid,
+           std::string(reinterpret_cast<const char*>(marker_id.bytes.data()), 16)}},
+          &payload)) {
+    return SecurityFailure<EngineEmitLifecycleAuditEventResult>(
+        request.context, "security.emit_lifecycle_audit_event",
+        MakeSecurityDiagnostic("SECURITY.AUDIT.EVIDENCE_REQUIRED",
+                               "lifecycle_payload_invalid"));
+  }
   const auto evidence = AppendSecurityEvidenceEvent(
-      request.context,
-      "security.emit_lifecycle_audit_event",
-      "lifecycle_audit",
-      "operation=" + operation + ";outcome=" + outcome +
-          ";diagnostic_code=" + diagnostic + ";correlation_uuid=" + correlation);
+      request.context, "security.emit_lifecycle_audit_event", "lifecycle_audit", payload);
   if (evidence.error) {
     return SecurityFailure<EngineEmitLifecycleAuditEventResult>(
         request.context,
@@ -80,16 +112,14 @@ EngineEmitLifecycleAuditEventResult EngineEmitLifecycleAuditEvent(
   AddSecurityEvidence(&result, "lifecycle_audit_event", operation + ":" + outcome);
   AddSecurityEvidence(&result, "message_vector_shape", "diag.server.lifecycle.v1");
   if (result.cache_marker_linked) {
-    const auto marker = request.cache_marker_uuid.empty()
-        ? SecurityOptionValue(request, "cache_marker_uuid:")
-        : request.cache_marker_uuid;
-    AddSecurityEvidence(&result, "lifecycle_cache_invalidation", marker.empty() ? operation : marker);
+    if (marker.empty()) AddSecurityEvidence(&result, "lifecycle_cache_invalidation", operation);
+    else AddSecurityEvidence(&result, "lifecycle_cache_invalidation", marker_id);
   }
   AddSecurityRow(&result,
                  {{"operation_key", operation},
                   {"outcome", outcome},
                   {"diagnostic_code", diagnostic},
-                  {"correlation_uuid", correlation},
+                  {"correlation_uuid", correlation_id},
                   {"redacted", "true"},
                   {"public_private_shape_separated", "true"},
                   {"parser_finality_authority", "false"},

@@ -682,6 +682,36 @@ EngineApiDiagnostic OverlayMgaTransactionAuthority(
   return OkDiagnostic();
 }
 
+// Row pages carry the database-local transaction id. Bind its immutable binary
+// identity from the same inventory snapshot used for statement visibility.
+EngineApiDiagnostic BindMgaRowCreatorIdentities(
+    const EngineRequestContext& context,
+    std::vector<CrudRowVersionRecord>* rows) {
+  if (rows->empty()) return OkDiagnostic();
+  const auto authority = ResolveStatementTransactionInventory(context);
+  if (!authority.ok()) return authority.diagnostic;
+  std::unordered_map<std::uint64_t, EngineUuid> identities;
+  for (const auto& entry : authority.snapshot->inventory.entries) {
+    if (entry.identity.local_id.valid() && entry.identity.transaction_uuid.valid()) {
+      identities.emplace(entry.identity.local_id.value,
+                         entry.identity.transaction_uuid.value);
+    }
+  }
+  for (auto& row : *rows) {
+    const auto creator = identities.find(row.creator_tx);
+    // A physical version may have been written after the retained snapshot.
+    // Its unknown creator remains invisible under the existing MGA rules.
+    if (creator == identities.end()) continue;
+    if (!row.creator_transaction_uuid.is_nil() &&
+        row.creator_transaction_uuid != creator->second) {
+      return MakeInvalidRequestDiagnostic("mga.row_store",
+                                          "creator_identity_mismatch");
+    }
+    row.creator_transaction_uuid = creator->second;
+  }
+  return OkDiagnostic();
+}
+
 bool ExactTextMigrationCreatorTransaction(
     const EngineRequestContext& context,
     const std::uint64_t creator_tx,
@@ -1648,6 +1678,12 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       return result;
     }
   }
+  const auto creator_status =
+      BindMgaRowCreatorIdentities(context, &result.state.row_versions);
+  if (creator_status.error) {
+    result.diagnostic = creator_status;
+    return result;
+  }
   const auto chain_status =
       ValidateMgaRowVersionRecordChains(result.state.row_versions);
   if (chain_status.error) {
@@ -1833,6 +1869,12 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     }
   }
   if (include_row_versions) {
+    const auto creator_status =
+        BindMgaRowCreatorIdentities(context, &result.state.row_versions);
+    if (creator_status.error) {
+      result.diagnostic = creator_status;
+      return result;
+    }
     const auto chain_status =
         ValidateMgaRowVersionRecordChains(result.state.row_versions);
     if (chain_status.error) {

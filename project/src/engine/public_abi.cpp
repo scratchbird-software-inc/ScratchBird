@@ -3808,12 +3808,18 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
     if (!value.is_null && (type == "uuid" || type == "uuid16")) {
-      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
-        throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      if (value.binary_value.empty()) {
+        // Legacy retained columnar values carry raw UUID16 in std::string.
+        if (bytes.size() != 16)
+          throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      } else {
+        if (!bytes.empty() || value.binary_value.size() != 16)
+          throw std::invalid_argument("public_result_uuid_carrier_invalid");
+        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
+      }
       kind = public_result::Kind::uuid;
-      bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
     }
-    else if (type == "bytea" || type == "binary" || type == "varbinary") kind = public_result::Kind::bytes;
+    else if (type == "bytea" || type == "binary" || type == "varbinary" || type == "list<text nullable>") kind = public_result::Kind::bytes;
     fields.push_back({name, kind, std::move(bytes)});
   }
   return public_record(std::move(fields));
@@ -6647,7 +6653,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto int64_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
           kCanonicalDatatypeCatalogUuid,
-          core_manifest.manifest.catalog_epoch, 1, int64_descriptor_uuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          int64_descriptor_uuid,
           int64_row->descriptor_epoch);
   const auto numeric_type_uuid =
       int64_identity.ok ? int64_identity.row.type_uuid
@@ -6655,18 +6663,29 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto boolean_type_uuid = boolean_row->descriptor_uuid.value;
   const auto text_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          kCanonicalDatatypeCatalogUuid, core_manifest.manifest.catalog_epoch,
-          1, kCanonicalTextDescriptorUuid, 1);
+          kCanonicalDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          kCanonicalTextDescriptorUuid, 1);
   const auto text_type_uuid = text_identity.row.type_uuid;
-  scratchbird::engine::internal_api::EngineUuid json_type_uuid;
-  scratchbird::engine::internal_api::EngineUuid text_list_type_uuid;
+  const auto aggregate_type_identity = [&](scratchbird::core::datatypes::CanonicalTypeId type) {
+    for (const auto& row : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (row.canonical_binary_type_code == static_cast<std::uint32_t>(type) &&
+          row.catalog_snapshot_uuid == kCanonicalDatatypeCatalogUuid &&
+          row.catalog_generation == scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration &&
+          row.registry_generation == scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration) return row.type_uuid;
+    }
+    return scratchbird::engine::internal_api::EngineUuid{};
+  };
+  const auto json_type_uuid = aggregate_type_identity(scratchbird::core::datatypes::CanonicalTypeId::json_document);
+  const auto text_list_type_uuid = aggregate_type_identity(scratchbird::core::datatypes::CanonicalTypeId::list);
   if (numeric_type_uuid.is_nil() || boolean_type_uuid.is_nil() ||
       numeric_type_uuid == boolean_type_uuid ||
       !text_identity.ok ||
       !scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(
           text_identity.row) ||
-      !issue_identity(&json_type_uuid) ||
-      !issue_identity(&text_list_type_uuid)) {
+      json_type_uuid.is_nil() ||
+      text_list_type_uuid.is_nil()) {
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -6757,7 +6776,15 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.REAL64_DESCRIPTOR_UNAVAILABLE",
         "engine.statement_context.real64_descriptor_unavailable");
   }
-  const auto real64_type_uuid = real64_row->descriptor_uuid.value;
+  const auto real64_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          kCanonicalDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          real64_row->descriptor_uuid.value, real64_row->descriptor_epoch);
+  const auto real64_type_uuid = real64_identity.ok
+      ? real64_identity.row.type_uuid
+      : scratchbird::engine::internal_api::EngineUuid{};
   std::array<scratchbird::engine::internal_api::EngineUuid, 2> real64_descriptor_uuids;
   if (real64_type_uuid.is_nil() ||
       !issue_identity(&real64_descriptor_uuids[0]) ||
@@ -6810,8 +6837,16 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.materialized_context_incomplete",
         "statement_v9_descriptor_type_cohort");
   }
-  const auto uuid_type_uuid = uuid_row->descriptor_uuid.value;
-  const auto uint64_type_uuid = uint64_row->descriptor_uuid.value;
+  const auto uuid_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          kCanonicalDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          uuid_row->descriptor_uuid.value, uuid_row->descriptor_epoch);
+  const auto uuid_type_uuid = uuid_identity.ok
+      ? uuid_identity.row.type_uuid
+      : scratchbird::engine::internal_api::EngineUuid{};
+  const auto uint64_type_uuid = aggregate_type_identity(scratchbird::core::datatypes::CanonicalTypeId::uint64);
   std::array<scratchbird::engine::internal_api::EngineUuid, 4> search_descriptor_uuids;
   if (uuid_type_uuid.is_nil() || uint64_type_uuid.is_nil() ||
       uuid_type_uuid == uint64_type_uuid ||
@@ -6868,7 +6903,15 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "statement_v10_descriptor_type_cohort");
   }
   const auto boolean_catalog_type_uuid = boolean_row->descriptor_uuid.value;
-  const auto geometry_type_uuid = geometry_row->descriptor_uuid.value;
+  const auto geometry_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          kCanonicalDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration,
+          geometry_row->descriptor_uuid.value, geometry_row->descriptor_epoch);
+  const auto geometry_type_uuid = geometry_identity.ok
+      ? geometry_identity.row.type_uuid
+      : scratchbird::engine::internal_api::EngineUuid{};
   const std::array<scratchbird::engine::internal_api::EngineUuid, 5> multileg_type_uuids = {
       uuid_type_uuid, uint64_type_uuid, real64_type_uuid,
       boolean_catalog_type_uuid, geometry_type_uuid};
@@ -12393,8 +12436,8 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
                    });
     const auto datatype_identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            kCanonicalDatatypeCatalogUuid, 1, 1,
-            kParameterBigintDescriptor, 1);
+            view.literal_catalog_snapshot_uuid, view.literal_catalog_generation,
+            view.literal_registry_generation, kParameterBigintDescriptor, 1);
     if (requested_type != "BIGINT" || !datatype_identity.ok ||
         datatype_identity.row.canonical_name != "bigint" ||
         datatype_identity.row.canonical_value_exact_bytes != 8 ||

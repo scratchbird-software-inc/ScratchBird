@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/schema_tree_api.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
@@ -69,8 +70,6 @@ constexpr std::string_view kSecurityAlterPolicyEffectiveExpressionUuid =
     "018f0a2b-0000-7000-9000-000000000708";
 constexpr std::string_view kSecurityAlterPolicySourceExpressionUuid =
     "018f0a2b-0000-7000-9000-000000000709";
-constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-    "019d0000-0000-7000-8000-00000000d701";
 
 struct CreatedDatabaseFixture {
   api::EngineUuid database_uuid;
@@ -395,12 +394,12 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.canonical_type_name = std::move(type);
   column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
-  column.descriptor.type_uuid = catalog.descriptor_uuid.value;
   const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, catalog.descriptor_uuid.value,
       catalog.descriptor_epoch);
-  if (codec.ok) column.descriptor.type_uuid = codec.row.type_uuid;
+  if (!codec.ok) Fail("driver fixture datatype codec binding unavailable");
+  column.descriptor.type_uuid = codec.row.type_uuid;
   column.descriptor.encoded_descriptor =
       "type=" + column.descriptor.canonical_type_name + ";nullable=true";
   return column;
@@ -412,8 +411,8 @@ api::EngineTypedValue Value(std::string value, std::string type = "text") {
   typed.descriptor.canonical_type_name = std::move(type);
   typed.descriptor.encoded_descriptor = "type=" + typed.descriptor.canonical_type_name;
   if (typed.descriptor.canonical_type_name == "uuid") {
-    const auto identity = ClientFixtureUuid(value);
-    typed.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+    if (value.size() != 16) Fail("driver fixture UUID value requires 16 bytes");
+    typed.binary_value.assign(value.begin(), value.end());
   } else {
     typed.encoded_value = std::move(value);
   }
@@ -430,31 +429,16 @@ api::EngineRowValue Row(const std::vector<std::pair<std::string, std::string>>& 
   return row;
 }
 
-api::EngineRequestContext BaseContext(const Args& args, const CreatedDatabaseFixture& fixture) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.security_context_present = true;
-  context.request_id = "public-driver-test-database-seed";
-  context.database_path = args.output.string();
-  context.database_uuid = fixture.database_uuid;
-  context.default_root_uuid = fixture.state.filespace_uuid.value;
-  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(args.output.string());
-  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
-    Fail("driver fixture durable bootstrap principal unavailable");
-  context.principal_uuid = bootstrap.state.principal_uuid.value;
-  context.session_uuid = ClientFixtureUuid("019f0a11-ce00-7000-8000-0000000000ff");
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid =
-      ClientFixtureUuid(kDatatypeCatalogSnapshotUuid);
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+void RefreshFixtureAuthorization(api::EngineRequestContext& context,
+                                 bool require_fresh_catalog) {
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory ||
+      context.principal_uuid != bootstrap.state.principal_uuid.value)
+    Fail("driver fixture durable bootstrap principal unavailable or mismatched");
   const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
   if (!loaded.ok) Fail("driver fixture durable security catalog unavailable");
   const auto& lifecycle = loaded.state;
-  if (!lifecycle.row_policies.empty())
+  if (require_fresh_catalog && !lifecycle.row_policies.empty())
     Fail("driver fixture requires a fresh bootstrap security catalog");
   api::DurableAuthorizationState authority;
   authority.authority_uuid = context.database_uuid;
@@ -485,6 +469,30 @@ api::EngineRequestContext BaseContext(const Args& args, const CreatedDatabaseFix
        authority.catalog_generation_id});
   if (!materialized.ok) Fail("driver fixture durable authorization materialization failed");
   context.authorization_context = materialized.context;
+}
+
+api::EngineRequestContext BaseContext(const Args& args, const CreatedDatabaseFixture& fixture) {
+  api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.security_context_present = true;
+  context.request_id = "public-driver-test-database-seed";
+  context.database_path = args.output.string();
+  context.database_uuid = fixture.database_uuid;
+  context.default_root_uuid = fixture.state.filespace_uuid.value;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(args.output.string());
+  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
+    Fail("driver fixture durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  context.session_uuid = ClientFixtureUuid("019f0a11-ce00-7000-8000-0000000000ff");
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
+  context.datatype_catalog_snapshot_uuid =
+      api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  RefreshFixtureAuthorization(context, true);
   context.optimizer_route_epoch = 1;
   context.optimizer_route_generation = 1;
   context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
@@ -784,7 +792,9 @@ std::vector<FixtureTable> FixtureTables(const api::EngineUuid& principal_uuid,
           "users",
           ClientFixtureUuid("018f0a2b-0000-7000-9000-000000000401"),
           {{"principal_uuid", "uuid"}, {"principal_name", "text"}, {"principal_state", "text"}},
-          {{{"principal_uuid", uuid::UuidToString(principal_uuid)}, {"principal_name", "alice"}, {"principal_state", "active"}}},
+          {{{"principal_uuid", std::string(
+              reinterpret_cast<const char*>(principal_uuid.bytes.data()),
+              principal_uuid.bytes.size())}, {"principal_name", "alice"}, {"principal_state", "active"}}},
       },
   };
   if (include_bulk_import_fixture) {
@@ -930,6 +940,9 @@ void CreateSecurityAlterPolicyFixture(
 
   api::EngineSecurityAlterPolicyRequest disable;
   disable.context = fixture_context;
+  // CREATE POLICY advances durable security generations. Re-materialize from
+  // that actual catalog state before the next lifecycle mutation.
+  RefreshFixtureAuthorization(disable.context, false);
   disable.policy_uuid = ClientFixtureUuid(kSecurityAlterPolicyFixtureUuid);
   disable.expected_policy_generation = created.policy_generation;
   disable.lifecycle_state = "disabled";

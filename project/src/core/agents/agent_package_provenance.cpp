@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_package_provenance.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -44,20 +45,25 @@ bool LooksLikeSha256(const std::string& value) {
   });
 }
 
-bool LooksLikeUuidText(const std::string& value) {
-  if (value.size() != 36) { return false; }
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) {
-      if (value[i] != '-') { return false; }
-      continue;
-    }
-    const char c = value[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-          (c >= 'A' && c <= 'F'))) {
-      return false;
-    }
-  }
+bool IsBinaryUuid(const std::string& value) {
+  if (value.size() != 16) return false;
+  core::platform::Uuid uuid;
+  std::copy(value.begin(),value.end(),uuid.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(uuid);
+}
+
+bool AppendFramedValue(std::string* out, const std::string& value) {
+  constexpr std::size_t limit = 16777216;
+  if (out->size() > limit-4 || value.size() > limit-4-out->size()) return false;
+  const auto size = static_cast<std::uint32_t>(value.size());
+  for (unsigned i=0;i<4;++i) out->push_back(static_cast<char>(size>>(8*i)));
+  out->append(value);
   return true;
+}
+std::string IntegerBytes(u64 value) {
+  std::string bytes(8,0);
+  for (unsigned i=0;i<8;++i) bytes[i]=static_cast<char>(value>>(8*i));
+  return bytes;
 }
 
 bool IsKnownSignatureAlgorithm(const std::string& value) {
@@ -124,37 +130,67 @@ const char* AgentPackageRevocationStatusName(
 
 std::string ComputeAgentPackageProvenanceDigest(
     const AgentPackageProvenanceRecord& record) {
-  std::ostringstream payload;
-  payload << AgentPackageSubjectKindName(record.subject_kind) << '\n'
-          << record.subject_id << '\n'
-          << record.package_uuid << '\n'
-          << record.package_version << '\n'
-          << record.package_version_ordinal << '\n'
-          << record.package_digest << '\n'
-          << record.signature_algorithm << '\n'
-          << record.signature_digest << '\n'
-          << record.signature_verified << '\n'
-          << record.signature_evidence_uuid << '\n'
-          << record.signer_identity << '\n'
-          << record.signer_key_id << '\n'
-          << record.signer_policy_id << '\n'
-          << record.sbom_format << '\n'
-          << record.sbom_digest << '\n'
-          << record.sbom_evidence_uuid << '\n'
-          << record.sandbox_profile_id << '\n'
-          << record.sandbox_profile_digest << '\n'
-          << record.sandbox_evidence_uuid << '\n'
-          << AgentPackageRevocationStatusName(record.revocation_status) << '\n'
-          << record.revocation_generation << '\n'
-          << record.revocation_evidence_uuid << '\n'
-          << record.provenance_evidence_uuid << '\n'
-          << record.production_package << '\n'
-          << record.test_fixture_package << '\n'
-          << record.debug_only_package << '\n'
-          << record.cluster_route_requested << '\n'
-          << record.external_cluster_provider_attested << '\n'
-          << record.external_cluster_provider_evidence_uuid << '\n';
-  return Sha256Digest(payload.str());
+  std::string payload = "SBPKP002";
+  const auto append = [&](const std::string& key, const std::string& value) {
+    return AppendFramedValue(&payload,key) && AppendFramedValue(&payload,value);
+  };
+  if (!append("subject_kind", IntegerBytes(static_cast<u64>(record.subject_kind)))) return {};
+  if (!append("subject_id", record.subject_id)) return {};
+  if (!record.package_uuid.empty() && !IsBinaryUuid(record.package_uuid)) return {};
+  if (!append("package_uuid", record.package_uuid)) return {};
+  if (!append("package_version", record.package_version)) return {};
+  if (!append("package_version_ordinal", IntegerBytes(static_cast<u64>(record.package_version_ordinal)))) return {};
+  if (!append("package_digest", record.package_digest)) return {};
+  if (!append("signature_algorithm", record.signature_algorithm)) return {};
+  if (!append("signature_digest", record.signature_digest)) return {};
+  if (!append("signature_verified", std::string(1,record.signature_verified ? 1 : 0))) return {};
+  if (!record.signature_evidence_uuid.empty() && !IsBinaryUuid(record.signature_evidence_uuid)) return {};
+  if (!append("signature_evidence_uuid", record.signature_evidence_uuid)) return {};
+  if (!append("signer_identity", record.signer_identity)) return {};
+  if (!append("signer_key_id", record.signer_key_id)) return {};
+  if (!append("signer_policy_id", record.signer_policy_id)) return {};
+  if (!append("signer_allowed_by_policy", std::string(1,record.signer_allowed_by_policy ? 1 : 0))) return {};
+  if (!append("signed_with_test_key", std::string(1,record.signed_with_test_key ? 1 : 0))) return {};
+  if (!append("signature_fixture", std::string(1,record.signature_fixture ? 1 : 0))) return {};
+  if (!append("sbom_present", std::string(1,record.sbom_present ? 1 : 0))) return {};
+  if (!append("sbom_format", record.sbom_format)) return {};
+  if (!append("sbom_digest", record.sbom_digest)) return {};
+  if (!record.sbom_evidence_uuid.empty() && !IsBinaryUuid(record.sbom_evidence_uuid)) return {};
+  if (!append("sbom_evidence_uuid", record.sbom_evidence_uuid)) return {};
+  if (!append("sandbox_profile_id", record.sandbox_profile_id)) return {};
+  if (!append("sandbox_profile_digest", record.sandbox_profile_digest)) return {};
+  if (!record.sandbox_evidence_uuid.empty() && !IsBinaryUuid(record.sandbox_evidence_uuid)) return {};
+  if (!append("sandbox_evidence_uuid", record.sandbox_evidence_uuid)) return {};
+  if (!append("revocation_status", IntegerBytes(static_cast<u64>(record.revocation_status)))) return {};
+  if (!append("revocation_checked", std::string(1,record.revocation_checked ? 1 : 0))) return {};
+  if (!append("revocation_generation", IntegerBytes(static_cast<u64>(record.revocation_generation)))) return {};
+  if (!record.revocation_evidence_uuid.empty() && !IsBinaryUuid(record.revocation_evidence_uuid)) return {};
+  if (!append("revocation_evidence_uuid", record.revocation_evidence_uuid)) return {};
+  if (!append("production_package", std::string(1,record.production_package ? 1 : 0))) return {};
+  if (!append("test_fixture_package", std::string(1,record.test_fixture_package ? 1 : 0))) return {};
+  if (!append("debug_only_package", std::string(1,record.debug_only_package ? 1 : 0))) return {};
+  if (!append("cluster_route_requested", std::string(1,record.cluster_route_requested ? 1 : 0))) return {};
+  if (!append("external_cluster_provider_attested", std::string(1,record.external_cluster_provider_attested ? 1 : 0))) return {};
+  if (!record.external_cluster_provider_evidence_uuid.empty() && !IsBinaryUuid(record.external_cluster_provider_evidence_uuid)) return {};
+  if (!append("external_cluster_provider_evidence_uuid", record.external_cluster_provider_evidence_uuid)) return {};
+  if (!record.provenance_evidence_uuid.empty() && !IsBinaryUuid(record.provenance_evidence_uuid)) return {};
+  if (!append("provenance_evidence_uuid", record.provenance_evidence_uuid)) return {};
+  if (!append("transaction_finality_authority", std::string(1,record.transaction_finality_authority ? 1 : 0))) return {};
+  if (!append("visibility_authority", std::string(1,record.visibility_authority ? 1 : 0))) return {};
+  if (!append("authorization_authority", std::string(1,record.authorization_authority ? 1 : 0))) return {};
+  if (!append("security_authority", std::string(1,record.security_authority ? 1 : 0))) return {};
+  if (!append("recovery_authority", std::string(1,record.recovery_authority ? 1 : 0))) return {};
+  if (!append("parser_authority", std::string(1,record.parser_authority ? 1 : 0))) return {};
+  if (!append("reference_authority", std::string(1,record.reference_authority ? 1 : 0))) return {};
+  if (!append("wal_authority", std::string(1,record.wal_authority ? 1 : 0))) return {};
+  if (!append("benchmark_authority", std::string(1,record.benchmark_authority ? 1 : 0))) return {};
+  if (!append("optimizer_plan_authority", std::string(1,record.optimizer_plan_authority ? 1 : 0))) return {};
+  if (!append("index_finality_authority", std::string(1,record.index_finality_authority ? 1 : 0))) return {};
+  if (!append("provider_finality_authority", std::string(1,record.provider_finality_authority ? 1 : 0))) return {};
+  if (!append("cluster_authority", std::string(1,record.cluster_authority ? 1 : 0))) return {};
+  if (!append("memory_authority", std::string(1,record.memory_authority ? 1 : 0))) return {};
+  if (!append("agent_action_authority", std::string(1,record.agent_action_authority ? 1 : 0))) return {};
+  return Sha256Digest(payload);
 }
 
 void FinalizeAgentPackageProvenanceDigest(
@@ -191,10 +227,24 @@ AgentRuntimeStatus ValidateAgentPackageProvenanceRecord(
     return AgentError("SB_AGENT_PACKAGE_PROVENANCE.SUBJECT_REQUIRED");
   }
   if (policy.require_package_uuid &&
-      !LooksLikeUuidText(record.package_uuid)) {
+      !IsBinaryUuid(record.package_uuid)) {
     return AgentError("SB_AGENT_PACKAGE_PROVENANCE.PACKAGE_UUID_REQUIRED",
                       SubjectKey(record.subject_kind, record.subject_id));
   }
+  if (!record.package_uuid.empty() && !IsBinaryUuid(record.package_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "package_uuid");
+  if (!record.signature_evidence_uuid.empty() && !IsBinaryUuid(record.signature_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "signature_evidence_uuid");
+  if (!record.sbom_evidence_uuid.empty() && !IsBinaryUuid(record.sbom_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "sbom_evidence_uuid");
+  if (!record.sandbox_evidence_uuid.empty() && !IsBinaryUuid(record.sandbox_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "sandbox_evidence_uuid");
+  if (!record.revocation_evidence_uuid.empty() && !IsBinaryUuid(record.revocation_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "revocation_evidence_uuid");
+  if (!record.external_cluster_provider_evidence_uuid.empty() && !IsBinaryUuid(record.external_cluster_provider_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "external_cluster_provider_evidence_uuid");
+  if (!record.provenance_evidence_uuid.empty() && !IsBinaryUuid(record.provenance_evidence_uuid))
+    return AgentError("SB_AGENT_PACKAGE_PROVENANCE.IDENTITY_INVALID", "provenance_evidence_uuid");
   if (record.package_version.empty() || record.package_version_ordinal == 0) {
     return AgentError("SB_AGENT_PACKAGE_PROVENANCE.VERSION_REQUIRED",
                       SubjectKey(record.subject_kind, record.subject_id));
@@ -326,9 +376,13 @@ AgentPackageProvenanceEvaluation ValidateAgentPackageProvenanceBundle(
         record.subject_kind == AgentPackageSubjectKind::actuator_provider;
     saw_agent_binary =
         saw_agent_binary || record.subject_kind == AgentPackageSubjectKind::agent_binary;
-    result.evidence_rows.push_back(key + "|" + record.package_uuid + "|" +
-                                   record.package_version + "|" +
-                                   record.provenance_digest);
+    std::string evidence = "SBPKE002";
+    if (!AppendFramedValue(&evidence,key) || !AppendFramedValue(&evidence,record.package_uuid) ||
+        !AppendFramedValue(&evidence,record.package_version) || !AppendFramedValue(&evidence,record.provenance_digest)) {
+      result.status = AgentError("SB_AGENT_PACKAGE_PROVENANCE.EVIDENCE_TOO_LARGE");
+      return result;
+    }
+    result.evidence_rows.push_back(std::move(evidence));
     bundle_payload << key << '|' << record.provenance_digest << '\n';
   }
   if (bundle.require_plugin_record && !saw_plugin) {
