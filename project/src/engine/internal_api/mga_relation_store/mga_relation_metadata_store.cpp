@@ -472,6 +472,13 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
   }
   const auto metadata_identity = metadata_lines.identity;
   const auto savepoint_identity = savepoint_lines.identity;
+  // A readable binary file is not a complete descriptor stream. Validate the
+  // same hashed bytes used by this metadata generation, including dependencies
+  // that no particular table record needs to look up during decoding.
+  if (!LoadAdmittedDescriptorFieldsSnapshot(descriptor_path, descriptor_lines, {})) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.relation_metadata", "descriptor_store_decode_failed");
+  }
   const auto savepoints = ParseSavepointBytes(context, savepoint_lines.binary_bytes);
   if (savepoints.diagnostic.error) return savepoints.diagnostic;
   const auto savepoint_digest = MetadataSavepointCacheDigest(savepoint_lines, savepoints);
@@ -1632,6 +1639,11 @@ MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
   }
   const auto metadata_identity = metadata_lines.identity;
   const auto savepoint_identity = savepoint_lines.identity;
+  if (!LoadAdmittedDescriptorFieldsSnapshot(descriptor_path, descriptor_lines, {})) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_metadata", "descriptor_store_decode_failed");
+    return result;
+  }
   const auto savepoints = ParseSavepointBytes(context, savepoint_lines.binary_bytes);
   if (savepoints.diagnostic.error) {
     result.diagnostic = savepoints.diagnostic;

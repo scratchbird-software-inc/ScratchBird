@@ -7,6 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "mga_relation_store/mga_descriptor_record_codec.hpp"
+#include "server_engine_bridge/statement_context.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
@@ -162,7 +169,7 @@ std::filesystem::path MakeTempDir() {
   return std::filesystem::path(made);
 }
 
-api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path) {
+api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path, api::EngineUuid* filespace) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779200001000).value;
@@ -182,6 +189,7 @@ api::EngineUuid CreateOpenDatabase(const std::filesystem::path& path) {
   Require(opened.ok(), "DBLC-009 first open activation failed");
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-009 clean shutdown marker failed");
+  *filespace = create.filespace_uuid.value;
   return create.database_uuid.value;
 }
 
@@ -887,6 +895,7 @@ void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
 
 void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
                                const api::EngineUuid& database_uuid,
+                               const api::EngineUuid& filespace_uuid,
                                bool canonical_savepoint_effect = false) {
   using State = api::EngineTransactionInventoryState;
   ServerSessionRegistry registry;
@@ -898,6 +907,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   auto context = EngineContext(database_path, database_uuid, attached.session_uuid);
   context.principal_uuid =
       scratchbird::core::platform::Uuid{session.effective_user_uuid};
+  context.default_root_uuid = filespace_uuid;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   const auto name = [](const std::string& text) {
     api::EngineLocalizedName result;
     result.language_tag = "en";
@@ -923,16 +934,33 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   api::EngineCreateTableRequest table;
   table.context = create_context;
   // Exact current built-in datatype receipt admitted by the Core registry.
-  table.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  table.context.datatype_catalog_generation = 1;
-  table.context.datatype_registry_generation = 1;
+  table.context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  table.context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  table.context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   table.target_schema = created_schema.primary_object;
   table.table_names.push_back(name("cleanup_io_temporary"));
   api::EngineColumnDefinition column;
   column.names.push_back(name("id"));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
-  column.descriptor.encoded_descriptor = "type=int64";
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "metadata fixture datatype catalog missing");
+  const auto datatype_row = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::int64);
+  Require(datatype_row.ok() && datatype_row.manifest.descriptor_rows.size() == 1, "metadata fixture int64 row missing");
+  const auto& datatype = datatype_row.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      table.context.datatype_catalog_snapshot_uuid, table.context.datatype_catalog_generation,
+      table.context.datatype_registry_generation, datatype.descriptor_uuid.value, datatype.descriptor_epoch);
+  Require(binding.ok, "metadata fixture int64 codec missing");
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture({
+      {{"type", "int64"}, {"nullable", "false"}},
+      {{"datatype_descriptor_uuid", binding.row.descriptor_uuid}, {"type_uuid", binding.row.type_uuid}}});
   column.nullable = false;
   table.table_columns.push_back(column);
   table.option_envelopes = {"temporary:true", "temporary_scope:private", "on_commit:preserve_rows"};
@@ -1009,6 +1037,37 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
               "temporary mutation admitted missing malformed or foreign session");
     }
   }
+  namespace bridge = scratchbird::server_engine_bridge;
+  std::string engine_session_detail;
+  auto* public_session = EnsureServerPublicAbiSessionForContext(&registry, session, &engine_session_detail);
+  Require(public_session && public_session->engine_session, "metadata fixture authenticated engine session missing");
+  struct ClosePublicSession {
+    ServerSessionRegistry* registry;
+    std::array<std::uint8_t, 16> session_uuid;
+    ~ClosePublicSession() {
+      CloseServerPublicAbiSessionForSession(registry, session_uuid, "metadata_fixture_complete");
+    }
+  } close_public_session{&registry, session.session_uuid};
+  bridge::StatementContextAcquireRequest statement_request;
+  statement_request.engine_context = &table.context;
+  statement_request.exact_transaction_uuid = table.context.transaction_uuid;
+  bridge::StatementContextReceiptView statement_view;
+  bridge::StatementContextReceiptHandle statement_receipt;
+  sb_engine_result_t statement_result = nullptr;
+  const auto acquired_statement = bridge::AcquireStatementContextReceipt(
+      public_session->engine_session, &statement_request, &statement_receipt,
+      &statement_view, &statement_result);
+  if (statement_result) sb_engine_result_release(statement_result);
+  Require(acquired_statement == SB_ENGINE_STATUS_OK, "metadata fixture engine statement acquisition failed");
+  struct ReleaseStatement {
+    bridge::StatementContextReceiptHandle receipt;
+    ~ReleaseStatement() { (void)bridge::ReleaseStatementContextReceipt(receipt); }
+  } release_statement{statement_receipt};
+  statement_result = nullptr;
+  const auto copied_statement = bridge::CopyStatementContextEngineContextV1(
+      statement_receipt, &table.context, &statement_result);
+  if (statement_result) sb_engine_result_release(statement_result);
+  Require(copied_statement == SB_ENGINE_STATUS_OK, "metadata fixture engine statement copy failed");
   api::EngineInsertRowsRequest insert;
   insert.context = table.context;
   insert.target_table = created_table.table_object;
@@ -1157,17 +1216,30 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     output.close();Require(!output.fail(),"metadata cache fixture write failed");
     std::filesystem::last_write_time(metadata_path,metadata_time);
   };
-  const auto hex_name=[](std::string_view value) {
-    std::string result;constexpr char digits[]="0123456789abcdef";
-    for(unsigned char ch:value) {result.push_back(digits[ch>>4]);result.push_back(digits[ch&15]);}
-    return result;
-  };
-  const auto original_name=hex_name("cleanup_io_temporary");
-  const auto changed_name=hex_name("cleanup_io_temporarx");
-  std::string changed_metadata(metadata_bytes.begin(),metadata_bytes.end());
-  const auto name_offset=changed_metadata.find(original_name);
+  std::vector<std::string> metadata_frames;
+  Require(api::DecodeMgaMetadataStream(metadata_bytes, &metadata_frames),
+          "actual binary metadata stream invalid");
+  const std::string original_name = "cleanup_io_temporary";
+  const std::string changed_name = "cleanup_io_temporarx";
+  std::string changed_metadata;
+  std::size_t name_offset = std::string::npos;
+  for (const auto& frame : metadata_frames) {
+    std::vector<std::string> fields;
+    Require(api::DecodeMgaMetadataFields(frame, &fields), "actual binary metadata frame invalid");
+    const auto field = std::find(fields.begin(), fields.end(), original_name);
+    if (field != fields.end()) {
+      Require(std::find(fields.begin(), fields.end(), api::MetadataUuidBytes(created_table.table_object.uuid)) != fields.end(),
+              "metadata rewrite selected a foreign relation");
+      name_offset = changed_metadata.size();
+      *field = changed_name;
+      const auto replacement = api::EncodeMgaMetadataFields(fields);
+      Require(replacement.size() == frame.size(), "metadata rewrite changed binary frame length");
+      changed_metadata += replacement;
+    } else {
+      changed_metadata += frame;
+    }
+  }
   Require(name_offset!=std::string::npos,"actual engine-created metadata name not found");
-  changed_metadata.replace(name_offset,original_name.size(),changed_name);
   Require(changed_metadata.size()==metadata_bytes.size(),"same-size metadata fixture changed length");
   write_same_metadata_identity(changed_metadata);
   const auto changed_snapshot=api::LoadMgaMetadataSnapshot(context);
@@ -1209,8 +1281,10 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   altered_descriptor.columns.front().canonical_name_key = "ix";
   const auto altered_fields = api::SerializeMgaRelationStorageDescriptor(altered_descriptor);
   std::string altered_bytes(descriptor_bytes.begin(), descriptor_bytes.end());
-  const auto original_pairs = api::EncodeCrudPairs(original_descriptor_fields);
-  const auto altered_pairs = api::EncodeCrudPairs(altered_fields);
+  std::string original_pairs, altered_pairs;
+  Require(api::AppendMgaDescriptorRecord(relation_uuid, original_descriptor_fields, &original_pairs) &&
+              api::AppendMgaDescriptorRecord(relation_uuid, altered_fields, &altered_pairs),
+          "binary descriptor replacement encoding failed");
   const auto pairs_offset = altered_bytes.find(original_pairs);
   Require(pairs_offset != std::string::npos && original_pairs.size() == altered_pairs.size(),
           "same-size descriptor replacement fixture invalid");
@@ -1311,6 +1385,11 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     const auto complete_time = std::filesystem::last_write_time(path);
     std::filesystem::resize_file(path, complete_bytes.size() - 1);
     Require(!api::LoadMgaMetadataSnapshot(context).ok(), "partial dependency reused metadata cache");
+    api::RelationReadSnapshot refused_metadata;
+    Require(api::LoadMgaMetadata(&refused_metadata, context).error &&
+                refused_metadata.tables.empty() && refused_metadata.indexes.empty() &&
+                refused_metadata.sealed_relation_descriptor_snapshots.empty(),
+            "partial dependency published direct metadata authority");
     rewrite_same_identity(path, complete_bytes, complete_time);
     Require(api::LoadMgaMetadataSnapshot(context).ok(),
             "restored dependency failed cache admission");
@@ -1349,7 +1428,10 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   const auto function_package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
   const auto call_savepoint_active = [&](const api::MgaSavepointNamesResult& names) {
     scratchbird::engine::functions::FunctionCallRequest request;
-    request.context.function_id = "sb.session.savepoint_active";
+    const auto* function = function_package.registry.Lookup("sb.session.savepoint_active");
+    Require(function != nullptr && uuid::IsEngineIdentityUuid(function->function_uuid),
+            "actual savepoint function binary registry binding missing");
+    request.context.function_uuid = function->function_uuid;
     request.context.security_allowed = request.context.policy_allowed = true;
     request.context.engine_request_context = &probe_context;
     request.context.sblr_context.transaction_context_present = true;
@@ -1855,11 +1937,17 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     Require(retained.ok && retained.has_work, "failed cleanup removed actual temporary metadata");
   }
   const auto metadata_size = std::filesystem::file_size(metadata_path);
+  char metadata_last_byte = 0;
+  {
+    std::ifstream original(metadata_path, std::ios::binary);
+    original.seekg(-1, std::ios::end);
+    Require(static_cast<bool>(original.get(metadata_last_byte)), "metadata fixture tail read failed");
+  }
   std::filesystem::resize_file(metadata_path, metadata_size - 1);
   const auto truncated = api::HasMgaTemporaryCleanupMetadataWork(context, true, true, true);
   {
     std::ofstream restore(metadata_path, std::ios::binary | std::ios::app);
-    restore.put(original_last_byte);
+    restore.put(metadata_last_byte);
     restore.flush();
     Require(restore.good(), "metadata fixture delimiter restoration failed");
   }
@@ -1891,7 +1979,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
 int main(int argc, char** argv) {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc009_detach_cleanup.sbdb";
-  const auto database_uuid = CreateOpenDatabase(database_path);
+  api::EngineUuid filespace_uuid;
+  const auto database_uuid = CreateOpenDatabase(database_path, &filespace_uuid);
   if (argc == 2 && std::string_view(argv[1]) == "--temporary-cleanup-failure") {
     std::cerr << "temporary_cleanup_fixture=" << temp_dir.string() << '\n';
     VerifyTemporaryCleanupFailure(database_path, database_uuid);
@@ -1900,10 +1989,10 @@ int main(int argc, char** argv) {
     VerifyTemporaryCleanupIdentity(database_path, database_uuid);
   } else if (argc == 2 && std::string_view(argv[1]) == "--metadata-read-failure") {
     std::cerr << "temporary_cleanup_fixture=" << temp_dir.string() << '\n';
-    VerifyMetadataReadFailure(database_path, database_uuid);
+    VerifyMetadataReadFailure(database_path, database_uuid, filespace_uuid);
   } else if (argc == 2 && std::string_view(argv[1]) == "--canonical-savepoint-effects") {
     std::cerr << "temporary_cleanup_fixture=" << temp_dir.string() << '\n';
-    VerifyMetadataReadFailure(database_path, database_uuid, true);
+    VerifyMetadataReadFailure(database_path, database_uuid, filespace_uuid, true);
   } else {
     Require(argc == 1, "unknown detach fixture arguments");
     VerifyDetachCleanup(database_path, database_uuid);

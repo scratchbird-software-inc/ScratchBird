@@ -30,10 +30,11 @@ using DescriptorFieldsByRelation =
     std::map<EngineUuid,
              std::vector<std::pair<std::string, std::string>>>;
 
-// Transitional MGA text sidecars must be completely readable before their
-// records confer authority. Missing optional files are empty; I/O failures or
-// partial records return false and clear output. This is not the required
-// binary metadata migration and does not validate each record's semantics.
+// Metadata records use binary length-framed envelopes; legacy text readers
+// remain separate and do not confer binary metadata authority. Missing optional
+// files are empty; I/O failures or partial records refuse publication. Metadata
+// cache admission validates all metadata, descriptor, and savepoint records
+// from the same bytes used for their content hashes before reusing a snapshot.
 bool ReadCompleteMgaMetadataRecords(const std::string& path,
                                    std::vector<std::string>* records);
 bool ReadCompleteMgaTextRecords(const std::string& path,
