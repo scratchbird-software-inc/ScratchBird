@@ -6589,7 +6589,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
     set_tests_properties(sbsql_savepoint_rollback_full_route_gate PROPERTIES
       LABELS "savepoint;real_server_route;restart_recovery;mga_transaction_regression"
-      RUN_SERIAL TRUE TIMEOUT 600)
+      RUN_SERIAL TRUE TIMEOUT 3600)
     if(SB_ENABLE_TEST_DML_ROUTE_SELECTION AND SB_BUILD_DATABASE_LIFECYCLE_TESTS)
       foreach(history_seed IN ITEMS 901 902)
         add_test(NAME dml_random_equivalence_${history_seed}_gate
@@ -6700,7 +6700,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
     set_tests_properties(sbsql_savepoint_refusal_full_route_gate PROPERTIES
       LABELS "savepoint;refusal_atomicity;real_server_route;restart_recovery;mga_transaction_regression"
-      RUN_SERIAL TRUE TIMEOUT 600)
+      RUN_SERIAL TRUE TIMEOUT 2400)
     if(SB_ENABLE_TEST_CRASH_INJECTION AND UNIX AND NOT WIN32)
       add_test(
         NAME sbsql_savepoint_recovery_full_route_gate

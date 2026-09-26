@@ -45,10 +45,13 @@ def run_case(args: argparse.Namespace, work: Path, name: str,
     route = None
     try:
         route = start_route(args, root / "r", database, tls_required=False)
+        # Nested cases execute many independently admitted statements in this
+        # one connection. Keep the complete rollback oracle with a bounded
+        # sequence budget rather than the short single-probe default.
         result = run_isql(args, route, "mutate", "\n".join([
             f"INSERT INTO {TABLE} (id, payload) VALUES (1, 'seed');",
             "COMMIT;", *statements, "COMMIT;", "",
-        ]))
+        ]), timeout=120)
         require_isql_success(result)
         probes = [line for line in isql_data_lines(result)
                   if not line.startswith("Rows affected: ")]

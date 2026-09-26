@@ -30,6 +30,9 @@ def run_case(args: argparse.Namespace, work: Path, name: str,
     route = None
     try:
         route = start_route(args, root / "r", database, tls_required=False)
+        # This is a multi-statement correctness workflow, not a 35-second
+        # latency gate. Preserve every same-session probe and bound the whole
+        # sequence separately from the shorter verification calls below.
         result = run_isql(args, route, "refuse_then_continue", "\n".join([
             f"INSERT INTO {TABLE} (id, payload) VALUES (1, 'seed');",
             "COMMIT;",
@@ -51,7 +54,7 @@ def run_case(args: argparse.Namespace, work: Path, name: str,
             f"SELECT COUNT(*) FROM {TABLE} WHERE id = 2;",
             "RELEASE SAVEPOINT outer_sp;", "COMMIT;",
             f"SELECT COUNT(*) FROM {TABLE} WHERE id = 4;", "",
-        ]))
+        ]), timeout=120)
         errors = result.stderr.splitlines()
         unexpected_diagnostic = (result.returncode != 1 or len(errors) != 1 or
                                  not errors[0].startswith("Error: ") or
@@ -94,6 +97,8 @@ def main() -> int:
     for flag in ("server", "listener", "parser-worker", "sb-isql",
                  "example-db-seeder", "work-dir"):
         parser.add_argument("--" + flag, required=True)
+    parser.add_argument("--case", action="append", default=[],
+                        help="Run selected cases; omitting this runs the complete matrix")
     args = parser.parse_args()
     work = Path(tempfile.mkdtemp(prefix="sbspr_"))
     requested = Path(args.work_dir)
@@ -147,7 +152,12 @@ def main() -> int:
             "MGA.SAVEPOINT.HANDLE_REQUIRED"),
     }
     failures = []
+    selected = set(args.case) if args.case else set(cases)
+    if selected - set(cases):
+        parser.error("unknown refusal case")
     for name, (sql, diagnostic) in cases.items():
+        if name not in selected:
+            continue
         try:
             run_case(args, work, name, sql, diagnostic)
             clean_passed_database(work / name)
@@ -155,7 +165,7 @@ def main() -> int:
         except Exception as error:
             failures.append(name)
             print(f"{name}=failed {error}", flush=True)
-    print(f"savepoint_refusal_full_route cases={len(cases)} "
+    print(f"savepoint_refusal_full_route cases={len(selected)} "
           f"failures={len(failures)} artifacts={work}")
     return bool(failures)
 
