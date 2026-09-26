@@ -12633,18 +12633,24 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
                               operation == "equi_join" || operation == "left_join" ||
                               operation == "left_outer_join" || operation == "semi_join" ||
                               operation == "join_group_all_equality";
-  if (!join_operation && !request.target_object.uuid.is_nil()) {
-    node.required_object_uuids.push_back(request.target_object.uuid);
-  }
+  // A scalar target and its relation carrier name the same dependency.
+  // Keep distinct objects distinct so ambiguous bindings still fail closed;
+  // join operand multiplicity is handled by its existing route below.
+  const auto append_object = [&](const EngineUuid& identity) {
+    if (identity.is_nil()) return;
+    if (join_operation || std::find(node.required_object_uuids.begin(),
+            node.required_object_uuids.end(), identity) == node.required_object_uuids.end()) {
+      node.required_object_uuids.push_back(identity);
+    }
+  };
+  if (!join_operation) append_object(request.target_object.uuid);
   for (const auto& object : request.related_objects) {
     if (join_operation) break;
-    if (!object.uuid.is_nil()) { node.required_object_uuids.push_back(object.uuid); }
+    append_object(object.uuid);
   }
   for (const auto& relation : relations) {
     if (!relation.descriptor_digest.empty()) { node.required_descriptors.push_back(relation.descriptor_digest); }
-    if (!relation.source_object.uuid.is_nil()) {
-      node.required_object_uuids.push_back(relation.source_object.uuid);
-    }
+    append_object(relation.source_object.uuid);
   }
   if (IsExecutableUpperAccessKind(access_kind)) {
     std::size_t relation_index = 0;
@@ -12695,7 +12701,7 @@ bool AttachLegacyOptimizerSelectionEvidence(
     ++emitted_stats;
   }
   if (!optimized.ok) {
-    *error_detail = optimized.diagnostics.empty() ? "optimizer_no_selectable_plan" : optimized.diagnostics.front();
+    *error_detail = optimized.diagnostics.empty() ? "optimizer_no_selectable_plan" : optimized.diagnostics.back();
     return false;
   }
   std::size_t emitted_candidates = 0;
@@ -14327,7 +14333,9 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       BuildLegacyPreAccessOptimizerStatistics(request, planned_relations);
   const auto logical = BuildExecutableLogicalPlan(request, plan_name, planned_relations, &statistics, &result.evidence);
   plan::PhysicalAccessKind selected_access = plan::PhysicalAccessKind::kTableScan;
-  (void)AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access);
+  if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access)) {
+    return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+  }
   const std::string selected_plan = plan::PhysicalAccessKindName(selected_access);
   result.plan_kind = selected_plan;
   AddApiBehaviorEvidence(&result, "query_plan", selected_plan);

@@ -27,6 +27,12 @@
 
 namespace {
 
+std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
+  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
+
 namespace agents = scratchbird::core::agents;
 namespace api = scratchbird::engine::internal_api;
 namespace index = scratchbird::core::index;
@@ -433,8 +439,8 @@ void TestSblrAndAgentClusterBoundary() {
           "SBLR cluster-required operation admission did not preserve the provider-boundary route");
 
   agents::DatabaseEngineAgentInput input;
-  input.database_uuid = "019e0f70-0000-7000-8000-000000000013";
-  input.engine_instance_uuid = "engine-instance:019e0f70";
+  input.database_uuid = BinaryFixtureIdentity(13070, 1);
+  input.engine_instance_uuid = BinaryFixtureIdentity(13070, 2);
   input.policy_generation = 1;
   input.catalog_generation = 1;
   input.security_generation = 1;

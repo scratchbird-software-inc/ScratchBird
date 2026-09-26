@@ -338,6 +338,7 @@ CatalogFixture MakeCatalogFixture() {
                              "dpc010-create-table");
   table_context.catalog_generation_id = created_schema.metadata_cache_epoch;
   table_context.name_resolution_epoch = created_schema.metadata_cache_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(table_context);
   const auto created_table =
       api::EngineCatalogCreateObject(CreateObjectRequest(table_context,
                                                          fixture.table_uuid,
@@ -358,6 +359,7 @@ void TestPlanCacheStabilityAndInvalidation() {
                             "dpc010-cache-read");
   read_context.catalog_generation_id = fixture.table_catalog_epoch;
   read_context.name_resolution_epoch = fixture.table_catalog_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(read_context);
   const auto resolved =
       api::EngineResolveName(ResolveRequest(read_context,
                                             fixture.schema_uuid,
@@ -423,6 +425,7 @@ void TestPlanCacheStabilityAndInvalidation() {
                               "dpc010-rename-table");
   rename_context.catalog_generation_id = fixture.table_catalog_epoch;
   rename_context.name_resolution_epoch = fixture.table_catalog_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(rename_context);
   api::EngineCatalogRenameObjectRequest rename;
   rename.context = rename_context;
   rename.target_object.uuid = fixture.table_uuid;
@@ -438,6 +441,7 @@ void TestPlanCacheStabilityAndInvalidation() {
                                  "dpc010-cache-after-ddl");
   after_ddl_context.catalog_generation_id = renamed.metadata_cache_epoch;
   after_ddl_context.name_resolution_epoch = renamed.metadata_cache_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(after_ddl_context);
   const auto after_ddl = api::EnginePlanOperation(
       CachedCountRequest(*fixture.session, after_ddl_context,
                          fixture.table_uuid,
@@ -678,6 +682,28 @@ void TestStatisticsFallbackAndSelectionEvidence(CrudFixture& fixture) {
                       "stale_or_missing_relation_statistics_scan"),
           "DPC-010 legacy missing-statistics refusal evidence missing");
   RequireOptimizerSelectionEvidence(legacy_lookup);
+
+  // Repeated carriers of one native dependency remain unambiguous. A second
+  // distinct object must not silently become a successful default scan.
+  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> repeated(
+      *fixture.session, fixture.context);
+  repeated.target_object.uuid = fixture.table_uuid;
+  repeated.target_object.object_kind = "table";
+  repeated.related_objects.push_back(repeated.target_object);
+  repeated.predicate = Predicate("column_equals", {"id-7"});
+  const auto repeated_plan = api::EnginePlanOperation(repeated);
+  RequireOk(repeated_plan, "DPC-010 repeated native dependency was ambiguous");
+  RequireOptimizerSelectionEvidence(repeated_plan);
+  auto ambiguous = repeated;
+  ambiguous.related_objects.front().uuid = NewIdentity(platform::UuidKind::object);
+  const auto ambiguous_plan = api::EnginePlanOperation(ambiguous);
+  Require(!ambiguous_plan.ok &&
+              std::any_of(ambiguous_plan.diagnostics.begin(), ambiguous_plan.diagnostics.end(),
+                  [](const auto& diagnostic) {
+                    return diagnostic.detail.find("invalid_or_ambiguous_object_binding") != std::string::npos;
+                  }),
+          "DPC-010 ambiguous native dependencies published a successful fallback plan");
+
 
   const auto fresh_candidates = opt::GenerateFullAccessPathCandidates(
       DpcCanonicalAccessRequest(fixture));

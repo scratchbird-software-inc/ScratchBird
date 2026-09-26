@@ -8,6 +8,7 @@
 #include "local_transaction_store.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "uuid.hpp"
+#include <openssl/evp.h>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -355,6 +356,25 @@ void DurableStoreCases() {
     for (const auto& entry : std::filesystem::directory_iterator(directory))
       if (entry.path().extension() == ".ddjr") chain_path = entry.path();
     Require(!chain_path.empty(), "durable binary chain path");
+    constexpr std::string_view domain = "SB_MGA_DELETE_FILE_KEY_V2";
+    std::vector<unsigned char> material(domain.begin(), domain.end());
+    const auto& identity = operation.head.descriptor.descriptor_uuid;
+    material.insert(material.end(), identity.begin(), identity.end());
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned length = 0;
+    Require(EVP_Digest(material.data(), material.size(), digest.data(), &length,
+                       EVP_sha256(), nullptr) == 1 && length == 32,
+            "independent native DELETE path digest");
+    constexpr char digits[] = "0123456789abcdef";
+    std::string key;
+    for (unsigned n = 0; n < length; ++n) {
+      key.push_back(digits[digest[n] >> 4]);
+      key.push_back(digits[digest[n] & 15]);
+    }
+    Require(chain_path.filename() == key + "." +
+                std::to_string(operation.head.descriptor.descriptor_generation) + ".ddjr",
+            "DELETE path must use a digest of native descriptor bytes");
+
     std::ofstream corrupt(chain_path, std::ios::binary | std::ios::app); corrupt << 'x'; corrupt.close();
     api::EngineApiDiagnostic diagnostic;
     Require(!api::MgaDmlDeleteDurableStoreV1::Open(f.context, operation.head.descriptor.descriptor_uuid,

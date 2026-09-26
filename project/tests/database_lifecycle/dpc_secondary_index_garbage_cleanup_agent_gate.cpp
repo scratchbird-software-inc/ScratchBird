@@ -482,7 +482,7 @@ void TestValidationFailureAndNonAuthoritativeRefusal() {
   {
     const auto scoped_index_path =
         api::MgaScopedRelationPath(
-            BaseContext(fixture, "dpc033-corrupt-index"), fixture.table_uuid, ".indexes", false);
+            BaseContext(fixture, "dpc033-corrupt-index"), fixture.table_uuid, ".indexes.sbnx", false);
     std::ofstream out(scoped_index_path,
                       std::ios::binary | std::ios::trunc);
     Require(static_cast<bool>(out), "DPC-033 could not corrupt index sidecar");

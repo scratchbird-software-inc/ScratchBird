@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -16,6 +17,12 @@
 #include <vector>
 
 namespace {
+
+std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
+  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
 
 namespace agents = scratchbird::core::agents;
 
@@ -50,8 +57,8 @@ const agents::AgentInstanceRecord* FindInstance(
 
 agents::AgentRuntimeActivationEvidence Evidence(unsigned generation = 17) {
   agents::AgentRuntimeActivationEvidence evidence;
-  evidence.database_uuid = "019e0f2a-003c-7000-8000-000000000003";
-  evidence.engine_instance_uuid = "engine-instance:019e0f2a-003c";
+  evidence.database_uuid = BinaryFixtureIdentity(60003, 1);
+  evidence.engine_instance_uuid = BinaryFixtureIdentity(60003, 2);
   evidence.lifecycle_mode = agents::AgentLifecycleMode::database_open;
   evidence.policy_generation = generation;
   evidence.catalog_generation = generation + 1;

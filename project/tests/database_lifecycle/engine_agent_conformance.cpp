@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -23,6 +24,12 @@
 #include <string_view>
 
 namespace {
+
+std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
+  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
+}
+
 
 namespace agents = scratchbird::core::agents;
 namespace db = scratchbird::storage::database;
@@ -86,8 +93,8 @@ std::filesystem::path TestDatabasePath() {
 
 agents::DatabaseEngineAgentInput ValidAgentInput() {
   agents::DatabaseEngineAgentInput input;
-  input.database_uuid = "019e0f2a-0000-7000-8000-000000000013";
-  input.engine_instance_uuid = "engine-instance:019e0f2a-0000-7000-8000-000000000013";
+  input.database_uuid = BinaryFixtureIdentity(13013, 1);
+  input.engine_instance_uuid = BinaryFixtureIdentity(13013, 2);
   input.database_lifecycle_state = "opened";
   input.lifecycle_mode = agents::AgentLifecycleMode::database_open;
   input.policy_generation = 7;
@@ -197,7 +204,7 @@ void TestShutdownStopAndAuthorityDenial() {
           "authority boundary diagnostic mismatch");
 }
 
-std::string CreateOpenCleanDatabase(const std::filesystem::path& path) {
+scratchbird::core::platform::Uuid CreateOpenCleanDatabase(const std::filesystem::path& path) {
   const auto now = CurrentUnixMillis();
   auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
   auto filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
@@ -241,11 +248,11 @@ std::string CreateOpenCleanDatabase(const std::filesystem::path& path) {
   Require(inspected.state.engine_agent_health.agent_state ==
               agents::DatabaseEngineAgentLifecycleState::not_started,
           "clean shutdown did not stop lifecycle agent runtime");
-  return uuid::UuidToString(create.database_uuid.value);
+  return create.database_uuid.value;
 }
 
 void WriteAuthStore(const std::filesystem::path& database_path,
-                    const std::string& database_uuid) {
+                    const scratchbird::core::platform::Uuid& database_uuid) {
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
           database_path, "DBLC-013H");

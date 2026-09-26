@@ -10,6 +10,7 @@
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
+#include "hash_digest.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <filesystem>
@@ -23,6 +24,21 @@ namespace scratchbird::engine::internal_api {
 namespace {
 namespace w = scratchbird::wire;
 namespace detail = mga_update_durable_detail;
+
+// Directory keys are domain-separated digests; authenticated frame fields
+// retain the native descriptor identity and remain the ownership authority.
+std::string DeleteDescriptorFileKey(const w::TypedUpdateUuid& descriptor_uuid) {
+  const auto native = detail::DmlUpdateDurableTypedUuidValue(descriptor_uuid);
+  std::array<std::uint8_t, 16> bytes{};
+  if (!detail::DmlUpdateDurableUuidBytes(native, &bytes)) return {};
+  constexpr std::string_view domain = "SB_MGA_DELETE_FILE_KEY_V2";
+  std::array<std::uint8_t, domain.size() + 16> material{};
+  std::copy(domain.begin(), domain.end(), material.begin());
+  std::copy(bytes.begin(), bytes.end(), material.begin() + domain.size());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material.data(), material.size());
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
+}
+
 namespace mga = scratchbird::transaction::mga;
 using Chain = std::vector<std::vector<std::uint8_t>>;
 using State = w::TypedUpdateJournalState;
@@ -202,15 +218,15 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   auto impl = std::make_unique<Impl>();
   impl->context = context; impl->descriptor_uuid = descriptor_uuid;
   impl->descriptor_generation = generation;
+  const auto file_key = DeleteDescriptorFileKey(descriptor_uuid);
+  if (file_key.empty()) return refuse("descriptor_file_key_invalid");
   const auto directory = context.database_path + ".sb.mga_delete_operations.v1";
   if (!detail::DmlUpdateDurableEnsureDirectory(directory)) return refuse("directory_fence_failed");
   // A durable new directory also requires the parent directory entry fence.
   const auto parent = std::filesystem::path(directory).parent_path();
   if (!detail::DmlUpdateDurableEnsureDirectory(parent.empty() ? "." : parent.string()))
     return refuse("parent_directory_fence_failed");
-  impl->path = directory + "/" + scratchbird::core::uuid::UuidToString(
-      detail::DmlUpdateDurableTypedUuidValue(descriptor_uuid)) +
-      "." + std::to_string(generation) + ".ddjr";
+  impl->path = directory + "/" + file_key + "." + std::to_string(generation) + ".ddjr";
   impl->temporary = impl->path + ".writing";
   impl->pending = impl->path + ".publication";
   impl->pending_temporary = impl->pending + ".writing";
