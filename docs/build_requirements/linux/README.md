@@ -19,6 +19,9 @@ Install or provide:
 - libgeos-dev
 - libproj-dev
 - libgtest-dev
+- libboost-dev
+- libgmp-dev
+- libmpfr-dev
 - unixodbc-dev
 - LLVM 23+
 - libllvm23 (runtime; provides the versioned `libLLVM.so.23.*` SONAME)
@@ -31,6 +34,13 @@ Install or provide:
 - SB_PUBLIC_RELEASE_SANITIZER_PROFILE=asan-ubsan
 
 Native proof contract:
+
+GMP and MPFR development headers and libraries are required for the numeric
+reference backend. A runtime-only `libmpfr.so` installation is insufficient.
+Use the development packages above, or explicitly provide
+`SBL_NUMERIC_GMP_INCLUDE_DIR`, `SBL_NUMERIC_GMP_LIBRARY`,
+`SBL_NUMERIC_MPFR_INCLUDE_DIR`, and `SBL_NUMERIC_MPFR_LIBRARY` for a non-system
+installation. Do not depend on another developer's build directory for headers.
 
 ```sh
 cmake -S project -B build-linux-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DSB_BUILD_TESTS=ON -DSB_BUILD_COMPATIBILITY_PARSERS=OFF -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic

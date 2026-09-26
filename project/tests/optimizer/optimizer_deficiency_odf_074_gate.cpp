@@ -10,6 +10,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "nosql/vector_api.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -19,6 +20,13 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+
+// Native component-fixture identities, not names admitted as row authority.
+// Preserve the former alpha/beta/delta/gamma ordering for exact-score ties.
+constexpr auto kAlpha = scratchbird::tests::FixtureUuid(74, 101);
+constexpr auto kBeta = scratchbird::tests::FixtureUuid(74, 102);
+constexpr auto kDelta = scratchbird::tests::FixtureUuid(74, 103);
+constexpr auto kGamma = scratchbird::tests::FixtureUuid(74, 104);
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -84,19 +92,19 @@ api::EngineVectorPhysicalProof VectorProof() {
 
 std::vector<api::EngineVectorCorpusRow> Corpus() {
   return {
-      {"row-alpha",
+      {kAlpha,
        {1.0, 0.0},
        {{"alpha", 1.0}},
        {{"tenant", "blue"}, {"kind", "primary"}}},
-      {"row-beta",
+      {kBeta,
        {0.9, 0.1},
        {{"beta", 1.0}},
        {{"tenant", "red"}, {"kind", "secondary"}}},
-      {"row-gamma",
+      {kGamma,
        {0.0, 1.0},
        {{"alpha", 0.2}, {"boost", 1.0}},
        {{"tenant", "blue"}, {"kind", "secondary"}}},
-      {"row-delta",
+      {kDelta,
        {0.4, 0.6},
        {{"boost", 3.0}},
        {{"tenant", "green"}, {"kind", "primary"}}},
@@ -146,6 +154,24 @@ std::string RowField(const api::EngineApiResult& result,
   return {};
 }
 
+api::EngineUuid RowIdentity(const api::EngineApiResult& result,
+                           std::size_t row_index) {
+  Require(row_index < result.result_shape.rows.size(),
+          "ODF-074 row identity is missing");
+  for (const auto& [name, value] : result.result_shape.rows[row_index].fields) {
+    if (name != "row_uuid") continue;
+    Require(value.descriptor.canonical_type_name == "uuid" &&
+                value.state == api::EngineValueState::value && !value.is_null &&
+                value.encoded_value.empty() && value.binary_value.size() == 16,
+            "ODF-074 row identity must be a non-null binary16 UUID without text");
+    api::EngineUuid identity;
+    std::copy(value.binary_value.begin(), value.binary_value.end(),
+              identity.bytes.begin());
+    return identity;
+  }
+  Fail("ODF-074 row_uuid field is missing");
+}
+
 void RequireEvidenceHygiene(const api::EngineApiResult& result) {
   for (const auto& item : result.evidence) {
     for (const auto forbidden :
@@ -171,9 +197,9 @@ void ExactVectorRankingAndMGAEvidence() {
   Require(result.ok, "ODF-074 exact vector search failed");
   Require(result.result_shape.rows.size() == 3,
           "ODF-074 exact vector search returned the wrong row count");
-  Require(RowField(result, 0, "row_uuid") == "row-alpha",
+  Require(RowIdentity(result, 0) == kAlpha,
           "ODF-074 exact vector ranking returned the wrong winner");
-  Require(RowField(result, 1, "row_uuid") == "row-beta",
+  Require(RowIdentity(result, 1) == kBeta,
           "ODF-074 exact vector ranking did not sort by exact distance");
   Require(EvidenceContains(result, "vector_physical_access",
                            "selected_tier=exact"),
@@ -213,7 +239,7 @@ void TierSelectionEvidence() {
     Require(result.ok, "ODF-074 vector tier selection failed");
     Require(EvidenceContains(result, "vector_physical_access", item.evidence),
             "ODF-074 selected tier evidence missing");
-    Require(RowField(result, 0, "row_uuid") == "row-alpha",
+    Require(RowIdentity(result, 0) == kAlpha,
             "ODF-074 selected tier changed deterministic exact rerank winner");
     RequireEvidenceHygiene(result);
   }
@@ -250,9 +276,9 @@ void FilterStrategies() {
     Require(result.ok, "ODF-074 filtered vector search failed");
     Require(result.result_shape.rows.size() == 2,
             "ODF-074 filtered vector search returned wrong row count");
-    Require(RowField(result, 0, "row_uuid") == "row-alpha",
+    Require(RowIdentity(result, 0) == kAlpha,
             "ODF-074 filtered vector search returned wrong winner");
-    Require(RowField(result, 1, "row_uuid") == "row-gamma",
+    Require(RowIdentity(result, 1) == kGamma,
             "ODF-074 filtered vector search returned an unfiltered row");
     Require(EvidenceContains(result, item.evidence_kind, item.evidence_id),
             "ODF-074 filtered strategy evidence missing");
@@ -266,7 +292,7 @@ void HybridDenseSparseScoring() {
   request.sparse_terms.push_back({"boost", 2.0});
   const auto result = api::EngineVectorSearch(request);
   Require(result.ok, "ODF-074 hybrid vector search failed");
-  Require(RowField(result, 0, "row_uuid") == "row-delta",
+  Require(RowIdentity(result, 0) == kDelta,
           "ODF-074 hybrid dense+sparse score did not affect ranking");
   Require(EvidenceContains(result, "vector_hybrid_dense_sparse",
                            "dense_plus_sparse_score"),

@@ -13,6 +13,9 @@ project(ScratchBird
   LANGUAGES C CXX
 )
 
+# Initialize BUILD_TESTING before any conditional test directories. Deferring
+# CTest to a driver subdirectory omits the alignment suite on a fresh configure.
+include(CTest)
 enable_testing()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PublicBranding.cmake")
 
@@ -21,6 +24,11 @@ option(SB_BUILD_COMPATIBILITY_PARSERS
   OFF)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME cmake_testing_bootstrap
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_testing_bootstrap.py")
+set_tests_properties(cmake_testing_bootstrap PROPERTIES
+  TIMEOUT 180 LABELS "build_hygiene;cmake_config;fresh_configure")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
   add_subdirectory(tests/parser_family_isolation)
 endif()

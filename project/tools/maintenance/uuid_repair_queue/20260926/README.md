@@ -54,11 +54,14 @@ as runtime verification. Preserve all existing recovery/security assertions.
 | 2018 | Binary table metadata frame, dependent on 2015 |
 | 2019 | Actual serializable isolation fixture authority |
 
-The old continuation stopped before 2002. Its script required `is_aggregate_v`
-guards in `uuid_binary_key_test.cpp`, but those guards were absent from the
-checkpoint. Inspect `prepared-uuid-construction-guard.patch` and reconcile the
-actual guard coverage before restarting this work; do not simply remove an
-assertion to advance the queue. The old waiting processes have been stopped.
+The old continuation stopped before 2002. Its script required the literal token
+`is_aggregate_v` in `uuid_binary_key_test.cpp`, but that token was absent from the
+checkpoint. Subsequent source inspection confirmed the non-aggregate constructor
+and the `AcceptsShortTextUuid`/text-construction static assertions were already
+present: this was a brittle script spelling check, not missing protection.
+An explicit non-aggregate static assertion now complements those existing checks.
+Do not reapply the already-present constructor patch or remove its safeguards.
+The old waiting processes have been stopped.
 
 The prepared detach fixture is not queued and still needs the actual default
 filespace binding. The prepared COMMENT ON fixture does not implement the missing

@@ -39,6 +39,7 @@ using Clock = std::chrono::steady_clock;
 template<class T>
 concept AcceptsShortTextUuid = requires { T{"rel.customer"}; };
 struct NativeUuidMember { Uuid identity; };
+static_assert(!std::is_aggregate_v<Uuid>);
 static_assert(!AcceptsShortTextUuid<Uuid>);
 static_assert(!AcceptsShortTextUuid<NativeUuidMember>);
 static_assert(!std::is_constructible_v<Uuid, const char*>);
