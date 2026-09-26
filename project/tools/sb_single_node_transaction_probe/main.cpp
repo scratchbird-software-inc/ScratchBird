@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <system_error>
 
@@ -122,10 +123,15 @@ class ProbeUndoExecutor final : public SavepointPhysicalUndoExecutor {
 
 class ProbeDatabaseCleanup final {
  public:
-  explicit ProbeDatabaseCleanup(std::string path) : path_(std::move(path)) {}
+  explicit ProbeDatabaseCleanup(std::string path, std::filesystem::path owned_directory = {})
+      : path_(std::move(path)), owned_directory_(std::move(owned_directory)) {}
 
   ~ProbeDatabaseCleanup() {
     std::error_code ignored;
+    if (!owned_directory_.empty()) {
+      std::filesystem::remove_all(owned_directory_, ignored);
+      return;
+    }
     std::filesystem::remove(path_ + ".sb.txn_publish", ignored);
     ignored.clear();
     std::filesystem::remove(path_ + ".sb.owner.lock", ignored);
@@ -135,6 +141,7 @@ class ProbeDatabaseCleanup final {
 
  private:
   std::string path_;
+  std::filesystem::path owned_directory_;
 };
 
 }  // namespace
@@ -146,6 +153,7 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  std::filesystem::path owned_directory;
   if (args.isolated_run) {
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::system_clock::now().time_since_epoch())
@@ -156,9 +164,23 @@ int main(int argc, char** argv) {
       PrintDiagnostic(run_identity.diagnostic);
       return 1;
     }
-    args.path += "." + UuidToString(run_identity.value.value) + ".isolated";
+    owned_directory = args.path + "." + UuidToString(run_identity.value.value) + ".isolated";
+    std::error_code directory_error;
+    if (!std::filesystem::create_directory(owned_directory, directory_error)) {
+      std::cerr << "isolated probe directory creation failed\n";
+      return 1;
+    }
+    args.path = (owned_directory / "probe.sbdb").string();
   }
-  ProbeDatabaseCleanup cleanup_files(args.path);
+  ProbeDatabaseCleanup cleanup_files(args.path, owned_directory);
+  if (!owned_directory.empty()) {
+    std::error_code permission_error;
+    std::filesystem::permissions(owned_directory, std::filesystem::perms::owner_all, permission_error);
+    if (permission_error) {
+      std::cerr << "isolated probe directory permissions failed\n";
+      return 1;
+    }
+  }
 
   auto memory_policy = DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "sb_single_node_transaction_probe";
@@ -191,15 +213,16 @@ int main(int argc, char** argv) {
   const auto activated = OpenDatabaseFile(activation_open);
   if (!activated.ok()) { PrintDiagnostic(activated.diagnostic); return 1; }
 
-  LocalTransactionManager manager(activated.state.local_transaction_inventory);
-  const auto begin = manager.Begin(txn_uuid, args.creation_millis + 10);
+  auto manager = std::make_unique<LocalTransactionManager>(activated.state.local_transaction_inventory);
+  const auto begin = manager->Begin(txn_uuid, args.creation_millis + 10);
   if (!begin.ok()) { PrintDiagnostic(begin.diagnostic); return 1; }
-  const auto persisted_begin = PersistLocalTransactionInventoryToDatabase(args.path, manager.inventory());
+  const auto persisted_begin = PersistLocalTransactionInventoryToDatabase(args.path, manager->inventory());
   if (!persisted_begin.ok()) { PrintDiagnostic(persisted_begin.diagnostic); return 1; }
   const auto loaded_begin = LoadLocalTransactionInventoryFromDatabase(args.path);
   if (!loaded_begin.ok()) { PrintDiagnostic(loaded_begin.diagnostic); return 1; }
+  manager = std::make_unique<LocalTransactionManager>(loaded_begin.inventory);
 
-  const auto snapshot = manager.Snapshot(begin.entry.identity.local_id);
+  const auto snapshot = manager->Snapshot(begin.entry.identity.local_id);
   if (!snapshot.ok()) { PrintDiagnostic(snapshot.diagnostic); return 1; }
   const auto isolation = ValidateLocalIsolationLevel(IsolationLevel::serializable);
   if (!isolation.ok()) { PrintDiagnostic(isolation.diagnostic); return 1; }
@@ -214,6 +237,7 @@ int main(int argc, char** argv) {
   if (!cow.ok()) { PrintDiagnostic(cow.diagnostic); return 1; }
 
   RowVersionMetadata metadata;
+  metadata.identity.version_uuid = GenerateTyped(UuidKind::row, args.creation_millis + 7021).value;
   metadata.identity.row = row_identity.identity;
   metadata.identity.creator_transaction = begin.entry.identity;
   metadata.identity.version_sequence = 1;
@@ -226,7 +250,7 @@ int main(int argc, char** argv) {
   LocalTransactionLockTable locks;
   const auto lock_a = locks.Acquire({begin.entry.identity.local_id, "row:1", TransactionLockMode::exclusive, {0, true}});
   if (!lock_a.ok()) { PrintDiagnostic(lock_a.diagnostic); return 1; }
-  const auto begin_2 = manager.Begin(txn_uuid_2, args.creation_millis + 11);
+  const auto begin_2 = manager->Begin(txn_uuid_2, args.creation_millis + 11);
   if (!begin_2.ok()) { PrintDiagnostic(begin_2.diagnostic); return 1; }
   const auto lock_timeout = locks.Acquire({begin_2.entry.identity.local_id, "row:1", TransactionLockMode::exclusive, {0, true}});
   const bool timeout_ok = !lock_timeout.ok() && lock_timeout.diagnostic.diagnostic_code == "SB-SNTXN-LOCK-TIMEOUT";
@@ -334,26 +358,27 @@ int main(int argc, char** argv) {
   const bool idle_policy_violation_ok = !idle_policy_result.ok() &&
                                         idle_policy_result.diagnostic.diagnostic_code == "SB-SNTXN-IDLE-POLICY-VIOLATION";
 
-  const auto commit = manager.Commit(begin.entry.identity.local_id, args.creation_millis + 20);
+  const auto commit = manager->Commit(begin.entry.identity.local_id, args.creation_millis + 20);
   if (!commit.ok()) { PrintDiagnostic(commit.diagnostic); return 1; }
-  const auto rollback = manager.Rollback(begin_2.entry.identity.local_id, args.creation_millis + 21);
+  const auto rollback = manager->Rollback(begin_2.entry.identity.local_id, args.creation_millis + 21);
   if (!rollback.ok()) { PrintDiagnostic(rollback.diagnostic); return 1; }
-  const auto persisted_final = PersistLocalTransactionInventoryToDatabase(args.path, manager.inventory());
+  const auto persisted_final = PersistLocalTransactionInventoryToDatabase(args.path, manager->inventory());
   if (!persisted_final.ok()) { PrintDiagnostic(persisted_final.diagnostic); return 1; }
   const auto loaded_final = LoadLocalTransactionInventoryFromDatabase(args.path);
   if (!loaded_final.ok()) { PrintDiagnostic(loaded_final.diagnostic); return 1; }
+  manager = std::make_unique<LocalTransactionManager>(loaded_final.inventory);
 
   const u32 inventory_page_capacity = MaxTransactionInventoryEntriesPerPage(args.page_size);
   const std::size_t overflow_target = static_cast<std::size_t>(inventory_page_capacity) + 8;
-  while (manager.inventory().entries.size() < overflow_target) {
-    const u64 ordinal = static_cast<u64>(manager.inventory().entries.size());
+  while (manager->inventory().entries.size() < overflow_target) {
+    const u64 ordinal = static_cast<u64>(manager->inventory().entries.size());
     const TypedUuid extra_txn_uuid = GenerateTyped(UuidKind::transaction, args.creation_millis + 8100 + ordinal);
-    const auto extra_begin = manager.Begin(extra_txn_uuid, args.creation_millis + 100 + ordinal);
+    const auto extra_begin = manager->Begin(extra_txn_uuid, args.creation_millis + 100 + ordinal);
     if (!extra_begin.ok()) { PrintDiagnostic(extra_begin.diagnostic); return 1; }
-    const auto extra_commit = manager.Commit(extra_begin.entry.identity.local_id, args.creation_millis + 200 + ordinal);
+    const auto extra_commit = manager->Commit(extra_begin.entry.identity.local_id, args.creation_millis + 200 + ordinal);
     if (!extra_commit.ok()) { PrintDiagnostic(extra_commit.diagnostic); return 1; }
   }
-  const auto persisted_multipage = PersistLocalTransactionInventoryToDatabase(args.path, manager.inventory());
+  const auto persisted_multipage = PersistLocalTransactionInventoryToDatabase(args.path, manager->inventory());
   if (!persisted_multipage.ok()) { PrintDiagnostic(persisted_multipage.diagnostic); return 1; }
   const auto loaded_multipage = LoadLocalTransactionInventoryFromDatabase(args.path);
   if (!loaded_multipage.ok()) { PrintDiagnostic(loaded_multipage.diagnostic); return 1; }
@@ -362,8 +387,12 @@ int main(int argc, char** argv) {
   compaction_request.inventory_authoritative = true;
   compaction_request.oldest_required_local_transaction_id = MakeLocalTransactionId(3);
   if (compaction_request.inventory.entries.size() >= 2) {
-    compaction_request.inventory.entries[0].state = TransactionState::archived;
-    compaction_request.inventory.entries[1].state = TransactionState::archived;
+    for (std::size_t index = 0; index < 2; ++index) {
+      const auto archived = ArchiveLocalTransaction(compaction_request.inventory,
+          compaction_request.inventory.entries[index].identity.local_id);
+      if (!archived.ok()) { PrintDiagnostic(archived.diagnostic); return 1; }
+      compaction_request.inventory = archived.inventory;
+    }
   }
   const auto compacted_inventory = CompactLocalTransactionInventory(compaction_request);
   if (!compacted_inventory.ok()) { PrintDiagnostic(compacted_inventory.diagnostic); return 1; }
@@ -383,10 +412,13 @@ int main(int argc, char** argv) {
   const auto cleanup = EvaluateLocalCleanupWithHorizons(metadata, loaded_final.horizons);
   if (!cleanup.ok()) { PrintDiagnostic(cleanup.diagnostic); return 1; }
   RowVersionMetadata rolled_back_metadata = metadata;
+  rolled_back_metadata.identity.version_uuid = GenerateTyped(UuidKind::row, args.creation_millis + 7022).value;
+  rolled_back_metadata.identity.creator_transaction = rollback.entry.identity;
   rolled_back_metadata.state = RowVersionState::rolled_back;
   rolled_back_metadata.creator_transaction_state = TransactionState::rolled_back;
   rolled_back_metadata.payload_present = false;
   RowVersionMetadata obsolete_metadata = metadata;
+  obsolete_metadata.identity.version_uuid = GenerateTyped(UuidKind::row, args.creation_millis + 7023).value;
   obsolete_metadata.chain.next_version_sequence = 2;
   obsolete_metadata.successor_transaction_local_id = commit.entry.identity.local_id;
   LocalCleanupWorksetRequest cleanup_request;
@@ -423,7 +455,7 @@ int main(int argc, char** argv) {
   const bool cleanup_authority_refused_ok = !refused_cleanup.ok() &&
       refused_cleanup.diagnostic.diagnostic_code == "SB-SNTXN-CLEANUP-HORIZON-NOT-AUTHORITATIVE";
 
-  const auto recovery = ClassifyLocalTransactionInventoryForRecovery(manager.inventory());
+  const auto recovery = ClassifyLocalTransactionInventoryForRecovery(manager->inventory());
   if (!recovery.ok()) { PrintDiagnostic(recovery.diagnostic); return 1; }
 
   TransactionMetrics metrics;
