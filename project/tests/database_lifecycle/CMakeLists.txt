@@ -3553,9 +3553,12 @@ if(TARGET sb_core_datatypes)
     current_core_datatype_comparison_cast_gate.cpp
   )
   target_compile_features(database_lifecycle_current_core_datatype_comparison_cast_gate PRIVATE cxx_std_17)
+  target_compile_definitions(database_lifecycle_current_core_datatype_comparison_cast_gate PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(database_lifecycle_current_core_datatype_comparison_cast_gate
     PRIVATE
       sb_core_datatypes
+      sb_core_resources
       sb_core_platform
   )
 

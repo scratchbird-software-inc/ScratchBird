@@ -8,7 +8,10 @@
 
 #include "datatype_operations.hpp"
 #include "datatype_document.hpp"
+#include "resource_seed_pack.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
@@ -52,6 +55,33 @@ dt::DatatypeTextSeedAuthority TextSeed(
     bool accent_insensitive = false,
     std::string charset_name = "UTF8") {
   dt::DatatypeTextSeedAuthority seed;
+  namespace resources = scratchbird::core::resources;
+  static const auto loaded = [] {
+    resources::ResourceSeedLoadConfig config;
+    config.seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+    return resources::LoadResourceSeedPack(config);
+  }();
+  Require(loaded.ok() && loaded.image.unicode_collation,
+          "MDF-014 actual admitted Unicode collation seed unavailable");
+  const auto profile = case_insensitive
+      ? (accent_insensitive ? resources::CollationProfile::uca17_root_primary
+                            : resources::CollationProfile::uca17_root_secondary)
+      : resources::CollationProfile::utf8_binary;
+  const auto recipe = std::find_if(loaded.image.collations.begin(), loaded.image.collations.end(),
+      [&](const auto& row) { return row.comparison_profile == profile; });
+  Require(recipe != loaded.image.collations.end() &&
+              recipe->case_insensitive == case_insensitive &&
+              recipe->accent_insensitive == accent_insensitive,
+          "MDF-014 collation recipe disagrees with fixture semantics");
+  // Component-level bound cohort, with actual admitted UCA data. Display
+  // names below deliberately carry no comparison or sort-key authority.
+  seed.database_uuid = scratchbird::tests::FixtureUuid(2056, 1);
+  seed.charset_uuid = scratchbird::tests::FixtureUuid(2056, 2);
+  seed.collation_uuid = scratchbird::tests::FixtureUuid(2056, 10 + static_cast<unsigned>(profile));
+  seed.resource_epoch = loaded.image.resource_epoch;
+  seed.collation_epoch = loaded.image.collation_epoch;
+  seed.comparison_profile = profile;
+  if (resources::UsesUnicodeRoot(profile)) seed.unicode_collation = loaded.image.unicode_collation;
   seed.active = true;
   seed.seed_pack_name = "initial-resource-pack";
   seed.seed_pack_version = "1";
@@ -60,6 +90,22 @@ dt::DatatypeTextSeedAuthority TextSeed(
   seed.collation_case_insensitive = case_insensitive;
   seed.collation_accent_insensitive = accent_insensitive;
   return seed;
+}
+
+void RequireBinaryComparisonCohort(const std::string& key,
+                                   const dt::DatatypeTextSeedAuthority& seed) {
+  std::string expected = "20:";
+  for (const auto& id : {seed.database_uuid, seed.charset_uuid, seed.collation_uuid})
+    expected.append(reinterpret_cast<const char*>(id.bytes.data()), id.bytes.size());
+  for (const auto value : {seed.resource_epoch, seed.collation_epoch,
+                           static_cast<std::uint64_t>(seed.comparison_profile)})
+    for (unsigned byte = 0; byte < 8; ++byte)
+      expected.push_back(static_cast<char>(value >> (byte * 8)));
+  Require(key.size() > expected.size() && key.compare(0, expected.size(), expected) == 0,
+          "MDF-014 sort key lost exact binary resource cohort");
+  Require(key.find("initial-resource-pack") == std::string::npos &&
+              key.find("UNICODE_CI") == std::string::npos,
+          "MDF-014 sort key used display names as resource authority");
 }
 
 void RequireCompareEqual(const dt::DatatypeTextSeedAuthority& seed,
@@ -161,10 +207,35 @@ void TestOrderedKeysAndResourceBoundComparison() {
   text_key.case_insensitive_character_compare = true;
   text_key.text_seed = TextSeed();
   const auto sort_key = dt::MakeDatatypeSortKey(text_key);
-  Require(sort_key.ok() &&
-              sort_key.sort_key.find("initial-resource-pack:1:UNICODE_CI") !=
-                  std::string::npos,
-          "MDF-014 text sort key did not bind resource identity");
+  Require(sort_key.ok(), "MDF-014 text sort key failed");
+  RequireBinaryComparisonCohort(sort_key.sort_key, text_key.text_seed);
+  auto renamed = text_key;
+  renamed.text_seed.seed_pack_name = "untrusted display label";
+  renamed.text_seed.charset_name = "not a charset authority";
+  renamed.text_seed.collation_name = "not a collation authority";
+  const auto unchanged = dt::MakeDatatypeSortKey(renamed);
+  Require(unchanged.ok() && unchanged.sort_key == sort_key.sort_key,
+          "MDF-014 display name changed bound comparison semantics");
+  auto next_epoch = text_key;
+  ++next_epoch.text_seed.collation_epoch;
+  const auto rekeyed = dt::MakeDatatypeSortKey(next_epoch);
+  Require(rekeyed.ok() && rekeyed.sort_key != sort_key.sort_key,
+          "MDF-014 collation epoch failed to separate binary sort-key cohorts");
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto invalid = text_key;
+    switch (mutation) {
+      case 0: invalid.text_seed.database_uuid = {}; break;
+      case 1: invalid.text_seed.charset_uuid = {}; break;
+      case 2: invalid.text_seed.collation_uuid.bytes[6] = 0x40; break;
+      case 3: invalid.text_seed.resource_epoch = 0; break;
+      case 4: invalid.text_seed.collation_epoch = 0; break;
+      case 5: invalid.text_seed.comparison_profile = scratchbird::core::resources::CollationProfile::unbound; break;
+      case 6: invalid.text_seed.unicode_collation.reset(); break;
+      case 7: invalid.text_seed.collation_accent_insensitive = true; break;
+    }
+    Require(!dt::MakeDatatypeSortKey(invalid).ok(),
+            "MDF-014 incomplete or crossed binary collation authority accepted");
+  }
 }
 
 void TestLocaleSpecificCharacterCollationProof() {
@@ -211,9 +282,7 @@ void TestLocaleSpecificCharacterCollationProof() {
   const auto sort_b = dt::MakeDatatypeSortKey(accent_key_b);
   Require(sort_a.ok() && sort_b.ok() && sort_a.sort_key == sort_b.sort_key,
           "MDF-014 accent-insensitive sort key mismatch");
-  Require(sort_a.sort_key.find("initial-resource-pack:1:UNICODE_CI_AI:UTF8:ci:ai") !=
-              std::string::npos,
-          "MDF-014 accent-insensitive sort key did not bind seed flags");
+  RequireBinaryComparisonCohort(sort_a.sort_key, accent_key_a.text_seed);
 
   dt::DatatypeComparisonRequest mode_mismatch;
   mode_mismatch.left = Value(dt::CanonicalTypeId::character, "Alpha");
