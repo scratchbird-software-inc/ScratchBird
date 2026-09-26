@@ -29,6 +29,11 @@ add_test(NAME cmake_testing_bootstrap
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_testing_bootstrap.py")
 set_tests_properties(cmake_testing_bootstrap PROPERTIES
   TIMEOUT 180 LABELS "build_hygiene;cmake_config;fresh_configure")
+add_test(NAME cmake_test_assertions
+  COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_test_assertions.py")
+set_tests_properties(cmake_test_assertions PROPERTIES
+  TIMEOUT 180 LABELS "build_hygiene;cmake_config;assertion_integrity")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
   add_subdirectory(tests/parser_family_isolation)
 endif()
@@ -4174,3 +4179,9 @@ if(TARGET scratchbird_public_output_stage)
   )
 endif()
 unset(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestAssertions.cmake")
+# Alignment registers some targets in deferred root-directory functions.
+# Enqueue this last so those targets receive the same assertion policy.
+cmake_language(DEFER CALL sb_enable_test_assertions
+  "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
