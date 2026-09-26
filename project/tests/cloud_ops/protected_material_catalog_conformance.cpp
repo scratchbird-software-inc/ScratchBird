@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/sb_test_temp_compat.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "security/protected_material_api.hpp"
 
 #include <cstdlib>
@@ -31,6 +34,8 @@ constexpr auto kReleasePolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e
 constexpr auto kPurgePolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1113-7000-8000-000000000010");
 constexpr auto kAuditPolicyUuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1114-7000-8000-000000000010");
 constexpr std::string_view kPlaintext = "CorrectHorseBatteryStaple-PCF011";
+std::filesystem::path database_path;
+api::EngineRequestContext bootstrap_context;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -40,29 +45,15 @@ void Require(bool condition, std::string_view message) {
 }
 
 const std::filesystem::path& DatabasePath() {
-  static const std::filesystem::path path =
-      std::filesystem::temp_directory_path() /
-      "scratchbird_cloud_ops_protected_material_catalog" /
-      "cloud_ops.sbdb";
-  return path;
+  return database_path;
 }
 
 api::EngineRequestContext Context(std::uint64_t tx,
                                   std::uint64_t visible_through,
                                   std::uint64_t epoch = 1000) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.database_path = DatabasePath().string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1100-7000-8000-000000000010");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019e18d0-1120-7000-8000-000000000010");
-  context.security_context_present = true;
-  context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:KEY_RELEASE_APPROVE");
-  context.trace_tags.push_back("right:PROTECTED_MATERIAL_RELEASE");
+  auto context = bootstrap_context;
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = visible_through;
-  context.security_epoch = 7;
   context.resource_epoch = epoch;
   return context;
 }
@@ -104,6 +95,9 @@ std::string Flatten(const api::EngineApiResult& result) {
   for (const auto& row : result.result_shape.rows) {
     for (const auto& field : row.fields) {
       out << field.first << '=' << field.second.encoded_value << '\n';
+      if (!field.second.binary_value.empty())
+        out.write(reinterpret_cast<const char*>(field.second.binary_value.data()),
+                  field.second.binary_value.size());
     }
   }
   return out.str();
@@ -127,7 +121,16 @@ api::EngineCreateProtectedMaterialResult CreateMaterial() {
   request.envelope_reference = "envelope:v1:wrapped-material-one";
   request.payload_hash = "sha256:version-one";
   request.option_envelopes.push_back("protected_material_authority:engine");
+  auto trace_only = request;
+  trace_only.context.authorization_context = {};
+  trace_only.context.trace_tags = {"security.bootstrap", "security.fixture_trace_authority",
+      "right:KEY_RELEASE_APPROVE", "right:PROTECTED_MATERIAL_RELEASE"};
+  const auto denied = api::EngineCreateProtectedMaterial(trace_only);
+  Require(!denied.ok && !denied.created && !denied.initial_version_created &&
+              HasDiagnostic(denied, "SECURITY.PROTECTED_MATERIAL.AUTHORITY_DENIED"),
+          "trace labels substituted for durable protected-material authorization");
   const auto result = api::EngineCreateProtectedMaterial(request);
+  if (!result.ok) std::cerr << Flatten(result);
   Require(result.ok && result.created && result.initial_version_created,
           "protected material create failed");
   Require(!result.plaintext_material_stored, "create stored plaintext material");
@@ -259,10 +262,25 @@ void TestPlaintextRefusalAndInspectRedaction() {
 }  // namespace
 
 int main() {
-  std::error_code ignored;
-  std::filesystem::remove_all(DatabasePath().parent_path(), ignored);
-  std::filesystem::create_directories(DatabasePath().parent_path());
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "protected-material-catalog-conformance");
+  auto pattern = (std::filesystem::temp_directory_path() / "sbpmcat_XXXXXX").string();
+  Require(mkdtemp(pattern.data()) != nullptr, "private catalog test workspace creation failed");
+  database_path = std::filesystem::path(pattern) / "cloud_ops.sbdb";
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = DatabasePath().string();
+  create.database_uuid = {scratchbird::core::platform::UuidKind::database, kDatabaseUuid};
+  create.filespace_uuid = {scratchbird::core::platform::UuidKind::filespace,
+      scratchbird::tests::FixtureUuid(1209, 1)};
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1780000000000;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "credentialed protected-material fixture bootstrap failed");
+  bootstrap_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   TestResolveReleaseAndPurgePolicy();
   TestPlaintextRefusalAndInspectRedaction();
+  // Only this invocation's exclusively created namespace is removed.
+  std::filesystem::remove_all(DatabasePath().parent_path());
   return EXIT_SUCCESS;
 }
