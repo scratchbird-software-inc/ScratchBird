@@ -4,6 +4,7 @@
 #include "dml/datatype_operator_registry_projection.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "api_diagnostics.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include <charconv>
 #include <chrono>
 #include <limits>
@@ -52,18 +53,9 @@ bool ColumnType(const EngineRequestContext& context,
       binding.descriptor_uuid.is_nil() ||
       !core::uuid::IsEngineIdentityUuid(binding.datatype_descriptor_uuid) ||
       !core::uuid::IsEngineIdentityUuid(binding.type_uuid)) return false;
-  std::map<std::string, std::string> fields;
-  std::string_view remaining(column.value_descriptor.encoded_descriptor);
-  while (!remaining.empty()) {
-    const auto end = remaining.find(';');
-    const auto token = remaining.substr(0, end);
-    const auto equal = token.find('=');
-    if (equal == std::string_view::npos || equal == 0 ||
-        !fields.emplace(std::string(token.substr(0, equal)), std::string(token.substr(equal + 1))).second)
-      return false;
-    if (end == std::string_view::npos) break;
-    remaining.remove_prefix(end + 1);
-  }
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(binding.encoded_descriptor, &metadata)) return false;
+  const auto& fields = metadata.text;
   const auto number = [&](const char* key, std::uint64_t expected) {
     const auto found = fields.find(key);
     if (found == fields.end()) return false;
@@ -72,8 +64,8 @@ bool ColumnType(const EngineRequestContext& context,
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && value == expected;
   };
-  if (fields.contains("datatype_descriptor_uuid") || fields.contains("type_uuid"))
-    return false;
+  if (BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") != binding.datatype_descriptor_uuid ||
+      BinaryCatalogUuid(metadata, "type_uuid") != binding.type_uuid) return false;
   // The initial admitted builtin rows all have generation one. A future
   // generation is a new profile, not permission to infer registry identity.
   if (binding.datatype_descriptor_generation != 1 ||
@@ -85,7 +77,8 @@ bool ColumnType(const EngineRequestContext& context,
   if (!current.ok) return false;
   const auto codec = fields.find("codec_id");
   const auto& resolved = current.row;
-  if (binding.type_uuid != resolved.type_uuid || codec == fields.end() ||
+  if (binding.type_uuid != resolved.type_uuid ||
+      BinaryCatalogUuid(metadata, "codec_uuid") != resolved.codec_uuid || codec == fields.end() ||
       codec->second != resolved.codec_id ||
       !number("type_generation", resolved.type_generation) ||
       !number("codec_version", resolved.codec_version) ||

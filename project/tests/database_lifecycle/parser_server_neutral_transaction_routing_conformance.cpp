@@ -21,6 +21,7 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include "resource_seed_pack.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
+#include "time.hpp"
 #include "parser_server_client.hpp"
 
 #include <array>
@@ -168,10 +169,18 @@ void RequireEngineOk(const TResult& result, std::string_view message) {
   }
 }
 
+platform::u64 IdentityClockMillis() {
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  Require(clock.ok(), "fixture node clock unavailable");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  Require(millis.ok(), "fixture UUID clock conversion failed");
+  return millis.unix_epoch_millis;
+}
+
 platform::TypedUuid NewTypedUuid(platform::UuidKind kind,
-                                 std::uint64_t salt) {
+                                 [[maybe_unused]] std::uint64_t salt) {
   const auto generated =
-      uuid::GenerateEngineIdentityV7(kind, 1944000000000ull + salt);
+      uuid::GenerateEngineIdentityV7(kind, IdentityClockMillis());
   Require(generated.ok(), "neutral transaction UUID generation failed");
   return generated.value;
 }
@@ -239,7 +248,7 @@ EngineTransactionFixture CreateEngineTransactionFixture() {
       NewTypedUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid =
       NewTypedUuid(platform::UuidKind::filespace, fixture.salt + 2);
-  create.creation_unix_epoch_millis = 1944000000000ull + fixture.salt + 3;
+  create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 8192;
   create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   create.require_resource_seed_pack = true;

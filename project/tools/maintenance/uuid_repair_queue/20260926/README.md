@@ -43,13 +43,13 @@ as runtime verification. Preserve all existing recovery/security assertions.
 | 2007 | Catalog/CABI-issued bulk binding fixture |
 | 2008 | Applied: exact admitted DELETE datatype cohort; registered DELETE/UPDATE carrier tests pass, full-route acceptance still pending |
 | 2009 | Two additional short socket workspace allocators |
-| 2010 | Twelve fixture UUID timestamp unit corrections |
+| 2010 | Applied: twelve fixture UUID/creation timestamps use the actual node wall clock; lifecycle runtime acceptance pending |
 | 2011 | Runtime session issuance and descriptor negatives |
 | 2012 | Binary agent/filespace/observability evidence fixtures |
 | 2013 | Binary shutdown acknowledgement fixture |
 | 2014 | Existing Windows portability repair, preserved only; Linux remains the active scope |
 | 2015 | SHOW CREATE binary column reader and fixture |
-| 2016 | UPDATE/DELETE binary readers and actual-receipt DML fixture |
+| 2016 | Binary readers applied; actual-receipt DML fixture and full-route acceptance pending |
 | 2017 | Published narrow-query fixture and engine linkage |
 | 2018 | Binary table metadata frame, dependent on 2015 |
 | 2019 | Actual serializable isolation fixture authority |
@@ -77,6 +77,20 @@ ownership and recovery checks remain; DELETE now executes 19,498 checks. The
 registered UPDATE carrier regression also passes. This is component coverage,
 not SQL/IPC DELETE execution or full-suite completion. The archived manifest and
 patch retain their original provenance; the applied test has stronger negatives.
+
+The 2010 fixture repair separates directory nonces from UUID issuance time;
+it does not apply the archived monotonic-milliseconds substitution. Both UUID
+generation and database creation now use the node wall-clock conversion already
+used by the corrected IPAR fixtures. Existing runtime assertions are unchanged.
+
+The 2016 readers now decode the persisted `column.v2` binary metadata and compare
+its native datatype/type/codec identities with the bound live registry row.
+The existing generation, codec, duplicate-field and malformed-input checks remain.
+An isolated diagnostic of the real DELETE column binder rejected all 18 valid
+registry rows before the repair; its candidate accepts all 18 and rejects all
+216 malformed/mismatched cases. This does not validate statement receipts or
+the complete UPDATE/DELETE route; the preserved actual-receipt fixture still
+needs reconciliation and full runtime tests remain required.
 
 The older overlapping Sandbox UPDATE draft is separately committed and pushed on
 `codex/sandbox-uuid-draft-20260926` at `36d3aaff9`. Do not merge that draft wholesale:

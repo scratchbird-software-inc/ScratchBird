@@ -12,6 +12,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "time.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -52,8 +53,16 @@ platform::u64 TimeSeed() {
       std::chrono::steady_clock::now().time_since_epoch().count());
 }
 
-platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, 1900000000000ull + salt);
+platform::u64 IdentityClockMillis() {
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  Require(clock.ok(), "fixture node clock unavailable");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  Require(millis.ok(), "fixture UUID clock conversion failed");
+  return millis.unix_epoch_millis;
+}
+
+platform::TypedUuid NewUuid(platform::UuidKind kind, [[maybe_unused]] platform::u64 salt) {
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, IdentityClockMillis());
   Require(generated.ok(), "IPAR-P3-04 UUID generation failed");
   return generated.value;
 }
@@ -179,7 +188,7 @@ Fixture MakeFixture(platform::u64 salt) {
   create.path = fixture.database_path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
-  create.creation_unix_epoch_millis = 1900000000000ull + salt + 3;
+  create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 8192;
   create.require_resource_seed_pack = false;
   create.allow_minimal_resource_bootstrap = true;

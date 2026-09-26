@@ -10,6 +10,7 @@
 #include "engine_host.hpp"
 #include "server_agent_runtime.hpp"
 #include "uuid.hpp"
+#include "time.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -44,9 +45,17 @@ platform::u64 TimeSeed() {
       std::chrono::steady_clock::now().time_since_epoch().count());
 }
 
-platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
+platform::u64 IdentityClockMillis() {
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  Require(clock.ok(), "fixture node clock unavailable");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  Require(millis.ok(), "fixture UUID clock conversion failed");
+  return millis.unix_epoch_millis;
+}
+
+platform::TypedUuid NewUuid(platform::UuidKind kind, [[maybe_unused]] platform::u64 salt) {
   const auto generated =
-      uuid::GenerateEngineIdentityV7(kind, 1900000000000ull + salt);
+      uuid::GenerateEngineIdentityV7(kind, IdentityClockMillis());
   Require(generated.ok(), "IPAR agent runtime UUID generation failed");
   return generated.value;
 }
@@ -81,7 +90,7 @@ Fixture MakeFixture() {
   create.path = fixture.database_path.string();
   create.database_uuid = fixture.database_uuid;
   create.filespace_uuid = fixture.filespace_uuid;
-  create.creation_unix_epoch_millis = 1900000000000ull + seed + 3;
+  create.creation_unix_epoch_millis = IdentityClockMillis();
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;

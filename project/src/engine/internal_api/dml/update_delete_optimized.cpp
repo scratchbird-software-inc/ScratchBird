@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "core/platform/savepoint_crash_injection.hpp"
@@ -3281,22 +3282,9 @@ bool DmlUpdateResolveColumnIdentity(
     return false;
   }
   const auto& binding = column.value_descriptor;
-  std::map<std::string, std::string> fields;
-  std::string_view remaining(binding.encoded_descriptor);
-  bool valid_fields = true;
-  while (!remaining.empty()) {
-    const auto end = remaining.find(';');
-    const auto token = remaining.substr(0, end);
-    const auto equal = token.find('=');
-    if (equal == std::string_view::npos || equal == 0 ||
-        !fields.emplace(std::string(token.substr(0, equal)),
-                        std::string(token.substr(equal + 1))).second) {
-      valid_fields = false;
-      break;
-    }
-    if (end == std::string_view::npos) break;
-    remaining.remove_prefix(end + 1);
-  }
+  CatalogColumnMetadata metadata;
+  const bool valid_fields = DecodeCatalogColumnMetadata(binding.encoded_descriptor, &metadata);
+  const auto& fields = metadata.text;
   const auto number = [&](const char* key, std::uint64_t expected) {
     const auto found = fields.find(key);
     if (found == fields.end()) return false;
@@ -3312,8 +3300,9 @@ bool DmlUpdateResolveColumnIdentity(
         "sblr.dml_update_rows.column_identity_stale", column.canonical_name_key);
     return false;
   };
-  if (!valid_fields || fields.contains("datatype_descriptor_uuid") ||
-      fields.contains("type_uuid") ||
+  if (!valid_fields ||
+      BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") != binding.datatype_descriptor_uuid ||
+      BinaryCatalogUuid(metadata, "type_uuid") != binding.type_uuid ||
       !uuid::IsEngineIdentityUuid(binding.datatype_descriptor_uuid) ||
       !uuid::IsEngineIdentityUuid(binding.type_uuid) ||
       binding.datatype_descriptor_generation == 0 ||
@@ -3328,6 +3317,7 @@ bool DmlUpdateResolveColumnIdentity(
       binding.datatype_descriptor_generation);
   const auto codec = fields.find("codec_id");
   if (!lookup.ok || binding.type_uuid != lookup.row.type_uuid ||
+      BinaryCatalogUuid(metadata, "codec_uuid") != lookup.row.codec_uuid ||
       codec == fields.end() || codec->second != lookup.row.codec_id ||
       !number("type_generation", lookup.row.type_generation) ||
       !number("codec_version", lookup.row.codec_version) ||
