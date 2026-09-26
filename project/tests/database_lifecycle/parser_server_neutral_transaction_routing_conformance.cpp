@@ -3,6 +3,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "../agents/agent_binary_identity_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
@@ -193,6 +194,7 @@ struct EngineTransactionFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
   platform::Uuid schema_uuid;
   platform::Uuid table_uuid;
   platform::Uuid resource_table_uuid;
@@ -211,6 +213,7 @@ struct EngineTransactionFixture {
       : directory(std::move(other.directory)),
         database_path(std::move(other.database_path)),
         database_uuid(std::move(other.database_uuid)),
+        owner_context(std::move(other.owner_context)),
         schema_uuid(std::move(other.schema_uuid)),
         table_uuid(std::move(other.table_uuid)),
         resource_table_uuid(std::move(other.resource_table_uuid)),
@@ -254,6 +257,7 @@ EngineTransactionFixture CreateEngineTransactionFixture() {
   create.require_resource_seed_pack = true;
   create.allow_minimal_resource_bootstrap = false;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -265,6 +269,7 @@ EngineTransactionFixture CreateEngineTransactionFixture() {
   }
   Require(created.ok(), "neutral transaction database creation failed");
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   const auto* gbk = resources::FindResourceSeedCharset(
       created.state.resource_seed_catalog, "GBK");
@@ -288,22 +293,18 @@ api::EngineRequestContext BeginEngineTransaction(
     const EngineTransactionFixture& fixture,
     std::uint64_t ordinal) {
   api::EngineBeginTransactionRequest begin;
+  begin.context = fixture.owner_context;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id = "neutral-engine-begin-" +
                              std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
   begin.context.database_uuid = fixture.database_uuid;
-  begin.context.principal_uuid = NewUuid(
-      platform::UuidKind::principal, fixture.salt + 100 + ordinal);
   begin.context.session_uuid = NewUuid(
       platform::UuidKind::object, fixture.salt + 200 + ordinal);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch = fixture.resource_epoch;
-  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  begin.context.datatype_catalog_generation = 1;
-  begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
@@ -330,28 +331,48 @@ api::EngineLocalizedName NeutralName(std::string value) {
   return name;
 }
 
-api::EngineColumnDefinition NeutralTextColumn(std::string name,
-                                              std::uint32_t ordinal) {
+api::EngineColumnDefinition NeutralBoundColumn(
+    const api::EngineRequestContext& context, std::string name,
+    std::uint32_t ordinal, std::string type) {
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "neutral fixture datatype catalog unavailable");
+  const auto row = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "neutral fixture datatype is absent from the engine catalog");
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto binding = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  Require(binding.ok, "neutral fixture datatype codec binding unavailable");
   api::EngineColumnDefinition column;
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
   column.names.push_back(NeutralName(std::move(name)));
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
   column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "text";
-  column.descriptor.encoded_descriptor = "type=text";
+  column.descriptor.canonical_type_name = std::move(type);
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.encoded_descriptor =
+      "type=" + column.descriptor.canonical_type_name + ";nullable=false";
   column.ordinal = ordinal;
   column.nullable = false;
   return column;
 }
 
-api::EngineColumnDefinition NeutralIntegerColumn(std::string name,
-                                                 std::uint32_t ordinal) {
-  api::EngineColumnDefinition column;
-  column.names.push_back(NeutralName(std::move(name)));
-  column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "integer";
-  column.descriptor.encoded_descriptor = "type=integer";
-  column.ordinal = ordinal;
-  column.nullable = false;
-  return column;
+api::EngineColumnDefinition NeutralTextColumn(
+    const api::EngineRequestContext& context, std::string name,
+    std::uint32_t ordinal) {
+  return NeutralBoundColumn(context, std::move(name), ordinal, "text");
+}
+
+api::EngineColumnDefinition NeutralIntegerColumn(
+    const api::EngineRequestContext& context, std::string name,
+    std::uint32_t ordinal) {
+  return NeutralBoundColumn(context, std::move(name), ordinal, "int64");
 }
 
 api::EngineTypedValue NeutralIntegerValue(std::int64_t value) {
@@ -364,14 +385,12 @@ api::EngineTypedValue NeutralIntegerValue(std::int64_t value) {
 }
 
 api::EngineColumnDefinition NeutralResourceTextColumn(
+    const api::EngineRequestContext& context,
     std::string name,
     std::uint32_t ordinal,
     const platform::Uuid& charset_uuid,
     const platform::Uuid& collation_uuid = {}) {
-  api::EngineColumnDefinition column;
-  column.names.push_back(NeutralName(std::move(name)));
-  column.descriptor.descriptor_kind = "scalar";
-  column.descriptor.canonical_type_name = "text";
+  auto column = NeutralTextColumn(context, std::move(name), ordinal);
   api::CatalogColumnMetadata metadata;
   metadata.text = {{"type", "text"}, {"character_length", "20"}};
   metadata.identities.emplace("charset_uuid", charset_uuid);
@@ -402,7 +421,7 @@ void CreateNeutralVisibilityTable(EngineTransactionFixture* fixture) {
   table.target_schema.uuid = fixture->schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(NeutralName("selector_visibility"));
-  table.table_columns.push_back(NeutralTextColumn("id", 0));
+  table.table_columns.push_back(NeutralTextColumn(context, "id", 0));
   const auto created_table = api::EngineCreateTable(table);
   RequireEngineOk(created_table,
                   "neutral visibility table creation failed");
@@ -417,10 +436,11 @@ void CreateNeutralVisibilityTable(EngineTransactionFixture* fixture) {
   resource_table.table_names.push_back(
       NeutralName("neutral_resource_projection"));
   auto f1 = NeutralResourceTextColumn(
-      "f1", 0, fixture->gbk_charset_uuid);
+      context, "f1", 0, fixture->gbk_charset_uuid);
   f1.nullable = false;
   resource_table.table_columns.push_back(std::move(f1));
   resource_table.table_columns.push_back(NeutralResourceTextColumn(
+      context,
       "f2",
       1,
       fixture->gbk_charset_uuid,
@@ -450,7 +470,7 @@ void CreateNeutralRoutineTable(EngineTransactionFixture* fixture) {
   table.target_schema.uuid = fixture->schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(NeutralName("neutral_routine_values"));
-  table.table_columns.push_back(NeutralIntegerColumn("a", 0));
+  table.table_columns.push_back(NeutralIntegerColumn(context, "a", 0));
   const auto created = api::EngineCreateTable(table);
   RequireEngineOk(created, "neutral routine table creation failed");
   fixture->routine_table_uuid = created.primary_object.uuid;
@@ -1328,8 +1348,9 @@ NeutralLiveV2Route MakeNeutralLiveV2Route(
                          channel_uuid,
                          route.default_transaction);
   session.relation_descriptor_projection_v3_negotiated = true;
+  session.admitted_dialect_profile_uuid = sbps::MakeUuidV7Bytes();
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_uuid = context.principal_uuid.bytes;
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = fixture.database_path.string();
   session.database_uuid = fixture.database_uuid;
@@ -1427,7 +1448,9 @@ void VerifyNeutralPersistedRelationProjection() {
   client_session.connection_uuid = client_session.session_uuid;
   client_session.database_uuid = fixture.database_uuid;
   client_session.default_language = "en";
-  client_session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1027, 1);
+  client_session.dialect_profile_uuid = platform::Uuid{
+      route.registry.sessions_by_uuid.at(platform::Uuid{route.session_uuid})
+          .admitted_dialect_profile_uuid};
   client_session.catalog_epoch = 1;
   client_session.security_policy_epoch = 1;
   ipc::ParserClientConfig client_config;
@@ -1524,6 +1547,22 @@ void VerifyNeutralPersistedRelationProjection() {
           "V3 server accepted schema 7007 without negotiated capability");
   server_session.relation_descriptor_projection_v3_negotiated = true;
 
+  auto wrong_dialect = client_session;
+  wrong_dialect.dialect_profile_uuid = NewUuid(platform::UuidKind::object, 9001);
+  const auto refused_dialect = DecodeServerFrame(
+      server::ResolveNamePublicFrameForEmbedded(
+          ResolveNameFrame(route.session_uuid,
+                           sbps::kSchemaResolveNameRequestV3,
+                           ipc::EncodeResolveNameRequestPayloadV3ForTest(
+                               wrong_dialect, "neutral_resource_projection",
+                               false, "relation", client_config, selector, 0x01u)),
+          route.engine_state, &route.registry),
+      "wrong-dialect V3 response did not decode");
+  Require((refused_dialect.header.flags & sbps::kFlagError) != 0 &&
+              FrameHasDiagnosticCode(refused_dialect,
+                                     "PARSER_SERVER_IPC.DIALECT_PROFILE_MISMATCH"),
+          "V3 accepted a dialect UUID not admitted on its session");
+
   const auto legacy = DecodeServerFrame(
       server::ResolveNamePublicFrameForEmbedded(
           ResolveNameFrame(route.session_uuid,
@@ -1532,6 +1571,10 @@ void VerifyNeutralPersistedRelationProjection() {
           route.engine_state,
           &route.registry),
       "legacy V2 name response did not decode");
+  if ((legacy.header.flags & sbps::kFlagError) != 0) {
+    for (const auto& code : sbps::DecodeMessageVectorDiagnosticCodes(legacy.payload))
+      std::cerr << "legacy V2 name resolution: " << code << '\n';
+  }
   Require((legacy.header.flags & sbps::kFlagError) == 0 &&
               legacy.header.payload_schema_id ==
                   sbps::kSchemaResolveNameResultV2,
@@ -1894,6 +1937,9 @@ void VerifyNeutralPersistedRelationProjection() {
       platform::Uuid{missing_route.session_uuid};
   missing_client_session.connection_uuid =
       missing_client_session.session_uuid;
+  missing_client_session.dialect_profile_uuid = platform::Uuid{
+      missing_route.registry.sessions_by_uuid.at(platform::Uuid{missing_route.session_uuid})
+          .admitted_dialect_profile_uuid};
   const auto missing_payload =
       ipc::EncodeResolveNameRequestPayloadV3ForTest(
           missing_client_session,
@@ -2762,11 +2808,23 @@ void VerifyRetiredNeutralPreparedInputRefused() {
   const auto handles_before = route.registry.object_handles_by_key.size();
   const auto cursors_before = route.registry.cursors_by_uuid.size();
 
+  // Keep retired input independent of the current encoder: that encoder
+  // correctly refuses to manufacture an unbound legacy procedural envelope.
+  constexpr std::string_view retired_procedural_input =
+      "operation_id=transaction.execute_block\n"
+      "opcode=SBLR_TRANSACTION_EXECUTE_BLOCK\n"
+      "procedural_ir_contract=sblr.procedural.block.v1\n"
+      "procedural_block_kind=anonymous\n"
+      "procedural_input_count=0\nprocedural_local_count=0\n"
+      "procedural_output_count=1\nprocedural_slot_count=1\n"
+      "procedural_instruction_count=0\nprocedural_yield_count=0\n"
+      "procedural_slot_0_id=result.0\nprocedural_slot_0_kind=result\n"
+      "procedural_slot_0_type=int32\nprocedural_slot_0_nullable=false\n";
   const auto refused = server::HandlePrepareSblr(
       &route.registry,
       route.engine_state,
       RoutedPrepareFrameV2(route.session_uuid,
-                           NeutralEmptyResultProceduralBlockEnvelope(),
+                           retired_procedural_input,
                            selector));
   Require(!refused.accepted &&
               SessionResultHasDiagnosticCode(refused,
