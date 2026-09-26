@@ -342,7 +342,19 @@ def require_bind_shape_refusal(port: int) -> None:
             sqlstate="08P01",
             diagnostic="invalid BIND payload",
         )
-        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+        sequence += 1
+        # Correct parameter arity must not make a truncated, unknown-format or
+        # overlong result-format trailer acceptable. The C++ prepared client
+        # separately covers a complete binary-result trailer and exact rows.
+        for suffix in (b"\x01", b"\x01\x00", b"\x01\x00\x02\x00", b"\x00\x00\xff"):
+            send_frame(
+                sock, MSG_BIND, sequence,
+                bind_payload("bad_result_format_portal", statement_name, (1, 5, 1)) + suffix,
+                attachment=attachment, txn_id=txn_id,
+            )
+            expect_error(sock, "malformed result-format trailer", sqlstate="08P01", diagnostic="invalid BIND payload")
+            sequence += 1
+        send_frame(sock, MSG_TERMINATE, sequence, attachment=attachment)
     finally:
         sock.close()
 

@@ -136,7 +136,7 @@ def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
         repo_root / "project/src/engine/public_abi.cpp",
         (
             "statement_management_source_free_match_recognize_parameterized_query_template",
-            "source_free_parameterized_query_template",
+            "parameterized_query_template",
         ),
     )
     _require_tokens(

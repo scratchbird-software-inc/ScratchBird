@@ -279,7 +279,7 @@ struct StatementPrepareAuthorityV1 {
   std::string body_operation_family;
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
-  bool source_free_parameterized_query_template = false;
+  bool parameterized_query_template = false;
   scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   // The parameter coordinator owns this UUID.  It is deliberately distinct
   // from canonical_statement_name, which is the session-visible SBsql name.
@@ -1236,7 +1236,7 @@ struct StatementExecuteAuthorityV1 {
   std::string body_operation_family;
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
-  bool source_free_parameterized_query_template = false;
+  bool parameterized_query_template = false;
   scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   std::uint64_t parameter_set_generation = 0;
   scratchbird::engine::internal_api::EngineUuid parameter_set_snapshot_uuid;

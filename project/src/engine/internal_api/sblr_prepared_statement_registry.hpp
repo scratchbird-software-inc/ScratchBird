@@ -51,7 +51,7 @@ struct SblrPreparedStatementRegistryRecordV1 {
   std::string body_operation_family;
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
-  bool source_free_parameterized_query_template = false;
+  bool parameterized_query_template = false;
   EngineUuid parameter_set_uuid;
   EngineUuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_set_generation = 0;

@@ -572,7 +572,7 @@ struct EnginePreparedStatementRecordV1 {
   std::string body_operation_family;
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
-  bool source_free_parameterized_query_template = false;
+  bool parameterized_query_template = false;
   scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   scratchbird::engine::internal_api::EngineUuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_set_generation = 0;
@@ -2042,7 +2042,7 @@ struct StatementManagementBodyV1 {
   std::uint8_t result_mode = 0;
   bool query_preflight_validated = false;
   bool source_free_parameterless_query_template = false;
-  bool source_free_parameterized_query_template = false;
+  bool parameterized_query_template = false;
 };
 
 bool statement_management_source_free_parameterless_query_template(
@@ -2056,12 +2056,16 @@ bool statement_management_source_free_parameterless_query_template(
   return false;
 }
 
-bool statement_management_source_free_parameterized_query_template(
+bool statement_management_parameterized_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
     const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters,
     std::string* detail) {
   if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
           operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterValues, parameters)) {
+    return true;
+  }
+  if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterHeapFilter, parameters)) {
     return true;
   }
   if (detail != nullptr) *detail = "stmt_prepare_bind.parameterized_template_profile_invalid";
@@ -2080,7 +2084,7 @@ bool statement_management_source_free_match_recognize_parameterized_query_templa
   return false;
 }
 
-bool statement_management_rebind_source_free_query_template(
+bool statement_management_rebind_query_template(
     scratchbird::engine::sblr::SblrOperationEnvelope* operation,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
     const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters,
@@ -2240,8 +2244,8 @@ bool statement_management_validate_body(
     const bool exact_source_free_parameterless_template =
         statement_management_source_free_parameterless_query_template(
             preflight_operation, &template_detail);
-    const bool exact_source_free_parameterized_template =
-        statement_management_source_free_parameterized_query_template(
+    const bool exact_parameterized_template =
+        statement_management_parameterized_query_template(
             preflight_operation, parameters, &template_detail);
     const bool exact_source_free_match_recognize_parameterized_template =
         statement_management_source_free_match_recognize_parameterized_query_template(
@@ -2254,8 +2258,8 @@ bool statement_management_validate_body(
     body.query_preflight_validated = preflight.ok;
     body.source_free_parameterless_query_template =
         exact_source_free_parameterless_template && preflight.ok;
-    body.source_free_parameterized_query_template =
-        exact_source_free_parameterized_template ||
+    body.parameterized_query_template =
+        exact_parameterized_template ||
         exact_source_free_match_recognize_parameterized_template;
   }
   switch (validated.entry->transaction_effect) {
@@ -2322,7 +2326,7 @@ statement_management_load_parameter_binding(
             std::move(code), std::move(key), std::move(detail));
     return result;
   };
-  if (!prepared.source_free_parameterized_query_template ||
+  if (!prepared.parameterized_query_template ||
       prepared.source_free_parameterless_query_template ||
       !valid_engine_identity(prepared.parameter_set_uuid) ||
       !valid_engine_identity(
@@ -3109,8 +3113,8 @@ to_prepared_statement_registry_record(
   record.body_result_shape = source.body_result_shape;
   record.source_free_parameterless_query_template =
       source.source_free_parameterless_query_template;
-  record.source_free_parameterized_query_template =
-      source.source_free_parameterized_query_template;
+  record.parameterized_query_template =
+      source.parameterized_query_template;
   record.parameter_set_uuid = source.parameter_set_uuid;
   record.parameter_prepared_statement_uuid =
       source.parameter_prepared_statement_uuid;
@@ -3156,8 +3160,8 @@ EnginePreparedStatementRecordV1 from_prepared_statement_registry_record(
   record.body_result_shape = source.body_result_shape;
   record.source_free_parameterless_query_template =
       source.source_free_parameterless_query_template;
-  record.source_free_parameterized_query_template =
-      source.source_free_parameterized_query_template;
+  record.parameterized_query_template =
+      source.parameterized_query_template;
   record.parameter_set_uuid = source.parameter_set_uuid;
   record.parameter_prepared_statement_uuid =
       source.parameter_prepared_statement_uuid;
@@ -8838,7 +8842,7 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
                   "sblr.stmt_prepare.bind_body_invalid", request_detail);
   }
   if (parameterized_prepare !=
-      body.source_free_parameterized_query_template) {
+      body.parameterized_query_template) {
     return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
                   "DATATYPE.DESCRIPTOR.INVALID",
                   "sblr.stmt_prepare.bind_parameter_template_mismatch");
@@ -8918,8 +8922,8 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
   authority.body_result_shape = body.result_shape;
   authority.source_free_parameterless_query_template =
       body.source_free_parameterless_query_template;
-  authority.source_free_parameterized_query_template =
-      body.source_free_parameterized_query_template;
+  authority.parameterized_query_template =
+      body.parameterized_query_template;
   if (parameterized_prepare) {
     authority.parameter_set_uuid =
         parameter_set.parameter_set_descriptor_uuid;
@@ -16680,9 +16684,9 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
   }
   const bool parameterless =
       prepared.source_free_parameterless_query_template &&
-      !prepared.source_free_parameterized_query_template;
+      !prepared.parameterized_query_template;
   const bool parameterized =
-      prepared.source_free_parameterized_query_template &&
+      prepared.parameterized_query_template &&
       !prepared.source_free_parameterless_query_template;
   const bool prepare_has_parameter_set =
       scratchbird::engine::sblr::stmt_execute_detail::NonZero(
@@ -16697,7 +16701,7 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
                   "SBLR.OPERAND.INVALID",
                   "sblr.stmt_execute.prepared_template_profile_invalid",
                   "named execution requires one exact engine-validated "
-                  "source-free query template profile");
+                  "query template profile");
   }
   StatementManagedParameterBindingV1 parameter_binding;
   if (parameterized) {
@@ -16793,8 +16797,8 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
   authority.body_result_shape = prepared.body_result_shape;
   authority.source_free_parameterless_query_template =
       prepared.source_free_parameterless_query_template;
-  authority.source_free_parameterized_query_template =
-      prepared.source_free_parameterized_query_template;
+  authority.parameterized_query_template =
+      prepared.parameterized_query_template;
   if (parameterized) {
     authority.parameter_set_uuid = prepared.parameter_set_uuid;
     authority.parameter_set_generation = prepared.parameter_set_generation;
@@ -16861,8 +16865,8 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
         current->second.descriptor_sha256 != prepared.descriptor_sha256 ||
         current->second.source_free_parameterless_query_template !=
             prepared.source_free_parameterless_query_template ||
-        current->second.source_free_parameterized_query_template !=
-            prepared.source_free_parameterized_query_template ||
+        current->second.parameterized_query_template !=
+            prepared.parameterized_query_template ||
         current->second.parameter_set_uuid != prepared.parameter_set_uuid ||
         current->second.parameter_set_generation !=
             prepared.parameter_set_generation ||
@@ -17549,7 +17553,7 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
     if (session->closed ||
         found == session->prepared_statements_by_name.end() ||
         found->second.freed ||
-        !found->second.source_free_parameterized_query_template ||
+        !found->second.parameterized_query_template ||
         found->second.source_free_parameterless_query_template ||
         found->second.parameter_prepared_statement_uuid !=
             request->prepared_statement_uuid ||
@@ -22795,7 +22799,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
               context.current_package_uuid.bytes ||
           stmt_execute_authority->source_free_parameterless_query_template ==
               stmt_execute_authority
-                  ->source_free_parameterized_query_template ||
+                  ->parameterized_query_template ||
           (stmt_execute_authority
                    ->source_free_parameterless_query_template &&
            (scratchbird::engine::sblr::stmt_execute_detail::NonZero(
@@ -22805,7 +22809,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             !stmt_execute_authority->parameter_set_uuid.is_nil() ||
             !stmt_execute_authority->canonical_parameter_bytes.empty())) ||
           (stmt_execute_authority
-                   ->source_free_parameterized_query_template &&
+                   ->parameterized_query_template &&
            (stmt_execute_descriptor.parameter_set_uuid !=
                 stmt_execute_authority->parameter_set_uuid.bytes ||
             stmt_execute_descriptor.parameter_set_generation !=
@@ -24263,7 +24267,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
         scratchbird::engine::sblr::SblrStmtPrepareResultV1 prepare_result;
         prepare_result.statement_uuid = stmt_prepare_descriptor.statement_uuid;
         const std::uint64_t prepared_generation =
-            stmt_prepare_authority->source_free_parameterized_query_template
+            stmt_prepare_authority->parameterized_query_template
                 ? stmt_prepare_authority->parameter_prepared_generation
                 : 1;
         if (prepared_generation == 0) {
@@ -24304,9 +24308,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
         published.source_free_parameterless_query_template =
             stmt_prepare_authority
                 ->source_free_parameterless_query_template;
-        published.source_free_parameterized_query_template =
+        published.parameterized_query_template =
             stmt_prepare_authority
-                ->source_free_parameterized_query_template;
+                ->parameterized_query_template;
         published.parameter_set_uuid =
             stmt_prepare_authority->parameter_set_uuid;
         published.parameter_prepared_statement_uuid =
@@ -24415,9 +24419,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
             current->second.source_free_parameterless_query_template !=
                 stmt_execute_authority
                     ->source_free_parameterless_query_template ||
-            current->second.source_free_parameterized_query_template !=
+            current->second.parameterized_query_template !=
                 stmt_execute_authority
-                    ->source_free_parameterized_query_template ||
+                    ->parameterized_query_template ||
             current->second.parameter_set_uuid !=
                 stmt_execute_authority->parameter_set_uuid ||
             current->second.parameter_set_generation !=
@@ -24483,7 +24487,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
         std::optional<scratchbird::engine::internal_api::SblrParameterSetSnapshot>
             nested_parameter_set;
         if (stmt_execute_authority
-                ->source_free_parameterized_query_template) {
+                ->parameterized_query_template) {
           const auto current_binding =
               statement_management_load_parameter_binding(
                   context, view, current_prepared);
@@ -24582,14 +24586,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
         if (stmt_execute_authority
                 ->source_free_parameterless_query_template ==
             stmt_execute_authority
-                ->source_free_parameterized_query_template) {
+                ->parameterized_query_template) {
           return fail_result(
               SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4088,
               "SBLR.OPERAND.INVALID",
               "sblr.stmt_execute.prepared_template_profile_invalid");
         }
         std::string template_rebind_detail;
-        if (!statement_management_rebind_source_free_query_template(
+        if (!statement_management_rebind_query_template(
                 &nested_member, context, nested_parameter_set ? &*nested_parameter_set : nullptr,
                 &template_rebind_detail)) {
           return fail_result(

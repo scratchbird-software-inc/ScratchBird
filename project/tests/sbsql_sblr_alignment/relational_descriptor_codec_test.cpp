@@ -3325,6 +3325,81 @@ wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false, 
   return op;
 }
 
+void TestPreparedHeapFilter() {
+  using Profile = wire::PreparedRelationalQueryProfileV1;
+  auto op = PreparedFixture(1);
+  op.operands.resize(11);
+  const auto add = [&](std::string type, std::string name, wire::SblrValueKind kind, Bytes bytes) {
+    wire::SblrOperand value;
+    value.ordinal = op.operands.size() + 1; value.type = std::move(type); value.name = std::move(name);
+    value.value_kind = kind; value.value_body = std::move(bytes); op.operands.push_back(std::move(value));
+  };
+  const auto text_bytes = [&](std::string_view text) {
+    const auto id = Id(99); Bytes bytes(id.bytes.begin(), id.bytes.end());
+    Append(bytes, text.size(), 8); bytes.insert(bytes.end(), text.begin(), text.end()); return bytes;
+  };
+  op.operands[10].value_body = text_bytes("2");
+  auto parameters = PreparedAuthority(1);
+  for (unsigned i = 0; i < 3; ++i) {
+    auto d = Fixture(1); d.descriptor_id = i + 1; d.descriptor_uuid = i == 2 ? Id(30) : Id(50 + i);
+    add("relational_descriptor_v3", "slot_" + std::to_string(i + 1), wire::SblrValueKind::relational_type_descriptor, Oracle(d));
+  }
+  Expression column, predicate;
+  column.expression_id = 1; column.result_descriptor_id = 1;
+  column.expression_kind = api::RelationalExpressionKind::kIdentifier; column.bound_name_uuid = Id(61);
+  add("relational_expression_v2", "slot_1", wire::SblrValueKind::relational_expression, ExpressionOracle(column));
+  wire::SblrParameterNodeTableV1 table;
+  table.nodes.push_back({2, 1, 0, Id(80).bytes, 9, Id(100).bytes, parameters.slots[0].datatype_descriptor_generation});
+  const auto table_bytes = wire::EncodeSblrParameterNodeTableV1(table);
+  constexpr std::string_view domain = "ScratchBird.SblrParameterNodeTable.V1";
+  Bytes hash_input(domain.begin(), domain.end()); hash_input.insert(hash_input.end(), table_bytes.begin(), table_bytes.end());
+  const auto hash = scratchbird::core::hash::ComputeSha256Digest(hash_input);
+  Require(hash.ok(), "heap parameter fixture hash");
+  add("relational_expression_v1", "2", wire::SblrValueKind::parameter_node_ref,
+      wire::EncodeSblrParameterNodeReferenceV1({1, 2, hash.digest, Id(80).bytes, 9, 0}));
+  predicate.expression_id = 3; predicate.result_descriptor_id = 2;
+  predicate.expression_kind = api::RelationalExpressionKind::kBinary;
+  predicate.child_expression_ids = {1, 2}; predicate.operator_name = "=";
+  add("relational_expression_v2", "slot_3", wire::SblrValueKind::relational_expression, ExpressionOracle(predicate));
+  for (unsigned node = 1; node <= 2; ++node)
+    add("relational_output_v1", "slot_" + std::to_string(node), wire::SblrValueKind::literal_typed,
+        text_bytes(std::to_string(node) + "|1|1|1|0|6964"));
+  add("relational_node_v1", "slot_1", wire::SblrValueKind::literal_typed, text_bytes("1|0|-|1|-"));
+  Bytes binding;
+  Require(wire::EncodeRelationalNodeBindingV1({1, "relation.source.v1", {1}, {Id(62)}, {}, {}}, &binding), "heap scan binding");
+  add("relational_node_binding_v2", "slot_1", wire::SblrValueKind::relational_node_binding, binding);
+  add("relational_node_v1", "slot_2", wire::SblrValueKind::literal_typed, text_bytes("2|0|1|1|-"));
+  Require(wire::EncodeRelationalNodeBindingV1({2, "filter.catalog-column-numeric-comparison.v1", {3}, {}, {}, {}}, &binding), "heap filter binding");
+  add("relational_node_binding_v2", "slot_2", wire::SblrValueKind::relational_node_binding, binding);
+  add("expression.parameter_node_table.v1", "parameter_nodes", wire::SblrValueKind::parameter_node_table, table_bytes);
+  Require(wire::ValidatePreparedRelationalQueryV1(op, Profile::kParameterHeapFilter, &parameters), "native table-backed template refused");
+  Require(!wire::ValidatePreparedRelationalQueryV1(op, Profile::kParameterValues, &parameters), "heap template treated as source-free");
+  const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206), 10, 8, Id(207), Id(5), 4, 5};
+  auto rebound = op;
+  Require(wire::RebindPreparedRelationalQueryV1(&rebound, context, &parameters), "table template rebinding refused");
+  for (unsigned index : {14, 15, 16, 20, 22, 23})
+    Require(rebound.operands[index].value_body == op.operands[index].value_body, "rebinding changed table or parameter identity");
+  for (unsigned which = 0; which < 5; ++which) {
+    auto invalid = parameters;
+    if (which == 0) invalid.slots[0].slot_uuid = invalid.slots[0].datatype_descriptor_uuid;
+    if (which == 1) ++invalid.slots[0].datatype_descriptor_generation;
+    if (which == 2) invalid.slots[0].nullable = false;
+    if (which == 3) invalid.slots[0].direction = api::SblrParameterDirection::out;
+    if (which == 4) invalid.descriptor_generation++;
+    auto unchanged = op;
+    Require(!wire::RebindPreparedRelationalQueryV1(&unchanged, context, &invalid) &&
+        wire::EncodeSblrEnvelope(unchanged) == wire::EncodeSblrEnvelope(op), "bad table parameter authority changed template");
+  }
+  for (const auto* comparison : {"=", "<>", "<", "<=", ">", ">="}) {
+    auto changed = op; predicate.operator_name = comparison;
+    changed.operands[16].value_body = ExpressionOracle(predicate);
+    Require(wire::ValidatePreparedRelationalQueryV1(changed, Profile::kParameterHeapFilter, &parameters), "comparison template refused");
+  }
+  auto invalid = op;
+  predicate.operator_name = "+"; invalid.operands[16].value_body = ExpressionOracle(predicate);
+  Require(!wire::ValidatePreparedRelationalQueryV1(invalid, Profile::kParameterHeapFilter, &parameters), "non-comparison heap filter accepted");
+}
+
 void TestPreparedRelationalQuery() {
   using Profile = wire::PreparedRelationalQueryProfileV1;
   auto nontrivial_literal = PreparedFixture(0, false, 7);
@@ -5527,6 +5602,7 @@ int main() {
     TestPropertyIdentityLifecycle();
     TestRowPattern();
     TestPreparedRelationalQuery();
+    TestPreparedHeapFilter();
   TestPreparedSlotAuthorityFailures();
     TestPreparedRelationalSubstitutions();
     TestCanonicalNameRequest();

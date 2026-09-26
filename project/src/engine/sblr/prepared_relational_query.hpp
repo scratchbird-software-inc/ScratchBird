@@ -18,7 +18,7 @@
 
 namespace scratchbird::engine::sblr {
 enum class PreparedRelationalQueryProfileV1 {
-  kLiteralValues, kParameterValues, kParameterMatchRecognize,
+  kLiteralValues, kParameterValues, kParameterMatchRecognize, kParameterHeapFilter,
 };
 
 // Structural recognition only. Live receipt, descriptor, parameter, resource
@@ -196,7 +196,8 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
         ValidateSblrLiteralReferenceBijectionV1(table, {ref});
   }
   if (profile != PreparedRelationalQueryProfileV1::kParameterValues &&
-      profile != PreparedRelationalQueryProfileV1::kParameterMatchRecognize) return false;
+      profile != PreparedRelationalQueryProfileV1::kParameterMatchRecognize &&
+      profile != PreparedRelationalQueryProfileV1::kParameterHeapFilter) return false;
   if (!d::Slot(op, op.operands.size() - 1, "expression.parameter_node_table.v1", "parameter_nodes", SblrValueKind::parameter_node_table))
     return false;
   const auto table = DecodeSblrParameterNodeTableV1(op.operands.back().value_body.data(), op.operands.back().value_body.size());
@@ -206,6 +207,70 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
   std::vector<std::uint32_t> ids;
   for (std::size_t i = 0; i < count; ++i) { if (i) handles += ','; handles += std::to_string(i + 1); ids.push_back(i + 1); }
   std::vector<internal_api::RelationalTypeDescriptor> descriptors;
+  if (profile == PreparedRelationalQueryProfileV1::kParameterHeapFilter) {
+    // A bound current-heap column filtered by one typed parameter. This only
+    // recognizes the immutable template; ordinary query admission resolves
+    // current catalog, column, security and MGA authority on every execution.
+    if (count != 1 || op.operands.size() != 24 || !parameters ||
+        parameters->state != internal_api::SblrParameterSetState::active ||
+        parameters->slots.size() != 1 ||
+        !core::uuid::IsEngineIdentityUuid(parameters->parameter_set_descriptor_uuid) ||
+        !parameters->descriptor_generation || !d::Descriptors(op, 3, &descriptors) ||
+        !d::Text(op, 10, "uint32", "relational_root_node_id", "2") ||
+        !d::Slot(op, 14, "relational_expression_v2", "slot_1", SblrValueKind::relational_expression) ||
+        !d::Slot(op, 15, "relational_expression_v1", "2", SblrValueKind::parameter_node_ref) ||
+        !d::Slot(op, 16, "relational_expression_v2", "slot_3", SblrValueKind::relational_expression) ||
+        !d::Output(op, 17, 1, 1, 1, 1, 0) || !d::Output(op, 18, 2, 2, 1, 1, 0) ||
+        !d::Text(op, 19, "relational_node_v1", "slot_1", "1|0|-|1|-") ||
+        !d::Text(op, 21, "relational_node_v1", "slot_2", "2|0|1|1|-")) return false;
+    const auto& slot = parameters->slots.front();
+    const auto& node = table.table.nodes.front();
+    const auto& descriptor = descriptors[2];
+    SblrParameterNodeReferenceV1 ref;
+    if (slot.slot_ordinal != 0 || !core::uuid::IsEngineIdentityUuid(slot.slot_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(slot.datatype_descriptor_uuid) ||
+        !slot.datatype_descriptor_generation || slot.direction != internal_api::SblrParameterDirection::in ||
+        node.node_id != 2 || node.parent_operand_ordinal != 1 || node.slot_ordinal != 0 ||
+        node.parameter_set_descriptor_uuid != parameters->parameter_set_descriptor_uuid.bytes ||
+        node.parameter_set_generation != parameters->descriptor_generation ||
+        node.datatype_descriptor_uuid != slot.datatype_descriptor_uuid.bytes ||
+        node.datatype_descriptor_generation != slot.datatype_descriptor_generation ||
+        descriptor.descriptor_uuid != slot.slot_uuid || !descriptor.datatype_identity_authoritative ||
+        descriptor.descriptor_generation != slot.datatype_descriptor_generation ||
+        descriptor.nullability != (slot.nullable ? internal_api::RelationalNullability::kNullable :
+                                                  internal_api::RelationalNullability::kNonNull) ||
+        !DecodeSblrParameterNodeReferenceV1(op.operands[15].value_body.data(), op.operands[15].value_body.size(), &ref) ||
+        !ValidateSblrParameterReferenceBijectionV1(table, {ref})) return false;
+    internal_api::RelationalExpressionRecord column, predicate;
+    RelationalNodeBindingRecord scan;
+    if (!DecodeRelationalExpressionV1(op.operands[14].value_body.data(), op.operands[14].value_body.size(), &column) ||
+        !DecodeRelationalExpressionV1(op.operands[16].value_body.data(), op.operands[16].value_body.size(), &predicate) ||
+        !d::Slot(op, 20, "relational_node_binding_v2", "slot_1", SblrValueKind::relational_node_binding) ||
+        !DecodeRelationalNodeBindingV1(op.operands[20].value_body.data(), op.operands[20].value_body.size(), &scan) ||
+        !column.bound_name_uuid || !core::uuid::IsEngineIdentityUuid(*column.bound_name_uuid) ||
+        !predicate.operator_name || scan.required_object_uuids.size() != 1 ||
+        !core::uuid::IsEngineIdentityUuid(scan.required_object_uuids.front())) return false;
+    internal_api::RelationalExpressionRecord expected_column, expected_predicate;
+    expected_column.expression_id = 1;
+    expected_column.expression_kind = internal_api::RelationalExpressionKind::kIdentifier;
+    expected_column.result_descriptor_id = 1; expected_column.bound_name_uuid = column.bound_name_uuid;
+    expected_predicate.expression_id = 3;
+    expected_predicate.expression_kind = internal_api::RelationalExpressionKind::kBinary;
+    expected_predicate.result_descriptor_id = 2; expected_predicate.child_expression_ids = {1, 2};
+    expected_predicate.operator_name = predicate.operator_name;
+    if (*predicate.operator_name != "=" && *predicate.operator_name != "<>" &&
+        *predicate.operator_name != "<" && *predicate.operator_name != "<=" &&
+        *predicate.operator_name != ">" && *predicate.operator_name != ">=") return false;
+    d::Bytes encoded;
+    RelationalNodeBindingRecord expected_scan, filter;
+    expected_scan.node_id = 1; expected_scan.semantic_variant_id = "relation.source.v1";
+    expected_scan.bound_expression_ids = {1}; expected_scan.required_object_uuids = scan.required_object_uuids;
+    filter.node_id = 2; filter.semantic_variant_id = "filter.catalog-column-numeric-comparison.v1";
+    filter.bound_expression_ids = {3};
+    return EncodeRelationalExpressionV1(expected_column, &encoded) && encoded == op.operands[14].value_body &&
+        EncodeRelationalExpressionV1(expected_predicate, &encoded) && encoded == op.operands[16].value_body &&
+        d::Binding(op, 20, expected_scan) && d::Binding(op, 22, filter);
+  }
   if (profile == PreparedRelationalQueryProfileV1::kParameterValues) {
     const auto expression_begin = 11 + count, output_begin = expression_begin + count, tail = output_begin + count;
     RelationalNodeBindingRecord values_binding;
@@ -293,7 +358,8 @@ inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, co
   if (std::ranges::any_of(ids, [](const auto& id) { return !core::uuid::IsEngineIdentityUuid(id); })) return false;
   bool recognized = false;
   for (const auto profile : {PreparedRelationalQueryProfileV1::kLiteralValues, PreparedRelationalQueryProfileV1::kParameterValues,
-                            PreparedRelationalQueryProfileV1::kParameterMatchRecognize}) {
+                            PreparedRelationalQueryProfileV1::kParameterMatchRecognize,
+                            PreparedRelationalQueryProfileV1::kParameterHeapFilter}) {
     if (ValidatePreparedRelationalQueryV1(*operation, profile, parameters)) { recognized = true; break; }
   }
   if (!recognized) return false;

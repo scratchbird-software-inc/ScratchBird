@@ -144,7 +144,7 @@ SblrPreparedStatementRegistryRecordV1 ParameterizedRecord(
     std::string name, std::uint8_t seed) {
   auto record = Record(std::move(name), seed);
   record.source_free_parameterless_query_template = false;
-  record.source_free_parameterized_query_template = true;
+  record.parameterized_query_template = true;
   record.parameter_set_uuid = NativeUuid(
       NewUuid(scratchbird::core::platform::UuidKind::object));
   record.parameter_prepared_statement_uuid = NativeUuid(

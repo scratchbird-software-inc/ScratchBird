@@ -50,9 +50,23 @@ int main(int argc, char** argv) {
     std::cerr << "execute: " << error.message << '\n';
     return 6;
   }
-  if (!rows.next() || rows.getInt64(0) != 1 || rows.next()) {
+  if (rows.getColumnCount() != 1 || rows.getColumnFormat(0) != 1 ||
+      !rows.next() || rows.getInt64(0) != 1 || rows.next()) {
     std::cerr << "prepared result was not the exact singleton bigint row\n";
     return 7;
+  }
+  statement.setInt64(1, 9223372036854775807LL);
+  scratchbird::client::ResultSet absent;
+  if (statement.executeQuery(&absent, &error) != scratchbird::core::Status::OK || absent.next()) {
+    std::cerr << "rebound absent key did not produce an empty result: " << error.message << '\n';
+    return 8;
+  }
+  statement.setInt64(1, 1);
+  scratchbird::client::ResultSet repeated;
+  if (statement.executeQuery(&repeated, &error) != scratchbird::core::Status::OK ||
+      !repeated.next() || repeated.getInt64(0) != 1 || repeated.next()) {
+    std::cerr << "rebound key did not restore the singleton result: " << error.message << '\n';
+    return 9;
   }
   std::cout << "1\n";
   return 0;

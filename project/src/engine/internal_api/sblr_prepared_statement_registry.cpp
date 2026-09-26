@@ -375,7 +375,7 @@ std::string RegistryPath(const EngineRequestContext& context) {
 bool ParameterStateValid(
     const SblrPreparedStatementRegistryRecordV1& record) {
   if (record.source_free_parameterless_query_template ==
-      record.source_free_parameterized_query_template) {
+      record.parameterized_query_template) {
     return false;
   }
   if (record.source_free_parameterless_query_template) {
@@ -530,7 +530,7 @@ std::vector<std::uint8_t> EncodeRecord(
   SetLe(&encoded, 12, static_cast<std::uint32_t>(record.state), 4);
   std::uint32_t flags = record.quoted ? 1U : 0U;
   if (record.source_free_parameterless_query_template) flags |= 1U << 1U;
-  if (record.source_free_parameterized_query_template) flags |= 1U << 2U;
+  if (record.parameterized_query_template) flags |= 1U << 2U;
   if (record.last_execution_terminal) flags |= 1U << 3U;
   if (record.last_execution_final) flags |= 1U << 4U;
   SetLe(&encoded, 16, flags, 4);
@@ -579,7 +579,7 @@ bool DecodeRecord(const std::uint8_t* data, std::size_t size,
   value.state = static_cast<SblrPreparedStatementRegistryStateV1>(state);
   value.quoted = (flags & 1U) != 0;
   value.source_free_parameterless_query_template = (flags & (1U << 1U)) != 0;
-  value.source_free_parameterized_query_template = (flags & (1U << 2U)) != 0;
+  value.parameterized_query_template = (flags & (1U << 2U)) != 0;
   value.last_execution_terminal = (flags & (1U << 3U)) != 0;
   value.last_execution_final = (flags & (1U << 4U)) != 0;
   value.prepared_generation = GetLe(data + 24, 8);

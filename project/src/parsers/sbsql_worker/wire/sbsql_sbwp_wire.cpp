@@ -288,6 +288,7 @@ struct BoundPortal {
   std::vector<std::uint32_t> param_types;
   std::vector<std::optional<std::string>> param_values;
   std::vector<PreparedParameterWireValue> parameter_wire_values;
+  std::vector<std::uint16_t> result_formats;
   std::vector<std::vector<std::optional<std::string>>> param_rows;
   platform::Uuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_prepared_generation{0};
@@ -4779,11 +4780,73 @@ ParseNativeBulkIngestWireCommand(std::string_view sql) {
   return command;
 }
 
+bool ApplyResultFormats(RowSet* rowset, const std::vector<std::uint16_t>& formats) {
+  if (formats.empty() || rowset->columns.empty()) return true;
+  if (formats.size() != 1 && formats.size() != rowset->columns.size()) return false;
+  for (std::size_t i = 0; i < rowset->columns.size(); ++i) {
+    auto& column = rowset->columns[i];
+    const auto format = formats[formats.size() == 1 ? 0 : i];
+    if (format > 1) return false;
+    if (format == column.format) continue;
+    for (auto& row : rowset->rows) {
+      if (i >= row.size()) return false;
+      if (!row[i]) continue;
+      auto& value = *row[i];
+      std::vector<std::uint8_t> bytes;
+      if (format == 0) {
+        // UUID result packets already carry binary data, independent of UUID
+        // version. Text rendering belongs here, never in engine identity code.
+        if (column.type_oid != kOidUuid || value.size() != 16) return false;
+        platform::Uuid id;
+        std::copy(value.begin(), value.end(), id.bytes.begin());
+        value = uuid::UuidToString(id);
+        continue;
+      }
+      if (column.type_oid == kOidInt2 || column.type_oid == kOidInt4 || column.type_oid == kOidInt8) {
+        std::int64_t number = 0;
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) return false;
+        const unsigned width = column.type_oid == kOidInt2 ? 2 : column.type_oid == kOidInt4 ? 4 : 8;
+        if ((width == 2 && (number < INT16_MIN || number > INT16_MAX)) ||
+            (width == 4 && (number < INT32_MIN || number > INT32_MAX))) return false;
+        for (unsigned byte = 0; byte < width; ++byte)
+          bytes.push_back(static_cast<std::uint8_t>(static_cast<std::uint64_t>(number) >> (8 * byte)));
+      } else if (column.type_oid == kOidBool) {
+        if (value == "true" || value == "TRUE" || value == "1") bytes.push_back(1);
+        else if (value == "false" || value == "FALSE" || value == "0") bytes.push_back(0);
+        else return false;
+      } else if (column.type_oid == kOidFloat4 || column.type_oid == kOidFloat8) {
+        const auto encode = [&]<typename T>() {
+          T number{};
+          const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+          if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) return false;
+          std::uint64_t bits = 0;
+          if constexpr (sizeof(T) == 4) { std::uint32_t raw; std::memcpy(&raw, &number, 4); bits = raw; }
+          else std::memcpy(&bits, &number, 8);
+          for (unsigned byte = 0; byte < sizeof(T); ++byte)
+            bytes.push_back(static_cast<std::uint8_t>(bits >> (8 * byte)));
+          return true;
+        };
+        if (!(column.type_oid == kOidFloat4 ? encode.template operator()<float>() :
+                                             encode.template operator()<double>())) return false;
+      } else if (column.type_oid == kOidText || column.type_oid == kOidVarchar || column.type_oid == kOidNumeric) {
+        if (value.size() > UINT32_MAX) return false;
+        PutU32(&bytes, static_cast<std::uint32_t>(value.size()));
+        bytes.insert(bytes.end(), value.begin(), value.end());
+      } else return false;
+      value.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+    column.format = static_cast<std::uint8_t>(format);
+  }
+  return true;
+}
+
 bool SendPipelineResult(ClientIo* io,
                         SbsqlTestWireSession* session,
                         SbwpSessionState* state,
                         std::string_view sql,
-                        const PipelineResult& result) {
+                        const PipelineResult& result,
+                        const std::vector<std::uint16_t>& result_formats = {}) {
   if (!result.server_cursor_uuid.is_nil() &&
       session != nullptr) {
     bool row_description_sent = false;
@@ -4803,6 +4866,10 @@ bool SendPipelineResult(ClientIo* io,
                                              "PARSER_SERVER_IPC.FETCH_REJECTED"));
       }
       RowSet rowset = ParseRowsFromResultPayload(fetched.row_packet);
+      if (!rowset.malformed && !ApplyResultFormats(&rowset, result_formats)) {
+        (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+        return SendError(io, state, "08P01", "result format does not match returned columns");
+      }
       if (rowset.malformed) {
         (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
         return SendError(io,
@@ -4861,6 +4928,8 @@ bool SendPipelineResult(ClientIo* io,
                                             CommandTagFor(sql, result)));
   }
   RowSet rowset = ParseRowsFromResultPayload(result.server_result_payload);
+  if (!rowset.malformed && !ApplyResultFormats(&rowset, result_formats))
+    return SendError(io, state, "08P01", "result format does not match returned columns");
   if (rowset.malformed) {
     return SendError(io,
                      state,
@@ -5282,7 +5351,19 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
     wire_value.public_type_metadata = oid;
     wire_values.push_back(std::move(wire_value));
   }
-  if (off != payload.size()) return std::nullopt;
+  std::vector<std::uint16_t> result_formats;
+  // Older native clients omit this optional trailer; a present trailer is
+  // decoded completely, never treated as arbitrary ignorable trailing bytes.
+  if (off != payload.size()) {
+    if (payload.size() - off < 2) return std::nullopt;
+    const auto count = ReadU16(payload, off); off += 2;
+    if (payload.size() - off != static_cast<std::size_t>(count) * 2) return std::nullopt;
+    for (std::uint16_t i = 0; i < count; ++i) {
+      const auto format = ReadU16(payload, off); off += 2;
+      if (format > 1) return std::nullopt;
+      result_formats.push_back(format);
+    }
+  }
   BoundPortal bound;
   // Preserve parameter markers through parse/bind/lower. Values travel in
   // the engine-issued parameter-set carrier and never become SQL text.
@@ -5290,6 +5371,7 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   bound.param_types = statement.param_types;
   bound.param_values = std::move(values);
   bound.parameter_wire_values = std::move(wire_values);
+  bound.result_formats = std::move(result_formats);
   bound.param_rows.push_back(bound.param_values);
   bound.parameter_prepared_statement_uuid =
       statement.parameter_prepared_statement_uuid;
@@ -5580,7 +5662,8 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                 const std::vector<PreparedParameterWireValue>*
                     parameter_values = nullptr,
                 const platform::Uuid& parameter_prepared_statement_uuid = {},
-                std::uint64_t parameter_prepared_generation = 0) {
+                std::uint64_t parameter_prepared_generation = 0,
+                const std::vector<std::uint16_t>& result_formats = {}) {
   const bool phase_trace = ParserPhaseTraceEnabled();
   const std::int64_t total_started = phase_trace ? ParserPhaseNowNs() : 0;
   state->ready_sent_for_current_operation = false;
@@ -5860,7 +5943,7 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                        : result.server_operation_id);
     return !send_ready || SendReady(io, state);
   }
-  if (!SendPipelineResult(io, session, state, sql, result)) return false;
+  if (!SendPipelineResult(io, session, state, sql, result, result_formats)) return false;
   if (commit_finality.has_value() && !SendTxnFinalityStatus(io, state, *commit_finality)) {
     return false;
   }
@@ -7544,7 +7627,8 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
                                  autocommit_emulation, nullptr, nullptr, false,
                                  nullptr, &found->second.parameter_wire_values,
                                  found->second.parameter_prepared_statement_uuid,
-                                 found->second.parameter_prepared_generation)) {
+                                 found->second.parameter_prepared_generation,
+                                 found->second.result_formats)) {
             rc = 1;
           }
         }

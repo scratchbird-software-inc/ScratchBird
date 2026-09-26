@@ -117,7 +117,7 @@ api::SblrPreparedStatementRegistryRecordV1 Record() {
   api::SblrPreparedStatementRegistryRecordV1 r;
   r.canonical_name="fixture"; r.body_operation_id="fixture.persistence";
   r.body_operation_family="fixture.family"; r.body_result_shape="fixture.shape";
-  r.source_free_parameterized_query_template=true;
+  r.parameterized_query_template=true;
   r.parameter_set_uuid=Id(11); r.parameter_prepared_statement_uuid=Id(12);
   r.parameter_set_snapshot_uuid=Id(13); r.parameter_set_generation=21;
   r.parameter_set_snapshot_generation=22; r.ordered_slot_table_sha256="sha256:"+std::string(64,'a');
@@ -279,7 +279,7 @@ int main(int argc, char** argv) {
     }
     auto parameterless=record;
     parameterless.source_free_parameterless_query_template=true;
-    parameterless.source_free_parameterized_query_template=false;
+    parameterless.parameterized_query_template=false;
     parameterless.parameter_set_uuid={}; parameterless.parameter_prepared_statement_uuid={};
     parameterless.parameter_set_snapshot_uuid={}; parameterless.parameter_set_generation=0;
     parameterless.parameter_set_snapshot_generation=0; parameterless.ordered_slot_table_sha256.clear();
