@@ -3,6 +3,7 @@
 #include "typed_delete_carrier_codec.hpp"
 #include "typed_delete_test_fixture.hpp"
 #include "hash_digest.hpp"
+#include "../../src/core/datatypes/admitted_datatype_cohort.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -110,6 +111,39 @@ int main() try {
           c.descriptor, c.predicate, c.datatypes, c.operators, &error);
     };
     Require(valid(f), "DELETE datatype/operator binding refused");
+    auto successor = f;
+    successor.descriptor.datatype_registry_generation = 2;
+    successor.datatypes.identity.vector_uuid = scratchbird::core::datatypes::kDatatypeCohortV2.bytes;
+    successor.datatypes.identity.vector_generation = 2;
+    for (auto& row : successor.datatypes.records) {
+      row.datatype_snapshot_uuid = successor.datatypes.identity.vector_uuid;
+      row.datatype_catalog_generation = 2;
+      row.datatype_registry_generation = 2;
+    }
+    fixture::Seal(successor);
+    Require(valid(successor), "DELETE refused admitted successor datatype cohort");
+    const auto refuses_registry = [](const fixture::Fixture& c) {
+      w::TypedDeleteCarrierError error;
+      return !w::ValidateTypedDeleteDatatypeOperatorAuthority(
+                 c.descriptor, c.predicate, c.datatypes, c.operators, &error) &&
+             error.field == "DDDC_registry_binding";
+    };
+    auto mismatched = successor;
+    mismatched.descriptor.datatype_registry_generation = 1;
+    fixture::Seal(mismatched);
+    Require(refuses_registry(mismatched),
+            "DELETE admitted successor authority under a predecessor descriptor");
+    mismatched = f;
+    mismatched.descriptor.datatype_registry_generation = 2;
+    fixture::Seal(mismatched);
+    Require(refuses_registry(mismatched),
+            "DELETE admitted predecessor authority under a successor descriptor");
+    mismatched = successor;
+    mismatched.datatypes.identity.vector_uuid = scratchbird::core::datatypes::kDatatypeCohortV1.bytes;
+    Require(!valid(mismatched), "DELETE admitted old snapshot with successor generation");
+    mismatched = successor;
+    mismatched.datatypes.identity.vector_generation = 3;
+    Require(!valid(mismatched), "DELETE admitted unpublished datatype generation");
     for (unsigned field = 0; field != 7; ++field) {
       auto altered = f;
       auto* hash = field == 0 ? &altered.descriptor.descriptor_evidence_sha256 :

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "typed_delete_carrier_codec.hpp"
+#include "../core/datatypes/admitted_datatype_cohort.hpp"
 #include "hash_digest.hpp"
 #include <algorithm>
 #include <limits>
@@ -464,7 +465,8 @@ bool ValidateTypedDeleteDatatypeOperatorAuthority(
       predicate_hash != descriptor.predicate_vector_sha256)
     return refuse("DDDC_predicate_binding");
   if (datatypes.format_version != 1 || !owned(datatypes.identity) ||
-      datatypes.identity.vector_uuid != kTypedUpdateDatatypeSnapshotUuid ||
+      !core::datatypes::IsAdmittedDatatypeCohort(datatypes.identity.vector_uuid,
+          datatypes.identity.vector_generation, descriptor.datatype_registry_generation) ||
       datatypes.identity.vector_generation != descriptor.datatype_registry_generation ||
       !owned(operators.identity) || operators.identity.vector_uuid != descriptor.builtin_operator_snapshot_uuid ||
       operators.identity.vector_generation != descriptor.builtin_operator_registry_generation)

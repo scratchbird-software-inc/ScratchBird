@@ -41,7 +41,7 @@ as runtime verification. Preserve all existing recovery/security assertions.
 | 2005 | Bulk-import cancellation fixture |
 | 2006 | Three short Unix-socket workspace allocators |
 | 2007 | Catalog/CABI-issued bulk binding fixture |
-| 2008 | Exact admitted DELETE datatype cohort |
+| 2008 | Applied: exact admitted DELETE datatype cohort; registered DELETE/UPDATE carrier tests pass, full-route acceptance still pending |
 | 2009 | Two additional short socket workspace allocators |
 | 2010 | Twelve fixture UUID timestamp unit corrections |
 | 2011 | Runtime session issuance and descriptor negatives |
@@ -67,6 +67,16 @@ The prepared detach fixture is not queued and still needs the actual default
 filespace binding. The prepared COMMENT ON fixture does not implement the missing
 catalog mutation. Default metric catalog binding and executor native descriptor
 propagation also remain open. No feature is closed or deferred by this archive.
+
+The 2008 repair was reconciled with the current source on 2026-09-26. The
+extended registered DELETE test first failed against the unchanged codec, then
+passed after replacing the predecessor-only UUID check with exact shared
+datatype-cohort admission. Both directions of fully sealed cross-generation
+mismatch are rejected at the registry-binding boundary. All existing corruption,
+ownership and recovery checks remain; DELETE now executes 19,498 checks. The
+registered UPDATE carrier regression also passes. This is component coverage,
+not SQL/IPC DELETE execution or full-suite completion. The archived manifest and
+patch retain their original provenance; the applied test has stronger negatives.
 
 The older overlapping Sandbox UPDATE draft is separately committed and pushed on
 `codex/sandbox-uuid-draft-20260926` at `36d3aaff9`. Do not merge that draft wholesale:
