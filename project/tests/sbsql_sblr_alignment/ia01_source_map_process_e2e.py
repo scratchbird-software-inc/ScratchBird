@@ -635,8 +635,13 @@ def main() -> int:
                     trace_path.write_bytes(b"")
         command = [args.client, f"unix:{endpoint}", str(database), "alice",
                    evidence, args.operation, f"sbsql-sblr-{args.operation}-e2e-first"]
+        # Each artifact proof is a multi-operation transaction/savepoint/DDL campaign,
+        # not one query. Individual client/protocol and registered CTest deadlines remain.
+        client_timeout = 120 if args.operation in (
+            "source-artifact-container", "source-artifact-external"
+        ) else 30
         first = subprocess.run(
-            command, capture_output=True, text=True, timeout=30, env=env
+            command, capture_output=True, text=True, timeout=client_timeout, env=env
         )
         if first.returncode != 0:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
@@ -1723,7 +1728,7 @@ def main() -> int:
         elif args.operation == "security-alter-policy":
             second[5] = "security-alter-policy-observe"
         verified = subprocess.run(
-            second, capture_output=True, text=True, timeout=30, env=env
+            second, capture_output=True, text=True, timeout=client_timeout, env=env
         )
         if verified.returncode != 0:
             raise ProofError(
