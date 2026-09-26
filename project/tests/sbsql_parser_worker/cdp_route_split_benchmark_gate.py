@@ -19,6 +19,7 @@ CDP fixture closure.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import socket
@@ -98,13 +99,15 @@ class RouteContext:
 
 
 def make_work_dir(preferred_root: Path) -> Path:
-    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_route_split")
+    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_route_split", Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="cdp_", dir=root))
         endpoint_probe = candidate / "i" / "sc" / "s.sock"
         listener_probe = candidate / "n" / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise RouteBenchmarkError("unable to allocate a short-enough route split workspace")

@@ -99,13 +99,15 @@ class IsqlResult:
 
 
 def make_work_dir(preferred_root: Path) -> Path:
-    roots = (preferred_root, Path(tempfile.gettempdir()) / "sbcp")
+    roots = (preferred_root, Path(tempfile.gettempdir()) / "sbcp", Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="cp_", dir=root))
         endpoint_probe = candidate / "plain" / "restart" / "sc" / "s.sock"
         listener_probe = candidate / "plain" / "restart" / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(str(endpoint_probe)), len(str(listener_probe))) < 100:
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise CopyPersistenceError("unable to allocate a short-enough COPY persistence workspace")

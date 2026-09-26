@@ -391,8 +391,8 @@ def check_cmake_controls(repo_root: Path, project_root: Path) -> list[dict[str, 
         "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
         "SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
         "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB",
+        'Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract',
+        'if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)',
     ):
         require_contains(project_cmake, token, "project_cmake_cluster_controls")
 
@@ -436,11 +436,16 @@ def check_cmake_controls(repo_root: Path, project_root: Path) -> list[dict[str, 
         "src/engine/sblr/CMakeLists.txt",
     ):
         text = require_file(project_root / relative, repo_root)
-        for token in (
+        for forbidden in (
             "add_library(sb_cluster_provider UNKNOWN IMPORTED GLOBAL)",
-            "IMPORTED_LOCATION",
             "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1",
             "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
+            "SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
+        ):
+            if forbidden in text:
+                fail(f"{relative}:direct_private_provider_selection_forbidden:{forbidden}")
+        for token in (
+            "SB_ENABLE_CLUSTER_PROVIDER=ON requires SB_CLUSTER_PROVIDER_STUB=ON; private implementations are never linked into the engine",
             "SB_CLUSTER_PROVIDER_STUB",
             "src/cluster_provider_stub",
             "src/cluster_provider",
@@ -449,7 +454,7 @@ def check_cmake_controls(repo_root: Path, project_root: Path) -> list[dict[str, 
         records.append(
             {
                 "file": relative,
-                "status": "external_stub_no_cluster_selection_declared",
+                "status": "stub_or_no_cluster_selection_direct_private_linking_forbidden",
                 "sha256": sha256_text(text),
             }
         )
@@ -478,7 +483,7 @@ def check_provider_sources(repo_root: Path, project_root: Path) -> list[dict[str
         "cluster_provider_route_admission",
         "result.ok = false",
         "result.cluster_authority_required = true",
-        "kClusterSupportNotEnabledCode",
+        "kClusterPathAbsentCode",
         "cluster.provider",
     ):
         require_contains(no_cluster if token in (
@@ -522,7 +527,7 @@ def check_provider_sources(repo_root: Path, project_root: Path) -> list[dict[str
         "result.ok = false",
         "result.cluster_authority_required = true",
         "cluster.provider.stub",
-        "kClusterHandshakeStubCompileLinkOnlyCode",
+        "kClusterPathAbsentCode",
     ):
         require_contains(stub if token in (
                              "scratchbird.cluster.compile_link_stub_provider",

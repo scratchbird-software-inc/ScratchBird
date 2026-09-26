@@ -36,6 +36,8 @@
 #include "sblr_dispatch_server.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "server_engine_bridge/statement_context.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include <map>
 #include "transaction/local_commit_publication.hpp"
 #include "transaction/transaction_api.hpp"
 #include "typed_update_carrier_codec.hpp"
@@ -62,6 +64,7 @@
 #include <string>
 #include <thread>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -82,6 +85,7 @@ namespace update_wire = scratchbird::wire;
 
 constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000001");
 api::EngineUuid g_database_uuid = kDatabaseUuid;
+api::EngineUuid g_primary_filespace_uuid;
 api::EngineUuid g_principal_uuid =
     scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000002");
 constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000101");
@@ -270,15 +274,16 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.request_id = "sbsfc021-dml-mga-row-result";
   context.database_path = database_path.string();
   context.database_uuid = g_database_uuid;
+  context.default_root_uuid = g_primary_filespace_uuid;
   context.principal_uuid = g_principal_uuid;
   context.session_uuid = FixtureIdentity(std::stoull(session_suffix, nullptr, 16));
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("SBSFC-021");
   context.trace_tags.push_back("dml-mga-row-result");
@@ -360,6 +365,23 @@ sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcod
   return envelope;
 }
 
+auto FixtureSessionScope(const api::EngineRequestContext& context) {
+  return std::make_tuple(context.database_path, context.database_uuid,
+                         context.principal_uuid, context.session_uuid, context.trust_mode);
+}
+
+auto& FixtureStatementSessions() {
+  using Key = decltype(FixtureSessionScope(api::EngineRequestContext{}));
+  static std::map<Key, std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
+  return sessions;
+}
+
+auto& FixtureTypedStatements() {
+  using Key = std::tuple<std::string, api::EngineUuid, std::string>;
+  static std::map<Key, std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
+  return statements;
+}
+
 sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
                                   const std::string& operation_id,
                                   const std::string& opcode,
@@ -367,6 +389,15 @@ sblr::SblrDispatchResult Dispatch(const std::filesystem::path& database_path,
                                   api::EngineApiRequest request = {},
                                   bool requires_transaction = false) {
   RequireServerAdmitted(operation_id, opcode);
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+  if (requires_transaction &&
+      (operation_id.starts_with("dml.") || operation_id == "query.plan_operation")) {
+    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+    auto& session = FixtureStatementSessions()[FixtureSessionScope(context)];
+    if (!session) session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
+    statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, context);
+    context = statement->context;
+  }
   auto envelope = Envelope(operation_id, opcode);
   envelope.requires_transaction_context = requires_transaction;
   request.context = context;
@@ -3756,70 +3787,24 @@ std::shared_ptr<api::EngineDmlUpdateResourceGovernorV1> TypedUpdateResourceGover
 api::EngineRequestContext TypedUpdateStatementContext(
     api::EngineRequestContext context,
     std::string_view suffix, bool publish_native_snapshot = false) {
-  context.statement_uuid =
-      FixtureIdentity(0x800 + std::stoull(std::string(suffix), nullptr, 16));
-  context.statement_receipt_uuid =
-      FixtureIdentity(0x900 + std::stoull(std::string(suffix), nullptr, 16));
-  context.statement_snapshot_uuid =
-      FixtureIdentity(0xa00 + std::stoull(std::string(suffix), nullptr, 16));
-  context.statement_snapshot_generation = 1;
-  context.catalog_epoch_uuid =
-      FixtureIdentity(0xd00 + std::stoull(std::string(suffix), nullptr, 16));
-  context.statement_metadata_snapshot_uuid =
-      FixtureIdentity(0xb00 + std::stoull(std::string(suffix), nullptr, 16));
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  // Receipt, snapshot, metadata and resource identities come from the engine.
+  // Repeated component demands with the same transaction/suffix retain the
+  // original receipt so replay checks exercise the same statement identity.
+  (void)publish_native_snapshot;
+  auto& statement = FixtureTypedStatements()[{context.database_path, context.transaction_uuid, std::string(suffix)}];
+  if (!statement) {
+    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+    auto& session = FixtureStatementSessions()[FixtureSessionScope(context)];
+    if (!session) session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
+    try {
+      statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, context);
+    } catch (const std::exception& error) {
+      std::cerr << "typed statement suffix=" << suffix << ": " << error.what() << '\n';
+      throw;
+    }
+  }
+  context = statement->context;
   context.trace_tags.push_back("private_dml_update_rows_binder");
-  const auto security = api::LoadSecurityPrincipalLifecycleState(context);
-  if (!security.ok) {
-    std::cerr << security.diagnostic.code << ':'
-              << security.diagnostic.message_key << ':'
-              << security.diagnostic.detail << '\n';
-  }
-  Require(security.ok && security.state.security_generation != 0 &&
-              security.state.policy_generation != 0 &&
-              security.state.security_context_generation != 0,
-          "typed UPDATE durable security authority was unavailable");
-  context.security_epoch = security.state.security_generation;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000004");
-  context.authorization_context.security_context_generation =
-      security.state.security_context_generation;
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch =
-      security.state.security_generation;
-  context.authorization_context.policy_epoch =
-      security.state.policy_generation;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back({context.principal_uuid, "principal"});
-  for (const auto& source : security.state.grants) {
-    if (source.revoked || source.grantee_uuid != context.principal_uuid) continue;
-    api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid = source.grant_uuid;
-    grant.subject_uuid = source.grantee_uuid; grant.subject_kind = source.grantee_kind;
-    grant.target_uuid = source.target_object_uuid; grant.right = source.privilege;
-    grant.security_epoch = context.security_epoch; grant.deny = source.grant_effect == "deny";
-    context.authorization_context.grants.push_back(std::move(grant));
-  }
-  context.resource_admission_uuid =
-      FixtureIdentity(0xc00 + std::stoull(std::string(suffix), nullptr, 16));
-  if (publish_native_snapshot) {
-    api::EnginePublishStatementSnapshotRequest request;
-    request.context = context;
-    request.context.statement_snapshot_uuid = {};
-    const auto published = api::EnginePublishStatementSnapshot(request);
-    Require(published.ok, "DELETE fixture MGA statement snapshot publication");
-    context.statement_snapshot_uuid = published.statement_snapshot_uuid;
-    context.snapshot_visible_through_local_transaction_id =
-        published.snapshot_vector.visible_committed_high_watermark;
-    context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
-        published.snapshot_vector.active_excluded_local_transaction_ids;
-    context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-        published.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  }
   // Trusted internal fixture issuer, not a production fallback. Public
   // receipt issuance and teardown are tested separately through the C ABI.
   static std::vector<std::shared_ptr<api::EngineDmlUpdateResourceReceiptV1>> receipts;
@@ -4068,6 +4053,11 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
     memory::MemoryTag pressure_tag;
     pressure_tag.category = memory::MemoryCategory::test_probe;
     pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = context.statement_receipt_uuid.bytes;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = context.principal_uuid.bytes;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::database] = context.database_uuid.bytes;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::session] = context.session_uuid.bytes;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::transaction] = context.transaction_uuid.bytes;
+    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = context.statement_uuid.bytes;
     pressure_tag.purpose = "text_preparation_budget_refusal_fixture";
     auto pressure = memory::DefaultMemoryManager().AllocateScoped(
         memory::DefaultMemoryManager().policy().per_context_limit_bytes,
@@ -4416,6 +4406,9 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
               "TEXT process recovery invalidated the outer boundary");
       read_for(crash_transaction, "seed", false);
       RequireTypedUpdateResourceGrants(0, "TEXT recovery fabricated a surviving-process grant");
+      FixtureTypedStatements().erase({crash_transaction.database_path,
+                                      crash_transaction.transaction_uuid, suffix});
+      FixtureStatementSessions().erase(FixtureSessionScope(crash_transaction));
       std::filesystem::remove_all(crash_root);
     }
   }
@@ -4505,8 +4498,8 @@ void VerifyPublicDmlResourceShutdown(const api::EngineRequestContext& transactio
   Require(sb_engine_session_begin(engine, &begin, &session, nullptr) == SB_ENGINE_STATUS_OK,
           "shutdown public session begin failed");
   bridge::StatementContextAcquireRequest acquire;
-  // The trusted component's synthetic statement identities are deliberately
-  // discarded: this test must obtain fresh authority from the real C ABI.
+  // Discard the previous statement's issued authority before requesting a
+  // fresh receipt through this public session.
   auto acquire_context = transaction;
   acquire_context.statement_uuid = {};
   acquire_context.statement_receipt_uuid = {};
@@ -4516,6 +4509,11 @@ void VerifyPublicDmlResourceShutdown(const api::EngineRequestContext& transactio
   acquire_context.statement_metadata_snapshot_engine_owned = false;
   acquire_context.catalog_epoch_uuid = {};
   acquire_context.resource_admission_uuid = {};
+  acquire_context.optimizer_capability_snapshot_uuid = {};
+  acquire_context.optimizer_resource_snapshot_uuid = {};
+  acquire_context.optimizer_route_snapshot_uuid = {};
+  acquire_context.maximum_mga_relation_decoded_bytes_per_pass = 0;
+  acquire_context.maximum_typed_result_transport_bytes_per_packet = 0;
   acquire_context.dml_update_resource_receipt.reset();
   acquire_context.trace_tags = {"SBSFC-021", "public_shutdown_fixture"};
   acquire_context.optimizer_route_epoch = 1;
@@ -4631,12 +4629,6 @@ void VerifyTypedDeleteDescriptorContract(const std::filesystem::path& database_p
   auto seed = BeginTransaction(database_path, "283");
   api::EngineSecurityGrantPrivilegeRequest privilege;
   privilege.context = TypedUpdateStatementContext(seed, "97");
-  // This seed operation uses the explicit embedded fixture bootstrap, not a
-  // materialized client authorization (which must never fall back to tags).
-  privilege.context.authorization_context = {};
-  privilege.context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  privilege.context.trace_tags.push_back("security.fixture_trace_authority");
-  privilege.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
   privilege.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000284");
   privilege.grantee_uuid = g_principal_uuid; privilege.target_object_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
   privilege.target_object_kind = "table"; privilege.privilege = "DELETE";
@@ -4832,8 +4824,8 @@ void VerifyTypedUpdateDescriptorContract(
     deletion.authenticated_statement_receipt_uuid = context.statement_receipt_uuid;
     deletion.structural_occurrence_id = 1;
     deletion.target_relation_uuid_hint = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000104");
-    update_wire::TypedUpdateUuid descriptor{}, occurrence{};
-    descriptor[0] = occurrence[0] = 1; descriptor[15] = 41; occurrence[15] = 42;
+    const update_wire::TypedUpdateUuid descriptor = scratchbird::tests::FixtureUuid(2007, 41).bytes;
+    const update_wire::TypedUpdateUuid occurrence = scratchbird::tests::FixtureUuid(2007, 42).bytes;
     const auto bind = [&](const api::EngineDmlDeleteRowsBindingDemandV1& input,
                           const api::EngineRequestContext& owner) {
       return api::BindDmlDeletePredicateV1(owner, input, descriptor, 1, occurrence, 1);
@@ -5431,10 +5423,6 @@ void VerifyTypedUpdateDescriptorContract(
   auto deferred_context = TypedUpdateStatementContext(transaction, "f5");
   auto deferred_demand = demand;
   deferred_demand.authenticated_statement_receipt_uuid = deferred_context.statement_receipt_uuid;
-  const auto deferred_bound = api::BindDmlUpdateRowsDescriptorV1(deferred_context, deferred_demand);
-  Require(deferred_bound.ok, "deferred retirement bind failed");
-  api::RetireDmlUpdateResourceReceiptDescriptorsV1(deferred_context);
-  RequireTypedUpdateResourceGrants(1, "cleanup retired an active receipt");
 
   auto run_retirement = std::make_shared<bool>(false);
   auto contention_context = transaction;
@@ -5453,6 +5441,15 @@ void VerifyTypedUpdateDescriptorContract(
     return false;
   };
   contention_context = TypedUpdateStatementContext(contention_context, "f6");
+  // Acquire the competing statements before creating unresolved work. Fresh
+  // snapshot publication must not bypass DML reconciliation; this fixture
+  // exercises resource-owner contention within already-issued statements.
+  auto retry_context = TypedUpdateStatementContext(transaction, "f7");
+  const auto deferred_bound = api::BindDmlUpdateRowsDescriptorV1(deferred_context, deferred_demand);
+  Require(deferred_bound.ok, "deferred retirement bind failed");
+  api::RetireDmlUpdateResourceReceiptDescriptorsV1(deferred_context);
+  RequireTypedUpdateResourceGrants(1, "cleanup retired an active receipt");
+
   auto contention_demand = demand;
   contention_demand.authenticated_statement_receipt_uuid = contention_context.statement_receipt_uuid;
   const auto contention_bound = api::BindDmlUpdateRowsDescriptorV1(contention_context, contention_demand);
@@ -5492,7 +5489,6 @@ void VerifyTypedUpdateDescriptorContract(
   api::RetryRetiredDmlUpdateResourceOwnersV1(wrong_database);
   RequireTypedUpdateResourceGrants(1, "another database identity drained the retired owner");
 
-  auto retry_context = TypedUpdateStatementContext(transaction, "f7");
   auto retry_demand = demand;
   retry_demand.authenticated_statement_receipt_uuid = retry_context.statement_receipt_uuid;
   const auto retry_bound = api::BindDmlUpdateRowsDescriptorV1(retry_context, retry_demand);
@@ -5893,6 +5889,8 @@ int main(int argc, char** argv) {
   Require(created.bootstrap_principal_uuid.valid(),
           "credentialed lifecycle fixture principal UUID missing");
   g_database_uuid = created.state.database_uuid.value;
+  Require(created.state.filespace_uuid.valid(), "credentialed fixture filespace UUID missing");
+  g_primary_filespace_uuid = created.state.filespace_uuid.value;
   g_principal_uuid = created.bootstrap_principal_uuid.value;
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
@@ -5906,6 +5904,8 @@ int main(int argc, char** argv) {
   if (descriptor_only) {
     VerifyTypedDeleteDescriptorContract(database_path);
     VerifyTypedUpdateDescriptorContract(database_path);
+    FixtureTypedStatements().clear();
+    FixtureStatementSessions().clear();
     std::filesystem::remove_all(work);
     std::cout << "sbsql_dml_typed_descriptor_conformance=passed\n";
     return EXIT_SUCCESS;
@@ -5913,6 +5913,8 @@ int main(int argc, char** argv) {
   VerifyTextTargetAuthority(database_path);
   VerifyTypedTextUpdateContract(database_path);
   if (argc == 2 && std::string_view(argv[1]) == "--text-only") {
+    FixtureTypedStatements().clear();
+    FixtureStatementSessions().clear();
     std::filesystem::remove_all(work);
     std::cout << "sbsql_dml_text_update_conformance=passed\n";
     return EXIT_SUCCESS;
@@ -5922,6 +5924,8 @@ int main(int argc, char** argv) {
   VerifyTypedDeleteDescriptorContract(database_path);
   VerifyDmlRowEffects(database_path);
 
+  FixtureTypedStatements().clear();
+    FixtureStatementSessions().clear();
   std::filesystem::remove_all(work);
   std::cout << "sbsql_dml_mga_row_result_conformance=passed\n";
   return EXIT_SUCCESS;

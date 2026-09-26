@@ -215,8 +215,8 @@ def check_project_cmake(repo_root: Path, project_root: Path) -> None:
         "SB_CLUSTER_PROVIDER_STUB",
         "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
         "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB, not both",
+        'Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract',
+        'if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)',
         "tests/release",
         "PUBLIC_RELEASE_PLATFORM_MATRIX",
     ):
@@ -263,9 +263,9 @@ def check_matrix(repo_root: Path, project_root: Path) -> dict[str, Any]:
         '"SB_CLUSTER_PROVIDER_STUB=OFF"',
         'mode: "cluster_stub_boundary"',
         '"SB_CLUSTER_PROVIDER_STUB=ON"',
-        'mode: "cluster_external_boundary"',
+        'mode: "direct_private_provider_link_forbidden"',
         '"SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=<path>"',
-        "routes_to_external_provider_abi_without_claiming_closed_source_cluster_implementation_in_core",
+        "configuration_refused_private_implementation_runs_only_in_supervised_provider_runner_via_signed_gateway_proxy",
         "cluster_positive_implementation_outside_core",
         "no_execution_plan_ctest_dependency",
     ):

@@ -5733,6 +5733,7 @@ if(TARGET sb_engine_internal_api)
     sbsql_narrow_query_profile_source_conformance
     PRIVATE
       sb_engine_internal_api
+      sb_engine
   )
   add_test(
     NAME sbsql_narrow_query_profile_source_conformance

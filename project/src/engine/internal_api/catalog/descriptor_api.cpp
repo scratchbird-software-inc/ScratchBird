@@ -8,6 +8,7 @@
 
 #include "catalog/descriptor_api.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "catalog/column_metadata_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -17,6 +18,7 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 
 #include <cctype>
 #include <optional>
@@ -49,27 +51,17 @@ std::string RenderIdentifier(std::string_view value) {
   return rendered;
 }
 
-std::string RenderColumnType(std::string_view encoded_descriptor) {
-  if (encoded_descriptor.empty()) return "text";
-  for (const std::string_view field : {"canonical", "type"}) {
-    const std::string prefix = std::string(field) + '=';
-    std::size_t begin = 0;
-    while (begin <= encoded_descriptor.size()) {
-      const std::size_t end = encoded_descriptor.find(';', begin);
-      const std::string_view part = encoded_descriptor.substr(
-          begin, end == std::string_view::npos ? std::string_view::npos
-                                                : end - begin);
-      if (part.starts_with(prefix) && part.size() > prefix.size()) {
-        return std::string(part.substr(prefix.size()));
-      }
-      if (end == std::string_view::npos) break;
-      begin = end + 1;
-    }
+std::optional<std::string> RenderColumnType(std::string_view encoded_descriptor) {
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(encoded_descriptor, &metadata)) return std::nullopt;
+  for (const std::string_view key : {"canonical", "type"}) {
+    const auto found = metadata.text.find(std::string(key));
+    if (found != metadata.text.end() && !found->second.empty()) return found->second;
   }
-  return std::string(encoded_descriptor);
+  return std::nullopt;
 }
 
-std::string RenderCreateTableStatement(const CrudTableRecord& table) {
+std::optional<std::string> RenderCreateTableStatement(const CrudTableRecord& table) {
   std::ostringstream out;
   out << "CREATE TABLE " << RenderIdentifier(table.default_name.empty()
                                                  ? std::string_view("unnamed_table")
@@ -78,8 +70,9 @@ std::string RenderCreateTableStatement(const CrudTableRecord& table) {
   for (std::size_t index = 0; index < table.columns.size(); ++index) {
     if (index != 0) out << ", ";
     const auto& column = table.columns[index];
-    out << RenderIdentifier(column.first) << ' '
-        << RenderColumnType(column.second);
+    const auto type = RenderColumnType(column.second);
+    if (!type.has_value()) return std::nullopt;
+    out << RenderIdentifier(column.first) << ' ' << *type;
   }
   out << ')';
   return out.str();
@@ -171,17 +164,20 @@ CatalogPinnedDescriptorCacheKey DescriptorCacheKey(const EngineGetDescriptorRequ
   return key;
 }
 
-void AddShowCreateTableEvidence(EngineGetDescriptorResult* result,
+bool AddShowCreateTableEvidence(EngineGetDescriptorResult* result,
                                 const CrudTableRecord& table) {
-  if (result == nullptr) return;
+  if (result == nullptr) return false;
+  const auto statement = RenderCreateTableStatement(table);
+  if (!statement.has_value()) return false;
   AddApiBehaviorEvidence(result, "show_create_statement", table.table_uuid);
   AddApiBehaviorEvidence(result, "show_create_object_kind", "table");
   AddApiBehaviorRow(result,
                     {{"object_uuid", table.table_uuid},
                      {"object_kind", "table"},
                      {"object_name", table.default_name},
-                     {"create_statement", RenderCreateTableStatement(table)}});
+                     {"create_statement", *statement}});
   result->result_shape.result_kind = "descriptor";
+  return true;
 }
 
 EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescriptorRequest& request);
@@ -251,11 +247,20 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
-      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
+      result.descriptor.encoded_descriptor = EncodeMetadataPairs(table->columns);
+      if (result.descriptor.encoded_descriptor.empty()) {
+        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
+            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
+                "invalid_binary_table_descriptor"));
+      }
       result.result_shape.result_kind = "descriptor";
       result.result_shape.columns.push_back(result.descriptor);
       result.evidence.push_back({"table_descriptor_lookup", table->table_uuid});
-      AddShowCreateTableEvidence(&result, *table);
+      if (!AddShowCreateTableEvidence(&result, *table)) {
+        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
+            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
+                "invalid_binary_column_metadata"));
+      }
       return result;
     }
   }
@@ -270,11 +275,20 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
-      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
+      result.descriptor.encoded_descriptor = EncodeMetadataPairs(table->columns);
+      if (result.descriptor.encoded_descriptor.empty()) {
+        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
+            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
+                "invalid_binary_table_descriptor"));
+      }
       result.result_shape.result_kind = "descriptor";
       result.result_shape.columns.push_back(result.descriptor);
       result.evidence.push_back({"table_descriptor_lookup", table->table_uuid});
-      AddShowCreateTableEvidence(&result, *table);
+      if (!AddShowCreateTableEvidence(&result, *table)) {
+        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
+            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
+                "invalid_binary_column_metadata"));
+      }
       return result;
     }
   }

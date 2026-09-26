@@ -145,7 +145,7 @@
       ],
       "entry_point_family": "cluster_provider_inspect_execute_boundary",
       "execution_authority": "external_or_stub_provider_required",
-      "non_cluster_refusal_code": "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"
+      "non_cluster_refusal_code": "PROCESS.CLUSTER_PATH_ABSENT"
     }
   ],
   "driver_manifest": {
@@ -220,7 +220,7 @@
       "boundary_type": "cluster_provider",
       "contract_version": "sb_cluster_provider_v1",
       "core_classification": "non_core_cluster",
-      "non_cluster_refusal_code": "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"
+      "non_cluster_refusal_code": "PROCESS.CLUSTER_PATH_ABSENT"
     },
     {
       "boundary_id": "cluster_metrics.v1",

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "maintenance_coordinator.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "wire/management_request_codec.hpp"
 #include "process_association_registry.hpp"
 #include "sbps.hpp"
 
@@ -260,9 +262,9 @@ void TestClusterRouteAndWrongAckGenerationFailClosed() {
   ServerMaintenanceOperationRequest ack;
   ack.operation_key = "ack_database_shutdown";
   ack.mode =
-      "acknowledger_kind:parser;"
-      "acknowledger_uuid:parser-013d;"
-      "acknowledgement_generation:41;"
+      "acknowledger_kind:parser;acknowledger_uuid:" +
+      scratchbird::wire::ManagementTargetBytes(scratchbird::tests::FixtureUuid(2013, 1)) +
+      ";acknowledgement_generation:41;"
       "acknowledgement_state:acknowledged";
   ack.request_uuid = sbps::MakeUuidV7Bytes();
   ack.session_uuid = sbps::MakeUuidV7Bytes();

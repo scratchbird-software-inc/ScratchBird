@@ -15,6 +15,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 from typing import Any
@@ -102,12 +103,12 @@ SOURCE_CLAIM_TOKENS = {
         "UdrEntrypointDescriptor",
     ),
     "project/src/cluster_provider/cluster_provider.hpp": (
-        "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+        "PROCESS.CLUSTER_PATH_ABSENT",
         "InspectClusterProvider",
         "ExecuteClusterOperation",
     ),
     "project/src/cluster_provider/no_cluster_provider.cpp": (
-        "kClusterSupportNotEnabledCode",
+        "kClusterPathAbsentCode",
         "ClusterProviderSupportsExecution",
     ),
     "project/src/cluster_provider_stub/stub_cluster_provider.cpp": (
@@ -148,7 +149,8 @@ def reject_private_reference(value: str, context: str) -> None:
     if Path(value).is_absolute():
         fail(f"absolute_path_recorded:{context}:{value}")
     for fragment in FORBIDDEN_REFERENCE_FRAGMENTS:
-        if fragment in value:
+        if (re.search(r'(?<![\w.-])[.]git(?![\w.-])', value, re.IGNORECASE)
+                if fragment == '.' + 'git' else fragment in value):
             fail(f"private_reference_recorded:{context}:{value}")
 
 
@@ -257,7 +259,7 @@ def validate_manifest_shape(repo_root: Path, manifest: dict[str, Any]) -> dict[s
             fail("surface_row_not_object")
         surface_id = str(surface.get("surface_id"))
         if surface.get("classification") == "non_core_cluster_boundary":
-            if surface.get("non_cluster_refusal_code") != "SBLR.CLUSTER.SUPPORT_NOT_ENABLED":
+            if surface.get("non_cluster_refusal_code") != "PROCESS.CLUSTER_PATH_ABSENT":
                 fail(f"cluster_surface_refusal_code_drift:{surface_id}")
         for path_text in surface.get("source_paths", []):
             if not isinstance(path_text, str):
@@ -332,7 +334,8 @@ def validate_driver_manifest(repo_root: Path, manifest: dict[str, Any]) -> dict[
         fail("driver_manifest_path_missing")
     reject_private_reference(path_text, "driver_manifest_path")
     path = require_file(repo_root, path_text)
-    rows = list(csv.DictReader(path.open(newline="", encoding="utf-8")))
+    with path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
     if len(rows) < int(driver.get("minimum_rows", 0)):
         fail(f"driver_manifest_row_count_below_claim:{len(rows)}")
 

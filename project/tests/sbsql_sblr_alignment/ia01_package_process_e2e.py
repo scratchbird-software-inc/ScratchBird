@@ -35,13 +35,15 @@ class ProofError(RuntimeError):
 
 
 def allocate_work(root: Path) -> Path:
-    candidates = (root, Path(tempfile.gettempdir()) / "sb_pkg_e2e")
+    candidates = (root, Path(tempfile.gettempdir()) / "sb_pkg_e2e", Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        candidates += (Path("/tmp"),)
     for candidate in candidates:
         candidate.mkdir(parents=True, exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="p", dir=candidate))
         server_probe = work / "sc" / "s.sock"
         listener_probe = work / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(str(server_probe)), len(str(listener_probe))) < 100:
+        if max(len(os.fsencode(server_probe)), len(os.fsencode(listener_probe))) < 100:
             return work
         shutil.rmtree(work, ignore_errors=True)
     raise ProofError("unable to allocate a short live-route workspace")

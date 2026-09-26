@@ -27,13 +27,8 @@ void Require(bool value, std::string_view detail) {
   if (!value) Fail(detail);
 }
 
-Uuid Id(const char* text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  Require(parsed.ok(), "fixture UUID was invalid");
-  Uuid result{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            result.begin());
-  return result;
+Uuid Id(std::uint32_t ordinal) {
+  return scratchbird::tests::FixtureUuid(2005, ordinal).bytes;
 }
 
 Sha Hash(const char* text) {
@@ -54,40 +49,40 @@ std::filesystem::path UniqueRoot() {
 api::SblrBulkImportStreamAuthorityInputV1 Authority() {
   api::SblrBulkImportStreamAuthorityInputV1 authority;
   authority.authenticated_receipt_uuid =
-      Id("10000000-0000-4000-8000-000000000001");
+      Id(1);
   authority.admitted_command_surface_id = "SBSQL-465931ED7427";
-  authority.binding_uuid = Id("10000000-0000-4000-8000-000000000002");
+  authority.binding_uuid = Id(2);
   authority.binding_generation = 3;
   authority.structural_occurrence = 1;
   authority.import_occurrence = 1;
   authority.syntax_demand_sha256 = Hash("syntax");
   authority.binding_evidence_sha256 = Hash("binding");
   authority.target_relation_uuid =
-      Id("10000000-0000-4000-8000-000000000003");
+      Id(3);
   authority.target_relation_generation = 4;
   authority.owning_transaction_uuid =
-      Id("10000000-0000-4000-8000-000000000004");
+      Id(4);
   authority.owning_local_transaction_id = 5;
   authority.statement_snapshot_uuid =
-      Id("10000000-0000-4000-8000-000000000005");
+      Id(5);
   authority.catalog_epoch_uuid =
-      Id("10000000-0000-4000-8000-000000000006");
+      Id(6);
   authority.catalog_generation = 7;
   authority.security_context_uuid =
-      Id("10000000-0000-4000-8000-000000000007");
+      Id(7);
   authority.security_epoch = 8;
   authority.policy_snapshot_uuid =
-      Id("10000000-0000-4000-8000-000000000008");
+      Id(8);
   authority.policy_generation = 9;
   authority.import_policy_bundle_sha256 = Hash("policy");
   authority.route_snapshot_uuid =
-      Id("10000000-0000-4000-8000-000000000009");
+      Id(9);
   authority.route_generation = 10;
-  authority.row_shape_uuid = Id("10000000-0000-4000-8000-00000000000a");
+  authority.row_shape_uuid = Id(10);
   authority.row_shape_generation = 11;
   authority.column_descriptor_set_sha256 = Hash("columns");
   authority.resource_grant_uuid =
-      Id("10000000-0000-4000-8000-00000000000b");
+      Id(11);
   authority.resource_grant_generation = 12;
   authority.executor_availability_generation = 13;
   authority.effective_maximum_stream_bytes = 1024;
@@ -101,16 +96,16 @@ api::SblrBulkImportStreamAuthorityInputV1 Authority() {
 api::EngineRequestContext Context(
     const api::SblrBulkImportStreamAuthorityInputV1& authority) {
   api::EngineRequestContext context;
-  context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000001");
-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000004");
+  context.statement_receipt_uuid = scratchbird::tests::FixtureUuid(2005, 1);
+  context.transaction_uuid = scratchbird::tests::FixtureUuid(2005, 4);
   context.local_transaction_id = authority.owning_local_transaction_id;
-  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000005");
-  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000006");
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuid(2005, 5);
+  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuid(2005, 6);
   context.catalog_generation_id = authority.catalog_generation;
   context.authorization_context.present = true;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000007");
+  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuid(2005, 7);
   context.authorization_context.security_epoch = authority.security_epoch;
-  context.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-00000000000b");
+  context.resource_admission_uuid = scratchbird::tests::FixtureUuid(2005, 11);
   context.resource_epoch = authority.resource_grant_generation;
   context.security_context_present = true;
   context.statement_metadata_snapshot_engine_owned = true;

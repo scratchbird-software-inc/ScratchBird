@@ -1,3 +1,4 @@
+#include "wire/parameter_slot_table.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "cache/binary_cache_key.hpp"
 #include "../../../wire/parser_server_ipc/public_relation_projection_codec.hpp"
@@ -8947,49 +8948,10 @@ std::optional<std::array<std::uint8_t, 32>> CanonicalSha256(
   return digest;
 }
 
-std::string ParameterSlotUuidText(
-    const std::array<std::uint8_t, 16>& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      text.push_back('-');
-    }
-    text.push_back(kHex[value[index] >> 4U]);
-    text.push_back(kHex[value[index] & 0x0fU]);
-  }
-  return text;
-}
-
 std::optional<std::array<std::uint8_t, 32>> ParameterSlotTableSha256(
     const std::vector<ipc::PreparedParameterSlotReference>& slots) {
-  if (slots.empty() || slots.size() > 4096) return std::nullopt;
-  std::string material;
-  for (std::size_t index = 0; index < slots.size(); ++index) {
-    const auto& slot = slots[index];
-    if (slot.slot_ordinal != index || slot.datatype_descriptor_generation == 0 ||
-        slot.direction < 1 || slot.direction > 3 || slot.nullable > 1 ||
-        !CanonicalUuidBytes(ParameterSlotUuidText(slot.slot_uuid)) ||
-        !CanonicalUuidBytes(
-            ParameterSlotUuidText(slot.datatype_descriptor_uuid)) ||
-        !CanonicalUuidBytes(ParameterSlotUuidText(slot.datatype_type_uuid))) {
-      return std::nullopt;
-    }
-    material.append(std::to_string(slot.slot_ordinal));
-    material.push_back(',');
-    material.append(ParameterSlotUuidText(slot.slot_uuid));
-    material.push_back(',');
-    material.append(ParameterSlotUuidText(slot.datatype_descriptor_uuid));
-    material.push_back(',');
-    material.append(std::to_string(slot.datatype_descriptor_generation));
-    material.push_back(',');
-    material.append(std::to_string(static_cast<unsigned>(slot.direction)));
-    material.push_back(',');
-    material.append(std::to_string(static_cast<unsigned>(slot.nullable)));
-    material.push_back(';');
-  }
-  return CanonicalSha256(CanonicalBytes(material.begin(), material.end()));
+  const auto material = wire_detail::ParameterSlotTableBytesV2(slots);
+  return material ? CanonicalSha256(*material) : std::nullopt;
 }
 
 std::optional<std::array<std::uint8_t, 32>> ParameterNodeTableSha256(
@@ -30456,10 +30418,12 @@ SbsqlTestWireSession::PrepareParameterizedNamedForWire(
       const auto& declared = declared_parameter_types[index];
       const auto& slot = prepared.slots[index];
       if ((declared != "BIGINT" && declared != "INT64") ||
-          ParameterSlotUuidText(slot.datatype_descriptor_uuid) !=
-              "019d0000-0000-7000-8000-00000000d711" ||
-          ParameterSlotUuidText(slot.datatype_type_uuid) !=
-              "019d0000-0000-7000-8000-00000000d712" ||
+          slot.datatype_descriptor_uuid !=
+              std::array<std::uint8_t, 16>{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                                           0x80, 0, 0, 0, 0, 0, 0xd7, 0x11} ||
+          slot.datatype_type_uuid !=
+              std::array<std::uint8_t, 16>{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                                           0x80, 0, 0, 0, 0, 0, 0xd7, 0x12} ||
           slot.datatype_descriptor_generation != 1 || slot.direction != 1) {
         result.messages.diagnostics.push_back(MakeDiagnostic(
             "DATATYPE.DESCRIPTOR.INVALID", "ERROR",

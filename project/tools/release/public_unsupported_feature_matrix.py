@@ -93,12 +93,12 @@ MATRIX_ROWS: tuple[UnsupportedFeatureRow, ...] = (
         surface="local cluster provider execution when cluster support is off",
         public_visibility="public_diagnostic",
         refusal_class="external_provider_required",
-        diagnostic_code="SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
-        message_key="engine.cluster.support_not_enabled",
+        diagnostic_code="PROCESS.CLUSTER_PATH_ABSENT",
+        message_key="engine.cluster.path_absent",
         runtime_executable=False,
         authority_claim=False,
         source_path="src/cluster_provider/no_cluster_provider.cpp",
-        source_token="kClusterSupportNotEnabledCode",
+        source_token="kClusterPathAbsentCode",
         source_no_overclaim_token="info.supports_execution = false;",
         public_test_path="tests/release/public_cluster_provider_boundary_cleanup_gate.cpp",
         public_test_token="no_cluster provider did not publish support-not-enabled diagnostic",
@@ -110,12 +110,12 @@ MATRIX_ROWS: tuple[UnsupportedFeatureRow, ...] = (
         surface="compile-link stub cluster provider execution",
         public_visibility="public_diagnostic",
         refusal_class="compile_time_disabled",
-        diagnostic_code="SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
-        message_key="engine.cluster.stub_compile_link_only",
+        diagnostic_code="PROCESS.CLUSTER_PATH_ABSENT",
+        message_key="engine.cluster.path_absent",
         runtime_executable=False,
         authority_claim=False,
         source_path="src/cluster_provider_stub/stub_cluster_provider.cpp",
-        source_token="kClusterHandshakeStubCompileLinkOnlyCode",
+        source_token="kClusterPathAbsentCode",
         source_no_overclaim_token="info.compile_link_only = true;",
         public_test_path="tests/release/public_cluster_provider_boundary_cleanup_gate.cpp",
         public_test_token="compile-link stub did not publish compile-link-only diagnostic",
@@ -253,7 +253,9 @@ def validate_row(project_root: Path, row: UnsupportedFeatureRow) -> dict[str, An
         require("CLUSTER" in row.diagnostic_code,
                 f"external_provider_without_cluster_diagnostic:{row.feature_id}")
     if row.refusal_class == "compile_time_disabled":
-        require("STUB" in row.diagnostic_code or "COMPILE" in row.diagnostic_code,
+        require((row.diagnostic_code == "PROCESS.CLUSTER_PATH_ABSENT"
+                 if row.feature_id == "cluster.compile_link_stub_provider_execution"
+                 else "STUB" in row.diagnostic_code or "COMPILE" in row.diagnostic_code),
                 f"compile_time_disabled_without_compile_diagnostic:{row.feature_id}")
     if row.refusal_class == "policy_blocked":
         require("POLICY_BLOCKED" in row.diagnostic_code,

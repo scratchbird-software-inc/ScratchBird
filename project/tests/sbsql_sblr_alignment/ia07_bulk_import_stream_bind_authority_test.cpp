@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "catalog/name_registry.hpp"
 #include "database_lifecycle.hpp"
@@ -117,27 +119,7 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  context.authorization_context.security_context_generation = 1;
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 1;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  context.authorization_context.effective_subjects.push_back(subject);
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = Identity(NewUuid(platform::UuidKind::object));
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = Identity(fixture.relation);
-  grant.right = "INSERT";
-  grant.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(grant);
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -156,9 +138,14 @@ std::unique_ptr<Fixture> MakeFixture() {
   create.filespace_uuid = fixture->filespace;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = kEpochMillis;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
+  Require(created.ok(), "database creation failed");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(create.path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "durable bootstrap principal missing");
+  fixture->principal = bootstrap.state.principal_uuid;
 
   api::EngineBeginTransactionRequest begin;
   begin.context = BaseContext(*fixture);
@@ -179,26 +166,20 @@ std::unique_ptr<Fixture> MakeFixture() {
       {{"type", "int32"}, {"nullable", "false"}},
       {{"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716")},
        {"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717")}}})}};
-  Require(!api::AppendMgaTableMetadata(fixture->transaction, table).error,
-          "table metadata append failed");
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               fixture->transaction, table, {}, &fixture->descriptor)
-               .error,
-          "relation descriptor creation failed");
-  api::EngineLocalizedName name;
-  name.name = table.default_name;
-  name.raw_name_text = table.default_name;
-  name.display_name = table.default_name;
-  name.language_tag = "en";
-  name.name_class = "primary";
-  name.default_name = true;
-  name.identifier_profile_uuid = "sbsql_v3";
-  Require(!api::PersistNameRegistryEntriesForObject(
-               fixture->transaction, "test.bulk_import_bind",
-               table.table_uuid, "table", Identity(fixture->schema), {name},
-               table.default_name)
-               .error,
-          "name registry publication failed");
+  fixture->transaction.current_schema_uuid = {};
+  Require(!scratchbird::tests::PublishMgaTableFixture(
+               fixture->transaction, table, {"int32"}).error,
+          "published bound table cohort failed");
+  fixture->schema = {platform::UuidKind::schema, fixture->transaction.current_schema_uuid};
+  const auto loaded = api::LoadMgaRelationStorageDescriptor(fixture->transaction, table.table_uuid);
+  Require(loaded.ok, "published relation descriptor unavailable");
+  fixture->descriptor = loaded.descriptor;
+  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(fixture->transaction);
+  Require(epochs.ok && epochs.state.metadata_epoch && epochs.state.name_resolution_epoch,
+          "published catalog epochs unavailable");
+  fixture->transaction.catalog_generation_id = epochs.state.metadata_epoch;
+  fixture->transaction.name_resolution_epoch = epochs.state.name_resolution_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(fixture->transaction);
   return fixture;
 }
 
@@ -321,6 +302,7 @@ void ReleaseResult(sb_engine_result_t result) {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("bulk_import_bind_authority");
   const auto* bulk_opcode =
       scratchbird::engine::sblr::LookupSblrOpcodeCode(775);
   Require(bulk_opcode != nullptr &&
@@ -365,6 +347,10 @@ int main() {
   bind_frame.payload = request.exact_bind_request_bytes;
   const auto bind_response = server::HandleBindBulkImportStream(
       &server_registry, server::HostedEngineState{}, bind_frame);
+  if (!bind_response.accepted) for (const auto& diagnostic : bind_response.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << '\n';
+    for (const auto& field : diagnostic.fields) std::cerr << field.key << '=' << field.value << '\n';
+  }
   Require(bind_response.accepted && bind_response.diagnostics.empty() &&
               bind_response.response_message_type == static_cast<std::uint16_t>(
                   sbps::MessageType::kBulkImportStreamBindAck) &&
@@ -473,6 +459,9 @@ int main() {
 
   auto unauthorized_context = fixture->transaction;
   unauthorized_context.authorization_context.grants.clear();
+  // The owner fixture has both explicit grants and the engine-issued SysArch
+  // bundle. Remove both authority carriers for this negative binding snapshot.
+  unauthorized_context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   bridge::StatementContextReceiptView unauthorized_view;
   const auto unauthorized_receipt =
       Acquire(session, unauthorized_context, &unauthorized_view);

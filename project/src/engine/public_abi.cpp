@@ -2058,9 +2058,10 @@ bool statement_management_source_free_parameterless_query_template(
 
 bool statement_management_source_free_parameterized_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
+    const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters,
     std::string* detail) {
   if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
-          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterValues)) {
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterValues, parameters)) {
     return true;
   }
   if (detail != nullptr) *detail = "stmt_prepare_bind.parameterized_template_profile_invalid";
@@ -2069,9 +2070,10 @@ bool statement_management_source_free_parameterized_query_template(
 
 bool statement_management_source_free_match_recognize_parameterized_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
+    const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters,
     std::string* detail) {
   if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
-          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterMatchRecognize)) {
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterMatchRecognize, parameters)) {
     return true;
   }
   if (detail != nullptr) *detail = "stmt_prepare_bind.match_recognize_template_profile_invalid";
@@ -2081,6 +2083,7 @@ bool statement_management_source_free_match_recognize_parameterized_query_templa
 bool statement_management_rebind_source_free_query_template(
     scratchbird::engine::sblr::SblrOperationEnvelope* operation,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters,
     std::string* detail) {
   const scratchbird::engine::sblr::PreparedRelationalContextV1 replacement{
       context.catalog_epoch_uuid, context.authorization_context.authority_uuid,
@@ -2090,7 +2093,7 @@ bool statement_management_rebind_source_free_query_template(
       context.snapshot_visible_through_local_transaction_id,
       context.statement_receipt_uuid, context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation, context.datatype_registry_generation};
-  if (scratchbird::engine::sblr::RebindPreparedRelationalQueryV1(operation, replacement)) {
+  if (scratchbird::engine::sblr::RebindPreparedRelationalQueryV1(operation, replacement, parameters)) {
     return true;
   }
   if (detail != nullptr) *detail = "stmt_execute.body_template_rebind_invalid";
@@ -2102,7 +2105,8 @@ bool statement_management_validate_body(
     const std::vector<std::uint8_t>& canonical_execution_envelope_bytes,
     const StatementContextReceiptView& view,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
-    StatementManagementBodyV1* output, std::string* detail) {
+    StatementManagementBodyV1* output, std::string* detail,
+    const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters = nullptr) {
   const auto fail = [&](std::string_view reason) {
     if (detail != nullptr) *detail = std::string(reason);
     return false;
@@ -2238,10 +2242,10 @@ bool statement_management_validate_body(
             preflight_operation, &template_detail);
     const bool exact_source_free_parameterized_template =
         statement_management_source_free_parameterized_query_template(
-            preflight_operation, &template_detail);
+            preflight_operation, parameters, &template_detail);
     const bool exact_source_free_match_recognize_parameterized_template =
         statement_management_source_free_match_recognize_parameterized_query_template(
-            preflight_operation, &template_detail);
+            preflight_operation, parameters, &template_detail);
     scratchbird::engine::internal_api::EngineApiRequest preflight_request;
     const auto preflight = scratchbird::engine::sblr::
         PreflightSblrQueryOperation(
@@ -2288,11 +2292,12 @@ bool statement_management_validate_body(
     const StatementPrepareBindRequestV1& request,
     const StatementContextReceiptView& view,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
-    StatementManagementBodyV1* output, std::string* detail) {
+    StatementManagementBodyV1* output, std::string* detail,
+    const scratchbird::engine::internal_api::SblrParameterSetSnapshot* parameters = nullptr) {
   return statement_management_validate_body(
       request.canonical_container_bytes,
       request.canonical_execution_envelope_bytes, view, context, output,
-      detail);
+      detail, parameters);
 }
 
 struct StatementManagedParameterBindingV1 {
@@ -8826,7 +8831,8 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
   }
   StatementManagementBodyV1 body;
   if (!statement_management_validate_body(*request, view, context, &body,
-                                          &request_detail)) {
+                                          &request_detail,
+                                          parameterized_prepare ? &parameter_set : nullptr)) {
     return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
                   "SBLR.OPERAND.INVALID",
                   "sblr.stmt_prepare.bind_body_invalid", request_detail);
@@ -24474,6 +24480,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         }
         std::optional<scratchbird::engine::sblr::SblrParameterValueSetV1>
             nested_parameter_value_set;
+        std::optional<scratchbird::engine::internal_api::SblrParameterSetSnapshot>
+            nested_parameter_set;
         if (stmt_execute_authority
                 ->source_free_parameterized_query_template) {
           const auto current_binding =
@@ -24522,6 +24530,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                 "sblr.stmt_execute.parameter_binding_generation_stale");
           }
           nested_parameter_value_set = current_binding.value_set;
+          nested_parameter_set = current_binding.parameter_set;
         }
         const auto nested_container =
             scratchbird::engine::DecodeSblrContainerBytes(
@@ -24581,7 +24590,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         }
         std::string template_rebind_detail;
         if (!statement_management_rebind_source_free_query_template(
-                &nested_member, context, &template_rebind_detail)) {
+                &nested_member, context, nested_parameter_set ? &*nested_parameter_set : nullptr,
+                &template_rebind_detail)) {
           return fail_result(
               SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4088,
               "SBLR.OPERAND.INVALID",

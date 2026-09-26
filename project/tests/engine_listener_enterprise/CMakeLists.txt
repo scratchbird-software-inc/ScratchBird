@@ -848,6 +848,7 @@ add_executable(engine_listener_serializable_isolation_conformance
 )
 target_compile_features(engine_listener_serializable_isolation_conformance PRIVATE cxx_std_23)
 target_link_libraries(engine_listener_serializable_isolation_conformance PRIVATE
+  sb_engine
   sb_transaction_mga
   sb_engine_internal_api
 )

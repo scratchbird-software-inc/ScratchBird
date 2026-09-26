@@ -504,14 +504,16 @@ bool ValidateFullDescriptorIdentity() {
   changed[2].descriptor.descriptor_kind = "tuple";
   passed &= Refuses(dag, 7, binding, changed,
                     "descriptor kind drift was admitted");
-  passed &= mutate("type_uuid=019d0000-0000-7000-8000-00000000d712",
-                   "type_uuid=019f3300-0000-7200-8000-000000000999",
-                   "encoded type UUID drift was admitted");
+  changed = row;
+  changed[2].descriptor.type_uuid = scratchbird::tests::FixtureUuid(2011, 1);
+  passed &= Refuses(dag, 7, binding, changed,
+                    "binary type UUID drift was admitted");
   passed &= mutate("nullability=nullable", "nullability=non_null",
                    "encoded nullability drift was admitted");
-  passed &= mutate("collation_uuid=019f3300-0000-7300-8000-000000000301",
-                   "collation_uuid=019f3300-0000-7300-8000-000000000399",
-                   "encoded collation UUID drift was admitted");
+  changed = row;
+  changed[2].descriptor.collation_uuid = scratchbird::tests::FixtureUuid(2011, 2);
+  passed &= Refuses(dag, 7, binding, changed,
+                    "binary collation UUID drift was admitted");
   passed &= mutate("timezone_profile_id=tz-profile-qow-017",
                    "timezone_profile_id=tz-profile-drift",
                    "encoded timezone profile drift was admitted");

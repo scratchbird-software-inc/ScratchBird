@@ -1,4 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -10,6 +12,8 @@
 #include "isolation.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
+#include "ddl/create_api.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
@@ -180,9 +184,11 @@ struct ApiFixture {
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
   api::EngineUuid table_uuid;
-  api::EngineUuid index_uuid;
+  api::EngineRequestContext owner;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
 
   ~ApiFixture() {
+    engine_session.reset();
     if (!root.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(root, ignored);
@@ -232,13 +238,11 @@ api::EnginePredicateEnvelope RangePredicate(std::string column,
 
 api::EngineRequestContext BaseContext(const ApiFixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NativeIdentity(UuidKind::principal, 410);
-  context.session_uuid = NativeIdentity(UuidKind::object, 411);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -247,6 +251,11 @@ api::EngineRequestContext BaseContext(const ApiFixture& fixture,
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(context);
+  if (!epochs.ok) throw std::runtime_error("fixture catalog epochs unavailable");
+  if (epochs.state.metadata_epoch) context.catalog_generation_id = epochs.state.metadata_epoch;
+  if (epochs.state.name_resolution_epoch) context.name_resolution_epoch = epochs.state.name_resolution_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -286,41 +295,25 @@ api::CrudTableRecord Table(const ApiFixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "eler021_serializable";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
-  table.columns.push_back({"note", "canonical=character"});
+  table.columns.push_back({"id", scratchbird::tests::NativeCatalogColumnFixture(
+      {{{"canonical", "text"}, {"primary_key", "true"}}, {}})});
+  table.columns.push_back({"note", scratchbird::tests::NativeCatalogColumnFixture(
+      {{{"canonical", "text"}}, {}})});
   return table;
-}
-
-api::CrudIndexRecord UniqueIdIndex(const ApiFixture& fixture,
-                                   const api::EngineRequestContext& context) {
-  api::CrudIndexRecord index;
-  index.creator_tx = context.local_transaction_id;
-  index.index_uuid = fixture.index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "id";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.unique = true;
-  index.key_envelopes.push_back("id");
-  index.key_envelopes.push_back("unique");
-  return index;
 }
 
 ApiFixture MakeApiFixture() {
   ApiFixture fixture;
   fixture.root = TempRoot();
   fixture.database_path = fixture.root / "eler021_serializable_api.sbdb";
-  fixture.database_uuid = NativeIdentity(UuidKind::database, 401);
   fixture.table_uuid = NativeIdentity(UuidKind::object, 402);
-  fixture.index_uuid = NativeIdentity(UuidKind::object, 403);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
   create.database_uuid = MakeUuid(UuidKind::database, 401);
   create.filespace_uuid = MakeUuid(UuidKind::filespace, 404);
   create.creation_unix_epoch_millis = kBaseMillis + 405;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -328,19 +321,69 @@ ApiFixture MakeApiFixture() {
   }
   Require(created.ok(), "ELER-021 API fixture database should create");
 
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.engine_session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner);
   auto metadata = Begin(fixture, "eler021-metadata", "read_committed");
-  const auto table_metadata = api::AppendMgaTableMetadata(metadata,
-                                                         Table(fixture, metadata));
-  if (table_metadata.error) {
-    std::cerr << table_metadata.code << ':' << table_metadata.detail << '\n';
+  api::EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = api::VisibleSchemaTreeRecords(metadata,
+      metadata.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error || schemas.empty())
+    throw std::runtime_error("serializable fixture bootstrap schema unavailable");
+  metadata.current_schema_uuid = schemas.front().schema_uuid;
+  fixture.owner.current_schema_uuid = metadata.current_schema_uuid;
+  api::EngineCreateTableRequest table_request;
+  table_request.context = metadata;
+  table_request.requested_table_uuid = fixture.table_uuid;
+  table_request.target_schema.uuid = metadata.current_schema_uuid;
+  table_request.target_schema.object_kind = "schema";
+  table_request.table_names.push_back({"en", "primary", "", "eler021_serializable", true});
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto type = dt::LookupDatatypeCatalogRow(manifest.manifest,
+      dt::CanonicalTypeIdFromStableName("text"));
+  if (!manifest.ok() || !type.ok() || type.manifest.descriptor_rows.size() != 1)
+    throw std::runtime_error("serializable fixture text datatype unavailable");
+  const auto& datatype = type.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      metadata.datatype_catalog_snapshot_uuid, metadata.datatype_catalog_generation,
+      metadata.datatype_registry_generation, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  if (!binding.ok) throw std::runtime_error("serializable fixture text codec unavailable");
+  const auto definition = Table(fixture, metadata);
+  for (std::size_t ordinal = 0; ordinal < definition.columns.size(); ++ordinal) {
+    api::EngineColumnDefinition column;
+    column.ordinal = ordinal;
+    column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
+    column.names.push_back({"en", "primary", "", definition.columns[ordinal].first, true});
+    column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = "text";
+    column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+    column.descriptor.type_uuid = binding.row.type_uuid;
+    column.descriptor.encoded_descriptor = definition.columns[ordinal].second;
+    column.nullable = ordinal != 0;
+    table_request.table_columns.push_back(std::move(column));
   }
-  Require(!table_metadata.error, "ELER-021 table metadata should append");
-  const auto index_metadata = api::AppendMgaIndexMetadata(metadata,
-                                                         UniqueIdIndex(fixture, metadata));
-  if (index_metadata.error) {
-    std::cerr << index_metadata.code << ':' << index_metadata.detail << '\n';
+  const auto table_created = api::EngineCreateTable(table_request);
+  if (!table_created.ok) {
+    PrintDiagnostics(table_created);
+    throw std::runtime_error("serializable fixture table creation failed");
   }
-  Require(!index_metadata.error, "ELER-021 index metadata should append");
+  const auto state = api::LoadMgaRelationStoreState(metadata);
+  if (!state.ok) throw std::runtime_error("serializable fixture catalog reload failed");
+  const auto indexes = api::VisibleCrudIndexesForTableColumn(
+      state.state.relation_metadata, fixture.table_uuid, "id", metadata.local_transaction_id);
+  if (indexes.size() != 1 || !indexes.front().unique ||
+      indexes.front().family != api::kCrudIndexFamilyBtree ||
+      indexes.front().profile != api::kCrudIndexProfileRowStoreScalarBtreeV1 ||
+      !uuid::IsEngineIdentityUuid(indexes.front().index_uuid)) {
+    std::cerr << "actual index count=" << indexes.size() << '\n';
+    for (const auto& index : indexes) std::cerr << "unique=" << index.unique
+        << " family=" << index.family << " profile=" << index.profile << '\n';
+    throw std::runtime_error("serializable fixture actual primary-key support index missing");
+  }
   Commit(metadata);
   return fixture;
 }
@@ -357,8 +400,8 @@ api::EngineSelectRowsResult SelectRange(const ApiFixture& fixture,
                                         const api::EngineRequestContext& context,
                                         std::string lower,
                                         std::string upper) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.engine_session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate =
@@ -371,8 +414,8 @@ api::EngineInsertRowsResult InsertRow(const ApiFixture& fixture,
                                       const api::EngineRequestContext& context,
                                       std::string id,
                                       std::string note) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.engine_session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(note)));
@@ -384,8 +427,8 @@ api::EngineInsertRowsResult InsertRow(const ApiFixture& fixture,
 api::EngineUpdateRowsResult UpdateRow(const ApiFixture& fixture,
                                       const api::EngineRequestContext& context,
                                       std::string id) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.engine_session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
@@ -397,8 +440,8 @@ api::EngineUpdateRowsResult UpdateRow(const ApiFixture& fixture,
 api::EngineDeleteRowsResult DeleteRow(const ApiFixture& fixture,
                                       const api::EngineRequestContext& context,
                                       std::string id) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.engine_session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate = EqualsPredicate("id", std::move(id));
@@ -414,6 +457,20 @@ bool SerializableIntegratedEngineApiProof() {
   }
   auto fixture = MakeApiFixture();
 
+  auto unique_writer = Begin(fixture, "eler021-unique-seed", "read_committed");
+  const auto unique_seed = InsertRow(fixture, unique_writer, "001", "original");
+  if (!unique_seed.ok) PrintDiagnostics(unique_seed);
+  ok = Require(unique_seed.ok, "real primary-key fixture seed failed") && ok;
+  Commit(unique_writer);
+  auto duplicate_writer = Begin(fixture, "eler021-unique-duplicate", "read_committed");
+  const auto duplicate = InsertRow(fixture, duplicate_writer, "001", "duplicate");
+  ok = Require(!duplicate.ok && FirstDiagnosticCode(duplicate) ==
+      "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
+      "real primary-key fixture did not reject duplicate insertion") && ok;
+  const auto retained = SelectRange(fixture, duplicate_writer, "001", "001");
+  ok = Require(retained.ok && retained.result_shape.rows.size() == 1,
+      "duplicate refusal changed the committed primary-key row count") && ok;
+  Commit(duplicate_writer);
   auto reader = Begin(fixture, "eler021-reader");
   const auto range_read = SelectRange(fixture, reader, "100", "200");
   ok = Require(range_read.ok,
@@ -441,6 +498,7 @@ bool SerializableIntegratedEngineApiProof() {
 
   auto outside_writer = Begin(fixture, "eler021-outside-writer");
   const auto outside = InsertRow(fixture, outside_writer, "250", "outside");
+  if (!outside.ok) PrintDiagnostics(outside);
   ok = Require(outside.ok,
                "insert outside active serializable range should be admitted") && ok;
   ok = Require(HasEvidence(outside.evidence,
@@ -469,8 +527,8 @@ bool SerializableIntegratedEngineApiProof() {
                "delete refusal should surface read-write diagnostic") && ok;
 
   auto external = Begin(fixture, "eler021-external-authority");
-  api::EngineInsertRowsRequest external_request;
-  external_request.context = external;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> external_request(
+      *fixture.engine_session, external);
   external_request.target_table.uuid = fixture.table_uuid;
   external_request.target_table.object_kind = "table";
   external_request.input_rows.push_back(Row("300", "external"));

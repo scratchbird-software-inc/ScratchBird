@@ -8,6 +8,7 @@
 
 #include "../../../support/binary_uuid_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "sblr_aggregate_window_runtime.hpp"
 #include "uuid.hpp"
@@ -248,10 +249,11 @@ api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  if (!identity.ok) std::abort();
+  return identity.row.type_uuid;
 }
 
 api::EngineUuid CoreAggregateTypeUuid(const std::string_view stable_name) {
@@ -266,10 +268,11 @@ api::EngineUuid CoreAggregateTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  if (!identity.ok) std::abort();
+  return identity.row.type_uuid;
 }
 
 api::EngineUuid FixtureUuid(const unsigned value) {

@@ -8,6 +8,7 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_filespace_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
@@ -22,9 +23,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
-#include <map>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,7 +41,6 @@ using scratchbird::core::platform::UuidKind;
 
 struct DecodedRecord {
   catalog::CatalogTypedRecord record;
-  std::map<std::string, std::string> fields;
 };
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -78,28 +76,6 @@ void ConfigureMemoryFixture() {
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
-}
-
-std::string UuidString(const TypedUuid& value) {
-  return uuid::UuidToString(value.value);
-}
-
-std::map<std::string, std::string> ParsePayloadFields(const std::string& payload) {
-  std::map<std::string, std::string> fields;
-  std::stringstream lines(payload);
-  std::string line;
-  while (std::getline(lines, line)) {
-    std::stringstream tokens(line);
-    std::string token;
-    while (tokens >> token) {
-      const std::size_t split = token.find('=');
-      if (split == std::string::npos) {
-        continue;
-      }
-      fields[token.substr(0, split)] = token.substr(split + 1);
-    }
-  }
-  return fields;
 }
 
 std::vector<page::CatalogPageRow> ReadCatalogRows(const std::filesystem::path& database_path,
@@ -164,7 +140,7 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
       std::cerr << decoded.diagnostic.diagnostic_code << '\n';
     }
     Require(decoded.ok(), "typed catalog record decode failed");
-    records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
+    records.push_back({decoded.record});
   }
   Require(!records.empty(), "no typed catalog records were decoded");
   return records;
@@ -180,55 +156,50 @@ std::vector<DecodedRecord> FilespaceRecords(const std::vector<DecodedRecord>& re
   return filespaces;
 }
 
-void RequireField(const DecodedRecord& record, std::string_view key, std::string_view expected) {
-  const auto found = record.fields.find(std::string(key));
-  Require(found != record.fields.end(), std::string("filespace record missing field ") + std::string(key));
-  Require(found->second == expected,
-          std::string("filespace record field ") + std::string(key) + " has unexpected value");
-}
-
 void RequireFilespaceCatalogRecord(const std::vector<DecodedRecord>& records,
                                    const TypedUuid& database_uuid,
                                    const TypedUuid& filespace_uuid) {
   const auto filespaces = FilespaceRecords(records);
   Require(filespaces.size() == 1, "catalog did not contain exactly one typed filespace record");
-  const auto& record = filespaces.front();
+  const auto decoded = catalog::DecodeCatalogFilespaceRecord(filespaces.front().record.payload);
+  Require(decoded.ok(), "filespace binary catalog payload did not decode");
+  const auto& record = *decoded.record;
 
-  RequireField(record, "database_uuid", UuidString(database_uuid));
-  RequireField(record, "filespace_uuid", UuidString(filespace_uuid));
-  RequireField(record, "filespace_role", "active_primary");
-  RequireField(record, "first_filespace", "1");
-  RequireField(record, "startup_authority", "1");
-  RequireField(record, "catalog_persistence_owner", "1");
-  RequireField(record, "filespace_manifest_owner", "1");
-  RequireField(record, "recovery_evidence_owner", "1");
-  RequireField(record, "state", "online");
-  RequireField(record, "read_only", "0");
+  Require(SameTypedUuid(record.database_uuid, database_uuid), "filespace binary database identity drifted");
+  Require(SameTypedUuid(record.filespace_uuid, filespace_uuid), "filespace binary filespace identity drifted");
+  Require(record.filespace_role == 1, "filespace filespace_role field drifted");
+  Require(record.first_filespace == true, "filespace first_filespace field drifted");
+  Require(record.startup_authority == true, "filespace startup_authority field drifted");
+  Require(record.catalog_persistence_owner == true, "filespace catalog_persistence_owner field drifted");
+  Require(record.filespace_manifest_owner == true, "filespace filespace_manifest_owner field drifted");
+  Require(record.recovery_evidence_owner == true, "filespace recovery_evidence_owner field drifted");
+  Require(record.state == 1, "filespace state field drifted");
+  Require(record.read_only == false, "filespace read_only field drifted");
 
-  RequireField(record, "physical_filespace_id", "0");
-  RequireField(record, "lifecycle_generation", "1");
-  RequireField(record, "filespace_manifest_generation", "1");
-  RequireField(record, "registered_txn", "1");
-  RequireField(record, "last_lifecycle_transaction", "1");
-  RequireField(record, "uuid_source", "fresh_uuidv7");
-  RequireField(record, "header_database_uuid_match_required", "1");
-  RequireField(record, "header_filespace_uuid_match_required", "1");
-  RequireField(record, "startup_state_coupled", "1");
-  RequireField(record, "page_header_coupled", "1");
-  RequireField(record, "open_validate_header", "1");
-  RequireField(record, "attach_admission_validate_header", "1");
-  RequireField(record, "transaction_admission_validate_filespace", "1");
-  RequireField(record, "maintenance_validate_header", "1");
-  RequireField(record, "verify_repair_validate_header", "1");
-  RequireField(record, "shutdown_validate_header", "1");
-  RequireField(record, "recovery_validate_header", "1");
-  RequireField(record, "drop_requires_database_lifecycle", "1");
-  RequireField(record, "quarantine_on_ambiguous", "1");
-  RequireField(record, "state_change_evidence_before_success", "1");
-  RequireField(record, "mga_visibility_required", "1");
-  RequireField(record, "path_is_locator_not_identity", "1");
-  RequireField(record, "duplicate_identity_refusal", "1");
-  RequireField(record, "stale_identity_refusal", "1");
+  Require(record.physical_filespace_id == 0, "filespace physical_filespace_id field drifted");
+  Require(record.lifecycle_generation == 1, "filespace lifecycle_generation field drifted");
+  Require(record.filespace_manifest_generation == 1, "filespace filespace_manifest_generation field drifted");
+  Require(record.registered_txn == 1, "filespace registered_txn field drifted");
+  Require(record.last_lifecycle_transaction == 1, "filespace last_lifecycle_transaction field drifted");
+  Require(record.uuid_source == 1, "filespace uuid_source field drifted");
+  Require(record.header_database_uuid_match_required == true, "filespace header_database_uuid_match_required field drifted");
+  Require(record.header_filespace_uuid_match_required == true, "filespace header_filespace_uuid_match_required field drifted");
+  Require(record.startup_state_coupled == true, "filespace startup_state_coupled field drifted");
+  Require(record.page_header_coupled == true, "filespace page_header_coupled field drifted");
+  Require(record.open_validate_header == true, "filespace open_validate_header field drifted");
+  Require(record.attach_admission_validate_header == true, "filespace attach_admission_validate_header field drifted");
+  Require(record.transaction_admission_validate_filespace == true, "filespace transaction_admission_validate_filespace field drifted");
+  Require(record.maintenance_validate_header == true, "filespace maintenance_validate_header field drifted");
+  Require(record.verify_repair_validate_header == true, "filespace verify_repair_validate_header field drifted");
+  Require(record.shutdown_validate_header == true, "filespace shutdown_validate_header field drifted");
+  Require(record.recovery_validate_header == true, "filespace recovery_validate_header field drifted");
+  Require(record.drop_requires_database_lifecycle == true, "filespace drop_requires_database_lifecycle field drifted");
+  Require(record.quarantine_on_ambiguous == true, "filespace quarantine_on_ambiguous field drifted");
+  Require(record.state_change_evidence_before_success == true, "filespace state_change_evidence_before_success field drifted");
+  Require(record.mga_visibility_required == true, "filespace mga_visibility_required field drifted");
+  Require(record.path_is_locator_not_identity == true, "filespace path_is_locator_not_identity field drifted");
+  Require(record.duplicate_identity_refusal == true, "filespace duplicate_identity_refusal field drifted");
+  Require(record.stale_identity_refusal == true, "filespace stale_identity_refusal field drifted");
 }
 
 void RequireStartupIdentity(const db::DatabaseLifecycleState& state,

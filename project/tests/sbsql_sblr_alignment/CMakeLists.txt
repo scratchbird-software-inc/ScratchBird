@@ -9925,3 +9925,32 @@ target_link_libraries(sbsql_sblr_alignment_direct_bulk_uuid_payload PRIVATE sb_e
 add_test(NAME sbsql_sblr_alignment_direct_bulk_uuid_payload COMMAND sbsql_sblr_alignment_direct_bulk_uuid_payload)
 set_tests_properties(sbsql_sblr_alignment_direct_bulk_uuid_payload PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;component_regression;not_runtime_acceptance" TIMEOUT 120)
+
+
+# Binary parameter hashing and cursor framing are component regressions. The
+# existing process tests retain the independent live execution/publication checks.
+add_executable(sbsql_sblr_alignment_parameter_slot_binary_hash
+  parameter_slot_binary_hash_test.cpp)
+target_compile_features(sbsql_sblr_alignment_parameter_slot_binary_hash PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_parameter_slot_binary_hash PRIVATE
+  ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
+target_link_libraries(sbsql_sblr_alignment_parameter_slot_binary_hash PRIVATE sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_parameter_slot_binary_hash
+  COMMAND sbsql_sblr_alignment_parameter_slot_binary_hash)
+set_tests_properties(sbsql_sblr_alignment_parameter_slot_binary_hash PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;parameter_authority;component_codec;not_e2e"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_execute_result_cursor_identity_framing
+  execute_result_cursor_identity_framing_test.cpp)
+target_compile_features(sbsql_sblr_alignment_execute_result_cursor_identity_framing PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_execute_result_cursor_identity_framing PRIVATE
+  ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_execute_result_cursor_identity_framing PRIVATE
+  sbl_parser_server_ipc_client sb_sblr_parameter_wire_codec)
+add_test(NAME sbsql_sblr_alignment_execute_result_cursor_identity_framing
+  COMMAND sbsql_sblr_alignment_execute_result_cursor_identity_framing)
+set_tests_properties(sbsql_sblr_alignment_execute_result_cursor_identity_framing PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;SBPS;cursor_framing;component_codec;not_e2e"
+  TIMEOUT 60)

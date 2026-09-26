@@ -283,7 +283,10 @@ CRASH_FAULT_CAMPAIGN_ROWS: tuple[dict[str, Any], ...] = (
             "tests/engine_listener_enterprise/engine_listener_storage_io_conformance.cpp": (
                 "FileDeviceDurableCreateSyncCloseAndReadOnlyRefusal",
                 "durable sync failed",
-                "exclusive owner lock was not cleaned up on close",
+                "closed device still reports an open handle",
+                'RunOwnerProbe(executable, path, next_mode, "open")',
+                'RunOwnerProbe(executable, path, next_mode, "crash")',
+                "ownership handoff modified data",
                 "SB-STORAGE-DISK-EXTENT-OVERFLOW",
             ),
         },
@@ -2408,7 +2411,9 @@ OPERATIONAL_READINESS_ROWS: tuple[dict[str, Any], ...] = (
                 "public diagnostic vector missing public shape",
                 "private diagnostic vector missing private shape",
                 "engine lifecycle metric not exposed through sys.metrics.current",
-                "parser rendered lifecycle diagnostic missing retryability",
+                'source_metadata->retry_class == "false"',
+                "scratchbird::core::diagnostics::CanonicalSeverity::warning",
+                "renderer inferred retry or severity from timeout text instead of source metadata",
             ),
             "tests/database_lifecycle/dpc_management_observability_support_bundle_gate.cpp": (
                 "metric_sample_count",

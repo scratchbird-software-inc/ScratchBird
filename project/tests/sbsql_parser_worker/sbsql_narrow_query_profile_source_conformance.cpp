@@ -1,5 +1,6 @@
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "catalog/column_metadata_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -10,6 +11,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/narrow_query_binding_authority.hpp"
@@ -68,7 +70,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 namespace wire = scratchbird::wire;
 
-constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+constexpr auto kDatatypeCatalogSnapshotUuid = api::kBootstrapDatatypeCatalogUuid;
 constexpr auto kInt32DescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716");
 constexpr auto kInt32TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717");
 constexpr auto kTextDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718");
@@ -149,11 +151,15 @@ struct Fixture {
   platform::Uuid principal_uuid;
   platform::Uuid session_uuid;
   api::EngineRequestContext transaction;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
+  std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
   std::shared_ptr<std::atomic_bool> cancelled =
       std::make_shared<std::atomic_bool>(false);
   std::vector<std::int32_t> ids{10, 20, 30, 40, 50};
 
   ~Fixture() {
+    statements.clear();
+    engine_session.reset();
     std::error_code ignored;
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
@@ -177,14 +183,12 @@ api::EngineRequestContext BaseContext(const Fixture& fixture) {
   context.name_resolution_epoch = 1;
   context.datatype_catalog_snapshot_uuid =
       kDatatypeCatalogSnapshotUuid;
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.maximum_mga_relation_decoded_bytes_per_pass =
-      kLargeDecodedGrant;
-  context.catalog_epoch_uuid = NewUuid(platform::UuidKind::object);
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   context.query_cancellation_requested = [flag = fixture.cancelled]() {
     return flag->load();
   };
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -230,16 +234,16 @@ Fixture MakeFixture() {
   create.filespace_uuid = filespace.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = NowMillis();
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << "\n";
   Require(created.ok(), "fixture database creation failed");
 
   fixture.database_uuid = database.value.value;
   fixture.filespace_uuid = filespace.value.value;
-  fixture.schema_uuid = NewUuid(platform::UuidKind::object);
+  fixture.schema_uuid = {};
   fixture.relation_uuid = NewUuid(platform::UuidKind::object);
-  fixture.principal_uuid = NewUuid(platform::UuidKind::principal);
+  fixture.principal_uuid = scratchbird::tests::BootstrapFixtureOwnerContext(create).principal_uuid;
   fixture.session_uuid = NewUuid(platform::UuidKind::object);
   fixture.transaction = Begin(&fixture);
 
@@ -251,8 +255,10 @@ Fixture MakeFixture() {
                    {"k1", Int32Descriptor(true)},
                    {"k2", Int32Descriptor(true)},
                    {"payload", TextDescriptor(true)}};
-  Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(
+              fixture.transaction, table, {"int32", "int32", "int32", "text"}).error,
           "fixture table metadata append failed");
+  fixture.schema_uuid = fixture.transaction.current_schema_uuid;
   api::MgaRelationStorageDescriptor descriptor;
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
       fixture.transaction, table, {}, &descriptor);
@@ -295,41 +301,17 @@ Fixture MakeFixture() {
 api::EngineRequestContext QueryContext(Fixture* fixture) {
   Require(fixture != nullptr, "fixture is absent");
   auto context = fixture->transaction;
-  context.statement_uuid = NewUuid(platform::UuidKind::object);
-  context.statement_receipt_uuid =
-      NewUuid(platform::UuidKind::object);
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  RequireOk(snapshot, "statement snapshot publication failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid =
-      NewUuid(platform::UuidKind::object);
-
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      NewUuid(platform::UuidKind::object);
-  context.authorization_context.security_context_generation = 1;
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 1;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  context.authorization_context.effective_subjects.push_back(subject);
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = NewUuid(platform::UuidKind::object);
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = fixture->relation_uuid;
-  grant.right = "SELECT";
-  grant.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(grant));
+  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(context);
+  Require(epochs.ok, "fixture catalog epochs unavailable");
+  context.catalog_generation_id = epochs.state.metadata_epoch;
+  context.name_resolution_epoch = epochs.state.name_resolution_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+  if (!fixture->engine_session)
+    fixture->engine_session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
+  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+      *fixture->engine_session, context);
+  context = statement->context;
+  fixture->statements.push_back(std::move(statement));
   context.trace_tags = {"private_narrow_query_binding_binder"};
   return context;
 }
@@ -1038,6 +1020,10 @@ void RequireUnchangedPostState(
 
 int main() {
   try {
+    const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+        scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+        "sbsql_narrow_query_profile_source_conformance");
+    Require(memory.ok() && memory.fixture_mode, "fixture memory configuration failed");
     auto fixture = MakeFixture();
     const auto post_state_context = QueryContext(&fixture);
     const auto initial_post_state =

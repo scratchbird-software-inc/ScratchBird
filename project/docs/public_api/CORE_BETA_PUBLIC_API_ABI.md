@@ -164,7 +164,7 @@ inside the engine/server boundary and are not public binary-view fields.
   - `project/src/cluster_provider/cluster_provider.hpp`
   - `project/src/cluster_provider/no_cluster_provider.cpp`
   - `project/src/cluster_provider_stub/stub_cluster_provider.cpp`
-- Non-cluster refusal code: `SBLR.CLUSTER.SUPPORT_NOT_ENABLED`.
+- Non-cluster refusal code: `PROCESS.CLUSTER_PATH_ABSENT`.
 - Positive cluster execution requires an external or stub provider boundary and
   is not claimed as core implementation.
 

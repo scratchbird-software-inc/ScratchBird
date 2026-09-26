@@ -44,7 +44,7 @@ REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
         'bool security_default_policy_installed = true',
         'bool database_auto_create = false',
         'std::string database_open_mode = "normal"',
-        'std::string database_daemon_scope = "shared"',
+        'std::string database_daemon_scope = "dedicated"',
         'bool embedded_direct_mode = false',
         "struct ServerListenerProfileConfig",
         'std::vector<ServerListenerProfileConfig> listener_profiles',

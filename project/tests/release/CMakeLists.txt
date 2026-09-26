@@ -2049,6 +2049,23 @@ set_tests_properties(public_secure_defaults_gate PROPERTIES
 )
 
 # PUBLIC_UNSUPPORTED_FEATURE_GATE
+add_test(NAME public_release_contract_oracle_regression
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/release_contract_oracle_regression.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+set_tests_properties(public_release_contract_oracle_regression PROPERTIES
+  LABELS "public_release_correctness;release_hygiene;source_oracle;negative_controls"
+  TIMEOUT 60)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME public_short_socket_workspace_regression
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/short_socket_workspace_regression.py
+            --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+  set_tests_properties(public_short_socket_workspace_regression PROPERTIES
+    LABELS "public_release_correctness;linux_proof;unix_socket;test_harness"
+    TIMEOUT 60)
+endif()
+
 add_test(
   NAME public_unsupported_feature_gate
   COMMAND ${Python3_EXECUTABLE}

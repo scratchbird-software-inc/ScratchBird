@@ -27,7 +27,7 @@ machine-readable API/ABI freeze source.
 | --- | --- | --- |
 | Public headers | Header inventory must match `public_headers` in the manifest. | `sb_engine_public_headers_api_docs_freeze_gate`; `PUBLIC_API_ABI_SURFACE` |
 | C API symbols | Symbol inventory must match `c_api_symbols` in the manifest. | `sb_engine_public_abi_symbol_gate`; `sb_engine_abi_version_packed` |
-| Provider ABI | Cluster provider and extension boundaries must stay provider-gated and fail closed without external authority. | `public_cluster_provider_handshake_gate`; `SBLR.CLUSTER.SUPPORT_NOT_ENABLED` |
+| Provider ABI | Cluster provider and extension boundaries must stay provider-gated and fail closed without external authority. | `public_cluster_provider_handshake_gate`; `PROCESS.CLUSTER_PATH_ABSENT` |
 | File format | Version metadata and upgrade gates must refuse unsupported or downgraded format transitions. | `public_release_version_metadata_gate`; `public_upgrade_migration_gate` |
 | Diagnostics | Diagnostic shape, message keys, redaction class, and compatibility status must stay stable. | `public_diagnostic_stability_gate`; `PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR` |
 | Config | Public secure defaults and config schema checks must remain fail-closed. | `public_default_config_check`; `PUBLIC_DEFAULT_CONFIG_CHECK` |

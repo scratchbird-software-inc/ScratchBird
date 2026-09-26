@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "engine/internal_api/sblr_parameter_set_registry.hpp"
 
 #include "relational_descriptor_codec.hpp"
 #include "relational_identity_codec.hpp"
@@ -114,7 +115,12 @@ inline bool Output(const SblrOperationEnvelope& op, std::size_t index, std::uint
 }
 inline bool Parameters(const SblrOperationEnvelope& op, const SblrParameterNodeTableCodecResultV1& table,
                        const std::vector<internal_api::RelationalTypeDescriptor>& descriptors,
-                       std::size_t expression_begin, std::size_t descriptor_offset) {
+                       std::size_t expression_begin, std::size_t descriptor_offset,
+                       const internal_api::SblrParameterSetSnapshot* parameters) {
+  if (!parameters || parameters->state != internal_api::SblrParameterSetState::active ||
+      !core::uuid::IsEngineIdentityUuid(parameters->parameter_set_descriptor_uuid) ||
+      parameters->descriptor_generation == 0 ||
+      parameters->slots.size() != table.table.nodes.size()) return false;
   std::vector<SblrParameterNodeReferenceV1> refs;
   for (std::size_t i = 0; i < table.table.nodes.size(); ++i) {
     const auto& node = table.table.nodes[i];
@@ -122,8 +128,24 @@ inline bool Parameters(const SblrOperationEnvelope& op, const SblrParameterNodeT
         node.node_id != i + 1 || node.parent_operand_ordinal != i + 1 || node.slot_ordinal != i ||
         i + descriptor_offset >= descriptors.size()) return false;
     const auto& descriptor = descriptors[i + descriptor_offset];
-    if (node.datatype_descriptor_uuid != descriptor.descriptor_uuid.bytes ||
+    const auto& slot = parameters->slots[i];
+    // The relational descriptor owns the issued slot identity; SBPN retains
+    // the distinct catalog datatype descriptor. Join both to admitted authority.
+    if (slot.slot_ordinal != i ||
+        !core::uuid::IsEngineIdentityUuid(slot.slot_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(slot.datatype_descriptor_uuid) ||
+        node.parameter_set_descriptor_uuid != parameters->parameter_set_descriptor_uuid.bytes ||
+        node.parameter_set_generation != parameters->descriptor_generation ||
+        descriptor.descriptor_uuid != slot.slot_uuid ||
+        node.datatype_descriptor_uuid != slot.datatype_descriptor_uuid.bytes ||
+        node.datatype_descriptor_generation != slot.datatype_descriptor_generation ||
+        slot.datatype_descriptor_generation == 0 ||
+        slot.direction != internal_api::SblrParameterDirection::in ||
+        descriptor.nullability != (slot.nullable ? internal_api::RelationalNullability::kNullable :
+                                                  internal_api::RelationalNullability::kNonNull) ||
         (descriptor.datatype_identity_authoritative && node.datatype_descriptor_generation != descriptor.descriptor_generation)) return false;
+    for (std::size_t prior = 0; prior < i; ++prior)
+      if (parameters->slots[prior].slot_uuid == slot.slot_uuid) return false;
     SblrParameterNodeReferenceV1 ref;
     if (!DecodeSblrParameterNodeReferenceV1(op.operands[expression_begin + i].value_body.data(),
             op.operands[expression_begin + i].value_body.size(), &ref) ||
@@ -144,7 +166,8 @@ inline bool Property(const SblrOperationEnvelope& op, std::size_t index,
 }
 }  // namespace prepared_relational_detail
 
-inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, PreparedRelationalQueryProfileV1 profile) {
+inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, PreparedRelationalQueryProfileV1 profile,
+    const internal_api::SblrParameterSetSnapshot* parameters = nullptr) {
   namespace d = prepared_relational_detail;
   if (!d::Header(op)) return false;
   if (profile == PreparedRelationalQueryProfileV1::kLiteralValues) {
@@ -190,7 +213,7 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
     values_binding.semantic_variant_id = "values.literal-table.v1";
     values_binding.bound_expression_ids = ids;
     if (op.operands.size() != 15 + 3 * count || !d::Descriptors(op, count, &descriptors) ||
-        !d::Parameters(op, table, descriptors, expression_begin, 0) ||
+        !d::Parameters(op, table, descriptors, expression_begin, 0, parameters) ||
         !d::Text(op, 10, "uint32", "relational_root_node_id", "1") ||
         !d::Text(op, tail, "relational_values_row_v1", "slot_1", handles) ||
         !d::Text(op, tail + 1, "relational_node_v1", "slot_1", "13|0|-|" + handles + "|1") ||
@@ -201,7 +224,7 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
   }
   const auto expression_begin = 12 + count, output_begin = expression_begin + count + 1, tail = output_begin + 2;
   if ((count != 2 && count != 3) || op.operands.size() != 24 + 2 * count || !d::Descriptors(op, count + 1, &descriptors) ||
-      !d::Parameters(op, table, descriptors, expression_begin, 1) ||
+      !d::Parameters(op, table, descriptors, expression_begin, 1, parameters) ||
       !d::Text(op, 10, "uint32", "relational_root_node_id", "2")) return false;
   const std::uint32_t output_expression = count + 1;
   constexpr core::platform::Uuid function{{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7e,0x2c,0xb4,0x37,0xeb,0xbb,0xc2,0xd4,0xf3,0x5b}};
@@ -259,7 +282,8 @@ struct PreparedRelationalContextV1 {
   core::platform::Uuid statement_receipt_uuid, datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0}, datatype_registry_generation{0};
 };
-inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, const PreparedRelationalContextV1& context) {
+inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, const PreparedRelationalContextV1& context,
+    const internal_api::SblrParameterSetSnapshot* parameters = nullptr) {
   if (!operation || !context.local_transaction_id ||
       !core::uuid::IsEngineIdentityUuid(context.statement_receipt_uuid) ||
       !core::uuid::IsEngineIdentityUuid(context.datatype_catalog_snapshot_uuid) ||
@@ -270,7 +294,7 @@ inline bool RebindPreparedRelationalQueryV1(SblrOperationEnvelope* operation, co
   bool recognized = false;
   for (const auto profile : {PreparedRelationalQueryProfileV1::kLiteralValues, PreparedRelationalQueryProfileV1::kParameterValues,
                             PreparedRelationalQueryProfileV1::kParameterMatchRecognize}) {
-    if (ValidatePreparedRelationalQueryV1(*operation, profile)) { recognized = true; break; }
+    if (ValidatePreparedRelationalQueryV1(*operation, profile, parameters)) { recognized = true; break; }
   }
   if (!recognized) return false;
   auto staged = *operation;

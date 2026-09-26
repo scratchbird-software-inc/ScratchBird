@@ -3190,6 +3190,17 @@ void TestNativeArtifactPublication() {
 namespace {
 // Independent carrier fixtures: this is shape/rebinding coverage, not a live
 // receipt, parser route, parameter execution or catalog-authority oracle.
+api::SblrParameterSetSnapshot PreparedAuthority(unsigned count, bool match = false) {
+  api::SblrParameterSetSnapshot authority;
+  authority.state = api::SblrParameterSetState::active;
+  authority.parameter_set_descriptor_uuid = Id(80);
+  authority.descriptor_generation = 9;
+  for (unsigned i = 0; i < count; ++i)
+    authority.slots.push_back({i, Id(30 + i + (match ? 1 : 0)), Id(100 + i),
+        0x0102030405060708ULL, api::SblrParameterDirection::in, true});
+  return authority;
+}
+
 wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false, std::uint64_t literal_node_id = 1) {
   auto op = wire::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE", "prepared.binary.fixture");
   op.opcode_code = 4615; op.parser_package_uuid = Id(6); op.registry_snapshot_uuid = Id(7);
@@ -3254,7 +3265,7 @@ wire::SblrOperationEnvelope PreparedFixture(unsigned count, bool match = false, 
     for (unsigned i = 0; i < count; ++i) {
       const auto& descriptor = descriptors[i + (match ? 1 : 0)];
       table.nodes.push_back({i + 1, i + 1, i, Id(80).bytes, 9,
-                            descriptor.descriptor_uuid.bytes, descriptor.descriptor_generation});
+                            Id(100 + i).bytes, descriptor.descriptor_generation});
       if (i) handles += ',';
       handles += std::to_string(i + 1); ids.push_back(i + 1);
     }
@@ -3326,17 +3337,18 @@ void TestPreparedRelationalQuery() {
       std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max(), Id(207), Id(5), 4, 5};
   for (const auto [count, match] : {std::pair{0u,false}, {1u,false}, {2u,false}, {16u,false}, {2u,true}, {3u,true}}) {
     const auto original = PreparedFixture(count, match);
+    const auto parameters = PreparedAuthority(count, match);
     const auto profile = match ? Profile::kParameterMatchRecognize : count ? Profile::kParameterValues : Profile::kLiteralValues;
     Require(wire::ValidateSblrEnvelope(original).ok, "prepared independent envelope invalid");
-    Require(wire::ValidatePreparedRelationalQueryV1(original, profile), "prepared binary profile refused");
+    Require(wire::ValidatePreparedRelationalQueryV1(original, profile, &parameters), "prepared binary profile refused");
     for (auto other : {Profile::kLiteralValues, Profile::kParameterValues, Profile::kParameterMatchRecognize})
-      if (other != profile) Require(!wire::ValidatePreparedRelationalQueryV1(original, other), "prepared profile confused");
+      if (other != profile) Require(!wire::ValidatePreparedRelationalQueryV1(original, other, &parameters), "prepared profile confused");
     const auto bytes = wire::EncodeSblrEnvelope(original);
     const auto decoded = wire::DecodeSblrEnvelope(bytes);
-    Require(decoded.ok && wire::ValidatePreparedRelationalQueryV1(decoded.envelope, profile), "prepared SBOP round trip failed");
+    Require(decoded.ok && wire::ValidatePreparedRelationalQueryV1(decoded.envelope, profile, &parameters), "prepared SBOP round trip failed");
     auto changed = original;
-    Require(wire::RebindPreparedRelationalQueryV1(&changed, context), "prepared context rebinding refused");
-    Require(wire::ValidatePreparedRelationalQueryV1(changed, profile), "rebound query lost canonical shape");
+    Require(wire::RebindPreparedRelationalQueryV1(&changed, context, &parameters), "prepared context rebinding refused");
+    Require(wire::ValidatePreparedRelationalQueryV1(changed, profile, &parameters), "rebound query lost canonical shape");
     auto expected = original;
     for (unsigned i = 0; i < 6; ++i) {
       const auto id = Id(201 + i);
@@ -3363,12 +3375,12 @@ void TestPreparedRelationalQuery() {
       if (mismatch == 1) ++stale.datatype_catalog_generation;
       if (mismatch == 2) ++stale.datatype_registry_generation;
       auto untouched = original;
-      Require(!wire::RebindPreparedRelationalQueryV1(&untouched, stale) &&
+      Require(!wire::RebindPreparedRelationalQueryV1(&untouched, stale, &parameters) &&
                   wire::EncodeSblrEnvelope(untouched) == bytes,
               "prepared rebind accepted a changed datatype cohort or partially published");
     }
     auto zero_visible = context; zero_visible.snapshot_visible_through_local_transaction_id = 0;
-    Require(wire::RebindPreparedRelationalQueryV1(&changed, zero_visible), "zero visible horizon refused");
+    Require(wire::RebindPreparedRelationalQueryV1(&changed, zero_visible, &parameters), "zero visible horizon refused");
     for (auto member : {&wire::PreparedRelationalContextV1::catalog_epoch_uuid, &wire::PreparedRelationalContextV1::security_context_uuid,
         &wire::PreparedRelationalContextV1::statement_uuid, &wire::PreparedRelationalContextV1::transaction_uuid,
         &wire::PreparedRelationalContextV1::statement_snapshot_uuid, &wire::PreparedRelationalContextV1::statement_metadata_snapshot_uuid,
@@ -3376,12 +3388,12 @@ void TestPreparedRelationalQuery() {
       for (bool nil : {false, true}) {
         auto invalid = context; if (nil) invalid.*member = {}; else (invalid.*member).bytes[6] = 0x40;
         changed = original;
-        Require(!wire::RebindPreparedRelationalQueryV1(&changed, invalid) && wire::EncodeSblrEnvelope(changed) == bytes,
+        Require(!wire::RebindPreparedRelationalQueryV1(&changed, invalid, &parameters) && wire::EncodeSblrEnvelope(changed) == bytes,
                 "invalid context identity accepted or partially published");
       }
     }
     auto invalid = context; invalid.local_transaction_id = 0; changed = original;
-    Require(!wire::RebindPreparedRelationalQueryV1(&changed, invalid) && wire::EncodeSblrEnvelope(changed) == bytes,
+    Require(!wire::RebindPreparedRelationalQueryV1(&changed, invalid, &parameters) && wire::EncodeSblrEnvelope(changed) == bytes,
             "zero local transaction accepted");
     for (std::size_t index = 0; index < original.operands.size(); ++index) {
       for (unsigned mutation = 0; mutation < 5; ++mutation) {
@@ -3391,18 +3403,18 @@ void TestPreparedRelationalQuery() {
         if (mutation == 2) item.name += ".wrong";
         if (mutation == 3) item.value = "text shadow";
         if (mutation == 4) item.value_flags = 1;
-        Require(!wire::ValidatePreparedRelationalQueryV1(changed, profile), "malformed prepared slot accepted");
+        Require(!wire::ValidatePreparedRelationalQueryV1(changed, profile, &parameters), "malformed prepared slot accepted");
       }
     }
     // Every allocation in recognition, copying and replacement is faulted.
     changed = original; const auto before_allocations = allocations;
-    Require(wire::RebindPreparedRelationalQueryV1(&changed, context), "allocation baseline refused");
+    Require(wire::RebindPreparedRelationalQueryV1(&changed, context, &parameters), "allocation baseline refused");
     const auto sites = allocations - before_allocations;
     Require(sites > 0, "prepared fault coverage empty");
     for (std::size_t site = 0; site < sites; ++site) {
       changed = original; bool published = false;
       fail_after = static_cast<long>(site);
-      try { published = wire::RebindPreparedRelationalQueryV1(&changed, context); } catch (const std::bad_alloc&) {}
+      try { published = wire::RebindPreparedRelationalQueryV1(&changed, context, &parameters); } catch (const std::bad_alloc&) {}
       fail_after = -1;
       Require(!published && wire::EncodeSblrEnvelope(changed) == bytes, "allocation failure partially rebound query");
       ++faults;
@@ -3414,36 +3426,39 @@ void TestPreparedRelationalQuery() {
 void TestPreparedRelationalSubstitutions() {
   using Profile = wire::PreparedRelationalQueryProfileV1;
   const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206), 123, 0, Id(207), Id(5), 4, 5};
-  const auto reject = [&](const wire::SblrOperationEnvelope& input, Profile profile) {
-    Require(!wire::ValidatePreparedRelationalQueryV1(input, profile), "prepared semantic shape substitution accepted");
+  const auto reject = [&](const wire::SblrOperationEnvelope& input, Profile profile,
+                          const api::SblrParameterSetSnapshot& parameters) {
+    Require(!wire::ValidatePreparedRelationalQueryV1(input, profile, &parameters), "prepared semantic shape substitution accepted");
     // These are canonical envelopes with invalid profile relationships. Their
     // serialization gives an independent full-envelope failure-atomicity check.
     const auto before = wire::EncodeSblrEnvelope(input);
     Require(!before.empty(), "substitution fixture not structurally canonical");
     auto copy = input;
-    Require(!wire::RebindPreparedRelationalQueryV1(&copy, context) && wire::EncodeSblrEnvelope(copy) == before,
+    Require(!wire::RebindPreparedRelationalQueryV1(&copy, context, &parameters) && wire::EncodeSblrEnvelope(copy) == before,
             "invalid shape rebind published partial state");
   };
   for (unsigned count : {0u, 1u, 3u}) {
     auto original = PreparedFixture(count);
+    const auto parameters = PreparedAuthority(count);
     const auto profile = count ? Profile::kParameterValues : Profile::kLiteralValues;
     for (unsigned index : {8u, 9u}) {
       for (const std::string_view number : {"", "00", "-1", "+1", "18446744073709551616", "1x"}) {
         auto changed = original; auto& body = changed.operands[index].value_body;
         body.resize(16); Append(body, number.size(), 8); body.insert(body.end(), number.begin(), number.end());
-        reject(changed, profile);
+        reject(changed, profile, parameters);
       }
     }
     auto changed = original;
-    changed.operands[11].value_body[8 + 15] ^= 1; reject(changed, profile); // descriptor/reference identity disagreement
-    changed = original; changed.operands[11].value_body[88] ^= 1; reject(changed, profile); // descriptor generation
-    changed = original; changed.operands[10].value_body.back() = '2'; reject(changed, profile); // wrong root
+    changed.operands[11].value_body[8 + 15] ^= 1; reject(changed, profile, parameters); // descriptor/reference identity disagreement
+    changed = original; changed.operands[11].value_body[88] ^= 1; reject(changed, profile, parameters); // descriptor generation
+    changed = original; changed.operands[10].value_body.back() = '2'; reject(changed, profile, parameters); // wrong root
     const auto output_index = count ? 11 + 2 * count : 13;
-    changed = original; changed.operands[output_index].value_body[24] = '2'; reject(changed, profile); // wrong output owner
-    changed = original; changed.operands[output_index].value_body.back() = 'z'; reject(changed, profile); // invalid label hex
-    changed = original; changed.operands[output_index].value_body[24 + 2] = '9'; reject(changed, profile); // nonexistent expression
+    changed = original; changed.operands[output_index].value_body[24] = '2'; reject(changed, profile, parameters); // wrong output owner
+    changed = original; changed.operands[output_index].value_body.back() = 'z'; reject(changed, profile, parameters); // invalid label hex
+    changed = original; changed.operands[output_index].value_body[24 + 2] = '9'; reject(changed, profile, parameters); // nonexistent expression
   }
   auto original = PreparedFixture(2, true);
+  const auto parameters = PreparedAuthority(2, true);
   constexpr auto profile = Profile::kParameterMatchRecognize;
   constexpr unsigned tail = 19;
   for (auto index : {16u, tail + 1, tail + 4, tail + 5, tail + 6, tail + 7}) {
@@ -3460,7 +3475,7 @@ void TestPreparedRelationalSubstitutions() {
     if (index == tail + 5) changed.operands[index].value_body[36] = 3; // pattern state budget
     if (index == tail + 6) changed.operands[index].value_body[24] = 2; // grouping is not partitioning
     if (index == tail + 7) changed.operands[index].value_body[23] ^= 1; // broken ordering identity
-    reject(changed, profile);
+    reject(changed, profile, parameters);
   }
   // Property identities are retained runtime UUIDs, never fixed classifier constants.
   auto changed = original;
@@ -3473,13 +3488,55 @@ void TestPreparedRelationalSubstitutions() {
   Require(wire::DecodeRelationalNodeBindingV1(bytes.data(), bytes.size(), &binding), "property crosslink decode");
   binding.required_property_uuids = {Id(150), Id(151)}; binding.delivered_property_uuids = binding.required_property_uuids;
   Require(wire::EncodeRelationalNodeBindingV1(binding, &changed.operands[tail + 4].value_body), "property crosslink encode");
-  Require(wire::ValidatePreparedRelationalQueryV1(changed, profile) && wire::RebindPreparedRelationalQueryV1(&changed, context),
+  Require(wire::ValidatePreparedRelationalQueryV1(changed, profile, &parameters) && wire::RebindPreparedRelationalQueryV1(&changed, context, &parameters),
           "nonconstant linked property identities refused");
   binding.required_property_uuids = {Id(150), Id(150)}; binding.delivered_property_uuids = binding.required_property_uuids;
   Require(wire::EncodeRelationalNodeBindingV1(binding, &changed.operands[tail + 4].value_body), "duplicate property fixture");
   const auto duplicate = Id(150);
   std::copy(duplicate.bytes.begin(), duplicate.bytes.end(), changed.operands[tail + 7].value_body.begin() + 8);
-  reject(changed, profile);
+  reject(changed, profile, parameters);
+}
+
+void TestPreparedSlotAuthorityFailures() {
+  const wire::PreparedRelationalContextV1 context{Id(201), Id(202), Id(203), Id(204), Id(205), Id(206),
+      123, 0, Id(207), Id(5), 4, 5};
+  for (bool match : {false, true}) {
+    const auto original = PreparedFixture(2, match);
+    const auto good = PreparedAuthority(2, match);
+    const auto profile = match ? wire::PreparedRelationalQueryProfileV1::kParameterMatchRecognize :
+                                wire::PreparedRelationalQueryProfileV1::kParameterValues;
+    Require(wire::ValidatePreparedRelationalQueryV1(original, profile, &good),
+            "distinct issued slot and datatype identities refused");
+    const auto reject = [&](const api::SblrParameterSetSnapshot* parameters) {
+      Require(!wire::ValidatePreparedRelationalQueryV1(original, profile, parameters),
+              "substituted prepared parameter authority admitted");
+      auto copy = original;
+      Require(!wire::RebindPreparedRelationalQueryV1(&copy, context, parameters) &&
+                  wire::EncodeSblrEnvelope(copy) == wire::EncodeSblrEnvelope(original),
+              "invalid slot authority partially rebound query");
+    };
+    reject(nullptr);
+    for (unsigned mutation = 0; mutation < 14; ++mutation) {
+      auto changed = good;
+      switch (mutation) {
+        case 0: changed.state = api::SblrParameterSetState::revoked; break;
+        case 1: changed.parameter_set_descriptor_uuid = {}; break;
+        case 2: ++changed.descriptor_generation; break;
+        case 3: changed.slots.pop_back(); break;
+        case 4: changed.slots[0].slot_ordinal = 1; break;
+        case 5: changed.slots[0].slot_uuid = Id(222); break;
+        case 6: changed.slots[0].slot_uuid.bytes[6] = 0x40; break;
+        case 7: changed.slots[0].datatype_descriptor_uuid = Id(222); break;
+        case 8: changed.slots[0].datatype_descriptor_uuid.bytes[6] = 0x40; break;
+        case 9: ++changed.slots[0].datatype_descriptor_generation; break;
+        case 10: changed.slots[0].datatype_descriptor_generation = 0; break;
+        case 11: changed.slots[0].direction = api::SblrParameterDirection::out; break;
+        case 12: changed.slots[0].nullable = false; break;
+        case 13: changed.slots[1].slot_uuid = changed.slots[0].slot_uuid; break;
+      }
+      reject(&changed);
+    }
+  }
 }
 
 namespace name_ipc = scratchbird::parser::ipc;
@@ -5470,6 +5527,7 @@ int main() {
     TestPropertyIdentityLifecycle();
     TestRowPattern();
     TestPreparedRelationalQuery();
+  TestPreparedSlotAuthorityFailures();
     TestPreparedRelationalSubstitutions();
     TestCanonicalNameRequest();
     TestTransactionalNameRequest();

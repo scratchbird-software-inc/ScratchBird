@@ -6,7 +6,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_catalog_column_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -26,6 +33,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -58,12 +66,22 @@ namespace sblr = scratchbird::engine::sblr;
 #endif
 
 constexpr std::string_view kSql = "SHOW CREATE TABLE replay_target";
-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000000901";
 constexpr std::string_view kOperationId = "catalog.get_descriptor";
 constexpr std::string_view kOpcode = "SBLR_CATALOG_GET_DESCRIPTOR";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kCanonicalAdmissionFamily = "sblr.catalog.introspect.v3";
-constexpr std::string_view kDatabasePath = "/tmp/sbsql_show_create_exact_route_conformance.sbdb";
+const std::filesystem::path kFixtureDirectory = [] {
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  for (unsigned attempt = 0; attempt < 64; ++attempt) {
+    auto path = std::filesystem::temp_directory_path() /
+        ("sb_show_create_" + std::to_string(stamp) + "_" + std::to_string(attempt));
+    std::error_code error;
+    if (std::filesystem::create_directory(path, error)) return path;
+    if (error) throw std::runtime_error("SHOW CREATE fixture directory creation failed");
+  }
+  throw std::runtime_error("SHOW CREATE fixture directory collision");
+}();
+const std::string kDatabasePath = (kFixtureDirectory / "database.sbdb").string();
 
 struct ShowCreateRowEvidence {
   std::string_view surface_id;
@@ -81,6 +99,20 @@ void Require(bool condition, std::string_view message) {
     std::cerr << message << '\n';
     std::exit(EXIT_FAILURE);
   }
+}
+
+bool HasBinaryTarget(const SblrEnvelope& envelope, const api::EngineUuid& expected) {
+  const scratchbird::parser::sbsql::SblrOperand* selected = nullptr;
+  for (const auto& operand : envelope.operands) {
+    if (operand.name != "target_object_uuid") continue;
+    if (selected) return false;
+    selected = &operand;
+  }
+  return selected && selected->type == "uuid" && selected->value.empty() &&
+         selected->canonical_value_kind == static_cast<std::uint16_t>(sblr::SblrValueKind::uuid_ref) &&
+         selected->canonical_value_body.size() == 16 &&
+         std::equal(selected->canonical_value_body.begin(), selected->canonical_value_body.end(),
+                    expected.bytes.begin());
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -192,8 +224,27 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   column.names.push_back(Name(std::move(name)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
-  column.descriptor.encoded_descriptor =
-      std::string("type=") + column.descriptor.canonical_type_name;
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "SHOW CREATE datatype manifest unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
+      dt::CanonicalTypeIdFromStableName(column.descriptor.canonical_type_name));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "SHOW CREATE datatype row unavailable");
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  Require(binding.ok, "SHOW CREATE datatype codec unavailable");
+  column.requested_column_uuid = scratchbird::tests::FixtureUuid(2015, 10 + ordinal);
+  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2015, 20 + ordinal);
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
+  column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(
+      {{{"type", column.descriptor.canonical_type_name}, {"nullable", "true"}},
+       {{"datatype_descriptor_uuid", binding.row.descriptor_uuid}, {"type_uuid", binding.row.type_uuid}}});
   column.nullable = true;
   return column;
 }
@@ -209,45 +260,34 @@ api::EngineRequestContext BaseEngineContext(const api::EngineUuid& database_uuid
   context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000804");
   context.cluster_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000805");
   context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000806");
-  context.catalog_generation_id = 7;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.security_epoch = 11;
-  context.resource_epoch = 13;
-  context.name_resolution_epoch = 17;
-  context.trace_tags.push_back("right:OBS_CATALOG_DESCRIPTOR_READ");
+  context.catalog_generation_id = 1;
+  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
   return context;
 }
 
 void RemoveEngineFiles() {
-  const std::filesystem::path path(kDatabasePath);
-  std::filesystem::remove(path);
-  for (const auto suffix : {
-           ".sb.crud_events",
-           ".sb.mga_row_versions",
-           ".sb.mga_relation_metadata",
-           ".sb.mga_index_entries",
-           ".sb.mga_relation_descriptors",
-           ".sb.mga_large_values",
-           ".sb.mga_savepoints",
-           ".sb.api_events",
-           ".sb.catalog_object_events",
-           ".sb.domain_events",
-       }) {
-    std::filesystem::remove(std::filesystem::path(std::string(kDatabasePath) + suffix));
-  }
+  std::filesystem::remove_all(kFixtureDirectory);
 }
 
 api::EngineRequestContext CreateAndOpenEngineDatabase() {
   const auto created =
       scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
           std::filesystem::path(kDatabasePath), SB_SBSFC021_SEED_PACK_ROOT);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                                << created.diagnostic.message_key << '\n';
   Require(created.ok(), "credentialed fixture create failed while seeding SHOW CREATE");
 
   api::EngineOpenLifecycleRequest open;
   open.context = BaseEngineContext(
       created.state.database_uuid.value);
+  open.context.principal_uuid = created.bootstrap_principal_uuid.value;
+  open.context.default_root_uuid = created.state.filespace_uuid.value;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(open.context);
   const auto opened = api::EngineOpenLifecycle(open);
   if (!opened.ok) PrintApiDiagnostics(opened, "lifecycle.open_database");
   Require(opened.ok, "lifecycle.open_database failed while seeding SHOW CREATE fixture");
@@ -255,7 +295,6 @@ api::EngineRequestContext CreateAndOpenEngineDatabase() {
 }
 
 api::EngineRequestContext SeedEngineTable() {
-  RemoveEngineFiles();
   auto context = CreateAndOpenEngineDatabase();
   api::EngineBeginTransactionRequest begin;
   begin.context = context;
@@ -281,6 +320,11 @@ api::EngineRequestContext SeedEngineTable() {
   const auto created = api::EngineCreateTable(table);
   if (!created.ok) PrintApiDiagnostics(created, "ddl.create_table");
   Require(created.ok, "ddl.create_table failed while seeding SHOW CREATE fixture");
+  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(context);
+  Require(epochs.ok, "SHOW CREATE published catalog epochs unavailable");
+  context.catalog_generation_id = epochs.state.metadata_epoch;
+  context.name_resolution_epoch = epochs.state.name_resolution_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -356,10 +400,10 @@ void RequireParserLoweringAndAdmission() {
           "SHOW CREATE payload missing catalog envelope kind");
   Require(Contains(artifacts.envelope.payload, "\"catalog_read_only\":true"),
           "SHOW CREATE payload did not prove read-only descriptor access");
-  Require(Contains(artifacts.envelope.payload,
-                   std::string("\"target_object_uuid\":\"") +
-                       std::string(kTargetUuid) + "\""),
-          "SHOW CREATE payload missing target UUID");
+  Require(HasBinaryTarget(artifacts.envelope,
+              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")) &&
+              !Contains(artifacts.envelope.payload, "\"target_object_uuid\""),
+          "SHOW CREATE must carry its exact target once as binary16, outside JSON text");
   Require(Contains(artifacts.envelope.payload, "\"show_create_target_kind\":\"table\""),
           "SHOW CREATE payload missing table target kind");
   Require(Contains(artifacts.envelope.payload, "SBSQL-A424141B1639") &&
@@ -426,6 +470,28 @@ void RequireEngineDispatch() {
           "catalog.get_descriptor returned wrong primary object");
   Require(result.api_result.result_shape.result_kind == "descriptor",
           "catalog.get_descriptor did not preserve descriptor result kind");
+  Require(result.api_result.result_shape.columns.size() == 1,
+          "SHOW CREATE descriptor shape must contain one table descriptor");
+  std::vector<std::pair<std::string, std::string>> columns;
+  const auto& encoded = result.api_result.result_shape.columns.front().encoded_descriptor;
+  Require(api::DecodeMetadataPairs(encoded, &columns) && columns.size() == 1 &&
+              columns.front().first == "id",
+          "table descriptor must use complete binary column framing");
+  api::CatalogColumnMetadata metadata;
+  Require(api::DecodeCatalogColumnMetadata(columns.front().second, &metadata),
+          "table descriptor lost binary column metadata");
+  const auto expected_column = Column(0, "id", "int64");
+  Require(api::BinaryCatalogUuid(metadata, "type_uuid") == expected_column.descriptor.type_uuid &&
+              api::BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") ==
+                  expected_column.descriptor.datatype_descriptor_uuid,
+          "table descriptor changed native datatype identities");
+  auto damaged = encoded;
+  damaged.back() ^= 1;
+  const auto retained = columns;
+  Require(!api::DecodeMetadataPairs(damaged, &columns) && columns == retained,
+          "damaged table metadata was admitted or changed output");
+  Require(!api::DecodeMetadataPairs(encoded + "trailing", &columns) && columns == retained,
+          "table descriptor trailing data was admitted");
   Require(ApiResultHasEvidence(result.api_result, "table_descriptor_lookup"),
           "catalog.get_descriptor missing table descriptor evidence");
   Require(ApiResultHasEvidence(result.api_result, "show_create_statement"),

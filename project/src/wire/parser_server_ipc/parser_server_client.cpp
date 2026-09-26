@@ -1840,8 +1840,24 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
   if (result == nullptr || response.payload.empty()) return false;
   Frame base = response;
   CursorStreamDescriptorV1 descriptor;
-  if (response.payload.size() >= kPresentDescriptorBytes &&
-      response.payload[response.payload.size() - kPresentDescriptorBytes] == 1) {
+  // The cursor identity in the fixed response prefix selects the trailer
+  // shape. Arbitrary row/detail bytes must never be guessed as a descriptor.
+  std::size_t header_offset = 0;
+  std::string outcome;
+  if (!ReadString(response.payload, &header_offset, &outcome) ||
+      response.payload.size() - header_offset < 32) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                  "The server V2 cursor response prefix is malformed.");
+    return false;
+  }
+  const core::platform::Uuid declared_cursor{GetUuid(response.payload, header_offset + 16)};
+  if (!declared_cursor.is_nil()) {
+    if (response.payload.size() < kPresentDescriptorBytes ||
+        response.payload[response.payload.size() - kPresentDescriptorBytes] != 1) {
+      AddDiagnostic(messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
+                    "The server V2 cursor stream descriptor trailer is missing.");
+      return false;
+    }
     std::size_t offset = response.payload.size() - kPresentDescriptorBytes + 1;
     const auto descriptor_uuid = GetUuid(response.payload, offset);
     offset += 16;
@@ -1869,11 +1885,14 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
     descriptor.result_set_uuid = scratchbird::core::platform::Uuid{result_set_uuid};
     descriptor.row_descriptor_uuid = scratchbird::core::platform::Uuid{row_descriptor_uuid};
     descriptor.snapshot_uuid = scratchbird::core::platform::Uuid{snapshot_uuid};
-    if (descriptor.complete()) {
+    if (descriptor.complete() &&
+        core::uuid::IsEngineIdentityUuid(descriptor.stream_descriptor_uuid) &&
+        core::uuid::IsEngineIdentityUuid(descriptor.cursor_uuid) &&
+        core::uuid::IsEngineIdentityUuid(descriptor.execution_uuid) &&
+        core::uuid::IsEngineIdentityUuid(descriptor.result_set_uuid) &&
+        core::uuid::IsEngineIdentityUuid(descriptor.row_descriptor_uuid) &&
+        core::uuid::IsEngineIdentityUuid(descriptor.snapshot_uuid)) {
       base.payload.resize(response.payload.size() - kPresentDescriptorBytes);
-    } else if (response.payload.back() == 0) {
-      descriptor = CursorStreamDescriptorV1{};
-      base.payload.pop_back();
     } else {
       AddDiagnostic(messages,
                     "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
@@ -1888,21 +1907,23 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
                   "The server V2 cursor stream descriptor trailer is malformed.");
     return false;
   }
-  if (!DecodeExecuteResultPayloadV2Base(base, result, messages)) return false;
-  if (!result->cursor_uuid.is_nil()) {
-    if (!descriptor.complete() || descriptor.cursor_uuid != result->cursor_uuid) {
+  ServerExecutionResult decoded;
+  if (!DecodeExecuteResultPayloadV2Base(base, &decoded, messages)) return false;
+  if (!decoded.cursor_uuid.is_nil()) {
+    if (!descriptor.complete() || descriptor.cursor_uuid != decoded.cursor_uuid) {
       AddDiagnostic(messages,
                     "SERVER.STREAM.DESCRIPTOR_INVALID",
                     "The server cursor result lacks its exact versioned stream descriptor.");
       return false;
     }
-    result->cursor_stream_descriptor = std::move(descriptor);
+    decoded.cursor_stream_descriptor = std::move(descriptor);
   } else if (descriptor.present) {
     AddDiagnostic(messages,
                   "SERVER.STREAM.DESCRIPTOR_INVALID",
                   "A cursor stream descriptor was returned without a cursor.");
     return false;
   }
+  *result = std::move(decoded);
   return true;
 }
 

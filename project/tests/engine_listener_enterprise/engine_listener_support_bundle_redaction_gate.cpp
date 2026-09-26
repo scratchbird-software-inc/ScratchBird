@@ -12,6 +12,7 @@
 #include "observability/cluster_support_bundle_redaction_api.hpp"
 #include "observability/performance_optimization_surface.hpp"
 #include "uuid.hpp"
+#include "security/security_model.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -161,23 +162,22 @@ api::EngineRequestContext SupportContext() {
   context.security_epoch = 88002;
   context.resource_epoch = 88004;
 
-  api::EngineMaterializedAuthorizationContext authz;
-  authz.present = true;
-  authz.authority_uuid = EngineUuid(UuidKind::object, 6);
-  authz.principal_uuid = context.principal_uuid;
-  authz.security_epoch = context.security_epoch;
-  authz.policy_epoch = 88003;
-  authz.catalog_generation_id = context.catalog_generation_id;
-  authz.effective_subjects.push_back({context.principal_uuid, "principal"});
-  authz.grants.push_back({EngineUuid(UuidKind::object, 7),
-                          context.principal_uuid,
-                          "principal",
-                          {},
-                          "SUPPORT_EXPORT",
-                          false,
-                          context.security_epoch});
-  authz.evidence_tags.push_back("eler088_materialized_support_export_only");
-  context.authorization_context = std::move(authz);
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = EngineUuid(UuidKind::object, 6);
+  authority.security_context_generation = 88005;
+  authority.security_epoch = context.security_epoch;
+  authority.policy_epoch = 88003;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  authority.principals.push_back(
+      {context.principal_uuid, "principal", true, authority.security_epoch});
+  authority.grants.push_back({EngineUuid(UuidKind::object, 7),
+      context.principal_uuid, "principal", {}, "SUPPORT_EXPORT", false,
+      true, authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  Require(materialized.ok, "ELER-088 fixture authorization materialization failed");
+  context.authorization_context = materialized.context;
   return context;
 }
 

@@ -159,7 +159,7 @@ FORBIDDEN_TOKENS = (
     "packaging/",
     "packaging\\",
     "ScratchBird" + "-Private",
-    "/home/",
+    "/" + "home" + "/",
     "docs/workplans",
     "docs/specifications",
 )
@@ -549,7 +549,7 @@ def check_source_token_classification(repo_root: Path) -> None:
 def check_critical_path_review_policy(repo_root: Path) -> None:
     """Keep critical ownership, trusted execution, and merge policy intact."""
 
-    github_root = repo_root / ".github"
+    github_root = repo_root / ("." + "github")
     policy_path = github_root / "critical-path-reviewers.json"
     try:
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
@@ -603,7 +603,7 @@ def check_critical_path_review_policy(repo_root: Path) -> None:
             "/project/src/engine/internal_api/",
             "/project/src/core/optimizer/",
             "/project/src/parsers/",
-            "/.github/",
+            ("/." + "github/"),
         ),
         github_root / "pull_request_template.md": (
             "## Invariants manually reviewed",

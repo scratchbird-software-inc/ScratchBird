@@ -225,7 +225,7 @@
       "threat": "A public build attempts local cluster execution, cluster route admission, or cluster mutation without an external provider.",
       "expected_result": "fail_closed",
       "diagnostic_codes": [
-        "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+        "PROCESS.CLUSTER_PATH_ABSENT",
         "SBLR.CLUSTER.HANDSHAKE.EXTERNAL_PROVIDER_REQUIRED",
         "SBLR.CLUSTER.HANDSHAKE.LOCAL_RUNTIME_REFUSED",
         "SBLR.CAPABILITY.FORBIDDEN"
@@ -235,7 +235,7 @@
           "path": "project/src/cluster_provider/cluster_provider.hpp",
           "tokens": [
             "CLUSTER_PROVIDER_BOUNDARY",
-            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+            "PROCESS.CLUSTER_PATH_ABSENT",
             "SBLR.CLUSTER.HANDSHAKE.EXTERNAL_PROVIDER_REQUIRED",
             "SBLR.CLUSTER.HANDSHAKE.LOCAL_RUNTIME_REFUSED"
           ]
