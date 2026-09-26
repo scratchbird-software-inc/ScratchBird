@@ -11,6 +11,7 @@ mutation-capability or crash-during-compensation coverage.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -20,6 +21,30 @@ from sbsql_copy_persistence_full_route_gate import (
 )
 
 TABLE = "sbsfc021_stream_table"
+
+
+def make_work_dir(preferred_root: Path) -> Path:
+    roots = (preferred_root, Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+        candidate = Path(tempfile.mkdtemp(prefix="sps_", dir=root))
+        # Case names are recorded separately from bounded ordinal directories.
+        # Reserve the full historical listener filename as an independent
+        # upper bound, including the reopened route and long TMPDIR values.
+        endpoint = candidate / "c65535/r2/lc" / ("sbsql_" + "0" * 32 + ".management.sock")
+        if len(os.fsencode(endpoint)) < 100:
+            return candidate
+        candidate.rmdir()
+    raise RuntimeError("unable to allocate a short savepoint socket workspace")
+
+
+def case_directory(work: Path, ordinal: int, name: str) -> Path:
+    root = work / f"c{ordinal}"
+    root.mkdir()
+    (root / "case_name.txt").write_text(name + "\n", encoding="utf-8")
+    return root
 
 
 def clean_passed_database(root: Path) -> None:
@@ -38,9 +63,8 @@ def clean_passed_database(root: Path) -> None:
                 artifact.unlink()
 
 
-def run_case(args: argparse.Namespace, work: Path, name: str,
+def run_case(args: argparse.Namespace, root: Path, name: str,
              statements: list[str], expected_probes: list[str]) -> None:
-    root = work / name
     database = root / "sp.sbdb"
     route = None
     try:
@@ -84,9 +108,8 @@ def run_case(args: argparse.Namespace, work: Path, name: str,
         stop_route(route)
 
 
-def run_all_rows_case(args: argparse.Namespace, work: Path) -> None:
+def run_all_rows_case(args: argparse.Namespace, root: Path) -> None:
     """Exercise empty, mutating and no-effect TRUE predicates without a bypass."""
-    root = work / "all_rows_update"
     database = root / "sp.sbdb"
     table = "savepoint_all_rows_update"
     route = None
@@ -137,8 +160,7 @@ def run_all_rows_case(args: argparse.Namespace, work: Path) -> None:
         stop_route(route)
 
 
-def run_omitted_columns_case(args: argparse.Namespace, work: Path) -> None:
-    root = work / "omitted_columns"
+def run_omitted_columns_case(args: argparse.Namespace, root: Path) -> None:
     database = root / "sp.sbdb"
     table = "savepoint_omitted_columns"
     route = None
@@ -186,8 +208,8 @@ def main() -> int:
     args = parser.parse_args()
     # Keep UNIX-domain socket paths short, while retaining the actual evidence
     # location beneath the requested build directory for discovery.
-    work = Path(tempfile.mkdtemp(prefix="sbsp8_"))
     requested = Path(args.work_dir)
+    work = make_work_dir(requested)
     requested.mkdir(parents=True, exist_ok=True)
     (requested / "artifact_path.txt").write_text(str(work) + "\n", encoding="utf-8")
     def count(predicate: str) -> str:
@@ -308,22 +330,24 @@ def main() -> int:
     if selected - (set(cases) | set(dedicated)):
         parser.error("unknown savepoint case")
     failures = []
-    for name, run in dedicated.items():
+    for ordinal, (name, run) in enumerate(dedicated.items()):
         if name not in selected:
             continue
         try:
-            run(args, work)
-            clean_passed_database(work / name)
+            root = case_directory(work, ordinal, name)
+            run(args, root)
+            clean_passed_database(root)
             print(f"{name}=passed", flush=True)
         except Exception as error:
             failures.append(name)
             print(f"{name}=failed {error}", flush=True)
-    for name, (statements, expected_probes) in cases.items():
+    for ordinal, (name, (statements, expected_probes)) in enumerate(cases.items(), len(dedicated)):
         if name not in selected:
             continue
         try:
-            run_case(args, work, name, statements, expected_probes)
-            clean_passed_database(work / name)
+            root = case_directory(work, ordinal, name)
+            run_case(args, root, name, statements, expected_probes)
+            clean_passed_database(root)
             print(f"{name}=passed", flush=True)
         except Exception as error:
             failures.append(name)

@@ -12,20 +12,20 @@ have positive coverage separately; TEXT predicate authority is independently ref
 from __future__ import annotations
 
 import argparse
-import tempfile
 from pathlib import Path
 
 from sbsql_copy_persistence_full_route_gate import (
     isql_data_lines, run_isql, start_route, stop_route,
 )
-from sbsql_savepoint_rollback_full_route_gate import clean_passed_database
+from sbsql_savepoint_rollback_full_route_gate import (
+    case_directory, clean_passed_database, make_work_dir,
+)
 
 TABLE = "sbsfc021_stream_table"
 
 
-def run_case(args: argparse.Namespace, work: Path, name: str,
+def run_case(args: argparse.Namespace, root: Path, name: str,
              rejected_sql: str, diagnostic: str) -> None:
-    root = work / name
     database = root / "sp.sbdb"
     route = None
     try:
@@ -100,8 +100,8 @@ def main() -> int:
     parser.add_argument("--case", action="append", default=[],
                         help="Run selected cases; omitting this runs the complete matrix")
     args = parser.parse_args()
-    work = Path(tempfile.mkdtemp(prefix="sbspr_"))
     requested = Path(args.work_dir)
+    work = make_work_dir(requested)
     requested.mkdir(parents=True, exist_ok=True)
     (requested / "artifact_path.txt").write_text(str(work) + "\n", encoding="utf-8")
     cases = {
@@ -155,12 +155,13 @@ def main() -> int:
     selected = set(args.case) if args.case else set(cases)
     if selected - set(cases):
         parser.error("unknown refusal case")
-    for name, (sql, diagnostic) in cases.items():
+    for ordinal, (name, (sql, diagnostic)) in enumerate(cases.items()):
         if name not in selected:
             continue
         try:
-            run_case(args, work, name, sql, diagnostic)
-            clean_passed_database(work / name)
+            root = case_directory(work, ordinal, name)
+            run_case(args, root, name, sql, diagnostic)
+            clean_passed_database(root)
             print(f"{name}=passed", flush=True)
         except Exception as error:
             failures.append(name)

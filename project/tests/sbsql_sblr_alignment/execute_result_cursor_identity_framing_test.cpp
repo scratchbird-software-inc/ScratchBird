@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "parser_server_client.hpp"
+#include "server/sblr_dispatch_server.hpp"
 #include "core/platform/runtime_platform.hpp"
 #include <algorithm>
 #include <array>
@@ -62,7 +63,50 @@ bool Decode(const Bytes& input, ipc::ServerExecutionResult* result = nullptr) {
   }
   return ok;
 }
+
+void ServerRefusalRoundTrips() {
+  namespace server = scratchbird::server;
+  namespace sbps = server::sbps;
+  for (const auto schema : {4011u, 4015u, 4016u, 4017u, 4018u}) {
+    sbps::Frame request;
+    request.header.payload_schema_id = schema;
+    request.header.request_uuid = Id(20).bytes;
+    request.header.session_uuid = Id(21).bytes;
+    request.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+    for (const bool before_dispatch : {false, true}) {
+      server::ServerSessionRegistry registry;
+      const auto response = before_dispatch
+          ? server::RejectExecuteSblrBeforeEngine(request, "SBLR.OPERATION.NONCANONICAL", "canonical_sblr_required")
+          : server::HandleExecuteSblr(&registry, {}, request);
+      const auto expected = before_dispatch ? "SBLR.OPERATION.NONCANONICAL" :
+          "PARSER_SERVER_IPC.EXECUTE_INVALID";
+      ipc::ServerExecutionResult decoded;
+      ipc::MessageVectorSet messages;
+      Check(!response.accepted && response.response_schema_id == 4012 &&
+                !(response.frame_flags & sbps::kFlagError),
+            "server refusal changed typed execute result schema");
+      Check(ipc::DecodeExecuteResultPayloadV2ForTest(response.payload, &decoded, &messages) &&
+                !decoded.accepted && decoded.cursor_uuid.is_nil() &&
+                !decoded.cursor_stream_descriptor.present &&
+                decoded.transaction_diagnostic_code == expected &&
+                messages.diagnostics.size() == 1 && messages.diagnostics.front().code == expected,
+            "actual server refusal lost its diagnostic at the parser boundary");
+      Check(!response.payload.empty() && response.payload.back() == 0,
+            "server omitted the explicit absent-cursor marker");
+      if (!response.payload.empty()) {
+        auto missing = response.payload;
+        missing.pop_back();
+        Check(!Decode(missing), "missing cursor marker consumed diagnostic bytes");
+        auto duplicate = response.payload;
+        duplicate.push_back(0);
+        Check(!Decode(duplicate), "duplicate cursor marker was accepted");
+      }
+    }
+  }
+}
+
 int main() {
+  ServerRefusalRoundTrips();
   for (std::size_t length = 128; length < 260; ++length) {
     auto payload = Base(false, length); payload.push_back(0);
     Check(Decode(payload), "ordinary absent descriptor rejected");

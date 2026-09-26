@@ -20,6 +20,8 @@ sys.dont_write_bytecode = True
 for directory in ('sbsql_parser_worker', 'sbsql_sblr_alignment', 'reference_regression'):
     sys.path.insert(0, str(ROOT / 'project/tests' / directory))
 CASES = (
+    ('sbsql_parser_worker/sbsql_savepoint_rollback_full_route_gate', 'make_work_dir', 'c65535/r2/sc', 'c65535/r2/lc'),
+    ('sbsql_parser_worker/sbsql_savepoint_refusal_full_route_gate', 'make_work_dir', 'c65535/r2/sc', 'c65535/r2/lc'),
     ('sbsql_parser_worker/cdp_profiler_evidence_gate', 'make_work_dir', 'i/sc', 'n/lc'),
     ('sbsql_parser_worker/cdp_route_split_benchmark_gate', 'make_work_dir', 'i/sc', 'n/lc'),
     ('sbsql_parser_worker/sbsql_copy_persistence_full_route_gate', 'make_work_dir', 'plain/restart/sc', 'plain/restart/lc'),

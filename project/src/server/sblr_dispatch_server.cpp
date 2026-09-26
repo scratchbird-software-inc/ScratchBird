@@ -1259,7 +1259,8 @@ std::vector<std::uint8_t> EncodeExecuteResultV2(
     const std::string& row_packet,
     const std::string& detail,
     const ServerTransactionResponseState& transaction_state,
-    const std::vector<ServerDiagnostic>& diagnostics = {}) {
+    const std::vector<ServerDiagnostic>& diagnostics = {},
+    const ServerCursorRecord* cursor = nullptr) {
   auto out = EncodeExecuteResult(outcome,
                                  server_request_uuid,
                                  cursor_uuid,
@@ -1302,6 +1303,10 @@ std::vector<std::uint8_t> EncodeExecuteResultV2(
              sbps::EncodeMessageVectorSet(diagnostics,
                                           server_request_uuid));
   }
+  // Schema 4012 has one cursor-presence trailer on every outcome, including
+  // refusals before canonical admission. It is not part of the length-framed
+  // diagnostic bytes and must not be inferred from their final byte.
+  AppendCursorStreamDescriptor(&out, cursor);
   return out;
 }
 
@@ -7267,12 +7272,12 @@ SessionOperationResult HandleExecuteSblrImpl(
           sbps::kSchemaExecuteCanonicalSblrParameterV1 ||
       request.header.payload_schema_id ==
           sbps::kSchemaExecuteCanonicalSblrVariableV1;
-  if (cursor_stream_descriptor_trailer_required != nullptr) {
-    *cursor_stream_descriptor_trailer_required = canonical_ingress;
-  }
   const bool v2 =
       request.header.payload_schema_id == kSchemaExecuteSblrTestV2 ||
       canonical_ingress;
+  if (cursor_stream_descriptor_trailer_required != nullptr) {
+    *cursor_stream_descriptor_trailer_required = v2;
+  }
   const std::uint32_t response_schema =
       v2 ? kSchemaExecuteResultTestV2 : kSchemaExecuteResultTestV1;
   auto decoded = DecodeExecutePayload(request.payload,
@@ -10808,6 +10813,9 @@ SessionOperationResult HandleExecuteSblrImpl(
       {{"cursor_requested", cursor_requested ? 1u : 0u},
        {"terminal_payload_bytes",
         publish_execute_result_payload ? row_packet.size() : 0}});
+  const auto published_cursor = cursor_requested
+      ? registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid})
+      : registry->cursors_by_uuid.end();
   if (v2) {
     result.transaction_state = transaction_response;
     result.payload = EncodeExecuteResultV2("accepted",
@@ -10819,7 +10827,12 @@ SessionOperationResult HandleExecuteSblrImpl(
                                               ? row_packet
                                               : "",
                                           {},
-                                          transaction_response);
+                                          transaction_response,
+                                          {},
+                                          published_cursor != registry->cursors_by_uuid.end() &&
+                                                  published_cursor->second.stream_descriptor_live
+                                              ? &published_cursor->second
+                                              : nullptr);
   } else {
     result.payload = EncodeExecuteResult("accepted",
                                          request_uuid,
@@ -10829,17 +10842,6 @@ SessionOperationResult HandleExecuteSblrImpl(
                                          publish_execute_result_payload
                                              ? row_packet
                                              : "");
-  }
-  const auto published_cursor = cursor_requested
-      ? registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid})
-      : registry->cursors_by_uuid.end();
-  if (canonical_ingress) {
-    AppendCursorStreamDescriptor(
-        &result.payload,
-        published_cursor != registry->cursors_by_uuid.end() &&
-                published_cursor->second.stream_descriptor_live
-            ? &published_cursor->second
-            : nullptr);
   }
   mark_execute_phase("encode_execute_result");
   WriteServerPhaseTrace("SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE",
@@ -10875,13 +10877,8 @@ SessionOperationResult HandleExecuteSblr(
        request.header.payload_schema_id != kSchemaExecuteSblrTestV2) ||
       (canonical_request && result.accepted) ||
       (!canonical_request && result.transaction_state.has_value())) {
-    // Canonical ingress success appends the negotiated descriptor in the
-    // implementation. A canonical refusal still owes the exact one-byte
-    // absent-descriptor trailer before returning through this early path.
-    if (!result.accepted &&
-        result.cursor_stream_descriptor_trailer_required) {
-      AppendCursorStreamDescriptor(&result.payload, nullptr);
-    }
+    // The schema encoder owns the cursor trailer for both accepted and
+    // refused results. Never append it again on an early return.
     return result;
   }
 
@@ -11002,9 +10999,6 @@ SessionOperationResult HandleExecuteSblr(
                                       std::move(result.diagnostics));
   rejection.cursor_stream_descriptor_trailer_required =
       result.cursor_stream_descriptor_trailer_required;
-  if (rejection.cursor_stream_descriptor_trailer_required) {
-    AppendCursorStreamDescriptor(&rejection.payload, nullptr);
-  }
   return rejection;
 }
 
@@ -11042,7 +11036,11 @@ SessionOperationResult RejectExecuteSblrBeforeEngine(
     std::string diagnostic_code,
     std::string detail,
     std::vector<ServerDiagnosticField> diagnostic_fields) {
-  if (request.header.payload_schema_id != kSchemaExecuteSblrTestV2) {
+  const auto schema = request.header.payload_schema_id;
+  if (schema != kSchemaExecuteSblrTestV2 &&
+      schema != kSchemaExecuteCanonicalSblrTestV1 && schema != 4016 &&
+      schema != sbps::kSchemaExecuteCanonicalSblrParameterV1 &&
+      schema != sbps::kSchemaExecuteCanonicalSblrVariableV1) {
     return Failure(
         static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
         kSchemaExecuteResultTestV1,
