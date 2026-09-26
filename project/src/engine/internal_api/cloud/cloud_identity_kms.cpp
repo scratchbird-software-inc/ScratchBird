@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cstdint>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <string_view>
 
@@ -466,10 +467,17 @@ bool CloudIdentityModeIsSecretless(const std::string& mode) {
 }
 
 CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest& request) {
+  std::set<std::string_view> identity_keys;
   for(const auto& option:request.option_envelopes) {
     const auto colon=option.find(':');
-    if(colon!=std::string::npos&&option.substr(0,colon).ends_with("uuid")&&
-        BinaryViewUuid(option.substr(colon+1)).is_nil())
+    if (colon == std::string::npos) continue;
+    const std::string_view key(option.data(), colon);
+    if (!key.ends_with("uuid")) continue;
+    // An identity field has one authority. Neither first-wins nor last-wins
+    // interpretation is safe, even when duplicate binary values agree.
+    if (!identity_keys.insert(key).second)
+      return Fail(request,"SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING","duplicate_uuid_option");
+    if(BinaryViewUuid(std::string_view(option).substr(colon+1)).is_nil())
       return Fail(request,"SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING","binary_uuid_option_required");
   }
   std::string offending_prefix;

@@ -11,12 +11,20 @@
 #include "cloud/cloud_identity_kms.hpp"
 
 #include <cassert>
+#include <array>
 #include <string>
 #include <vector>
 
 namespace api = scratchbird::engine::internal_api;
 
 namespace {
+
+std::string UuidOption(std::string_view key, std::uint32_t ordinal) {
+  const auto uuid = scratchbird::tests::FixtureUuid(1208, ordinal);
+  std::string result(key);
+  result.append(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
+  return result;
+}
 
 api::EngineApiRequest BaseRequest() {
   api::EngineApiRequest request;
@@ -25,20 +33,20 @@ api::EngineApiRequest BaseRequest() {
   request.context.database_uuid = scratchbird::tests::FixtureUuid(1208, 801);
   request.context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 802);
   request.option_envelopes = {
-      "provider_profile_uuid:provider-1",
+      UuidOption("provider_profile_uuid:", 1),
       "external_subject_ref:spiffe://tenant/ns/default/sa/scratchbird",
-      "internal_subject_uuid:subject-1",
+      UuidOption("internal_subject_uuid:", 2),
       "identity_evidence:verified",
       "assertion_signature_valid:true",
       "assertion_expiry_ms:4102444800000",
       "evidence_observed_ms:1780000000000",
-      "kms_profile_uuid:kms-profile-1",
+      UuidOption("kms_profile_uuid:", 3),
       "kms_mode:cloud_kms",
       "kms_key_reference:projects/example/locations/local/keyRings/test/cryptoKeys/main",
-      "protected_material_uuid:pm-1",
-      "protected_material_version_uuid:pmv-1",
-      "rotation_policy_uuid:rotation-1",
-      "audit_policy_uuid:audit-1",
+      UuidOption("protected_material_uuid:", 4),
+      UuidOption("protected_material_version_uuid:", 5),
+      UuidOption("rotation_policy_uuid:", 6),
+      UuidOption("audit_policy_uuid:", 7),
       "kms_version_current:7",
       "kms_version_observed:7",
   };
@@ -104,10 +112,10 @@ void StaticSecretAllowedOnlyAsProtectedAuditedReference() {
   Add(&request, "identity_mode:static_secret");
   Add(&request, "static_secret_explicitly_allowed:true");
   Add(&request, "static_secret_break_glass:true");
-  Add(&request, "static_secret_policy_uuid:static-policy-1");
-  Add(&request, "static_secret_audit_evidence_uuid:static-audit-1");
-  Add(&request, "static_secret_rotation_policy_uuid:static-rotation-1");
-  Add(&request, "static_secret_protected_material_version_uuid:pmv-static-1");
+  Add(&request, UuidOption("static_secret_policy_uuid:", 8));
+  Add(&request, UuidOption("static_secret_audit_evidence_uuid:", 9));
+  Add(&request, UuidOption("static_secret_rotation_policy_uuid:", 10));
+  Add(&request, UuidOption("static_secret_protected_material_version_uuid:", 11));
   const auto result = api::ValidateCloudIdentityKmsPolicyApi(request);
   assert(result.ok);
   assert(RowValueEquals(result, "static_secret_policy_exception", "true"));
@@ -147,19 +155,82 @@ void LocalEmulatorFixtureDoesNotRequireExternalKms() {
       "identity_mode:local_emulator",
       "identity_emulator_evidence:verified",
       "local_emulator_fixture:true",
-      "kms_profile_uuid:kms-emulator-profile",
+      UuidOption("kms_profile_uuid:", 12),
       "kms_mode:local_emulator",
       "emulator_key_ref:fixture-key-1",
-      "protected_material_uuid:pm-emulator",
-      "protected_material_version_uuid:pmv-emulator",
-      "rotation_policy_uuid:rotation-emulator",
-      "audit_policy_uuid:audit-emulator",
+      UuidOption("protected_material_uuid:", 13),
+      UuidOption("protected_material_version_uuid:", 14),
+      UuidOption("rotation_policy_uuid:", 15),
+      UuidOption("audit_policy_uuid:", 16),
       "kms_emulator_evidence:verified",
   };
   const auto result = api::ValidateCloudIdentityKmsPolicyApi(request);
   assert(result.ok);
   assert(RowValueEquals(result, "local_emulator_fixture", "true"));
   assert(RowValueEquals(result, "external_kms_dependency", "not_required"));
+}
+
+void RequiredIdentitiesRemainBinaryAndUnambiguous() {
+  const std::array<std::string_view, 7> keys = {
+      "provider_profile_uuid:", "internal_subject_uuid:", "kms_profile_uuid:",
+      "protected_material_uuid:", "protected_material_version_uuid:",
+      "rotation_policy_uuid:", "audit_policy_uuid:"};
+  for (const auto key : keys) {
+    auto valid = BaseRequest();
+    Add(&valid, "identity_mode:workload_identity");
+    Add(&valid, "workload_trust_ref:trust-bundle-1");
+    assert(api::ValidateCloudIdentityKmsPolicyApi(valid).ok);
+    for (unsigned mutation = 0; mutation < 10; ++mutation) {
+      auto bad = valid;
+      for (auto& option : bad.option_envelopes) {
+        if (!option.starts_with(key)) continue;
+        auto value = option.substr(key.size());
+        switch (mutation) {
+          case 0: value = "019d0000-04b8-7000-8000-000000000001"; break;
+          case 1: value.assign(16, '\0'); break;
+          case 2: value[6] = 0x40; break;
+          case 3: value[8] = 0; break;
+          case 4: value.pop_back(); break;
+          case 5: value.push_back('\0'); break;
+          case 6: value.clear(); break;
+          default: break;
+        }
+        option = std::string(key) + value;
+      }
+      if (mutation >= 7) {
+        // Both identical and conflicting duplicate fields are ambiguous,
+        // including a malformed duplicate after an otherwise valid value.
+        Add(&bad, mutation == 9 ? std::string(key) + "text-alias" :
+            UuidOption(key, 99));
+        if (mutation == 7) {
+          for (const auto& option : valid.option_envelopes) {
+            if (option.starts_with(key)) bad.option_envelopes.back() = option;
+          }
+        }
+      }
+      const auto result = api::ValidateCloudIdentityKmsPolicyApi(bad);
+      assert(!result.ok);
+      assert(result.primary_object.uuid.is_nil());
+      assert(!result.diagnostics.empty());
+      assert(result.diagnostics.front().code == "SB_DIAG_CLOUD_IDENTITY_MAPPING_MISSING");
+      assert(result.diagnostics.front().detail ==
+          (mutation >= 7 ? "duplicate_uuid_option" : "binary_uuid_option_required"));
+      assert(RowValueEquals(result, "decision", "deny"));
+    }
+    const auto admitted = api::ValidateCloudIdentityKmsPolicyApi(valid);
+    assert(admitted.ok);
+    for (const auto& row : admitted.result_shape.rows) {
+      for (const auto& field : row.fields) {
+        if (!field.first.ends_with("_uuid")) continue;
+        const auto& bytes = field.second.binary_value;
+        assert(field.second.descriptor.canonical_type_name == "uuid");
+        assert(field.second.encoded_value.empty());
+        assert(bytes.size() == 16);
+        assert((static_cast<unsigned char>(bytes[6]) & 0xf0) == 0x70);
+        assert((static_cast<unsigned char>(bytes[8]) & 0xc0) == 0x80);
+      }
+    }
+  }
 }
 
 }  // namespace
@@ -171,5 +242,6 @@ int main() {
   PlaintextMaterialIsRejected();
   StaleKmsVersionCannotAuthorizeEnvelope();
   LocalEmulatorFixtureDoesNotRequireExternalKms();
+  RequiredIdentitiesRemainBinaryAndUnambiguous();
   return 0;
 }
