@@ -7662,7 +7662,7 @@ SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
   demand.authenticated_statement_receipt_uuid =
       engine_api::EngineUuid{receipt_bytes};
   demand.structural_occurrence_id = occurrence;
-  demand.target_relation_uuid_hint = UuidBytesToText(relation_bytes);
+  demand.target_relation_uuid_hint = engine_api::EngineUuid{relation_bytes};
   demand.assignments.reserve(assignment_count);
   for (std::uint32_t expected = 1; expected <= assignment_count; ++expected) {
     if (offset + 4 > request.payload.size()) {

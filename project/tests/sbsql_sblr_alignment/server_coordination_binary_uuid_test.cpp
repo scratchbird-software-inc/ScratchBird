@@ -3,6 +3,8 @@
 #include "../../src/server/session_registry.hpp"
 #include "../../src/server/statement_coordination_uuid.hpp"
 #include "../../src/server/authority_cache_scope.hpp"
+#include "../../src/engine/internal_api/dml/update_api.hpp"
+#include "../../src/engine/internal_api/dml/update_column_identity.hpp"
 #include <new>
 
 #include "../../src/engine/internal_api/sblr_accel_gpu_compile_coordinator.hpp"
@@ -778,6 +780,93 @@ int main() {
     }
     check(reached_success);
   }
+  // Actual UPDATE column-binding helper; no SQL/IPC or catalog-owner claim.
+  static_assert(std::is_same_v<decltype(api::EngineDmlUpdateRowsBindingDemandV1::authenticated_statement_receipt_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::EngineDmlUpdateRowsBindingDemandV1::target_relation_uuid_hint), Uuid>);
+  static_assert(std::is_same_v<decltype(api::EngineDmlUpdateRowsDescriptorRefV1::descriptor_uuid), Uuid>);
+  scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1 selected;
+  selected.catalog_snapshot_uuid = base;
+  selected.catalog_generation = 19;
+  selected.registry_generation = 23;
+  selected.descriptor_uuid = base; selected.descriptor_uuid.bytes[15] = 2;
+  selected.descriptor_generation = 29;
+  selected.type_uuid = base; selected.type_uuid.bytes[15] = 3;
+  selected.type_generation = 31;
+  selected.codec_id = "exact-binary-codec";
+  selected.codec_version = 1;
+  selected.codec_generation = 37;
+  api::EngineDescriptor value_descriptor;
+  value_descriptor.descriptor_uuid = base;
+  value_descriptor.datatype_descriptor_uuid = selected.descriptor_uuid;
+  value_descriptor.datatype_descriptor_generation = selected.descriptor_generation;
+  value_descriptor.type_uuid = selected.type_uuid;
+  value_descriptor.encoded_descriptor =
+      "type_uuid=not-an-identity;datatype_descriptor_uuid=hostile;datatype_descriptor_generation=0";
+  api::DmlUpdateBoundColumnV1 bound_column;
+  const std::string column_name(96, 'c');
+  check(api::BindDmlUpdateColumnIdentityV1(base, 17, 2, column_name,
+      value_descriptor, selected, &bound_column));
+  check(bound_column.column_uuid == base && bound_column.column_generation == 17 &&
+      bound_column.ordinal == 2 && bound_column.canonical_name_key == column_name &&
+      bound_column.datatype_descriptor_uuid == selected.descriptor_uuid &&
+      bound_column.datatype_descriptor_generation == 29 &&
+      bound_column.type_uuid == selected.type_uuid && bound_column.type_generation == 31 &&
+      bound_column.codec_id == selected.codec_id && bound_column.codec_version == 1 &&
+      bound_column.codec_generation == 37);
+  const auto original_column = bound_column;
+  const auto column_unchanged = [&] {
+    return bound_column.column_uuid == original_column.column_uuid &&
+        bound_column.column_generation == original_column.column_generation &&
+        bound_column.ordinal == original_column.ordinal &&
+        bound_column.canonical_name_key == original_column.canonical_name_key &&
+        bound_column.datatype_descriptor_uuid == original_column.datatype_descriptor_uuid &&
+        bound_column.datatype_descriptor_generation == original_column.datatype_descriptor_generation &&
+        bound_column.type_uuid == original_column.type_uuid &&
+        bound_column.type_generation == original_column.type_generation &&
+        bound_column.codec_id == original_column.codec_id &&
+        bound_column.codec_version == original_column.codec_version &&
+        bound_column.codec_generation == original_column.codec_generation;
+  };
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    for (bool type : {false, true}) {
+      auto wrong = value_descriptor;
+      auto& id = type ? wrong.type_uuid : wrong.datatype_descriptor_uuid;
+      id.bytes[bit / 8] ^= std::uint8_t(1U << (bit % 8));
+      check(!api::BindDmlUpdateColumnIdentityV1(base, 17, 2, column_name,
+          wrong, selected, &bound_column));
+      check(column_unchanged());
+    }
+  }
+  for (unsigned defect = 0; defect < 12; ++defect) {
+    auto descriptor = value_descriptor;
+    auto row = selected;
+    auto column_id = base;
+    std::uint64_t generation = 17;
+    switch (defect) {
+      case 0: column_id = {}; break;
+      case 1: column_id.bytes[6] = 0x40; break;
+      case 2: generation = 0; break;
+      case 3: descriptor.descriptor_uuid = {}; break;
+      case 4: descriptor.datatype_descriptor_generation = 0; break;
+      case 5: row.descriptor_generation++; break;
+      case 6: row.catalog_snapshot_uuid = {}; break;
+      case 7: row.catalog_generation = 0; break;
+      case 8: row.registry_generation = 0; break;
+      case 9: row.type_generation = 0; break;
+      case 10: row.codec_version = 0; break;
+      case 11: row.codec_generation = 0; break;
+    }
+    check(!api::BindDmlUpdateColumnIdentityV1(column_id, generation, 2,
+        column_name, descriptor, row, &bound_column));
+    check(column_unchanged());
+  }
+  auto no_codec = selected; no_codec.codec_id.clear();
+  check(!api::BindDmlUpdateColumnIdentityV1(base, 17, 2, column_name,
+      value_descriptor, no_codec, &bound_column));
+  check(column_unchanged());
+  check(!api::BindDmlUpdateColumnIdentityV1(base, 17, 2, column_name,
+      value_descriptor, selected, nullptr));
+
   check(allocation_failures != 0);
   std::printf("server identity owner allocation failures checked: %zu\n", allocation_failures);
   std::printf("server coordination binary UUID component: PASS %zu checks; not live IPC acceptance\n", checks);
