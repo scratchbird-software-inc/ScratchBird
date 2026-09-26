@@ -1,4 +1,7 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/sb_test_temp_compat.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -110,65 +113,42 @@ std::string BytesAsText(const std::vector<unsigned char>& bytes) {
 }
 
 struct Fixture {
-  std::filesystem::path root =
-      std::filesystem::temp_directory_path() /
-      "scratchbird_eler033_protected_material";
-  std::filesystem::path database_path = root / "eler033.sbdb";
-  api::EngineUuid authority = MakeUuid(UuidKind::object, 1);
+  std::filesystem::path root;
+  std::filesystem::path database_path;
   api::EngineUuid database = MakeUuid(UuidKind::database, 2);
-  api::EngineUuid principal = MakeUuid(UuidKind::principal, 3);
-  api::EngineUuid session = MakeUuid(UuidKind::session, 4);
+  api::EngineUuid principal;
+  api::EngineRequestContext bootstrap_context;
   api::EngineUuid material = MakeUuid(UuidKind::object, 10);
   api::EngineUuid version_one = MakeUuid(UuidKind::object, 11);
   api::EngineUuid version_two = MakeUuid(UuidKind::object, 12);
+  Fixture() {
+    auto pattern = (std::filesystem::temp_directory_path() / "sbpmgate_XXXXXX").string();
+    Require(mkdtemp(pattern.data()) != nullptr, "private protected-material workspace creation failed");
+    root = pattern;
+    database_path = root / "eler033.sbdb";
+    scratchbird::storage::database::DatabaseCreateConfig create;
+    create.path = database_path.string();
+    create.database_uuid = {UuidKind::database, database};
+    create.filespace_uuid = {UuidKind::filespace, MakeUuid(UuidKind::filespace, 5)};
+    create.page_size = 16384;
+    create.creation_unix_epoch_millis = kBaseMillis;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
+            "protected-material database bootstrap failed");
+    bootstrap_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    principal = bootstrap_context.principal_uuid;
+  }
 };
-
-api::EngineMaterializedAuthorizationContext AuthorizationContext(
-    const Fixture& fixture) {
-  api::EngineMaterializedAuthorizationContext context;
-  context.present = true;
-  context.authority_uuid = fixture.authority;
-  context.principal_uuid = fixture.principal;
-  context.security_epoch = 31;
-  context.policy_epoch = 32;
-  context.catalog_generation_id = 33;
-  context.effective_subjects.push_back({fixture.principal, "principal"});
-  context.grants.push_back({MakeUuid(UuidKind::object, 40),
-                            fixture.principal,
-                            "principal",
-                            {},
-                            "KEY_RELEASE_APPROVE",
-                            false,
-                            31});
-  context.grants.push_back({MakeUuid(UuidKind::object, 41),
-                            fixture.principal,
-                            "principal",
-                            {},
-                            "PROTECTED_MATERIAL_RELEASE",
-                            false,
-                            31});
-  context.evidence_tags.push_back("durable_authorization_context");
-  return context;
-}
 
 api::EngineRequestContext Context(const Fixture& fixture,
                                   u64 tx,
                                   u64 visible_through,
                                   u64 resource_epoch = 1771200335000ull) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.bootstrap_context;
   context.request_id = "eler033-protected-material-durable-catalog";
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database;
-  context.principal_uuid = fixture.principal;
-  context.session_uuid = fixture.session;
   context.local_transaction_id = tx;
   context.snapshot_visible_through_local_transaction_id = visible_through;
-  context.security_context_present = true;
-  context.catalog_generation_id = 33;
-  context.security_epoch = 31;
   context.resource_epoch = resource_epoch;
-  context.authorization_context = AuthorizationContext(fixture);
   return context;
 }
 
@@ -330,15 +310,14 @@ void ProveCatalogPathIsRequired(const Fixture& fixture) {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "protected-material-durable-catalog-conformance");
   const Fixture fixture;
-  std::error_code ignored;
-  std::filesystem::remove_all(fixture.root, ignored);
-  std::filesystem::create_directories(fixture.root);
 
   ProveDurableCatalogLifecycle(fixture);
   ProveCatalogPathIsRequired(fixture);
 
-  std::filesystem::remove_all(fixture.root, ignored);
+  std::filesystem::remove_all(fixture.root);
   std::cout << "engine_listener_protected_material_durable_catalog_conformance=passed\n";
   return EXIT_SUCCESS;
 }
