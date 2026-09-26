@@ -9,6 +9,29 @@ set_tests_properties(sbsql_sblr_alignment_large_payload_binary PROPERTIES TIMEOU
 
 # Component tests include their owning implementation to exercise private
 # binary codec helpers, and link real engine dependencies for the full gate.
+add_executable(sbsql_sblr_alignment_persisted_column_binding_identity
+  persisted_column_binding_identity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_persisted_column_binding_identity PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_persisted_column_binding_identity PRIVATE sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_persisted_column_binding_identity
+  COMMAND sbsql_sblr_alignment_persisted_column_binding_identity)
+set_tests_properties(sbsql_sblr_alignment_persisted_column_binding_identity PROPERTIES
+  TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;descriptor_identity;not_runtime_acceptance")
+
+add_executable(sbsql_sblr_alignment_native_dml_gateway_identity
+  native_dml_gateway_identity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_dml_gateway_identity PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_native_dml_gateway_identity PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/server
+  ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+target_link_libraries(sbsql_sblr_alignment_native_dml_gateway_identity PRIVATE
+  sb_server_sblr_local_gateway sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_native_dml_gateway_identity
+  COMMAND sbsql_sblr_alignment_native_dml_gateway_identity)
+set_tests_properties(sbsql_sblr_alignment_native_dml_gateway_identity PROPERTIES
+  TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;server_gateway;not_runtime_acceptance")
+
 foreach(binary_component IN ITEMS domain_record structured_type projection_view schema_journal catalog_artifact executable_lifecycle mga_row mga_large_value mga_relation_locator constraint_metadata memory_policy_catalog sample_descriptor optimizer_metric_bundle executor_availability index_metric memory_metric)
   add_executable(sbsql_sblr_alignment_${binary_component}_binary
     ${binary_component}_binary_test.cpp)

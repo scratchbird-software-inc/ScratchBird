@@ -790,7 +790,7 @@ void VerifyCanonicalTextPersistedRowAuthority(
             effective_nullability, refusal_detail);
       };
   sblr::CanonicalRelationalExpressionRuntime live_authority(
-      dag, std::move(services));
+      dag, services);
   const bool live_inferred = live_authority.InferTypeForConsumer(
       1, row_binding, row_values,
       api::EngineCanonicalExpressionConsumer::filter, &inferred, &detail);
@@ -799,6 +799,29 @@ void VerifyCanonicalTextPersistedRowAuthority(
   }
   Require(live_inferred && inferred == "text",
           "live canonical TEXT row authority was not consumed");
+
+  auto crossed_identifier_dag = dag;
+  crossed_identifier_dag.expressions.front().bound_name_uuid =
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71b");
+  sblr::CanonicalRelationalExpressionRuntime crossed_identifier(
+      crossed_identifier_dag, services);
+  Require(!crossed_identifier.InferTypeForConsumer(
+              1, row_binding, row_values,
+              api::EngineCanonicalExpressionConsumer::filter, &inferred,
+              &detail) && detail.find("persisted column UUID differs from bound identifier") !=
+                  std::string::npos,
+          "live datatype authority concealed a crossed column UUID");
+  auto ambiguous_identifier_dag = dag;
+  auto extra_identifier = crossed_identifier_dag.expressions.front();
+  extra_identifier.expression_id = 2;
+  ambiguous_identifier_dag.expressions.push_back(std::move(extra_identifier));
+  sblr::CanonicalRelationalExpressionRuntime ambiguous_identifier(
+      ambiguous_identifier_dag, services);
+  Require(!ambiguous_identifier.InferTypeForConsumer(
+              1, row_binding, row_values,
+              api::EngineCanonicalExpressionConsumer::filter, &inferred,
+              &detail),
+          "one persisted descriptor acquired ambiguous column authority");
 
   const auto contextual_dag_for = [&](const bool literal_is_left) {
     api::TypedRelationalDag contextual_dag;

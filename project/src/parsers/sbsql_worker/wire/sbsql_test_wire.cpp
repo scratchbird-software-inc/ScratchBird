@@ -19904,7 +19904,7 @@ BuildCanonicalRouteTextSubmission(
         })) return std::nullopt;
     engine::sblr::SblrOperand target;
     target.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
-    target.type = "uuid_ref";
+    target.type = "uuid";
     target.name = "target_object_uuid";
     target.value_kind = engine::sblr::SblrValueKind::uuid_ref;
     target.value_body.assign(target_uuid.bytes.begin(), target_uuid.bytes.end());

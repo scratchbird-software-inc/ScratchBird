@@ -4,6 +4,7 @@
 #include "sblr_local_gateway.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include "engine/sblr/sblr_bound_object_identity.hpp"
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -205,29 +206,28 @@
 namespace scratchbird::server {
 namespace {
 
-bool CanonicalNonzeroUuid(const std::string& value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') return false;
-  bool nonzero = false;
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (value[index] == '-') continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
-    nonzero = nonzero || ch != '0';
-  }
-  return nonzero;
-}
-
 using CanonicalTextOperandMap =
     std::unordered_map<std::string_view, std::string_view>;
 
 std::optional<CanonicalTextOperandMap> DecodeCanonicalTypedTextOperands(
-    const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
+    const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
+    bool require_binary_target = false) {
   if (operation.operands.empty()) return std::nullopt;
+  if (require_binary_target) {
+    scratchbird::engine::sblr::SblrBoundObjectIdentities identities;
+    if (!scratchbird::engine::sblr::DecodeSblrBoundObjectIdentities(
+            operation, &identities) ||
+        !identities.Find("target_object_uuid") ||
+        std::count_if(identities.values.begin(), identities.values.end(),
+                      [](const auto& value) { return value.has_value(); }) != 1)
+      return std::nullopt;
+  }
   CanonicalTextOperandMap values;
   values.reserve(operation.operands.size());
   for (std::size_t index = 0; index < operation.operands.size(); ++index) {
     const auto& operand = operation.operands[index];
+    if (require_binary_target && operand.name == "target_object_uuid")
+      continue;  // Already validated as exactly one binary UUIDv7 above.
     if (operand.ordinal != index + 1 || operand.type != "text" ||
         operand.name.empty() || !operand.value.empty() ||
         operand.value_flags != 0 ||
@@ -506,10 +506,8 @@ bool CanonicalCreateTableTextOperands(
 
 bool CanonicalInsertRowsTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
-  const auto operands = DecodeCanonicalTypedTextOperands(operation);
+  const auto operands = DecodeCanonicalTypedTextOperands(operation, true);
   if (!operands) return false;
-  const auto target_uuid =
-      CanonicalTextOperandValue(*operands, "target_object_uuid");
   const auto target_kind =
       CanonicalTextOperandValue(*operands, "target_object_kind");
   const auto row_count_text =
@@ -522,8 +520,7 @@ bool CanonicalInsertRowsTextOperands(
       *operands, "insert_values_compact_payload");
   std::uint64_t row_count = 0;
   std::uint64_t column_count = 0;
-  if (!target_uuid || !CanonicalNonzeroUuid(std::string(*target_uuid)) ||
-      !target_kind || *target_kind != "table" || !row_count_text ||
+  if (!target_kind || *target_kind != "table" || !row_count_text ||
       !CanonicalPositiveDecimal(*row_count_text, &row_count) ||
       !column_count_text ||
       !CanonicalPositiveDecimal(*column_count_text, &column_count) ||
@@ -612,10 +609,8 @@ bool CanonicalUpdateRowsDescriptorOperand(
 
 bool CanonicalNativeBulkIngestTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
-  const auto operands = DecodeCanonicalTypedTextOperands(operation);
+  const auto operands = DecodeCanonicalTypedTextOperands(operation, true);
   if (!operands) return false;
-  const auto target_uuid =
-      CanonicalTextOperandValue(*operands, "target_object_uuid");
   const auto target_kind =
       CanonicalTextOperandValue(*operands, "target_object_kind");
   const auto row_count_text =
@@ -624,8 +619,7 @@ bool CanonicalNativeBulkIngestTextOperands(
       CanonicalTextOperandValue(*operands, "insert_values_column_count");
   std::uint64_t row_count = 0;
   std::uint64_t column_count = 0;
-  if (!target_uuid || !CanonicalNonzeroUuid(std::string(*target_uuid)) ||
-      !target_kind || *target_kind != "table" || !row_count_text ||
+  if (!target_kind || *target_kind != "table" || !row_count_text ||
       !CanonicalPositiveDecimal(*row_count_text, &row_count) ||
       !column_count_text ||
       !CanonicalPositiveDecimal(*column_count_text, &column_count) ||

@@ -657,6 +657,23 @@ bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
   return true;
 }
 
+std::optional<api::EngineUuid> BoundColumnIdentity(
+    const std::unordered_map<std::uint32_t,
+                             const api::RelationalExpressionRecord*>& expressions,
+    std::uint32_t descriptor_id) {
+  std::optional<api::EngineUuid> identity;
+  for (const auto& [id, expression] : expressions) {
+    (void)id;
+    if (expression->expression_kind != api::RelationalExpressionKind::kIdentifier ||
+        expression->result_descriptor_id != descriptor_id) continue;
+    if (!expression->bound_name_uuid ||
+        !IsCanonicalUuid(*expression->bound_name_uuid) ||
+        (identity && *identity != *expression->bound_name_uuid)) return std::nullopt;
+    identity = expression->bound_name_uuid;
+  }
+  return identity;
+}
+
 bool SamePersistedRowDescriptor(
     const std::uint32_t bound_descriptor_id,
     const api::RelationalTypeDescriptor& bound,
@@ -664,10 +681,27 @@ bool SamePersistedRowDescriptor(
     const std::optional<api::RelationalNullability>
         effective_nullability = std::nullopt,
     const CanonicalRelationalExpressionRuntimeServices* services = nullptr,
-    std::string* authority_refusal_detail = nullptr) {
+    std::string* authority_refusal_detail = nullptr,
+    const std::optional<api::EngineUuid>& bound_column_uuid = std::nullopt) {
   if (!api::QowCanonicalDescriptorIdentityV1(actual) ||
       actual.descriptor_kind != "scalar") {
     return false;
+  }
+
+  // A column and its scalar descriptor are separate native identities. Bind
+  // persisted column metadata to the admitted identifier, never to the
+  // descriptor occurrence UUID. Apply this before delegated authority hooks
+  // as well, so no hook can mask a crossed physical-column binding.
+  api::CatalogColumnMetadata metadata;
+  if (actual.encoded_descriptor.starts_with("SBMETA")) {
+    if (!api::DecodeCatalogColumnMetadata(actual.encoded_descriptor, &metadata)) return false;
+    const auto column = metadata.identities.find("column_uuid");
+    if (column != metadata.identities.end() &&
+        (!bound_column_uuid || column->second != *bound_column_uuid)) {
+      if (authority_refusal_detail)
+        *authority_refusal_detail = "persisted column UUID differs from bound identifier";
+      return false;
+    }
   }
 
   const auto expected_nullability =
@@ -761,10 +795,8 @@ bool SamePersistedRowDescriptor(
 
   if (actual.type_uuid != bound.type_uuid ||
       actual.collation_uuid != bound.collation_uuid.value_or(api::EngineUuid{})) return false;
-  api::CatalogColumnMetadata metadata;
   std::vector<std::pair<std::string_view, std::string_view>> fields;
   if (actual.encoded_descriptor.starts_with("SBMETA")) {
-    if (!api::DecodeCatalogColumnMetadata(actual.encoded_descriptor, &metadata)) return false;
     for (const auto& [key, value] : metadata.text) fields.emplace_back(key, value);
   } else {
     std::string_view remaining = actual.encoded_descriptor;
@@ -811,7 +843,7 @@ bool SamePersistedRowDescriptor(
     else if (key == "codec_uuid") {
       if (!datatype_identity || value != datatype_identity->codec_uuid) return false;
     } else if (key == "column_uuid") {
-      if (value != bound.descriptor_uuid || value != actual.descriptor_uuid) return false;
+      if (!bound_column_uuid || value != *bound_column_uuid) return false;
     } else return false;
   }
   bool canonical_seen = false;
@@ -1192,7 +1224,8 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
                          row_values[ordinal].descriptor) &&
          !SamePersistedRowDescriptor(descriptor_id, *descriptor->second,
                                      row_values[ordinal].descriptor,
-                                     effective_nullability)) ||
+                                     effective_nullability, nullptr, nullptr,
+                                     BoundColumnIdentity(expressions, descriptor_id))) ||
         !descriptor_dynamic_bytes(row_values[ordinal].descriptor,
                                   &descriptor_bytes) ||
         !descriptor_dynamic_bytes(expected_descriptor,
@@ -2124,7 +2157,8 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (!SamePersistedRowDescriptor(
             descriptor_id, *descriptor->second, value->descriptor,
             effective_nullability,
-            &services_, &descriptor_authority_detail)) {
+            &services_, &descriptor_authority_detail,
+            BoundColumnIdentity(expressions_, descriptor_id))) {
       *refusal_detail =
           "materialized row value lost its full canonical descriptor identity:" +
           std::string("identity=") +
