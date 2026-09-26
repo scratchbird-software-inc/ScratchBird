@@ -581,12 +581,12 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
         )
         sequence += 1
         ready_payload, frame_txn = expect_error_then_ready(
-            sock, b"CLUSTER.GATEWAY.CLUSTER_CONTEXT_REQUIRED"
+            sock, b"PROCESS.CLUSTER_PATH_ABSENT"
         )
         status, txn_id = decode_ready(ready_payload)
         if status == 0 or txn_id == 0 or frame_txn == 0:
             raise RouteError(
-                "cluster-provider local-context refusal did not retain an active MGA transaction"
+                "missing-provider refusal did not retain an active MGA transaction"
             )
 
         send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)

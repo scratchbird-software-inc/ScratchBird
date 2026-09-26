@@ -9887,6 +9887,29 @@ std::string JsonEscape(std::string_view input) {
 SblrQueryPreflightResult PreflightSblrQueryOperation(
     SblrDispatchRequest request) {
   SblrQueryPreflightResult result;
+  // Provider inspection is a cluster-owned root, not a relational query. The
+  // authenticated package still needs complete validation before dispatch;
+  // preflight must not turn the missing provider into an opcode mismatch or
+  // synthesize a local inspection result.
+  if (request.envelope.operation_id == "cluster.inspect_provider") {
+    const auto validation = ValidateSblrEnvelope(request.envelope);
+    if (!validation.ok) {
+      result.diagnostic_id = validation.diagnostics.empty()
+          ? "SBLR.OPERAND_INVALID" : validation.diagnostics.front().code;
+      result.detail = validation.diagnostics.empty()
+          ? "cluster inspection envelope validation failed"
+          : validation.diagnostics.front().message;
+      return result;
+    }
+    if (!request.envelope.operands.empty()) {
+      result.diagnostic_id = "SBLR.OPERAND_INVALID";
+      result.detail = "cluster provider inspection takes no operands";
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = std::move(request.envelope);
+    return result;
+  }
   if (const char* trace = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"); trace && *trace) { std::ofstream f(trace, std::ios::app); if (f) f << "preflight_observe op=" << request.envelope.operation_id << " opcode=" << request.envelope.opcode << " code=" << request.envelope.opcode_code << "\n"; }
   const bool exact_source_map =
       request.envelope.operation_id == "engine.op.source_map" &&

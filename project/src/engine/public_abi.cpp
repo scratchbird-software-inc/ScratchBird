@@ -22670,13 +22670,15 @@ sb_engine_status_t DispatchStatementContextReceipt(
            !context.security_context_present) ||
           (member.requires_transaction_context &&
            context.local_transaction_id == 0 &&
-           context.transaction_uuid.is_nil()) ||
-          (member.requires_cluster_authority &&
-           !context.cluster_authority_available)) {
+           context.transaction_uuid.is_nil())) {
         return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4062,
                            "SECURITY.ACCESS_DENIED",
                            "sblr.opcode_stream.member_context_refused");
       }
+      // A registry-owned cluster requirement selects the provider; it is not
+      // evidence that the local receipt can supply cluster authority. Leave
+      // that authority unchanged so the provider owns authorization and the
+      // exact missing-provider refusal instead of a local SECURITY denial.
     }
     if (stmt_prepare_root) {
       std::string detail;

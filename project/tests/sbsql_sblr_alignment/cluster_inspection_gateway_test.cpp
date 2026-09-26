@@ -126,6 +126,20 @@ int main() {
       dispatch.context.cluster_authority_available = available;
       dispatch.context.cluster_transaction_active = request.cluster_transaction_active;
       dispatch.context.route_fence_present = request.route_fence_present;
+      const auto preflight = sblr::PreflightSblrQueryOperation(dispatch);
+      Check(preflight.ok && preflight.materialized_envelope.operands.empty() &&
+                sblr::EncodeSblrEnvelope(preflight.materialized_envelope) ==
+                    sblr::EncodeSblrEnvelope(dispatch.envelope),
+            "package preflight excluded or rewrote valid provider inspection");
+      for (unsigned mutation = 0; mutation != 3; ++mutation) {
+        auto invalid = dispatch;
+        if (mutation == 0) ++invalid.envelope.opcode_code;
+        if (mutation == 1) invalid.envelope.opcode = "SBLR_CLUSTER_JOIN";
+        if (mutation == 2)
+          invalid.envelope.operands = package.operations.front().operands;
+        Check(!sblr::PreflightSblrQueryOperation(std::move(invalid)).ok,
+              "package preflight admitted malformed provider inspection");
+      }
       const auto result = sblr::DispatchSblrOperation(std::move(dispatch));
       ++dispatches;
       Check(result.envelope_validated && result.accepted && result.dispatched_to_api,
