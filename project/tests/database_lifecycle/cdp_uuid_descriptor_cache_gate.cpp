@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -298,6 +299,6 @@ int main() {
           "descriptor cache did not miss after DDL epoch change");
   Rollback(after_ddl_context);
 
-  std::filesystem::remove(path);
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
   return EXIT_SUCCESS;
 }
