@@ -1,0 +1,18 @@
+--- a/project/tests/sbsql_parser_worker/qow_qry_017_having_row_binding.cpp
++++ b/project/tests/sbsql_parser_worker/qow_qry_017_having_row_binding.cpp
+@@ -507,3 +507,4 @@
+-  passed &= mutate("type_uuid=019d0000-0000-7000-8000-00000000d712",
+-                   "type_uuid=019f3300-0000-7200-8000-000000000999",
+-                   "encoded type UUID drift was admitted");
++  changed = row;
++  changed[2].descriptor.type_uuid = scratchbird::tests::FixtureUuid(2011, 1);
++  passed &= Refuses(dag, 7, binding, changed,
++                    "binary type UUID drift was admitted");
+@@ -512,3 +513,4 @@
+-  passed &= mutate("collation_uuid=019f3300-0000-7300-8000-000000000301",
+-                   "collation_uuid=019f3300-0000-7300-8000-000000000399",
+-                   "encoded collation UUID drift was admitted");
++  changed = row;
++  changed[2].descriptor.collation_uuid = scratchbird::tests::FixtureUuid(2011, 2);
++  passed &= Refuses(dag, 7, binding, changed,
++                    "binary collation UUID drift was admitted");

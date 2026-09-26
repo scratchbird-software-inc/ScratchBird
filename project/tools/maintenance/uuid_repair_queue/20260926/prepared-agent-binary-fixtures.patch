@@ -1,0 +1,55 @@
+--- a/project/tests/agents/agent_runtime_shutdown_recovery_gate.cpp
++++ b/project/tests/agents/agent_runtime_shutdown_recovery_gate.cpp
+@@ -0,0 +1 @@
++#include "../support/binary_uuid_fixture.hpp"
+@@ -19,0 +21,6 @@
++std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
++  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
++  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
++}
++
++
+@@ -53,2 +60,2 @@
+-  evidence.database_uuid = "019e0f2a-003c-7000-8000-000000000003";
+-  evidence.engine_instance_uuid = "engine-instance:019e0f2a-003c";
++  evidence.database_uuid = BinaryFixtureIdentity(60003, 1);
++  evidence.engine_instance_uuid = BinaryFixtureIdentity(60003, 2);
+--- a/project/tests/database_lifecycle/cluster_boundary_conformance.cpp
++++ b/project/tests/database_lifecycle/cluster_boundary_conformance.cpp
+@@ -28,0 +29,6 @@
++
++std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
++  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
++  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
++}
++
+@@ -436,2 +442,2 @@
+-  input.database_uuid = "019e0f70-0000-7000-8000-000000000013";
+-  input.engine_instance_uuid = "engine-instance:019e0f70";
++  input.database_uuid = BinaryFixtureIdentity(13070, 1);
++  input.engine_instance_uuid = BinaryFixtureIdentity(13070, 2);
+--- a/project/tests/database_lifecycle/engine_agent_conformance.cpp
++++ b/project/tests/database_lifecycle/engine_agent_conformance.cpp
+@@ -0,0 +1 @@
++#include "../support/binary_uuid_fixture.hpp"
+@@ -26,0 +28,6 @@
++std::string BinaryFixtureIdentity(std::uint32_t domain, std::uint32_t ordinal) {
++  const auto identity = scratchbird::tests::FixtureUuid(domain, ordinal);
++  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
++}
++
++
+@@ -89,2 +96,2 @@
+-  input.database_uuid = "019e0f2a-0000-7000-8000-000000000013";
+-  input.engine_instance_uuid = "engine-instance:019e0f2a-0000-7000-8000-000000000013";
++  input.database_uuid = BinaryFixtureIdentity(13013, 1);
++  input.engine_instance_uuid = BinaryFixtureIdentity(13013, 2);
+@@ -200 +207 @@
+-std::string CreateOpenCleanDatabase(const std::filesystem::path& path) {
++scratchbird::core::platform::Uuid CreateOpenCleanDatabase(const std::filesystem::path& path) {
+@@ -244 +251 @@
+-  return uuid::UuidToString(create.database_uuid.value);
++  return create.database_uuid.value;
+@@ -248 +255 @@
+-                    const std::string& database_uuid) {
++                    const scratchbird::core::platform::Uuid& database_uuid) {

@@ -1,0 +1,47 @@
+--- a/project/src/engine/sblr/CANONICAL_QUERY_EXECUTION_AUTHORITY.md
++++ b/project/src/engine/sblr/CANONICAL_QUERY_EXECUTION_AUTHORITY.md
+@@ -976,2 +976,2 @@
+-now tracks thirty-one modules and applies the model-family finality/parser/WAL
+-boundary to time-series, vector, and search alike. Build, focused test,
++now tracks thirty-one modules. Time-series, vector, and search must not own
++transaction finality or parser execution; WAL must not supply recovery authority. Build, focused test,
+@@ -996,2 +996,2 @@
+-now tracks thirty-two modules and applies the model-family
+-finality/parser/WAL boundary to time-series, vector, search, and key-value.
++now tracks thirty-two modules. Time-series, vector, search, and key-value must not
++own transaction finality or parser execution; WAL must not supply recovery authority.
+@@ -1015,3 +1015,3 @@
+-now tracks thirty-three modules and applies the model-family
+-finality/parser/WAL boundary to time-series, vector, search, key-value, and
+-graph. Build, focused test, source-authority, MGA-policy, instrumentation, and
++now tracks thirty-three modules. Time-series, vector, search, key-value, and graph
++must not own transaction finality or parser execution; WAL must not supply
++recovery authority. Build, focused test, source-authority, MGA-policy, instrumentation, and
+@@ -1035,2 +1035,3 @@
+-The source-authority gate now tracks thirty-four modules and applies the
+-model-family finality/parser/WAL boundary to all six Stage 5 family modules.
++The source-authority gate now tracks thirty-four modules. All six Stage 5 family
++modules must not own transaction finality or parser execution. WAL must not
++supply recovery authority.
+@@ -1061,2 +1062,2 @@
+-tracked thirty-five modules and applied the model-family
+-finality/parser/WAL boundary to the spatial/columnar module as well.
++tracked thirty-five modules. The spatial/columnar module must not own transaction
++finality or parser execution; WAL must not supply recovery authority.
+--- a/project/src/storage/database/local_transaction_store.cpp
++++ b/project/src/storage/database/local_transaction_store.cpp
+@@ -1237,3 +1237,4 @@
+-  // A readable page chain can still be the pre-publication generation after a
+-  // process crash.  The fsynced publish journal is the authority that decides
+-  // whether recovery exposes the old or new whole-inventory snapshot.
++  // Readable pages may contain an unselected attempt after a crash. The
++  // validated same-node SBTXP005 inventory publication carrier selects the
++  // complete old/new inventory and generation under the native MGA protocol;
++  // it never replays mutation commands or delegates finality to a generic log.
+@@ -1278,3 +1279,3 @@
+-  // The journal is part of inventory authority. Refuse before even publishing
+-  // its "publishing" image; relying on WriteAt's read-only check changes the
+-  // journal first and can disturb a node opened only for inspection.
++  // Refuse read-only devices before replacing the native inventory carrier.
++  // Waiting for WriteAt's read-only check would already change its selected
++  // inventory image and disturb a node opened only for inspection.

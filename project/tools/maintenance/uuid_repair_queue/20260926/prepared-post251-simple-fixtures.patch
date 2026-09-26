@@ -1,0 +1,41 @@
+--- a/project/tests/database_lifecycle/dpc_secondary_index_delta_overlay_lookup_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_secondary_index_delta_overlay_lookup_gate.cpp
+@@ -194,2 +194,4 @@
+-  index.family = api::kCrudIndexFamilyBtree;
+-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
++  // Exercise admitted deferred non-unique hash maintenance; unique B-tree
++  // maintenance remains synchronous, as in the DPC-024 merge gate.
++  index.family = unique ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash;
++  index.profile = unique ? api::kCrudIndexProfileRowStoreScalarBtreeV1 : std::string{};
+--- a/project/tests/database_lifecycle/dpc_secondary_index_delta_recovery_repair_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_secondary_index_delta_recovery_repair_gate.cpp
+@@ -206,2 +206,4 @@
+-  index.family = api::kCrudIndexFamilyBtree;
+-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
++  // Exercise admitted deferred non-unique hash maintenance; unique B-tree
++  // maintenance remains synchronous, as in the DPC-024 merge gate.
++  index.family = unique ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash;
++  index.profile = unique ? api::kCrudIndexProfileRowStoreScalarBtreeV1 : std::string{};
+--- a/project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp
+@@ -196,2 +196,4 @@
+-  index.family = api::kCrudIndexFamilyBtree;
+-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
++  // Exercise admitted deferred non-unique hash maintenance; unique B-tree
++  // maintenance remains synchronous, as in the DPC-024 merge gate.
++  index.family = unique ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash;
++  index.profile = unique ? api::kCrudIndexProfileRowStoreScalarBtreeV1 : std::string{};
+--- a/project/tests/performance/optimizer_deficiency_odf_024_gate.cpp
++++ b/project/tests/performance/optimizer_deficiency_odf_024_gate.cpp
+@@ -300,4 +300,4 @@
+-      {{"catalog_alter", "rel.customer", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+-      {{"index_change", "idx.customer_id", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+-      {{"function_change", "fn.mask_email", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+-      {{"filespace_profile_change", "filespace.hot", 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
++      {{"catalog_alter", scratchbird::tests::FixtureUuid(1275, 1), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
++      {{"index_change", scratchbird::tests::FixtureUuid(1275, 3), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
++      {{"function_change", scratchbird::tests::FixtureUuid(1275, 2), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
++      {{"filespace_profile_change", scratchbird::tests::FixtureUuid(1275, 4), 200}, "SB_OPTIMIZER_PLAN_CACHE_DEPENDENCY_INVALIDATED"},
+@@ -314 +314 @@
+-  const auto unrelated = cache.InvalidateWithEvidence({"index_change", "idx.unrelated", 201});
++  const auto unrelated = cache.InvalidateWithEvidence({"index_change", scratchbird::tests::FixtureUuid(1275, 5), 201});

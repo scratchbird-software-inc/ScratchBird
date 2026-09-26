@@ -1,0 +1,61 @@
+--- a/project/tests/sbsql_sblr_alignment/ia07_bulk_import_stream_cancellation_fault_test.cpp
++++ b/project/tests/sbsql_sblr_alignment/ia07_bulk_import_stream_cancellation_fault_test.cpp
+@@ -30,7 +30,2 @@
+-Uuid Id(const char* text) {
+-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
+-  Require(parsed.ok(), "fixture UUID was invalid");
+-  Uuid result{};
+-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
+-            result.begin());
+-  return result;
++Uuid Id(std::uint32_t ordinal) {
++  return scratchbird::tests::FixtureUuid(2005, ordinal).bytes;
+@@ -57 +52 @@
+-      Id("10000000-0000-4000-8000-000000000001");
++      Id(1);
+@@ -59 +54 @@
+-  authority.binding_uuid = Id("10000000-0000-4000-8000-000000000002");
++  authority.binding_uuid = Id(2);
+@@ -66 +61 @@
+-      Id("10000000-0000-4000-8000-000000000003");
++      Id(3);
+@@ -69 +64 @@
+-      Id("10000000-0000-4000-8000-000000000004");
++      Id(4);
+@@ -72 +67 @@
+-      Id("10000000-0000-4000-8000-000000000005");
++      Id(5);
+@@ -74 +69 @@
+-      Id("10000000-0000-4000-8000-000000000006");
++      Id(6);
+@@ -77 +72 @@
+-      Id("10000000-0000-4000-8000-000000000007");
++      Id(7);
+@@ -80 +75 @@
+-      Id("10000000-0000-4000-8000-000000000008");
++      Id(8);
+@@ -84 +79 @@
+-      Id("10000000-0000-4000-8000-000000000009");
++      Id(9);
+@@ -86 +81 @@
+-  authority.row_shape_uuid = Id("10000000-0000-4000-8000-00000000000a");
++  authority.row_shape_uuid = Id(10);
+@@ -90 +85 @@
+-      Id("10000000-0000-4000-8000-00000000000b");
++      Id(11);
+@@ -104,2 +99,2 @@
+-  context.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000001");
+-  context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000004");
++  context.statement_receipt_uuid = scratchbird::tests::FixtureUuid(2005, 1);
++  context.transaction_uuid = scratchbird::tests::FixtureUuid(2005, 4);
+@@ -107,2 +102,2 @@
+-  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000005");
+-  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000006");
++  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuid(2005, 5);
++  context.catalog_epoch_uuid = scratchbird::tests::FixtureUuid(2005, 6);
+@@ -111 +106 @@
+-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000007");
++  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuid(2005, 7);
+@@ -113 +108 @@
+-  context.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-00000000000b");
++  context.resource_admission_uuid = scratchbird::tests::FixtureUuid(2005, 11);

@@ -1,0 +1,53 @@
+--- a/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
+@@ -14,0 +15,2 @@
++#include "datatype_operations.hpp"
++#include "catalog/datatype_bootstrap_identity.hpp"
+@@ -422,0 +425,19 @@
++void BindColumnDatatype(api::EngineColumnDefinition* column) {
++  namespace dt = scratchbird::core::datatypes;
++  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
++  Require(manifest.ok(), "column fixture datatype catalog unavailable");
++  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
++      dt::CanonicalTypeIdFromStableName(column->descriptor.canonical_type_name));
++  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
++          "column fixture datatype missing from catalog");
++  const auto& datatype = row.manifest.descriptor_rows.front();
++  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
++      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
++      api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
++      datatype.descriptor_epoch);
++  Require(binding.ok, "column fixture datatype codec binding unavailable");
++  column->descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
++  column->descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
++  column->descriptor.type_uuid = binding.row.type_uuid;
++}
++
+@@ -433,0 +455 @@
++  BindColumnDatatype(&column);
+@@ -442,0 +465 @@
++  BindColumnDatatype(&column);
+@@ -450 +472,0 @@
+-  (void)descriptor_uuid;
+@@ -455 +477 @@
+-  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711");
++  column.descriptor.descriptor_uuid = descriptor_uuid;
+@@ -459 +481,2 @@
+-      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "int64"}, {"nullable", "false"}}, {{"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712")}, {"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711")}}});
++      scratchbird::tests::NativeCatalogColumnFixture({{{"type", "int64"}, {"nullable", "false"}}, {}});
++  BindColumnDatatype(&column);
+@@ -474,0 +498 @@
++  BindColumnDatatype(&column);
+@@ -3834,0 +3859,4 @@
++  text_column.requested_column_uuid = FixtureIdentity(0xe10);
++  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe20);
++  text_column.descriptor.charset_uuid = charset.resource_descriptor.resource_uuid;
++  text_column.descriptor.collation_uuid = charset.resource_descriptor.default_collation_uuid;
+@@ -3838,0 +3867 @@
++  BindColumnDatatype(&text_column);
+@@ -3840,0 +3870,2 @@
++  text_column.requested_column_uuid = FixtureIdentity(0xe11);
++  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe21);
+@@ -3844,0 +3876,2 @@
++  text_column.requested_column_uuid = FixtureIdentity(0xe12);
++  text_column.descriptor.descriptor_uuid = FixtureIdentity(0xe22);

@@ -1,0 +1,34 @@
+--- a/project/src/wire/typed_delete_carrier_codec.cpp
++++ b/project/src/wire/typed_delete_carrier_codec.cpp
+@@ -3,0 +4 @@
++#include "../core/datatypes/admitted_datatype_cohort.hpp"
+@@ -467 +468,2 @@
+-      datatypes.identity.vector_uuid != kTypedUpdateDatatypeSnapshotUuid ||
++      !core::datatypes::IsAdmittedDatatypeCohort(datatypes.identity.vector_uuid,
++          datatypes.identity.vector_generation, descriptor.datatype_registry_generation) ||
+--- a/project/tests/sbsql_sblr_alignment/typed_delete_carrier_codec_test.cpp
++++ b/project/tests/sbsql_sblr_alignment/typed_delete_carrier_codec_test.cpp
+@@ -4,0 +5 @@
++#include "../../src/core/datatypes/admitted_datatype_cohort.hpp"
+@@ -112,0 +114,21 @@
++    auto successor = f;
++    successor.descriptor.datatype_registry_generation = 2;
++    successor.datatypes.identity.vector_uuid = scratchbird::core::datatypes::kDatatypeCohortV2.bytes;
++    successor.datatypes.identity.vector_generation = 2;
++    for (auto& row : successor.datatypes.records) {
++      row.datatype_snapshot_uuid = successor.datatypes.identity.vector_uuid;
++      row.datatype_catalog_generation = 2;
++      row.datatype_registry_generation = 2;
++    }
++    fixture::Seal(successor);
++    Require(valid(successor), "DELETE refused admitted successor datatype cohort");
++    auto mismatched = successor;
++    mismatched.descriptor.datatype_registry_generation = 1;
++    fixture::Seal(mismatched);
++    Require(!valid(mismatched), "DELETE admitted cross-generation datatype authority");
++    mismatched = successor;
++    mismatched.datatypes.identity.vector_uuid = scratchbird::core::datatypes::kDatatypeCohortV1.bytes;
++    Require(!valid(mismatched), "DELETE admitted old snapshot with successor generation");
++    mismatched = successor;
++    mismatched.datatypes.identity.vector_generation = 3;
++    Require(!valid(mismatched), "DELETE admitted unpublished datatype generation");

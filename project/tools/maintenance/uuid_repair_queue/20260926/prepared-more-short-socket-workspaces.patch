@@ -1,0 +1,20 @@
+--- a/project/tests/sbsql_parser_worker/cdp_copy_route_gate.py
++++ b/project/tests/sbsql_parser_worker/cdp_copy_route_gate.py
+@@ -20,0 +21 @@
++import os
+@@ -65 +66 @@
+-    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_copy_route")
++    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_copy_route", Path(tempfile.gettempdir()), Path("/tmp"))
+@@ -71 +72 @@
+-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
++        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
+--- a/project/tests/sbsql_parser_worker/live_server_agent_storage_benchmark_gate.py
++++ b/project/tests/sbsql_parser_worker/live_server_agent_storage_benchmark_gate.py
+@@ -14,0 +15 @@
++import os
+@@ -41 +42 @@
+-    roots = (preferred_root, Path(tempfile.gettempdir()) / "sb_live_agent_storage")
++    roots = (preferred_root, Path(tempfile.gettempdir()) / "sb_live_agent_storage", Path(tempfile.gettempdir()), Path("/tmp"))
+@@ -47 +48 @@
+-        if max(len(str(endpoint_probe)), len(str(listener_probe))) < 100:
++        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:

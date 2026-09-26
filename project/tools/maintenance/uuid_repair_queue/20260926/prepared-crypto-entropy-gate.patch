@@ -1,0 +1,37 @@
+--- a/project/tests/release/public_crypto_entropy_policy_gate.py
++++ b/project/tests/release/public_crypto_entropy_policy_gate.py
+@@ -16,0 +17 @@
++import re
+@@ -66 +67,3 @@
+-            "std::random_device random",
++            "FillCryptographicRandomBytes(bytes.data(), bytes.size())",
++            "return std::nullopt",
++            "TIME.UUID_RANDOMNESS_UNAVAILABLE",
+@@ -68,0 +72,12 @@
++        ),
++    },
++    {
++        "row_id": "cryptographic_random_backend",
++        "surface": "entropy",
++        "path": "src/core/common/crypto_random.hpp",
++        "tokens": (
++            "<openssl/rand.h>",
++            "FillCryptographicRandomBytes",
++            "RAND_bytes(destination+offset,static_cast<int>(count))!=1",
++            "OPENSSL_cleanse(destination,size)",
++            "return false",
+@@ -136 +151,5 @@
+-            "protected-material-audit:v1:sha256:",
++            "IssueRuntimeIdentityV7()",
++            "SerializeAuditPayload",
++            "event.audit_event_uuid.is_nil() || !AppendIdentity(payload, event.audit_event_uuid)",
++            "AttachSha256Digest(&record, kRecordOffsetDigest, kProtectedMaterialDigestBytes)",
++            "Sha256DigestMatches(record, kRecordOffsetDigest, digest_bytes)",
+@@ -308,0 +328,7 @@
++
++    # UUIDs consume the central CSPRNG and refuse provider failure. Requiring
++    # the retired random_device implementation would regress this boundary.
++    for relative in ("src/core/uuid/uuid.cpp", "src/core/common/crypto_random.hpp"):
++        entropy_text = read_project_file(project_root, relative)
++        if re.search(r"\bstd::(?:random_device|mt19937(?:_64)?|minstd_rand0?)\b", entropy_text):
++            fail(f"local_prng_entropy_fallback:{relative}")

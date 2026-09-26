@@ -1,0 +1,23 @@
+--- a/project/tests/database_lifecycle/routine_delete_column_range_vertical_slice.cpp
++++ b/project/tests/database_lifecycle/routine_delete_column_range_vertical_slice.cpp
+@@ -110 +110,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/sbsql_parser_worker/sbsql_database_create_schema_bootstrap_gate.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_database_create_schema_bootstrap_gate.cpp
+@@ -84,0 +85,5 @@
++  if (kind == UuidKind::session) {
++    const auto session = uuid::IssueRuntimeIdentityV7();
++    Require(session.has_value(), "test runtime session UUID generation failed");
++    return *session;
++  }
+--- a/project/tests/database_lifecycle/sbsql_multilingual_name_registry_conformance.cpp
++++ b/project/tests/database_lifecycle/sbsql_multilingual_name_registry_conformance.cpp
+@@ -110,3 +110,3 @@
+-  const auto session = uuid::GenerateEngineIdentityV7(UuidKind::session, CurrentUnixMillis());
+-  Require(session.ok(), "name registry session identity generation failed");
+-  context.session_uuid = session.value.value;
++  const auto session = uuid::IssueRuntimeIdentityV7();
++  Require(session.has_value(), "name registry session identity generation failed");
++  context.session_uuid = *session;

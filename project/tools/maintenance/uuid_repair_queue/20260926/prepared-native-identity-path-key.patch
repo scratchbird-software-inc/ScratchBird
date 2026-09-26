@@ -1,0 +1,39 @@
+--- a/project/src/core/uuid/uuid.cpp
++++ b/project/src/core/uuid/uuid.cpp
+@@ -18,0 +19 @@
++#include <openssl/evp.h>
+@@ -464 +465,15 @@
+-  return std::filesystem::path(UuidToString(uuid));
++  constexpr std::string_view domain = "SB_ENGINE_IDENTITY_PATH_KEY_V2";
++  std::array<byte, domain.size() + 16> material{};
++  std::copy(domain.begin(), domain.end(), material.begin());
++  std::copy(uuid.bytes.begin(), uuid.bytes.end(), material.begin() + domain.size());
++  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
++  unsigned digest_size = 0;
++  if (EVP_Digest(material.data(), material.size(), digest.data(), &digest_size,
++                 EVP_sha256(), nullptr) != 1 || digest_size != 32) return std::nullopt;
++  std::string key;
++  key.reserve(64);
++  for (unsigned i = 0; i < digest_size; ++i) {
++    key.push_back(kHex[digest[i] >> 4]);
++    key.push_back(kHex[digest[i] & 15]);
++  }
++  return std::filesystem::path(std::move(key));
+--- a/project/src/core/uuid/uuid.hpp
++++ b/project/src/core/uuid/uuid.hpp
+@@ -104,2 +104,3 @@
+-// OS filename projection only. Engine ownership and lookup retain the input
+-// binary identity; a path component is not a replacement UUID authority.
++// Domain-separated digest key for OS filenames, never UUID text. Ownership
++// and lookup retain the native identity in authenticated records. A filename
++// cannot be decoded into an identity or used as replacement UUID authority.
+--- a/project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp
++++ b/project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp
+@@ -1107 +1107 @@
+-                "019d0000-0000-7000-8000-00000000d714" &&
++                "aebb71bae9d05c8cbbd0eafc4ee96a4041bbe3f231cc692ed2871d40dbe6719b" &&
+@@ -1109,0 +1110,4 @@
++    auto different_path_identity = path_identity;
++    different_path_identity.bytes[15] ^= 1;
++    Require(uuid::EngineIdentityPathComponent(different_path_identity) != component,
++            "distinct native identities shared a filesystem key");

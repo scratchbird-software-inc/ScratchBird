@@ -1,0 +1,46 @@
+--- a/project/tests/performance/optimizer_runtime_hot_path_orh_220_221_222_gate.cpp
++++ b/project/tests/performance/optimizer_runtime_hot_path_orh_220_221_222_gate.cpp
+@@ -17,0 +18 @@
++#include "../support/binary_uuid_fixture.hpp"
+@@ -364 +365 @@
+-      {opt::JoinRelationNode{.relation_uuid = "rel.orders",
++      {opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 1),
+@@ -366 +367 @@
+-       opt::JoinRelationNode{.relation_uuid = "rel.customers",
++       opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
+@@ -368 +369 @@
+-       opt::JoinRelationNode{.relation_uuid = "rel.countries",
++       opt::JoinRelationNode{.relation_uuid = scratchbird::tests::FixtureUuid(220221, 3),
+@@ -372,2 +373,2 @@
+-           .left_relation_uuid = "rel.orders",
+-           .right_relation_uuid = "rel.customers",
++           .left_relation_uuid = scratchbird::tests::FixtureUuid(220221, 1),
++           .right_relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
+@@ -380,2 +381,2 @@
+-           .left_relation_uuid = "rel.customers",
+-           .right_relation_uuid = "rel.countries",
++           .left_relation_uuid = scratchbird::tests::FixtureUuid(220221, 2),
++           .right_relation_uuid = scratchbird::tests::FixtureUuid(220221, 3),
+--- a/project/src/core/platform/runtime_platform.hpp
++++ b/project/src/core/platform/runtime_platform.hpp
+@@ -257,0 +258,7 @@
++  // Non-aggregate construction prevents a short string literal from silently
++  // becoming an ASCII-padded identity through unsigned-byte brace elision.
++  // UUID values still preserve every possible 128-bit pattern; engine identity
++  // policy is checked separately at the authority boundary.
++  constexpr Uuid() noexcept = default;
++  constexpr Uuid(std::array<byte, 16> value) noexcept : bytes(value) {}
++
+--- a/project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp
++++ b/project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp
+@@ -38,0 +39,10 @@
++template<class T>
++concept AcceptsShortTextUuid = requires { T{"rel.customer"}; };
++struct NativeUuidMember { Uuid identity; };
++static_assert(!AcceptsShortTextUuid<Uuid>);
++static_assert(!AcceptsShortTextUuid<NativeUuidMember>);
++static_assert(!std::is_constructible_v<Uuid, const char*>);
++static_assert(!std::is_constructible_v<Uuid, std::string_view>);
++constexpr Uuid kNativeBytes{{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,255}};
++static_assert(kNativeBytes.bytes.front() == 0 && kNativeBytes.bytes.back() == 255);
++static_assert(Uuid{}.is_nil());

@@ -1,0 +1,150 @@
+--- a/project/tests/database_lifecycle/CMakeLists.txt
++++ b/project/tests/database_lifecycle/CMakeLists.txt
+@@ -782,0 +783 @@
++      sb_engine
+--- a/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
+@@ -13,0 +14 @@
++#include "../support/engine_statement_fixture.hpp"
+@@ -167,25 +168 @@
+-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
+-                                      const platform::Uuid& database_uuid,
+-                                      const platform::Uuid& principal_uuid,
+-                                      std::string request_id) {
+-  api::EngineRequestContext context;
+-  context.trust_mode = api::EngineTrustMode::server_isolated;
+-  context.request_id = std::move(request_id);
+-  context.database_path = path.string();
+-  context.database_uuid = database_uuid;
+-  context.principal_uuid = principal_uuid;
+-  context.session_uuid = NewIdentity(platform::UuidKind::object);
+-  context.security_context_present = true;
+-  context.identifier_profile_uuid = "sbsql_v3";
+-  context.language_context.language_tag = "en";
+-  context.language_context.default_language_tag = "en";
+-  context.catalog_generation_id = 1;
+-  context.security_epoch = 17;
+-  context.resource_epoch = 19;
+-  context.name_resolution_epoch = 1;
+-  return context;
+-}
+-
+-api::EngineRequestContext Begin(const std::filesystem::path& path,
+-                                const platform::Uuid& database_uuid,
+-                                const platform::Uuid& principal_uuid,
++api::EngineRequestContext Begin(const api::EngineRequestContext& owner_context,
+@@ -194,2 +171,2 @@
+-  request.context =
+-      BaseContext(path, database_uuid, principal_uuid, std::move(request_id));
++  request.context = owner_context;
++  request.context.request_id = std::move(request_id);
+@@ -202,2 +179 @@
+-  context.snapshot_visible_through_local_transaction_id =
+-      begun.snapshot_visible_through_local_transaction_id;
++  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+@@ -220 +196 @@
+-platform::Uuid CreateDatabase(const std::filesystem::path& path) {
++api::EngineRequestContext CreateDatabase(const std::filesystem::path& path) {
+@@ -227,2 +203 @@
+-  create.allow_minimal_resource_bootstrap = true;
+-  create.require_resource_seed_pack = false;
++  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+@@ -236 +211 @@
+-  return create.database_uuid.value;
++  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
+@@ -282 +257,2 @@
+-api::EnginePlanOperationRequest CachedCountRequest(
++scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> CachedCountRequest(
++    const scratchbird::tests::FixtureEngineSession& session,
+@@ -288,2 +264 @@
+-  api::EnginePlanOperationRequest request;
+-  request.context = std::move(context);
++  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> request(session, context);
+@@ -317,0 +293,2 @@
++  api::EngineRequestContext owner_context;
++  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+@@ -328,0 +306 @@
++    session.reset();
+@@ -340,2 +318,3 @@
+-  fixture.database_uuid = CreateDatabase(fixture.database_path);
+-  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
++  fixture.owner_context = CreateDatabase(fixture.database_path);
++  fixture.database_uuid = fixture.owner_context.database_uuid;
++  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+@@ -347,3 +326 @@
+-  auto schema_context = Begin(fixture.database_path,
+-                              fixture.database_uuid,
+-                              fixture.principal_uuid,
++  auto schema_context = Begin(fixture.owner_context,
+@@ -360,3 +337 @@
+-  auto table_context = Begin(fixture.database_path,
+-                             fixture.database_uuid,
+-                             fixture.principal_uuid,
++  auto table_context = Begin(fixture.owner_context,
+@@ -375 +350,2 @@
+-
++  fixture.owner_context.current_schema_uuid = fixture.schema_uuid;
++  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
+@@ -381,3 +357 @@
+-  auto read_context = Begin(fixture.database_path,
+-                            fixture.database_uuid,
+-                            fixture.principal_uuid,
++  auto read_context = Begin(fixture.owner_context,
+@@ -402 +376 @@
+-      CachedCountRequest(read_context,
++      CachedCountRequest(*fixture.session, read_context,
+@@ -417 +391 @@
+-      CachedCountRequest(read_context,
++      CachedCountRequest(*fixture.session, read_context,
+@@ -432 +406 @@
+-      CachedCountRequest(read_context,
++      CachedCountRequest(*fixture.session, read_context,
+@@ -448,3 +422 @@
+-  auto rename_context = Begin(fixture.database_path,
+-                              fixture.database_uuid,
+-                              fixture.principal_uuid,
++  auto rename_context = Begin(fixture.owner_context,
+@@ -465,3 +437 @@
+-  auto after_ddl_context = Begin(fixture.database_path,
+-                                 fixture.database_uuid,
+-                                 fixture.principal_uuid,
++  auto after_ddl_context = Begin(fixture.owner_context,
+@@ -472 +442 @@
+-      CachedCountRequest(after_ddl_context,
++      CachedCountRequest(*fixture.session, after_ddl_context,
+@@ -489,0 +460,2 @@
++  api::EngineRequestContext owner_context;
++  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+@@ -498,0 +471 @@
++    session.reset();
+@@ -542,2 +515,3 @@
+-  fixture.database_uuid = CreateDatabase(fixture.database_path);
+-  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
++  fixture.owner_context = CreateDatabase(fixture.database_path);
++  fixture.database_uuid = fixture.owner_context.database_uuid;
++  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+@@ -546,3 +520 @@
+-  fixture.context = Begin(fixture.database_path,
+-                          fixture.database_uuid,
+-                          fixture.principal_uuid,
++  fixture.context = Begin(fixture.owner_context,
+@@ -551,2 +523,2 @@
+-  const auto table = api::AppendMgaTableMetadata(fixture.context,
+-                                                 TableRecord(fixture));
++  const auto table = scratchbird::tests::PublishMgaTableFixture(fixture.context,
++      TableRecord(fixture), {"character", "character"}, {CoveringIndexRecord(fixture)});
+@@ -556,0 +529,4 @@
++  Commit(fixture.context);
++  fixture.owner_context.current_schema_uuid = fixture.context.current_schema_uuid;
++  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
++  fixture.context = Begin(fixture.owner_context, "dpc010-crud-data");
+@@ -565,2 +541,2 @@
+-  api::EngineInsertRowsRequest insert;
+-  insert.context = fixture.context;
++  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> insert(
++      *fixture.session, fixture.context);
+@@ -592,2 +568,2 @@
+-  api::EnginePlanOperationRequest request;
+-  request.context = fixture.context;
++  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> request(
++      *fixture.session, fixture.context);

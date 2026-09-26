@@ -1,0 +1,228 @@
+--- a/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
+@@ -340,0 +341 @@
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(table_context);
+@@ -360,0 +362 @@
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(read_context);
+@@ -425,0 +428 @@
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(rename_context);
+@@ -440,0 +444 @@
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(after_ddl_context);
+@@ -680,0 +685,22 @@
++
++  // Repeated carriers of one native dependency remain unambiguous. A second
++  // distinct object must not silently become a successful default scan.
++  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> repeated(
++      *fixture.session, fixture.context);
++  repeated.target_object.uuid = fixture.table_uuid;
++  repeated.target_object.object_kind = "table";
++  repeated.related_objects.push_back(repeated.target_object);
++  repeated.predicate = Predicate("column_equals", {"id-7"});
++  const auto repeated_plan = api::EnginePlanOperation(repeated);
++  RequireOk(repeated_plan, "DPC-010 repeated native dependency was ambiguous");
++  RequireOptimizerSelectionEvidence(repeated_plan);
++  auto ambiguous = repeated;
++  ambiguous.related_objects.front().uuid = NewIdentity(platform::UuidKind::object);
++  const auto ambiguous_plan = api::EnginePlanOperation(ambiguous);
++  Require(!ambiguous_plan.ok &&
++              std::any_of(ambiguous_plan.diagnostics.begin(), ambiguous_plan.diagnostics.end(),
++                  [](const auto& diagnostic) {
++                    return diagnostic.detail.find("invalid_or_ambiguous_object_binding") != std::string::npos;
++                  }),
++          "DPC-010 ambiguous native dependencies published a successful fallback plan");
++
+--- a/project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp
+@@ -485 +485 @@
+-            BaseContext(fixture, "dpc033-corrupt-index"), fixture.table_uuid, ".indexes", false);
++            BaseContext(fixture, "dpc033-corrupt-index"), fixture.table_uuid, ".indexes.sbnx", false);
+--- a/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
+@@ -38,0 +39,2 @@
++#include "../support/engine_statement_fixture.hpp"
++#include <map>
+@@ -64,0 +67 @@
++#include <tuple>
+@@ -84,0 +88 @@
++api::EngineUuid g_primary_filespace_uuid;
+@@ -272,0 +277 @@
++  context.default_root_uuid = g_primary_filespace_uuid;
+@@ -279,3 +284,3 @@
+-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+-  context.datatype_catalog_generation = 1;
+-  context.datatype_registry_generation = 1;
++  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
++  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
++  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+@@ -362,0 +368,17 @@
++auto FixtureSessionScope(const api::EngineRequestContext& context) {
++  return std::make_tuple(context.database_path, context.database_uuid,
++                         context.principal_uuid, context.session_uuid, context.trust_mode);
++}
++
++auto& FixtureStatementSessions() {
++  using Key = decltype(FixtureSessionScope(api::EngineRequestContext{}));
++  static std::map<Key, std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
++  return sessions;
++}
++
++auto& FixtureTypedStatements() {
++  using Key = std::tuple<std::string, api::EngineUuid, std::string>;
++  static std::map<Key, std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
++  return statements;
++}
++
+@@ -369,0 +392,9 @@
++  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
++  if (requires_transaction &&
++      (operation_id.starts_with("dml.") || operation_id == "query.plan_operation")) {
++    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
++    auto& session = FixtureStatementSessions()[FixtureSessionScope(context)];
++    if (!session) session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
++    statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, context);
++    context = statement->context;
++  }
+@@ -3759,15 +3790,17 @@
+-  context.statement_uuid =
+-      FixtureIdentity(0x800 + std::stoull(std::string(suffix), nullptr, 16));
+-  context.statement_receipt_uuid =
+-      FixtureIdentity(0x900 + std::stoull(std::string(suffix), nullptr, 16));
+-  context.statement_snapshot_uuid =
+-      FixtureIdentity(0xa00 + std::stoull(std::string(suffix), nullptr, 16));
+-  context.statement_snapshot_generation = 1;
+-  context.catalog_epoch_uuid =
+-      FixtureIdentity(0xd00 + std::stoull(std::string(suffix), nullptr, 16));
+-  context.statement_metadata_snapshot_uuid =
+-      FixtureIdentity(0xb00 + std::stoull(std::string(suffix), nullptr, 16));
+-  context.statement_metadata_snapshot_engine_owned = true;
+-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+-  context.datatype_catalog_generation = 1;
+-  context.datatype_registry_generation = 1;
++  // Receipt, snapshot, metadata and resource identities come from the engine.
++  // Repeated component demands with the same transaction/suffix retain the
++  // original receipt so replay checks exercise the same statement identity.
++  (void)publish_native_snapshot;
++  auto& statement = FixtureTypedStatements()[{context.database_path, context.transaction_uuid, std::string(suffix)}];
++  if (!statement) {
++    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
++    auto& session = FixtureStatementSessions()[FixtureSessionScope(context)];
++    if (!session) session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
++    try {
++      statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, context);
++    } catch (const std::exception& error) {
++      std::cerr << "typed statement suffix=" << suffix << ": " << error.what() << '\n';
++      throw;
++    }
++  }
++  context = statement->context;
+@@ -3775,48 +3807,0 @@
+-  const auto security = api::LoadSecurityPrincipalLifecycleState(context);
+-  if (!security.ok) {
+-    std::cerr << security.diagnostic.code << ':'
+-              << security.diagnostic.message_key << ':'
+-              << security.diagnostic.detail << '\n';
+-  }
+-  Require(security.ok && security.state.security_generation != 0 &&
+-              security.state.policy_generation != 0 &&
+-              security.state.security_context_generation != 0,
+-          "typed UPDATE durable security authority was unavailable");
+-  context.security_epoch = security.state.security_generation;
+-  context.authorization_context.present = true;
+-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f2100-0000-7000-8000-000000000004");
+-  context.authorization_context.security_context_generation =
+-      security.state.security_context_generation;
+-  context.authorization_context.principal_uuid = context.principal_uuid;
+-  context.authorization_context.security_epoch =
+-      security.state.security_generation;
+-  context.authorization_context.policy_epoch =
+-      security.state.policy_generation;
+-  context.authorization_context.catalog_generation_id =
+-      context.catalog_generation_id;
+-  context.authorization_context.effective_subjects.push_back({context.principal_uuid, "principal"});
+-  for (const auto& source : security.state.grants) {
+-    if (source.revoked || source.grantee_uuid != context.principal_uuid) continue;
+-    api::EngineMaterializedAuthorizationGrant grant;
+-    grant.grant_uuid = source.grant_uuid;
+-    grant.subject_uuid = source.grantee_uuid; grant.subject_kind = source.grantee_kind;
+-    grant.target_uuid = source.target_object_uuid; grant.right = source.privilege;
+-    grant.security_epoch = context.security_epoch; grant.deny = source.grant_effect == "deny";
+-    context.authorization_context.grants.push_back(std::move(grant));
+-  }
+-  context.resource_admission_uuid =
+-      FixtureIdentity(0xc00 + std::stoull(std::string(suffix), nullptr, 16));
+-  if (publish_native_snapshot) {
+-    api::EnginePublishStatementSnapshotRequest request;
+-    request.context = context;
+-    request.context.statement_snapshot_uuid = {};
+-    const auto published = api::EnginePublishStatementSnapshot(request);
+-    Require(published.ok, "DELETE fixture MGA statement snapshot publication");
+-    context.statement_snapshot_uuid = published.statement_snapshot_uuid;
+-    context.snapshot_visible_through_local_transaction_id =
+-        published.snapshot_vector.visible_committed_high_watermark;
+-    context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
+-        published.snapshot_vector.active_excluded_local_transaction_ids;
+-    context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+-        published.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+-  }
+@@ -4070,0 +4056,5 @@
++    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = context.principal_uuid.bytes;
++    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::database] = context.database_uuid.bytes;
++    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::session] = context.session_uuid.bytes;
++    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::transaction] = context.transaction_uuid.bytes;
++    pressure_tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = context.statement_uuid.bytes;
+@@ -4418,0 +4409,3 @@
++      FixtureTypedStatements().erase({crash_transaction.database_path,
++                                      crash_transaction.transaction_uuid, suffix});
++      FixtureStatementSessions().erase(FixtureSessionScope(crash_transaction));
+@@ -4508,2 +4501,2 @@
+-  // The trusted component's synthetic statement identities are deliberately
+-  // discarded: this test must obtain fresh authority from the real C ABI.
++  // Discard the previous statement's issued authority before requesting a
++  // fresh receipt through this public session.
+@@ -4518,0 +4512,5 @@
++  acquire_context.optimizer_capability_snapshot_uuid = {};
++  acquire_context.optimizer_resource_snapshot_uuid = {};
++  acquire_context.optimizer_route_snapshot_uuid = {};
++  acquire_context.maximum_mga_relation_decoded_bytes_per_pass = 0;
++  acquire_context.maximum_typed_result_transport_bytes_per_packet = 0;
+@@ -4634,6 +4631,0 @@
+-  // This seed operation uses the explicit embedded fixture bootstrap, not a
+-  // materialized client authorization (which must never fall back to tags).
+-  privilege.context.authorization_context = {};
+-  privilege.context.trust_mode = api::EngineTrustMode::embedded_in_process;
+-  privilege.context.trace_tags.push_back("security.fixture_trace_authority");
+-  privilege.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
+@@ -4835,2 +4827,2 @@
+-    update_wire::TypedUpdateUuid descriptor{}, occurrence{};
+-    descriptor[0] = occurrence[0] = 1; descriptor[15] = 41; occurrence[15] = 42;
++    const update_wire::TypedUpdateUuid descriptor = scratchbird::tests::FixtureUuid(2007, 41).bytes;
++    const update_wire::TypedUpdateUuid occurrence = scratchbird::tests::FixtureUuid(2007, 42).bytes;
+@@ -5434,4 +5425,0 @@
+-  const auto deferred_bound = api::BindDmlUpdateRowsDescriptorV1(deferred_context, deferred_demand);
+-  Require(deferred_bound.ok, "deferred retirement bind failed");
+-  api::RetireDmlUpdateResourceReceiptDescriptorsV1(deferred_context);
+-  RequireTypedUpdateResourceGrants(1, "cleanup retired an active receipt");
+@@ -5455,0 +5444,9 @@
++  // Acquire the competing statements before creating unresolved work. Fresh
++  // snapshot publication must not bypass DML reconciliation; this fixture
++  // exercises resource-owner contention within already-issued statements.
++  auto retry_context = TypedUpdateStatementContext(transaction, "f7");
++  const auto deferred_bound = api::BindDmlUpdateRowsDescriptorV1(deferred_context, deferred_demand);
++  Require(deferred_bound.ok, "deferred retirement bind failed");
++  api::RetireDmlUpdateResourceReceiptDescriptorsV1(deferred_context);
++  RequireTypedUpdateResourceGrants(1, "cleanup retired an active receipt");
++
+@@ -5495 +5491,0 @@
+-  auto retry_context = TypedUpdateStatementContext(transaction, "f7");
+@@ -5895,0 +5892,2 @@
++  Require(created.state.filespace_uuid.valid(), "credentialed fixture filespace UUID missing");
++  g_primary_filespace_uuid = created.state.filespace_uuid.value;
+@@ -5908,0 +5907,2 @@
++    FixtureTypedStatements().clear();
++    FixtureStatementSessions().clear();
+@@ -5915,0 +5916,2 @@
++    FixtureTypedStatements().clear();
++    FixtureStatementSessions().clear();
+@@ -5924,0 +5927,2 @@
++  FixtureTypedStatements().clear();
++    FixtureStatementSessions().clear();

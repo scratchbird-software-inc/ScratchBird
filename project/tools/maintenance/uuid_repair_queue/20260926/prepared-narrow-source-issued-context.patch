@@ -1,0 +1,102 @@
+--- a/project/tests/sbsql_parser_worker/CMakeLists.txt
++++ b/project/tests/sbsql_parser_worker/CMakeLists.txt
+@@ -5725 +5725 @@
+-if(TARGET sb_engine_internal_api)
++if(TARGET sb_engine_internal_api AND TARGET sb_engine)
+@@ -5734,0 +5735 @@
++      sb_engine
+--- a/project/tests/sbsql_parser_worker/sbsql_narrow_query_profile_source_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_narrow_query_profile_source_conformance.cpp
+@@ -2,0 +3 @@
++#include "../support/engine_statement_fixture.hpp"
+@@ -12,0 +14 @@
++#include "memory.hpp"
+@@ -71 +73 @@
+-constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
++constexpr auto kDatatypeCatalogSnapshotUuid = api::kBootstrapDatatypeCatalogUuid;
+@@ -151,0 +154,2 @@
++  std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
++  std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
+@@ -156,0 +161,2 @@
++    statements.clear();
++    engine_session.reset();
+@@ -180,5 +186,2 @@
+-  context.datatype_catalog_generation = 1;
+-  context.datatype_registry_generation = 1;
+-  context.maximum_mga_relation_decoded_bytes_per_pass =
+-      kLargeDecodedGrant;
+-  context.catalog_epoch_uuid = NewUuid(platform::UuidKind::object);
++  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
++  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+@@ -187,0 +191 @@
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+@@ -233,2 +237 @@
+-  create.allow_minimal_resource_bootstrap = true;
+-  create.require_resource_seed_pack = false;
++  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+@@ -235,0 +239 @@
++  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << "\n";
+@@ -240 +244 @@
+-  fixture.schema_uuid = NewUuid(platform::UuidKind::object);
++  fixture.schema_uuid = {};
+@@ -242 +246 @@
+-  fixture.principal_uuid = NewUuid(platform::UuidKind::principal);
++  fixture.principal_uuid = scratchbird::tests::BootstrapFixtureOwnerContext(create).principal_uuid;
+@@ -254 +258,2 @@
+-  Require(!api::AppendMgaTableMetadata(fixture.transaction, table).error,
++  Require(!scratchbird::tests::PublishMgaTableFixture(
++              fixture.transaction, table, {"int32", "int32", "int32", "text"}).error,
+@@ -255,0 +261 @@
++  fixture.schema_uuid = fixture.transaction.current_schema_uuid;
+@@ -298,35 +304,11 @@
+-  context.statement_uuid = NewUuid(platform::UuidKind::object);
+-  context.statement_receipt_uuid =
+-      NewUuid(platform::UuidKind::object);
+-  api::EnginePublishStatementSnapshotRequest publish;
+-  publish.context = context;
+-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
+-  RequireOk(snapshot, "statement snapshot publication failed");
+-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+-  context.snapshot_visible_through_local_transaction_id =
+-      snapshot.snapshot_vector.visible_committed_high_watermark;
+-  context.statement_metadata_snapshot_engine_owned = true;
+-  context.statement_metadata_snapshot_uuid =
+-      NewUuid(platform::UuidKind::object);
+-
+-  context.authorization_context.present = true;
+-  context.authorization_context.authority_uuid =
+-      NewUuid(platform::UuidKind::object);
+-  context.authorization_context.security_context_generation = 1;
+-  context.authorization_context.principal_uuid = context.principal_uuid;
+-  context.authorization_context.security_epoch = context.security_epoch;
+-  context.authorization_context.policy_epoch = 1;
+-  context.authorization_context.catalog_generation_id =
+-      context.catalog_generation_id;
+-  api::EngineAuthorizationSubject subject;
+-  subject.subject_uuid = context.principal_uuid;
+-  subject.subject_kind = "principal";
+-  context.authorization_context.effective_subjects.push_back(subject);
+-  api::EngineMaterializedAuthorizationGrant grant;
+-  grant.grant_uuid = NewUuid(platform::UuidKind::object);
+-  grant.subject_uuid = context.principal_uuid;
+-  grant.subject_kind = "principal";
+-  grant.target_uuid = fixture->relation_uuid;
+-  grant.right = "SELECT";
+-  grant.security_epoch = context.security_epoch;
+-  context.authorization_context.grants.push_back(std::move(grant));
++  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(context);
++  Require(epochs.ok, "fixture catalog epochs unavailable");
++  context.catalog_generation_id = epochs.state.metadata_epoch;
++  context.name_resolution_epoch = epochs.state.name_resolution_epoch;
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
++  if (!fixture->engine_session)
++    fixture->engine_session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
++  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
++      *fixture->engine_session, context);
++  context = statement->context;
++  fixture->statements.push_back(std::move(statement));
+@@ -1040,0 +1023,4 @@
++    const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
++        scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
++        "sbsql_narrow_query_profile_source_conformance");
++    Require(memory.ok() && memory.fixture_mode, "fixture memory configuration failed");

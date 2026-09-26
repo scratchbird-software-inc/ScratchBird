@@ -1,0 +1,61 @@
+--- a/project/src/engine/internal_api/dml/delete_predicate_binding.cpp
++++ b/project/src/engine/internal_api/dml/delete_predicate_binding.cpp
+@@ -6,0 +7 @@
++#include "catalog/column_metadata_codec.hpp"
+@@ -55,12 +56,3 @@
+-  std::map<std::string, std::string> fields;
+-  std::string_view remaining(column.value_descriptor.encoded_descriptor);
+-  while (!remaining.empty()) {
+-    const auto end = remaining.find(';');
+-    const auto token = remaining.substr(0, end);
+-    const auto equal = token.find('=');
+-    if (equal == std::string_view::npos || equal == 0 ||
+-        !fields.emplace(std::string(token.substr(0, equal)), std::string(token.substr(equal + 1))).second)
+-      return false;
+-    if (end == std::string_view::npos) break;
+-    remaining.remove_prefix(end + 1);
+-  }
++  CatalogColumnMetadata metadata;
++  if (!DecodeCatalogColumnMetadata(binding.encoded_descriptor, &metadata)) return false;
++  const auto& fields = metadata.text;
+@@ -75,2 +67,2 @@
+-  if (fields.contains("datatype_descriptor_uuid") || fields.contains("type_uuid"))
+-    return false;
++  if (BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") != binding.datatype_descriptor_uuid ||
++      BinaryCatalogUuid(metadata, "type_uuid") != binding.type_uuid) return false;
+@@ -88 +80,2 @@
+-  if (binding.type_uuid != resolved.type_uuid || codec == fields.end() ||
++  if (binding.type_uuid != resolved.type_uuid ||
++      BinaryCatalogUuid(metadata, "codec_uuid") != resolved.codec_uuid || codec == fields.end() ||
+--- a/project/src/engine/internal_api/dml/update_delete_optimized.cpp
++++ b/project/src/engine/internal_api/dml/update_delete_optimized.cpp
+@@ -10,0 +11 @@
++#include "catalog/column_metadata_codec.hpp"
+@@ -3284,16 +3285,3 @@
+-  std::map<std::string, std::string> fields;
+-  std::string_view remaining(binding.encoded_descriptor);
+-  bool valid_fields = true;
+-  while (!remaining.empty()) {
+-    const auto end = remaining.find(';');
+-    const auto token = remaining.substr(0, end);
+-    const auto equal = token.find('=');
+-    if (equal == std::string_view::npos || equal == 0 ||
+-        !fields.emplace(std::string(token.substr(0, equal)),
+-                        std::string(token.substr(equal + 1))).second) {
+-      valid_fields = false;
+-      break;
+-    }
+-    if (end == std::string_view::npos) break;
+-    remaining.remove_prefix(end + 1);
+-  }
++  CatalogColumnMetadata metadata;
++  const bool valid_fields = DecodeCatalogColumnMetadata(binding.encoded_descriptor, &metadata);
++  const auto& fields = metadata.text;
+@@ -3315,2 +3303,3 @@
+-  if (!valid_fields || fields.contains("datatype_descriptor_uuid") ||
+-      fields.contains("type_uuid") ||
++  if (!valid_fields ||
++      BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") != binding.datatype_descriptor_uuid ||
++      BinaryCatalogUuid(metadata, "type_uuid") != binding.type_uuid ||
+@@ -3330,0 +3320 @@
++      BinaryCatalogUuid(metadata, "codec_uuid") != lookup.row.codec_uuid ||

@@ -1,0 +1,51 @@
+--- a/project/src/engine/internal_api/catalog/descriptor_api.cpp
++++ b/project/src/engine/internal_api/catalog/descriptor_api.cpp
+@@ -20,0 +21 @@
++#include "mga_relation_store/mga_metadata_record_codec.hpp"
+@@ -249 +250,6 @@
+-      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
++      result.descriptor.encoded_descriptor = EncodeMetadataPairs(table->columns);
++      if (result.descriptor.encoded_descriptor.empty()) {
++        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
++            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
++                "invalid_binary_table_descriptor"));
++      }
+@@ -272 +278,6 @@
+-      result.descriptor.encoded_descriptor = "columns=" + EncodeCrudPairs(table->columns);
++      result.descriptor.encoded_descriptor = EncodeMetadataPairs(table->columns);
++      if (result.descriptor.encoded_descriptor.empty()) {
++        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
++            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
++                "invalid_binary_table_descriptor"));
++      }
+--- a/project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp
+@@ -0,0 +1 @@
++#include "mga_relation_store/mga_metadata_record_codec.hpp"
+@@ -245 +246,2 @@
+-      {{{"type", column.descriptor.canonical_type_name}, {"nullable", "true"}}, {}});
++      {{{"type", column.descriptor.canonical_type_name}, {"nullable", "true"}},
++       {{"datatype_descriptor_uuid", binding.row.descriptor_uuid}, {"type_uuid", binding.row.type_uuid}}});
+@@ -470,0 +473,22 @@
++  Require(result.api_result.result_shape.columns.size() == 1,
++          "SHOW CREATE descriptor shape must contain one table descriptor");
++  std::vector<std::pair<std::string, std::string>> columns;
++  const auto& encoded = result.api_result.result_shape.columns.front().encoded_descriptor;
++  Require(api::DecodeMetadataPairs(encoded, &columns) && columns.size() == 1 &&
++              columns.front().first == "id",
++          "table descriptor must use complete binary column framing");
++  api::CatalogColumnMetadata metadata;
++  Require(api::DecodeCatalogColumnMetadata(columns.front().second, &metadata),
++          "table descriptor lost binary column metadata");
++  const auto expected_column = Column(0, "id", "int64");
++  Require(api::BinaryCatalogUuid(metadata, "type_uuid") == expected_column.descriptor.type_uuid &&
++              api::BinaryCatalogUuid(metadata, "datatype_descriptor_uuid") ==
++                  expected_column.descriptor.datatype_descriptor_uuid,
++          "table descriptor changed native datatype identities");
++  auto damaged = encoded;
++  damaged.back() ^= 1;
++  const auto retained = columns;
++  Require(!api::DecodeMetadataPairs(damaged, &columns) && columns == retained,
++          "damaged table metadata was admitted or changed output");
++  Require(!api::DecodeMetadataPairs(encoded + "trailing", &columns) && columns == retained,
++          "table descriptor trailing data was admitted");

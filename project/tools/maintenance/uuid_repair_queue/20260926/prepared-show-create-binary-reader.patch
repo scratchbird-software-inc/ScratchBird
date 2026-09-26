@@ -1,0 +1,70 @@
+--- a/project/src/engine/internal_api/catalog/descriptor_api.cpp
++++ b/project/src/engine/internal_api/catalog/descriptor_api.cpp
+@@ -10,0 +11 @@
++#include "catalog/column_metadata_codec.hpp"
+@@ -52,21 +53,11 @@
+-std::string RenderColumnType(std::string_view encoded_descriptor) {
+-  if (encoded_descriptor.empty()) return "text";
+-  for (const std::string_view field : {"canonical", "type"}) {
+-    const std::string prefix = std::string(field) + '=';
+-    std::size_t begin = 0;
+-    while (begin <= encoded_descriptor.size()) {
+-      const std::size_t end = encoded_descriptor.find(';', begin);
+-      const std::string_view part = encoded_descriptor.substr(
+-          begin, end == std::string_view::npos ? std::string_view::npos
+-                                                : end - begin);
+-      if (part.starts_with(prefix) && part.size() > prefix.size()) {
+-        return std::string(part.substr(prefix.size()));
+-      }
+-      if (end == std::string_view::npos) break;
+-      begin = end + 1;
+-    }
+-  }
+-  return std::string(encoded_descriptor);
+-}
+-
+-std::string RenderCreateTableStatement(const CrudTableRecord& table) {
++std::optional<std::string> RenderColumnType(std::string_view encoded_descriptor) {
++  CatalogColumnMetadata metadata;
++  if (!DecodeCatalogColumnMetadata(encoded_descriptor, &metadata)) return std::nullopt;
++  for (const std::string_view key : {"canonical", "type"}) {
++    const auto found = metadata.text.find(std::string(key));
++    if (found != metadata.text.end() && !found->second.empty()) return found->second;
++  }
++  return std::nullopt;
++}
++
++std::optional<std::string> RenderCreateTableStatement(const CrudTableRecord& table) {
+@@ -81,2 +72,3 @@
+-    out << RenderIdentifier(column.first) << ' '
+-        << RenderColumnType(column.second);
++    const auto type = RenderColumnType(column.second);
++    if (!type.has_value()) return std::nullopt;
++    out << RenderIdentifier(column.first) << ' ' << *type;
+@@ -174 +166 @@
+-void AddShowCreateTableEvidence(EngineGetDescriptorResult* result,
++bool AddShowCreateTableEvidence(EngineGetDescriptorResult* result,
+@@ -176 +168,3 @@
+-  if (result == nullptr) return;
++  if (result == nullptr) return false;
++  const auto statement = RenderCreateTableStatement(table);
++  if (!statement.has_value()) return false;
+@@ -183 +177 @@
+-                     {"create_statement", RenderCreateTableStatement(table)}});
++                     {"create_statement", *statement}});
+@@ -184,0 +179 @@
++  return true;
+@@ -258 +253,5 @@
+-      AddShowCreateTableEvidence(&result, *table);
++      if (!AddShowCreateTableEvidence(&result, *table)) {
++        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
++            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
++                "invalid_binary_column_metadata"));
++      }
+@@ -277 +276,5 @@
+-      AddShowCreateTableEvidence(&result, *table);
++      if (!AddShowCreateTableEvidence(&result, *table)) {
++        return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(request.context,
++            "catalog.get_descriptor", MakeInvalidRequestDiagnostic("catalog.get_descriptor",
++                "invalid_binary_column_metadata"));
++      }

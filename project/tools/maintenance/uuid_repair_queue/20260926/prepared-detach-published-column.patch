@@ -1,0 +1,35 @@
+--- a/project/tests/database_lifecycle/detach_cleanup_conformance.cpp
++++ b/project/tests/database_lifecycle/detach_cleanup_conformance.cpp
+@@ -9,0 +10,4 @@
++#include "../support/native_catalog_column_fixture.hpp"
++#include "catalog/datatype_bootstrap_identity.hpp"
++#include "datatype_catalog_manifest.hpp"
++#include "datatype_operations.hpp"
+@@ -926,3 +930,3 @@
+-  table.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+-  table.context.datatype_catalog_generation = 1;
+-  table.context.datatype_registry_generation = 1;
++  table.context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
++  table.context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
++  table.context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
+@@ -935 +939,19 @@
+-  column.descriptor.encoded_descriptor = "type=int64";
++  namespace dt = scratchbird::core::datatypes;
++  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
++  Require(manifest.ok(), "metadata fixture datatype catalog unavailable");
++  const auto datatype = dt::LookupDatatypeCatalogRow(manifest.manifest,
++      dt::CanonicalTypeIdFromStableName("int64"));
++  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
++          "metadata fixture int64 datatype unavailable");
++  const auto& datatype_row = datatype.manifest.descriptor_rows.front();
++  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
++      table.context.datatype_catalog_snapshot_uuid, table.context.datatype_catalog_generation,
++      table.context.datatype_registry_generation, datatype_row.descriptor_uuid.value, datatype_row.descriptor_epoch);
++  Require(binding.ok, "metadata fixture int64 codec unavailable");
++  column.requested_column_uuid = scratchbird::tests::FixtureUuid(2020, 1);
++  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2020, 2);
++  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
++  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
++  column.descriptor.type_uuid = binding.row.type_uuid;
++  column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(
++      {{{"type", "int64"}, {"nullable", "false"}}, {}});

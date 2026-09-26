@@ -1,0 +1,79 @@
+--- a/project/src/engine/native_compile/native_compile.cpp
++++ b/project/src/engine/native_compile/native_compile.cpp
+@@ -334,0 +335 @@
++  bool authority_admitted = false;
+@@ -396,0 +398,6 @@
++  if (Contains(module, "cluster")) {
++    lower.unit_kind = "cluster_operation";
++    lower.reason = "cluster_operation_forbidden_noncluster";
++    return lower;
++  }
++  lower.authority_admitted = true;
+@@ -405,5 +411,0 @@
+-    return lower;
+-  }
+-  if (Contains(module, "cluster")) {
+-    lower.unit_kind = "cluster_operation";
+-    lower.reason = "cluster_operation_forbidden_noncluster";
+@@ -748,0 +751,10 @@
++  const auto lowerability = ClassifyLowerability(request);
++  // Rejected inputs must not acquire backend resources or become interpreter
++  // successes through optional/disabled native-compile policy fallback.
++  if (!lowerability.authority_admitted) {
++    return Failure(request, profile, preflight_backend,
++                   lowerability.reason == "sql_compile_forbidden"
++                       ? "NATIVE.SQL_COMPILE_FORBIDDEN"
++                       : "NATIVE.COMPILE_FAILED_REFUSED",
++                   lowerability.reason);
++  }
+@@ -769 +780,0 @@
+-  const auto lowerability = ClassifyLowerability(request);
+--- a/project/tests/optimizer/optimizer_enterprise_llvm_boundary_gate.cpp
++++ b/project/tests/optimizer/optimizer_enterprise_llvm_boundary_gate.cpp
+@@ -15,0 +16,2 @@
++#include <vector>
++#include <utility>
+@@ -157,0 +160,41 @@
++void TestRejectedInputsCannotFallback() {
++  const std::vector<std::pair<std::string, std::string>> rejected{
++      {"sql:SELECT 1", "sql_compile_forbidden"},
++      {"sblr:parser_ast:expr", "parser_authority_forbidden"},
++      {"sblr:reference_plan:predicate", "reference_authority_forbidden"},
++      {"sblr:protocol_frame:predicate", "protocol_or_client_authority_forbidden"},
++      {"engine_ir:predicate", "engine_ir_validation_required"},
++      {"sblr:catalog_security:predicate", "authority_check_forbidden"},
++      {"sblr:mga_visibility:predicate", "mga_visibility_forbidden"},
++      {"sblr:dml_mutation:commit", "mutation_side_effect_forbidden"},
++      {"sblr:cluster:udr_call", "cluster_operation_forbidden_noncluster"},
++      {"unclassified", "sblr_or_engine_ir_required"},
++      {"", "module_payload_required"}};
++  for (const auto* payload : {"sblr:udr_call", "sblr:logging_function"}) {
++    auto request = BaseRequest();
++    request.module_payload = payload;
++    request.allow_interpreter_fallback = true;
++    request.simulate_backend_unavailable = true;
++    const auto result = native::CompileNativeUnit(request);
++    Require(result.ok && result.fallback_used &&
++                result.effective_mode == native::NativeCompileEffectiveMode::interpreter,
++            "admitted interpreter-only operation lost fallback eligibility");
++  }
++  for (const auto& [payload, reason] : rejected) {
++    for (const auto* profile : {"native_compile.jit_optional", "native_compile.disabled"}) {
++      for (const bool unavailable : {false, true}) {
++        auto request = BaseRequest();
++        request.module_payload = payload;
++        request.policy_profiles = {profile};
++        request.allow_interpreter_fallback = true;
++        request.simulate_backend_unavailable = unavailable;
++        const auto result = native::CompileNativeUnit(request);
++        Require(!result.ok && !result.fallback_used &&
++                    result.effective_mode == native::NativeCompileEffectiveMode::refused &&
++                    result.diagnostic_detail == reason && !result.llvm_memory_reserved,
++                "rejected native input reached memory admission or interpreter fallback");
++      }
++    }
++  }
++}
++
+@@ -184,0 +228 @@
++  TestRejectedInputsCannotFallback();

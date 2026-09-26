@@ -1,0 +1,1017 @@
+{
+  "format": 1,
+  "source_checkpoint": "57c5277098d6a13531e6215de8d7d5193b14a730",
+  "status": "source preservation only; pending repairs are NOT applied or validated here",
+  "old_sandbox_draft_branch": "codex/sandbox-uuid-draft-20260926",
+  "old_sandbox_draft_commit": "36d3aaff9",
+  "pending_claim_order": [
+    2002,
+    2003,
+    2004,
+    2005,
+    2006,
+    2007,
+    2008,
+    2009,
+    2010,
+    2011,
+    2012,
+    2013,
+    2014,
+    2015,
+    2016,
+    2017,
+    2018,
+    2019
+  ],
+  "groups": [
+    {
+      "name": "prepared-agent-binary-fixtures",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-agent-binary-fixtures.patch",
+      "patch_sha256": "321ef0bfdc9c6b339aa54e2768f60ec313d9c346329f35f21885a737528b12e0",
+      "files": [
+        {
+          "target": "project/tests/agents/agent_runtime_shutdown_recovery_gate.cpp",
+          "original_sha256": "fd7db4cfa6fc962b0fcc18f5582fa60995ea68226bd4ea1f0325abc09879fcc8",
+          "prepared_sha256": "ce86d58b3a93b15220e869c622e20673353a20cf2920170b1e2446ea8b0eab4d",
+          "checkpoint_sha256": "ce86d58b3a93b15220e869c622e20673353a20cf2920170b1e2446ea8b0eab4d",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/cluster_boundary_conformance.cpp",
+          "original_sha256": "26c3e7345079c1e4d09d6ea125e1b5e2ba2f1e862f020cf3ab63b5268f176751",
+          "prepared_sha256": "76b5b4eae7835501752aefb846c04a29f1ca3e1350a662c46d4ac94521fc6ee1",
+          "checkpoint_sha256": "76b5b4eae7835501752aefb846c04a29f1ca3e1350a662c46d4ac94521fc6ee1",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/engine_agent_conformance.cpp",
+          "original_sha256": "ba1531609be273caa6729f3588a4c0e0940820e427f61cf055330f3799ba5c06",
+          "prepared_sha256": "de5e2a0259846413e2cf5527bda24a5872534435cdb231eee3e60775b8444f81",
+          "checkpoint_sha256": "de5e2a0259846413e2cf5527bda24a5872534435cdb231eee3e60775b8444f81",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-agent-fault-binary-evidence",
+      "historical_queue_claims": [
+        2012
+      ],
+      "patch_file": "prepared-agent-fault-binary-evidence.patch",
+      "patch_sha256": "42cc9b755d3f79a6dda9f0aea66ed2828f0b06ae14624a0cef293368f1b85c5e",
+      "files": [
+        {
+          "target": "project/tests/agents/agent_fault_injection_gate.cpp",
+          "original_sha256": "d87edef51bfc21ea37f1583ac37c1a3d8268f0253ea2c3a761934711aa2d9e4d",
+          "prepared_sha256": "6df46a9a682c986f533dbc7dcde0d28aa755a9f21c09e93eefde4f2c42d8032e",
+          "checkpoint_sha256": "d87edef51bfc21ea37f1583ac37c1a3d8268f0253ea2c3a761934711aa2d9e4d",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-aggregate-registry-repairs",
+      "historical_queue_claims": [
+        2004
+      ],
+      "patch_file": "prepared-aggregate-registry-repairs.patch",
+      "patch_sha256": "803981225cff504ae285fff5a58bd2a01071f9a1caec0398cf57e847698d0897",
+      "files": [
+        {
+          "target": "project/src/engine/sblr/sblr_aggregate_window_runtime_02_aggregate_ordered_approx.inc",
+          "original_sha256": "7c87376513fd4a158e90a36397365e9a2954b9c39a9d4ec24af69ed97a997b01",
+          "prepared_sha256": "d8eab99803832a237ec9184eda8e11626922d756de07198c8933bf0293cbe302",
+          "checkpoint_sha256": "7c87376513fd4a158e90a36397365e9a2954b9c39a9d4ec24af69ed97a997b01",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_015_aggregate_window_runtime_conformance.cpp",
+          "original_sha256": "6b4afe8863977860b6aac2753d7ecfa938181f42012d66c27d3cbe3b38a2e3b3",
+          "prepared_sha256": "67e98055fdc954be3424642b1bf45d570dff6361186cb30e0997043aa74c954b",
+          "checkpoint_sha256": "6b4afe8863977860b6aac2753d7ecfa938181f42012d66c27d3cbe3b38a2e3b3",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-bulk-bind-cohort-fixture",
+      "historical_queue_claims": [
+        2007
+      ],
+      "patch_file": "prepared-bulk-bind-cohort-fixture.patch",
+      "patch_sha256": "9d243e75a1504c2794770839b8f83a9e3f25810c46ace6379ace249a01f9ebe4",
+      "files": [
+        {
+          "target": "project/tests/sbsql_sblr_alignment/ia07_bulk_import_stream_bind_authority_test.cpp",
+          "original_sha256": "aa05d3fe11607288a54b54477a452dc0be3fc1014d99ef4a58c406ff32a05670",
+          "prepared_sha256": "83075e78b115712ec078f0fe58bee6c7ea9506b931b98012f25c66a0fd57054b",
+          "checkpoint_sha256": "aa05d3fe11607288a54b54477a452dc0be3fc1014d99ef4a58c406ff32a05670",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-bulk-cancel-binary-fixture",
+      "historical_queue_claims": [
+        2005
+      ],
+      "patch_file": "prepared-bulk-cancel-binary-fixture.patch",
+      "patch_sha256": "515acae28d0715fbf0af66284d04acb0ef01301acdf1625d09790b19c6889e6d",
+      "files": [
+        {
+          "target": "project/tests/sbsql_sblr_alignment/ia07_bulk_import_stream_cancellation_fault_test.cpp",
+          "original_sha256": "e24b81b337ee99747bf4b22abf7ca3d9ee0244bf61ce4c9ddfa08a5d5f1150c5",
+          "prepared_sha256": "4ca1bc2b7be0bfb20795b3b7c3b638ab5d75a26613a5bf045f1419b821131a59",
+          "checkpoint_sha256": "e24b81b337ee99747bf4b22abf7ca3d9ee0244bf61ce4c9ddfa08a5d5f1150c5",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-cache-binary-tests",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-cache-binary-tests.patch",
+      "patch_sha256": "38eb281bb6e6d6efc9b3b5d9318cf5b81a399828972da9b8ac1e2173298cbcd5",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp",
+          "original_sha256": "9e551cb977a9ee422428290158031c535effb85725ba40ab78f3fcb361c9ab38",
+          "prepared_sha256": "825859f0bff43dcc1423053f08092c057f8498e30b6931a062d0c8b59869d0ca",
+          "checkpoint_sha256": "fb7f13aba1bc6d434376c869b2ec23da746920f0789ce922b7ef02abde0cca64",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/performance/optimizer_deficiency_odf_024_gate.cpp",
+          "original_sha256": "d5afd0e2dc9966df18e7cba5c65ffb9e5c7853d44218aeef135df58701a792a7",
+          "prepared_sha256": "7b924a29e0fb3b03477ca0de8db789164c7ef8b6486a1960cf1582855bd09f6c",
+          "checkpoint_sha256": "aef06c0f42b47e4b6330dc739f21922751aa504b32b24cfa6b1f93c8ff808342",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/optimizer/optimizer_enterprise_plan_cache_gate.cpp",
+          "original_sha256": "28beedeffd7e9cd45053a930c018e457dcd9e5a2bc8b0beb34479bee1c00ef8c",
+          "prepared_sha256": "e22c167ebba3a0f49042db7c9436b3932f86d3ea2019f813944fcfe15940bb2e",
+          "checkpoint_sha256": "e22c167ebba3a0f49042db7c9436b3932f86d3ea2019f813944fcfe15940bb2e",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/optimizer/optimizer_planner_opch_030_031_gate.cpp",
+          "original_sha256": "3fcaad01508e1a3823a215ec0d156b0d0d71a6338fbdd57d38d55441dce5a7cc",
+          "prepared_sha256": "cf29f6f893e484bfd4fd307e1577740391ce27c3d65e71cb8ed372d7863d6617",
+          "checkpoint_sha256": "cf29f6f893e484bfd4fd307e1577740391ce27c3d65e71cb8ed372d7863d6617",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-cloud-binary-identity",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-cloud-binary-identity.patch",
+      "patch_sha256": "a249cf3f73a5321fd569d8cf85126ffffa5615355026dc5bf67a54616c86f1d3",
+      "files": [
+        {
+          "target": "project/src/storage/filespace/CMakeLists.txt",
+          "original_sha256": "20622916a9ad6ce9bacdbd15643393eb2b4058a3015dae537375da56a0b81ace",
+          "prepared_sha256": "f5f03f4b39e66f559afe25069cec2081e763dc81257ec4e31a54f1179fee6e54",
+          "checkpoint_sha256": "f5f03f4b39e66f559afe25069cec2081e763dc81257ec4e31a54f1179fee6e54",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/src/storage/filespace/cloud_filespace_provider.cpp",
+          "original_sha256": "a4bed1cd3614adea91d773388f8db495754b3f274341d187ea097062b1b48ed5",
+          "prepared_sha256": "f8da80e8e3dcb62a9eb2e51b2a3aba23bd0895cd8dfd7c832c46d8069faba949",
+          "checkpoint_sha256": "f8da80e8e3dcb62a9eb2e51b2a3aba23bd0895cd8dfd7c832c46d8069faba949",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/src/storage/filespace/cloud_filespace_provider.hpp",
+          "original_sha256": "838eac8a3dbe38475da645871fd2f2374d696ad31d8b622aa591efc3e39486ac",
+          "prepared_sha256": "fd8c6851fd6661c4523de4f69e4e24b67585e539b136612cc25a64e456ec2769",
+          "checkpoint_sha256": "fd8c6851fd6661c4523de4f69e4e24b67585e539b136612cc25a64e456ec2769",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/cloud_storage_emulator_conformance.cpp",
+          "original_sha256": "b654e570f1ddcf32865d39e938dd11277b7911eb3d22d79ff1db33839d56acad",
+          "prepared_sha256": "5a3445f10196d4880fd12a829ea4ae9991c7edc8bf4d4a92a5cba76ffd274368",
+          "checkpoint_sha256": "5a3445f10196d4880fd12a829ea4ae9991c7edc8bf4d4a92a5cba76ffd274368",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-crypto-entropy-gate",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-crypto-entropy-gate.patch",
+      "patch_sha256": "9f4ab39d36d5fce30abdf28fa6bec62fce0cda2b216b56b000df8768349c02e4",
+      "files": [
+        {
+          "target": "project/tests/release/public_crypto_entropy_policy_gate.py",
+          "original_sha256": "353be31709b5753fe8fd88bbe9c23864ac5596052ba38635238642009677874b",
+          "prepared_sha256": "bc4947fb076ad0ba9d051411f5e45f1fe698cc00fda4522051766a0beefeb183",
+          "checkpoint_sha256": "bc4947fb076ad0ba9d051411f5e45f1fe698cc00fda4522051766a0beefeb183",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-delete-binary-file-key",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-delete-binary-file-key.patch",
+      "patch_sha256": "2407e6ff02448c9a6ec4dabd48c91ac851e0cf18aef8ee2bf5bd65fc4f8526e5",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/mga_relation_store/mga_delete_durable_store.cpp",
+          "original_sha256": "b800aabacf2a4fa6b17fd24e665ca380e3301db3d3c0aa502403d43a5075c9d0",
+          "prepared_sha256": "69a7705051b0c0957adc31abf91b8829a43c6e29710620736fce19156ff69806",
+          "checkpoint_sha256": "69a7705051b0c0957adc31abf91b8829a43c6e29710620736fce19156ff69806",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_dml_delete_recovery_authority_conformance.cpp",
+          "original_sha256": "633777e6f144b9e06b75376933685505addef34982bd14be2a76b3591e362a66",
+          "prepared_sha256": "733a66232c72dbe82dd97fa922f67bfdcd09377ac44129f72930f233dc79dc86",
+          "checkpoint_sha256": "733a66232c72dbe82dd97fa922f67bfdcd09377ac44129f72930f233dc79dc86",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-delete-cohort-validation",
+      "historical_queue_claims": [
+        2008
+      ],
+      "patch_file": "prepared-delete-cohort-validation.patch",
+      "patch_sha256": "1f1f4adfcefd641cfa9765256cfee7b614f0420a814214b2febc86575f99abbd",
+      "files": [
+        {
+          "target": "project/src/wire/typed_delete_carrier_codec.cpp",
+          "original_sha256": "47da1c2214f5f580283409e3953eb38d1fd725000e6d01b6d556b87df6505f05",
+          "prepared_sha256": "e437f8c385ed3fed294ce2b456b10bc5d6f3bba9c5f866b52e8bdaade5e59497",
+          "checkpoint_sha256": "47da1c2214f5f580283409e3953eb38d1fd725000e6d01b6d556b87df6505f05",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_sblr_alignment/typed_delete_carrier_codec_test.cpp",
+          "original_sha256": "1cf0b82ce5ab9107a7086073745d20758e23d20d7ac8ad356ad4ce304f7f5146",
+          "prepared_sha256": "175c5db58b1f99c04b4af4f3bd9ab0abe2505c16d1a237ccd626fa3c5b220f5f",
+          "checkpoint_sha256": "1cf0b82ce5ab9107a7086073745d20758e23d20d7ac8ad356ad4ce304f7f5146",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-detach-published-column",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-detach-published-column.patch",
+      "patch_sha256": "8511ce75db6e792300a91a9c72c5140a682e11a5235484ceda6ddbc5ecc9ae83",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/detach_cleanup_conformance.cpp",
+          "original_sha256": "7dc960dbc734b42c88456c5ce621ba7c0e22b85fd47583a69d731592065fbfcd",
+          "prepared_sha256": "cb348bdccc3f4e5bb44537a2fcf623830c792369f9b0bc898daf20ea93300f0a",
+          "checkpoint_sha256": "7dc960dbc734b42c88456c5ce621ba7c0e22b85fd47583a69d731592065fbfcd",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-dml-binary-column-readers",
+      "historical_queue_claims": [
+        2016
+      ],
+      "patch_file": "prepared-dml-binary-column-readers.patch",
+      "patch_sha256": "cbb6c1eef49061b71ac49d012be60f63b195b0a9f3fa3cdf76a9d5d3a5a7e320",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/dml/delete_predicate_binding.cpp",
+          "original_sha256": "cc576ae7431548e80909fe756634393223177b6550d3c96c996f398ccbf6795f",
+          "prepared_sha256": "923e018eef7faab43e412c3e582404cc9ce3eb44178e376d0426c14625d685dc",
+          "checkpoint_sha256": "cc576ae7431548e80909fe756634393223177b6550d3c96c996f398ccbf6795f",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/src/engine/internal_api/dml/update_delete_optimized.cpp",
+          "original_sha256": "489ce5d53f9b79bfe9c587ce20fd0526ef7712336a375f0cc99ce50fe8499bcd",
+          "prepared_sha256": "b49ddb382ea2fe5ca83b0ab256346b332a9a46ffcccddd21c8410d7f3ea62b89",
+          "checkpoint_sha256": "489ce5d53f9b79bfe9c587ce20fd0526ef7712336a375f0cc99ce50fe8499bcd",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-dpc010-fixture",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-dpc010-fixture.patch",
+      "patch_sha256": "1f2b0c3bfa242ee0b04b4f5898d16b411fb5083273d2725c37084dbb8bdef926",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/CMakeLists.txt",
+          "original_sha256": "d3cfe9fddfc1dafeb828fde5af0a6305b8ae107547d48c92b1ef0e67a1f8bfcf",
+          "prepared_sha256": "f156f4bbca0bebccfd579066e79fa1226f39677358ba1e600db475f9fecbad7a",
+          "checkpoint_sha256": "679ae9d9f01dfbcb5853a3c015f4b53fc0cffb8ffe2effacf609821e6a5f388b",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp",
+          "original_sha256": "825859f0bff43dcc1423053f08092c057f8498e30b6931a062d0c8b59869d0ca",
+          "prepared_sha256": "8005205338cc6f0c0178c106f5e5cdeff745b482e0933b20b7226cebfeca5b19",
+          "checkpoint_sha256": "fb7f13aba1bc6d434376c869b2ec23da746920f0789ce922b7ef02abde0cca64",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-exact-route-binary-targets",
+      "historical_queue_claims": [
+        2015
+      ],
+      "patch_file": "prepared-exact-route-binary-targets.patch",
+      "patch_sha256": "e2ff835f216ee078f81bba3408b8cdc447fd3d80a55968fb3922fad9fb17ef5a",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_comment_on_exact_route_conformance.cpp",
+          "original_sha256": "2e29c1ea62d6221f5024df56461835175909afbef12ed204d1365ff71e5a63ed",
+          "prepared_sha256": "7e0105f19ccf773720bbd9f5133ceea7b97dfe527cebd1952ef22ac83779bb48",
+          "checkpoint_sha256": "2e29c1ea62d6221f5024df56461835175909afbef12ed204d1365ff71e5a63ed",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp",
+          "original_sha256": "41440d61bfdd2179012bea0addaffcf98010d595d3cf3c2e2e36c53a3d674cbe",
+          "prepared_sha256": "167211df3c9e27912378b7bc5915587b5893c5dffd293381b7005c5043680da2",
+          "checkpoint_sha256": "41440d61bfdd2179012bea0addaffcf98010d595d3cf3c2e2e36c53a3d674cbe",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-filespace-binary-fixture",
+      "historical_queue_claims": [
+        2012
+      ],
+      "patch_file": "prepared-filespace-binary-fixture.patch",
+      "patch_sha256": "2f32822687637eb960f9a44416b5d273290fcb46d2127c6c2bfbf19dae9aaf42",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/filespace_lifecycle_conformance.cpp",
+          "original_sha256": "35d9b95471297cfedb1177ce101c1f19e2c5ceadf40bdd7cca5fa36d8549cdcf",
+          "prepared_sha256": "1f8d69daadfac60a6464e5da50c958155a39179877f421d0dd2f26b16c86291a",
+          "checkpoint_sha256": "35d9b95471297cfedb1177ce101c1f19e2c5ceadf40bdd7cca5fa36d8549cdcf",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-fixture-uuid-time-units",
+      "historical_queue_claims": [
+        2010
+      ],
+      "patch_file": "prepared-fixture-uuid-time-units.patch",
+      "patch_sha256": "c0e042aa898179c073aee7ffed5026e23ec1446b6da05dc8b014cacd02afd99f",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/ipar_adaptive_batch_sizing_gate.cpp",
+          "original_sha256": "41f6c121b6373b347770e922aa7d91be10e0d56adaa1832473750556fdb89a6c",
+          "prepared_sha256": "ff4e6b45490a18d40d2e7a5ab49db8219b17d02ddeb6b698aa689a96d2d28cc5",
+          "checkpoint_sha256": "41f6c121b6373b347770e922aa7d91be10e0d56adaa1832473750556fdb89a6c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_agent_runtime_idle_gate.cpp",
+          "original_sha256": "f8e70fd5603c9439768f318a2d26709018f1ee3cf2ba104f8fe8e7519acc7d7d",
+          "prepared_sha256": "450cbe1e7993677e5b3ce63f534de1ddff974e79b96e41a5baad1bb52df042f7",
+          "checkpoint_sha256": "f8e70fd5603c9439768f318a2d26709018f1ee3cf2ba104f8fe8e7519acc7d7d",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_concurrency_insert_proof_gate.cpp",
+          "original_sha256": "3de9202ac9da0aa90d4e1561c6ba5cd562416fdc49fb542993cf775549991058",
+          "prepared_sha256": "213a716288b4e4ae883e7056cac56c8df029210b10ab303338f822019425378c",
+          "checkpoint_sha256": "3de9202ac9da0aa90d4e1561c6ba5cd562416fdc49fb542993cf775549991058",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_index_family_preallocation_gate.cpp",
+          "original_sha256": "f165cd5ebf49cf7be4527f35b0ff8fdb4fdb648623af6441e3da42fd320c5606",
+          "prepared_sha256": "e9db6143ecd0b9442567374c020a888b69f35f1ed1794c218556c80d66980872",
+          "checkpoint_sha256": "f165cd5ebf49cf7be4527f35b0ff8fdb4fdb648623af6441e3da42fd320c5606",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_insert_cancel_timeout_gate.cpp",
+          "original_sha256": "1ed7d417955fef32b48502523ad5c852c82b0c905ffb92784a10d9c18ae6635c",
+          "prepared_sha256": "ffc95d782354379600afac8efe66f44600abebcb7ec2e29ccaa7c3e17fbb7eb5",
+          "checkpoint_sha256": "1ed7d417955fef32b48502523ad5c852c82b0c905ffb92784a10d9c18ae6635c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_large_value_batch_allocation_gate.cpp",
+          "original_sha256": "27d77b7dca3ea4cad42ed94170a22afcb38ae976d4a5f105182f36754a1614bf",
+          "prepared_sha256": "26d5b2cce077d7c3390fe373a17d8c56f14430d3a586c7c6677d70042a1da061",
+          "checkpoint_sha256": "27d77b7dca3ea4cad42ed94170a22afcb38ae976d4a5f105182f36754a1614bf",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_mixed_reader_writer_workload_gate.cpp",
+          "original_sha256": "7520387a22e4953405abe99fbba23fb6fa4e81cda58b138455d7d2ceba799b6c",
+          "prepared_sha256": "51a1b175077e6cbbe7b43623b3489eb0644ae641ffa5e6c305e444fe121d5b7f",
+          "checkpoint_sha256": "7520387a22e4953405abe99fbba23fb6fa4e81cda58b138455d7d2ceba799b6c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_page_size_preallocation_gate.cpp",
+          "original_sha256": "1abdb00d4f6cc3cbdb4ab223532ba3fc0299af061c14b37864f1e2f52da47c9e",
+          "prepared_sha256": "63bf78f7283c50d574503ebb45a979221c46623bd6998f5f844abd7cb7842213",
+          "checkpoint_sha256": "1abdb00d4f6cc3cbdb4ab223532ba3fc0299af061c14b37864f1e2f52da47c9e",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_resource_quota_backpressure_gate.cpp",
+          "original_sha256": "e89c2dd1de60d2583fe61a855a731ff4ce59adc91a22c9cd99874921bec81f1d",
+          "prepared_sha256": "2fe17f5c58c6c2fece3068d39c5f54c37e363122bffa76538e2944e6171e2827",
+          "checkpoint_sha256": "e89c2dd1de60d2583fe61a855a731ff4ce59adc91a22c9cd99874921bec81f1d",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_restart_persistence_gate.cpp",
+          "original_sha256": "8e38910e76aba968cbbbf5971dd0018e2827926b7c226b0576c4da959e6d1eec",
+          "prepared_sha256": "cd3f4a2d48f9b43bc93b1c80796a768c4e594bfad98c44843a835d98949ed25d",
+          "checkpoint_sha256": "8e38910e76aba968cbbbf5971dd0018e2827926b7c226b0576c4da959e6d1eec",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/ipar_storage_format_migration_safety_gate.cpp",
+          "original_sha256": "1fb0d71aaabe41749047807cab4aa6d58e9c0f3dcab1b229a0cc249f78a93c41",
+          "prepared_sha256": "bff6ca3b9632aba2b2eaacda0017e40cf7044c06ec7de3b226c3f5885293d415",
+          "checkpoint_sha256": "1fb0d71aaabe41749047807cab4aa6d58e9c0f3dcab1b229a0cc249f78a93c41",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/parser_server_neutral_transaction_routing_conformance.cpp",
+          "original_sha256": "b3a67c379077037852624a20999b93827b605ffd678b1624afee35ced565ba4c",
+          "prepared_sha256": "12d29c29953b9a9ac76ce2ff36a1aa3a4147fd18fd17181b8451a0bfdcdf49a6",
+          "checkpoint_sha256": "b3a67c379077037852624a20999b93827b605ffd678b1624afee35ced565ba4c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-having-binary-descriptor-negatives",
+      "historical_queue_claims": [
+        2011
+      ],
+      "patch_file": "prepared-having-binary-descriptor-negatives.patch",
+      "patch_sha256": "da6d6ef8e06a53c06040976432d6ee57bc22caeef2bce47d9450c28cfa88ddb1",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/qow_qry_017_having_row_binding.cpp",
+          "original_sha256": "e96a7b4574d13c063fbe819be4831a9c24d2a2e3dfcfab2c726c2cb4131be3ae",
+          "prepared_sha256": "3a7ab6d10ce7e49d57ef37e9bfc1e33af378860f1ce17ac72205af2b73e655a4",
+          "checkpoint_sha256": "e96a7b4574d13c063fbe819be4831a9c24d2a2e3dfcfab2c726c2cb4131be3ae",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-mga-carrier-comments",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-mga-carrier-comments.patch",
+      "patch_sha256": "f1f2b1784a19cfd2d8608ad1bb5479b8ab8f01f7e90cc26aa4f2010aa2a17c61",
+      "files": [
+        {
+          "target": "project/src/engine/sblr/CANONICAL_QUERY_EXECUTION_AUTHORITY.md",
+          "original_sha256": "5d43572569059438b3cb3798f1e625235c966c6beed7e70e3775e3365b5eb953",
+          "prepared_sha256": "c66102338fc60e88bcf4f535a1fb35847dcd20f5ff7b9fe24204a9f63cfe4713",
+          "checkpoint_sha256": "c66102338fc60e88bcf4f535a1fb35847dcd20f5ff7b9fe24204a9f63cfe4713",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/src/storage/database/local_transaction_store.cpp",
+          "original_sha256": "1966fcf7104ba9523bcff3f7937b3dc79dab92d921dcd3bfec34336f651583bc",
+          "prepared_sha256": "89bd82138e8ba112f0a8531e99d48f94f026726ec1d50e89fcbffa61aa6933d8",
+          "checkpoint_sha256": "89bd82138e8ba112f0a8531e99d48f94f026726ec1d50e89fcbffa61aa6933d8",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-more-short-socket-workspaces",
+      "historical_queue_claims": [
+        2009
+      ],
+      "patch_file": "prepared-more-short-socket-workspaces.patch",
+      "patch_sha256": "b17b1ca4244ccfa3f0aafd3e55bf642a6a4be1c6400e3e815dc5ece362121434",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/cdp_copy_route_gate.py",
+          "original_sha256": "8a6fc3d1f0ffe19726c776d9feaa9a8574d59e824f87d206a6b54cf7c427ae7c",
+          "prepared_sha256": "d114553c1539faf5adbcf0e25fd0df893241b3af3ced00d0000fe0c8717ea080",
+          "checkpoint_sha256": "8a6fc3d1f0ffe19726c776d9feaa9a8574d59e824f87d206a6b54cf7c427ae7c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/live_server_agent_storage_benchmark_gate.py",
+          "original_sha256": "e8d288759846f91b170e6ed9c9cc0cc4b806035797a0fb267a0fb09b5e1f9263",
+          "prepared_sha256": "db8bbbbb254441bab2371eaee09bd41765055722f8b988635ed33a4dc8e85dfe",
+          "checkpoint_sha256": "e8d288759846f91b170e6ed9c9cc0cc4b806035797a0fb267a0fb09b5e1f9263",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-narrow-source-issued-context",
+      "historical_queue_claims": [
+        2017
+      ],
+      "patch_file": "prepared-narrow-source-issued-context.patch",
+      "patch_sha256": "89db848f19bc71348021af0dae84fdebb7c8c96aa5343d010aec8d49f2fe337d",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/CMakeLists.txt",
+          "original_sha256": "e31be8edd8ce41ed967cbbd64cb9f2d2c5b81a664673211322ae20e907670acf",
+          "prepared_sha256": "45f403d0cfeeddc538e5e82a9031f8a0cc19a6630ffe78bfefc0065f1da4d56d",
+          "checkpoint_sha256": "e31be8edd8ce41ed967cbbd64cb9f2d2c5b81a664673211322ae20e907670acf",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_narrow_query_profile_source_conformance.cpp",
+          "original_sha256": "5d011423bb81db9373aea780c300ca930b21f35a152b2a9006d9c1e1afff8b1c",
+          "prepared_sha256": "8862d751369fa024dfc54be8f5138e386fa03e6897d03a190c7898eaef21a5b7",
+          "checkpoint_sha256": "5d011423bb81db9373aea780c300ca930b21f35a152b2a9006d9c1e1afff8b1c",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-native-compile-admission",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-native-compile-admission.patch",
+      "patch_sha256": "1793ca461bf396f8366f8927b822ebfb76664984ac88f074fe3df66ad9949c97",
+      "files": [
+        {
+          "target": "project/src/engine/native_compile/native_compile.cpp",
+          "original_sha256": "e4046c019040e3b774794322accdcc598186f072b1d5bece2da019e691beef45",
+          "prepared_sha256": "117781a7581883c7009fc0a0e56098d034519798d762fc120bbc329eb9a7b4f0",
+          "checkpoint_sha256": "117781a7581883c7009fc0a0e56098d034519798d762fc120bbc329eb9a7b4f0",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/optimizer/optimizer_enterprise_llvm_boundary_gate.cpp",
+          "original_sha256": "a8943cbae60702c8393182fd1925487e68837dc0cd844e45e04364ef92c29fe6",
+          "prepared_sha256": "c5c5e1953eec287ed8227514bb95217f60c0db5c694a211c0a1b5c7c68b7c34f",
+          "checkpoint_sha256": "c5c5e1953eec287ed8227514bb95217f60c0db5c694a211c0a1b5c7c68b7c34f",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-native-identity-path-key",
+      "historical_queue_claims": [
+        2002
+      ],
+      "patch_file": "prepared-native-identity-path-key.patch",
+      "patch_sha256": "d005d7df37213ae67669e88bbd738a05e352548cf16e1f179a6bf228949ffad6",
+      "files": [
+        {
+          "target": "project/src/core/uuid/uuid.cpp",
+          "original_sha256": "589912a01ce09f566a9db8b992144a0f9c9a6cfb67eddc31bdde2a378be29f77",
+          "prepared_sha256": "fe15b896bbfccb5d874a7b92fe566b5d61d8a5770a6ae097b23dd90bdb8305dc",
+          "checkpoint_sha256": "589912a01ce09f566a9db8b992144a0f9c9a6cfb67eddc31bdde2a378be29f77",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/src/core/uuid/uuid.hpp",
+          "original_sha256": "7530ba91edefda08fd1f4039e724c86177259a8609be998537f571b9e7245706",
+          "prepared_sha256": "8429b14e824a6b4f751370596baf8fd4a73f6f573b664982271fda0454bbefba",
+          "checkpoint_sha256": "7530ba91edefda08fd1f4039e724c86177259a8609be998537f571b9e7245706",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp",
+          "original_sha256": "55c02881b246210eba197e927e3bc6171bc82072de857f64b2ceee66f7457ba4",
+          "prepared_sha256": "94e419b789964776c036e1388a9846b7603a74cabb0fd8361105d69f55bc55c8",
+          "checkpoint_sha256": "6c7fbd17bc9a9c38ca878f9d0d4635a1b4bd6152bc83513964ac375e256a6b97",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-observability-binary-field-fixture",
+      "historical_queue_claims": [
+        2012
+      ],
+      "patch_file": "prepared-observability-binary-field-fixture.patch",
+      "patch_sha256": "aa3f382c6f4629d96886379cab20df1e633aa98802a938e32a05ad88f481beb0",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_observability_exact_route_conformance.cpp",
+          "original_sha256": "4fa32766feb675c579cc612181404b4386c6fb5a8da37a1258380d9e911bee7e",
+          "prepared_sha256": "896d645d1b8a11b596a047f0b2345a3859ccea95e9ccf7fd08f868c5fc92d52c",
+          "checkpoint_sha256": "4fa32766feb675c579cc612181404b4386c6fb5a8da37a1258380d9e911bee7e",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-odf063-binary-fixture",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-odf063-binary-fixture.patch",
+      "patch_sha256": "5511db816ea9e0f30571ec51e2ec4b2b505501a5260b82aaf00154297a37cfff",
+      "files": [
+        {
+          "target": "project/tests/optimizer/CMakeLists.txt",
+          "original_sha256": "f5d0c78427eb42ef22192177acb2c19c3563d5572b48710e0df47d947fbb429c",
+          "prepared_sha256": "c9cc3b4a69e7406fb46ed50c6d568add044f9388f893dc58d9e050ee5f5ea5a1",
+          "checkpoint_sha256": "c9cc3b4a69e7406fb46ed50c6d568add044f9388f893dc58d9e050ee5f5ea5a1",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/optimizer/optimizer_deficiency_odf_063_gate.cpp",
+          "original_sha256": "ca7573b2048e775d2a15595edd3ddd4799d8994c22c9db90e384ad9bd5a17a49",
+          "prepared_sha256": "b39becb100685a3294f099765117a9e213477bb5e58b745c497d736297d8bf96",
+          "checkpoint_sha256": "b39becb100685a3294f099765117a9e213477bb5e58b745c497d736297d8bf96",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-plan-native-dependencies",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-plan-native-dependencies.patch",
+      "patch_sha256": "e6e58b921cace40edbe51b9ca249fc69f13c5f4061f64f28ee2383ed5c4ba2f8",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/query/plan_api.cpp",
+          "original_sha256": "ca6aac2e25783be087325c246c7a083f0499bf8bf12fc077d2b1649812e709b0",
+          "prepared_sha256": "6663a8f89b29c97cd661fc8ec662569ae4fab8c5dc6a6be9266eb29fde0189d2",
+          "checkpoint_sha256": "6663a8f89b29c97cd661fc8ec662569ae4fab8c5dc6a6be9266eb29fde0189d2",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-post251-simple-fixtures",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-post251-simple-fixtures.patch",
+      "patch_sha256": "edeaebb156c97e5ed7fdd170b9f480d5a524bfda317e21258e0b23c8a868aa12",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/dpc_secondary_index_delta_overlay_lookup_gate.cpp",
+          "original_sha256": "9463ffd3c2edfce5a982433ee22e86551c2e18ed659e68ffef02d9360dca9d50",
+          "prepared_sha256": "f704e1370fbafa30fdaddf8fcac7c127529fbbd4aafb7180b6b9359dfc2e4111",
+          "checkpoint_sha256": "f704e1370fbafa30fdaddf8fcac7c127529fbbd4aafb7180b6b9359dfc2e4111",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/dpc_secondary_index_delta_recovery_repair_gate.cpp",
+          "original_sha256": "da63449bffbfa5225f0ce8056ebc72527ed4a0be3d230a7133327b0f3b49d083",
+          "prepared_sha256": "059370504e9a589ffd550c020703bdc23bc1e09c6e374f107c44b713a142264c",
+          "checkpoint_sha256": "059370504e9a589ffd550c020703bdc23bc1e09c6e374f107c44b713a142264c",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp",
+          "original_sha256": "4ba0f36f0186b771bb8ce8e72d5d149869524d637b580ee3514a576c0821425a",
+          "prepared_sha256": "f60390f83a61c46b230138a552f8c28aec04100a58938a65ed4bca34cccab241",
+          "checkpoint_sha256": "4e17396c4b6026e38cc9de8ae1f46f854a0f50165cabb54df1096ce78807d5a2",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/performance/optimizer_deficiency_odf_024_gate.cpp",
+          "original_sha256": "7b924a29e0fb3b03477ca0de8db789164c7ef8b6486a1960cf1582855bd09f6c",
+          "prepared_sha256": "aef06c0f42b47e4b6330dc739f21922751aa504b32b24cfa6b1f93c8ff808342",
+          "checkpoint_sha256": "aef06c0f42b47e4b6330dc739f21922751aa504b32b24cfa6b1f93c8ff808342",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-post254-fixtures",
+      "historical_queue_claims": [
+        2016
+      ],
+      "patch_file": "prepared-post254-fixtures.patch",
+      "patch_sha256": "fef994d324c61abcf78979472df4f501af29ba4ab3a15d88526efff86217a837",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp",
+          "original_sha256": "8005205338cc6f0c0178c106f5e5cdeff745b482e0933b20b7226cebfeca5b19",
+          "prepared_sha256": "fb7f13aba1bc6d434376c869b2ec23da746920f0789ce922b7ef02abde0cca64",
+          "checkpoint_sha256": "fb7f13aba1bc6d434376c869b2ec23da746920f0789ce922b7ef02abde0cca64",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp",
+          "original_sha256": "f60390f83a61c46b230138a552f8c28aec04100a58938a65ed4bca34cccab241",
+          "prepared_sha256": "4e17396c4b6026e38cc9de8ae1f46f854a0f50165cabb54df1096ce78807d5a2",
+          "checkpoint_sha256": "4e17396c4b6026e38cc9de8ae1f46f854a0f50165cabb54df1096ce78807d5a2",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp",
+          "original_sha256": "237ab2e95705c33fecba9217233967664fbc5145674811598a8a119b23b93694",
+          "prepared_sha256": "f8582743b661ad878f161cd9bd050ccec5afdfcb0c61ba38e12c7325c94091fa",
+          "checkpoint_sha256": "237ab2e95705c33fecba9217233967664fbc5145674811598a8a119b23b93694",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-public-reference-lf-hash",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-public-reference-lf-hash.patch",
+      "patch_sha256": "5ca52ddb0b23241d8badfd327b4e2871d0a545229c74eb9aa7c03a18ad623b4d",
+      "files": [
+        {
+          "target": "project/tools/release/public_reference_acquisition_policy.py",
+          "original_sha256": "755edf2b845d77a93b9ae9384974b611c9c6f5a255683e6ef180f842b4d26837",
+          "prepared_sha256": "5223d34c62e4a02630c5072d1bdc4cf779cb8a8174becc4b5e03c9c2359b80b2",
+          "checkpoint_sha256": "5223d34c62e4a02630c5072d1bdc4cf779cb8a8174becc4b5e03c9c2359b80b2",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-remaining-uuid-fixture-generation",
+      "historical_queue_claims": [
+        2011
+      ],
+      "patch_file": "prepared-remaining-uuid-fixture-generation.patch",
+      "patch_sha256": "ca52817881b65e45d1348ca4e20fe904011c5fb56174458d5c61890bda11e93d",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/routine_delete_column_range_vertical_slice.cpp",
+          "original_sha256": "8e856fed71193b6348eed1ee217f20a2971598d75965e93b05ac6913b212aabf",
+          "prepared_sha256": "2b16eec19b9970aa42f4b28a79f8e33fb7550934b4533874a3b8324c96908fec",
+          "checkpoint_sha256": "8e856fed71193b6348eed1ee217f20a2971598d75965e93b05ac6913b212aabf",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_database_create_schema_bootstrap_gate.cpp",
+          "original_sha256": "730d6aed2fe847d0b6a8ecede36b7a959d013b51d9ddb97f59847d6a9c8f4099",
+          "prepared_sha256": "2a8e07247c19f31cae609f9251504bafbdfcf7eb9f7954624ff5fd911d0e59f6",
+          "checkpoint_sha256": "730d6aed2fe847d0b6a8ecede36b7a959d013b51d9ddb97f59847d6a9c8f4099",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/database_lifecycle/sbsql_multilingual_name_registry_conformance.cpp",
+          "original_sha256": "e5f24e99e83a8439028ea8a106f5dfb6063a0bd753f15989a700e969e60897c9",
+          "prepared_sha256": "bd6d1536f422954c158cb3e5292c99452d9ff37004a32ab6ad36633af4a1764d",
+          "checkpoint_sha256": "e5f24e99e83a8439028ea8a106f5dfb6063a0bd753f15989a700e969e60897c9",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-row-result-columns",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-row-result-columns.patch",
+      "patch_sha256": "cbfb1f3869fb089a821bf5a09bb2b553537d67f860cf267d8f0ebe3414627cae",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp",
+          "original_sha256": "c4e3e336c2429ad28736977b408946da5eed654053b4edbfc9f6920da7fbb647",
+          "prepared_sha256": "237ab2e95705c33fecba9217233967664fbc5145674811598a8a119b23b93694",
+          "checkpoint_sha256": "237ab2e95705c33fecba9217233967664fbc5145674811598a8a119b23b93694",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-serializable-issued-context",
+      "historical_queue_claims": [
+        2019
+      ],
+      "patch_file": "prepared-serializable-issued-context.patch",
+      "patch_sha256": "28e11d82e6538380f9b7a8230e46ccaa4ab1cf8adc3e1c034c23b6bb5c850e97",
+      "files": [
+        {
+          "target": "project/tests/engine_listener_enterprise/CMakeLists.txt",
+          "original_sha256": "a1ca4077de93f1dc4551b00875d289787c402029928e11d3cf3c238163ff7cc7",
+          "prepared_sha256": "20b0074d2af1a113d58fa178c0700b352806b30e1d954c0700ddfdd16ca53ce4",
+          "checkpoint_sha256": "a1ca4077de93f1dc4551b00875d289787c402029928e11d3cf3c238163ff7cc7",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/engine_listener_enterprise/engine_listener_serializable_isolation_conformance.cpp",
+          "original_sha256": "8d7c5bbfcf14caa2c4432dce9264804c2bf12b83345b74e2fed59362a914ad9a",
+          "prepared_sha256": "b96fbeb988f5ceaebdddfc35bdc304bd947f44960bf82c87c1a76a35dd44b108",
+          "checkpoint_sha256": "8d7c5bbfcf14caa2c4432dce9264804c2bf12b83345b74e2fed59362a914ad9a",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-short-socket-workspaces",
+      "historical_queue_claims": [
+        2006
+      ],
+      "patch_file": "prepared-short-socket-workspaces.patch",
+      "patch_sha256": "485b8062f97160e4c5973cf09d3ff0226a3af206e178ca0ff7ba428de4412b75",
+      "files": [
+        {
+          "target": "project/tests/sbsql_parser_worker/cdp_profiler_evidence_gate.py",
+          "original_sha256": "95bbe1dfa0cd60edd3a727aa9117d55537592b24a2d744f79d33a21607729a61",
+          "prepared_sha256": "84b6f130f93f1b823f5a641235be8a810aeeb57089fea6fded5f51fe57340b0e",
+          "checkpoint_sha256": "95bbe1dfa0cd60edd3a727aa9117d55537592b24a2d744f79d33a21607729a61",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/cdp_route_split_benchmark_gate.py",
+          "original_sha256": "571c840d3f45cdaeb8a8a6aaac72197fcc3b5a4f2483a337d2d0f2c2de775ccd",
+          "prepared_sha256": "e05d4ca58c90096c63565266bc8f5e9eb6211cdf2abfe7c50d971c56e9b0a108",
+          "checkpoint_sha256": "571c840d3f45cdaeb8a8a6aaac72197fcc3b5a4f2483a337d2d0f2c2de775ccd",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_copy_persistence_full_route_gate.py",
+          "original_sha256": "3a5a8aef1ea76dcb08f1f9a8ef718bea60668fcf06b72d87a676eab13ad64a27",
+          "prepared_sha256": "a8c8a695f992e04555d2fd95fb3fb063463f00f196c5cad359778a373f5d793d",
+          "checkpoint_sha256": "3a5a8aef1ea76dcb08f1f9a8ef718bea60668fcf06b72d87a676eab13ad64a27",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-show-create-binary-reader",
+      "historical_queue_claims": [
+        2015
+      ],
+      "patch_file": "prepared-show-create-binary-reader.patch",
+      "patch_sha256": "1302c96a4d4c97aaa03e5ab3c999d306f96caa08b2418e9cd9daaf153cafab06",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/catalog/descriptor_api.cpp",
+          "original_sha256": "afdc0cb5ca26dec1693d4382eb88866500dd8f487deb74d35995fc8388b664f3",
+          "prepared_sha256": "e59f3ecd7463d7fa6db7216dd12a725744f68eb144626e35a4f2affd6a8d73c2",
+          "checkpoint_sha256": "afdc0cb5ca26dec1693d4382eb88866500dd8f487deb74d35995fc8388b664f3",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-shutdown-ack-binary-fixture",
+      "historical_queue_claims": [
+        2013
+      ],
+      "patch_file": "prepared-shutdown-ack-binary-fixture.patch",
+      "patch_sha256": "084dd14224fc05c66a61abfb9375a178b82323ffbf874efc4921fe65b0c905f6",
+      "files": [
+        {
+          "target": "project/tests/database_lifecycle/process_association_conformance.cpp",
+          "original_sha256": "9db80f8e0445c0b78d3b74ace6ec38bf6b42ce8240d420bc6fdb0a7740d802ab",
+          "prepared_sha256": "628ed683d257c9df73c579bdda269a3c676361b065b0bb13895480db2bd787c8",
+          "checkpoint_sha256": "9db80f8e0445c0b78d3b74ace6ec38bf6b42ce8240d420bc6fdb0a7740d802ab",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-table-descriptor-binary-frame",
+      "historical_queue_claims": [
+        2018
+      ],
+      "patch_file": "prepared-table-descriptor-binary-frame.patch",
+      "patch_sha256": "566430eb8e4148850eb18fef69df0b5ab4f6228910791f6a9ac2b72e0b4e985e",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/catalog/descriptor_api.cpp",
+          "original_sha256": "e59f3ecd7463d7fa6db7216dd12a725744f68eb144626e35a4f2affd6a8d73c2",
+          "prepared_sha256": "9f4de054963e3f05f55e8affa8fb53e34686b28961c6f2b2d7e242cafb5a3d37",
+          "checkpoint_sha256": "afdc0cb5ca26dec1693d4382eb88866500dd8f487deb74d35995fc8388b664f3",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp",
+          "original_sha256": "167211df3c9e27912378b7bc5915587b5893c5dffd293381b7005c5043680da2",
+          "prepared_sha256": "031532b97c8b1616984135a1aeb2f6dced290620ab8b743715a7b08851a777c6",
+          "checkpoint_sha256": "41440d61bfdd2179012bea0addaffcf98010d595d3cf3c2e2e36c53a3d674cbe",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-update-binary-paths",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-update-binary-paths.patch",
+      "patch_sha256": "7bffa8f5be172f34500bf20423f34387de8db418cee4602b3f3b5e1e0b4e1645",
+      "files": [
+        {
+          "target": "project/src/engine/internal_api/mga_relation_store/mga_update_durable_frame_store.cpp",
+          "original_sha256": "6fdc2f13228e39b30306541f5065c53b211697c7d5514ce52cdad86490353326",
+          "prepared_sha256": "0932c942e091675b18b47bcca686ce6479c0bc910cd96d982f7163516e33cb46",
+          "checkpoint_sha256": "0932c942e091675b18b47bcca686ce6479c0bc910cd96d982f7163516e33cb46",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/src/engine/internal_api/mga_relation_store/mga_update_durable_store.cpp",
+          "original_sha256": "6bfa6349aa1bf8d124b0d6e9df2a16176c46e51bffc01665bf219e0b408c4fb9",
+          "prepared_sha256": "b98b7e60c93c7eebb1d99fd280af8072c114d38abba985ca2b56384c5dbd6406",
+          "checkpoint_sha256": "b98b7e60c93c7eebb1d99fd280af8072c114d38abba985ca2b56384c5dbd6406",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp",
+          "original_sha256": "bd0aca351101ba4b21ec73caef209140cb7ce4690faa984ecc039956e84c8ed3",
+          "prepared_sha256": "c4e3e336c2429ad28736977b408946da5eed654053b4edbfc9f6920da7fbb647",
+          "checkpoint_sha256": "237ab2e95705c33fecba9217233967664fbc5145674811598a8a119b23b93694",
+          "checkpoint_comparison": "diverged_from_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_parser_worker/sbsql_dml_update_statement_mga_authority_provider_conformance.cpp",
+          "original_sha256": "ae77091ad42daddaa87335389f6eb947aefae37596be857182e8512fad62a9ce",
+          "prepared_sha256": "7fc43eb2fa9b7bc45491a6602af83cde9b297552d0c4b30656685dec92f5981c",
+          "checkpoint_sha256": "7fc43eb2fa9b7bc45491a6602af83cde9b297552d0c4b30656685dec92f5981c",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_sblr_alignment/update_frame_binary_identity_test.cpp",
+          "original_sha256": "8d1a73a6d6a1cf8875a7aeb149bc284bc8680db1eb932ce0d1bb0ac70990b1a2",
+          "prepared_sha256": "a728e106f6e516f652777714f22dc9ddefc45897b9208b1568b006f9deea670d",
+          "checkpoint_sha256": "a728e106f6e516f652777714f22dc9ddefc45897b9208b1568b006f9deea670d",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-uuid-construction-guard",
+      "historical_queue_claims": [],
+      "patch_file": "prepared-uuid-construction-guard.patch",
+      "patch_sha256": "2a56108638ab42748aaab346ca49f3d636bf976d2aa2317e375df4c9ed8b3cca",
+      "files": [
+        {
+          "target": "project/tests/performance/optimizer_runtime_hot_path_orh_220_221_222_gate.cpp",
+          "original_sha256": "2b7141e5fbb222b543aa61fd6fdaffbe6e665b4ed7fecea060e665ecfac18f86",
+          "prepared_sha256": "5b9fe39848c479ced865332869443e490fc784df1d5ccdfb278dd04cafdb394e",
+          "checkpoint_sha256": "5b9fe39848c479ced865332869443e490fc784df1d5ccdfb278dd04cafdb394e",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/src/core/platform/runtime_platform.hpp",
+          "original_sha256": "efabe0fdc9b651bf210ba0914508de561c1ac35808fa6aac8d0af1ee14ffb87c",
+          "prepared_sha256": "61a19880c66654ce213d32068c1aaadeb09e5552c56979e22ad6d9406bc294b1",
+          "checkpoint_sha256": "61a19880c66654ce213d32068c1aaadeb09e5552c56979e22ad6d9406bc294b1",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/sbsql_sblr_alignment/uuid_binary_key_test.cpp",
+          "original_sha256": "55c02881b246210eba197e927e3bc6171bc82072de857f64b2ceee66f7457ba4",
+          "prepared_sha256": "6c7fbd17bc9a9c38ca878f9d0d4635a1b4bd6152bc83513964ac375e256a6b97",
+          "checkpoint_sha256": "6c7fbd17bc9a9c38ca878f9d0d4635a1b4bd6152bc83513964ac375e256a6b97",
+          "checkpoint_comparison": "prepared_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "prepared-windows-wire-iostream",
+      "historical_queue_claims": [
+        2014
+      ],
+      "patch_file": "prepared-windows-wire-iostream.patch",
+      "patch_sha256": "74bb4eff2f99d3e103efe9be9218083bd403f104a611b2fbcef9b301bd5ae014",
+      "files": [
+        {
+          "target": "project/src/parsers/sbsql_worker/CMakeLists.txt",
+          "original_sha256": "70ccf30f0fc7c21b29101c5cb0af747f22dc59412c4a34d11042712ea7dc6524",
+          "prepared_sha256": "568a131816226f245e42d91089c7f772c5e302e97f0160dfedc9994dae32e4dd",
+          "checkpoint_sha256": "70ccf30f0fc7c21b29101c5cb0af747f22dc59412c4a34d11042712ea7dc6524",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/tests/engine_listener_enterprise/engine_listener_windows_transport_source_gate.py",
+          "original_sha256": "1918618b7a26bb97dbd4e9102ec6de90de7ad77e082d232e96a6e0c3d1f7d6e0",
+          "prepared_sha256": "f7c60698227fd1b324cf75ff1938277a540db7d35eb528b36e72793833ca2d9f",
+          "checkpoint_sha256": "1918618b7a26bb97dbd4e9102ec6de90de7ad77e082d232e96a6e0c3d1f7d6e0",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        },
+        {
+          "target": "project/src/parsers/sbsql_worker/wire/sbsql_test_wire.cpp",
+          "original_sha256": "847317b819d2292e9c5ca0c5127f0339c1a0f2433e5c490c9747e89c431de071",
+          "prepared_sha256": "c28483229e4a04affcfa9ed67a80abc6979edb3dc0f595c7cf15b4697ca35176",
+          "checkpoint_sha256": "847317b819d2292e9c5ca0c5127f0339c1a0f2433e5c490c9747e89c431de071",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    },
+    {
+      "name": "staged-source-artifact-deadlines",
+      "historical_queue_claims": [
+        2003
+      ],
+      "patch_file": "staged-source-artifact-deadlines.patch",
+      "patch_sha256": "97e58afc4a4fc4d5e30ea9a7043394b63f17a4d2d4189e7066883e770198ff2a",
+      "files": [
+        {
+          "target": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py",
+          "original_sha256": "dd3b7dc59b14883078cb451823aa9c77f30b7c8b79b60e5bb6a8a4f88b27231f",
+          "prepared_sha256": "dd5d1a2b75498a818c615e6c22ea94afb34cb49c46fe179060516655917be444",
+          "checkpoint_sha256": "dd3b7dc59b14883078cb451823aa9c77f30b7c8b79b60e5bb6a8a4f88b27231f",
+          "checkpoint_comparison": "original_equals_checkpoint"
+        }
+      ]
+    }
+  ]
+}

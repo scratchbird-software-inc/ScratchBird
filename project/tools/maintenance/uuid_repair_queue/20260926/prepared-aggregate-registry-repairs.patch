@@ -1,0 +1,41 @@
+--- a/project/src/engine/sblr/sblr_aggregate_window_runtime_02_aggregate_ordered_approx.inc
++++ b/project/src/engine/sblr/sblr_aggregate_window_runtime_02_aggregate_ordered_approx.inc
+@@ -584,0 +585,3 @@
++  const auto* named_entry =
++      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
++          CanonicalAggregateFunctionForSblrAlias(function_id));
+@@ -585,0 +589 @@
++      named_entry == nullptr || !named_entry->executable ||
+@@ -595,0 +600,10 @@
++  }
++  if (named_entry->function_uuid != registry_entry->function_uuid) {
++    SblrAggregateWindowState diagnostic_state;
++    diagnostic_state.function_id = std::string(function_id);
++    diagnostic_state.function_uuid = function_uuid;
++    return AggregateFailure(SblrStatusCode::execution_failed,
++                            std::string(function_id),
++                            AggregateDiagnostic("SB_DIAG_AGGREGATE_REGISTRY_IDENTITY_MISMATCH",
++                                                context, &diagnostic_state,
++                                                "aggregate alias and binary function identity select different registry rows"));
+--- a/project/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_015_aggregate_window_runtime_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_015_aggregate_window_runtime_conformance.cpp
+@@ -10,0 +11 @@
++#include "catalog/datatype_bootstrap_identity.hpp"
+@@ -251,2 +252,2 @@
+-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
++      api::kBootstrapDatatypeCatalogUuid,
++      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+@@ -254 +255,2 @@
+-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
++  if (!identity.ok) std::abort();
++  return identity.row.type_uuid;
+@@ -269,2 +271,2 @@
+-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
++      api::kBootstrapDatatypeCatalogUuid,
++      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
+@@ -272 +274,2 @@
+-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
++  if (!identity.ok) std::abort();
++  return identity.row.type_uuid;

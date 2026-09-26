@@ -1,0 +1,237 @@
+--- a/project/src/storage/filespace/CMakeLists.txt
++++ b/project/src/storage/filespace/CMakeLists.txt
+@@ -28,0 +29,3 @@
++
++# Binary cloud manifest integrity and one-way native identity path keys.
++target_link_libraries(sb_storage_filespace PRIVATE sb_core_hash)
+--- a/project/src/storage/filespace/cloud_filespace_provider.cpp
++++ b/project/src/storage/filespace/cloud_filespace_provider.cpp
+@@ -11,0 +12 @@
++#include "hash_digest.hpp"
+@@ -17 +18,2 @@
+-#include <sstream>
++#include <limits>
++#include <string_view>
+@@ -31 +33,33 @@
+-using scratchbird::core::uuid::UuidToString;
++
++// Filesystem keys are one-way hashes of domain-separated native identities.
++// Binary manifests retain the identities; paths are not recovery authority.
++std::string CloudIdentityKey(const Uuid& uuid) {
++  if (!IsEngineIdentityUuid(uuid)) return {};
++  constexpr std::string_view domain = "SB_CLOUD_FILE_KEY_V2";
++  std::vector<byte> material(domain.begin(), domain.end());
++  material.insert(material.end(), uuid.bytes.begin(), uuid.bytes.end());
++  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material);
++  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
++}
++void PutU32(std::string& bytes, u32 value) {
++  for (unsigned i = 0; i < 4; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
++}
++void PutU64(std::string& bytes, u64 value) {
++  for (unsigned i = 0; i < 8; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
++}
++void PutUuid(std::string& bytes, const Uuid& uuid) {
++  bytes.append(reinterpret_cast<const char*>(uuid.bytes.data()), uuid.bytes.size());
++}
++// Eight-byte versioned magic, LE32 body length, binary body, SHA256 checksum.
++// These manifests describe copies and policy; MGA inventory owns finality.
++std::string FrameManifest(std::string_view magic, const std::string& body) {
++  if (magic.size() != 8 || body.size() > std::numeric_limits<u32>::max()) return {};
++  std::string frame(magic);
++  PutU32(frame, static_cast<u32>(body.size()));
++  frame += body;
++  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
++      reinterpret_cast<const byte*>(frame.data()), frame.size());
++  if (!digest.ok()) return {};
++  frame.append(reinterpret_cast<const char*>(digest.digest.data()), digest.digest.size());
++  return frame;
++}
+@@ -65,2 +99,2 @@
+-          {"database_uuid", UuidToString(binding.database_uuid.value)},
+-          {"filespace_uuid", UuidToString(binding.filespace_uuid.value)},
++          {"database_uuid", binding.database_uuid.value},
++          {"filespace_uuid", binding.filespace_uuid.value},
+@@ -205,0 +240,18 @@
++  const auto database_key = CloudIdentityKey(config.database_uuid.value);
++  const auto filespace_key = CloudIdentityKey(config.filespace_uuid.value);
++  if (database_key.empty() || filespace_key.empty() || binding.provider_name.size() > 65536) {
++    return Error("SB-CLOUD-FILESPACE-MANIFEST-ENCODING-FAILED",
++                 "storage.cloud_filespace.manifest_encoding_failed", {}, binding);
++  }
++  std::string body;
++  PutUuid(body, config.database_uuid.value);
++  PutUuid(body, config.filespace_uuid.value);
++  PutU32(body, config.page_size);
++  PutU32(body, 1);  // lifecycle checkpoint required; provider-native consistency false
++  PutU32(body, static_cast<u32>(binding.provider_name.size()));
++  body += binding.provider_name;
++  const auto frame = FrameManifest("SBCFM002", body);
++  if (frame.empty()) {
++    return Error("SB-CLOUD-FILESPACE-MANIFEST-ENCODING-FAILED",
++                 "storage.cloud_filespace.manifest_encoding_failed", {}, binding);
++  }
+@@ -208,2 +260 @@
+-      UuidToString(config.database_uuid.value) / "filespaces" /
+-      UuidToString(config.filespace_uuid.value);
++      database_key / "filespaces" / filespace_key;
+@@ -213 +264 @@
+-  binding.manifest_path = (root / "cloud_filespace_manifest.txt").string();
++  binding.manifest_path = (root / "cloud_filespace_manifest.sbcf").string();
+@@ -240,7 +291 @@
+-  manifest << "scratchbird.cloud_filespace.local_emulator.v1\n"
+-           << "database_uuid=" << UuidToString(config.database_uuid.value) << "\n"
+-           << "filespace_uuid=" << UuidToString(config.filespace_uuid.value) << "\n"
+-           << "provider_name=" << binding.provider_name << "\n"
+-           << "page_size=" << config.page_size << "\n"
+-           << "snapshot_requires_lifecycle_checkpoint=1\n"
+-           << "provider_native_snapshot_database_consistent=0\n";
++  manifest.write(frame.data(), static_cast<std::streamsize>(frame.size()));
+@@ -348 +393,3 @@
+-  if (request.snapshot_uuid.empty() || !SafeObjectKey(request.snapshot_uuid)) {
++  if (!IsEngineIdentityUuid(request.snapshot_uuid) ||
++      !IsTypedEngineIdentity(binding.database_uuid, UuidKind::database) ||
++      !IsTypedEngineIdentity(binding.filespace_uuid, UuidKind::filespace)) {
+@@ -351 +398 @@
+-                 request.snapshot_uuid,
++                 {},
+@@ -366 +413,14 @@
+-  const auto snapshot_path = std::filesystem::path(binding.snapshot_root_path) / request.snapshot_uuid;
++  const auto snapshot_key = CloudIdentityKey(request.snapshot_uuid);
++  std::string body;
++  PutUuid(body, request.snapshot_uuid);
++  PutUuid(body, binding.database_uuid.value);
++  PutUuid(body, binding.filespace_uuid.value);
++  PutU64(body, request.checkpoint_generation);
++  PutU64(body, request.transaction_inventory_generation);
++  PutU32(body, 31);  // lifecycle, attach/write fences, flush, coordinated consistency
++  const auto frame = FrameManifest("SBCSM002", body);
++  if (snapshot_key.empty() || frame.empty()) {
++    return Error("SB-CLOUD-FILESPACE-SNAPSHOT-MANIFEST-ENCODING-FAILED",
++                 "storage.cloud_filespace.snapshot_manifest_encoding_failed", {}, binding);
++  }
++  const auto snapshot_path = std::filesystem::path(binding.snapshot_root_path) / snapshot_key;
+@@ -375 +435 @@
+-  const auto manifest_path = snapshot_path / "snapshot_manifest.txt";
++  const auto manifest_path = snapshot_path / "snapshot_manifest.sbcs";
+@@ -383,12 +443 @@
+-  manifest << "scratchbird.cloud_filespace.snapshot.v1\n"
+-           << "snapshot_uuid=" << request.snapshot_uuid << "\n"
+-           << "database_uuid=" << UuidToString(binding.database_uuid.value) << "\n"
+-           << "filespace_uuid=" << UuidToString(binding.filespace_uuid.value) << "\n"
+-           << "lifecycle_coordinated=1\n"
+-           << "attach_admission_fenced=1\n"
+-           << "write_admission_fenced=1\n"
+-           << "dirty_pages_flushed=1\n"
+-           << "checkpoint_generation=" << request.checkpoint_generation << "\n"
+-           << "transaction_inventory_generation=" << request.transaction_inventory_generation << "\n"
+-           << "provider_native_snapshot_database_consistent=0\n"
+-           << "database_consistent=1\n";
++  manifest.write(frame.data(), static_cast<std::streamsize>(frame.size()));
+--- a/project/src/storage/filespace/cloud_filespace_provider.hpp
++++ b/project/src/storage/filespace/cloud_filespace_provider.hpp
+@@ -21,0 +22 @@
++using scratchbird::core::platform::Uuid;
+@@ -65 +66 @@
+-  std::string snapshot_uuid;
++  Uuid snapshot_uuid;
+@@ -75 +76 @@
+-  std::string snapshot_uuid;
++  Uuid snapshot_uuid;
+--- a/project/tests/database_lifecycle/cloud_storage_emulator_conformance.cpp
++++ b/project/tests/database_lifecycle/cloud_storage_emulator_conformance.cpp
+@@ -9,0 +10,4 @@
++#include "../support/binary_uuid_fixture.hpp"
++#include <openssl/sha.h>
++#include <algorithm>
++#include <array>
+@@ -68,2 +72,42 @@
+-bool Contains(std::string_view haystack, std::string_view needle) {
+-  return haystack.find(needle) != std::string_view::npos;
++std::uint64_t ReadLittle(std::string_view bytes, std::size_t offset, std::size_t width) {
++  Require(width <= 8 && offset <= bytes.size() && width <= bytes.size() - offset,
++          "binary cloud manifest integer bounds");
++  std::uint64_t value = 0;
++  for (std::size_t i = 0; i < width; ++i)
++    value |= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[offset + i])) << (i * 8);
++  return value;
++}
++void RequireUuid(std::string_view bytes, std::size_t offset,
++                 const scratchbird::core::platform::Uuid& id) {
++  Require(offset <= bytes.size() && 16 <= bytes.size() - offset,
++          "binary cloud manifest UUID bounds");
++  for (std::size_t i = 0; i < 16; ++i)
++    Require(static_cast<unsigned char>(bytes[offset + i]) == id.bytes[i],
++            "binary cloud manifest UUID bytes mismatch");
++}
++std::string ManifestBody(const std::filesystem::path& path, std::string_view magic) {
++  const auto bytes = ReadFile(path);
++  Require(bytes.size() >= 44 && bytes.substr(0, 8) == magic,
++          "binary cloud manifest magic or framing missing");
++  const auto length = ReadLittle(bytes, 8, 4);
++  Require(length == bytes.size() - 44, "binary cloud manifest exact length mismatch");
++  std::array<unsigned char, SHA256_DIGEST_LENGTH> checksum{};
++  Require(SHA256(reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size() - 32,
++                 checksum.data()) != nullptr, "independent manifest checksum failed");
++  for (std::size_t i = 0; i < 32; ++i)
++    Require(static_cast<unsigned char>(bytes[bytes.size() - 32 + i]) == checksum[i],
++            "binary cloud manifest checksum mismatch");
++  return bytes.substr(12, length);
++}
++std::string ExpectedFileKey(const scratchbird::core::platform::Uuid& id) {
++  std::string material = "SB_CLOUD_FILE_KEY_V2";
++  material.append(reinterpret_cast<const char*>(id.bytes.data()), 16);
++  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
++  Require(SHA256(reinterpret_cast<const unsigned char*>(material.data()), material.size(),
++                 digest.data()) != nullptr, "independent cloud path digest failed");
++  std::string key;
++  for (auto value : digest) {
++    key.push_back("0123456789abcdef"[value >> 4]);
++    key.push_back("0123456789abcdef"[value & 15]);
++  }
++  return key;
+@@ -109 +153 @@
+-  config.provider_name = "p2-local-emulator";
++  config.provider_name = std::string("p2\nprovider\0binary", 18);
+@@ -116,3 +160,13 @@
+-  Require(Contains(ReadFile(bound.binding.manifest_path),
+-                   "snapshot_requires_lifecycle_checkpoint=1"),
+-          "local emulator manifest missing snapshot lifecycle policy");
++  const auto provider_manifest = ManifestBody(bound.binding.manifest_path, "SBCFM002");
++  RequireUuid(provider_manifest, 0, database_uuid.value);
++  RequireUuid(provider_manifest, 16, filespace_uuid.value);
++  Require(ReadLittle(provider_manifest, 32, 4) == config.page_size &&
++              ReadLittle(provider_manifest, 36, 4) == 1,
++          "binary provider manifest page size or lifecycle policy mismatch");
++  Require(ReadLittle(provider_manifest, 40, 4) == config.provider_name.size() &&
++              provider_manifest.substr(44) == config.provider_name,
++          "binary provider manifest did not frame embedded name bytes");
++  Require(std::filesystem::path(bound.binding.root_path) ==
++              dir / "databases" / ExpectedFileKey(database_uuid.value) /
++                  "filespaces" / ExpectedFileKey(filespace_uuid.value),
++          "cloud provider path did not use native-identity digest keys");
+@@ -135 +189,5 @@
+-  snapshot.snapshot_uuid = "019e2000-0000-7000-8000-000000000301";
++  snapshot.snapshot_uuid = scratchbird::tests::FixtureUuid(6301, 1);
++  auto invalid_snapshot = snapshot;
++  invalid_snapshot.snapshot_uuid = {};
++  Require(!filespace::CreateCloudFilespaceSnapshot(invalid_snapshot).ok(),
++          "nil snapshot identity was admitted");
+@@ -156,5 +214,12 @@
+-  const auto manifest = ReadFile(coordinated.snapshot.manifest_path);
+-  Require(Contains(manifest, "database_consistent=1"),
+-          "coordinated snapshot manifest missing database consistency evidence");
+-  Require(Contains(manifest, "provider_native_snapshot_database_consistent=0"),
+-          "coordinated snapshot manifest missing provider-native warning");
++  const auto manifest = ManifestBody(coordinated.snapshot.manifest_path, "SBCSM002");
++  Require(manifest.size() == 68, "binary snapshot manifest body length mismatch");
++  RequireUuid(manifest, 0, snapshot.snapshot_uuid);
++  RequireUuid(manifest, 16, database_uuid.value);
++  RequireUuid(manifest, 32, filespace_uuid.value);
++  Require(ReadLittle(manifest, 48, 8) == 42 && ReadLittle(manifest, 56, 8) == 43 &&
++              ReadLittle(manifest, 64, 4) == 31,
++          "binary snapshot manifest generation or coordination flags mismatch");
++  Require(coordinated.snapshot.snapshot_uuid == snapshot.snapshot_uuid &&
++              std::filesystem::path(coordinated.snapshot.snapshot_path).filename() ==
++                  ExpectedFileKey(snapshot.snapshot_uuid),
++          "snapshot native identity or digest key mismatch");

@@ -1,0 +1,33 @@
+--- a/project/src/engine/internal_api/query/plan_api.cpp
++++ b/project/src/engine/internal_api/query/plan_api.cpp
+@@ -12636,3 +12636,11 @@
+-  if (!join_operation && !request.target_object.uuid.is_nil()) {
+-    node.required_object_uuids.push_back(request.target_object.uuid);
+-  }
++  // A scalar target and its relation carrier name the same dependency.
++  // Keep distinct objects distinct so ambiguous bindings still fail closed;
++  // join operand multiplicity is handled by its existing route below.
++  const auto append_object = [&](const EngineUuid& identity) {
++    if (identity.is_nil()) return;
++    if (join_operation || std::find(node.required_object_uuids.begin(),
++            node.required_object_uuids.end(), identity) == node.required_object_uuids.end()) {
++      node.required_object_uuids.push_back(identity);
++    }
++  };
++  if (!join_operation) append_object(request.target_object.uuid);
+@@ -12641 +12649 @@
+-    if (!object.uuid.is_nil()) { node.required_object_uuids.push_back(object.uuid); }
++    append_object(object.uuid);
+@@ -12645,3 +12653 @@
+-    if (!relation.source_object.uuid.is_nil()) {
+-      node.required_object_uuids.push_back(relation.source_object.uuid);
+-    }
++    append_object(relation.source_object.uuid);
+@@ -12698 +12704 @@
+-    *error_detail = optimized.diagnostics.empty() ? "optimizer_no_selectable_plan" : optimized.diagnostics.front();
++    *error_detail = optimized.diagnostics.empty() ? "optimizer_no_selectable_plan" : optimized.diagnostics.back();
+@@ -14330 +14336,3 @@
+-  (void)AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access);
++  if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access)) {
++    return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
++  }

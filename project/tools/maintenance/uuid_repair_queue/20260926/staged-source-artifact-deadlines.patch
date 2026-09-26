@@ -1,0 +1,14 @@
+--- a/project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py
++++ b/project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py
+@@ -637,0 +638,5 @@
++        # These source-preserving proofs execute a sequence of transaction,
++        # savepoint and DDL requests in each independent authenticated client.
++        client_timeout = 120 if args.operation in (
++            "source-artifact-container", "source-artifact-external"
++        ) else 30
+@@ -639 +644 @@
+-            command, capture_output=True, text=True, timeout=30, env=env
++            command, capture_output=True, text=True, timeout=client_timeout, env=env
+@@ -1726 +1731 @@
+-            second, capture_output=True, text=True, timeout=30, env=env
++            second, capture_output=True, text=True, timeout=client_timeout, env=env

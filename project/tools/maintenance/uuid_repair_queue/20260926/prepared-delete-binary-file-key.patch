@@ -1,0 +1,52 @@
+--- a/project/src/engine/internal_api/mga_relation_store/mga_delete_durable_store.cpp
++++ b/project/src/engine/internal_api/mga_relation_store/mga_delete_durable_store.cpp
+@@ -12,0 +13 @@
++#include "hash_digest.hpp"
+@@ -25,0 +27,15 @@
++
++// Directory keys are domain-separated digests; authenticated frame fields
++// retain the native descriptor identity and remain the ownership authority.
++std::string DeleteDescriptorFileKey(const w::TypedUpdateUuid& descriptor_uuid) {
++  const auto native = detail::DmlUpdateDurableTypedUuidValue(descriptor_uuid);
++  std::array<std::uint8_t, 16> bytes{};
++  if (!detail::DmlUpdateDurableUuidBytes(native, &bytes)) return {};
++  constexpr std::string_view domain = "SB_MGA_DELETE_FILE_KEY_V2";
++  std::array<std::uint8_t, domain.size() + 16> material{};
++  std::copy(domain.begin(), domain.end(), material.begin());
++  std::copy(bytes.begin(), bytes.end(), material.begin() + domain.size());
++  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material.data(), material.size());
++  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
++}
++
+@@ -204,0 +221,2 @@
++  const auto file_key = DeleteDescriptorFileKey(descriptor_uuid);
++  if (file_key.empty()) return refuse("descriptor_file_key_invalid");
+@@ -211,3 +229 @@
+-  impl->path = directory + "/" + scratchbird::core::uuid::UuidToString(
+-      detail::DmlUpdateDurableTypedUuidValue(descriptor_uuid)) +
+-      "." + std::to_string(generation) + ".ddjr";
++  impl->path = directory + "/" + file_key + "." + std::to_string(generation) + ".ddjr";
+--- a/project/tests/sbsql_parser_worker/sbsql_dml_delete_recovery_authority_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_dml_delete_recovery_authority_conformance.cpp
+@@ -10,0 +11 @@
++#include <openssl/evp.h>
+@@ -357,0 +359,19 @@
++    constexpr std::string_view domain = "SB_MGA_DELETE_FILE_KEY_V2";
++    std::vector<unsigned char> material(domain.begin(), domain.end());
++    const auto& identity = operation.head.descriptor.descriptor_uuid;
++    material.insert(material.end(), identity.begin(), identity.end());
++    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
++    unsigned length = 0;
++    Require(EVP_Digest(material.data(), material.size(), digest.data(), &length,
++                       EVP_sha256(), nullptr) == 1 && length == 32,
++            "independent native DELETE path digest");
++    constexpr char digits[] = "0123456789abcdef";
++    std::string key;
++    for (unsigned n = 0; n < length; ++n) {
++      key.push_back(digits[digest[n] >> 4]);
++      key.push_back(digits[digest[n] & 15]);
++    }
++    Require(chain_path.filename() == key + "." +
++                std::to_string(operation.head.descriptor.descriptor_generation) + ".ddjr",
++            "DELETE path must use a digest of native descriptor bytes");
++

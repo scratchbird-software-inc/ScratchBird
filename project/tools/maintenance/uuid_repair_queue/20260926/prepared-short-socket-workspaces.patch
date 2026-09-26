@@ -1,0 +1,26 @@
+--- a/project/tests/sbsql_parser_worker/cdp_profiler_evidence_gate.py
++++ b/project/tests/sbsql_parser_worker/cdp_profiler_evidence_gate.py
+@@ -151 +151 @@
+-    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_profiler")
++    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_profiler", Path(tempfile.gettempdir()), Path("/tmp"))
+@@ -157 +157 @@
+-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
++        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
+--- a/project/tests/sbsql_parser_worker/cdp_route_split_benchmark_gate.py
++++ b/project/tests/sbsql_parser_worker/cdp_route_split_benchmark_gate.py
+@@ -21,0 +22 @@
++import os
+@@ -101 +102 @@
+-    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_route_split")
++    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp_route_split", Path(tempfile.gettempdir()), Path("/tmp"))
+@@ -107 +108 @@
+-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
++        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
+--- a/project/tests/sbsql_parser_worker/sbsql_copy_persistence_full_route_gate.py
++++ b/project/tests/sbsql_parser_worker/sbsql_copy_persistence_full_route_gate.py
+@@ -102 +102 @@
+-    roots = (preferred_root, Path(tempfile.gettempdir()) / "sbcp")
++    roots = (preferred_root, Path(tempfile.gettempdir()) / "sbcp", Path(tempfile.gettempdir()), Path("/tmp"))
+@@ -108 +108 @@
+-        if max(len(str(endpoint_probe)), len(str(listener_probe))) < 100:
++        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:

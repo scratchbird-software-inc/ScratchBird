@@ -1,0 +1,15 @@
+--- a/project/tests/agents/agent_fault_injection_gate.cpp
++++ b/project/tests/agents/agent_fault_injection_gate.cpp
+@@ -11,0 +12 @@
++#include <algorithm>
+@@ -40,5 +41,5 @@
+-  Require(!value.empty(), label + " UUID was empty");
+-  Require(value.find("agent-fault-evidence:") == std::string::npos,
+-          label + " leaked old label-prefixed evidence UUID");
+-  Require(uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object, value).ok(),
+-          label + " was not a typed durable engine UUID: " + value);
++  Require(value.size() == 16, label + " UUID was not exactly binary16");
++  platform::Uuid identity;
++  std::copy(value.begin(), value.end(), identity.bytes.begin());
++  Require(uuid::MakeDurableEngineIdentityUuid(platform::UuidKind::object, identity).ok(),
++          label + " was not a typed durable engine UUID");

@@ -1,0 +1,272 @@
+--- a/project/src/engine/internal_api/mga_relation_store/mga_update_durable_frame_store.cpp
++++ b/project/src/engine/internal_api/mga_relation_store/mga_update_durable_frame_store.cpp
+@@ -52,0 +53,14 @@
++
++// Filesystem keys are domain-separated digests of binary identities. Identity
++// authority remains the authenticated raw16 fields inside the durable frames.
++std::string DurableIdentityFileKey(const EngineUuid& uuid) {
++  std::array<std::uint8_t, 16> identity{};
++  if (!DmlUpdateDurableUuidBytes(uuid, &identity)) return {};
++  constexpr std::string_view domain = "SB_MGA_UPDATE_FILE_KEY_V2";
++  std::array<std::uint8_t, domain.size() + 16> material{};
++  std::copy(domain.begin(), domain.end(), material.begin());
++  std::copy(identity.begin(), identity.end(), material.begin() + domain.size());
++  const auto digest = scratchbird::core::hash::ComputeSha256Digest(material.data(), material.size());
++  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest)
++                     : std::string{};
++}
+@@ -222,2 +236,3 @@
+-  return DmlUpdateDurableOperationStorePath(context) + "/" +
+-         scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
++  const auto key = DurableIdentityFileKey(identity.descriptor_uuid);
++  if (context.database_path.empty() || key.empty()) return {};
++  return DmlUpdateDurableOperationStorePath(context) + "/" + key + ".duop";
+@@ -228,2 +243,3 @@
+-  return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" +
+-         scratchbird::core::uuid::UuidToString(savepoint_uuid) + ".dups";
++  const auto key = DurableIdentityFileKey(savepoint_uuid);
++  if (context.database_path.empty() || key.empty()) return {};
++  return DmlUpdateStatementSavepointBinaryStorePath(context) + "/" + key + ".dups";
+@@ -429,0 +446,4 @@
++  if (path.empty()) {
++    result.detail = "durable_store_path_invalid";
++    return result;
++  }
+@@ -509,0 +530 @@
++  if (data_path.empty()) return;
+--- a/project/src/engine/internal_api/mga_relation_store/mga_update_durable_store.cpp
++++ b/project/src/engine/internal_api/mga_relation_store/mga_update_durable_store.cpp
+@@ -150 +150 @@
+-  if (encoded.empty()) return DmlUpdateDurableRawAppendResultV1::write_failed;
++  if (path.empty() || encoded.empty()) return DmlUpdateDurableRawAppendResultV1::write_failed;
+@@ -246 +246 @@
+-  if (bytes.empty()) return false;
++  if (path.empty() || bytes.empty()) return false;
+@@ -964,2 +964,3 @@
+-  return DmlUpdateDurableOperationStorePath(context) + "/" +
+-         scratchbird::core::uuid::UuidToString(lookup.descriptor_uuid) + ".duop";
++  MgaDmlUpdateDurableOperationIdentityV1 identity;
++  identity.descriptor_uuid = lookup.descriptor_uuid;
++  return DmlUpdateDurableDescriptorPath(context, identity);
+@@ -1575,2 +1576,3 @@
+-bool DmlUpdateStatementLoadBinaryChain(
+-    const EngineRequestContext& context, const EngineUuid& savepoint_uuid,
++bool DmlUpdateStatementLoadBinaryChainAtPath(
++    const EngineRequestContext& context, const std::string& path,
++    const EngineUuid& expected_savepoint_uuid,
+@@ -1579 +1581,3 @@
+-  if (records == nullptr || !DmlUpdateStatementUuidValid(savepoint_uuid)) {
++  if (records == nullptr || path.empty() ||
++      (!expected_savepoint_uuid.is_nil() &&
++       !DmlUpdateStatementUuidValid(expected_savepoint_uuid))) {
+@@ -1583,2 +1586,0 @@
+-  const std::string path =
+-      DmlUpdateDurableSavepointPath(context, savepoint_uuid);
+@@ -1604 +1606,4 @@
+-        record.authority.savepoint_uuid != savepoint_uuid) {
++        (!expected_savepoint_uuid.is_nil() &&
++         record.authority.savepoint_uuid != expected_savepoint_uuid) ||
++        (!records->empty() && record.authority.savepoint_uuid !=
++                                  records->front().authority.savepoint_uuid)) {
+@@ -1610,0 +1616,7 @@
++  const auto canonical_path =
++      DmlUpdateDurableSavepointPath(context, first.authority.savepoint_uuid);
++  if (canonical_path.empty() || std::filesystem::path(path) !=
++                                    std::filesystem::path(canonical_path)) {
++    if (detail != nullptr) *detail = "savepoint_filename_identity_invalid";
++    return false;
++  }
+@@ -1634,0 +1647,13 @@
++}
++
++bool DmlUpdateStatementLoadBinaryChain(
++    const EngineRequestContext& context, const EngineUuid& savepoint_uuid,
++    std::vector<DmlUpdateStatementSavepointJournalRecordV1>* records,
++    std::string* detail) {
++  if (!DmlUpdateStatementUuidValid(savepoint_uuid)) {
++    if (detail != nullptr) *detail = "savepoint_identity_invalid";
++    return false;
++  }
++  return DmlUpdateStatementLoadBinaryChainAtPath(context,
++      DmlUpdateDurableSavepointPath(context, savepoint_uuid), savepoint_uuid,
++      records, detail);
+@@ -1713,7 +1737,0 @@
+-    const std::string filename = path.stem().string();
+-    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(filename);
+-    if (!filename_uuid.ok() ||
+-        scratchbird::core::uuid::UuidToString(filename_uuid.value) != filename) {
+-      if (refusal_detail) *refusal_detail = "update_savepoint_filename_identity_invalid";
+-      return false;
+-    }
+@@ -1722 +1740 @@
+-    if (!DmlUpdateStatementLoadBinaryChain(context, filename_uuid.value, &records,
++    if (!DmlUpdateStatementLoadBinaryChainAtPath(context, path.string(), {}, &records,
+@@ -1964,2 +1982,7 @@
+-    paths.emplace_back(DmlUpdateDurableSavepointPath(
+-        context, required_savepoint_uuid));
++    const auto path = DmlUpdateDurableSavepointPath(context, required_savepoint_uuid);
++    if (path.empty()) {
++      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
++      result.detail = "savepoint_store_path_invalid";
++      return result;
++    }
++    paths.emplace_back(path);
+@@ -1991,7 +2013,0 @@
+-    const auto filename_uuid = scratchbird::core::uuid::ParseUuid(path.stem().string());
+-    if (!filename_uuid.ok() || scratchbird::core::uuid::UuidToString(filename_uuid.value) != path.stem().string()) {
+-      result.state = DmlUpdateDurableSavepointLookupStateV1::corrupt;
+-      result.detail = "savepoint_filename_identity_invalid";
+-      return result;
+-    }
+-    const EngineUuid uuid = filename_uuid.value;
+@@ -2000 +2016,2 @@
+-    if (!DmlUpdateStatementLoadBinaryChain(context, uuid, &chain, &detail)) {
++    if (!DmlUpdateStatementLoadBinaryChainAtPath(
++            context, path.string(), required_savepoint_uuid, &chain, &detail)) {
+@@ -2252 +2269 @@
+-  const std::string path = directory + "/" + scratchbird::core::uuid::UuidToString(identity.descriptor_uuid) + ".duop";
++  const std::string path = DmlUpdateDurableDescriptorPath(context, identity);
+@@ -2956 +2973,2 @@
+-  if (current.identity.descriptor_generation != lookup.descriptor_generation ||
++  if (current.identity.descriptor_uuid != lookup.descriptor_uuid ||
++      current.identity.descriptor_generation != lookup.descriptor_generation ||
+@@ -3370,0 +3389 @@
++      current.identity.descriptor_uuid != lookup.descriptor_uuid ||
+@@ -3406,0 +3426 @@
++         current.identity.descriptor_uuid == lookup.descriptor_uuid &&
+--- a/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_dml_mga_row_result_conformance.cpp
+@@ -29,0 +30 @@
++#include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
+@@ -4877,0 +4879,30 @@
++  // A filesystem key is not descriptor authority. A valid authenticated frame
++  // moved under another native identity must not become that descriptor.
++  {
++    namespace durable = api::mga_update_durable_detail;
++    api::MgaDmlUpdateDurableOperationIdentityV1 path_identity;
++    path_identity.descriptor_uuid = resource_lookup.descriptor_uuid;
++    const auto original_path = durable::DmlUpdateDurableDescriptorPath(context, path_identity);
++    auto other_lookup = resource_lookup;
++    other_lookup.descriptor_uuid.bytes.back() ^= 0x80;
++    path_identity.descriptor_uuid = other_lookup.descriptor_uuid;
++    const auto other_path = durable::DmlUpdateDurableDescriptorPath(context, path_identity);
++    Require(!original_path.empty() && !other_path.empty() &&
++                !std::filesystem::exists(other_path), "durable rename fixture invalid");
++    std::filesystem::rename(original_path, other_path);
++    const auto wrong_identity = api::InspectMgaDmlUpdateDurableOperationForTestingV1(
++        context, other_lookup);
++    const auto wrong_recovery = api::RecoverMgaDmlUpdateDurableOperationChainV1(
++        context, other_lookup);
++    Require(wrong_identity.outcome == api::MgaDmlUpdateDurableOperationOutcomeV1::stale &&
++                wrong_identity.journal.empty() && !wrong_recovery.ok() &&
++                !wrong_recovery.validated_handle.valid(),
++            "renamed descriptor file supplied another binary identity");
++    Require(!api::CorruptMgaDmlUpdateDurableExtentByteForTestingV1(
++                context, other_lookup, 0, 1),
++            "test lookup authenticated a renamed descriptor");
++    std::filesystem::rename(other_path, original_path);
++    Require(api::InspectMgaDmlUpdateDurableOperationForTestingV1(context, resource_lookup)
++                .outcome == api::MgaDmlUpdateDurableOperationOutcomeV1::committed,
++            "original descriptor identity did not recover after restoring path");
++  }
+--- a/project/tests/sbsql_parser_worker/sbsql_dml_update_statement_mga_authority_provider_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_dml_update_statement_mga_authority_provider_conformance.cpp
+@@ -384,0 +385,49 @@
++void TestBinarySavepointFileIdentity(const std::filesystem::path& database_path) {
++  const auto request = Request(database_path);
++  const auto opened = engine_api::OpenDmlUpdateStatementMgaAuthorityV1(request);
++  Require(opened.ok, "binary path savepoint creation failed");
++  const std::filesystem::path directory =
++      database_path.string() + ".sb.mga_update_statement_savepoints.v1";
++  std::filesystem::path original;
++  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
++    if (entry.path().extension() == ".dups") {
++      Require(original.empty(), "unexpected duplicate savepoint file");
++      original = entry.path();
++    }
++  }
++  Require(!original.empty() && original.stem().string().size() == 64,
++          "savepoint file does not use an opaque digest key");
++  std::string other_key(64, '0');
++  if (original.stem().string() == other_key) other_key[0] = '1';
++  const auto renamed = directory / (other_key + ".dups");
++  std::filesystem::rename(original, renamed);
++  Require(engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
++          "renamed binary savepoint acquired another filesystem identity");
++  Require(!engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(
++              Recover(request, opened.authority)).ok,
++          "missing canonical savepoint path recovered authority");
++  std::filesystem::rename(renamed, original);
++  const auto recovered = engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(
++      Recover(request, opened.authority));
++  Require(recovered.ok && recovered.authority == opened.authority,
++          "restored binary savepoint did not recover exact authority");
++  std::ifstream input(original, std::ios::binary);
++  std::string bytes((std::istreambuf_iterator<char>(input)), {});
++  input.close();
++  Require(bytes.size() > 352, "binary savepoint frame missing");
++  auto corrupt = bytes;
++  corrupt.back() ^= 1;
++  {
++    std::ofstream output(original, std::ios::binary | std::ios::trunc);
++    output.write(corrupt.data(), static_cast<std::streamsize>(corrupt.size()));
++  }
++  Require(engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
++          "corrupt binary savepoint payload supplied an identity");
++  {
++    std::ofstream output(original, std::ios::binary | std::ios::trunc);
++    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
++  }
++  Require(!engine_api::ActiveMgaSavepointNames(request.context).diagnostic.error,
++          "restored binary frame remained invalid");
++}
++
+@@ -388,0 +438 @@
++  TestBinarySavepointFileIdentity(temporary.path() / "binary_paths.sdb");
+--- a/project/tests/sbsql_sblr_alignment/update_frame_binary_identity_test.cpp
++++ b/project/tests/sbsql_sblr_alignment/update_frame_binary_identity_test.cpp
+@@ -9,0 +10,3 @@
++#include <filesystem>
++#include <openssl/sha.h>
++#include <openssl/evp.h>
+@@ -109,0 +113,40 @@
++  const auto file_key = [](const Uuid& uuid) {
++    const std::string domain = "SB_MGA_UPDATE_FILE_KEY_V2";
++    std::vector<unsigned char> material(domain.begin(), domain.end());
++    material.insert(material.end(), uuid.bytes.begin(), uuid.bytes.end());
++    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
++    Check(SHA256(material.data(), material.size(), digest.data()) != nullptr,
++          "independent filename digest failed");
++    constexpr char hex[] = "0123456789abcdef";
++    std::string result;
++    for (const auto byte : digest) {
++      result.push_back(hex[byte >> 4]);
++      result.push_back(hex[byte & 15]);
++    }
++    return result;
++  };
++  const auto expected = context.database_path + ".sb.mga_durable_operations/" +
++      file_key(original.identity.descriptor_uuid) + ".duop";
++  Check(codec::DmlUpdateDurableDescriptorPath(context, original.identity) == expected,
++        "descriptor path is not derived from raw16 digest");
++  const auto savepoint_uuid = original.identity.operation_uuid;
++  Check(codec::DmlUpdateDurableSavepointPath(context, savepoint_uuid) ==
++            context.database_path + ".sb.mga_update_statement_savepoints.v1/" +
++                file_key(savepoint_uuid) + ".dups",
++        "savepoint path is not derived from raw16 digest");
++  Check(codec::DmlUpdateDurableSavepointPath(context, {}).empty(),
++        "nil savepoint identity acquired a filename");
++  const auto empty_read = codec::DmlUpdateDurableLoadFrames("");
++  Check(!empty_read.ok && !empty_read.missing,
++        "empty path was treated as absent durable evidence");
++  {
++    codec::DmlUpdateDurableFileLock empty_lock("");
++    Check(!empty_lock.ok(), "empty path acquired a file lock");
++  }
++  Check(EVP_set_default_properties(nullptr, "provider=sb_missing_update_test") == 1,
++        "hash provider fault setup failed");
++  const auto bad_descriptor = codec::DmlUpdateDurableDescriptorPath(context, original.identity);
++  const auto bad_savepoint = codec::DmlUpdateDurableSavepointPath(context, savepoint_uuid);
++  Check(EVP_set_default_properties(nullptr, "") == 1, "hash provider restore failed");
++  Check(bad_descriptor.empty() && bad_savepoint.empty(),
++        "hash failure yielded usable durable identity paths");

@@ -1,0 +1,12 @@
+--- a/project/tests/database_lifecycle/process_association_conformance.cpp
++++ b/project/tests/database_lifecycle/process_association_conformance.cpp
+@@ -9,0 +10,2 @@
++#include "../support/binary_uuid_fixture.hpp"
++#include "wire/management_request_codec.hpp"
+@@ -263,3 +265,3 @@
+-      "acknowledger_kind:parser;"
+-      "acknowledger_uuid:parser-013d;"
+-      "acknowledgement_generation:41;"
++      "acknowledger_kind:parser;acknowledger_uuid:" +
++      scratchbird::wire::ManagementTargetBytes(scratchbird::tests::FixtureUuid(2013, 1)) +
++      ";acknowledgement_generation:41;"

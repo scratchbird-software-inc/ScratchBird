@@ -1,0 +1,148 @@
+--- a/project/tests/sbsql_parser_worker/sbsql_comment_on_exact_route_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_comment_on_exact_route_conformance.cpp
+@@ -57,0 +58,14 @@
++}
++
++bool HasBinaryTarget(const SblrEnvelope& envelope, const api::EngineUuid& expected) {
++  const scratchbird::parser::sbsql::SblrOperand* selected = nullptr;
++  for (const auto& operand : envelope.operands) {
++    if (operand.name != "target_object_uuid") continue;
++    if (selected) return false;
++    selected = &operand;
++  }
++  return selected && selected->type == "uuid" && selected->value.empty() &&
++         selected->canonical_value_kind == static_cast<std::uint16_t>(sblr::SblrValueKind::uuid_ref) &&
++         selected->canonical_value_body.size() == 16 &&
++         std::equal(selected->canonical_value_body.begin(), selected->canonical_value_body.end(),
++                    expected.bytes.begin());
+@@ -207,3 +221,4 @@
+-  Require(Contains(artifacts.envelope.payload,
+-                   "\"target_object_uuid\":\"019f0000-0000-7000-8000-000000b5e101\""),
+-          "COMMENT ON payload missing target UUID");
++  Require(HasBinaryTarget(artifacts.envelope,
++              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000b5e101")) &&
++              !Contains(artifacts.envelope.payload, "\"target_object_uuid\""),
++          "COMMENT ON must carry its exact target once as binary16, outside JSON text");
+--- a/project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_show_create_exact_route_conformance.cpp
+@@ -9,0 +10,6 @@
++#include "../support/native_catalog_column_fixture.hpp"
++#include "../support/durable_authorization_fixture.hpp"
++#include "catalog/datatype_bootstrap_identity.hpp"
++#include "catalog/catalog_object_lifecycle.hpp"
++#include "datatype_catalog_manifest.hpp"
++#include "datatype_operations.hpp"
+@@ -28,0 +35 @@
++#include <chrono>
+@@ -61 +67,0 @@
+-constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000000901";
+@@ -66 +72,12 @@
+-constexpr std::string_view kDatabasePath = "/tmp/sbsql_show_create_exact_route_conformance.sbdb";
++const std::filesystem::path kFixtureDirectory = [] {
++  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
++  for (unsigned attempt = 0; attempt < 64; ++attempt) {
++    auto path = std::filesystem::temp_directory_path() /
++        ("sb_show_create_" + std::to_string(stamp) + "_" + std::to_string(attempt));
++    std::error_code error;
++    if (std::filesystem::create_directory(path, error)) return path;
++    if (error) throw std::runtime_error("SHOW CREATE fixture directory creation failed");
++  }
++  throw std::runtime_error("SHOW CREATE fixture directory collision");
++}();
++const std::string kDatabasePath = (kFixtureDirectory / "database.sbdb").string();
+@@ -83,0 +101,14 @@
++}
++
++bool HasBinaryTarget(const SblrEnvelope& envelope, const api::EngineUuid& expected) {
++  const scratchbird::parser::sbsql::SblrOperand* selected = nullptr;
++  for (const auto& operand : envelope.operands) {
++    if (operand.name != "target_object_uuid") continue;
++    if (selected) return false;
++    selected = &operand;
++  }
++  return selected && selected->type == "uuid" && selected->value.empty() &&
++         selected->canonical_value_kind == static_cast<std::uint16_t>(sblr::SblrValueKind::uuid_ref) &&
++         selected->canonical_value_body.size() == 16 &&
++         std::equal(selected->canonical_value_body.begin(), selected->canonical_value_body.end(),
++                    expected.bytes.begin());
+@@ -195,2 +226,20 @@
+-  column.descriptor.encoded_descriptor =
+-      std::string("type=") + column.descriptor.canonical_type_name;
++  namespace dt = scratchbird::core::datatypes;
++  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
++  Require(manifest.ok(), "SHOW CREATE datatype manifest unavailable");
++  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
++      dt::CanonicalTypeIdFromStableName(column.descriptor.canonical_type_name));
++  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
++          "SHOW CREATE datatype row unavailable");
++  const auto& datatype = row.manifest.descriptor_rows.front();
++  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
++      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
++      api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
++      datatype.descriptor_epoch);
++  Require(binding.ok, "SHOW CREATE datatype codec unavailable");
++  column.requested_column_uuid = scratchbird::tests::FixtureUuid(2015, 10 + ordinal);
++  column.descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2015, 20 + ordinal);
++  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
++  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
++  column.descriptor.type_uuid = binding.row.type_uuid;
++  column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(
++      {{{"type", column.descriptor.canonical_type_name}, {"nullable", "true"}}, {}});
+@@ -212,8 +261,7 @@
+-  context.catalog_generation_id = 7;
+-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+-  context.datatype_catalog_generation = 1;
+-  context.datatype_registry_generation = 1;
+-  context.security_epoch = 11;
+-  context.resource_epoch = 13;
+-  context.name_resolution_epoch = 17;
+-  context.trace_tags.push_back("right:OBS_CATALOG_DESCRIPTOR_READ");
++  context.catalog_generation_id = 1;
++  context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
++  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
++  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
++  context.security_epoch = 1;
++  context.resource_epoch = 1;
++  context.name_resolution_epoch = 1;
+@@ -224,16 +272 @@
+-  const std::filesystem::path path(kDatabasePath);
+-  std::filesystem::remove(path);
+-  for (const auto suffix : {
+-           ".sb.crud_events",
+-           ".sb.mga_row_versions",
+-           ".sb.mga_relation_metadata",
+-           ".sb.mga_index_entries",
+-           ".sb.mga_relation_descriptors",
+-           ".sb.mga_large_values",
+-           ".sb.mga_savepoints",
+-           ".sb.api_events",
+-           ".sb.catalog_object_events",
+-           ".sb.domain_events",
+-       }) {
+-    std::filesystem::remove(std::filesystem::path(std::string(kDatabasePath) + suffix));
+-  }
++  std::filesystem::remove_all(kFixtureDirectory);
+@@ -245,0 +279,2 @@
++  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
++                                << created.diagnostic.message_key << '\n';
+@@ -250,0 +286,3 @@
++  open.context.principal_uuid = created.bootstrap_principal_uuid.value;
++  open.context.default_root_uuid = created.state.filespace_uuid.value;
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(open.context);
+@@ -258 +295,0 @@
+-  RemoveEngineFiles();
+@@ -283,0 +321,5 @@
++  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(context);
++  Require(epochs.ok, "SHOW CREATE published catalog epochs unavailable");
++  context.catalog_generation_id = epochs.state.metadata_epoch;
++  context.name_resolution_epoch = epochs.state.name_resolution_epoch;
++  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+@@ -359,4 +401,4 @@
+-  Require(Contains(artifacts.envelope.payload,
+-                   std::string("\"target_object_uuid\":\"") +
+-                       std::string(kTargetUuid) + "\""),
+-          "SHOW CREATE payload missing target UUID");
++  Require(HasBinaryTarget(artifacts.envelope,
++              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000901")) &&
++              !Contains(artifacts.envelope.payload, "\"target_object_uuid\""),
++          "SHOW CREATE must carry its exact target once as binary16, outside JSON text");

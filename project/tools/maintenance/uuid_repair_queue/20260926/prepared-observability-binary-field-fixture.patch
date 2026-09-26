@@ -1,0 +1,25 @@
+--- a/project/tests/sbsql_parser_worker/sbsql_observability_exact_route_conformance.cpp
++++ b/project/tests/sbsql_parser_worker/sbsql_observability_exact_route_conformance.cpp
+@@ -394,0 +395,16 @@
++    }
++  }
++  return false;
++}
++
++bool ApiResultHasUuidField(const api::EngineApiResult& result,
++                           std::string_view name,
++                           const api::EngineUuid& expected) {
++  for (const auto& row : result.result_shape.rows) {
++    for (const auto& [field_name, value] : row.fields) {
++      if (field_name != name) continue;
++      return value.state == api::EngineValueState::value &&
++             value.descriptor.canonical_type_name == "uuid" &&
++             value.encoded_value.empty() && value.binary_value.size() == 16 &&
++             std::equal(value.binary_value.begin(), value.binary_value.end(),
++                        expected.bytes.begin());
+@@ -840 +856 @@
+-    Require(ApiResultHasField(result.api_result,
++    Require(ApiResultHasUuidField(result.api_result,
+@@ -842 +858 @@
+-                              "019f0000-0000-7000-8000-000000000801"),
++                              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000801")),

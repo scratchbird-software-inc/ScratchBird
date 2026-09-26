@@ -1,0 +1,72 @@
+--- a/project/tests/database_lifecycle/ipar_adaptive_batch_sizing_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_adaptive_batch_sizing_gate.cpp
+@@ -58 +58,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_agent_runtime_idle_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_agent_runtime_idle_gate.cpp
+@@ -44 +44,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_concurrency_insert_proof_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_concurrency_insert_proof_gate.cpp
+@@ -60 +60,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_index_family_preallocation_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_index_family_preallocation_gate.cpp
+@@ -58 +58,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_insert_cancel_timeout_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_insert_cancel_timeout_gate.cpp
+@@ -54 +54,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_large_value_batch_allocation_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_large_value_batch_allocation_gate.cpp
+@@ -52 +52,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_mixed_reader_writer_workload_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_mixed_reader_writer_workload_gate.cpp
+@@ -60 +60,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_page_size_preallocation_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_page_size_preallocation_gate.cpp
+@@ -53 +53,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_resource_quota_backpressure_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_resource_quota_backpressure_gate.cpp
+@@ -52 +52,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_restart_persistence_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_restart_persistence_gate.cpp
+@@ -53 +53,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/ipar_storage_format_migration_safety_gate.cpp
++++ b/project/tests/database_lifecycle/ipar_storage_format_migration_safety_gate.cpp
+@@ -46 +46,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());
+--- a/project/tests/database_lifecycle/parser_server_neutral_transaction_routing_conformance.cpp
++++ b/project/tests/database_lifecycle/parser_server_neutral_transaction_routing_conformance.cpp
+@@ -229 +229,2 @@
+-      std::chrono::steady_clock::now().time_since_epoch().count());
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch()).count());

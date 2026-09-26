@@ -1,0 +1,19 @@
+--- a/project/src/parsers/sbsql_worker/CMakeLists.txt
++++ b/project/src/parsers/sbsql_worker/CMakeLists.txt
+@@ -58,0 +59,6 @@
++# The parser wire translation unit exceeds the standard COFF section limit.
++if(MSVC)
++  target_compile_options(sbl_sbsql_parser_pipeline PRIVATE /bigobj)
++elseif(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++  target_compile_options(sbl_sbsql_parser_pipeline PRIVATE -Wa,-mbig-obj)
++endif()
+--- a/project/tests/engine_listener_enterprise/engine_listener_windows_transport_source_gate.py
++++ b/project/tests/engine_listener_enterprise/engine_listener_windows_transport_source_gate.py
+@@ -49,0 +50 @@
++        "-Wa,-mbig-obj",
+--- a/project/src/parsers/sbsql_worker/wire/sbsql_test_wire.cpp
++++ b/project/src/parsers/sbsql_worker/wire/sbsql_test_wire.cpp
+@@ -246,0 +247 @@
++#include <iostream>
+@@ -275 +275,0 @@
+-#include <iostream>

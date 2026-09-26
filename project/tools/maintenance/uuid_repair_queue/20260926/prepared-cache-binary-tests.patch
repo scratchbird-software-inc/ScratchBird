@@ -1,0 +1,133 @@
+--- a/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
++++ b/project/tests/database_lifecycle/dpc_plan_stability_statistics_lifecycle_gate.cpp
+@@ -410 +410 @@
+-  Require(HasIdentityEvidence(first, "optimizer_live_plan_cache_binding", fixture.table_uuid),
++  Require(HasIdentityEvidence(first, "descriptor", fixture.table_uuid),
+--- a/project/tests/performance/optimizer_deficiency_odf_024_gate.cpp
++++ b/project/tests/performance/optimizer_deficiency_odf_024_gate.cpp
+@@ -79,10 +79,57 @@
+-  return Require(key.find("catalog_stats=") != std::string::npos, "catalog stats digest missing from key") &&
+-         Require(key.find("security_policy=") != std::string::npos, "security policy digest missing from key") &&
+-         Require(key.find("redaction_route=") != std::string::npos, "redaction route digest missing from key") &&
+-         Require(key.find("param_shape=") != std::string::npos, "parameter shape digest missing from key") &&
+-         Require(key.find("memory_grant_class=") != std::string::npos, "memory grant class missing from key") &&
+-         Require(key.find("memory_grant=") != std::string::npos, "memory grant digest missing from key") &&
+-         Require(key.find("compatibility_epoch=") != std::string::npos, "compatibility epoch missing from key") &&
+-         Require(key.find("format_compatibility_epoch=") != std::string::npos,
+-                 "format compatibility epoch missing from key") &&
+-         Require(key.find("route_epoch=") != std::string::npos, "route epoch missing from key");
++  if (!Require(!key.empty(), "binary plan cache key is empty")) return false;
++  // Binding is observable through cache-key sensitivity, not display labels.
++  {
++    auto changed = input;
++    changed.catalog_stats_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "catalog_stats_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.security_policy_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "security_policy_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.redaction_route_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "redaction_route_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.parameter_shape_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "parameter_shape_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.memory_grant_class += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "memory_grant_class omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.memory_grant_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "memory_grant_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    ++changed.compatibility_epoch;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "compatibility_epoch omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    ++changed.format_compatibility_epoch;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "format_compatibility_epoch omitted from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    ++changed.route_epoch;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "route_epoch omitted from binary key")) return false;
++  }
++  return true;
+--- a/project/tests/optimizer/optimizer_enterprise_plan_cache_gate.cpp
++++ b/project/tests/optimizer/optimizer_enterprise_plan_cache_gate.cpp
+@@ -132,8 +132,17 @@
+-  if (!Require(key.find("optimizer_controls=") != std::string::npos,
+-               "normalized controls missing from key")) return false;
+-  if (!Require(key.find("memory_feedback_generation=5109") != std::string::npos,
+-               "memory feedback generation missing from key")) return false;
+-  if (!Require(key.find("route_cap=sha256:route-capability-local-index-v51") !=
+-                   std::string::npos,
+-               "route capability digest missing from key")) {
+-    return false;
++  {
++    auto changed = input;
++    changed.normalized_optimizer_controls_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "normalized_optimizer_controls_digest missing from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    ++changed.memory_feedback_generation;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "memory_feedback_generation missing from binary key")) return false;
++  }
++  {
++    auto changed = input;
++    changed.route_capability_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "route_capability_digest missing from binary key")) return false;
+--- a/project/tests/optimizer/optimizer_planner_opch_030_031_gate.cpp
++++ b/project/tests/optimizer/optimizer_planner_opch_030_031_gate.cpp
+@@ -153,6 +153,21 @@
+-  return Require(key.find("optimizer_controls=") != std::string::npos,
+-                 "plan cache key omitted normalized optimizer controls") &&
+-         Require(key.find("memory_feedback_generation=737") != std::string::npos,
+-                 "plan cache key omitted memory feedback generation") &&
+-         Require(key.find("redaction_epoch=733") != std::string::npos,
+-                 "plan cache key omitted redaction epoch");
++  if (!Require(key == opt::BuildOptimizerPlanCacheKey(right),
++               "reordered normalized controls changed the binary key")) return false;
++  {
++    auto changed = left;
++    changed.normalized_optimizer_controls_digest += "-changed";
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "normalized_optimizer_controls_digest omitted from binary key")) return false;
++  }
++  {
++    auto changed = left;
++    ++changed.memory_feedback_generation;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "memory_feedback_generation omitted from binary key")) return false;
++  }
++  {
++    auto changed = left;
++    ++changed.redaction_epoch;
++    if (!Require(opt::BuildOptimizerPlanCacheKey(changed) != key,
++                 "redaction_epoch omitted from binary key")) return false;
++  }
++  return true;
