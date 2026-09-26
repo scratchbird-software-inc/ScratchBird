@@ -40,6 +40,50 @@
 #include <sstream>
 #endif
 
+namespace scratchbird::engine::internal_api {
+namespace {
+
+// DatatypeOperationValue uses a byte string for binary scalars. Keep that
+// internal representation out of EngineTypedValue's textual result carrier.
+void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
+                            const EngineDescriptor& descriptor,
+                            EngineTypedValue* output) {
+  *output = EngineTypedValue{};
+  output->descriptor = descriptor;
+  output->is_null = cast.is_null;
+  output->state = cast.is_null ? EngineValueState::sql_null
+                               : EngineValueState::value;
+  if (cast.is_null) return;
+  if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
+      cast.type_id == core::datatypes::CanonicalTypeId::binary) {
+    output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
+  } else {
+    output->encoded_value = cast.encoded_value;
+  }
+}
+
+bool ScalarCastInputEncoding(const EngineTypedValue& input,
+                             core::datatypes::CanonicalTypeId type,
+                             std::string* bytes) {
+  bytes->clear();
+  if (input.isSqlNull())
+    return input.encoded_value.empty() && input.binary_value.empty();
+  if (input.state != EngineValueState::value) return false;
+  const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
+                      type == core::datatypes::CanonicalTypeId::binary;
+  if (!input.binary_value.empty()) {
+    if (!binary || !input.encoded_value.empty()) return false;
+    bytes->assign(reinterpret_cast<const char*>(input.binary_value.data()),
+                  input.binary_value.size());
+  } else {
+    *bytes = input.encoded_value;
+  }
+  return type != core::datatypes::CanonicalTypeId::uuid || bytes->size() == 16;
+}
+
+}  // namespace
+}  // namespace scratchbird::engine::internal_api
+
 #ifndef SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_EXTERNAL
 
 namespace scratchbird::engine::internal_api {
@@ -408,10 +452,8 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   }
   dt::DatatypeCastRequest request;
   request.value.type_id = source_type;
-  request.value.encoded_value = input_value.encoded_value;
-  if (!input_value.isSqlNull() &&
-      (source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary) &&
-      !QowCanonicalComparableEncodingV1(input_value, source_type, &request.value.encoded_value)) {
+  if (!ScalarCastInputEncoding(input_value, source_type,
+                                &request.value.encoded_value)) {
     *refusal_detail = "canonical coercion operand encoding is invalid";
     return false;
   }
@@ -425,12 +467,7 @@ bool QowApplyCanonicalDescriptorCoercionV1(
                           : cast.diagnostic.diagnostic_code;
     return false;
   }
-  output_value->descriptor = target_descriptor;
-  output_value->encoded_value = cast.value.encoded_value;
-  output_value->binary_value.clear();
-  output_value->is_null = cast.value.is_null;
-  output_value->state = cast.value.is_null ? EngineValueState::sql_null
-                                           : EngineValueState::value;
+  PublishScalarCastValue(cast.value, target_descriptor, output_value);
   *cast_category = dt::DatatypeCastCategoryName(cast.category);
   return true;
 }
@@ -2436,8 +2473,13 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   }
   dt::DatatypeCastRequest cast_request;
   cast_request.value.type_id = source_type;
-  cast_request.value.encoded_value = input.encoded_value;
-  cast_request.value.is_null = input.is_null;
+  if (!ScalarCastInputEncoding(input, source_type,
+                                &cast_request.value.encoded_value)) {
+    return ApiFailure<EngineCastValueResult>(
+        request.context, "query.cast_value",
+        MakeInvalidRequestDiagnostic("query.cast_value", "scalar_value_encoding_invalid"));
+  }
+  cast_request.value.is_null = input.isSqlNull();
   cast_request.target_type_id = target_type;
   cast_request.explicit_cast = request.explicit_cast;
   cast_request.reference_compatibility_profile = !request.compatibility_profile.names.empty();
@@ -2452,11 +2494,8 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     EngineTypedValue candidate;
     candidate.descriptor.descriptor_kind = "scalar";
     candidate.descriptor.canonical_type_name = dt::CanonicalTypeName(cast.value.type_id);
-    candidate.encoded_value = cast.value.encoded_value;
-    candidate.is_null = cast.value.is_null;
-    candidate.state = cast.value.is_null ? EngineValueState::sql_null
-                                         : EngineValueState::value;
-    if (candidate.is_null) candidate.encoded_value.clear();
+    const auto base_descriptor = candidate.descriptor;
+    PublishScalarCastValue(cast.value, base_descriptor, &candidate);
     const auto validation = ValidateDomainTypedValue(request.context,
                                                     target,
                                                     candidate,
@@ -2477,12 +2516,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     return result;
   }
   auto result = ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
-  result.value.descriptor = target;
-  result.value.encoded_value = cast.value.encoded_value;
-  result.value.is_null = cast.value.is_null;
-  result.value.state = cast.value.is_null ? EngineValueState::sql_null
-                                          : EngineValueState::value;
-  if (result.value.is_null) result.value.encoded_value.clear();
+  PublishScalarCastValue(cast.value, target, &result.value);
   result.cast_category = dt::DatatypeCastCategoryName(cast.category);
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(target);

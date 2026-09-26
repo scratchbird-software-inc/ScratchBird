@@ -8,11 +8,15 @@
 
 #include "database_lifecycle.hpp"
 #include "domain_support/domain_store.hpp"
+#include "query/expression_api.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "dml/constraint_enforcement.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -373,10 +377,117 @@ void DomainBinaryCatalogProof() {
           "tampered domain catalog diagnostic did not identify digest mismatch");
 }
 
+void DomainBinaryScalarProof() {
+  const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+  CleanupDir cleanup{std::filesystem::temp_directory_path() /
+                     ("sb_domain_scalar_" + std::to_string(unique))};
+  const auto fixture = CreateDatabaseFixture(cleanup.root);
+  auto writer = Context(fixture, "domain-scalar-writer");
+  Begin(&writer);
+  namespace dt = scratchbird::core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(catalog.ok(), "domain scalar datatype catalog unavailable");
+  std::vector<api::DomainRecord> domains;
+  for (const auto type : {"uuid", "binary"}) {
+    const auto row = dt::LookupDatatypeCatalogRow(
+        catalog.manifest, dt::CanonicalTypeIdFromStableName(type));
+    Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+            "domain scalar base datatype unavailable");
+    api::DomainRecord domain;
+    domain.creator_tx = writer.local_transaction_id;
+    domain.domain_uuid = NativeIdentity(UuidKind::object, 400 + domains.size());
+    domain.catalog_row_uuid = NativeIdentity(UuidKind::object, 410 + domains.size());
+    domain.schema_uuid = NativeIdentity(UuidKind::schema, 420);
+    domain.default_name = std::string("binary_carrier_") + type;
+    domain.base_descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+    domain.base_descriptor_kind = "scalar";
+    domain.base_canonical_type_name = type;
+    domain.base_encoded_descriptor = std::string("type=") + type;
+    domain.nullable = true;
+    domain.check_constraint_envelope = "sblr_predicate:not_empty";
+    const auto appended = api::AppendDomainEvent(writer, api::MakeDomainCreateEvent(domain));
+    Require(!appended.error, "binary scalar domain persistence failed");
+    domains.push_back(std::move(domain));
+  }
+  Commit(&writer);
+  auto reader = Context(fixture, "domain-scalar-reader");
+  Begin(&reader);
+  const std::vector<std::uint8_t> bytes{
+      0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
+      0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00};
+  const std::string raw(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  for (const auto& domain : domains) {
+    const auto visible = api::FindVisibleDomain(reader, domain.domain_uuid, reader.local_transaction_id);
+    Require(visible.has_value(), "binary scalar domain unavailable after commit/reload");
+    const auto descriptor = api::DomainDescriptor(*visible);
+    api::EngineTypedValue input;
+    input.descriptor.descriptor_kind = "scalar";
+    input.descriptor.canonical_type_name = "uuid";
+    input.binary_value = bytes;
+    const auto validate = [&](const api::EngineTypedValue& value) {
+      return api::ValidateDomainTypedValue(reader, descriptor, value, reader.local_transaction_id);
+    };
+    const auto valid = validate(input);
+    Require(valid.ok && valid.value.binary_value == bytes && valid.value.encoded_value.empty() &&
+                valid.value.descriptor.descriptor_uuid == domain.domain_uuid,
+            "persisted domain validation lost binary UUID bytes or descriptor");
+    const auto repeated = validate(valid.value);
+    Require(repeated.ok && repeated.value.binary_value == bytes && repeated.value.encoded_value.empty(),
+            "named domain value lost its catalog base type on revalidation");
+    api::EngineCastValueRequest request;
+    request.context = reader;
+    request.input_value = input;
+    request.target_descriptor = descriptor;
+    request.explicit_cast = true;
+    const auto cast = api::EngineCastValue(request);
+    RequireApiOk(cast, "UUID-to-domain cast failed");
+    Require(cast.value.binary_value == bytes && cast.value.encoded_value.empty() &&
+                cast.value.descriptor.descriptor_uuid == domain.domain_uuid,
+            "UUID-to-domain cast lost binary payload");
+    const auto column = api::DomainColumnDescriptor(domain.domain_uuid);
+    api::ConstraintDmlValidationCache cache;
+    const auto row = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
+        {{"v", raw}}, reader.local_transaction_id, &cache);
+    Require(row.ok && row.values.size() == 1 && row.values.front().second == raw,
+            "domain row validation dropped binary bytes");
+    const auto cached = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
+        {{"v", raw}}, reader.local_transaction_id, &cache);
+    Require(cached.ok && cached.values == row.values &&
+                std::ranges::any_of(cached.evidence, [](const auto& evidence) {
+                  return evidence.evidence_kind == "constraint_proof_hit";
+                }), "domain cache hit lost validated binary bytes");
+    const auto null_row = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
+        {{"v", "<NULL>"}}, reader.local_transaction_id);
+    Require(null_row.ok && null_row.values.front().second == "<NULL>",
+            "domain row adapter lost SQL NULL");
+    input.binary_value.clear();
+    input.state = api::EngineValueState::sql_null;
+    const auto null_value = validate(input);
+    Require(null_value.ok && null_value.value.state == api::EngineValueState::sql_null &&
+                null_value.value.is_null && null_value.value.binary_value.empty() &&
+                null_value.value.encoded_value.empty(), "domain NULL retained data");
+    input.binary_value = bytes;
+    Require(!validate(input).ok, "domain accepted NULL with binary payload");
+    input.state = api::EngineValueState::value;
+    input.encoded_value = "550e8400-e29b-41d4-a716-446655440000";
+    Require(!validate(input).ok, "domain accepted ambiguous UUID carriers");
+    input.binary_value.clear();
+    Require(!validate(input).ok, "domain parsed UUID text inside the engine");
+    input.encoded_value.clear();
+    input.binary_value.assign(15, 0);
+    Require(!validate(input).ok, "domain accepted short UUID input");
+    input.descriptor.canonical_type_name = "binary";
+    input.binary_value.clear();
+    Require(!validate(input).ok, "domain bypassed base cast or not-empty constraint");
+  }
+  Commit(&reader);
+}
+
 }  // namespace
 
 int main() {
   DomainBinaryCatalogProof();
+  DomainBinaryScalarProof();
   std::cout << "engine_listener_domain_binary_catalog_conformance=passed\n";
   return EXIT_SUCCESS;
 }

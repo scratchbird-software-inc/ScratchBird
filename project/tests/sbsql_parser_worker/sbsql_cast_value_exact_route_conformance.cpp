@@ -13,6 +13,7 @@
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "query/expression_api.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
@@ -67,13 +68,11 @@ struct CastRuntimeCase {
   std::string_view expected_value;
 };
 
-constexpr std::array<CastRuntimeCase, 5> kRuntimeCases{{
+constexpr std::array<CastRuntimeCase, 4> kRuntimeCases{{
     {"character", "42", "int64", "42"},
     {"character", "true", "boolean", "true"},
     {"int64", "1", "boolean", "true"},
     {"int64", "17", "character", "17"},
-    {"character", "550e8400-e29b-41d4-a716-446655440000", "uuid",
-     "550e8400-e29b-41d4-a716-446655440000"},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -356,6 +355,142 @@ void RequireDirectRuntimeValues() {
   }
 }
 
+api::EngineDescriptor BoundDescriptor(std::string_view type) {
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "cast fixture datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeIdFromStableName(std::string(type)));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "cast fixture datatype absent from catalog");
+  auto descriptor = Descriptor(type);
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(
+      2053, type == "uuid" ? 1 : 2);
+  descriptor.type_uuid = datatype.descriptor_uuid.value;
+  descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  return descriptor;
+}
+
+void RequireUuidBinaryCasts() {
+  // UUID text is parser/client syntax, not an engine UUID value. Retain the
+  // old v4 sample, but assert its exact bytes and the refusal of its textual
+  // engine carrier. Also exercise every version nibble, nil and all-one data.
+  const auto v4 = scratchbird::tests::FixtureUuidLiteral(
+      "550e8400-e29b-41d4-a716-446655440000");
+  std::vector<std::vector<std::uint8_t>> values;
+  values.emplace_back(v4.bytes.begin(), v4.bytes.end());
+  for (unsigned version = 0; version < 16; ++version) {
+    auto bytes = values.front();
+    bytes[6] = static_cast<std::uint8_t>((version << 4) | (bytes[6] & 15));
+    values.push_back(std::move(bytes));
+  }
+  values.emplace_back(16, 0);
+  values.emplace_back(16, 255);
+  for (const bool bound : {false, true}) {
+    const auto descriptor = [&](std::string_view type) {
+      return bound ? BoundDescriptor(type) : Descriptor(type);
+    };
+    const auto cast = [&](api::EngineTypedValue input, std::string_view target,
+                          bool explicit_cast = true) {
+      api::EngineCastValueRequest request;
+      request.context = EngineContext();
+      request.input_value = std::move(input);
+      request.target_descriptor = descriptor(target);
+      request.explicit_cast = explicit_cast;
+      return api::EngineCastValue(request);
+    };
+    const auto require_refused = [&](api::EngineTypedValue input,
+                                      std::string_view target) {
+      const auto result = cast(std::move(input), target);
+      Require(!result.ok && !result.diagnostics.empty() &&
+                  result.value.encoded_value.empty() && result.value.binary_value.empty(),
+              "malformed UUID cast published a value or lost its refusal");
+    };
+    for (const auto& bytes : values) {
+      for (const auto source : {"uuid", "binary"}) {
+        for (const auto target : {"uuid", "binary"}) {
+          api::EngineTypedValue input;
+          input.descriptor = descriptor(source);
+          input.binary_value = bytes;
+          const auto result = cast(input, target);
+          Require(result.ok && result.value.binary_value == bytes &&
+                      result.value.encoded_value.empty() &&
+                      result.value.state == api::EngineValueState::value &&
+                      !result.value.isSqlNull() &&
+                      result.value.descriptor.descriptor_uuid == descriptor(target).descriptor_uuid &&
+                      result.value.descriptor.canonical_type_name == target &&
+                      HasEvidence(result, "datatype_cast", result.cast_category),
+                  "UUID/binary cast did not preserve binary16 data and target descriptor");
+          const auto roundtrip = cast(result.value, source);
+          Require(roundtrip.ok && roundtrip.value.binary_value == bytes &&
+                      roundtrip.value.encoded_value.empty(),
+                  "UUID/binary roundtrip lost bits or produced text");
+          if (bound) {
+            api::EngineTypedValue output;
+            std::string category, refusal;
+            Require(api::QowApplyCanonicalDescriptorCoercionV1(
+                        input, descriptor(target), true, &output, &category, &refusal) &&
+                        refusal.empty() && !category.empty() &&
+                        output.binary_value == bytes && output.encoded_value.empty(),
+                    "descriptor coercion lost native UUID/binary result bytes");
+            auto unbound = input;
+            unbound.descriptor.descriptor_uuid = {};
+            Require(!api::QowApplyCanonicalDescriptorCoercionV1(
+                        unbound, descriptor(target), true, &output, &category, &refusal),
+                    "UUID data coercion accepted missing system descriptor authority");
+            unbound = input;
+            unbound.descriptor.type_uuid.bytes[6] = 0x40;
+            Require(!api::QowApplyCanonicalDescriptorCoercionV1(
+                        unbound, descriptor(target), true, &output, &category, &refusal),
+                    "UUID data coercion accepted a v4 system type identity");
+          }
+          const auto implicit = cast(input, target, false);
+          Require(implicit.ok == (std::string_view(source) == target),
+                  "UUID cast changed explicit-versus-identity admission");
+        }
+      }
+    }
+    for (const auto source : {"uuid", "binary"}) {
+      api::EngineTypedValue input;
+      input.descriptor = descriptor(source);
+      input.state = api::EngineValueState::sql_null;
+      // The enum is authoritative even if the legacy is_null flag is unset.
+      const auto null_cast = cast(input, "uuid");
+      Require(null_cast.ok && null_cast.value.state == api::EngineValueState::sql_null &&
+                  null_cast.value.is_null && null_cast.value.encoded_value.empty() &&
+                  null_cast.value.binary_value.empty(), "UUID NULL cast retained a payload");
+      input.binary_value = values.front();
+      require_refused(input, "uuid");
+      input.state = api::EngineValueState::value;
+      input.encoded_value = "ambiguous";
+      require_refused(input, "uuid");
+      input.encoded_value.clear();
+      for (const auto size : {0u, 15u, 17u, 36u}) {
+        input.binary_value.resize(size);
+        require_refused(input, "uuid");
+      }
+      input.binary_value.clear();
+      input.encoded_value = "550e8400-e29b-41d4-a716-446655440000";
+      require_refused(input, "uuid");
+    }
+    auto text = Value("character", "550e8400-e29b-41d4-a716-446655440000");
+    text.descriptor = descriptor("character");
+    require_refused(text, "uuid");
+    api::EngineTypedValue uuid;
+    uuid.descriptor = descriptor("uuid");
+    uuid.binary_value = values.front();
+    require_refused(uuid, "character");
+    for (const auto state : {api::EngineValueState::error, api::EngineValueState::missing,
+                             api::EngineValueState::unknown,
+                             api::EngineValueState::default_requested}) {
+      uuid.state = state;
+      require_refused(uuid, "uuid");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -366,6 +501,7 @@ int main() {
   RequireBooleanCastExactRoutes();
   RequireSafeTryCastExactRoutes();
   RequireDirectRuntimeValues();
+  RequireUuidBinaryCasts();
   std::cout << "sbsql_cast_value_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
 }

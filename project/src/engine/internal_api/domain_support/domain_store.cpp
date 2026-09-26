@@ -1264,7 +1264,20 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     result.diagnostic = DomainValidationDiagnostic("domain_cast_right_denied:" + cast_right);
     return result;
   }
-  if (input_value.is_null || input_value.encoded_value == "<NULL>") {
+  const auto input_type = dt::CanonicalTypeIdFromStableName(
+      input_value.descriptor.descriptor_kind == "domain"
+          ? DescriptorField(input_value.descriptor.encoded_descriptor, "base_type")
+          : input_value.descriptor.canonical_type_name);
+  const bool input_is_binary = input_type == dt::CanonicalTypeId::uuid ||
+                               input_type == dt::CanonicalTypeId::binary;
+  const bool legacy_row_null = !input_is_binary && input_value.binary_value.empty() &&
+                               input_value.encoded_value == "<NULL>";
+  if (input_value.isSqlNull() || legacy_row_null) {
+    if (input_value.isSqlNull() &&
+        (!input_value.binary_value.empty() || !input_value.encoded_value.empty())) {
+      result.diagnostic = DomainValidationDiagnostic("domain_null_payload_invalid");
+      return result;
+    }
     if (!domain->nullable) {
       result.diagnostic = DomainValidationDiagnostic("domain_null_forbidden");
       return result;
@@ -1272,8 +1285,17 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     result.ok = true;
     result.value = input_value;
     result.value.descriptor = DomainDescriptor(*domain);
+    result.value.encoded_value.clear();
+    result.value.binary_value.clear();
     result.value.is_null = true;
+    result.value.state = EngineValueState::sql_null;
     result.evidence.push_back({"domain_validation", domain_uuid});
+    return result;
+  }
+  if (input_value.state != EngineValueState::value ||
+      (!input_value.binary_value.empty() &&
+       (!input_is_binary || !input_value.encoded_value.empty()))) {
+    result.diagnostic = DomainValidationDiagnostic("domain_value_encoding_invalid");
     return result;
   }
   EngineTypedValue value_for_base_cast = input_value;
@@ -1301,12 +1323,20 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
     for (const auto& evidence : base_validation.evidence) { result.evidence.push_back(evidence); }
   }
   const auto target_type = dt::CanonicalTypeIdFromStableName(domain->base_canonical_type_name);
-  const auto source_type = value_for_base_cast.descriptor.canonical_type_name.empty()
+  const auto source_type_name = value_for_base_cast.descriptor.descriptor_kind == "domain"
+      ? DescriptorField(value_for_base_cast.descriptor.encoded_descriptor, "base_type")
+      : value_for_base_cast.descriptor.canonical_type_name;
+  const auto source_type = source_type_name.empty()
                                ? dt::CanonicalTypeId::character
-                               : dt::CanonicalTypeIdFromStableName(value_for_base_cast.descriptor.canonical_type_name);
+                               : dt::CanonicalTypeIdFromStableName(source_type_name);
   dt::DatatypeCastRequest cast_request;
   cast_request.value.type_id = source_type == dt::CanonicalTypeId::unknown ? dt::CanonicalTypeId::character : source_type;
   cast_request.value.encoded_value = value_for_base_cast.encoded_value;
+  if (!value_for_base_cast.binary_value.empty()) {
+    cast_request.value.encoded_value.assign(
+        reinterpret_cast<const char*>(value_for_base_cast.binary_value.data()),
+        value_for_base_cast.binary_value.size());
+  }
   cast_request.value.is_null = false;
   cast_request.target_type_id = target_type == dt::CanonicalTypeId::unknown ? dt::CanonicalTypeId::character : target_type;
   cast_request.explicit_cast = true;
@@ -1323,8 +1353,16 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
   result.ok = true;
   result.value = input_value;
   result.value.descriptor = DomainDescriptor(*domain);
-  result.value.encoded_value = cast.value.encoded_value;
+  result.value.encoded_value.clear();
+  result.value.binary_value.clear();
+  if (cast.value.type_id == dt::CanonicalTypeId::uuid ||
+      cast.value.type_id == dt::CanonicalTypeId::binary) {
+    result.value.binary_value.assign(cast.value.encoded_value.begin(), cast.value.encoded_value.end());
+  } else {
+    result.value.encoded_value = cast.value.encoded_value;
+  }
   result.value.is_null = false;
+  result.value.state = EngineValueState::value;
   result.evidence.push_back({"domain_validation", domain_uuid});
   if (!domain->check_constraint_envelope.empty()) { result.evidence.push_back({"domain_check", domain_uuid}); }
   return result;
@@ -1388,18 +1426,34 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
       }
       continue;
     }
+    if (value.is_null) {
+      value.state = EngineValueState::sql_null;
+      value.encoded_value.clear();
+    } else if (domain->base_canonical_type_name == "uuid" ||
+               domain->base_canonical_type_name == "binary") {
+      // The row carrier is opaque bytes; the visible domain catalog supplies
+      // its type. It is not character text to parse into a UUID.
+      value.descriptor.canonical_type_name = domain->base_canonical_type_name;
+      value.binary_value.assign(value.encoded_value.begin(), value.encoded_value.end());
+      value.encoded_value.clear();
+    }
     const auto validation = ValidateDomainTypedValue(context, descriptor, value, observer_tx);
     if (!validation.ok) {
       result.diagnostic = validation.diagnostic;
       return result;
     }
-    UpsertField(&result.values, column_name, validation.value.is_null ? "<NULL>" : validation.value.encoded_value);
+    std::string row_value = validation.value.is_null ? "<NULL>" : validation.value.encoded_value;
+    if (!validation.value.binary_value.empty()) {
+      row_value.assign(reinterpret_cast<const char*>(validation.value.binary_value.data()),
+                       validation.value.binary_value.size());
+    }
+    UpsertField(&result.values, column_name, row_value);
     for (const auto& evidence : validation.evidence) { result.evidence.push_back(evidence); }
     StoreConstraintDmlProof(cache,
                             context,
                             "domain_check",
                             proof_identity,
-                            validation.value.is_null ? std::string("<NULL>") : validation.value.encoded_value,
+                            row_value,
                             &result.evidence);
   }
   result.ok = true;
