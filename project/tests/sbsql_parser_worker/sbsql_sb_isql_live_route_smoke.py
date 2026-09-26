@@ -42,12 +42,15 @@ def make_work_dir(preferred_root: Path) -> Path:
         )
     else:
         roots = (preferred_root, Path(tempfile.gettempdir()) / "sb_isql_live")
+    roots += (Path(tempfile.gettempdir()),)
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="l", dir=root))
         endpoint_probe = candidate / "sc" / "s.sock"
         listener_probe = candidate / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(str(endpoint_probe)), len(str(listener_probe))) < 100:
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise SmokeError("unable to allocate a short-enough live route workspace")

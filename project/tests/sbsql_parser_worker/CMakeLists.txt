@@ -6289,7 +6289,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       PRIVATE
         SB_EXAMPLE_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
     )
-    target_link_libraries(sbsql_example_database_seed PRIVATE sb_engine_sblr sb_storage_database sb_core_uuid)
+    target_link_libraries(sbsql_example_database_seed PRIVATE sb_engine sb_engine_sblr sb_storage_database sb_core_uuid)
   endif()
   if(TARGET sb_storage_database AND TARGET sb_core_uuid)
     add_executable(sbsql_manager_database_seed sbsql_manager_database_seed.cpp)

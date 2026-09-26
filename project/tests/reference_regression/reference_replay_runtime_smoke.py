@@ -93,13 +93,18 @@ def read_tail(path: Path, limit: int = 12000) -> str:
 
 
 def make_work_dir(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix="reference_replay_", dir=root))
-    endpoint_probe = work / "server" / "control" / "sbps.sock"
-    if len(str(endpoint_probe)) >= 100:
-        shutil.rmtree(work, ignore_errors=True)
-        raise RuntimeSmokeError(f"work path too long for IPC socket safety: {work}")
-    return work
+    roots = (root, Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
+    for candidate in roots:
+        candidate.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="rr_", dir=candidate))
+        endpoint_probe = work / "server/control/sbps.sock"
+        listener_probe = work / "listener/control" / ("sbsql_" + ("0" * 32) + ".management.sock")
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:
+            return work
+        shutil.rmtree(work)
+    raise RuntimeSmokeError("unable to allocate a short reference runtime workspace")
 
 
 def start_runtime(args: argparse.Namespace, work: Path) -> dict[str, Any]:

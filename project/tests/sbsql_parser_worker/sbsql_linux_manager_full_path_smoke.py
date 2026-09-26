@@ -49,13 +49,16 @@ class SmokeError(RuntimeError):
 
 def make_work_dir(preferred_root: Path) -> Path:
     roots = (preferred_root, Path(tempfile.gettempdir()) / "sbmfp")
+    roots += (Path(tempfile.gettempdir()),)
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="sbm_", dir=root))
         endpoint_probe = candidate / "sc" / "s.sock"
         listener_probe = candidate / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
         manager_probe = candidate / "mc" / "sbmn_manager.control.sock"
-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(manager_probe))) < 100:
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(os.fsencode(manager_probe))) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise SmokeError("unable to allocate a short-enough Linux full-path workspace")

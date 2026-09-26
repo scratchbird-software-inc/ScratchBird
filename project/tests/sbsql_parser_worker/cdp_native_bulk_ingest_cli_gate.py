@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import hashlib
 import re
 import shutil
@@ -63,12 +64,15 @@ class RunResult:
 
 def make_work_dir(preferred_root: Path) -> Path:
     roots = (preferred_root, Path(tempfile.gettempdir()) / "cdp041")
+    roots += (Path(tempfile.gettempdir()),)
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="c_", dir=root))
         endpoint_probe = candidate / "ipc" / "sc" / "s.sock"
         listener_probe = candidate / "inet" / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock")
-        if max(len(str(endpoint_probe)), len(str(listener_probe)), len(str(candidate / "e.sbdb"))) < 100:
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe)), len(os.fsencode(candidate / "e.sbdb"))) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise NativeBulkIngestGateError("unable to allocate a short-enough CDP-041 workspace")

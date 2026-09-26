@@ -18,6 +18,7 @@ No inet listener or external parser worker process is launched for this route.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -34,11 +35,14 @@ class SmokeError(RuntimeError):
 
 def make_work_dir(preferred_root: Path) -> Path:
     roots = (preferred_root, Path(tempfile.gettempdir()) / "sb_isql_local_ipc")
+    roots += (Path(tempfile.gettempdir()),)
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="sbi_", dir=root))
         endpoint_probe = candidate / "sc" / "s.sock"
-        if len(str(endpoint_probe)) < 100:
+        if len(os.fsencode(endpoint_probe)) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise SmokeError("unable to allocate a short-enough local IPC workspace")

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import hashlib
 import json
 import os
@@ -269,13 +270,18 @@ def write_auth_file(database: Path) -> Path:
 
 
 def make_work_dir(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix="rt_", dir=root))
-    endpoint_probe = work / "s" / "c" / "sbps.sock"
-    listener_probe = work / "l" / "c" / "l00000.management.sock"
-    if len(str(endpoint_probe)) >= 100 or len(str(listener_probe)) >= 100:
-        raise OriginalToolSmokeError(f"work path too long for IPC socket safety: {work}")
-    return work
+    roots = (root, Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
+    for candidate in roots:
+        candidate.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix="rt_", dir=candidate))
+        endpoint_probe = work / "s/c/sbps.sock"
+        listener_probe = work / "l/c" / ("sbsql_" + ("0" * 32) + ".management.sock")
+        if max(len(os.fsencode(endpoint_probe)), len(os.fsencode(listener_probe))) < 100:
+            return work
+        shutil.rmtree(work)
+    raise OriginalToolSmokeError("unable to allocate a short reference runtime workspace")
 
 
 def start_server(args: argparse.Namespace, work: Path) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:

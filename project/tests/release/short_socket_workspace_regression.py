@@ -17,7 +17,7 @@ parser.add_argument('--repo-root', type=Path, required=True)
 args, remaining = parser.parse_known_args()
 ROOT = args.repo_root.resolve()
 sys.dont_write_bytecode = True
-for directory in ('sbsql_parser_worker', 'sbsql_sblr_alignment'):
+for directory in ('sbsql_parser_worker', 'sbsql_sblr_alignment', 'reference_regression'):
     sys.path.insert(0, str(ROOT / 'project/tests' / directory))
 CASES = (
     ('sbsql_parser_worker/cdp_profiler_evidence_gate', 'make_work_dir', 'i/sc', 'n/lc'),
@@ -26,6 +26,14 @@ CASES = (
     ('sbsql_parser_worker/cdp_copy_route_gate', 'make_work_dir', 'ipc/sc', 'inet/lc'),
     ('sbsql_parser_worker/live_server_agent_storage_benchmark_gate', 'make_work_dir', 'sc1', 'lc'),
     ('sbsql_sblr_alignment/ia01_package_process_e2e', 'allocate_work', 'sc', 'lc'),
+    ('sbsql_parser_worker/sbsql_sb_isql_live_route_smoke', 'make_work_dir', 'sc', 'lc'),
+    ('sbsql_parser_worker/sbsql_sb_isql_local_ipc_route_smoke', 'make_work_dir', 'sc', None),
+    ('sbsql_parser_worker/sbsql_sb_isql_embedded_server_authority_smoke', 'make_work_dir', 'sc', None),
+    ('sbsql_parser_worker/sbsql_linux_manager_full_path_smoke', 'make_work_dir', 'sc', 'lc'),
+    ('sbsql_parser_worker/cdp_native_bulk_ingest_cli_gate', 'make_work_dir', 'ipc/sc', 'inet/lc'),
+    ('sbsql_parser_worker/cdp_soak_leak_stability_gate', 'make_work_dir', 'i/sc', 'n/lc'),
+    ('reference_regression/reference_replay_runtime_smoke', 'make_work_dir', 'server/control', 'listener/control'),
+    ('reference_regression/reference_original_tool_smoke', 'make_work_dir', 's/c', 'l/c'),
 )
 
 
@@ -52,8 +60,12 @@ class ShortSocketWorkspaces(unittest.TestCase):
                             second = getattr(module, function)(preferred)
                             self.assertNotEqual(work, second)
                             self.assertEqual(work.stat().st_mode & 0o777, 0o700)
-                            endpoints = (work / server_dir / 's.sock',
-                                work / listener_dir / ('sbsql_' + '0' * 32 + '.management.sock'))
+                            server_name = 'sbps.sock' if name.startswith('reference_regression/') else 's.sock'
+                            endpoints = [work / server_dir / server_name]
+                            if listener_dir is not None:
+                                endpoints.append(work / listener_dir / ('sbsql_' + '0' * 32 + '.management.sock'))
+                            if name.endswith('sbsql_linux_manager_full_path_smoke'):
+                                endpoints.append(work / 'mc/sbmn_manager.control.sock')
                             for endpoint in endpoints:
                                 self.assertLess(len(os.fsencode(endpoint)), 100)
                                 endpoint.parent.mkdir(parents=True, exist_ok=True)

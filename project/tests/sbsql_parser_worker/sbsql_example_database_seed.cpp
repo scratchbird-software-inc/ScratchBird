@@ -1,4 +1,3 @@
-#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,15 +8,14 @@
 
 #include "api_types.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "security/security_model.hpp"
+#include "server_engine_bridge/statement_context.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
-#include "hash_digest.hpp"
-#include "sblr_dispatch.hpp"
-#include "sblr_engine_envelope.hpp"
-#include "sblr_opcode_registry.hpp"
-#include "sblr_transaction_begin_runtime.hpp"
-#include "sblr_transaction_commit_runtime.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -51,7 +49,6 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
-namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -67,8 +64,7 @@ constexpr std::string_view kBenchmarkCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
-constexpr auto kDatatypeCatalogSnapshotUuid =
-    scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+api::EngineUuid seed_filespace_uuid;
 
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -97,15 +93,36 @@ api::EngineLocalizedName Name(std::string name) {
   return {"en", "primary", name, name, true};
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name, std::string type) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::uint32_t ordinal,
+                                  std::string name,
+                                  std::string type) {
+  if (type == "bigint") type = "int64";
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) Fail("driver fixture datatype catalog unavailable");
+  const auto row = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeIdFromStableName(type));
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
+    Fail("driver fixture datatype is not in the engine catalog");
+  const auto& catalog = row.manifest.descriptor_rows.front();
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid = NewUuid(UuidKind::object);
-  column.names.push_back(Name(std::move(name)));
+  column.names.push_back(Name(name));
   column.descriptor.descriptor_uuid = NewUuid(UuidKind::object);
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);
-  column.descriptor.encoded_descriptor = "type=" + column.descriptor.canonical_type_name;
+  column.descriptor.datatype_descriptor_uuid = catalog.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = catalog.descriptor_epoch;
+  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, catalog.descriptor_uuid.value,
+      catalog.descriptor_epoch);
+  if (!codec.ok) Fail("driver fixture datatype codec binding unavailable");
+  column.descriptor.type_uuid = codec.row.type_uuid;
+  column.descriptor.encoded_descriptor =
+      "type=" + column.descriptor.canonical_type_name + ";nullable=true";
   return column;
 }
 
@@ -147,16 +164,61 @@ api::EngineRowValue CopyStreamRow(api::EngineUuid row_uuid,
   return row;
 }
 
+void RefreshFixtureAuthorization(api::EngineRequestContext& context,
+                                 bool require_fresh_catalog) {
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(context.database_path);
+  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory ||
+      context.principal_uuid != bootstrap.state.principal_uuid.value)
+    Fail("driver fixture durable bootstrap principal unavailable or mismatched");
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(context);
+  if (!loaded.ok) Fail("driver fixture durable security catalog unavailable");
+  const auto& lifecycle = loaded.state;
+  if (require_fresh_catalog && !lifecycle.row_policies.empty())
+    Fail("driver fixture requires a fresh bootstrap security catalog");
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context.database_uuid;
+  authority.security_context_generation = lifecycle.security_context_generation;
+  authority.security_epoch = lifecycle.security_generation;
+  authority.policy_epoch = lifecycle.policy_generation;
+  authority.catalog_generation_id = context.catalog_generation_id;
+  authority.engine_owned_sysarch_role_uuid = bootstrap.state.sysarch_role_uuid.value;
+  context.security_epoch = authority.security_epoch;
+  for (const auto& principal : lifecycle.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true,
+                                     authority.security_epoch});
+  for (const auto& role : lifecycle.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : lifecycle.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : lifecycle.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true,
+          authority.security_epoch});
+  const auto materialized = api::MaterializeDurableAuthorizationContext(authority,
+      {context.principal_uuid, authority.security_epoch, authority.policy_epoch,
+       authority.catalog_generation_id});
+  if (!materialized.ok) Fail("driver fixture durable authorization materialization failed");
+  context.authorization_context = materialized.context;
+}
+
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
                                       const api::EngineUuid& database_uuid) {
-  static const api::EngineUuid seeder_principal_uuid = NewUuid(UuidKind::principal);
   static const api::EngineUuid seeder_session_uuid = NewUuid(UuidKind::session);
   api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsql-example-database-seed";
   context.database_path = database_path.string();
   context.database_uuid = database_uuid;
-  context.principal_uuid = seeder_principal_uuid;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(database_path.string());
+  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
+    Fail("example fixture durable bootstrap principal unavailable");
+  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  context.default_root_uuid = seed_filespace_uuid;
   context.session_uuid = seeder_session_uuid;
   context.security_context_present = true;
   context.catalog_generation_id = 1;
@@ -164,164 +226,45 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
   context.datatype_catalog_snapshot_uuid =
-      kDatatypeCatalogSnapshotUuid;
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+      api::kBootstrapDatatypeCatalogUuid;
+  context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   context.trace_tags.push_back("sbsql.example_database_seed");
   context.trace_tags.push_back("security.bootstrap");
-  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("group:SEC");
-  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
-  context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  context.trace_tags.push_back("right:DML_MUTATE");
+  RefreshFixtureAuthorization(context, true);
   return context;
 }
 
-sblr::SblrOperationEnvelope Envelope(std::string operation_id, std::string opcode) {
-  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
-  if (registry_entry == nullptr) {
-    Fail("seed operation is absent from the canonical SBLR registry: " +
-         operation_id);
-  }
-  if (registry_entry->opcode != opcode) {
-    Fail("seed opcode mnemonic drifted from the canonical SBLR registry: " +
-         operation_id);
-  }
-  auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id), std::move(opcode), "sbsql.example_database_seed");
-  envelope.opcode_code = registry_entry->code;
-  envelope.result_shape = registry_entry->result_contract;
-  envelope.diagnostic_shape = "diagnostic_vector";
-  static const api::EngineUuid parser_package_uuid = NewUuid(UuidKind::object);
-  static const api::EngineUuid registry_snapshot_uuid = NewUuid(UuidKind::object);
-  envelope.parser_package_uuid = parser_package_uuid;
-  envelope.registry_snapshot_uuid = registry_snapshot_uuid;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.requires_security_context = true;
-  return envelope;
-}
-
-struct SeedTransaction {
-  api::EngineRequestContext context;
-  scratchbird::core::hash::Digest256 begin_admission_sha256{};
-};
+// Fixture construction uses the real internal transaction API. The later
+// wire tests, not a validation-only envelope, establish SBLR/IPC execution.
+struct SeedTransaction { api::EngineRequestContext context; };
 
 SeedTransaction BeginSeedTransaction(const std::filesystem::path& database_path,
-                                     const api::EngineUuid& database_uuid) {
+                                    const api::EngineUuid& database_uuid) {
   auto context = BaseContext(database_path, database_uuid);
-  auto envelope = Envelope("engine.op.txn_begin", "SBLR_TXN_BEGIN");
-  envelope.requires_transaction_context = false;
-
-  sblr::SblrTransactionBeginOptionsV1 options;
-  options.isolation_profile_uuid[0] = 1;
-  options.isolation_profile_generation = 1;
-  options.transaction_policy_snapshot_uuid[0] = 2;
-  options.transaction_policy_generation = 1;
-  options.read_mode = 1;
-  options.authority_scope = 1;
-  options.wait_policy = 1;
-  auto body = sblr::EncodeSblrTransactionBeginOptionsV1(&options);
-  if (body.empty()) Fail("canonical transaction-begin options failed to encode");
-  const auto admission_sha =
-      scratchbird::core::hash::ComputeSha256Digest(body);
-  if (!admission_sha.ok()) Fail("canonical transaction-begin evidence hash failed");
-
-  sblr::SblrOperand operand;
-  operand.ordinal = 1;
-  operand.type = "transaction.begin_options";
-  operand.name = "options";
-  operand.value_kind = sblr::SblrValueKind::transaction_begin_options;
-  operand.value_body = std::move(body);
-  envelope.operands.push_back(std::move(operand));
-
-  api::EngineApiRequest api_request;
-  api_request.context = context;
-  api_request.operation_id = "engine.op.txn_begin";
-  auto admitted = sblr::DispatchSblrOperation(
-      {context, std::move(envelope), std::move(api_request), std::nullopt});
-  if (!admitted.envelope_validated || !admitted.accepted ||
-      !admitted.dispatched_to_api || !admitted.api_result.ok) {
-    std::cerr << "seed canonical transaction-begin admission failed\n"
-              << sblr::SerializeSblrDispatchResultToJson(admitted);
-    Fail("canonical transaction-begin admission failed");
-  }
-  if (admitted.api_result.local_transaction_id != 0 ||
-      !admitted.api_result.transaction_uuid.is_nil()) {
-    Fail("SBLR transaction-begin admission published engine MGA state");
-  }
-
   api::EngineBeginTransactionRequest begin;
-  begin.context = context;
-  begin.operation_id = "transaction.begin";
+  begin.context = context; begin.operation_id = "transaction.begin";
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
-  if (!begun.ok || begun.local_transaction_id == 0 ||
-      begun.transaction_uuid.is_nil()) {
-    Fail("engine-owned transaction begin failed after canonical SBLR admission");
-  }
+  if (!begun.ok || !begun.local_transaction_id || begun.transaction_uuid.is_nil())
+    Fail("example fixture transaction begin failed");
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
-  return {std::move(context), admission_sha.digest};
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  return {std::move(context)};
 }
 
 void CommitSeedTransaction(const SeedTransaction& transaction) {
-  auto envelope = Envelope("engine.op.txn_commit", "SBLR_TXN_COMMIT");
-  envelope.requires_transaction_context = true;
-
-  if (!uuid::IsEngineIdentityUuid(transaction.context.transaction_uuid))
-    Fail("seed transaction UUID is not an engine identity");
-  sblr::SblrTransactionCommitOptionsV1 options;
-  std::copy(transaction.context.transaction_uuid.bytes.begin(),
-            transaction.context.transaction_uuid.bytes.end(),
-            options.transaction_uuid.begin());
-  options.local_transaction_id = transaction.context.local_transaction_id;
-  options.admitted_handle_evidence_sha256 =
-      transaction.begin_admission_sha256;
-  options.commit_mode = 1;
-  options.authority_scope = 1;
-  options.wait_policy = 1;
-  auto body = sblr::EncodeSblrTransactionCommitOptionsV1(&options);
-  if (body.empty()) Fail("canonical transaction-commit options failed to encode");
-
-  sblr::SblrOperand operand;
-  operand.ordinal = 1;
-  operand.type = "transaction.commit.options";
-  operand.name = "options";
-  operand.value_kind = sblr::SblrValueKind::transaction_commit_options;
-  operand.value_body = std::move(body);
-  envelope.operands.push_back(std::move(operand));
-
-  api::EngineApiRequest api_request;
-  api_request.context = transaction.context;
-  api_request.operation_id = "engine.op.txn_commit";
-  auto admitted = sblr::DispatchSblrOperation(
-      {transaction.context, std::move(envelope), std::move(api_request),
-       std::nullopt});
-  if (!admitted.envelope_validated || !admitted.accepted ||
-      !admitted.dispatched_to_api || !admitted.api_result.ok) {
-    std::cerr << "seed canonical transaction-commit admission failed\n"
-              << sblr::SerializeSblrDispatchResultToJson(admitted);
-    Fail("canonical transaction-commit admission failed");
-  }
-
   api::EngineCommitTransactionRequest commit;
-  commit.context = transaction.context;
-  commit.operation_id = "transaction.commit";
+  commit.context = transaction.context; commit.operation_id = "transaction.commit";
   const auto committed = api::EngineCommitTransaction(commit);
   if (!committed.ok || !committed.engine_finality_known ||
       committed.commit_finality_state != "committed_by_engine_inventory") {
-    std::cerr << "commit ok=" << (committed.ok ? "true" : "false")
-              << " finality_known="
-              << (committed.engine_finality_known ? "true" : "false")
-              << " state=" << committed.commit_finality_state << '\n';
-    for (const auto& diagnostic : committed.diagnostics) {
+    for (const auto& diagnostic : committed.diagnostics)
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-    }
-    Fail("engine-owned transaction commit failed after canonical SBLR admission");
+    Fail("example fixture transaction commit failed");
   }
 }
 
@@ -355,6 +298,7 @@ api::EngineUuid CreateDatabase(const std::filesystem::path& database_path,
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
     Fail("example database creation failed");
   }
+  seed_filespace_uuid = created.state.filespace_uuid.value;
   return database_uuid.value.value;
 }
 
@@ -379,8 +323,8 @@ void CreateTable(const api::EngineRequestContext& context,
   request.target_schema.object_kind = "schema";
   request.requested_table_uuid = std::move(table_uuid);
   request.table_names.push_back(Name(std::move(name)));
-  request.table_columns.push_back(Column(0, "id", "text"));
-  request.table_columns.push_back(Column(1, "payload", "text"));
+  request.table_columns.push_back(Column(context, 0, "id", "text"));
+  request.table_columns.push_back(Column(context, 1, "payload", "text"));
   if (!api::EngineCreateTable(request).ok) {
     Fail("engine-owned benchmark table seed failed");
   }
@@ -400,7 +344,7 @@ void CreateTableWithColumns(const api::EngineRequestContext& context,
   request.table_names.push_back(Name(std::move(name)));
   for (std::uint32_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
     request.table_columns.push_back(
-        Column(ordinal, columns[ordinal].first, columns[ordinal].second));
+        Column(context, ordinal, columns[ordinal].first, columns[ordinal].second));
   }
   if (!api::EngineCreateTable(request).ok) {
     Fail("engine-owned benchmark table seed failed");
@@ -417,8 +361,8 @@ api::EngineUuid CreateCopyStreamFixtureTable(const api::EngineRequestContext& co
   request.target_schema.object_kind = "schema";
   request.requested_table_uuid = table_uuid;
   request.table_names.push_back(Name("sbsfc021_stream_table"));
-  request.table_columns.push_back(Column(0, "id", "int64"));
-  request.table_columns.push_back(Column(1, "payload", "text"));
+  request.table_columns.push_back(Column(context, 0, "id", "int64"));
+  request.table_columns.push_back(Column(context, 1, "payload", "text"));
   request.table_indexes.push_back(CopyStreamUniqueIdIndex());
   if (!api::EngineCreateTable(request).ok) {
     Fail("engine-owned copy-stream table seed failed");
@@ -533,27 +477,120 @@ void CreateTriggerDefinitionFixtures(
   }
 }
 
-void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
+// The seeder owns an embedded engine session; statement identities and resource
+// snapshots are issued by that engine, never reconstructed by the fixture.
+class SeedSession {
+ public:
+  explicit SeedSession(const api::EngineRequestContext& context) {
+    sb_engine_open_params_v1_t open{};
+    open.struct_size = sizeof(open);
+    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open.database_path_utf8 = context.database_path.data();
+    open.database_path_size = context.database_path.size();
+    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    Check(sb_engine_open(&open, &engine_, nullptr), nullptr, "engine open");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::copy(context.principal_uuid.bytes.begin(), context.principal_uuid.bytes.end(),
+              begin.effective_user_uuid.bytes);
+    std::copy(context.session_uuid.bytes.begin(), context.session_uuid.bytes.end(),
+              begin.session_uuid.bytes);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    Check(sb_engine_session_begin(engine_, &begin, &session_, nullptr), nullptr,
+          "session begin");
+  }
+  ~SeedSession() {
+    sb_engine_session_end_params_v1_t end{};
+    end.struct_size = sizeof(end);
+    end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    end.rollback_active_transactions = 1;
+    end.cancel_open_results = 1;
+    (void)sb_engine_session_end(session_, &end, nullptr);
+    (void)sb_engine_close(engine_, nullptr);
+  }
+  SeedSession(const SeedSession&) = delete;
+  SeedSession& operator=(const SeedSession&) = delete;
+  sb_engine_session_t get() const { return session_; }
+  static void Check(sb_engine_status_t status, sb_engine_result_t result,
+                    const char* phase) {
+    if (status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+        for (std::size_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+          const auto& d = diagnostics.diagnostics[i];
+          for (const auto text : {d.symbolic_code, d.message_key, d.safe_detail}) {
+            if (text.data) std::cerr.write(text.data, text.size_bytes);
+            std::cerr << ':';
+          }
+          std::cerr << '\n';
+        }
+      }
+    }
+    if (result) sb_engine_result_release(result);
+    if (status != SB_ENGINE_STATUS_OK)
+      Fail(std::string("driver fixture ") + phase + " failed");
+  }
+ private:
+  sb_engine_handle_t engine_ = nullptr;
+  sb_engine_session_t session_ = nullptr;
+};
+
+class SeedStatement {
+ public:
+  SeedStatement(const SeedSession& session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session.get(), &request, &receipt_, &view, &result);
+    SeedSession::Check(status, result, "statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(
+        receipt_, &context, &result);
+    SeedSession::Check(copied, result, "statement context copy");
+  }
+  ~SeedStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  SeedStatement(const SeedStatement&) = delete;
+  SeedStatement& operator=(const SeedStatement&) = delete;
+  api::EngineRequestContext context;
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
+void SeedCopyStreamFixtureRow(const SeedSession& session, const api::EngineRequestContext& context,
                               const api::EngineUuid& table_uuid) {
+  SeedStatement statement(session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = "dml.insert_rows";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(CopyStreamRow(NewUuid(UuidKind::row),
                                              "6",
                                              "stream-baseline"));
-  if (!api::EngineInsertRows(request).ok) {
+  const auto inserted = api::EngineInsertRows(request);
+  if (!inserted.ok || inserted.inserted_count != request.input_rows.size()) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Fail("engine-owned copy-stream row seed failed");
   }
 }
 
-void SeedChunkedResponseFixtureRows(const api::EngineRequestContext& context,
+void SeedChunkedResponseFixtureRows(const SeedSession& session, const api::EngineRequestContext& context,
                                     const api::EngineUuid& table_uuid) {
   constexpr std::size_t kRowCount = 300;
   constexpr std::size_t kPayloadBytes = 3800;
+  SeedStatement statement(session, context);
   api::EngineInsertRowsRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.operation_id = "dml.insert_rows";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -570,7 +607,10 @@ void SeedChunkedResponseFixtureRows(const api::EngineRequestContext& context,
                    static_cast<char>('a' + (ordinal % 26)))});
     request.input_rows.push_back(std::move(row));
   }
-  if (!api::EngineInsertRows(request).ok) {
+  const auto inserted = api::EngineInsertRows(request);
+  if (!inserted.ok || inserted.inserted_count != kRowCount) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Fail("engine-owned chunked-response row seed failed");
   }
 }
@@ -618,6 +658,7 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
     Fail("engine-owned restricted schema principal seed failed");
   }
   api::EngineSecurityGrantPrivilegeRequest connect_grant;
+  RefreshFixtureAuthorization(security_transaction.context, true);
   connect_grant.context = security_transaction.context;
   connect_grant.grantee_uuid = restricted_principal.principal_uuid;
   connect_grant.grantee_kind = "principal";
@@ -634,8 +675,9 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
   CommitSeedTransaction(security_transaction);
 
   auto seed_transaction = BeginSeedTransaction(database_path, database_uuid);
-  SeedCopyStreamFixtureRow(seed_transaction.context, copy_stream_table_uuid);
-  SeedChunkedResponseFixtureRows(seed_transaction.context,
+  SeedSession session(seed_transaction.context);
+  SeedCopyStreamFixtureRow(session, seed_transaction.context, copy_stream_table_uuid);
+  SeedChunkedResponseFixtureRows(session, seed_transaction.context,
                                  chunked_response_table_uuid);
   CommitSeedTransaction(seed_transaction);
 }
