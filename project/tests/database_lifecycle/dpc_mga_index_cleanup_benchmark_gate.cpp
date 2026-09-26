@@ -14,6 +14,7 @@
 #include "secondary_index_delta_ledger.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <iomanip>
@@ -89,7 +90,7 @@ mga::LocalTransactionInventory Inventory(
   mga::LocalTransactionInventory inventory;
   inventory.entries = std::move(entries);
   inventory.next_local_transaction_id = next_local_transaction_id;
-  return inventory;
+  return scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 }
 
 mga::AuthoritativeCleanupHorizonRequest HorizonRequest(

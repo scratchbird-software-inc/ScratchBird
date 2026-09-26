@@ -8,6 +8,7 @@
 
 #include "transaction_cleanup_horizon_service.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -75,7 +76,7 @@ mga::LocalTransactionInventory Inventory(
   mga::LocalTransactionInventory inventory;
   inventory.entries = std::move(entries);
   inventory.next_local_transaction_id = next_local_transaction_id;
-  return inventory;
+  return scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 }
 
 mga::AuthoritativeCleanupHorizonRequest Request(
@@ -249,6 +250,41 @@ void TestNonAuthoritativeAndMissingInventoryRefusals() {
           "DPC-030 snapshot inventory diagnostic mismatch");
 }
 
+void TestBinaryInventoryAndCommitOrderRefusals() {
+  const auto inventory = Inventory({
+      Entry(1, mga::TransactionState::committed),
+      Entry(2, mga::TransactionState::rolled_back),
+      Entry(3, mga::TransactionState::committed),
+  }, 4);
+  Require(inventory.next_commit_sequence == 3 &&
+              inventory.entries[0].commit_sequence == 1 &&
+              inventory.entries[1].commit_sequence == 0 &&
+              inventory.entries[2].commit_sequence == 2,
+          "DPC-030 fixture lost issued commit order or committed a rollback");
+  const auto refuse = [&](auto corrupt, std::string_view reason) {
+    auto request = Request(inventory);
+    corrupt(request.inventory);
+    const auto result = mga::ComputeAuthoritativeCleanupHorizon(request);
+    Require(!result.ok() && !result.cleanup_horizon.valid() &&
+                result.diagnostic.diagnostic_code == "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID" &&
+                result.diagnostic.message_key == std::string("transaction.cleanup_horizon.") + std::string(reason),
+            "DPC-030 invalid binary identity or commit order admitted cleanup authority");
+  };
+  refuse([](auto& value) { value.entries[0].commit_sequence = 0; }, "commit_sequence_invalid");
+  refuse([](auto& value) { value.entries[2].commit_sequence = 1; }, "duplicate_commit_sequence");
+  refuse([](auto& value) { value.entries[1].commit_sequence = 1; }, "noncommitted_commit_sequence");
+  refuse([](auto& value) { value.next_commit_sequence = 0; }, "next_commit_sequence_invalid");
+  refuse([](auto& value) { value.entries[0].begin_visible_through_commit_sequence = 3; }, "begin_commit_sequence_invalid");
+  refuse([](auto& value) { value.entries[0].identity.transaction_uuid.value = {}; }, "invalid_transaction_identity");
+  refuse([](auto& value) {
+    auto& bytes = value.entries[0].identity.transaction_uuid.value.bytes;
+    bytes[6] = static_cast<platform::byte>((bytes[6] & 0x0f) | 0x40);
+  }, "invalid_transaction_identity");
+  refuse([](auto& value) {
+    value.entries[2].identity.transaction_uuid = value.entries[0].identity.transaction_uuid;
+  }, "duplicate_transaction_uuid");
+}
+
 void TestSupportEvidenceIsStable() {
   const auto inventory = Inventory({
       Entry(1, mga::TransactionState::committed),
@@ -303,6 +339,7 @@ int main() {
   TestNewerFinalTransactionsDoNotAdvancePastOldActive();
   TestAlwaysInTransactionReplacementBehavior();
   TestNonAuthoritativeAndMissingInventoryRefusals();
+  TestBinaryInventoryAndCommitOrderRefusals();
   TestSupportEvidenceIsStable();
   return EXIT_SUCCESS;
 }

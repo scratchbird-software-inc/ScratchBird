@@ -12,6 +12,7 @@
 #include "memory.hpp"
 #include "row_data_page.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -162,7 +163,7 @@ txn::LocalTransactionInventory Inventory() {
       InventoryEntry(2, txn::TransactionState::committed));
   inventory.entries.push_back(
       InventoryEntry(3, txn::TransactionState::rolled_back));
-  return inventory;
+  return scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 }
 
 txn::RowVersionMetadata Metadata(platform::TypedUuid row_uuid,

@@ -15,6 +15,7 @@ using scratchbird::tests::FixtureIdentityForLabel;
 #include "agent_durable_catalog.hpp"
 #include "agent_enterprise_evidence.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -257,6 +258,7 @@ void TestStorageVersionCleanup(agent::DurableAgentCatalogImage* catalog) {
   mga::LocalTransactionInventory inventory;
   inventory.entries = {old, successor, rolled_back};
   inventory.next_local_transaction_id = 4;
+  inventory = scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
   const auto row = Row(1);
 
   impl::StorageVersionCleanupAgentRequest request;

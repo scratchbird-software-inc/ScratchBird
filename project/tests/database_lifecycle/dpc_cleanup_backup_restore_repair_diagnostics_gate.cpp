@@ -10,6 +10,7 @@
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/cleanup_diagnostics_api.hpp"
 #include "uuid.hpp"
+#include "../support/transaction_inventory_model_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -80,7 +81,7 @@ mga::LocalTransactionInventory Inventory(
   mga::LocalTransactionInventory inventory;
   inventory.entries = std::move(entries);
   inventory.next_local_transaction_id = next_local_transaction_id;
-  return inventory;
+  return scratchbird::tests::CommitInventoryModelFixture(std::move(inventory));
 }
 
 mga::AuthoritativeCleanupHorizonRequest HorizonRequest(
