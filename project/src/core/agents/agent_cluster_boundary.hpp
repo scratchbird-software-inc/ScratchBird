@@ -22,7 +22,7 @@
 namespace scratchbird::core::agents {
 
 inline constexpr const char* kAgentClusterSupportNotEnabledCode =
-    "SBLR.CLUSTER.SUPPORT_NOT_ENABLED";
+    "PROCESS.CLUSTER_PATH_ABSENT";
 inline constexpr const char* kAgentClusterLeaseRequiredCode =
     "CLUSTER.LEASE_REQUIRED";
 inline constexpr const char* kAgentClusterLeaderExistsCode =

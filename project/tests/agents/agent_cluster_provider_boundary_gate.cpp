@@ -106,6 +106,8 @@ void RequireNoClusterVector(const agents::AgentClusterBoundaryResult& result) {
           "no-cluster provider support mismatch");
   Require(HasDiagnostic(result, agents::kAgentClusterSupportNotEnabledCode),
           "no-cluster diagnostic code missing");
+  Require(result.diagnostic_code == cluster_provider::kClusterPathAbsentCode,
+          "agent boundary changed the provider's canonical execution refusal");
   Require(HasEvidence(result, "cluster_provider", "no_cluster"),
           "no-cluster provider evidence missing");
   Require(HasEvidence(result, "cluster_provider_name",
@@ -131,7 +133,7 @@ void RequireCompileLinkStubVector(const agents::AgentClusterBoundaryResult& resu
           "compile-link stub provider support mismatch");
   Require(HasDiagnostic(
               result,
-              cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+              cluster_provider::kClusterPathAbsentCode),
           "compile-link stub diagnostic missing");
   Require(HasEvidence(result, "cluster_provider_type", "compile_link_stub"),
           "compile-link stub provider-type evidence missing");

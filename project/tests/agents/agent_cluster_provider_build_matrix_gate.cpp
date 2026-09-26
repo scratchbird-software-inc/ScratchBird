@@ -71,6 +71,8 @@ void TestCompileTimeProviderMatrix() {
   Require(!result.ok, "default no-cluster provider accepted cluster operation");
   Require(HasDiagnostic(result, agents::kAgentClusterSupportNotEnabledCode),
           "default no-cluster exact diagnostic missing");
+  Require(result.diagnostic_code == cluster_provider::kClusterPathAbsentCode,
+          "agent boundary changed the provider's canonical execution refusal");
 #elif defined(SCRATCHBIRD_CLUSTER_PROVIDER_STUB)
   Require(info.provider_name ==
               std::string_view("scratchbird.cluster.compile_link_stub_provider"),
@@ -94,7 +96,7 @@ void TestCompileTimeProviderMatrix() {
           "compile-link stub provider did not fail closed");
   Require(HasDiagnostic(
               result,
-              cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+              cluster_provider::kClusterPathAbsentCode),
           "compile-link stub exact diagnostic missing");
 #elif defined(SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL)
   Require(!info.provider_name.empty(), "external provider name missing");
