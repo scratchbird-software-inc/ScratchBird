@@ -1000,9 +1000,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero_unknown_mode
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --unknown-mode-for-admission-test)
+    COMMAND ${CMAKE_COMMAND}
+      -DTEST_PROGRAM=$<TARGET_FILE:sbsql_sblr_alignment_filespace_page_zero>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/filespace_unknown_mode_refusal.cmake)
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero_unknown_mode PROPERTIES
-    WILL_FAIL TRUE TIMEOUT 5 LABELS "sbsql_sblr_alignment;test_harness;unknown_mode_rejection;not_SQL_E2E")
+    TIMEOUT 5 LABELS "sbsql_sblr_alignment;test_harness;unknown_mode_rejection;not_SQL_E2E")
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;canonical_catalog_root;binary_uuid;node_ownership"
     TIMEOUT 300)
