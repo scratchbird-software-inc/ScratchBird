@@ -9,6 +9,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
@@ -21,6 +22,7 @@
 #include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -109,6 +111,7 @@ struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   db::DatabaseLifecycleResult created;
+  api::EngineRequestContext owner_context;
   api::EngineUuid database_uuid;
   api::EngineUuid principal_uuid;
   api::EngineUuid session_uuid;
@@ -147,13 +150,14 @@ Fixture CreateFixture() {
   create.require_resource_seed_pack = true;
   create.allow_minimal_resource_bootstrap = false;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   fixture.created = db::CreateDatabaseFile(create);
   Require(fixture.created.ok(),
           "catalog projection database creation failed");
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.principal_uuid =
-      NewUuid(UuidKind::principal, fixture.salt + 4);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
   fixture.session_uuid = NewUuid(UuidKind::object, fixture.salt + 5);
   fixture.schema_uuid = NewUuid(UuidKind::schema, fixture.salt + 6);
   fixture.function_uuid = NewUuid(UuidKind::object, fixture.salt + 7);
@@ -166,6 +170,7 @@ api::EngineRequestContext Begin(Fixture& fixture,
                                 std::uint64_t ordinal,
                                 bool read_only = false) {
   api::EngineBeginTransactionRequest begin;
+  begin.context = fixture.owner_context;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id =
       "catalog-projection-begin-" + std::to_string(ordinal);
@@ -178,14 +183,7 @@ api::EngineRequestContext Begin(Fixture& fixture,
   begin.context.security_epoch = 1;
   begin.context.resource_epoch =
       fixture.created.state.resource_seed_catalog.resource_epoch;
-  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  begin.context.datatype_catalog_generation = 1;
-  begin.context.datatype_registry_generation = 1;
   begin.context.name_resolution_epoch = 1;
-  scratchbird::tests::database_lifecycle::MaterializeAuthorizationRights(
-      &begin.context,
-      "relation_descriptor_projection_conformance",
-      {"CATALOG_MUTATE"});
   begin.isolation_level = "read_committed";
   if (read_only) {
     begin.transaction_policy_profile.encoded_profiles.push_back(
@@ -313,13 +311,40 @@ void CreateViewAndRefusalProbes(
           "catalog projection view descriptor was not engine-visible");
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal,
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                   std::uint32_t ordinal,
                                    std::string name,
                                    std::string canonical_type,
                                    std::string encoded_descriptor) {
+  namespace datatypes = scratchbird::core::datatypes;
+  const auto manifest = datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "projection fixture datatype catalog unavailable");
+  const auto row = datatypes::LookupDatatypeCatalogRow(
+      manifest.manifest, datatypes::CanonicalTypeIdFromStableName(
+          canonical_type == "integer" ? "int32" : canonical_type));
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "projection fixture datatype absent from current catalog");
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto binding = datatypes::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  // This test projects catalog metadata, not a BLOB literal/parameter codec.
+  // BLOB is owned by the complete builtin datatype catalog, whose existing
+  // metadata contract uses its catalog descriptor identity as the type
+  // identity. Do not invent a codec tuple or substitute the TEXT identity.
+  const bool builtin_blob = canonical_type == "blob";
+  Require(builtin_blob ? !binding.ok : binding.ok,
+          "projection fixture datatype authority does not match its catalog");
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
   column.names.push_back(Name(std::move(name)));
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  column.descriptor.type_uuid = builtin_blob
+      ? datatype.descriptor_uuid.value : binding.row.type_uuid;
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(canonical_type);
   column.descriptor.encoded_descriptor = std::move(encoded_descriptor);
@@ -347,17 +372,31 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
   table.requested_table_uuid = fixture.relation_uuid;
   table.table_names.push_back(Name("generic_catalog_source"));
   table.table_columns.push_back(
-      Column(0, "integer_value", "integer", "type=integer"));
+      Column(context, 0, "integer_value", "integer", "type=integer"));
   table.table_columns.push_back(Column(
+      context,
       1,
       "text_value",
       "text",
       ResourceMetadata("type=text;character_length=20", utf8->resource_uuid, utf8->default_collation_uuid)));
   table.table_columns.push_back(Column(
+      context,
       2,
       "text_payload",
       "blob",
       ResourceMetadata("type=blob;text_resource_storage=large_object", utf8->resource_uuid, utf8->default_collation_uuid)));
+  auto wrong_blob_identity = table;
+  wrong_blob_identity.table_columns.back().descriptor.type_uuid =
+      table.table_columns[1].descriptor.type_uuid;
+  const auto rejected_blob_identity = api::EngineCreateTable(wrong_blob_identity);
+  Require(!rejected_blob_identity.ok &&
+              std::any_of(rejected_blob_identity.diagnostics.begin(),
+                          rejected_blob_identity.diagnostics.end(), [](const auto& diagnostic) {
+                            return diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+                                diagnostic.detail ==
+                                    "ddl.create_table:bound_column_datatype_catalog_mismatch";
+                          }),
+          "catalog projection accepted a TEXT identity for its BLOB column");
   RequireOk(api::EngineCreateTable(table),
             "catalog projection source table create failed");
 
@@ -489,6 +528,28 @@ void RequireProjectionRows(
   Require(Field(text_blob, "character_length").isSqlNull() &&
               Field(text_blob, "text_large_object").encoded_value == "true",
           "text large-object length/state is invalid");
+  for (std::size_t i = 0; i < selected.result_shape.rows.size(); ++i) {
+    const auto& row = selected.result_shape.rows[i];
+    const auto& column = descriptor.columns[i];
+    for (const auto& [name, identity] :
+         std::initializer_list<std::pair<std::string_view, api::EngineUuid>>{
+             {"column_uuid", column.column_uuid},
+             {"charset_uuid", column.charset_uuid},
+             {"collation_uuid", column.collation_uuid}}) {
+      const auto& value = Field(row, name);
+      Require(value.encoded_value.empty(),
+              "catalog projection rendered a system UUID as text");
+      if (identity.is_nil()) {
+        Require(value.isSqlNull() && value.binary_value.empty(),
+                "absent catalog identity was not a payload-free SQL NULL");
+      } else {
+        Require(!value.isSqlNull() && value.binary_value.size() == 16 &&
+                    std::equal(value.binary_value.begin(), value.binary_value.end(),
+                               identity.bytes.begin()),
+                "catalog projection changed a binary system identity");
+      }
+    }
+  }
   for (const auto& row : selected.result_shape.rows) {
     Require(row.fields.size() == 10,
             "catalog projection row field count is invalid");

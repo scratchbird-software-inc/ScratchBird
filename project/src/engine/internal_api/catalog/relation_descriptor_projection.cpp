@@ -12,6 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/binary_view_options.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/select_api.hpp"
@@ -431,31 +432,14 @@ EngineTypedValue NullValue(const EngineDescriptor& descriptor) {
   return typed;
 }
 
-std::string EncodedDescriptorField(const std::string& descriptor,
-                                   const std::string& requested_field) {
-  const std::string lowered_field = LowerAscii(requested_field);
-  std::size_t offset = 0;
-  while (offset <= descriptor.size()) {
-    const auto delimiter = descriptor.find(';', offset);
-    const auto end =
-        delimiter == std::string::npos ? descriptor.size() : delimiter;
-    const std::string field = descriptor.substr(offset, end - offset);
-    const auto equals = field.find('=');
-    if (equals != std::string::npos &&
-        LowerAscii(field.substr(0, equals)) == lowered_field) {
-      return field.substr(equals + 1);
-    }
-    if (delimiter == std::string::npos) break;
-    offset = delimiter + 1;
-  }
-  return {};
-}
-
-bool IsTextLargeObject(
+std::optional<bool> IsTextLargeObject(
     const MgaRelationColumnStorageDescriptor& column) {
-  return LowerAscii(EncodedDescriptorField(
-             column.value_descriptor.encoded_descriptor,
-             "text_resource_storage")) == "large_object";
+  CatalogColumnMetadata metadata;
+  if (!DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor,
+                                   &metadata)) return std::nullopt;
+  const auto storage = metadata.text.find("text_resource_storage");
+  return storage != metadata.text.end() &&
+         LowerAscii(storage->second) == "large_object";
 }
 
 struct ResolvedColumnResources {
@@ -901,6 +885,11 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
   std::vector<EngineRowValue> rows;
   rows.reserve(columns.size());
   for (const auto& column : columns) {
+    const auto text_large_object = IsTextLargeObject(column);
+    if (!text_large_object.has_value()) {
+      return ProjectionFailure<EngineSelectRowsResult>(
+          request.context, ProjectionDiagnostic("column_metadata_invalid"));
+    }
     ResolvedColumnResources resources;
     const auto resources_resolved =
         ResolveColumnResources(request.context, column, &resources);
@@ -954,7 +943,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
     row.fields.push_back(
         {"text_large_object",
          ScalarValue(boolean_descriptor,
-                     IsTextLargeObject(column) ? "true" : "false")});
+                     *text_large_object ? "true" : "false")});
     rows.push_back(std::move(row));
   }
 
