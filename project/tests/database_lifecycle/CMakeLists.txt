@@ -271,6 +271,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND
   )
   target_link_libraries(database_lifecycle_sblr_composite_key_authority_gate
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api

@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -95,6 +98,9 @@ struct DatabaseFixture {
   std::filesystem::path directory;
   std::filesystem::path path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
 
   DatabaseFixture() = default;
   DatabaseFixture(const DatabaseFixture&) = delete;
@@ -102,13 +108,18 @@ struct DatabaseFixture {
   DatabaseFixture(DatabaseFixture&& other) noexcept
       : directory(std::move(other.directory)),
         path(std::move(other.path)),
-        database_uuid(std::move(other.database_uuid)) {
+        database_uuid(std::move(other.database_uuid)),
+        owner_context(std::move(other.owner_context)),
+        sessions(std::move(other.sessions)),
+        statements(std::move(other.statements)) {
     other.directory.clear();
     other.path.clear();
   }
   DatabaseFixture& operator=(DatabaseFixture&&) = delete;
 
   ~DatabaseFixture() {
+    statements.clear();
+    sessions.clear();
     if (directory.empty()) { return; }
     std::error_code error;
     std::filesystem::remove_all(directory, error);
@@ -131,8 +142,7 @@ DatabaseFixture CreateDatabase() {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, NowMillis() + 2).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = NowMillis() + 3;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -141,30 +151,25 @@ DatabaseFixture CreateDatabase() {
   }
   Require(created.ok(), "composite-key database create failed");
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return fixture;
 }
 
 api::EngineRequestContext BaseContext(const DatabaseFixture& fixture,
                                       const api::EngineUuid& schema_uuid,
                                       std::uint64_t session_ordinal) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = "sblr-composite-key-authority";
   context.database_path = fixture.path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = GeneratedUuid(UuidKind::object, 100);
   context.session_uuid =
       GeneratedUuid(UuidKind::object, 200 + session_ordinal);
   context.current_schema_uuid = schema_uuid;
-  context.default_root_uuid = GeneratedUuid(UuidKind::object, 300);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
@@ -174,7 +179,8 @@ api::EngineRequestContext BaseContext(const DatabaseFixture& fixture,
 
 api::EngineRequestContext Begin(const DatabaseFixture& fixture,
                                 const api::EngineUuid& schema_uuid,
-                                std::uint64_t session_ordinal) {
+                                std::uint64_t session_ordinal,
+                                bool acquire_statement = true) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(fixture, schema_uuid, session_ordinal);
   request.isolation_level = "read_committed";
@@ -186,6 +192,13 @@ api::EngineRequestContext Begin(const DatabaseFixture& fixture,
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
+  if (acquire_statement) {
+    auto session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
+    auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*session, context);
+    context = statement->context;
+    fixture.sessions.push_back(std::move(session));
+    fixture.statements.push_back(std::move(statement));
+  }
   return context;
 }
 
@@ -234,6 +247,9 @@ api::EngineCreateTableResult CreateTableComponent(
     api::EngineCreateTableRequest request) {
   request.operation_id = "engine.op.ddl_create_table";
   request.context = context;
+  for (auto& column : request.table_columns)
+    scratchbird::tests::BindFixtureColumnDatatype(context,
+        scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return api::EngineCreateTable(request);
 }
 
@@ -379,10 +395,12 @@ std::vector<std::string> MetadataKeyColumns(const api::CrudIndexRecord& index) {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "composite-key-native-fixture");
   auto fixture = CreateDatabase();
   const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::schema, 10);
 
-  auto setup = Begin(fixture, schema_uuid, 1);
+  auto setup = Begin(fixture, schema_uuid, 1, false);
   api::EngineCreateSchemaRequest schema;
   schema.context = setup;
   schema.target_object.uuid = schema_uuid;
