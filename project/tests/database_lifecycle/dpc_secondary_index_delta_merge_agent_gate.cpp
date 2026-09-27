@@ -10,6 +10,9 @@
 #include "../support/published_mga_table_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
+#include "dml/update_api.hpp"
+#include "dml/delete_api.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "memory.hpp"
@@ -29,6 +32,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -677,6 +681,189 @@ void ValidateRefusalDiagnostics() {
           "DPC-024 corrupt ledger diagnostic changed");
 }
 
+void ValidateEmptyKeyMutationAndMerge(const std::string& original_key, bool deferred) {
+  auto fixture = MakeFixture("empty_key", 4000);
+  const auto row_uuid = SeedCommittedRow(fixture, "empty-id", original_key, deferred);
+  const auto lookup = [&](const std::string& key, std::uint64_t count, bool overlay) {
+    auto reader = Begin(fixture, "empty-key-reader");
+    const auto result = SelectEquals(fixture, reader, "name", key);
+    RequireOk(result, "empty key lookup failed");
+    Require(result.visible_count == count, "empty key lookup returned wrong rows");
+    Require(result.result_shape.rows.size() == count,
+            "empty key result publication has the wrong row count");
+    if (count != 0) Require(HasEvidence(result.evidence, "index_lookup"),
+                           "empty key index result was replaced by a heap scan");
+    for (const auto& row : result.result_shape.rows) {
+      const auto value = std::find_if(row.fields.begin(), row.fields.end(), [](const auto& field) {
+        return field.first == "name";
+      });
+      Require(value != row.fields.end() && !value->second.isSqlNull() &&
+                  value->second.encoded_value == key,
+              "empty or embedded-NUL key bytes changed in the result");
+    }
+    Require(HasEvidence(result.evidence, "mga_secondary_index_delta_overlay_used") == (overlay && deferred),
+            "empty key lookup used the wrong index publication path");
+    Rollback(reader);
+  };
+  const auto merge = [&](std::uint64_t expected) {
+    const auto ledger = LoadLedger(fixture);
+    if (!deferred) {
+      Require(ledger.records.empty(), "synchronous key mutation unexpectedly wrote deferred deltas");
+      return;
+    }
+    const auto request = MergeRequest(fixture, MaxLedgerLocalTransactionId(ledger));
+    const auto merged = api::MergeMgaSecondaryIndexDeltasForIndex(
+        BaseContext(fixture, "empty-key-merge"), request);
+    if (!merged.ok) std::cerr << merged.diagnostic.code << ':' << merged.diagnostic.detail << '\n';
+    Require(merged.ok && merged.merged_count == expected && merged.cleaned_count == expected,
+            "empty key merge did not publish and clean the exact delta count");
+    const auto repeated = api::MergeMgaSecondaryIndexDeltasForIndex(
+        BaseContext(fixture, "empty-key-repeated-merge"), request);
+    Require(repeated.ok && repeated.merged_count == 0 && repeated.cleaned_count == 0,
+            "empty key repeated merge was not idempotent");
+  };
+  const auto update = [&](const std::string& value, bool commit) {
+    auto writer = Begin(fixture, "empty-key-update");
+    {
+      ProbeStatement statement(*fixture.session, writer);
+      api::EngineUpdateRowsRequest request;
+      request.context = statement.context;
+      request.target_table.uuid = fixture.table_uuid;
+      request.target_table.object_kind = "table";
+      request.update_predicate.predicate_kind = "column_equals";
+      request.update_predicate.canonical_predicate_envelope = "id";
+      request.update_predicate.bound_values.push_back(TextValue("empty-id"));
+      request.assignments.push_back({"name", TextValue(value)});
+      if (deferred) request.option_envelopes = DeferredOptions();
+      const auto updated = api::EngineUpdateRows(request);
+      RequireOk(updated, "empty key update failed");
+      Require(updated.updated_count == 1, "empty key update did not change exactly one row");
+    }
+    if (commit) Commit(writer); else Rollback(writer);
+  };
+  lookup(original_key, 1, true);
+  merge(1);
+  lookup(original_key, 1, false);
+  update("replacement", true);
+  lookup(original_key, 0, true);
+  lookup("replacement", 1, true);
+  merge(2);
+  lookup(original_key, 0, false);
+  lookup("replacement", 1, false);
+  update(original_key, false);
+  lookup(original_key, 0, false);
+  lookup("replacement", 1, false);
+  update(original_key, true);
+  merge(2);
+  fixture.session.reset();
+  fixture.session = std::make_shared<ProbeSession>(BaseContext(fixture, "empty-key-reopen"));
+  lookup(original_key, 1, false);
+  lookup("replacement", 0, false);
+  auto writer = Begin(fixture, "empty-key-delete");
+  {
+    ProbeStatement statement(*fixture.session, writer);
+    api::EngineDeleteRowsRequest request;
+    request.context = statement.context;
+    request.target_table.uuid = fixture.table_uuid;
+    request.target_table.object_kind = "table";
+    request.delete_predicate.predicate_kind = "row_uuid_match";
+    request.delete_predicate.row_uuid = row_uuid;
+    request.tombstone_only = true;
+    if (deferred) request.option_envelopes = DeferredOptions();
+    const auto deleted = api::EngineDeleteRows(request);
+    RequireOk(deleted, "empty key delete failed");
+    Require(deleted.deleted_count == 1, "empty key delete count drifted");
+  }
+  Commit(writer);
+  lookup(original_key, 0, true);
+  merge(1);
+  fixture.session.reset();
+  fixture.session = std::make_shared<ProbeSession>(BaseContext(fixture, "empty-key-delete-reopen"));
+  lookup(original_key, 0, false);
+}
+
+void ValidateMalformedKeyPayloadRefusals() {
+  auto fixture = MakeFixture("key_payload_refusals", 5000);
+  (void)SeedCommittedRow(fixture, "key-proof", "", true);
+  const auto baseline = LoadLedger(fixture);
+  const auto context = BaseContext(fixture, "key-payload-refusal");
+  const auto before = api::LoadMgaRelationStoreState(context);
+  Require(before.ok, "key payload base read failed");
+  const auto encode_and_write = [&](const auto& ledger) {
+    const auto encoded = idx::EncodePersistentSecondaryIndexDeltaLedger(ledger, {});
+    Require(encoded.ok(), "key payload mutation could not be checksummed");
+    std::ofstream out(fixture.database_path.string() + ".sb.mga_secondary_index_delta_ledger",
+                      std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
+    out.close();
+    Require(out.good(), "key payload mutation could not be persisted");
+    return encoded.bytes;
+  };
+  const auto entry_fields = [](const auto& e) {
+    return std::tie(e.creator_tx, e.event_sequence, e.sequence, e.index_uuid, e.table_uuid,
+                    e.column_name, e.family, e.entry_kind, e.key_value, e.payload_value,
+                    e.row_uuid, e.version_uuid);
+  };
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto changed = baseline;
+    auto found = std::find_if(changed.records.begin(), changed.records.end(), [&](const auto& r) {
+      return r.delta.index_uuid.value == fixture.non_unique_index_uuid;
+    });
+    Require(found != changed.records.end(), "key payload mutation target missing");
+    auto fields = api::DecodeCrudPairs(found->delta.key_payload);
+    Require(fields.size() == 3, "key payload fixture shape drifted");
+    if (mutation == 0) fields.erase(fields.begin());
+    if (mutation == 1) fields.erase(fields.begin() + 1);
+    if (mutation == 2) fields.erase(fields.begin() + 2);
+    if (mutation == 3) fields[1] = fields[0];
+    if (mutation == 4) fields[2].second = "substituted-family";
+    found->delta.key_payload = api::EncodeCrudPairs(fields);
+    if (mutation == 5) found->delta.key_payload += "|malformed";
+    if (mutation == 6) found->delta.key_payload[0] = 'z';
+    // A nonempty malformed field frame still has valid outer checksum/identity.
+    // The core ledger codec itself correctly refuses a wholly empty payload.
+    if (mutation == 7) found->delta.key_payload = api::EncodeCrudPairs({{"unknown", ""}});
+    const auto expected = encode_and_write(changed);
+    auto reader = Begin(fixture, "key-payload-reader");
+    const auto loaded = api::LoadMgaRelationStoreState(reader);
+    Require(loaded.ok, "key payload overlay fixture read failed");
+    api::EnginePredicateEnvelope predicate;
+    predicate.predicate_kind = "column_equals";
+    predicate.canonical_predicate_envelope = "name";
+    predicate.bound_values.push_back(TextValue(""));
+    const auto overlay = api::IndexedMgaRowsForPredicateForContext(
+        api::BuildMgaRelationReadView(loaded.state), fixture.table_uuid, predicate, reader, 0);
+    Require(!overlay.ok && overlay.index_refused && overlay.rows.empty(),
+            "malformed key payload was treated as an empty key by the overlay");
+    const auto selected = SelectEquals(fixture, reader, "name", "");
+    RequireOk(selected, "authoritative heap fallback failed after index refusal");
+    Require(selected.visible_count == 1 &&
+        HasEvidence(selected.evidence, "mga_secondary_index_delta_overlay_refused") &&
+        !HasEvidence(selected.evidence, "index_lookup") &&
+        EvidenceValue(selected.evidence, "row_scan_predicate").find("secondary_index_delta_overlay_refused") != std::string::npos,
+        "heap fallback hid index corruption or claimed index-produced results");
+    Rollback(reader);
+    const auto merged = api::MergeMgaSecondaryIndexDeltasForIndex(context,
+        MergeRequest(fixture, MaxLedgerLocalTransactionId(baseline)));
+    Require(!merged.ok && merged.diagnostic.code == "corrupt_ledger_refused" &&
+                merged.merged_count == 0 && merged.cleaned_count == 0,
+            "malformed key payload was merged or cleaned");
+    const auto retained = idx::EncodePersistentSecondaryIndexDeltaLedger(LoadLedger(fixture), {});
+    Require(retained.ok() && retained.bytes == expected, "refused merge changed the durable ledger");
+    const auto after = api::LoadMgaRelationStoreState(context);
+    Require(after.ok && after.state.index_entries.size() == before.state.index_entries.size() &&
+        std::equal(before.state.index_entries.begin(), before.state.index_entries.end(),
+                   after.state.index_entries.begin(), [&](const auto& a, const auto& b) {
+                     return entry_fields(a) == entry_fields(b);
+                   }), "refused merge changed a base index entry");
+    (void)encode_and_write(baseline);
+  }
+  const auto restored = api::MergeMgaSecondaryIndexDeltasForIndex(context,
+      MergeRequest(fixture, MaxLedgerLocalTransactionId(baseline)));
+  Require(restored.ok && restored.merged_count == 1 && restored.cleaned_count == 1,
+          "restored empty-key payload did not merge successfully");
+}
+
 }  // namespace
 
 int main() {
@@ -690,5 +877,10 @@ int main() {
   ValidateAuthoritativeMergeDrainsIntoBase();
   ValidateHorizonRetainsFutureAndResourceRefuses();
   ValidateRefusalDiagnostics();
+  for (bool deferred : {false, true}) {
+    ValidateEmptyKeyMutationAndMerge("", deferred);
+    ValidateEmptyKeyMutationAndMerge(std::string("k\0x", 3), deferred);
+  }
+  ValidateMalformedKeyPayloadRefusals();
   return EXIT_SUCCESS;
 }

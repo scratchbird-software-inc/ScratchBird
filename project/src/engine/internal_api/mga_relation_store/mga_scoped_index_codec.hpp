@@ -32,8 +32,7 @@ inline bool AppendScopedExactIndexBinaryBatch(
       !AppendBinaryString(&staged, batch.index.family) ||
       !AppendBinaryString(&staged, batch.entry_kind.empty() ? "exact" : batch.entry_kind)) return false;
   for (const auto& entry : batch.entries) {
-    if (entry.encoded_key.empty() ||
-        !AppendBinaryString(&staged, entry.encoded_key) ||
+    if (!AppendBinaryString(&staged, entry.encoded_key) ||
         !AppendBinaryString(&staged, entry.payload_value) ||
         !AppendBinaryEngineUuid(&staged, entry.row_uuid) ||
         !AppendBinaryEngineUuid(&staged, entry.version_uuid)) return false;
@@ -104,7 +103,7 @@ inline bool DecodeScopedIndexBinaryBytes(std::span<const std::uint8_t> bytes,
       entry.column_name = column;
       entry.family = family;
       entry.entry_kind = kind;
-      if (!ReadBinaryString(bytes, &cursor, &entry.key_value) || entry.key_value.empty() ||
+      if (!ReadBinaryString(bytes, &cursor, &entry.key_value) ||
           !ReadBinaryString(bytes, &cursor, &entry.payload_value) ||
           !ReadBinaryEngineUuid(bytes, &cursor, &entry.row_uuid) ||
           !ReadBinaryEngineUuid(bytes, &cursor, &entry.version_uuid)) return false;

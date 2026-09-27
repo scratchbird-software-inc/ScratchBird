@@ -424,7 +424,7 @@ void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch
   const std::size_t before_batch = job->entries.size();
   job->entries.reserve(before_batch + batch.entries.size());
   for (const auto& entry : batch.entries) {
-    if (entry.encoded_key.empty() || entry.row_uuid.is_nil() ||
+    if (entry.row_uuid.is_nil() ||
         entry.version_uuid.is_nil()) {
       job->ok = false;
       job->diagnostic = MakeInvalidRequestDiagnostic("mga.index_store",
@@ -1744,7 +1744,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
                                           "exact_index_entry_invalid");
     }
     for (const auto& entry : batch.entries) {
-      if (entry.encoded_key.empty() || entry.row_uuid.is_nil() ||
+      if (entry.row_uuid.is_nil() ||
           entry.version_uuid.is_nil()) {
         return MakeInvalidRequestDiagnostic("mga.index_store",
                                             "exact_index_entry_invalid");
@@ -1786,7 +1786,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
   for (const auto& batch : batches) {
     if (batch.entries.empty()) { continue; }
     for (const auto& entry : batch.entries) {
-      if (entry.encoded_key.empty() || entry.row_uuid.is_nil() || entry.version_uuid.is_nil()) {
+      if (entry.row_uuid.is_nil() || entry.version_uuid.is_nil()) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid");
       }
     }

@@ -423,10 +423,6 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntries(
                             "index.transactional_provider.identity_incomplete",
                             "transaction, index generation, row/version, physical relation, and key identity are required"));
     }
-    if (request.key_value.empty()) {
-      return Failure(context_, &request.index, entry_kind,
-                     MakeInvalidRequestDiagnostic("mga.index_store", "exact_index_entry_invalid"));
-    }
     MgaExactIndexEntryAppendBatch batch;
     batch.index = request.index;
     batch.table_uuid = request.table_uuid;

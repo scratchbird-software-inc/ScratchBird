@@ -783,18 +783,26 @@ void ValidateMutationAdmissionRefusals() {
     valid.key_value = test_case.old_key;
     const auto before = durable_bytes();
     for (const bool retire : {false, true}) {
-      for (const int invalid_field : {0, 1, 2, 3}) {
-        auto invalid = valid;
-        if (invalid_field == 0) invalid.version_uuid = {};
-        if (invalid_field == 1) invalid.index.family = "policy_blocked";
-        if (invalid_field == 2) invalid.table_uuid = {};
-        if (invalid_field == 3) invalid.key_value.clear();
-        const auto rejected = retire ? provider.PrepareRetireEntries({valid, invalid})
-                                     : provider.PrepareInsertEntries({valid, invalid});
-        Require(!rejected.ok, "admission", "invalid index batch suffix was accepted");
-        RequireDiagnosticOk(append.FlushIndexEntries(), "admission", "batch refusal flush failed");
-        Require(durable_bytes() == before, "admission",
-                "invalid index batch suffix appended a valid prefix");
+      for (const bool empty_key : {false, true}) {
+        for (const int invalid_field : {0, 1, 2, 3, 4, 5}) {
+          auto invalid = valid;
+          // A present empty key is valid. It must not rescue an invalid native
+          // identity, and a bad suffix must never publish the valid prefix.
+          if (empty_key) invalid.key_value.clear();
+          if (invalid_field == 0) invalid.version_uuid = {};
+          if (invalid_field == 1) invalid.index.family = "policy_blocked";
+          if (invalid_field == 2) invalid.table_uuid = {};
+          if (invalid_field == 3) invalid.row_uuid = {};
+          if (invalid_field == 4) invalid.index.event_sequence = 0;
+          if (invalid_field == 5) invalid.version_uuid.bytes[6] =
+              (invalid.version_uuid.bytes[6] & 0x0f) | 0x40;
+          const auto rejected = retire ? provider.PrepareRetireEntries({valid, invalid})
+                                       : provider.PrepareInsertEntries({valid, invalid});
+          Require(!rejected.ok, "admission", "invalid index batch suffix was accepted");
+          RequireDiagnosticOk(append.FlushIndexEntries(), "admission", "batch refusal flush failed");
+          Require(durable_bytes() == before, "admission",
+                  "invalid index batch suffix appended a valid prefix");
+        }
       }
     }
     auto missing_predecessor = valid;

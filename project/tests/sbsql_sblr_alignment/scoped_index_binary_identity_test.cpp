@@ -36,6 +36,19 @@ int main() {
   Check(a::AppendScopedIndexEntryBinaryRecord(&general_encoded,9,17,Id(2),Id(1),
       "id","btree","exact",std::string("k\0x",3),std::string("\0p",2),Id(3),Id(4)));
   Check(general_encoded==golden);
+  // Present zero-length values retain their length frames and binary identities.
+  const auto empty_golden=Unhex("53424d4942494e3102000000010000000000000009000000000000001100000000000000019000000000700080000000000000010190000000007000800000000000000202000000696405000000627472656505000000657861637400000000000000000190000000007000800000000000000301900000000070008000000000000004");
+  auto empty=batch;
+  empty.entries.front().encoded_key.clear();
+  empty.entries.front().payload_value.clear();
+  std::string empty_encoded;
+  Check(a::AppendScopedExactIndexBinaryBatch(&empty_encoded,empty,9,17));
+  Check(empty_encoded==empty_golden && empty_encoded.size()==132);
+  std::vector<a::CrudIndexEntryRecord> empty_rows;
+  Check(a::DecodeScopedIndexBinaryBytes(Bytes(empty_encoded),&empty_rows));
+  Check(empty_rows.size()==1 && empty_rows[0].key_value.empty() && empty_rows[0].payload_value.empty());
+  Check(empty_rows[0].table_uuid==Id(1) && empty_rows[0].index_uuid==Id(2) &&
+        empty_rows[0].row_uuid==Id(3) && empty_rows[0].version_uuid==Id(4));
   Check(!a::AppendScopedIndexEntryBinaryRecord(&general_encoded,9,17,{},Id(1),
       "id","btree","exact","k","p",Id(3),Id(4)));
   Check(general_encoded==golden);
@@ -49,7 +62,7 @@ int main() {
       Check(row.key_value==std::string("k\0x",3)&&row.payload_value==std::string("\0p",2));
     }
   }
-  for (const auto& data : {golden,legacy}) {
+  for (const auto& data : {golden,empty_golden,legacy}) {
     for (std::size_t size=1;size<data.size();++size) {
       std::vector<a::CrudIndexEntryRecord> rows(1);rows.front().table_uuid=Id(9);
       Check(!a::DecodeScopedIndexBinaryBytes(Bytes(data).first(size),&rows));

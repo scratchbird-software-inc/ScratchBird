@@ -211,14 +211,32 @@ std::uint64_t SnapshotVisibleThroughForOverlay(const RelationReadSnapshot& state
   return MaxCommittedLocalTransactionId(state);
 }
 
-std::string DeltaPayloadField(const std::string& key_payload,
-                              const std::string& field) {
-  for (const auto& [key, value] : DecodeCrudPairs(key_payload)) {
-    if (key == field) {
-      return value;
-    }
+struct SecondaryIndexKeyPayload {
+  std::string key;
+  std::string payload;
+  std::string family;
+};
+
+std::optional<SecondaryIndexKeyPayload> DecodeSecondaryIndexKeyPayload(
+    const std::string& encoded, const CrudIndexRecord& index) {
+  const auto fields = DecodeCrudPairs(encoded);
+  // The compatibility pair decoder is permissive. At a durable index boundary
+  // require complete canonical framing and exactly one of each owned field.
+  if (fields.size() != 3 || EncodeCrudPairs(fields) != encoded) return std::nullopt;
+  SecondaryIndexKeyPayload result;
+  std::set<std::string> seen;
+  for (const auto& [name, value] : fields) {
+    if (!seen.insert(name).second) return std::nullopt;
+    if (name == "key") result.key = value;
+    else if (name == "payload") result.payload = value;
+    else if (name == "family") result.family = value;
+    else return std::nullopt;
   }
-  return {};
+  const auto expected_family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
+                                                    : index.family;
+  if (result.family != expected_family) return std::nullopt;
+  // Empty key and payload bytes are values, not evidence of a missing field.
+  return result;
 }
 
 int CompareOverlayScalar(const std::string& left, const std::string& right) {
@@ -245,9 +263,9 @@ bool OverlayPredicateSupported(const EnginePredicateEnvelope& predicate) {
          predicate.predicate_kind == "column_range";
 }
 
-bool OverlayEntryMatchesPredicate(const idx::SecondaryIndexOverlayEntry& entry,
+bool OverlayEntryMatchesPredicate(const SecondaryIndexKeyPayload& entry,
                                   const EnginePredicateEnvelope& predicate) {
-  const std::string key = DeltaPayloadField(entry.key_payload, "key");
+  const auto& key = entry.key;
   if (predicate.predicate_kind == "column_equals") {
     return !predicate.bound_values.empty() &&
            key == predicate.bound_values.front().encoded_value;
@@ -549,18 +567,18 @@ EngineApiDiagnostic CrudIndexEntryForMergedBase(const CrudIndexRecord& index,
   entry.index_uuid = base.index_uuid.value;
   entry.table_uuid = base.table_uuid.value;
   entry.column_name = index.column_name;
-  entry.family = DeltaPayloadField(base.key_payload, "family");
-  if (entry.family.empty()) {
-    entry.family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
-                                        : index.family;
-  }
+  const auto payload = DecodeSecondaryIndexKeyPayload(base.key_payload, index);
+  if (!payload) return Dpc024MergeDiagnostic("corrupt_ledger_refused",
+      "mga.secondary_index_delta_merge.corrupt_base_entry_refused",
+      "merged base index entry has malformed or missing key payload fields");
+  entry.family = payload->family;
   entry.entry_kind = "exact";
-  entry.key_value = DeltaPayloadField(base.key_payload, "key");
-  entry.payload_value = DeltaPayloadField(base.key_payload, "payload");
+  entry.key_value = payload->key;
+  entry.payload_value = payload->payload;
   entry.row_uuid = base.row_uuid.value;
   entry.version_uuid = base.version_uuid.value;
   if (entry.index_uuid.is_nil() || entry.table_uuid.is_nil() || entry.row_uuid.is_nil() ||
-      entry.version_uuid.is_nil() || entry.key_value.empty()) {
+      entry.version_uuid.is_nil()) {
     return Dpc024MergeDiagnostic("corrupt_ledger_refused",
                                  "mga.secondary_index_delta_merge.corrupt_base_entry_refused",
                                  "merged base index entry lost required identity or key payload");
@@ -1107,6 +1125,15 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
       continue;
     }
     ++result.scanned_count;
+    if (!DecodeSecondaryIndexKeyPayload(record.delta.key_payload, *selected)) {
+      result.throttle_or_refusal_reason = "corrupt_ledger_refused";
+      result.diagnostic = Dpc024MergeDiagnostic("corrupt_ledger_refused",
+          "mga.secondary_index_delta_merge.key_payload_refused",
+          "persistent delta key payload fields are malformed or incomplete");
+      AddMergeEvidence(&result.evidence, "mga_secondary_index_delta_merge_refused",
+                       result.throttle_or_refusal_reason);
+      return result;
+    }
     if (record.commit_state == idx::SecondaryIndexDeltaLedgerCommitState::repair_rebuild_required ||
         record.commit_state == idx::SecondaryIndexDeltaLedgerCommitState::refused) {
       result.throttle_or_refusal_reason = "corrupt_ledger_refused";
@@ -1835,6 +1862,8 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     if (!LedgerRecordRelevantToIndex(record, *selected, table_uuid)) {
       continue;
     }
+    if (!DecodeSecondaryIndexKeyPayload(record.delta.key_payload, *selected))
+      return RefuseIndexedLookup("secondary_index_delta_key_payload_invalid");
     if (record.commit_state ==
             idx::SecondaryIndexDeltaLedgerCommitState::repair_rebuild_required ||
         record.commit_state == idx::SecondaryIndexDeltaLedgerCommitState::refused) {
@@ -1949,7 +1978,9 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
   std::set<EngineUuid> seen_candidates;
   std::size_t candidate_count = 0;
   for (const auto& entry : overlay.entries) {
-    if (!OverlayEntryMatchesPredicate(entry, predicate)) {
+    const auto payload = DecodeSecondaryIndexKeyPayload(entry.key_payload, *selected);
+    if (!payload) return RefuseIndexedLookup("secondary_index_overlay_key_payload_invalid");
+    if (!OverlayEntryMatchesPredicate(*payload, predicate)) {
       continue;
     }
     const EngineUuid row_uuid =

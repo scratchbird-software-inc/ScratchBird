@@ -180,9 +180,6 @@ LocalityAwareExactIndexApplyBatchPlan PlanLocalityAwareExactIndexApplyBatches(
          entry_ordinal < batch.entries.size();
          ++entry_ordinal) {
       const auto& entry = batch.entries[entry_ordinal];
-      if (entry.encoded_key.empty()) {
-        continue;
-      }
       idx::CommitGroupLocalityIndexApplyItem item;
       item.source_batch_ordinal = batch_ordinal;
       item.source_row_ordinal = entry_ordinal;
