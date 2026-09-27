@@ -3,6 +3,7 @@
 #pragma once
 
 #include "sblr_runtime.hpp"
+#include "sblr_binary_value_carrier.hpp"
 #include "../internal_api/query/projection_api.hpp"
 
 #include <algorithm>
@@ -27,18 +28,10 @@ inline std::string FormatReal64(double value) {
   return encoded.str();
 }
 inline bool BinaryCarrierValid(const SblrValue& value) noexcept {
-  return !value.is_null && value.payload_kind == SblrValuePayloadKind::binary &&
-      (value.descriptor_id == "binary" || value.descriptor_id == "varbinary") &&
-      value.text_value.empty() && value.encoded_value.empty() &&
-      value.charset_name.empty() && value.collation_name.empty() &&
-      value.uuid_value.is_nil() && value.uuid_array_value.empty() && !value.has_int64_value &&
-      !value.has_uint64_value && !value.has_real64_value;
+  return SblrBinaryPayloadValid(value);
 }
 inline bool EmptyNullCarrier(const SblrValue& value) noexcept {
-  return value.is_null && value.payload_kind == SblrValuePayloadKind::none &&
-      value.binary_value.empty() && value.text_value.empty() && value.encoded_value.empty() &&
-      value.uuid_value.is_nil() && value.uuid_array_value.empty() && !value.has_int64_value && !value.has_uint64_value &&
-      !value.has_real64_value && value.charset_name.empty() && value.collation_name.empty();
+  return SblrNullPayloadEmpty(value);
 }
 }  // namespace projection_value_detail
 
@@ -180,10 +173,13 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
+  if (value.payload_kind == SblrValuePayloadKind::uuid_text) return false;
   if (value.is_null && (value.descriptor_id == "binary" ||
       value.descriptor_id == "varbinary" || value.descriptor_id == "uuid" ||
       value.descriptor_id == "uuid_array"))
     return projection_value_detail::EmptyNullCarrier(value);
+  if (value.descriptor_id == "uuid" || value.payload_kind == SblrValuePayloadKind::uuid_binary)
+    return SblrUuidPayloadValid(value);
   if (value.descriptor_id == "uuid_array" ||
       value.payload_kind == SblrValuePayloadKind::uuid_array_binary)
     return SblrUuidArrayPayloadValid(value);
@@ -194,6 +190,11 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
+  if (value.payload_kind == SblrValuePayloadKind::uuid_text ||
+      (!value.is_null && (value.descriptor_id == "uuid" ||
+                         value.payload_kind == SblrValuePayloadKind::uuid_binary) &&
+       !SblrUuidPayloadValid(value)))
+    throw std::invalid_argument("conflicting SBLR UUID payload representations");
   if (!value.is_null && (value.descriptor_id == "binary" || value.descriptor_id == "varbinary") &&
       !projection_value_detail::BinaryCarrierValid(value))
     throw std::invalid_argument("conflicting SBLR binary payload tag");

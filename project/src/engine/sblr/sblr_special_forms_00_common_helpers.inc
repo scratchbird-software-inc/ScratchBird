@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by sblr_special_forms.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "sblr_special_forms.hpp"
+#include "sblr_binary_value_carrier.hpp"
 
 #include "datatype_operations.hpp"
 #include "sblr_operator_runtime.hpp"
@@ -19,6 +20,7 @@
 #include <functional>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -76,6 +78,8 @@ bool Truthy(const SblrValue& value) {
 
 bool ValuesEqual(const SblrValue& left, const SblrValue& right) {
   if (left.is_null || right.is_null) return false;
+  const auto native = CompareSblrNativeBinaryValues(left, right);
+  if (native.attempted) return native.valid && native.order == 0;
   if (left.has_int64_value && right.has_int64_value) return left.int64_value == right.int64_value;
   if (left.has_uint64_value && right.has_uint64_value) return left.uint64_value == right.uint64_value;
   if (left.has_real64_value && right.has_real64_value) return left.real64_value == right.real64_value;
@@ -84,6 +88,8 @@ bool ValuesEqual(const SblrValue& left, const SblrValue& right) {
 }
 
 int CompareValues(const SblrValue& left, const SblrValue& right) {
+  const auto native = CompareSblrNativeBinaryValues(left, right);
+  if (native.attempted) return native.order;
   if (left.has_int64_value && right.has_int64_value) {
     return left.int64_value < right.int64_value ? -1 : (left.int64_value > right.int64_value ? 1 : 0);
   }
@@ -97,6 +103,11 @@ int CompareValues(const SblrValue& left, const SblrValue& right) {
     return left.encoded_value.compare(right.encoded_value);
   }
   return left.text_value.compare(right.text_value);
+}
+
+bool NativeComparisonValid(const SblrValue& left, const SblrValue& right) {
+  const auto comparison = CompareSblrNativeBinaryValues(left, right);
+  return !comparison.attempted || comparison.valid;
 }
 
 std::string Lower(std::string_view value) {

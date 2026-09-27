@@ -34,6 +34,8 @@ SblrResult EvaluateSblrCoalesceFormLazy(std::string_view operation_id,
 }
 
 SblrResult EvaluateSblrNullIfForm(std::string_view operation_id, const SblrValue& left, const SblrValue& right) {
+  if (!NativeComparisonValid(left, right))
+    return SpecialFormFailure(operation_id, {}, "SBLR.DESCRIPTOR_MISMATCH", "NULLIF requires matching native binary carriers");
   SblrResult out = MakeSblrSuccess(std::string(operation_id));
   if (ValuesEqual(left, right)) {
     out.scalar_values.push_back(NullValue(left.descriptor_id));
@@ -50,11 +52,15 @@ SblrResult EvaluateSblrExistsForm(std::string_view operation_id, bool row_exists
 SblrResult EvaluateSblrInListForm(std::string_view operation_id,
                                   const SblrValue& probe,
                                   const std::vector<SblrValue>& candidates) {
+  if (!NativeComparisonValid(probe, probe))
+    return SpecialFormFailure(operation_id, {}, "SBLR.DESCRIPTOR_MISMATCH", "IN probe has an invalid native carrier");
   if (probe.is_null) {
     return ScalarResult(operation_id, MakeSblrTruthValue(SblrTruthValue::unknown));
   }
   bool saw_null = false;
   for (const auto& candidate : candidates) {
+    if (!NativeComparisonValid(probe, candidate))
+      return SpecialFormFailure(operation_id, {}, "SBLR.DESCRIPTOR_MISMATCH", "IN requires matching native binary carriers");
     if (candidate.is_null) {
       saw_null = true;
       continue;
@@ -73,6 +79,8 @@ SblrResult EvaluateSblrInListFormLazy(std::string_view operation_id,
   SblrValue probe_value;
   const auto probe_result = EvaluateThunkScalar(operation_id, context, probe, &probe_value);
   if (!probe_result.ok()) return probe_result;
+  if (!NativeComparisonValid(probe_value, probe_value))
+    return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH", "IN probe has an invalid native carrier");
   if (probe_value.is_null) {
     return ScalarResult(operation_id, MakeSblrTruthValue(SblrTruthValue::unknown));
   }
@@ -81,6 +89,8 @@ SblrResult EvaluateSblrInListFormLazy(std::string_view operation_id,
     SblrValue candidate;
     const auto candidate_result = EvaluateThunkScalar(operation_id, context, candidate_thunk, &candidate);
     if (!candidate_result.ok()) return candidate_result;
+    if (!NativeComparisonValid(probe_value, candidate))
+      return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH", "IN requires matching native binary carriers");
     if (candidate.is_null) {
       saw_null = true;
       continue;
@@ -96,6 +106,8 @@ SblrResult EvaluateSblrBetweenForm(std::string_view operation_id,
                                    const SblrValue& value,
                                    const SblrValue& lower,
                                    const SblrValue& upper) {
+  if (!NativeComparisonValid(value, lower) || !NativeComparisonValid(value, upper))
+    return SpecialFormFailure(operation_id, {}, "SBLR.DESCRIPTOR_MISMATCH", "BETWEEN requires matching native binary carriers");
   if (value.is_null || lower.is_null || upper.is_null) {
     return ScalarResult(operation_id, MakeSblrTruthValue(SblrTruthValue::unknown));
   }

@@ -43,6 +43,10 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast,
                                 bool reference_compatibility_profile) {
+  if (!SblrNativeCastCarrierValid(value)) {
+    return SpecialFormFailure(operation_id, context, "SBLR.DESCRIPTOR_MISMATCH",
+                              "cast source has conflicting or non-native value carriers");
+  }
   const auto target_type = CanonicalTypeFromDescriptor(target_descriptor_id);
   if (target_type == datatypes::CanonicalTypeId::unknown) {
     return SpecialFormFailure(operation_id,

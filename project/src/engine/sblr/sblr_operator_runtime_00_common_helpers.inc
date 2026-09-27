@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by sblr_operator_runtime.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "sblr_operator_runtime.hpp"
+#include "sblr_binary_value_carrier.hpp"
 
 #include "datatype_advanced_family.hpp"
 #include "datatype_operations.hpp"

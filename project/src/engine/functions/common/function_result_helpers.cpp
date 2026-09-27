@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::engine::functions {
@@ -31,12 +32,13 @@ scratchbird::engine::sblr::SblrValue MakeNullValue(std::string descriptor_id) {
 }
 
 scratchbird::engine::sblr::SblrValue MakeTextValue(std::string descriptor_id, std::string value_text) {
+  if (descriptor_id == "uuid")
+    throw std::invalid_argument("UUID values require the native binary16 constructor");
   scratchbird::engine::sblr::SblrValue value;
   value.descriptor_id = std::move(descriptor_id);
   value.text_value = std::move(value_text);
   value.encoded_value = value.text_value;
-  value.payload_kind = value.descriptor_id == "uuid" ? scratchbird::engine::sblr::SblrValuePayloadKind::uuid_text :
-                       (value.descriptor_id == "timestamp" ||
+  value.payload_kind = (value.descriptor_id == "timestamp" ||
                         value.descriptor_id == "timestamp_tz" ||
                         value.descriptor_id == "timestamp_epoch_ms" ||
                         value.descriptor_id == "date" ||

@@ -924,9 +924,14 @@
 
   if (IdIs(id, {"data.scalar.nullif", "sb.scalar.nullif", "nullif"})) {
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "expected exactly two arguments");
+    const auto native = scratchbird::engine::sblr::CompareSblrNativeBinaryValues(
+        request.arguments[0].value, request.arguments[1].value);
+    if (native.attempted && !native.valid)
+      return RefuseFunctionInvalidInput(request, "NULLIF requires matching native binary carriers");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {request.arguments[0].value});
     if (IsSqlNull(request.arguments[1].value)) return MakeFunctionSuccess(request, {request.arguments[0].value});
-    if (ValueAsText(request.arguments[0].value) == ValueAsText(request.arguments[1].value)) {
+    if (native.attempted ? native.order == 0 :
+        ValueAsText(request.arguments[0].value) == ValueAsText(request.arguments[1].value)) {
       return MakeFunctionSuccess(request, {MakeNullValue(request.arguments[0].value.descriptor_id)});
     }
     return MakeFunctionSuccess(request, {request.arguments[0].value});
@@ -948,6 +953,9 @@
     std::string best_text;
     for (std::size_t i = 0; i < request.arguments.size(); ++i) {
       const auto& candidate = request.arguments[i].value;
+      if (scratchbird::engine::sblr::SblrHasNativeBinaryCarrier(candidate) &&
+          !scratchbird::engine::sblr::SblrNativeCastCarrierValid(candidate))
+        return RefuseFunctionInvalidInput(request, "greatest/least received an invalid native value carrier");
       if (IsSqlNull(candidate)) continue;
       double candidate_real = 0;
       const bool candidate_is_numeric = best_is_numeric && ValueAsReal64(candidate, &candidate_real);
@@ -959,7 +967,13 @@
         continue;
       }
       bool replace = false;
-      if (best_is_numeric && candidate_is_numeric) {
+      const auto native = scratchbird::engine::sblr::CompareSblrNativeBinaryValues(
+          candidate, request.arguments[best_index].value);
+      if (native.attempted) {
+        if (!native.valid)
+          return RefuseFunctionInvalidInput(request, "greatest/least requires matching native binary carriers");
+        replace = want_greatest ? native.order > 0 : native.order < 0;
+      } else if (best_is_numeric && candidate_is_numeric) {
         replace = want_greatest ? candidate_real > best_real : candidate_real < best_real;
       } else {
         const std::string candidate_text = ValueAsText(candidate);
@@ -1007,6 +1021,11 @@
     const auto target_descriptor =
         LowerAscii(TrimAscii(ValueAsText(target_value)));
     if (target_descriptor.empty()) return RefuseFunctionInvalidInput(request, "cast target descriptor id is required");
+    if (NativeBinaryCast(request.arguments[0].value, target_descriptor)) {
+      if (request.arguments.size() != 2)
+        return RefuseFunctionInvalidInput(request, "native UUID/binary cast does not accept a rounding or compatibility profile");
+      return CastNativeBinaryValue(request, target_descriptor, false);
+    }
 
     const auto decimal_descriptor =
         ParseDecimalTargetDescriptor(target_descriptor);

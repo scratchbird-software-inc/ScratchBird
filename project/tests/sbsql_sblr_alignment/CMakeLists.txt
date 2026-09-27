@@ -7,6 +7,14 @@ set_tests_properties(sbsql_sblr_alignment_large_payload_binary PROPERTIES TIMEOU
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+add_executable(sbsql_sblr_alignment_native_uuid_cast native_uuid_cast_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_uuid_cast PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_uuid_cast PRIVATE ../../src/engine/functions ../../src/engine)
+target_link_libraries(sbsql_sblr_alignment_native_uuid_cast PRIVATE sb_engine_functions sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_native_uuid_cast COMMAND sbsql_sblr_alignment_native_uuid_cast)
+set_tests_properties(sbsql_sblr_alignment_native_uuid_cast PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;scalar_cast;component_regression;not_runtime_acceptance")
+
 # Component tests include their owning implementation to exercise private
 # binary codec helpers, and link real engine dependencies for the full gate.
 add_executable(sbsql_sblr_alignment_persisted_column_binding_identity

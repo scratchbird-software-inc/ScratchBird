@@ -54,8 +54,15 @@ SblrResult EvaluateSblrComparison(std::string_view operator_id,
                                   const SblrValue& right,
                                   const SblrExecutionContext& context) {
   if (IsOperator(operator_id, "op_is_null", "operator.null.is_null")) {
+    if (SblrHasNativeBinaryCarrier(left) && !SblrNativeCastCarrierValid(left))
+      return OperatorDiagnosticFailure(operator_id, context, "SBLR.DESCRIPTOR_MISMATCH",
+                                       "NULL predicate source has an invalid native carrier");
     return ScalarResult(operator_id, BoolValue(left.is_null ? SblrTruthValue::true_value : SblrTruthValue::false_value));
   }
+  const auto native = CompareSblrNativeBinaryValues(left, right);
+  if (native.attempted && !native.valid)
+    return OperatorDiagnosticFailure(operator_id, context, "SBLR.DESCRIPTOR_MISMATCH",
+                                     "comparison requires valid matching native binary carriers");
   if (IsOperator(operator_id, "op_is_distinct", "operator.compare.is_distinct")) {
     if (left.is_null != right.is_null) {
       return ScalarResult(operator_id, BoolValue(SblrTruthValue::true_value));
@@ -68,7 +75,9 @@ SblrResult EvaluateSblrComparison(std::string_view operator_id,
   }
 
   int cmp = 0;
-  if (IsIntervalPayload(left) && IsIntervalPayload(right)) {
+  if (native.attempted) {
+    cmp = native.order;
+  } else if (IsIntervalPayload(left) && IsIntervalPayload(right)) {
     std::int64_t left_seconds = 0;
     std::int64_t right_seconds = 0;
     if (!ParseIntervalSeconds(left, &left_seconds) || !ParseIntervalSeconds(right, &right_seconds)) {

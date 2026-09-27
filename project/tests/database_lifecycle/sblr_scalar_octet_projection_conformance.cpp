@@ -240,6 +240,17 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
 bool HasEvidence(const sblr::SblrDispatchResult& result,
                  std::string_view kind,
                  std::string_view id) {
+  if (kind == "function_runtime") {
+    static const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+    const auto* function = package.registry.Lookup(id);
+    Require(function != nullptr, "runtime evidence fixture callable is absent from the engine registry");
+    for (const auto& evidence : result.api_result.evidence) {
+      const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+      if (evidence.evidence_kind == kind && identity && *identity == function->function_uuid)
+        return true;
+    }
+    return false;
+  }
   for (const auto& evidence : result.api_result.evidence) {
     if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) {
       return true;

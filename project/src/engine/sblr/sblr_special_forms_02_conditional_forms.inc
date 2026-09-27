@@ -48,11 +48,14 @@
     case datatypes::CanonicalTypeId::blob:
       out.payload_kind = SblrValuePayloadKind::binary;
       out.binary_value.assign(value.encoded_value.begin(), value.encoded_value.end());
+      out.encoded_value.clear();
       return out;
     case datatypes::CanonicalTypeId::uuid:
-      out.payload_kind = SblrValuePayloadKind::uuid_text;
-      out.text_value = value.encoded_value;
-      return out;
+      if (value.encoded_value.size() != out.uuid_value.bytes.size()) {
+        throw std::invalid_argument("datatype UUID result must contain exactly 16 bytes");
+      }
+      std::copy(value.encoded_value.begin(), value.encoded_value.end(), out.uuid_value.bytes.begin());
+      return MakeSblrUuidValue(out.uuid_value);
     case datatypes::CanonicalTypeId::date:
     case datatypes::CanonicalTypeId::time:
     case datatypes::CanonicalTypeId::timestamp:

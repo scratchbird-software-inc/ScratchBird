@@ -71,6 +71,15 @@ int main(int argc, char** argv) {
            "ENCODE(X'', 'hex') AS empty", "row[0]=encoded=00ff10;decoded=hex:00ff10;empty=") ||
       !run("SELECT UUID '550e8400-e29b-41d4-a716-446655440000' AS id, X'00ff10' AS bytes_value",
            "row[0]=id=550e8400-e29b-41d4-a716-446655440000;bytes_value=hex:00ff10", 1) ||
+      !run("SELECT GREATEST(UUID '00000000-0000-0000-0000-000000000000', "
+           "UUID 'ffffffff-ffff-ffff-ffff-ffffffffffff') AS greatest_value, "
+           "LEAST(UUID 'ffffffff-ffff-ffff-ffff-ffffffffffff', "
+           "UUID '00000000-0000-0000-0000-000000000000') AS least_value, "
+           "NULLIF(UUID '550e8400-e29b-41d4-a716-446655440000', "
+           "UUID 'ffffffff-ffff-ffff-ffff-ffffffffffff') AS different_value",
+           "row[0]=greatest_value=ffffffff-ffff-ffff-ffff-ffffffffffff;"
+           "least_value=00000000-0000-0000-0000-000000000000;"
+           "different_value=550e8400-e29b-41d4-a716-446655440000", 3) ||
       !run("ROLLBACK TRANSACTION", {})) return 4;
   std::cout << "builtin_function_binary_process=passed phase=" << argv[4] << '\n';
   return 0;

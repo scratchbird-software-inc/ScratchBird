@@ -36,13 +36,6 @@
       if (!ParseBooleanText(value, &parsed)) return RefuseFunctionInvalidInput(request, "cast to boolean requires boolean-compatible text/value");
       return MakeFunctionSuccess(request, {MakeInt64Value("boolean", parsed ? 1 : 0)});
     }
-    if (target_descriptor == "uuid") {
-      std::string canonical;
-      if (!CanonicalizeUuidText(ValueAsText(value), &canonical)) {
-        return RefuseFunctionInvalidInput(request, "cast to uuid expects canonical UUID text");
-      }
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", std::move(canonical))});
-    }
     if (target_descriptor == "date" || target_descriptor == "time" ||
         target_descriptor == "timestamp" || target_descriptor == "timestamp_tz" ||
         target_descriptor == "interval" || target_descriptor == "json" ||
@@ -60,11 +53,15 @@
     if (IsSqlNull(request.arguments[1].value)) {
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor is required");
     }
+    if (request.arguments[1].value.payload_kind != scratchbird::engine::sblr::SblrValuePayloadKind::text)
+      return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor must be typed text");
     const auto target_descriptor = LowerAscii(TrimAscii(ValueAsText(request.arguments[1].value)));
     if (target_descriptor.empty()) {
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor is required");
     }
     const auto& value = request.arguments[0].value;
+    if (NativeBinaryCast(value, target_descriptor))
+      return CastNativeBinaryValue(request, target_descriptor, true);
     auto null_result = [&](std::string descriptor) {
       return MakeFunctionSuccess(request, {MakeNullValue(std::move(descriptor))});
     };
@@ -133,12 +130,6 @@
       bool parsed = false;
       if (!ParseBooleanText(value, &parsed)) return null_result("boolean");
       return MakeFunctionSuccess(request, {MakeInt64Value("boolean", parsed ? 1 : 0)});
-    }
-    if (target_descriptor == "uuid") {
-      if (IsSqlNull(value)) return null_result("uuid");
-      std::string canonical;
-      if (!CanonicalizeUuidText(ValueAsText(value), &canonical)) return null_result("uuid");
-      return MakeFunctionSuccess(request, {MakeTextValue("uuid", std::move(canonical))});
     }
     if (target_descriptor == "date" || target_descriptor == "time" ||
         target_descriptor == "timestamp" || target_descriptor == "timestamp_tz" ||

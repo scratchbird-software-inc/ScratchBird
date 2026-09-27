@@ -21,6 +21,8 @@
 #include "security/visibility_api.hpp"
 #include "sblr/sblr_domain_runtime.hpp"
 #include "sblr/sblr_sequence_runtime.hpp"
+#include "sblr/sblr_special_forms.hpp"
+#include "sblr/sblr_binary_value_carrier.hpp"
 #include "uuid.hpp"
 
 #include <array>
@@ -54,6 +56,38 @@
 
 namespace scratchbird::engine::functions {
 namespace {
+
+bool NativeBinaryCast(const scratchbird::engine::sblr::SblrValue& value,
+                      std::string_view target) {
+  using K = scratchbird::engine::sblr::SblrValuePayloadKind;
+  return target == "uuid" || target == "binary" || target == "varbinary" ||
+      value.descriptor_id == "uuid" || value.descriptor_id == "binary" ||
+      value.descriptor_id == "varbinary" || value.payload_kind == K::uuid_binary ||
+      value.payload_kind == K::uuid_text || value.payload_kind == K::binary;
+}
+
+FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
+                                         const std::string& target,
+                                         bool safe) {
+  namespace s = scratchbird::engine::sblr;
+  const auto& input = request.arguments[0].value;
+  if (!s::SblrNativeCastCarrierValid(input))
+    return RefuseFunctionInvalidInput(request, "cast input has conflicting native value carriers");
+  auto result = s::EvaluateSblrCastForm(request.context.function_id, input, target,
+                                      request.context.sblr_context, true, false);
+  if (!result.ok()) {
+    const bool unknown_target = std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.diagnostic_id == "SBLR.CAST_TARGET_UNKNOWN"; });
+    if (safe && !unknown_target) return MakeFunctionSuccess(request, {MakeNullValue(target)});
+    FunctionCallResult refused;
+    refused.result = std::move(result);
+    return refused;
+  }
+  // Preserve the requested scalar alias; the canonical datatype owns the
+  // conversion and its permission checks, never UUID text normalization.
+  result.scalar_values.front().descriptor_id = target;
+  return MakeFunctionSuccess(request, std::move(result.scalar_values));
+}
 
 std::string LowerAscii(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),

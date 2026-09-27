@@ -70,7 +70,6 @@ bool MultiplyWouldOverflow(std::int64_t left, std::int64_t right) {
 
 bool IsTextualPayload(const SblrValue& value) {
   return value.payload_kind == SblrValuePayloadKind::text ||
-         value.payload_kind == SblrValuePayloadKind::uuid_text ||
          value.payload_kind == SblrValuePayloadKind::temporal_text ||
          value.payload_kind == SblrValuePayloadKind::descriptor_payload ||
          value.descriptor_id == "text" ||

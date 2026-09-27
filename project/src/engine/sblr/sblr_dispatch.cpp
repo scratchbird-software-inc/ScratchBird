@@ -8965,7 +8965,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
           "engine.function.argument_encoding_invalid",
           "function argument encoding does not match its bound type",
           true));
-      out.evidence.push_back({"function_runtime", request.function_id});
+      out.evidence.push_back({"function_runtime", request.function_uuid});
       return out;
     }
   }
@@ -9042,7 +9042,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
            ProjectionSblrValueResolved(function_result.scalar_values.front());
   if (out.ok) {
     out.value = EngineTypedValueFromSblrValue(function_result.scalar_values.front());
-    out.evidence.push_back({"function_runtime", request.function_id});
+    out.evidence.push_back({"function_runtime", request.function_uuid});
     return out;
   }
   if (function_result.diagnostics.empty()) {

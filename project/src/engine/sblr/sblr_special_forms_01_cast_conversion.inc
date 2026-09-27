@@ -28,8 +28,11 @@ datatypes::CanonicalTypeId InferSblrSourceType(const SblrValue& value) {
       return datatypes::CanonicalTypeId::character;
     case SblrValuePayloadKind::binary:
       return datatypes::CanonicalTypeId::binary;
-    case SblrValuePayloadKind::uuid_text:
+    case SblrValuePayloadKind::uuid_binary:
       return datatypes::CanonicalTypeId::uuid;
+    case SblrValuePayloadKind::uuid_text:
+    case SblrValuePayloadKind::uuid_array_binary:
+      return datatypes::CanonicalTypeId::unknown;
     case SblrValuePayloadKind::temporal_text:
       return datatypes::CanonicalTypeId::timestamp;
     case SblrValuePayloadKind::descriptor_payload:
@@ -41,6 +44,10 @@ datatypes::CanonicalTypeId InferSblrSourceType(const SblrValue& value) {
 
 std::string EncodedCastInput(const SblrValue& value) {
   if (value.is_null) return {};
+  if (value.payload_kind == SblrValuePayloadKind::uuid_binary) {
+    return {reinterpret_cast<const char*>(value.uuid_value.bytes.data()),
+            value.uuid_value.bytes.size()};
+  }
   if (!value.encoded_value.empty()) return value.encoded_value;
   if (value.payload_kind == SblrValuePayloadKind::binary) {
     return std::string(value.binary_value.begin(), value.binary_value.end());
@@ -98,6 +105,7 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
   out.is_null = value.is_null;
   out.encoded_value = value.encoded_value;
   if (value.is_null) {
+    out.encoded_value.clear();
     out.payload_kind = SblrValuePayloadKind::none;
     return out;
   }
