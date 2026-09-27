@@ -1957,8 +1957,10 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
   config.sbps_enabled = true;
   config.database_daemon_scope = "dedicated";
 
-  server::ServerLifecycleArtifacts artifacts;
-  artifacts.generation = 1;
+  config.pid_file = config.control_dir / "server.pid";
+  const auto startup = server::WriteStartupLifecycleArtifacts(config, "serving");
+  Require(startup.ok(), "full-route server startup artifacts failed");
+  const auto& artifacts = startup.artifacts;
   const auto engine_state = FullRouteEngineState(fixture);
   server::ServerIpcEndpointResult endpoint_result;
   std::mutex ready_mutex;

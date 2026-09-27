@@ -143,8 +143,13 @@ void CheckServerLifecycle() {
   Require(validation.database_association_valid, "database association was not valid");
   Require(validation.endpoint_descriptor_valid, "endpoint descriptor was not valid");
 
-  auto stopped = WriteStoppedLifecycleArtifacts(config, startup.artifacts.generation + 1);
+  auto stop_owner = startup.artifacts;
+  ++stop_owner.generation;
+  auto stopped = WriteStoppedLifecycleArtifacts(config, stop_owner);
   Require(stopped.ok(), "stopped lifecycle artifacts failed");
+  Require(!startup.artifacts.server_uuid.is_nil() &&
+              stopped.artifacts.server_uuid == startup.artifacts.server_uuid,
+          "shutdown changed the owning native server identity");
   const auto state = Slurp(config.lifecycle_state_file);
   Require(state.find("state=stopped") != std::string::npos, "stopped state missing");
   Require(state.find("database_runtime_scope_id=db-019e12a0-p5") != std::string::npos,

@@ -1114,6 +1114,15 @@ std::optional<HelloRequest> DecodeHelloRequest(const std::vector<std::uint8_t>& 
   hello.launch_generation = GetU64(payload, offset);
   offset += 8;
   hello.capability_bitmap = GetBytes32(payload, offset);
+  offset += 32;
+  if (offset != payload.size()) return std::nullopt;
+  for (const auto* identity : {&hello.parser_instance_uuid, &hello.parser_package_uuid,
+                               &hello.parser_family_uuid, &hello.dialect_profile_uuid,
+                               &hello.launch_uuid, &hello.listener_uuid}) {
+    if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{*identity})) {
+      return std::nullopt;
+    }
+  }
   return hello;
 }
 

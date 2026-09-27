@@ -11,6 +11,7 @@
 #include "lifecycle.hpp"
 
 #include "config.hpp"
+#include "../core/uuid/uuid.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -420,6 +421,15 @@ ServerLifecycleResult WriteStartupLifecycleArtifacts(const ServerBootstrapConfig
     return result;
   }
 
+  const auto server_uuid = core::uuid::IssueRuntimeIdentityV7();
+  if (!server_uuid) {
+    result.diagnostics.push_back(RuntimeDiagnostic(
+        "SERVER.RUNTIME.OWNER_TOKEN_INVALID", "server.runtime.owner_token_invalid",
+        "A native server instance identity could not be issued."));
+    return result;
+  }
+  result.artifacts.server_uuid = *server_uuid;
+
   if (!WriteTextFile(config.pid_file,
                      std::to_string(CurrentPid()) + "\n",
                      &result.diagnostics,
@@ -446,9 +456,10 @@ ServerLifecycleResult WriteStartupLifecycleArtifacts(const ServerBootstrapConfig
 }
 
 ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig& config,
-                                                     std::uint64_t generation) {
+                                                     const ServerLifecycleArtifacts& owner) {
   ServerLifecycleResult result;
-  result.artifacts.generation = generation == 0 ? NowMicros() : generation;
+  result.artifacts = owner;
+  result.artifacts.generation = owner.generation == 0 ? NowMicros() : owner.generation;
   result.artifacts.state = "stopped";
   result.artifacts.pid_file = config.pid_file.string();
   result.artifacts.owner_token_file = OwnerFilePath(config).string();
@@ -643,7 +654,7 @@ ServerLifecycleResult CleanupServerRuntimeArtifacts(const ServerBootstrapConfig&
   std::filesystem::remove(config.pid_file, ec);
   std::filesystem::remove(OwnerFilePath(config), ec);
   if (operation != ServerRuntimeCleanupOperation::kRestart) {
-    WriteStoppedLifecycleArtifacts(config, result.artifacts.generation);
+    WriteStoppedLifecycleArtifacts(config, result.artifacts);
   }
   if (operation == ServerRuntimeCleanupOperation::kUninstall && IsDedicatedScope(config)) {
     std::filesystem::remove(config.lifecycle_state_file, ec);

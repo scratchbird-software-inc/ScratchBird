@@ -60,6 +60,8 @@ struct ParserPackageRegistryEntry {
 };
 
 struct ParserPackageRegistry {
+  // Identity of this loaded snapshot, not package/catalog authority.
+  core::platform::Uuid snapshot_uuid;
   std::uint64_t generation = 1;
   std::uint64_t capability_policy_generation = 1;
   std::string source = "default_builtin";

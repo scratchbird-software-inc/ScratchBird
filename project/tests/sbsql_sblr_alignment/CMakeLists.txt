@@ -1588,6 +1588,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_server_uuid_emission)
   set_tests_properties(sbsql_sblr_alignment_server_uuid_emission PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;concurrency;fork")
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME sbsql_sblr_alignment_server_hello_native_identity
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/server_hello_native_identity_test.py
+      --server $<TARGET_FILE:sb_server>)
+  set_tests_properties(sbsql_sblr_alignment_server_hello_native_identity PROPERTIES
+    TIMEOUT 180 LABELS "sbsql_sblr_alignment;IA-06;binary_uuid;real_process;SBPS;restart")
 endif()
 
 add_executable(sbsql_sblr_alignment_engine_diagnostic_snapshot engine_diagnostic_snapshot_test.cpp)

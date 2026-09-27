@@ -12,6 +12,7 @@
 
 #include "agent_feature_gates.hpp"
 #include "sb_udr_runtime.hpp"
+#include "../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -104,9 +105,21 @@ std::string JsonEscape(std::string_view input) {
   return out.str();
 }
 
+void BindLoadedSnapshotIdentity(ParserPackageRegistry* registry) {
+  const auto identity = core::uuid::IssueRuntimeIdentityV7();
+  if (!identity) {
+    registry->diagnostics.push_back(ParserPackageDiagnostic(
+        "SERVER.PARSER.REGISTRY_UNREADABLE",
+        "A native parser registry snapshot identity could not be issued."));
+    return;
+  }
+  registry->snapshot_uuid = *identity;
+}
+
 ParserPackageRegistry DefaultRegistry() {
   ParserPackageRegistry registry;
   registry.entries.push_back(ParserPackageRegistryEntry{});
+  BindLoadedSnapshotIdentity(&registry);
   return registry;
 }
 
@@ -337,6 +350,7 @@ ParserPackageRegistry LoadParserPackageRegistry(const ServerBootstrapConfig& con
   entry.failure_count_1h = ParseU64(values["failure_count_1h"], entry.failure_count_1h);
   if (ParserPackageShouldQuarantine(entry)) entry.state = "quarantined";
   registry.entries.push_back(std::move(entry));
+  BindLoadedSnapshotIdentity(&registry);
   return registry;
 }
 

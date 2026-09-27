@@ -533,9 +533,11 @@ struct ClientNegotiationState {
 std::vector<std::uint8_t> AcceptFrame(
     const sbps::Frame& request,
     const ServerBootstrapConfig& config,
+    const ServerLifecycleArtifacts& artifacts,
+    const ParserPackageRegistry& parser_registry,
     ClientNegotiationState* negotiation_state) {
   sbps::HelloAccept accept;
-  accept.server_uuid = sbps::MakeUuidV7Bytes();
+  accept.server_uuid = artifacts.server_uuid.bytes;
   accept.channel_uuid =
       negotiation_state != nullptr && negotiation_state->hello_admitted
           ? negotiation_state->server_channel_uuid
@@ -565,7 +567,8 @@ std::vector<std::uint8_t> AcceptFrame(
       negotiation_state->admitted_hello_payload = request.payload;
     }
   }
-  accept.registry_snapshot_uuid = sbps::MakeUuidV7Bytes();
+  accept.registry_snapshot_uuid = parser_registry.snapshot_uuid.bytes;
+  accept.server_policy_generation = parser_registry.capability_policy_generation;
   const auto payload = sbps::EncodeHelloAccept(accept);
   sbps::FrameHeader header;
   header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kHelloAccept);
@@ -3920,7 +3923,8 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                            "server.parser.hello",
                            "accepted",
                            "parser package admitted");
-    WriteAll(client_fd, AcceptFrame(frame, config, negotiation_state));
+    WriteAll(client_fd, AcceptFrame(frame, config, artifacts, parser_registry,
+                                  negotiation_state));
     return true;
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPing)) {
@@ -4768,6 +4772,13 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                                    const HostedEngineState& engine_state,
                                                    const ParserServerIpcLifecycleCallbacks& callbacks) {
   ServerIpcEndpointResult result;
+  if (!core::uuid::IsEngineIdentityUuid(artifacts.server_uuid)) {
+    result.exit_code = 2;
+    result.diagnostics.push_back(EndpointDiagnostic(
+        "PARSER_SERVER_IPC.ENDPOINT_CREATE_FAILED",
+        "The endpoint requires its owning server's retained native UUIDv7."));
+    return result;
+  }
 #ifdef _WIN32
   if (!EnsureWinsockInitialized()) {
     result.exit_code = 2;
@@ -5061,7 +5072,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         flush.diagnostic_code.empty() ? "OPS.EVIDENCE.FLUSH_FAILED" : flush.diagnostic_code,
         "Server observability evidence did not flush cleanly during shutdown."));
   }
-  const auto stopped = WriteStoppedLifecycleArtifacts(config, artifacts.generation);
+  const auto stopped = WriteStoppedLifecycleArtifacts(config, artifacts);
   if (!stopped.diagnostics.empty()) {
     result.diagnostics.insert(result.diagnostics.end(),
                               stopped.diagnostics.begin(),

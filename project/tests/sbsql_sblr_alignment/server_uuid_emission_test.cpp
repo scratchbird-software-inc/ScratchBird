@@ -1,6 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "sbps.hpp"
+#include "parser_package_registry.hpp"
+#include "ipc_server.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,9 +41,98 @@ std::vector<Id> Generate(std::size_t count) {
   for(std::size_t i=0;i<count;++i) ids.push_back(scratchbird::server::sbps::MakeUuidV7Bytes());
   return ids;
 }
+
+void HelloCodecChecks() {
+  namespace sbps = scratchbird::server::sbps;
+  const auto original = sbps::EncodeHelloRequestForTest();
+  const auto decoded = sbps::DecodeHelloRequest(original);
+  Check(decoded.has_value(), "canonical HELLO did not decode");
+  if (!decoded) return;
+  // The final fields are launch UUID, listener UUID, generation and bitmap.
+  const std::array<std::size_t, 6> offsets{
+      0, 16, 32, 48, original.size() - 72, original.size() - 56};
+  for (std::size_t field = 0; field < offsets.size(); ++field) {
+    for (std::size_t octet = 0; octet < 16; ++octet) {
+      for (unsigned value = 0; value < 256; ++value) {
+        auto payload = original;
+        payload[offsets[field] + octet] = static_cast<std::uint8_t>(value);
+        const bool valid = (octet != 6 || (value & 0xf0) == 0x70) &&
+                           (octet != 8 || (value & 0xc0) == 0x80);
+        const auto result = sbps::DecodeHelloRequest(payload);
+        Check(result.has_value() == valid, "HELLO system identity byte validation mismatch");
+        if (!result) continue;
+        const std::array<const Id*, 6> fields{
+            &result->parser_instance_uuid, &result->parser_package_uuid,
+            &result->parser_family_uuid, &result->dialect_profile_uuid,
+            &result->launch_uuid, &result->listener_uuid};
+        for (std::size_t selected = 0; selected < offsets.size(); ++selected) {
+          Check(std::equal(fields[selected]->begin(), fields[selected]->end(),
+                           payload.begin() + offsets[selected]),
+                "HELLO decoding changed a native identity octet");
+        }
+      }
+    }
+    auto nil = original;
+    std::fill_n(nil.begin() + offsets[field], 16, 0);
+    Check(!sbps::DecodeHelloRequest(nil), "HELLO accepted a nil system identity");
+  }
+  for (std::size_t size = 0; size < original.size(); ++size) {
+    Check(!sbps::DecodeHelloRequest({original.begin(), original.begin() + size}),
+          "HELLO accepted a truncated payload");
+  }
+  for (const auto count : {1, 16, 36}) {
+    auto extra = original;
+    extra.insert(extra.end(), count, 0);
+    Check(!sbps::DecodeHelloRequest(extra), "HELLO accepted trailing payload bytes");
+  }
+}
+
+void RetainedOwnerChecks() {
+  namespace server = scratchbird::server;
+  namespace uuid = scratchbird::core::uuid;
+  server::ServerBootstrapConfig config;
+  const auto first = server::LoadParserPackageRegistry(config);
+  const auto second = server::LoadParserPackageRegistry(config);
+  const auto copy = first;
+  Check(first.diagnostics.empty() && second.diagnostics.empty() &&
+            uuid::IsEngineIdentityUuid(first.snapshot_uuid) &&
+            uuid::IsEngineIdentityUuid(second.snapshot_uuid),
+        "registry load did not retain a native snapshot owner");
+  Check(first.snapshot_uuid != second.snapshot_uuid &&
+            first.snapshot_uuid == copy.snapshot_uuid,
+        "registry copies/reloads did not preserve/distinguish their actual owner");
+
+  char path[] = "/tmp/sb_hello_registry_XXXXXX";
+  const auto fd = ::mkstemp(path);
+  Check(fd >= 0, "failed registry fixture creation");
+  if (fd >= 0) {
+    ::close(fd);
+    config.parser_registry_path = path;
+    const auto failed = server::LoadParserPackageRegistry(config);
+    Check(!failed.diagnostics.empty() && failed.snapshot_uuid.is_nil(),
+          "failed registry load published a successful snapshot identity");
+    ::unlink(path);
+  }
+  server::HostedEngineState no_engine;
+  for (unsigned kind = 0; kind != 3; ++kind) {
+    server::ServerLifecycleArtifacts invalid;
+    if (kind) {
+      invalid.server_uuid.bytes = server::sbps::MakeUuidV7Bytes();
+      if (kind == 1) invalid.server_uuid.bytes[6] = 0x40;
+      else invalid.server_uuid.bytes[8] = 0xc0;
+    }
+    const auto denied = server::RunParserServerIpcEndpoint(config, invalid, no_engine);
+    Check(!denied.ok() && denied.exit_code != 0 &&
+              denied.diagnostics.size() == 1 &&
+              denied.diagnostics.front().code == "PARSER_SERVER_IPC.ENDPOINT_CREATE_FAILED",
+          "endpoint accepted a missing or malformed retained native server owner");
+  }
+}
 }
 int main() {
   namespace sbps=scratchbird::server::sbps;
+  HelloCodecChecks();
+  RetainedOwnerChecks();
   constexpr unsigned count=4096,threads=8;
   const auto initial=sbps::MakeUuidV7Bytes();Check(Valid(initial),"initial server identity not binary UUIDv7");
   int descriptors[2];

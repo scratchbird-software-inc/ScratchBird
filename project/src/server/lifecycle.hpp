@@ -11,6 +11,7 @@
 #pragma once
 
 #include "diagnostics.hpp"
+#include "../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -22,6 +23,8 @@ struct ServerBootstrapConfig;
 
 struct ServerLifecycleArtifacts {
   std::uint64_t generation = 0;
+  // Issued by startup, retained across channels and shutdown; never a caption.
+  core::platform::Uuid server_uuid;
   std::string state;
   std::string pid_file;
   std::string owner_token_file;
@@ -62,7 +65,7 @@ enum class ServerRuntimeCleanupOperation {
 ServerLifecycleResult WriteStartupLifecycleArtifacts(const ServerBootstrapConfig& config,
                                                      const std::string& target_state);
 ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig& config,
-                                                     std::uint64_t generation);
+                                                     const ServerLifecycleArtifacts& owner);
 ServerRuntimeArtifactValidation ValidateServerRuntimeArtifacts(const ServerBootstrapConfig& config,
                                                                const ServerLifecycleArtifacts& artifacts,
                                                                bool require_existing_files);
