@@ -13,6 +13,7 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "memory.hpp"
 #include "nosql/document_api.hpp"
+#include "nosql/document_path_physical_provider.hpp"
 #include "nosql/graph_api.hpp"
 #include "nosql/key_value_api.hpp"
 #include "nosql/search_api.hpp"
@@ -437,6 +438,16 @@ void NoSqlSurfacesRouteThroughSplitModel() {
     AddNoSqlSplitOptions(&request, ids, "document", body);
     const auto result = api::EngineDocumentInsert(request);
     RequireNoSqlHotColdPayload(result, "payload", body, ids, request.context);
+    api::DocumentPathProviderOpenRequest open;
+    open.artifact_path = api::DocumentPathPhysicalProviderPath(request.context);
+    open.expected_identity = api::DocumentPathProviderIdentityForContext(request.context, 1);
+    open.require_expected_identity = true;
+    const auto provider = api::OpenDocumentPathPhysicalProvider(open);
+    // This index counts rows with indexed logical fields, not opaque documents.
+    Require(provider.ok && provider.artifact.stats.row_count == 0 &&
+                provider.artifact.stats.path_count == 0 &&
+                provider.artifact.path_dictionary.empty() && provider.artifact.postings.empty(),
+            "ODF-063 physical header or opaque payload was interpreted as document fields");
     Rollback(request.context);
   }
   {

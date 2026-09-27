@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,14 +89,20 @@ api::EngineTypedValue TextValue(std::string value) {
   typed.descriptor.canonical_type_name = "character";
   typed.descriptor.encoded_descriptor = "canonical=character";
   typed.encoded_value = std::move(value);
-  typed.is_null = typed.encoded_value == "<NULL>";
+  typed.setState(api::EngineValueState::value);
   return typed;
 }
 
-api::EngineRowValue Row(std::initializer_list<std::pair<std::string, std::string>> fields) {
+api::EngineTypedValue NullTextValue() {
+  auto typed = TextValue({});
+  typed.setState(api::EngineValueState::sql_null);
+  return typed;
+}
+
+api::EngineRowValue Row(std::initializer_list<std::pair<std::string, std::optional<std::string>>> fields) {
   api::EngineRowValue row;
   for (const auto& [name, value] : fields) {
-    row.fields.push_back({name, TextValue(value)});
+    row.fields.push_back({name, value ? TextValue(*value) : NullTextValue()});
   }
   return row;
 }
@@ -569,7 +576,7 @@ void FailuresRemainFailClosed() {
       fixture,
       context,
       fixture.child_table_uuid,
-      {Row({{"id", "c2"}, {"parent_id", "p1"}, {"nn", "<NULL>"}, {"code", "ok"}, {"dom", "xy"}})});
+      {Row({{"id", "c2"}, {"parent_id", "p1"}, {"nn", std::nullopt}, {"code", "ok"}, {"dom", "xy"}})});
   Require(!null_nn.ok, "ODF-039 null not-null value was accepted");
   Require(FirstCode(null_nn) == "CLI.CONSTRAINT_NOT_NULL_VIOLATION",
           "ODF-039 not-null diagnostic code drifted");

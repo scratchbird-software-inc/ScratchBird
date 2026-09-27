@@ -7,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "crud_support/crud_store.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "hash_digest.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "transaction/transaction_api.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
@@ -38,21 +43,6 @@ void Require(bool condition, const std::string& message) {
   if (!condition) { throw std::runtime_error(message); }
 }
 
-std::uint64_t Fnva64(const std::string& text) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const unsigned char ch : text) {
-    hash ^= ch;
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string Hex64(std::uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << std::setw(16) << std::setfill('0') << value;
-  return out.str();
-}
-
 std::string ReadFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   std::ostringstream out;
@@ -68,17 +58,17 @@ void WriteFile(const std::filesystem::path& path, const std::string& text) {
 }
 
 std::string Rechecksum(std::string text) {
-  const auto checksum_pos = text.find("CHECKSUM\t");
-  Require(checksum_pos != std::string::npos, "checksum header missing");
-  const auto checksum_end = text.find('\n', checksum_pos);
-  Require(checksum_end != std::string::npos, "checksum line missing newline");
-  const auto body_start = checksum_end + 1;
-  const auto end_pos = text.rfind("END\n");
-  Require(end_pos != std::string::npos, "END missing");
-  const auto body = text.substr(body_start, end_pos - body_start);
-  text.replace(checksum_pos,
-               checksum_end - checksum_pos,
-               "CHECKSUM\t" + Hex64(Fnva64(body)));
+  // Binary v2: magic[9], version:u32, length:u64, SHA-256[32], records.
+  constexpr std::size_t body_start = 53;
+  Require(text.size() >= body_start && text.substr(0, 9) == "SBDOCPATH",
+          "binary document header missing");
+  const auto size = static_cast<std::uint64_t>(text.size() - body_start);
+  for (unsigned i = 0; i < 8; ++i)
+    text[13 + i] = static_cast<char>(size >> (8 * i));
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const platform::byte*>(text.data() + body_start), size);
+  Require(digest.ok() && digest.digest_bytes == 32, "fixture checksum failed");
+  text.replace(21, 32, reinterpret_cast<const char*>(digest.digest.data()), 32);
   return text;
 }
 
@@ -86,29 +76,44 @@ std::string MutateFirstTag(const std::string& text,
                            const std::string& tag,
                            const std::string& key,
                            const std::string& value) {
-  std::istringstream in(text);
-  std::ostringstream out;
-  std::string line;
-  bool changed = false;
-  while (std::getline(in, line)) {
-    if (!changed && line.rfind(tag + "\t", 0) == 0) {
-      auto pairs = api::DecodeCrudPairs(line.substr(tag.size() + 1));
-      bool found = false;
-      for (auto& [pair_key, pair_value] : pairs) {
-        if (pair_key == key) {
-          pair_value = value;
-          found = true;
-          break;
-        }
+  const auto wanted = std::map<std::string, std::uint8_t>{
+      {"PATH", 2}, {"SHAPE", 3}, {"POST", 4}, {"STATS", 6}}.at(tag);
+  const std::span<const std::uint8_t> input(
+      reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+  std::size_t cursor = 53;
+  while (cursor < input.size()) {
+    const auto start = cursor;
+    std::uint8_t record_tag = 0;
+    std::uint32_t size = 0;
+    Require(api::ReadBinaryU8(input, &cursor, &record_tag) &&
+                api::ReadBinaryU32(input, &cursor, &size) && size <= input.size() - cursor,
+            "invalid fixture binary record frame");
+    if (record_tag == wanted) {
+      api::BinaryCatalogMetadata fields;
+      Require(api::DecodeBinaryCatalogMetadata(
+                  std::string_view(text).substr(cursor, size),
+                  "document.path.record.v2", &fields), "invalid fixture binary record");
+      if (key == "row_uuid") {
+        Require(fields.identities.contains(key), "native row identity missing");
+        // Nil is a valid binary field but an invalid posting identity.
+        fields.identities[key] = {};
+      } else {
+        Require(fields.text.contains(key), "mutation key missing: " + key);
+        fields.text[key] = value;
       }
-      Require(found, "mutation key missing: " + key);
-      line = tag + "\t" + api::EncodeCrudPairs(pairs);
-      changed = true;
+      std::string record;
+      Require(api::EncodeBinaryCatalogMetadata(fields, "document.path.record.v2", &record),
+              "could not encode mutated fixture record");
+      std::string frame(1, static_cast<char>(record_tag));
+      api::AppendBinaryU32(&frame, static_cast<std::uint32_t>(record.size()));
+      frame += record;
+      auto mutated = text;
+      mutated.replace(start, cursor + size - start, frame);
+      return Rechecksum(std::move(mutated));
     }
-    out << line << '\n';
+    cursor += size;
   }
-  Require(changed, "mutation tag missing: " + tag);
-  return Rechecksum(out.str());
+  throw std::runtime_error("mutation tag missing: " + tag);
 }
 
 bool EvidenceContains(const api::EngineApiResult& result,
@@ -167,60 +172,38 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
-mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
-                                              mga::TransactionState state) {
-  mga::TransactionInventoryEntry entry;
-  const auto identity = mga::MakeTransactionIdentity(
-      mga::MakeLocalTransactionId(local_id),
-      NewUuid(platform::UuidKind::transaction, local_id),
-      mga::TransactionScope::local_node);
-  Require(identity.ok(), "could not create transaction identity");
-  entry.identity = identity.identity;
-  entry.state = state;
-  entry.begin_unix_epoch_millis = 1779520000000ull + local_id;
-  if (state == mga::TransactionState::committed ||
-      state == mga::TransactionState::archived ||
-      state == mga::TransactionState::rolled_back ||
-      state == mga::TransactionState::failed_terminal) {
-    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
-    entry.evidence_record_written = true;
-  }
-  return entry;
-}
-
-void CreateDatabaseFixture(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabaseFixture(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database, 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
   create.creation_unix_epoch_millis = 1779520000000ull;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "could not create document provider gate database");
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
-void PersistTransactionInventory(const api::EngineRequestContext& context,
-                                 mga::TransactionState writer_state) {
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
-  const std::uint64_t writer_tx = context.local_transaction_id;
-  const std::uint64_t reader_tx = context.local_transaction_id + 50;
-  inventory.entries.push_back(InventoryEntry(writer_tx, writer_state));
-  inventory.entries.push_back(InventoryEntry(reader_tx, mga::TransactionState::active));
-  inventory.next_local_transaction_id = reader_tx + 1;
-  const auto persisted =
-      db::PersistLocalTransactionInventoryToDatabase(context.database_path,
-                                                     inventory);
-  Require(persisted.ok(), "could not persist transaction inventory");
-}
-
-void SeedTransaction(const api::EngineRequestContext& context) {
-  PersistTransactionInventory(context, mga::TransactionState::active);
+api::EngineRequestContext BeginTransaction(const api::EngineRequestContext& owner) {
+  api::EngineBeginTransactionRequest request;
+  request.context = owner;
+  request.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(request);
+  Require(begun.ok, "could not begin document fixture transaction");
+  auto context = owner;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  return context;
 }
 
 void CommitTransaction(const api::EngineRequestContext& context) {
-  PersistTransactionInventory(context, mga::TransactionState::committed);
+  api::EngineCommitTransactionRequest request;
+  request.context = context;
+  Require(api::EngineCommitTransaction(request).ok, "could not commit document fixture transaction");
 }
 
 api::EngineDocumentInsertResult InsertDocument(
@@ -348,11 +331,12 @@ void RequireOpenDiagnostic(const std::filesystem::path& path,
 }
 
 void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
-  CreateDatabaseFixture(db_path);
-  auto writer = Context(db_path, 100);
-  SeedTransaction(writer);
+  const auto owner = CreateDatabaseFixture(db_path);
+  scratchbird::tests::FixtureEngineSession session(owner);
+  auto writer = BeginTransaction(owner);
+  auto writer_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, writer);
+  writer = writer_statement->context;
   api::EngineDocumentProviderCleanup(writer, true);
-  SeedTransaction(writer);
 
   const auto first_document =
       InsertDocument(writer,
@@ -367,12 +351,21 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
                       {"status", "closed"}});
 
   const auto generation = CurrentGeneration(writer);
+  Require(first_document.primary_object.uuid != second_document.primary_object.uuid,
+          "distinct documents reused one native identity");
+  api::DocumentPathProviderOpenRequest persisted;
+  persisted.artifact_path = api::DocumentPathPhysicalProviderPath(writer);
+  const auto indexed = api::OpenDocumentPathPhysicalProvider(persisted);
+  Require(indexed.ok && indexed.artifact.stats.row_count == 2,
+          "equal default captions merged distinct document UUIDs");
   Require(generation.provider_id == api::kDocumentPathPhysicalProviderId,
           "wrong provider generation id");
+  writer_statement.reset();
   CommitTransaction(writer);
 
-  auto reader = writer;
-  reader.local_transaction_id = 150;
+  auto reader = BeginTransaction(owner);
+  auto reader_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, reader);
+  reader = reader_statement->context;
   const auto inventory =
       db::LoadLocalTransactionInventoryFromDatabase(db_path.string());
   Require(inventory.ok(),
@@ -469,6 +462,11 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
   Require(missing_result.dml_summary.visible_rows_scanned == 0,
           "missing path/value fell back to scan");
 
+  reader_statement.reset();
+  CommitTransaction(reader);
+  writer = BeginTransaction(owner);
+  writer_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, writer);
+  writer = writer_statement->context;
   api::EngineDocumentUpdateRequest update;
   update.context = writer;
   update.target_object = first_document.primary_object;
@@ -481,7 +479,13 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
                            "document_path_provider_persisted=true"),
           "document update did not persist rebuilt provider");
   const auto update_generation = CurrentGeneration(writer);
+  writer_statement.reset();
+  CommitTransaction(writer);
+  reader = BeginTransaction(owner);
+  reader_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, reader);
+  reader = reader_statement->context;
   api::EngineDocumentFindRequest updated = exact;
+  updated.context = reader;
   updated.equals_value = "archived";
   updated.path = "status";
   updated.projected_paths = {"status"};
@@ -491,6 +495,11 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
   Require(updated_result.result_shape.rows.size() == 1,
           "updated document provider returned wrong row count");
 
+  reader_statement.reset();
+  CommitTransaction(reader);
+  writer = BeginTransaction(owner);
+  writer_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, writer);
+  writer = writer_statement->context;
   api::EngineDocumentDeleteRequest delete_request;
   delete_request.context = writer;
   delete_request.target_object = second_document.primary_object;
@@ -501,13 +510,21 @@ void ProviderRuntimeScenario(const std::filesystem::path& db_path) {
                            "document_path_provider_persisted=true"),
           "document delete did not persist rebuilt provider");
   const auto delete_generation = CurrentGeneration(writer);
+  writer_statement.reset();
+  CommitTransaction(writer);
+  reader = BeginTransaction(owner);
+  reader_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(session, reader);
+  reader = reader_statement->context;
   api::EngineDocumentFindRequest deleted = exact;
+  deleted.context = reader;
   deleted.equals_value = "C-2";
   deleted.physical_proof = Proof(writer, delete_generation);
   auto deleted_result = api::EngineDocumentFind(deleted);
   Require(deleted_result.ok, "deleted document provider probe failed");
   Require(deleted_result.result_shape.rows.empty(),
           "deleted document remained in provider index");
+  reader_statement.reset();
+  CommitTransaction(reader);
 }
 
 void DirectProviderScenario(const std::filesystem::path& base_path) {
@@ -637,7 +654,8 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
   auto checksum_path = artifact_path;
   checksum_path += ".checksum";
   auto checksum_text = clean;
-  checksum_text.replace(checksum_text.find("STATS"), 5, "STATE");
+  Require(checksum_text.size() > 53, "binary fixture body missing");
+  checksum_text.back() ^= 1;
   WriteFile(checksum_path, checksum_text);
   auto checksum_result = api::OpenDocumentPathPhysicalProvider(
       {checksum_path.string(), {}, false, false, {}});
@@ -732,6 +750,8 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
 
 int main() {
   try {
+    scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+        "document-path-native-fixture");
     auto directory_template = (std::filesystem::temp_directory_path() /
         "scratchbird_document_path_provider_XXXXXX").string();
     const char* directory = ::mkdtemp(directory_template.data());

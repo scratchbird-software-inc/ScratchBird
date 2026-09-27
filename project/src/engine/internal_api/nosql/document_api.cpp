@@ -134,7 +134,6 @@ std::string RequestDocumentName(const EngineApiRequest& request,
 
 std::map<std::string, std::string> ParsePayloadFragments(
     const EngineApiRequest& request,
-    const std::string& persisted_payload,
     std::set<std::string>* null_paths, bool* valid) {
   std::map<std::string, std::string> fragments;
   *valid = true;
@@ -164,15 +163,9 @@ std::map<std::string, std::string> ParsePayloadFragments(
       }
     }
   }
-  if (!fragments.empty()) { return fragments; }
-
-  std::stringstream stream(persisted_payload);
-  std::string pair;
-  while (std::getline(stream, pair, ';')) {
-    const auto equals = pair.find('=');
-    if (equals == std::string::npos || equals == 0) { continue; }
-    fragments[pair.substr(0, equals)] = pair.substr(equals + 1);
-  }
+  // Only typed logical document fields define index paths. The persisted
+  // payload may be a binary hot/cold head or an overflow locator, and operation
+  // metadata is not document data. An opaque payload supplies no named paths.
   return fragments;
 }
 
@@ -357,13 +350,8 @@ bool LoadDocumentProviderLocked(const EngineRequestContext& context,
       if (verb == "DELETE") {
         loaded.documents.erase(record.document_uuid);
       } else {
-        if (!record.name.empty()) {
-          for (auto it = loaded.documents.begin(); it != loaded.documents.end();) {
-            if (it->second.collection_uuid == record.collection_uuid &&
-                it->second.name == record.name) it = loaded.documents.erase(it);
-            else ++it;
-          }
-        }
+        // A display name is not identity. Distinct native document UUIDs must
+        // remain distinct even when both have the same (or default) caption.
         loaded.documents[record.document_uuid] = std::move(record);
       }
     }
@@ -500,7 +488,7 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
           : bound_row_uuid;
   record.payload = RowField(result, "payload");
   bool fragments_valid = false;
-  record.fragments = ParsePayloadFragments(request, record.payload, &record.null_paths, &fragments_valid);
+  record.fragments = ParsePayloadFragments(request, &record.null_paths, &fragments_valid);
   if (!fragments_valid) {
     outcome.ok = false;
     outcome.diagnostic = MakeInvalidRequestDiagnostic("document.provider", "UUID document cells require binary16");
@@ -525,15 +513,6 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
       return outcome;
     }
     const auto previous = state;
-    for (auto it = state.documents.begin(); it != state.documents.end();) {
-      if (!record.name.empty() && it->second.collection_uuid == record.collection_uuid &&
-          it->second.name == record.name &&
-          it->first != record.document_uuid) {
-        it = state.documents.erase(it);
-      } else {
-        ++it;
-      }
-    }
     state.documents[record.document_uuid] = record;
     RebuildDocumentIndexes(&state);
     record = state.documents[record.document_uuid];

@@ -109,7 +109,7 @@ api::EngineTypedValue TextValue(std::string value) {
   typed.descriptor.canonical_type_name = "character";
   typed.descriptor.encoded_descriptor = "canonical=character";
   typed.encoded_value = std::move(value);
-  typed.is_null = typed.encoded_value == "<NULL>";
+  typed.setState(api::EngineValueState::value);
   return typed;
 }
 

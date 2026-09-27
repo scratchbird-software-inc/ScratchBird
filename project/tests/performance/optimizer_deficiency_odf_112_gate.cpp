@@ -32,6 +32,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -109,7 +110,13 @@ api::EngineTypedValue TextValue(std::string value) {
   typed.descriptor.canonical_type_name = "character";
   typed.descriptor.encoded_descriptor = "canonical=character";
   typed.encoded_value = std::move(value);
-  typed.is_null = typed.encoded_value == "<NULL>";
+  typed.setState(api::EngineValueState::value);
+  return typed;
+}
+
+api::EngineTypedValue NullTextValue() {
+  auto typed = TextValue({});
+  typed.setState(api::EngineValueState::sql_null);
   return typed;
 }
 
@@ -128,11 +135,11 @@ api::EngineRowValue SortedRow(std::string id, std::string city) {
 }
 
 api::EngineRowValue ProofRow(std::string id,
-                             std::string parent_id,
+                             std::optional<std::string> parent_id,
                              std::string note) {
   api::EngineRowValue row;
   row.fields.push_back({"id", TextValue(std::move(id))});
-  row.fields.push_back({"parent_id", TextValue(std::move(parent_id))});
+  row.fields.push_back({"parent_id", parent_id ? TextValue(std::move(*parent_id)) : NullTextValue()});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
 }
@@ -1206,7 +1213,7 @@ ScenarioEvidence ProofValidationAcceptedScenario() {
   auto copy_request = StrictImportRequest(
       fixture,
       context,
-      {ProofRow("root", "<NULL>", "root row"),
+      {ProofRow("root", std::nullopt, "root row"),
        ProofRow("child", "root", "child row")},
       {"copy_append_batching=enabled", "sorted_bulk_index_build=enabled"});
   const auto imported = api::EngineExecuteImportRows(copy_request);
@@ -1258,8 +1265,8 @@ ScenarioEvidence ProofValidationRefusalScenario() {
   const auto duplicate = api::EngineExecuteImportRows(
       StrictImportRequest(fixture,
                           duplicate_context,
-                          {ProofRow("dup", "<NULL>", "first"),
-                           ProofRow("dup", "<NULL>", "second")},
+                          {ProofRow("dup", std::nullopt, "first"),
+                           ProofRow("dup", std::nullopt, "second")},
                           {"copy_append_batching=enabled",
                            "sorted_bulk_index_build=enabled"}));
   Require(!duplicate.ok, "ODF-112 duplicate proof batch was accepted");

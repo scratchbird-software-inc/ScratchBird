@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +9,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
@@ -75,12 +77,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid schema_uuid;
   api::EngineUuid table_uuid;
   platform::u64 salt = 0;
   api::EngineRequestContext context;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -126,15 +131,10 @@ api::CrudTableRecord Table(const Fixture& fixture) {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
@@ -184,8 +184,7 @@ Fixture MakeFixture(std::string_view label, platform::u64 salt) {
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -195,20 +194,23 @@ Fixture MakeFixture(std::string_view label, platform::u64 salt) {
   Require(created.ok(), "IPAR-P3-07 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.schema_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.context = Begin(fixture, "ipar-p3-07-metadata-" + std::string(label));
 
-  const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
+  const auto table = scratchbird::tests::PublishMgaTableFixture(
+      fixture.context, Table(fixture), {"character", "character"});
   Require(!table.error, "IPAR-P3-07 table metadata append failed");
+  fixture.schema_uuid = fixture.context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.context);
   return fixture;
 }
 
-api::EngineInsertRowsRequest InsertRequest(const Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(const Fixture& fixture,
                                            std::vector<api::EngineRowValue> rows,
                                            std::vector<std::string> options) {
-  api::EngineInsertRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.target_schema.uuid = fixture.schema_uuid;
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -314,6 +316,8 @@ void VerifyAgentQueueBackpressureRefusal(platform::u64 salt) {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "ipar-resource-quota-native-fixture");
   const auto salt = TimeSeed();
   VerifyAllowedRoute(salt + 100);
   VerifyPageReservationRefusal(salt + 200);

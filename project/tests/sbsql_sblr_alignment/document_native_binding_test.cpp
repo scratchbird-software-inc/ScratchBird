@@ -67,10 +67,10 @@ int main() {
   Check(!a::AddProjectedDocumentRow(&result, candidate, request, &cells, &bytes, &refused));
   a::EngineApiRequest insert; insert.assignments = {{"document_uuid", value}};
   std::set<std::string> nulls; bool valid = false;
-  Check(a::ParsePayloadFragments(insert, {}, &nulls, &valid).at("document_uuid") == raw && valid);
+  Check(a::ParsePayloadFragments(insert, &nulls, &valid).at("document_uuid") == raw && valid);
   insert.assignments[0].second.binary_value.clear();
   insert.assignments[0].second.encoded_value = "019f0000-0000-7000-8000-000000000001";
-  a::ParsePayloadFragments(insert, {}, &nulls, &valid); Check(!valid);
+  a::ParsePayloadFragments(insert, &nulls, &valid); Check(!valid);
   char path[] = "/tmp/sb_document_native_XXXXXX";
   const auto directory = ::mkdtemp(path); Check(directory != nullptr);
   context.database_path = std::string(directory) + "/database";

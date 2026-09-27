@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -111,16 +112,22 @@ api::EngineTypedValue TextValue(std::string value) {
   typed.descriptor.canonical_type_name = "character";
   typed.descriptor.encoded_descriptor = "canonical=character";
   typed.encoded_value = std::move(value);
-  typed.is_null = typed.encoded_value == "<NULL>";
+  typed.setState(api::EngineValueState::value);
+  return typed;
+}
+
+api::EngineTypedValue NullTextValue() {
+  auto typed = TextValue({});
+  typed.setState(api::EngineValueState::sql_null);
   return typed;
 }
 
 api::EngineRowValue Row(std::string id,
-                        std::string parent_id,
+                        std::optional<std::string> parent_id,
                         std::string note) {
   api::EngineRowValue row;
   row.fields.push_back({"id", TextValue(std::move(id))});
-  row.fields.push_back({"parent_id", TextValue(std::move(parent_id))});
+  row.fields.push_back({"parent_id", parent_id ? TextValue(std::move(*parent_id)) : NullTextValue()});
   row.fields.push_back({"note", TextValue(std::move(note))});
   return row;
 }
@@ -421,7 +428,7 @@ void AcceptedStrictCopyAndNativeUseProofs() {
   const auto imported = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     context,
-                    {Row("root", "<NULL>", "root row"),
+                    {Row("root", std::nullopt, "root row"),
                      Row("child", "root", "child row")}));
   RequireOk(imported, "ODF-046 strict COPY proof import failed");
   Require(imported.accepted_rows == 2 && imported.inserted_rows == 2,
@@ -451,8 +458,8 @@ void DuplicateBatchUniqueRefusesBeforeAppend() {
   const auto imported = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     context,
-                    {Row("dup", "<NULL>", "first"),
-                     Row("dup", "<NULL>", "second")}));
+                    {Row("dup", std::nullopt, "first"),
+                     Row("dup", std::nullopt, "second")}));
   Require(!imported.ok, "ODF-046 duplicate batch was accepted");
   Require(!imported.diagnostics.empty(), "ODF-046 duplicate lacked diagnostic");
   Require(imported.diagnostics.front().code ==
@@ -475,7 +482,7 @@ void PersistedUniqueConflictRefusesBeforeAppend() {
   const auto seeded = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     seed_context,
-                    {Row("persisted", "<NULL>", "seed")}));
+                    {Row("persisted", std::nullopt, "seed")}));
   RequireOk(seeded, "ODF-046 persisted seed insert failed");
   Commit(seed_context);
 
@@ -483,7 +490,7 @@ void PersistedUniqueConflictRefusesBeforeAppend() {
   const auto duplicate = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     conflict_context,
-                    {Row("persisted", "<NULL>", "duplicate")}));
+                    {Row("persisted", std::nullopt, "duplicate")}));
   Require(!duplicate.ok, "ODF-046 persisted unique conflict was accepted");
   Require(!duplicate.diagnostics.empty(),
           "ODF-046 persisted conflict lacked diagnostic");
@@ -540,7 +547,7 @@ void HistoricalIndexEntriesAreMGARecheckedBeforeConflict() {
   const auto seeded = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     seed_context,
-                    {Row("reusable", "<NULL>", "seed")}));
+                    {Row("reusable", std::nullopt, "seed")}));
   RequireOk(seeded, "ODF-046 historical seed insert failed");
   Commit(seed_context);
 
@@ -559,7 +566,7 @@ void HistoricalIndexEntriesAreMGARecheckedBeforeConflict() {
   const auto reused = api::EngineExecuteImportRows(
       ImportRequest(fixture,
                     reuse_context,
-                    {Row("reusable", "<NULL>", "reused")}));
+                    {Row("reusable", std::nullopt, "reused")}));
   RequireOk(reused,
             "ODF-046 historical index entry caused false unique conflict");
   AssertAcceptedProofEvidence(reused,

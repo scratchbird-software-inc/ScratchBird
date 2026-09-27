@@ -615,6 +615,7 @@ target_link_libraries(
   document_path_physical_provider_gate
   PRIVATE
     sb_engine_internal_api
+    sb_engine
 )
 add_test(
   NAME document_path_physical_provider_gate
