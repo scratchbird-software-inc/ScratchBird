@@ -70,6 +70,9 @@ struct CacheEntry {
   std::string sblr_payload;
   std::string statement_family;
   std::string operation_family;
+  // Exact lowering operation; family captions cannot establish whether an
+  // artifact contains a statement-bound native query. Empty is not reusable.
+  std::string operation_id;
   std::uint64_t statement_hash{0};
   bool parser_executes_sql{false};
   bool storage_authority_cached{false};
@@ -86,6 +89,8 @@ struct CacheStoreResult {
   std::string stable_key;
   std::string compact_key;
 };
+
+[[nodiscard]] bool CanReuseParseOnlyArtifact(const CacheEntry& entry) noexcept;
 
 class SblrTemplateCache {
  public:

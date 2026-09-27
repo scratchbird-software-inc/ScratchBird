@@ -27490,7 +27490,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.attempts_total");
     if (auto cached = cache_->LookupEntry(frontdoor_cache_key)) {
       auto result = PipelineResultFromCacheEntry(*cached);
-      if ((!submit && result.operation_family != "sblr.query.relational.v3") ||
+      if ((!submit && CanReuseParseOnlyArtifact(*cached)) ||
           CanReuseFrontdoorCacheForSubmit(result)) {
         if (metrics_) {
           metrics_->Increment("sys.metrics.parsers.frontdoor_cache.hits_total");
@@ -30044,6 +30044,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     entry.sblr_payload = result.sblr_payload;
     entry.statement_family = result.statement_family;
     entry.operation_family = result.operation_family;
+    entry.operation_id = lowered.operation_id;
     entry.statement_hash = result.statement_hash;
     entry.parser_executes_sql = false;
     entry.storage_authority_cached = false;

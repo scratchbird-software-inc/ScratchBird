@@ -180,12 +180,28 @@ void VerifyStandardEnglishFallbackPassThrough() {
               Contains(snapshot, "\"resource_compatibility_identity\"") &&
               Contains(snapshot, "\"resource_version_identity\""),
           "cache snapshot does not disclose language/resource dimensions");
-  Require(Contains(snapshot, "sbsql.language-profile.fr-CA") &&
-              Contains(snapshot, ":fr-CA:sbsql.syntax.standard:en:"),
-          "cache snapshot did not retain preferred language fallback key evidence");
-  Require(Contains(snapshot, "sbsql.builtin.recovery.en") &&
-              Contains(snapshot, ":en:sbsql.syntax.standard::"),
-          "cache snapshot did not retain canonical English key evidence");
+  // Stable keys are binary and the diagnostic snapshot publishes compact
+  // fingerprints, not the retired colon-delimited key. Verify the retained
+  // dimensions through actual invalidation and reuse of both cached entries.
+  Require(cache.Size() == 2, "language variants did not retain distinct entries");
+  cache.InvalidateInputLanguageFallbackTag("en");
+  Require(cache.Size() == 1, "fallback invalidation did not select exactly one entry");
+  Require(preferred_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "preferred fallback dimension was not retained");
+  Require(!english_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "canonical English entry survived fallback invalidation");
+  cache.InvalidateLanguageProfile("sbsql.builtin.recovery.en");
+  Require(cache.Size() == 1, "profile invalidation did not select exactly one entry");
+  Require(english_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "canonical English profile dimension was not retained");
+  Require(!preferred_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "preferred entry survived canonical English profile invalidation");
+  cache.InvalidateLanguageTag("fr-CA");
+  Require(cache.Size() == 1, "language tag invalidation did not select exactly one entry");
+  Require(preferred_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "preferred language tag dimension was not retained");
+  Require(!english_session.RunPipeline(kParserOnlyQueryCarrier, false).frontdoor_cache_hit,
+          "canonical English entry survived preferred language tag invalidation");
 }
 
 sbsql::SblrEnvelope MinimalEnvelope() {

@@ -209,9 +209,47 @@ void VerifyEpochInvalidationStillRemovesStaleEntries() {
           "catalog epoch invalidation removed current parser cache entry");
 }
 
+void VerifyExactOperationReuseBoundary() {
+  auto entry = EntryFor(BaseKey(), "parser-only-artifact");
+  entry.operation_family = "sblr.query.relational.v3";
+  Require(!sbsql::CanReuseParseOnlyArtifact(entry),
+          "missing operation classification was reusable");
+  for (const auto* operation : {"query.bind_expression", "query.bind_predicate"}) {
+    entry.operation_id = operation;
+    Require(sbsql::CanReuseParseOnlyArtifact(entry),
+            "non-native binding artifact was excluded by its family caption");
+    sbsql::SblrTemplateCache cache(1);
+    Require(cache.StoreEntry(entry).stored, "parser-only artifact was not stored");
+    const auto retained = cache.LookupEntry(entry.key);
+    Require(retained && retained->operation_id == operation &&
+                sbsql::CanReuseParseOnlyArtifact(*retained),
+            "cache lost the exact lowering operation");
+  }
+  for (const auto* family : {"sblr.query.relational.v3", "sblr.catalog.mutation.v3", ""}) {
+    entry.operation_id = "query.execute";
+    entry.operation_family = family;
+    Require(!sbsql::CanReuseParseOnlyArtifact(entry),
+            "native statement artifact was reusable through a family caption");
+  }
+  entry.operation_id = "query.bind_expression";
+  for (auto flag : {&sbsql::CacheEntry::parser_executes_sql,
+                    &sbsql::CacheEntry::storage_authority_cached,
+                    &sbsql::CacheEntry::visibility_authority_cached,
+                    &sbsql::CacheEntry::authorization_authority_cached,
+                    &sbsql::CacheEntry::finality_authority_cached}) {
+    entry.*flag = true;
+    Require(!sbsql::CanReuseParseOnlyArtifact(entry),
+            "an authority-bearing artifact was reusable");
+    entry.*flag = false;
+  }
+  entry.sblr_payload.clear();
+  Require(!sbsql::CanReuseParseOnlyArtifact(entry), "empty artifact was reusable");
+}
+
 } // namespace
 
 int main() {
+  VerifyExactOperationReuseBoundary();
   VerifyAuthorityRefusals();
   VerifyDeterministicLruEviction();
   VerifyCompactKeyAndStableDiagnostics();

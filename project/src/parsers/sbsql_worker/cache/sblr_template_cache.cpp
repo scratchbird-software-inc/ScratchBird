@@ -83,6 +83,13 @@ std::optional<CacheStoreResult> ValidateEntryForStore(
 
 } // namespace
 
+bool CanReuseParseOnlyArtifact(const CacheEntry& entry) noexcept {
+  return !entry.operation_id.empty() && entry.operation_id != "query.execute" &&
+         !entry.sblr_payload.empty() && !entry.parser_executes_sql &&
+         !entry.storage_authority_cached && !entry.visibility_authority_cached &&
+         !entry.authorization_authority_cached && !entry.finality_authority_cached;
+}
+
 std::string CacheKey::StableKey() const {
   BinaryCacheKey out("sbsql-cache-v9");
   out.Number(shape_hash);
