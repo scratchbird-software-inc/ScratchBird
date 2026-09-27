@@ -149,16 +149,25 @@ void PrintMessages(const PipelineArtifacts& artifacts) {
 }
 
 PipelineArtifacts RunPipeline(std::string_view sql,
-                              std::vector<api::EngineUuid> resolved = {}) {
+                              std::vector<api::EngineUuid> resolved = {},
+                              bool bind_functions = true) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
+  // Component fixture binding from the actual engine registry. Executable
+  // lowering receives native identities; symbolic labels confer no authority.
+  std::vector<scratchbird::wire::BuiltinFunctionIdentity> functions;
+  if (bind_functions) {
+    const auto package = fn::BuildStandardFunctionSeedPackage();
+    for (const auto& entry : package.registry.Entries())
+      if (entry.catalog_visible) functions.push_back({entry.function_id, entry.function_uuid});
+  }
   artifacts.bound = BindAst(artifacts.ast,
                             artifacts.cst,
                             ParserConfigForTest(),
                             session,
-                            std::move(resolved));
+                            std::move(resolved), nullptr, functions);
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -880,6 +889,25 @@ void RequireLockFunctionRuntimeAndLowering() {
   Require(Contains(release_lock.envelope.payload,
                    "\"projection_0_function_arg_count\":\"1\""),
           "Gate 011 RELEASE_LOCK projection arity missing");
+  for (const auto& [artifacts, name] : {
+           std::pair{&get_lock, "sb.scalar.get_lock"},
+           std::pair{&release_lock, "sb.scalar.release_lock"}}) {
+    const auto* entry = package.registry.Lookup(name);
+    Require(entry != nullptr, "Gate 011 callable identity missing from engine registry");
+    const auto identity = std::find_if(artifacts->envelope.operands.begin(),
+        artifacts->envelope.operands.end(), [](const auto& operand) {
+          return operand.name == "projection_0_function_uuid";
+        });
+    Require(identity != artifacts->envelope.operands.end() &&
+                identity->type == "uuid" && identity->value.empty() &&
+                identity->canonical_value_body.size() == 16 &&
+                std::equal(identity->canonical_value_body.begin(),
+                           identity->canonical_value_body.end(), entry->function_uuid.bytes.begin()),
+            "Gate 011 scalar projection lost its actual binary callable binding");
+  }
+  const auto unbound = RunPipeline("SELECT GET_LOCK('gate011_projection', 0)", {}, false);
+  Require(!unbound.verifier.admitted && HasEnvelopeDiagnostic(unbound, "SBLR.OPERAND_INVALID"),
+          "Gate 011 spelling-only scalar call must not gain executable authority");
 }
 
 void RequireSelectForUpdateCompatibilityEvidence() {
