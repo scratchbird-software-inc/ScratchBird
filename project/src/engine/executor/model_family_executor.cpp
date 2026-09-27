@@ -847,9 +847,6 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     reservation.owner = request.spill_owner;
     reservation.bytes = request.admitted_plan.admitted_spill_bytes;
     reservation.purpose = "rcp080.multimodel.bounded.spill.v1";
-    temp_reservation_started = true;
-    temp_reservation_guard.Arm(request.engine_temp_workspace,
-                               &request.spill_owner.operation_id);
     scratchbird::core::memory::TempWorkspaceResult reserved;
     try {
       reserved =
@@ -860,6 +857,15 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     } catch (...) {
       return refuse("SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
                     "temp spill reservation threw");
+    }
+    // The temp owner returns a record whenever this call retains backing,
+    // including a post-publication failure. A refused acquisition with no
+    // record owns nothing: do not count a cleanup or erase other reservations
+    // that already belong to this operation.
+    temp_reservation_started = reserved.record.has_value();
+    if (temp_reservation_started) {
+      temp_reservation_guard.Arm(request.engine_temp_workspace,
+                                 &request.spill_owner.operation_id);
     }
     if (!reserved.ok() || !reserved.record.has_value() ||
         reserved.record->owner.statement_id != reservation.owner.statement_id ||

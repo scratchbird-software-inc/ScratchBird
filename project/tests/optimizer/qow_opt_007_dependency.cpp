@@ -4,6 +4,7 @@
 #include "../../src/engine/executor/model_family_executor.hpp"
 
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -653,8 +654,9 @@ executor::ModelFamilyCompositionExecutionRequestV1 RuntimeRequest(
   request.spill_operation_uuid = Uuid(operation_seed);
   request.spill_resource_contract_uuid = Uuid(804);
   request.spill_owner.temp_object_uuid = Uuid(operation_seed + 1);
-  request.spill_owner.database_id = Uuid(operation_seed + 2);
-  request.spill_owner.engine_id = Uuid(operation_seed + 3);
+  // All operations in this workspace retain its one node/process owner.
+  request.spill_owner.database_id = Uuid(3002);
+  request.spill_owner.engine_id = Uuid(3003);
   request.spill_owner.session_id = Uuid(operation_seed + 4);
   request.spill_owner.transaction_id = Mga().owning_transaction_uuid;
   request.spill_owner.statement_id = Mga().statement_uuid;
@@ -677,6 +679,8 @@ memory::TempWorkspacePolicy WorkspacePolicy(const std::filesystem::path& root,
                                             const std::string& name) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = name;
+  policy.database_uuid = Uuid(3002);
+  policy.engine_uuid = Uuid(3003);
   policy.root_path = root;
   policy.filespace_quota_bytes = 1024 * 1024;
   policy.session_quota_bytes = 1024 * 1024;
@@ -714,6 +718,8 @@ int main() {
   const auto root = UniqueTempRoot("sb_rcp080_qow_opt_007_dependency");
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "rcp080_qow_opt_007_dependency";
+  policy.database_uuid = Uuid(3002);
+  policy.engine_uuid = Uuid(3003);
   policy.root_path = root;
   policy.filespace_quota_bytes = 1024 * 1024;
   policy.session_quota_bytes = 1024 * 1024;
@@ -843,6 +849,46 @@ int main() {
   passed &= refuses_preaccess(substituted,
                               "SB_MODEL_RESOURCE_SPILL_REFUSED_V1",
                               "spill policy generation");
+  // Failed acquisition must not clean another live reservation, even when
+  // the caller repeats an operation UUID. The real temp owner rejects the
+  // mismatched or invalid node/process UUID before publishing a new record.
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    memory::TempWorkspaceAllocationRequest held_request;
+    held_request.owner = request.spill_owner;
+    held_request.owner.temp_object_uuid = Uuid(4000 + variant);
+    held_request.bytes = 16;
+    held_request.storage_class = memory::TempStorageClass::spill_file;
+    held_request.lifetime = memory::TempWorkspaceLifetime::operation_lifetime;
+    held_request.purpose = "uuid-refused-acquisition-retains-existing-owner";
+    const auto held = workspace.ReserveTempFilespace(held_request);
+    if (!Require(held.ok() && held.record.has_value(),
+                 "preexisting spill ownership setup failed")) return 1;
+    auto wrong_owner = request;
+    if (variant == 0) wrong_owner.spill_owner.database_id = Uuid(9004);
+    if (variant == 1) wrong_owner.spill_owner.engine_id = Uuid(9005);
+    if (variant == 2) wrong_owner.spill_owner.database_id = {};
+    if (variant == 3) wrong_owner.spill_owner.engine_id.bytes[6] = 0x40;
+    const auto before = workspace.Snapshot();
+    const auto denied = executor::ExecuteModelFamilyCompositionV1(wrong_owner);
+    const auto after = workspace.Snapshot();
+    passed &= Require(!denied.accepted && !denied.execution_started &&
+                          !denied.root_published && denied.no_partial_root &&
+                          denied.root_output_batch.rows.empty() &&
+                          denied.diagnostic_id == "SB_MODEL_RESOURCE_SPILL_REFUSED_V1" &&
+                          denied.cleanup_complete && denied.spill_cleanup_count == 0 &&
+                          denied.provider_cleanup_count == 0 &&
+                          before.active_bytes == 16 && after.active_bytes == before.active_bytes &&
+                          after.allocation_count == before.allocation_count &&
+                          after.cleanup_count == before.cleanup_count &&
+                          workspace.ActiveRecords().size() == 1 &&
+                          std::filesystem::is_regular_file(held.record->path),
+                      "refused binary owner erased or claimed cleanup of a preexisting reservation");
+    const auto cleanup = workspace.CleanupOperation(held_request.owner.operation_id);
+    passed &= Require(cleanup.ok() && cleanup.cleaned_count == 1 &&
+                          workspace.Snapshot().active_bytes == 0 &&
+                          !std::filesystem::exists(held.record->path),
+                      "original binary owner could not clean its retained reservation");
+  }
   const auto below_plan =
       optimizer::CoordinateModelFamilyDependencyDagV1(Admission(348));
   auto below_request = request;
@@ -937,6 +983,18 @@ int main() {
   descriptor_substitution.spill_operation_uuid = Uuid(3030);
   descriptor_substitution.spill_owner.operation_id =
       descriptor_substitution.spill_operation_uuid;
+  // Make the existing three-provider cleanup assertion deterministic: all
+  // three providers must have started before one publishes a bad descriptor
+  // and fans cancellation out to its peers.
+  std::barrier providers_entered(3);
+  for (auto& leg : descriptor_substitution.legs) {
+    const auto provider = leg.execution.execute_provider;
+    leg.execution.execute_provider = [provider, &providers_entered](const auto& input) {
+      auto output = provider(input);
+      providers_entered.arrive_and_wait();
+      return output;
+    };
+  }
   const auto original_document_provider =
       descriptor_substitution.legs[1].execution.execute_provider;
   descriptor_substitution.legs[1].execution.execute_provider =

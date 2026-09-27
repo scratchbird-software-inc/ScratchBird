@@ -27,6 +27,8 @@ int main() {
   const auto root = UniqueTempRoot("sb_rcp080_qow_opt_018_failure");
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "rcp080_qow_opt_018_failure";
+  policy.database_uuid = Uuid(4002);
+  policy.engine_uuid = Uuid(4003);
   policy.root_path = root;
   policy.filespace_quota_bytes = 1024 * 1024;
   policy.session_quota_bytes = 1024 * 1024;
