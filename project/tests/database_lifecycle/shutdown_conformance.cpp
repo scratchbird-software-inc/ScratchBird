@@ -335,6 +335,48 @@ void TestNativeShutdownScopeRefusesBeforeMutation(const std::filesystem::path& d
           "identity refusal mutated durable lifecycle state");
 }
 
+void TestDurableShutdownChecksTheOpenedNode(const std::filesystem::path& dir) {
+  const auto fixture = CreateActiveDatabase(dir / "durable_identity.sbdb", 1779400006000);
+  const auto bytes = [&] {
+    disk::FileDevice device;
+    Require(device.Open(fixture.path.string(), disk::FileOpenMode::open_existing_read_only).ok(),
+            "cannot inspect durable shutdown identity fixture");
+    std::vector<std::uint8_t> data(std::filesystem::file_size(fixture.path));
+    Require(device.ReadAt(0, data.data(), data.size()).ok(), "cannot read identity fixture bytes");
+    return data;
+  };
+  const auto before = bytes();
+  auto foreign = fixture.database_uuid;
+  foreign.bytes[15] ^= 0x80;
+  auto v4 = fixture.database_uuid;
+  v4.bytes[6] = static_cast<std::uint8_t>((v4.bytes[6] & 15) | 0x40);
+  auto invalid_variant = fixture.database_uuid;
+  invalid_variant.bytes[8] &= 0x3f;
+  for (const auto& invalid : {scratchbird::core::platform::Uuid{}, v4, invalid_variant, foreign}) {
+    const auto refused = db::MarkDatabaseCleanShutdown(fixture.path.string(), invalid);
+    Require(!refused.ok(), "shutdown accepted an invalid or foreign expected node");
+    Require(refused.diagnostic.diagnostic_code ==
+                (invalid == foreign ? "SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-MISMATCH"
+                                    : "SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-INVALID"),
+            "durable shutdown identity refusal diagnostic mismatch");
+    Require(bytes() == before, "refused shutdown modified bytes of the opened database");
+  }
+  // The server must pass its claimed native identity all the way to the opened
+  // file. An otherwise complete snapshot cannot bless a different node's path.
+  auto snapshot = Snapshot(fixture);
+  snapshot.database_uuid = foreign;
+  const auto config = Config(fixture);
+  auto coordinator = Coordinator(config);
+  const auto refused = scratchbird::server::ApplyDatabaseShutdownOperation(
+      &coordinator, config, Request("shutdown_database"), snapshot);
+  Require(!refused.ok && HasDiagnostic(refused, "SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-MISMATCH"),
+          "server shutdown did not retain expected node at the storage boundary");
+  Require(bytes() == before, "server shutdown marked a foreign file clean");
+  Require(db::MarkDatabaseCleanShutdown(fixture.path.string(), fixture.database_uuid).ok(),
+          "exact native owner could not mark database clean");
+  Require(ReadStartup(fixture).clean_shutdown, "exact-owner shutdown did not persist clean state");
+}
+
 }  // namespace
 
 int main() {
@@ -346,6 +388,7 @@ int main() {
   TestDrainTimeoutPreservesActiveTransactionFinality(temp_dir);
   TestForceShutdownRequiresExplicitPolicyAndDoesNotMarkClean(temp_dir);
   TestNativeShutdownScopeRefusesBeforeMutation(temp_dir);
+  TestDurableShutdownChecksTheOpenedNode(temp_dir);
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;
 }

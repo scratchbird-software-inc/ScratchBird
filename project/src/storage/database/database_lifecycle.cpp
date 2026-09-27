@@ -8440,7 +8440,15 @@ DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config) 
   return result;
 }
 
-StartupWriteResult MarkDatabaseCleanShutdown(const std::string& path) {
+namespace {
+
+StartupWriteResult MarkDatabaseCleanShutdownImpl(
+    const std::string& path,
+    const scratchbird::core::platform::Uuid* expected_database_uuid) {
+  if (expected_database_uuid != nullptr && !IsEngineIdentityUuid(*expected_database_uuid)) {
+    return StartupLifecycleError("SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-INVALID",
+                                 "storage.database_lifecycle.shutdown_identity_invalid");
+  }
   if (path.empty()) {
     return StartupLifecycleError("SB-DB-LIFECYCLE-SHUTDOWN-PATH-REQUIRED",
                                  "storage.database_lifecycle.shutdown_path_required");
@@ -8460,6 +8468,12 @@ StartupWriteResult MarkDatabaseCleanShutdown(const std::string& path) {
   const auto parsed_header = ParseDatabaseHeader(serialized);
   if (!parsed_header.ok()) {
     return StartupLifecyclePropagate(parsed_header.status, parsed_header.diagnostic);
+  }
+
+  if (expected_database_uuid != nullptr &&
+      parsed_header.header.database_uuid != *expected_database_uuid) {
+    return StartupLifecycleError("SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-MISMATCH",
+                                 "storage.database_lifecycle.shutdown_identity_mismatch");
   }
 
   auto startup_state = ReadStartupStatePageBody(&device, parsed_header.header.page_size);
@@ -8598,6 +8612,18 @@ StartupWriteResult MarkDatabaseCleanShutdown(const std::string& path) {
     return StartupLifecyclePropagate(close.status, close.diagnostic);
   }
   return StartupLifecycleOkStatus();
+}
+
+}  // namespace
+
+StartupWriteResult MarkDatabaseCleanShutdown(const std::string& path) {
+  return MarkDatabaseCleanShutdownImpl(path, nullptr);
+}
+
+StartupWriteResult MarkDatabaseCleanShutdown(
+    const std::string& path,
+    const scratchbird::core::platform::Uuid& expected_database_uuid) {
+  return MarkDatabaseCleanShutdownImpl(path, &expected_database_uuid);
 }
 
 DiagnosticRecord MakeDatabaseLifecycleDiagnostic(Status status,

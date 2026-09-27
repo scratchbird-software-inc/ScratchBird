@@ -360,6 +360,10 @@ DatabaseLifecycleResult VerifyDatabaseLifecycle(const DatabaseLifecycleOperation
 DatabaseLifecycleResult RepairDatabaseLifecycle(const DatabaseLifecycleRepairConfig& config);
 DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config);
 StartupWriteResult MarkDatabaseCleanShutdown(const std::string& path);
+// Request-driven shutdown must bind the opened file to its native node owner.
+StartupWriteResult MarkDatabaseCleanShutdown(
+    const std::string& path,
+    const scratchbird::core::platform::Uuid& expected_database_uuid);
 DiagnosticRecord MakeDatabaseLifecycleDiagnostic(Status status,
                                                 std::string diagnostic_code,
                                                 std::string message_key,

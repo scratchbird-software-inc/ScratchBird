@@ -462,7 +462,8 @@ EngineShutdownLifecycleResult EngineShutdownLifecycle(const EngineShutdownLifecy
   constexpr const char* operation = "lifecycle.shutdown_database";
   auto authority = ValidateLifecycleAuthority<EngineShutdownLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
-  const auto clean = scratchbird::storage::database::MarkDatabaseCleanShutdown(request.context.database_path);
+  const auto clean = scratchbird::storage::database::MarkDatabaseCleanShutdown(
+      request.context.database_path, request.context.database_uuid);
   if (!clean.ok()) {
     return LifecycleFailure<EngineShutdownLifecycleResult>(request.context,
                                                           operation,

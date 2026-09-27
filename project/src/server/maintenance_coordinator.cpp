@@ -705,7 +705,8 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
   scratchbird::storage::database::DatabaseLifecycleResult inspected;
   bool clean_shutdown_marked = false;
   if (!force) {
-    const auto clean = scratchbird::storage::database::MarkDatabaseCleanShutdown(target_path);
+    const auto clean = scratchbird::storage::database::MarkDatabaseCleanShutdown(
+        target_path, snapshot.database_uuid);
     if (!clean.ok()) {
       return refuse(clean.diagnostic.diagnostic_code.empty()
                         ? "ENGINE.SHUTDOWN_INPUT_INVALID"
