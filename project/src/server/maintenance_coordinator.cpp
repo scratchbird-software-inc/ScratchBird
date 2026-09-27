@@ -225,7 +225,7 @@ std::string ShutdownRuntimeRecordJson(const ServerMaintenanceOperationRequest& r
   out << "[{\"operation_key\":\"" << JsonEscape(request.operation_key)
       << "\",\"shutdown_mode\":\"" << JsonEscape(shutdown_mode)
       << "\",\"database_ref\":\"" << JsonEscape(snapshot.database_path.empty() ? "" : "[path-redacted]")
-      << "\",\"database_uuid\":\"" << status::Identity(std::string_view(snapshot.database_uuid))
+      << "\",\"database_uuid\":\"" << status::Identity(snapshot.database_uuid)
       << "\",\"association_scope_proven\":" << BoolText(snapshot.association_scope_proven)
       << ",\"notified_manager_count\":" << snapshot.associated_manager_count
       << ",\"notified_listener_count\":" << snapshot.associated_listener_count
@@ -460,8 +460,8 @@ std::string MaintenanceCoordinatorRecordsJson(const ServerMaintenanceCoordinator
       << ",\"shutdown_active_transaction_session_count\":"
       << coordinator.shutdown_active_transaction_session_count
       << ",\"shutdown_mode\":\"" << JsonEscape(coordinator.shutdown_mode)
-      << "\",\"shutdown_database_uuid\":\"" << status::Identity(std::string_view(coordinator.shutdown_database_uuid))
-      << "\",\"database_uuid\":\"" << status::Identity(std::string_view(coordinator.database_uuid))
+      << "\",\"shutdown_database_uuid\":\"" << status::Identity(coordinator.shutdown_database_uuid)
+      << "\",\"database_uuid\":\"" << status::Identity(coordinator.database_uuid)
       << "\",\"permitted_maintenance_operations\":\""
       << JsonEscape(coordinator.permitted_maintenance_operations)
       << "\",\"last_operation\":\"" << JsonEscape(coordinator.last_operation)
@@ -529,8 +529,10 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
     return bytes.empty() || wire::DecodeManagementTarget(bytes, &id);
   };
   if (!valid_optional(request.target_uuid) ||
-      !valid_optional(coordinator->database_uuid) ||
-      !valid_optional(coordinator->shutdown_database_uuid) ||
+      (!coordinator->database_uuid.is_nil() &&
+       !core::uuid::IsEngineIdentityUuid(coordinator->database_uuid)) ||
+      (!coordinator->shutdown_database_uuid.is_nil() &&
+       !core::uuid::IsEngineIdentityUuid(coordinator->shutdown_database_uuid)) ||
       !valid_optional(coordinator->last_finality_token)) {
     result.ok = false;
     result.outcome = "refused";
@@ -543,7 +545,7 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
 
   std::vector<std::string> mode_fields;
   if (!wire::SplitManagementMode(request.mode, &mode_fields) ||
-      !valid_optional(snapshot.database_uuid))
+      !core::uuid::IsEngineIdentityUuid(snapshot.database_uuid))
     return refuse("ENGINE.SHUTDOWN_INPUT_INVALID", "Shutdown identities and options require native binary16 UUIDs.",
                   "shutdown_binary_identity_invalid");
 
@@ -567,16 +569,24 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
                   snapshot.association_diagnostic_detail.empty()
                       ? "shutdown_association_scope_not_proven"
                       : snapshot.association_diagnostic_detail,
-                  {{"database_uuid", snapshot.database_uuid}});
+                  {{"database_uuid", wire::ManagementTargetBytes(snapshot.database_uuid)}});
   }
   if (!request.target_uuid.empty() &&
       wire::DecodeManagementTarget(request.target_uuid, &target) && !target.is_nil() &&
-      !snapshot.database_uuid.empty() &&
-      request.target_uuid != snapshot.database_uuid) {
+      target != snapshot.database_uuid) {
     return refuse("ENGINE.SHUTDOWN_SCOPE_INVALID",
                   "The shutdown target UUID does not match the associated database UUID.",
                   "shutdown_target_uuid_mismatch",
-                  {{"target_uuid", request.target_uuid}, {"database_uuid", snapshot.database_uuid}});
+                  {{"target_uuid", request.target_uuid},
+                   {"database_uuid", wire::ManagementTargetBytes(snapshot.database_uuid)}});
+  }
+  if ((!coordinator->database_uuid.is_nil() &&
+       coordinator->database_uuid != snapshot.database_uuid) ||
+      (!coordinator->shutdown_database_uuid.is_nil() &&
+       coordinator->shutdown_database_uuid != snapshot.database_uuid)) {
+    return refuse("ENGINE.SHUTDOWN_SCOPE_INVALID",
+                  "A server maintenance coordinator cannot change its database identity.",
+                  "shutdown_coordinator_node_mismatch");
   }
 
   const bool fallback_required = snapshot.listener_unavailable ||
@@ -587,13 +597,13 @@ ServerMaintenanceOperationResult ApplyDatabaseShutdownOperation(
       return refuse("ENGINE.SHUTDOWN_PARSER_ASSOCIATION_STALE",
                     "The parser association fallback evidence is stale.",
                     "shutdown_parser_association_stale",
-                    {{"database_uuid", snapshot.database_uuid}});
+                    {{"database_uuid", wire::ManagementTargetBytes(snapshot.database_uuid)}});
     }
     if (!snapshot.parser_association_registry_available) {
       return refuse("ENGINE.SHUTDOWN_PARSER_ASSOCIATION_MISSING",
                     "The listener is unavailable and no engine-visible parser association is present.",
                     "shutdown_parser_association_missing",
-                    {{"database_uuid", snapshot.database_uuid}});
+                    {{"database_uuid", wire::ManagementTargetBytes(snapshot.database_uuid)}});
     }
     parser_fallback_used = true;
   }
@@ -773,8 +783,10 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
     return bytes.empty() || wire::DecodeManagementTarget(bytes, &id);
   };
   if (!valid_optional(request.target_uuid) ||
-      !valid_optional(coordinator->database_uuid) ||
-      !valid_optional(coordinator->shutdown_database_uuid) ||
+      (!coordinator->database_uuid.is_nil() &&
+       !core::uuid::IsEngineIdentityUuid(coordinator->database_uuid)) ||
+      (!coordinator->shutdown_database_uuid.is_nil() &&
+       !core::uuid::IsEngineIdentityUuid(coordinator->shutdown_database_uuid)) ||
       !valid_optional(coordinator->last_finality_token)) {
     result.ok = false;
     result.outcome = "refused";
@@ -952,7 +964,7 @@ ServerMaintenanceOperationResult ApplyServerMaintenanceOperation(
       return result;
     }
 
-    coordinator->database_uuid = TokenBytes(database_result.state.database_uuid.value.bytes);
+    coordinator->database_uuid = database_result.state.database_uuid.value;
     ++coordinator->generation;
     const std::string outcome =
         request.operation_key == "enter_database_maintenance" ? "maintenance_enabled" :

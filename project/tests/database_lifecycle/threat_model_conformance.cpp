@@ -259,8 +259,8 @@ void TestForceShutdownRuntimeGate(const std::filesystem::path& temp_dir) {
 
   server::ServerShutdownRuntimeSnapshot snapshot;
   snapshot.database_path = config.database_default_path.string();
-  snapshot.database_uuid = scratchbird::wire::ManagementTargetBytes(
-      scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000001"));
+  snapshot.database_uuid =
+      scratchbird::tests::FixtureUuidLiteral("019e13d0-0000-7000-8000-000000000001");
   snapshot.association_scope_proven = true;
   snapshot.associated_manager_count = 1;
   snapshot.associated_listener_count = 1;

@@ -304,11 +304,9 @@ engine_api::EngineRequestContext EngineContextForManagement(
   if (context.engine_state != nullptr) {
     for (const auto& database : context.engine_state->databases) {
       if (!database.database_open) continue;
-      const bool path_matches = !session.database_path.empty() &&
-                                session.database_path == database.database_path;
       const bool uuid_matches = !session.database_uuid.is_nil() &&
                                 session.database_uuid == database.database_uuid;
-      if (path_matches || uuid_matches) {
+      if (uuid_matches) {
         engine_context.cluster_authority_available = false;
         break;
       }
@@ -555,10 +553,10 @@ void RecordManagementLifecycleObservability(const ServerManagementContext& conte
 
 bool SessionMatchesDatabase(const ServerSessionRecord& session,
                             const std::string& database_path,
-                            const std::string& database_uuid) {
-  if (!database_uuid.empty() && session.database_uuid == BinaryIdentity(database_uuid)) return true;
-  if (!database_path.empty() && session.database_path == database_path) return true;
-  return false;
+                            const NativeUuid& database_uuid) {
+  (void)database_path;
+  return scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid) &&
+         session.database_uuid == database_uuid;
 }
 
 std::string NormalizeDatabaseSelector(std::string selector) {
@@ -577,13 +575,13 @@ std::string NormalizeDatabaseSelector(std::string selector) {
 
 bool ListenerMatchesDatabase(const ServerListenerProfileRuntime& profile,
                              const std::string& database_path,
-                             const std::string& database_uuid,
+                             const NativeUuid& database_uuid,
                              bool single_hosted_database) {
   const auto selector = NormalizeDatabaseSelector(profile.database_selector);
   if (!selector.empty() &&
       selector != "default" &&
       selector != database_path &&
-      selector != database_uuid) {
+      selector != IdentityBytes(database_uuid)) {
     return false;
   }
   if (selector.empty() || selector == "default") {
@@ -600,11 +598,11 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
   registry.generation = context.artifacts == nullptr || context.artifacts->generation == 0
       ? 1
       : context.artifacts->generation;
-  if (snapshot.database_uuid.empty() && snapshot.database_path.empty()) return registry;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(snapshot.database_uuid)) return registry;
 
   ProcessAssociationRecord server_process;
   server_process.kind = ProcessAssociationKind::kServerProcess;
-  server_process.database_uuid = BinaryIdentity(snapshot.database_uuid);
+  server_process.database_uuid = snapshot.database_uuid;
   server_process.database_path = snapshot.database_path;
   server_process.component_uuid = "sb_server:" + std::to_string(registry.generation);
   server_process.process_uuid = server_process.component_uuid;
@@ -615,7 +613,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
 
   ProcessAssociationRecord manager;
   manager.kind = ProcessAssociationKind::kManager;
-  manager.database_uuid = BinaryIdentity(snapshot.database_uuid);
+  manager.database_uuid = snapshot.database_uuid;
   manager.database_path = snapshot.database_path;
   manager.manager_uuid = "sb_server_manager:" + std::to_string(registry.generation);
   manager.component_uuid = manager.manager_uuid;
@@ -633,7 +631,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
   if (context.config != nullptr && context.config->sbps_enabled) {
     ProcessAssociationRecord ipc;
     ipc.kind = ProcessAssociationKind::kIpcEndpoint;
-    ipc.database_uuid = BinaryIdentity(snapshot.database_uuid);
+    ipc.database_uuid = snapshot.database_uuid;
     ipc.database_path = snapshot.database_path;
     ipc.ipc_endpoint = context.config->sbps_endpoint.empty()
         ? "parser_server_ipc"
@@ -656,7 +654,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       }
       ProcessAssociationRecord listener;
       listener.kind = ProcessAssociationKind::kListener;
-      listener.database_uuid = BinaryIdentity(snapshot.database_uuid);
+      listener.database_uuid = snapshot.database_uuid;
       listener.database_path = snapshot.database_path;
       listener.listener_uuid = profile.listener_uuid;
       listener.component_uuid = profile.listener_uuid;
@@ -675,7 +673,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       if (!profile.parser_package_ref.empty()) {
         ProcessAssociationRecord parser;
         parser.kind = ProcessAssociationKind::kParser;
-        parser.database_uuid = BinaryIdentity(snapshot.database_uuid);
+        parser.database_uuid = snapshot.database_uuid;
         parser.database_path = snapshot.database_path;
         parser.listener_uuid = profile.listener_uuid;
         parser.parser_instance_uuid = profile.listener_uuid + ":parser_pool:" +
@@ -700,9 +698,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       if (!SessionMatchesDatabase(session, snapshot.database_path, snapshot.database_uuid)) continue;
       ProcessAssociationRecord session_record;
       session_record.kind = ProcessAssociationKind::kSession;
-      session_record.database_uuid = session.database_uuid.is_nil()
-          ? BinaryIdentity(snapshot.database_uuid)
-          : session.database_uuid;
+      session_record.database_uuid = session.database_uuid;
       session_record.database_path = session.database_path.empty()
           ? snapshot.database_path
           : session.database_path;
@@ -729,22 +725,23 @@ const HostedDatabaseSnapshot* TargetDatabase(const ServerManagementContext& cont
                                              std::uint64_t* open_database_count) {
   if (open_database_count != nullptr) *open_database_count = 0;
   if (context.engine_state == nullptr) return nullptr;
-  const HostedDatabaseSnapshot* first_open = nullptr;
-  const HostedDatabaseSnapshot* matched = nullptr;
+  const HostedDatabaseSnapshot* hosted = nullptr;
+  std::uint64_t count = 0;
   for (const auto& database : context.engine_state->databases) {
     if (!database.database_open) continue;
-    if (open_database_count != nullptr) ++(*open_database_count);
-    if (first_open == nullptr) first_open = &database;
-    if (!request.target_uuid.empty() && BinaryIdentity(request.target_uuid) == database.database_uuid) {
-      matched = &database;
-    }
-    if (context.config != nullptr &&
-        !context.config->database_default_path.empty() &&
-        database.database_path == context.config->database_default_path.string()) {
-      matched = &database;
-    }
+    ++count;
+    hosted = &database;
   }
-  return matched == nullptr ? first_open : matched;
+  if (open_database_count != nullptr) *open_database_count = count;
+  // One server owns one node. Neither a configured path nor the first entry
+  // may override an explicit target or rescue an ambiguous hosted registry.
+  if (count != 1 || !scratchbird::core::uuid::IsEngineIdentityUuid(hosted->database_uuid))
+    return nullptr;
+  NativeUuid target;
+  if (!request.target_uuid.empty() &&
+      (!scratchbird::wire::DecodeManagementTarget(request.target_uuid, &target) ||
+       (!target.is_nil() && target != hosted->database_uuid))) return nullptr;
+  return hosted;
 }
 
 ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
@@ -755,7 +752,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
   const auto* database = TargetDatabase(context, request, &open_database_count);
   if (database != nullptr) {
     snapshot.database_path = database->database_path;
-    snapshot.database_uuid = IdentityBytes(database->database_uuid);
+    snapshot.database_uuid = database->database_uuid;
   } else if (context.config != nullptr && !context.config->database_default_path.empty()) {
     snapshot.database_path = context.config->database_default_path.string();
   }
@@ -804,7 +801,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
       ModeBool(request.mode, "parser_fallback_required", false);
   auto association_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       association_registry,
-      BinaryIdentity(snapshot.database_uuid),
+      snapshot.database_uuid,
       snapshot.database_path,
       0,
       parser_fallback_requested,
@@ -814,7 +811,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
   if (parser_fallback_required != parser_fallback_requested) {
     association_result = ApplyProcessAssociationScopeToShutdownSnapshot(
         association_registry,
-        BinaryIdentity(snapshot.database_uuid),
+        snapshot.database_uuid,
         snapshot.database_path,
         0,
         parser_fallback_required,
@@ -912,7 +909,7 @@ std::optional<ServerDiagnostic> DropPreflightDiagnostic(
     return ManagementDiagnostic("ENGINE.DBLC_DROP_UNSAFE",
                                 "Drop database requires exact target database association scope.",
                                 {{"reason", "drop_association_scope_not_proven"},
-                                 {"database_uuid", snapshot.database_uuid}});
+                                 {"database_uuid", IdentityBytes(snapshot.database_uuid)}});
   }
   if (snapshot.active_transaction_session_count != 0) {
     return ManagementDiagnostic("ENGINE.DBLC_DROP_UNSAFE",
@@ -1360,7 +1357,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                                diagnostic->code,
                                                state_before,
                                                state_after,
-                                               drop_snapshot.database_uuid,
+                                               IdentityBytes(drop_snapshot.database_uuid),
                                                "drop preflight refused unsafe lifecycle operation");
         return ErrorResponse(frame, {*diagnostic});
       }
@@ -1375,7 +1372,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
         maintenance_request.mode += ";ownership_release_verified:true";
       }
       if (maintenance_request.target_uuid.empty()) {
-        maintenance_request.target_uuid = drop_snapshot.database_uuid;
+        maintenance_request.target_uuid = IdentityBytes(drop_snapshot.database_uuid);
       }
     }
     const auto maintenance = IsDatabaseShutdownOperation(decoded->operation_key)
@@ -1410,7 +1407,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                              state_before,
                                              state_after,
                                              IsDatabaseShutdownOperation(decoded->operation_key)
-                                                 ? shutdown_snapshot.database_uuid
+                                                 ? IdentityBytes(shutdown_snapshot.database_uuid)
                                                  : IdentityBytes(session->database_uuid),
                                              "maintenance coordinator refused lifecycle operation");
       return ErrorResponse(frame, maintenance.diagnostics);

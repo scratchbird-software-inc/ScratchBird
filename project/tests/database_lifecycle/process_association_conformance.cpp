@@ -106,7 +106,7 @@ ProcessAssociationRegistry FreshRegistry() {
 
 ServerShutdownRuntimeSnapshot Snapshot() {
   ServerShutdownRuntimeSnapshot snapshot;
-  snapshot.database_uuid = scratchbird::wire::ManagementTargetBytes(kDatabaseUuid);
+  snapshot.database_uuid = kDatabaseUuid;
   snapshot.database_path = std::string(kDatabasePath);
   return snapshot;
 }

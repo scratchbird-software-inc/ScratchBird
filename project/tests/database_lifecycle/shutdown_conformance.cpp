@@ -22,6 +22,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -68,7 +69,7 @@ std::filesystem::path MakeTempDir() {
 
 struct Fixture {
   std::filesystem::path path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   scratchbird::core::platform::u32 page_size = 0;
 };
 
@@ -93,7 +94,7 @@ Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t no
 
   Fixture fixture;
   fixture.path = path;
-  fixture.database_uuid = scratchbird::wire::ManagementTargetBytes(create.database_uuid.value);
+  fixture.database_uuid = create.database_uuid.value;
   fixture.page_size = created.state.header.page_size;
   return fixture;
 }
@@ -173,7 +174,8 @@ void TestGracefulShutdownCommitsCleanFinalTransaction(const std::filesystem::pat
     if (field.kind != scratchbird::wire::public_result::Kind::uuid) continue;
     ++uuid_atoms;
     Require(field.value.size() == 16, "shutdown UUID atom is not binary16");
-    if (field.value == fixture.database_uuid) ++database_atoms;
+    if (field.value == scratchbird::wire::ManagementTargetBytes(fixture.database_uuid))
+      ++database_atoms;
   }
   Require(database_atoms == 4 && uuid_atoms == 7,
           "coordinator/runtime/storage array joining changed UUID atoms");
@@ -276,6 +278,63 @@ void TestForceShutdownRequiresExplicitPolicyAndDoesNotMarkClean(const std::files
           "force shutdown incorrectly marked database clean");
 }
 
+void TestNativeShutdownScopeRefusesBeforeMutation(const std::filesystem::path& dir) {
+  using NativeUuid = scratchbird::core::platform::Uuid;
+  static_assert(!std::is_assignable_v<decltype(ServerShutdownRuntimeSnapshot::database_uuid)&,
+                                      std::string>);
+  static_assert(!std::is_assignable_v<decltype(ServerMaintenanceCoordinator::database_uuid)&,
+                                      std::string>);
+  static_assert(!std::is_assignable_v<decltype(ServerMaintenanceCoordinator::shutdown_database_uuid)&,
+                                      std::string>);
+  const auto fixture = CreateActiveDatabase(dir / "identity_refusals.sbdb", 1779400005000);
+  const auto config = Config(fixture);
+  const auto before = ReadStartup(fixture);
+  NativeUuid v4 = fixture.database_uuid;
+  v4.bytes[6] = static_cast<std::uint8_t>((v4.bytes[6] & 15) | 0x40);
+  NativeUuid bad_variant = fixture.database_uuid;
+  bad_variant.bytes[8] &= 0x3f;
+  for (const auto& invalid : {NativeUuid{}, v4, bad_variant}) {
+    auto coordinator = Coordinator(config);
+    auto snapshot = Snapshot(fixture);
+    snapshot.database_uuid = invalid;
+    const auto result = scratchbird::server::ApplyDatabaseShutdownOperation(
+        &coordinator, config, Request("shutdown_database"), snapshot);
+    Require(!result.ok && HasDiagnostic(result, "ENGINE.SHUTDOWN_INPUT_INVALID"),
+            "invalid snapshot node identity was not refused");
+    Require(coordinator.state == "running" && !coordinator.attach_admission_fenced &&
+                coordinator.database_uuid.is_nil() && coordinator.shutdown_database_uuid.is_nil(),
+            "invalid snapshot changed node scope or shutdown fences");
+  }
+  auto coordinator = Coordinator(config);
+  auto foreign = fixture.database_uuid;
+  foreign.bytes[15] ^= 0x80;
+  auto request = Request("shutdown_database");
+  request.target_uuid = scratchbird::wire::ManagementTargetBytes(foreign);
+  const auto result = scratchbird::server::ApplyDatabaseShutdownOperation(
+      &coordinator, config, request, Snapshot(fixture));
+  Require(!result.ok && HasDiagnostic(result, "ENGINE.SHUTDOWN_SCOPE_INVALID"),
+          "equal path rescued a different requested node identity");
+  Require(coordinator.state == "running" && !coordinator.attach_admission_fenced,
+          "foreign requested node mutated shutdown state");
+  for (const bool shutdown_binding : {false, true}) {
+    coordinator = Coordinator(config);
+    if (shutdown_binding) coordinator.shutdown_database_uuid = foreign;
+    else coordinator.database_uuid = foreign;
+    const auto bound_refusal = scratchbird::server::ApplyDatabaseShutdownOperation(
+        &coordinator, config, Request("shutdown_database"), Snapshot(fixture));
+    Require(!bound_refusal.ok && HasDiagnostic(bound_refusal, "ENGINE.SHUTDOWN_SCOPE_INVALID"),
+            "shutdown rebound an existing coordinator to a different node");
+    Require(coordinator.state == "running" && !coordinator.attach_admission_fenced &&
+                (shutdown_binding ? coordinator.shutdown_database_uuid : coordinator.database_uuid) == foreign,
+            "shutdown refusal changed retained coordinator identity");
+  }
+  const auto after = ReadStartup(fixture);
+  Require(!after.clean_shutdown &&
+              after.clean_shutdown_local_transaction_id == before.clean_shutdown_local_transaction_id &&
+              after.durable_lifecycle_phase == before.durable_lifecycle_phase,
+          "identity refusal mutated durable lifecycle state");
+}
+
 }  // namespace
 
 int main() {
@@ -286,6 +345,7 @@ int main() {
   TestAcknowledgementTimeoutRefusesBeforeCleanFinalTransaction(temp_dir);
   TestDrainTimeoutPreservesActiveTransactionFinality(temp_dir);
   TestForceShutdownRequiresExplicitPolicyAndDoesNotMarkClean(temp_dir);
+  TestNativeShutdownScopeRefusesBeforeMutation(temp_dir);
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;
 }

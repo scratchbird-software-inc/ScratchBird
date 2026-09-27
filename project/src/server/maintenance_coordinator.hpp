@@ -47,8 +47,8 @@ struct ServerMaintenanceCoordinator {
   std::uint64_t shutdown_acknowledged_count = 0;
   std::uint64_t shutdown_active_transaction_session_count = 0;
   std::string shutdown_mode;
-  std::string shutdown_database_uuid;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid shutdown_database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string permitted_maintenance_operations;
   std::string last_operation;
   std::string last_outcome;
@@ -79,7 +79,7 @@ struct ServerMaintenanceOperationResult {
 
 struct ServerShutdownRuntimeSnapshot {
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::uint64_t associated_manager_count = 1;
   std::uint64_t associated_listener_count = 0;
   std::uint64_t associated_parser_count = 0;
