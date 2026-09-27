@@ -9937,19 +9937,6 @@ add_test(NAME sbsql_sblr_alignment_native_compile_binary_binding COMMAND sbsql_s
 set_tests_properties(sbsql_sblr_alignment_native_compile_binary_binding PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;native_binding;not_runtime_acceptance")
 
-if(UNIX AND TARGET sbl_sbsql_parser_worker_core)
-  add_executable(sbsql_sblr_alignment_parser_config_binary_identity
-    parser_config_binary_identity_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE cxx_std_23)
-  target_include_directories(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
-  target_link_libraries(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE sbl_sbsql_parser_worker_core)
-  add_test(NAME sbsql_sblr_alignment_parser_config_binary_identity
-    COMMAND sbsql_sblr_alignment_parser_config_binary_identity)
-  set_tests_properties(sbsql_sblr_alignment_parser_config_binary_identity PROPERTIES
-    LABELS "sbsql_sblr_alignment;binary_uuid;parser_component;not_runtime_acceptance" TIMEOUT 60)
-endif()
-
 add_executable(sbsql_sblr_alignment_metric_history_binary_store metric_history_binary_store_test.cpp)
 target_compile_features(sbsql_sblr_alignment_metric_history_binary_store PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_metric_history_binary_store PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)

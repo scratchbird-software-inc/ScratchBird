@@ -5958,6 +5958,22 @@ add_executable(sbp_sbsql_no_spin_gate parser_no_spin_gate.cpp)
 target_compile_features(sbp_sbsql_no_spin_gate PRIVATE cxx_std_23)
 add_test(NAME sbp_sbsql_no_spin_gate COMMAND sbp_sbsql_no_spin_gate ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
 
+if(UNIX AND TARGET sbl_sbsql_parser_worker_core)
+  # The alignment directory is configured before the worker library exists.
+  # Register this worker-dependent identity gate here so it cannot silently
+  # disappear from an otherwise complete Linux build.
+  add_executable(sbsql_sblr_alignment_parser_config_binary_identity
+    ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment/parser_config_binary_identity_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
+  target_link_libraries(sbsql_sblr_alignment_parser_config_binary_identity PRIVATE sbl_sbsql_parser_worker_core)
+  add_test(NAME sbsql_sblr_alignment_parser_config_binary_identity
+    COMMAND sbsql_sblr_alignment_parser_config_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_parser_config_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;parser_component;not_runtime_acceptance" TIMEOUT 60)
+endif()
+
 add_executable(
   sbsql_no_spin_no_wal_no_direct_db_gate
   generated/hardening/sbsql_no_spin_no_wal_no_direct_db_gate.cpp

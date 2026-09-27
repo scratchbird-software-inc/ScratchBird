@@ -10,7 +10,8 @@
 
 #include "control_plane.hpp"
 #include "uuid.hpp"
-#include <fstream>
+#include <charconv>
+#include <chrono>
 #include <stdexcept>
 #include "lifecycle/parser_lifecycle.hpp"
 #include "statement/statement_catalog.hpp"
@@ -20,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <thread>
@@ -37,6 +39,8 @@
 #include <windows.h>
 #else
 #include <cerrno>
+#include <poll.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -125,6 +129,76 @@ void CloseFd(int* fd) {
   }
 }
 #endif
+
+scratchbird::core::platform::Uuid ReadStartupIdentity(std::string_view descriptor) {
+  std::intptr_t handle = -1;
+  const auto parsed = std::from_chars(descriptor.data(), descriptor.data() + descriptor.size(), handle);
+  if (descriptor.empty() || parsed.ec != std::errc{} ||
+      parsed.ptr != descriptor.data() + descriptor.size() || handle < 0)
+    throw std::invalid_argument("parser identity requires an inherited local stream socket");
+#ifdef _WIN32
+  if (!EnsureWinsockInitialized()) throw std::runtime_error("socket initialization failed");
+  const auto fd = static_cast<SOCKET>(handle);
+  int type = 0, type_size = sizeof(type), address_size = sizeof(sockaddr_storage);
+  sockaddr_storage address{};
+  if (::getsockopt(fd, SOL_SOCKET, SO_TYPE, reinterpret_cast<char*>(&type), &type_size) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &address_size) != 0 ||
+      type != SOCK_STREAM || address.ss_family != AF_UNIX)
+    throw std::invalid_argument("parser identity descriptor is not a local stream socket");
+#else
+  if (handle > std::numeric_limits<int>::max())
+    throw std::invalid_argument("parser identity socket descriptor is out of range");
+  const auto fd = static_cast<int>(handle);
+  int type = 0;
+  socklen_t type_size = sizeof(type), address_size = sizeof(sockaddr_storage);
+  sockaddr_storage address{};
+  if (::getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &type_size) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &address_size) != 0 ||
+      type != SOCK_STREAM || address.ss_family != AF_UNIX)
+    throw std::invalid_argument("parser identity descriptor is not a local stream socket");
+#endif
+  // The launcher owns this dedicated descriptor. Borrow it without changing
+  // its flags or closing it; EOF terminates the single fixed-width binding.
+  std::array<std::uint8_t, 17> bytes{};
+  std::size_t used = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) throw std::invalid_argument("parser identity channel timed out");
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count() + 1;
+#ifdef _WIN32
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    timeval timeout{static_cast<long>(remaining / 1000), static_cast<long>((remaining % 1000) * 1000)};
+    const auto ready = ::select(0, &readable, nullptr, nullptr, &timeout);
+    if (ready == SOCKET_ERROR && ::WSAGetLastError() == WSAEINTR) continue;
+    if (ready <= 0) throw std::invalid_argument("parser identity channel is unavailable or timed out");
+    const auto received = ::recv(fd, reinterpret_cast<char*>(bytes.data() + used),
+                                 static_cast<int>(bytes.size() - used), 0);
+    if (received == SOCKET_ERROR &&
+        (::WSAGetLastError() == WSAEINTR || ::WSAGetLastError() == WSAEWOULDBLOCK)) continue;
+#else
+    pollfd input{fd, POLLIN, 0};
+    const auto ready = ::poll(&input, 1, static_cast<int>(remaining));
+    if (ready < 0 && errno == EINTR) continue;
+    if (ready <= 0) throw std::invalid_argument("parser identity channel is unavailable or timed out");
+    const auto received = ::recv(fd, bytes.data() + used, bytes.size() - used, MSG_DONTWAIT);
+    if (received < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+#endif
+    if (received < 0) throw std::invalid_argument("parser identity channel read failed");
+    if (received == 0) break;
+    used += static_cast<std::size_t>(received);
+    if (used > 16) throw std::invalid_argument("parser identity channel contains trailing bytes");
+  }
+  scratchbird::core::platform::Uuid identity;
+  if (used != identity.bytes.size())
+    throw std::invalid_argument("parser identity channel is truncated");
+  std::copy_n(bytes.begin(), identity.bytes.size(), identity.bytes.begin());
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity))
+    throw std::invalid_argument("parser identity channel requires one binary16 engine UUID");
+  return identity;
+}
 
 } // namespace
 
@@ -229,6 +303,7 @@ ParserConfig ConfigFromArgs(int argc, char** argv, bool force_probe) {
   config.tls_cert_file = Env("SB_TLS_CERT_FILE", "");
   config.tls_key_file = Env("SB_TLS_KEY_FILE", "");
   config.tls_ca_file = Env("SB_TLS_CA_FILE", "");
+  bool identity_bound = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
     if (arg == "--listener-worker") config.listener_worker = true;
@@ -240,18 +315,12 @@ ParserConfig ConfigFromArgs(int argc, char** argv, bool force_probe) {
     if (arg == "--allow-probe-auth") config.allow_probe_auth = true;
     if (auto value = ValueAfter(arg, "--server-endpoint="); !value.empty()) config.server_endpoint = std::move(value);
     if (auto value = ValueAfter(arg, "--database-token="); !value.empty()) config.database_token = std::move(value);
-    if (arg.starts_with("--parser-uuid="))
-      throw std::invalid_argument("use --parser-identity-file with a binary16 binding");
-    if (arg == "--parser-identity-file=")
-      throw std::invalid_argument("parser identity file path is required");
-    if (auto value = ValueAfter(arg, "--parser-identity-file="); !value.empty()) {
-      std::ifstream input(value, std::ios::binary);
-      scratchbird::core::platform::Uuid identity;
-      input.read(reinterpret_cast<char*>(identity.bytes.data()), 16);
-      if (!input || input.peek() != std::char_traits<char>::eof() ||
-          !scratchbird::core::uuid::IsEngineIdentityUuid(identity))
-        throw std::invalid_argument("parser identity file must contain one binary16 engine UUID");
-      config.parser_uuid = identity;
+    if (arg.starts_with("--parser-uuid=") || arg.starts_with("--parser-identity-file="))
+      throw std::invalid_argument("use --parser-identity-socket with an inherited binary16 binding");
+    if (arg.starts_with("--parser-identity-socket=")) {
+      if (identity_bound) throw std::invalid_argument("duplicate parser identity binding");
+      config.parser_uuid = ReadStartupIdentity(arg.substr(std::string_view("--parser-identity-socket=").size()));
+      identity_bound = true;
     }
     if (auto value = ValueAfter(arg, "--listener-uuid="); !value.empty()) config.listener_uuid = std::move(value);
     if (auto value = ValueAfter(arg, "--dialect="); !value.empty()) config.dialect = std::move(value);
