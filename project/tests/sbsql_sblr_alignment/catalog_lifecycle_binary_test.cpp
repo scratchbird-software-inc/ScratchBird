@@ -36,7 +36,7 @@ template<class Record> void CheckRecord() {
     return a::DecodeApiBehaviorRecord({reinterpret_cast<const std::uint8_t*>(bytes.data()),bytes.size()},out);
   };
   Check(decode_frame(encoded,&frame));
-  Check(frame.payload.substr(0,8)=="SBCAT002");
+  Check(frame.payload.substr(0,8)=="SBCAT003");
   // Creator is LE64 followed immediately by the first fixed-width UUID.
   for (unsigned i=0;i<16;++i) Check(static_cast<std::uint8_t>(frame.payload[16+i])==Traits::Identity(record).bytes[i]);
   a::CatalogLifecycleRecord decoded;
@@ -44,6 +44,24 @@ template<class Record> void CheckRecord() {
   Check(std::holds_alternative<Record>(decoded));
   const auto& copy=std::get<Record>(decoded);
   Check(Traits::Fields(copy)==Traits::Fields(record));
+  if constexpr (std::is_same_v<Record, a::EngineCatalogObjectRecord>) {
+    // Row identity is persisted raw16 after the object identity, never issued
+    // by replay or by a result adapter.
+    for (unsigned i=0;i<16;++i)
+      Check(static_cast<std::uint8_t>(frame.payload[32+i])==record.catalog_row_uuid.bytes[i]);
+    for (const auto invalid : {a::EngineUuid{}, record.object_uuid}) {
+      auto bad_record=record;
+      bad_record.catalog_row_uuid=invalid;
+      auto unchanged=encoded;
+      Check(!a::EncodeCatalogLifecycleRecord(bad_record,&unchanged)&&unchanged==encoded);
+      auto bad_frame=frame;
+      std::copy(invalid.bytes.begin(),invalid.bytes.end(),bad_frame.payload.begin()+32);
+      Check(!a::DecodeCatalogLifecycleFrame(bad_frame,&decoded));
+    }
+    auto legacy=frame;
+    legacy.payload.replace(0,8,"SBCAT002");
+    Check(!a::DecodeCatalogLifecycleFrame(legacy,&decoded));
+  }
   std::string repeated;
   Check(a::EncodeCatalogLifecycleRecord(copy,&repeated)&&repeated==encoded);
   for (std::size_t n=0;n<encoded.size();++n) {

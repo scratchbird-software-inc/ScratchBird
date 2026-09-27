@@ -132,7 +132,8 @@ SOURCE_ANCHORS = {
         "GenerateEngineIdentityV7",
     ),
     "project/tests/agents/agent_runtime_uuid_authority_gate.cpp": (
-        "ParseDurableEngineIdentityUuid",
+        "MakeTypedUuid",
+        "NativeFixtureIdentity",
         "GenerateEngineIdentityV7",
     ),
     "project/tests/agents/agent_third_party_management_request_gate.cpp": (

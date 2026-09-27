@@ -43,7 +43,7 @@ template<class Record> struct Traits;
 template<> struct Traits<EngineCatalogObjectRecord> {
   static constexpr const char* kind = "EngineCatalogObjectRecord";
   template<class T> static auto Fields(T& r) {
-    return std::tie(r.creator_tx, r.object_uuid, r.object_kind, r.schema_uuid, r.owner_principal_uuid, r.lifecycle_state, r.definition_epoch, r.metadata_epoch, r.payload, r.synonym_target_uuid, r.synonym_target_class, r.deleted);
+    return std::tie(r.creator_tx, r.object_uuid, r.catalog_row_uuid, r.object_kind, r.schema_uuid, r.owner_principal_uuid, r.lifecycle_state, r.definition_epoch, r.metadata_epoch, r.payload, r.synonym_target_uuid, r.synonym_target_class, r.deleted);
   }
   static const EngineUuid& Identity(const EngineCatalogObjectRecord& r) { return r.object_uuid; }
 };
@@ -132,6 +132,10 @@ using CatalogLifecycleRecord = std::variant<EngineCatalogObjectRecord,
 template<class Record>
 bool EncodeCatalogLifecycleRecord(const Record& record, std::string* output) {
   using Traits = catalog_record_codec::Traits<Record>;
+  if constexpr (std::is_same_v<Record, EngineCatalogObjectRecord>) {
+    if (!core::uuid::IsEngineIdentityUuid(record.catalog_row_uuid) ||
+        record.catalog_row_uuid == record.object_uuid) return false;
+  }
   ApiBehaviorRecord frame;
   frame.object_uuid = Traits::Identity(record);
   frame.creator_tx = record.creator_tx;
@@ -157,6 +161,10 @@ bool DecodeCatalogLifecycleBody(const ApiBehaviorRecord& frame, Record* output) 
         return (catalog_record_codec::Get(bytes, cursor, field) && ...);
       }, Traits::Fields(candidate)) || cursor != bytes.size() ||
       candidate.creator_tx != frame.creator_tx || Traits::Identity(candidate) != frame.object_uuid) return false;
+  if constexpr (std::is_same_v<Record, EngineCatalogObjectRecord>) {
+    if (!core::uuid::IsEngineIdentityUuid(candidate.catalog_row_uuid) ||
+        candidate.catalog_row_uuid == candidate.object_uuid) return false;
+  }
   *output = std::move(candidate); return true;
 }
 inline bool DecodeCatalogLifecycleFrame(const ApiBehaviorRecord& frame, CatalogLifecycleRecord* output) {

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_runtime.hpp"
+#include "agent_binary_identity_fixture.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
@@ -40,8 +41,12 @@ void RequireObjectUuid(const std::string& value, const std::string& label) {
   Require(!value.empty(), label + " UUID was empty");
   Require(value.find("agent-fault-evidence:") == std::string::npos,
           label + " leaked old label-prefixed evidence UUID");
-  Require(uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object, value).ok(),
-          label + " was not a typed durable engine UUID: " + value);
+  Require(value.size() == 16, label + " UUID was not binary16");
+  const auto native = scratchbird::tests::NativeFixtureIdentity(value);
+  Require(uuid::MakeTypedUuid(platform::UuidKind::object, native).ok(),
+          label + " was not a typed durable engine UUID");
+  Require(scratchbird::tests::BinaryFixtureIdentity(native) == value,
+          label + " UUID bytes changed during validation");
 }
 
 struct ExpectedScenario {

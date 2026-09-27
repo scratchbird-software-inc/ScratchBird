@@ -405,6 +405,20 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
   return false;
 }
 
+bool ApiResultHasUuidField(const api::EngineApiResult& result,
+                          std::string_view name, const api::EngineUuid& expected) {
+  for (const auto& row : result.result_shape.rows) {
+    for (const auto& [field_name, value] : row.fields) {
+      if (field_name == name && !value.isSqlNull() &&
+          value.descriptor.canonical_type_name == "uuid" && value.encoded_value.empty() &&
+          value.binary_value.size() == expected.bytes.size() &&
+          std::equal(value.binary_value.begin(), value.binary_value.end(), expected.bytes.begin()))
+        return true;
+    }
+  }
+  return false;
+}
+
 std::string ApiResultEvidenceValue(const api::EngineApiResult& result,
                                    std::string_view kind) {
   for (const auto& evidence : result.evidence) {
@@ -837,9 +851,9 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
                             "EngineShowVersion did not return product evidence"));
   }
   if (row.operation_id == "observability.show_database") {
-    Require(ApiResultHasField(result.api_result,
+    Require(ApiResultHasUuidField(result.api_result,
                               "database_uuid",
-                              "019f0000-0000-7000-8000-000000000801"),
+                              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000801")),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowDatabase did not return database UUID evidence"));
   }
@@ -854,9 +868,9 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
                             "EngineShowSystem did not return trust mode evidence"));
   }
   if (row.operation_id == "observability.show_sessions") {
-    Require(ApiResultHasField(result.api_result,
+    Require(ApiResultHasUuidField(result.api_result,
                               "session_uuid",
-                              "019f0000-0000-7000-8000-000000000802"),
+                              scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000000802")),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowSessions did not return session UUID evidence"));
   }

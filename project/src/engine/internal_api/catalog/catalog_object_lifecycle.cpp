@@ -1127,7 +1127,7 @@ void FillObjectResult(TResult* result,
   result->bound_object_identity.catalog_generation_id = metadata_epoch;
   result->bound_object_identity.security_epoch = context.security_epoch;
   result->bound_object_identity.resource_epoch = context.resource_epoch;
-  result->catalog_row_uuid = GenerateCrudEngineUuid("row");
+  result->catalog_row_uuid = object.catalog_row_uuid;
   result->metadata_cache_epoch = metadata_epoch;
   AddEvidence(result, "catalog_metadata_epoch", std::to_string(metadata_epoch));
   AddEvidence(result, "metadata_cache_invalidation", object.object_uuid);
@@ -1418,6 +1418,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     EngineCatalogObjectRecord object;
     object.creator_tx = request.context.local_transaction_id;
     object.object_uuid = constraint_uuid;
+    object.catalog_row_uuid = GenerateCrudEngineUuid("row");
     object.object_kind = "constraint";
     object.schema_uuid = owner_object_uuid;
     object.owner_principal_uuid = request.context.principal_uuid;
@@ -1696,6 +1697,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   EngineCatalogObjectRecord record;
   record.creator_tx = request.context.local_transaction_id;
   record.object_uuid = object_uuid;
+  record.catalog_row_uuid = GenerateCrudEngineUuid("row");
   record.object_kind = object_kind;
   record.schema_uuid = schema_uuid;
   record.owner_principal_uuid = request.context.principal_uuid;
@@ -2038,7 +2040,7 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   auto result = SuccessResult<EngineCatalogDropObjectResult>(request.context, kOperation);
   result.primary_object.uuid = object_uuid;
   result.primary_object.object_kind = existing->object_kind;
-  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = dropped.catalog_row_uuid;
   result.metadata_cache_epoch = epoch;
   AddEvidence(&result, "catalog_metadata_epoch", std::to_string(epoch));
   AddEvidence(&result, "metadata_cache_invalidation", object_uuid);

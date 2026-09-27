@@ -22,7 +22,7 @@ namespace scratchbird::engine::internal_api {
 // packages are not authority here; callers provide UUID-resolved internal API
 // requests and receive UUID-first catalog identities.
 
-inline constexpr const char* kCatalogObjectLifecycleEventMagic = "SBCAT002";
+inline constexpr const char* kCatalogObjectLifecycleEventMagic = "SBCAT003";
 
 inline constexpr const char* kCatalogObjectDiagnosticUuidRequired = "CATALOG.OBJECT.UUID_REQUIRED";
 inline constexpr const char* kCatalogObjectDiagnosticKindRequired = "CATALOG.OBJECT.KIND_REQUIRED";
@@ -61,6 +61,7 @@ struct EngineCatalogObjectRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
   EngineUuid object_uuid;
+  EngineUuid catalog_row_uuid;
   std::string object_kind;
   EngineUuid schema_uuid;
   EngineUuid owner_principal_uuid;

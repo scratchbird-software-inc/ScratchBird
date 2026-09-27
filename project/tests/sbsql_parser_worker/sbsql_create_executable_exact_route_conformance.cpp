@@ -10,6 +10,7 @@
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -25,6 +26,7 @@
 
 #include "../release/public_release_authz_fixture.hpp"
 
+#include "extensibility/executable_object_lifecycle.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -742,6 +744,8 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   for (const auto suffix : {".sb.api_events",
                             ".sb.crud_events",
                             ".sb.name_events",
+                            ".sb.catalog_object_events",
+                            ".sb.executable_object_events",
                             ".sb.transaction_inventory",
                             ".dirty.manifest",
                             ".recovery.evidence",
@@ -889,6 +893,42 @@ sblr::SblrOperationEnvelope EngineEnvelope(const Case& route) {
   return envelope;
 }
 
+void RequirePersistedIdentity(const api::EngineRequestContext& context,
+                              const api::EngineApiResult& result) {
+  const auto executable = api::LoadExecutableObjectLifecycleState(context);
+  Require(executable.ok, "executable catalog replay failed");
+  const auto record = std::find_if(executable.state.objects.begin(), executable.state.objects.end(),
+      [&](const auto& candidate) { return candidate.object_uuid == result.primary_object.uuid; });
+  Require(record != executable.state.objects.end() && !record->deleted &&
+              uuid::IsEngineIdentityUuid(record->catalog_row_uuid) &&
+              record->catalog_row_uuid != record->object_uuid,
+          "executable catalog row identity was not persisted");
+  if (result.primary_object.object_kind != "trigger") {
+    Require(record->catalog_row_uuid == result.catalog_row_uuid,
+            "executable result does not identify its persisted catalog row");
+    return;
+  }
+  // Trigger DDL owns a catalog-object row as well as executable metadata.
+  // Its public receipt identifies the former, not the executable metadata row.
+  const auto catalog = api::LoadCatalogObjectLifecycleState(context);
+  Require(catalog.ok, "trigger catalog replay failed");
+  const auto trigger = std::find_if(catalog.state.objects.begin(), catalog.state.objects.end(),
+      [&](const auto& candidate) { return candidate.object_uuid == result.primary_object.uuid; });
+  Require(trigger != catalog.state.objects.end() && !trigger->deleted &&
+              trigger->catalog_row_uuid == result.catalog_row_uuid &&
+              trigger->catalog_row_uuid != trigger->object_uuid &&
+              trigger->catalog_row_uuid != record->catalog_row_uuid,
+          "trigger result does not identify its persisted catalog row");
+  api::EngineCatalogLookupObjectRequest lookup;
+  lookup.context = context;
+  lookup.target_object = result.primary_object;
+  for (unsigned i = 0; i < 2; ++i) {
+    const auto read = api::EngineCatalogLookupObjectByUuid(lookup);
+    Require(read.ok && read.catalog_row_uuid == result.catalog_row_uuid,
+            "catalog lookup invented a different row identity");
+  }
+}
+
 void RequireDirectEngineRuntime() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
@@ -909,6 +949,7 @@ void RequireDirectEngineRuntime() {
   Require(schema_result.ok,
           "CREATE executable component fixture schema create failed");
 
+  std::vector<api::EngineApiResult> created_objects;
   for (const auto& route : Cases()) {
     api::EngineApiRequest common;
     common.context = context;
@@ -958,7 +999,59 @@ void RequireDirectEngineRuntime() {
             "EngineCreate executable missing name registry evidence");
     Require(!result.catalog_row_uuid.is_nil(),
             "EngineCreate executable missing catalog row UUID evidence");
+    RequirePersistedIdentity(context, result);
+    created_objects.push_back(result);
   }
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok, "executable fixture commit failed");
+  const auto reopened = BeginEngineTransaction(path, database_uuid);
+  for (const auto& result : created_objects) RequirePersistedIdentity(reopened, result);
+  for (const auto& created : created_objects) {
+    if (created.primary_object.object_kind != "trigger") continue;
+    api::EngineCatalogAlterObjectRequest alter;
+    alter.context = reopened;
+    alter.target_object = created.primary_object;
+    alter.option_envelopes.push_back("payload:row_identity_alter");
+    const auto altered = api::EngineCatalogAlterObject(alter);
+    Require(altered.ok && altered.catalog_row_uuid == created.catalog_row_uuid,
+            "catalog ALTER changed the persisted row UUID");
+    RequirePersistedIdentity(reopened, altered);
+
+    api::EngineCatalogRenameObjectRequest rename;
+    rename.context = reopened;
+    rename.target_object = created.primary_object;
+    api::EngineLocalizedName renamed;
+    renamed.language_tag = "en";
+    renamed.name_class = "default";
+    renamed.name = "renamed_trigger_row_identity";
+    renamed.default_name = true;
+    rename.localized_names.push_back(renamed);
+    const auto renamed_result = api::EngineCatalogRenameObject(rename);
+    Require(renamed_result.ok && renamed_result.catalog_row_uuid == created.catalog_row_uuid,
+            "catalog RENAME changed the persisted row UUID");
+    RequirePersistedIdentity(reopened, renamed_result);
+
+    api::EngineCatalogDropObjectRequest drop;
+    drop.context = reopened;
+    drop.target_object = created.primary_object;
+    const auto dropped = api::EngineCatalogDropObject(drop);
+    Require(dropped.ok && dropped.catalog_row_uuid == created.catalog_row_uuid,
+            "catalog DROP invented a row UUID instead of identifying the retired row");
+    api::EngineCatalogLookupObjectRequest lookup;
+    lookup.context = reopened;
+    lookup.target_object = created.primary_object;
+    Require(!api::EngineCatalogLookupObjectByUuid(lookup).ok,
+            "dropped catalog object remained visible in its deleting transaction");
+    break;
+  }
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = reopened;
+  Require(api::EngineRollbackTransaction(rollback).ok, "executable fixture rollback failed");
+  const auto after_rollback = BeginEngineTransaction(path, database_uuid);
+  for (const auto& result : created_objects) RequirePersistedIdentity(after_rollback, result);
+  rollback.context = after_rollback;
+  Require(api::EngineRollbackTransaction(rollback).ok, "replay fixture rollback failed");
   RemoveDatabaseArtifacts(path);
 }
 

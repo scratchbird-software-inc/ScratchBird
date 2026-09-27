@@ -63,6 +63,9 @@ int main() {
     // transaction visibility or finality.
     api::EngineCatalogObjectRecord record;
     record.object_uuid = identity;
+    const auto row = uuid::GenerateEngineIdentityV7(UuidKind::row, millis);
+    Setup(row.ok(), "catalog row UUID generation failed");
+    record.catalog_row_uuid = row.value.value;
     record.object_kind = "schema";
     record.lifecycle_state = "active";
     record.definition_epoch = 1;
@@ -85,6 +88,7 @@ int main() {
       const auto epoch = api::LoadCatalogObjectLifecycleEpochState(context);
       Check(state.ok && state.state.objects.size() == 1 &&
             state.state.objects[0].object_uuid == identity &&
+            state.state.objects[0].catalog_row_uuid == record.catalog_row_uuid &&
             state.state.metadata_epoch == 41, "actual object identity and epoch must survive");
       Check(epoch.ok && epoch.state.metadata_epoch == 41, "actual metadata epoch must survive");
     };

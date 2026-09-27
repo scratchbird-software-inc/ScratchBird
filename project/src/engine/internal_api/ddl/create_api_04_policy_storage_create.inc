@@ -754,6 +754,12 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
     return ExecutableCreateLifecycleFailure<TResult>(
         effective.context, operation_id, lifecycle);
   }
+  // The generic behavior append has no catalog row. The executable lifecycle
+  // is the mutation owner; preserve its actual persisted row identity.
+  AddDdlPublicationResult(&result, operation_id, object_kind,
+                          lifecycle.bound_object_identity.object_uuid,
+                          lifecycle.catalog_row_uuid);
+  if (!result.ok) return result;
   AddApiBehaviorEvidence(&result, "executable_lifecycle", lifecycle.bound_object_identity.object_uuid);
   AddApiBehaviorEvidence(&result, "executable_generation", std::to_string(lifecycle.executable_generation));
   for (const auto& evidence : lifecycle.evidence) {

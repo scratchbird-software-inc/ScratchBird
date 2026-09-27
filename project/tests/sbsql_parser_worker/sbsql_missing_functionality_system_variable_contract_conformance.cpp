@@ -298,8 +298,13 @@ bool ValidateContextVariableResolver() {
   const auto session = sblr::ResolveSblrContextVariable(
       "ctx_current_session_uuid", sblr_context);
   ok &= Require(session.ok() && session.scalar_values.size() == 1 &&
-                    session.scalar_values.front().text_value ==
-                        "019f1000-0000-7000-8000-000000000003",
+                    session.scalar_values.front().payload_kind == sblr::SblrValuePayloadKind::uuid_binary &&
+                    session.scalar_values.front().uuid_value == context.session_uuid &&
+                    session.scalar_values.front().descriptor_id == "uuid" &&
+                    !session.scalar_values.front().is_null &&
+                    session.scalar_values.front().text_value.empty() &&
+                    session.scalar_values.front().encoded_value.empty() &&
+                    session.scalar_values.front().binary_value.empty(),
                 "ctx_current_session_uuid mismatch");
 
   const auto timezone = sblr::ResolveSblrContextVariable(
