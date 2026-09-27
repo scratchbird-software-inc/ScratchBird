@@ -838,6 +838,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
+      sb_server_engine_bridge
       sb_storage_database
   )
 

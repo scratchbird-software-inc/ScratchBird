@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -16,6 +17,7 @@
 #include "query/plan_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -24,6 +26,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <memory>
+#include <utility>
 
 namespace {
 
@@ -123,29 +127,32 @@ struct Fixture {
   api::EngineUuid right_table_uuid;
   api::EngineUuid window_table_uuid;
   api::EngineRequestContext context;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
+
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture& operator=(const Fixture&) = delete;
+  Fixture(Fixture&& other)
+      : dir(std::exchange(other.dir, {})),
+        database_path(std::move(other.database_path)), database_uuid(other.database_uuid),
+        left_table_uuid(other.left_table_uuid), right_table_uuid(other.right_table_uuid),
+        window_table_uuid(other.window_table_uuid), context(std::move(other.context)),
+        owner_context(std::move(other.owner_context)), engine_session(std::move(other.engine_session)) {}
 
   ~Fixture() {
+    engine_session.reset();
     std::error_code ignored;
     if (!dir.empty()) std::filesystem::remove_all(dir, ignored);
   }
 };
 
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 1000);
-  context.session_uuid = NewIdentity(platform::UuidKind::object, 1001);
-  context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -188,8 +195,8 @@ void InsertRows(Fixture& fixture,
     rows.push_back(Row(id, 1000 + i));
   }
 
-  api::EngineInsertRowsRequest insert;
-  insert.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> insert(
+      *fixture.engine_session, fixture.context);
   insert.context.request_id = "dpc065-query-relation-insert";
   insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
@@ -214,8 +221,8 @@ api::EngineSelectRowsResult SelectComparison(Fixture& fixture,
                                              const api::EngineUuid& table_uuid,
                                              std::string kind,
                                              std::int64_t bound) {
-  api::EngineSelectRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-neutral-comparison-select-" + kind;
   request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
@@ -229,8 +236,8 @@ api::EngineUpdateRowsResult UpdateComparison(Fixture& fixture,
                                              std::int64_t bound,
                                              std::string assignment_column,
                                              std::int64_t assignment_value) {
-  api::EngineUpdateRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-neutral-comparison-update-" + kind;
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -244,8 +251,8 @@ api::EngineDeleteRowsResult DeleteComparison(Fixture& fixture,
                                              const api::EngineUuid& table_uuid,
                                              std::string kind,
                                              std::int64_t bound) {
-  api::EngineDeleteRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-neutral-comparison-delete-" + kind;
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -256,8 +263,8 @@ api::EngineDeleteRowsResult DeleteComparison(Fixture& fixture,
 api::EngineSelectRowsResult SelectAll(Fixture& fixture,
                                       const api::EngineUuid& table_uuid,
                                       std::string request_id) {
-  api::EngineSelectRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.source_object.uuid = table_uuid;
   request.source_object.object_kind = "table";
@@ -269,8 +276,8 @@ api::EngineUpdateRowsResult UpdateComparisonWindow(
     const api::EngineUuid& table_uuid,
     api::EngineApiU64 limit,
     api::EngineApiU64 offset) {
-  api::EngineUpdateRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-neutral-update-row-window";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -286,8 +293,8 @@ api::EngineDeleteRowsResult DeleteComparisonWindow(
     const api::EngineUuid& table_uuid,
     api::EngineApiU64 limit,
     api::EngineApiU64 offset) {
-  api::EngineDeleteRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-neutral-delete-row-window";
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
@@ -309,8 +316,7 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database, 10);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 11);
   create.creation_unix_epoch_millis = NowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -320,28 +326,31 @@ Fixture MakeFixture() {
   Require(created.ok(), "DPC-065 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.engine_session =
+      std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
   fixture.left_table_uuid = NewIdentity(platform::UuidKind::object, 20);
   fixture.right_table_uuid = NewIdentity(platform::UuidKind::object, 21);
   fixture.window_table_uuid = NewIdentity(platform::UuidKind::object, 22);
   fixture.context = Begin(fixture, "dpc065-query-relation-metadata");
 
   const auto left_table =
-      api::AppendMgaTableMetadata(fixture.context,
+      scratchbird::tests::PublishMgaTableFixture(fixture.context,
                                   Table(fixture,
                                         fixture.left_table_uuid,
-                                        "dpc065_query_left"));
+                                        "dpc065_query_left"), {"int64", "int64", "int64"});
   Require(!left_table.error, "DPC-065 left table metadata append failed");
   const auto right_table =
-      api::AppendMgaTableMetadata(fixture.context,
+      scratchbird::tests::PublishMgaTableFixture(fixture.context,
                                   Table(fixture,
                                         fixture.right_table_uuid,
-                                        "dpc065_query_right"));
+                                        "dpc065_query_right"), {"int64", "int64", "int64"});
   Require(!right_table.error, "DPC-065 right table metadata append failed");
   const auto window_table =
-      api::AppendMgaTableMetadata(fixture.context,
+      scratchbird::tests::PublishMgaTableFixture(fixture.context,
                                   Table(fixture,
                                         fixture.window_table_uuid,
-                                        "dpc065_mutation_window"));
+                                        "dpc065_mutation_window"), {"int64", "int64", "int64"});
   Require(!window_table.error, "DPC-065 window table metadata append failed");
 
   InsertRows(fixture, fixture.left_table_uuid, 128, false);
@@ -353,10 +362,21 @@ Fixture MakeFixture() {
 }  // namespace
 
 int main() {
+  scratchbird::core::memory::AllocationPolicy policy;
+  policy.policy_name = "dpc_query_crud_relation_materialization_gate";
+  policy.hard_limit_bytes = 64ull * 1024 * 1024;
+  policy.soft_limit_bytes = 48ull * 1024 * 1024;
+  policy.per_context_limit_bytes = 32ull * 1024 * 1024;
+  policy.page_buffer_pool_limit_bytes = 16ull * 1024 * 1024;
+  policy.track_allocations = true;
+  policy.zero_memory_on_release = true;
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      policy, "dpc_query_crud_relation_materialization_gate");
+  Require(memory.ok() && memory.fixture_mode, "DPC-065 memory fixture configuration failed");
   auto fixture = MakeFixture();
 
-  api::EnginePlanOperationRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EnginePlanOperationRequest> request(
+      *fixture.engine_session, fixture.context);
   request.context.request_id = "dpc065-query-relation-join";
   request.execute = true;
   request.query_operation = "inner_join";
@@ -413,8 +433,8 @@ int main() {
   Require(counted.result_shape.rows.front().fields.front().second.encoded_value == "128",
           "DPC-065 descriptor-cached CRUD count value mismatch");
 
-  api::EngineSelectRowsRequest projected_count;
-  projected_count.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> projected_count(
+      *fixture.engine_session, fixture.context);
   projected_count.context.request_id = "dpc065-neutral-count-projection";
   projected_count.source_object.uuid = fixture.left_table_uuid;
   projected_count.source_object.object_kind = "table";
@@ -434,8 +454,8 @@ int main() {
               HasEvidence(selected_count, "row_scan_predicate", "column_less"),
           "DPC-065 neutral count projection bypassed MGA-visible row scan");
 
-  api::EngineSelectRowsRequest select;
-  select.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> select(
+      *fixture.engine_session, fixture.context);
   select.context.request_id = "dpc065-bounded-predicate-order-select";
   select.source_object.uuid = fixture.left_table_uuid;
   select.source_object.object_kind = "table";
@@ -471,8 +491,8 @@ int main() {
             "DPC-065 neutral comparison select did not use visible row scan");
   }
 
-  api::EngineSelectRowsRequest select_always_false;
-  select_always_false.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> select_always_false(
+      *fixture.engine_session, fixture.context);
   select_always_false.context.request_id = "dpc065-neutral-always-false-select";
   select_always_false.source_object.uuid = fixture.left_table_uuid;
   select_always_false.source_object.object_kind = "table";
@@ -485,8 +505,8 @@ int main() {
   Require(HasEvidence(selected_always_false, "row_scan_predicate", "always_false"),
           "DPC-065 neutral always_false select did not use table scan");
 
-  api::EngineUpdateRowsRequest update_always_false;
-  update_always_false.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> update_always_false(
+      *fixture.engine_session, fixture.context);
   update_always_false.context.request_id = "dpc065-neutral-always-false-update";
   update_always_false.target_table.uuid = fixture.left_table_uuid;
   update_always_false.target_table.object_kind = "table";
@@ -502,8 +522,8 @@ int main() {
                       "table_scan"),
           "DPC-065 neutral always_false update did not use table scan");
 
-  api::EngineDeleteRowsRequest delete_always_false;
-  delete_always_false.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> delete_always_false(
+      *fixture.engine_session, fixture.context);
   delete_always_false.context.request_id = "dpc065-neutral-always-false-delete";
   delete_always_false.target_table.uuid = fixture.left_table_uuid;
   delete_always_false.target_table.object_kind = "table";
@@ -628,8 +648,8 @@ int main() {
                                   "mutation_row_window_offset_requires_limit"),
           "DPC-065 neutral mutation offset without limit did not fail closed");
 
-  api::EngineDeleteRowsRequest conflicting_window;
-  conflicting_window.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> conflicting_window(
+      *fixture.engine_session, fixture.context);
   conflicting_window.context.request_id = "dpc065-neutral-window-batch-conflict";
   conflicting_window.target_table.uuid = fixture.window_table_uuid;
   conflicting_window.target_table.object_kind = "table";
@@ -681,5 +701,8 @@ int main() {
                       "table_scan"),
           "DPC-065 neutral column_not_equals delete did not use MGA-visible table scan");
 
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = fixture.context;
+  RequireOk(api::EngineRollbackTransaction(rollback), "DPC-065 fixture rollback failed");
   return EXIT_SUCCESS;
 }
