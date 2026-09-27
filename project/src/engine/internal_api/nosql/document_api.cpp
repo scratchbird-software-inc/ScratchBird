@@ -52,6 +52,7 @@ struct PhysicalDocumentRecord {
   std::string name;
   std::string payload;
   std::map<std::string, std::string> fragments;
+  std::map<std::string, std::string> fragment_types;
   std::set<std::string> null_paths;
   std::string shape_id;
   EngineApiU64 shape_ref_count = 0;
@@ -134,39 +135,48 @@ std::string RequestDocumentName(const EngineApiRequest& request,
 
 std::map<std::string, std::string> ParsePayloadFragments(
     const EngineApiRequest& request,
-    std::set<std::string>* null_paths, bool* valid) {
+    std::set<std::string>* null_paths, bool* valid,
+    std::map<std::string, std::string>* fragment_types) {
   std::map<std::string, std::string> fragments;
   *valid = true;
-  const auto stored_cell = [&](const EngineTypedValue& value) {
-    if (!value.isSqlNull() && value.descriptor.canonical_type_name == "uuid") {
-      EngineUuid identity;
-      const std::string_view bytes(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
-      if (!value.encoded_value.empty() || !DecodeDocumentUuid(bytes, &identity)) {
-        *valid = false;
-        return std::string{};
-      }
-      return std::string(bytes);
+  null_paths->clear();
+  fragment_types->clear();
+  const auto store_cell = [&](const std::string& path, const EngineTypedValue& value) {
+    if (path.empty()) { *valid = false; return; }
+    if (value.state == EngineValueState::missing && !value.is_null &&
+        value.encoded_value.empty() && value.binary_value.empty()) {
+      fragments.erase(path);
+      fragment_types->erase(path);
+      null_paths->erase(path);
+      return;
     }
-    return value.encoded_value;
+    const auto scalar = DocumentPathScalarFromTypedValue(value);
+    if (scalar.scalar_type.empty()) { *valid = false; return; }
+    fragments[path] = scalar.encoded_value;
+    (*fragment_types)[path] = scalar.scalar_type;
+    if (scalar.is_null) null_paths->insert(path);
+    else null_paths->erase(path);
   };
   for (const auto& [path, value] : request.assignments) {
-    if (!path.empty()) {
-      fragments[path] = stored_cell(value);
-      if (value.isSqlNull()) null_paths->insert(path);
-    }
+    store_cell(path, value);
   }
   for (const auto& row : request.rows) {
     for (const auto& [path, value] : row.fields) {
-      if (!path.empty()) {
-        fragments[path] = stored_cell(value);
-        if (value.isSqlNull()) null_paths->insert(path);
-      }
+      store_cell(path, value);
     }
   }
   // Only typed logical document fields define index paths. The persisted
   // payload may be a binary hot/cold head or an overflow locator, and operation
   // metadata is not document data. An opaque payload supplies no named paths.
   return fragments;
+}
+
+bool ValidDocumentFields(const EngineApiRequest& request) {
+  std::set<std::string> nulls;
+  std::map<std::string, std::string> types;
+  bool valid = false;
+  (void)ParsePayloadFragments(request, &nulls, &valid, &types);
+  return valid;
 }
 
 std::string ShapeKey(const std::map<std::string, std::string>& fragments) {
@@ -244,16 +254,22 @@ bool EncodeDocumentProviderEvent(const EngineRequestContext& context,
   std::string fragments;
   AppendBinaryU32(&fragments, static_cast<std::uint32_t>(record.fragments.size()));
   for (const auto& [path, value] : record.fragments) {
+    const auto type = record.fragment_types.find(path);
+    if (type == record.fragment_types.end() || type->second.empty() ||
+        (record.null_paths.contains(path) && !value.empty()) ||
+        (!record.null_paths.contains(path) && type->second == "uuid" && value.size() != 16))
+      return false;
     if (!AppendBinaryString(&fragments, path) ||
-        !AppendBinaryString(&fragments, value)) return false;
+        !AppendBinaryString(&fragments, value) ||
+        !AppendBinaryString(&fragments, type->second)) return false;
     fragments.push_back(record.null_paths.contains(path) ? 1 : 0);
   }
-  if (record.fragments.size() > 65536 ||
+  if (record.fragments.size() > 65536 || record.fragment_types.size() != record.fragments.size() ||
       std::ranges::any_of(record.null_paths, [&](const auto& path) {
         return !record.fragments.contains(path);
       })) return false;
   fields.text.emplace("fragments", std::move(fragments));
-  return EncodeBinaryCatalogMetadata(fields, "nosql.document.event.v2", encoded);
+  return EncodeBinaryCatalogMetadata(fields, "nosql.document.event.v3", encoded);
 }
 
 bool DecodeDocumentProviderEvent(const EngineRequestContext& context,
@@ -261,7 +277,7 @@ bool DecodeDocumentProviderEvent(const EngineRequestContext& context,
                                  PhysicalDocumentRecord* record) {
   if (!verb || !record) return false;
   BinaryCatalogMetadata fields;
-  if (!DecodeBinaryCatalogMetadata(encoded, "nosql.document.event.v2", &fields) ||
+  if (!DecodeBinaryCatalogMetadata(encoded, "nosql.document.event.v3", &fields) ||
       BinaryCatalogUuid(fields, "database_uuid") != context.database_uuid) return false;
   PhysicalDocumentRecord decoded;
   decoded.collection_uuid = BinaryCatalogUuid(fields, "collection_uuid");
@@ -279,10 +295,13 @@ bool DecodeDocumentProviderEvent(const EngineRequestContext& context,
   std::uint32_t count = 0;
   if (!ReadBinaryU32(input, &cursor, &count) || count > 65536) return false;
   for (std::uint32_t i = 0; i < count; ++i) {
-    std::string path, value;
+    std::string path, value, type;
     if (!ReadBinaryString(input, &cursor, &path) ||
-        !ReadBinaryString(input, &cursor, &value) || cursor == input.size() ||
-        input[cursor] > 1 || !decoded.fragments.emplace(path, value).second) return false;
+        !ReadBinaryString(input, &cursor, &value) ||
+        !ReadBinaryString(input, &cursor, &type) || path.empty() || type.empty() ||
+        cursor == input.size() || input[cursor] > 1 ||
+        !decoded.fragments.emplace(path, value).second) return false;
+    decoded.fragment_types.emplace(path, type);
     if (input[cursor++]) decoded.null_paths.insert(path);
   }
   if (cursor != input.size()) return false;
@@ -308,14 +327,14 @@ bool PersistDocumentProviderEvent(const EngineRequestContext& context,
     std::ifstream in(path, std::ios::binary);
     char magic[11];
     if (!in.read(magic, sizeof(magic)) ||
-        std::string_view(magic, sizeof(magic)) != "SBNOSQLDOC2") return false;
+        std::string_view(magic, sizeof(magic)) != "SBNOSQLDOC3") return false;
   }
   std::string frame;
   AppendBinaryU32(&frame, static_cast<std::uint32_t>(encoded.size()));
   frame += encoded;
   std::ofstream out(path, std::ios::binary | std::ios::app);
   if (!out) return false;
-  if (!exists) out.write("SBNOSQLDOC2", 11);
+  if (!exists) out.write("SBNOSQLDOC3", 11);
   out.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   out.flush();
   return out.good();
@@ -334,7 +353,7 @@ bool LoadDocumentProviderLocked(const EngineRequestContext& context,
     std::ifstream in(path, std::ios::binary);
     char magic[11];
     if (!in.read(magic, sizeof(magic)) ||
-        std::string_view(magic, sizeof(magic)) != "SBNOSQLDOC2") return false;
+        std::string_view(magic, sizeof(magic)) != "SBNOSQLDOC3") return false;
     while (in.peek() != std::char_traits<char>::eof()) {
       std::uint8_t length[4];
       if (!in.read(reinterpret_cast<char*>(length), 4)) return false;
@@ -387,13 +406,8 @@ std::vector<DocumentPathRowEvidence> ProviderRowsFromState(
     row.version_uuid = record.version_uuid;
     row.row_ordinal = record.creator_tx;
     for (const auto& [path, value] : record.fragments) {
-      EngineTypedValue typed;
-      typed.encoded_value = value;
-      if (record.null_paths.contains(path)) {
-        typed.encoded_value.clear();
-        typed.setState(EngineValueState::sql_null);
-      }
-      row.values.push_back({path, DocumentPathScalarFromTypedValue(typed)});
+      row.values.push_back({path, {record.fragment_types.at(path), value,
+                                  record.null_paths.contains(path)}});
     }
     rows.push_back(std::move(row));
   }
@@ -488,10 +502,11 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
           : bound_row_uuid;
   record.payload = RowField(result, "payload");
   bool fragments_valid = false;
-  record.fragments = ParsePayloadFragments(request, &record.null_paths, &fragments_valid);
+  record.fragments = ParsePayloadFragments(request, &record.null_paths, &fragments_valid,
+                                           &record.fragment_types);
   if (!fragments_valid) {
     outcome.ok = false;
-    outcome.diagnostic = MakeInvalidRequestDiagnostic("document.provider", "UUID document cells require binary16");
+    outcome.diagnostic = MakeInvalidRequestDiagnostic("document.provider", "invalid typed document cell; UUID values require binary16");
     return outcome;
   }
   record.creator_tx = request.context.local_transaction_id;
@@ -683,7 +698,8 @@ struct DocumentMatchResult {
 DocumentMatchResult CompareDocumentValue(
     const EngineDocumentFindRequest& request,
     const std::string& encoded_value,
-    const bool stored_null) {
+    const bool stored_null,
+    const std::string& scalar_type) {
   if (!request.comparison_value_present) {
     return {true,
             request.equals_value.empty() || encoded_value == request.equals_value,
@@ -691,10 +707,19 @@ DocumentMatchResult CompareDocumentValue(
   }
   EngineTypedValue left;
   left.descriptor = request.comparison_value.descriptor;
+  const auto text_type = [](const std::string& type) {
+    return type == "text" || type == "string" || type == "character";
+  };
+  if (!stored_null && scalar_type != left.descriptor.canonical_type_name &&
+      !(text_type(scalar_type) && text_type(left.descriptor.canonical_type_name)))
+    return {false, false, "document scalar datatype does not match bound comparison"};
   if (stored_null) {
     left.setState(EngineValueState::sql_null);
   } else {
-    left.encoded_value = encoded_value;
+    if (left.descriptor.canonical_type_name == "uuid") {
+      if (encoded_value.size() != 16) return {false, false, "UUID document value requires binary16"};
+      left.binary_value.assign(encoded_value.begin(), encoded_value.end());
+    } else left.encoded_value = encoded_value;
     left.setState(EngineValueState::value);
   }
   EngineComparisonPredicateOperator operation =
@@ -751,7 +776,7 @@ DocumentMatchResult PathMatches(const EngineDocumentFindRequest& request,
                                 : request.path == path;
     if (path_match) {
       auto compared = CompareDocumentValue(
-          request, value, record.null_paths.contains(path));
+          request, value, record.null_paths.contains(path), record.fragment_types.at(path));
       if (!compared.valid || compared.matches) return compared;
     }
   }
@@ -927,9 +952,11 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
       value.setState(EngineValueState::sql_null);
     } else {
       if (value.descriptor.canonical_type_name == "uuid") {
-        EngineUuid identity;
-        if (!DecodeDocumentUuid(scalar->encoded_value, &identity)) return false;
-        value.binary_value.assign(identity.bytes.begin(), identity.bytes.end());
+        if (scalar->scalar_type != "uuid" || scalar->encoded_value.size() != 16) return false;
+        value.binary_value.assign(scalar->encoded_value.begin(), scalar->encoded_value.end());
+      } else if (scalar->scalar_type == "uuid") {
+        // Formatting user UUID data belongs at the parser/client boundary.
+        return false;
       } else value.encoded_value = scalar->encoded_value;
       value.setState(EngineValueState::value);
     }
@@ -997,6 +1024,14 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
     return false;
   }
   if (!request.typed_rows_only) {
+    for (const auto& projected : typed_row.values) {
+      if (!add_bytes(projected.value.descriptor.encoded_descriptor.size()) ||
+          !add_bytes(projected.value.descriptor.canonical_type_name.size()) ||
+          !add_bytes(projected.value.descriptor.descriptor_kind.size())) {
+        *resource_refused = true;
+        return false;
+      }
+    }
     if (!add_bytes(sizeof(EngineRowValue)) ||
         !add_bytes(16) ||
         !add_bytes(fields.capacity() *
@@ -1027,6 +1062,12 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
   result->typed_rows.push_back(std::move(typed_row));
   if (!request.typed_rows_only) {
     AddApiBehaviorRow(result, std::move(fields));
+    // The generic API row and the typed model exchange carry the same cell;
+    // path captions must not turn native UUID bytes back into TEXT values.
+    for (const auto& projected : result->typed_rows.back().values) {
+      for (auto& [name, value] : result->result_shape.rows.back().fields)
+        if (name == "path:" + projected.path) value = projected.value;
+    }
   }
   if (!request.typed_rows_only) {
     if (!candidate.shape_id.empty()) {
@@ -1068,7 +1109,7 @@ std::vector<DocumentPathProviderProjectedValue> ProjectValuesFromSource(
     if (!requested_path(path) && !matched_probe(path)) continue;
     DocumentPathProviderProjectedValue projected_value;
     projected_value.path = path;
-    projected_value.value.scalar_type = "string";
+    projected_value.value.scalar_type = record.fragment_types.at(path);
     projected_value.value.encoded_value = value;
     projected_value.value.is_null = record.null_paths.contains(path);
     projected.push_back(std::move(projected_value));
@@ -1628,6 +1669,8 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
           (!account_record_bytes(
                sizeof(std::pair<const std::string, std::string>) +
                3 * sizeof(void*) + path.size() + encoded.size()) ||
+           !account_record_bytes(sizeof(std::pair<const std::string, std::string>) +
+               3 * sizeof(void*) + path.size() + column->value_descriptor.canonical_type_name.size()) ||
            (encoded == "<NULL>" &&
             !account_record_bytes(sizeof(std::string) +
                                   3 * sizeof(void*) + path.size())))) {
@@ -1649,6 +1692,9 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
     record.creator_tx = row.creator_tx;
     for (const auto& [path, encoded] : row.values) {
       if (!retain_path(path)) continue;
+      const auto column = std::ranges::find_if(read.descriptor.columns,
+          [&](const auto& candidate) { return candidate.canonical_name_key == path; });
+      record.fragment_types.emplace(path, column->value_descriptor.canonical_type_name);
       if (encoded == "<NULL>") {
         record.fragments.emplace(path, std::string{});
         record.null_paths.insert(path);
@@ -1793,6 +1839,12 @@ EngineDocumentFindResult PhysicalDocumentFind(
   probe_request.path = request.path;
   probe_request.equals_value.encoded_value = request.equals_value;
   probe_request.equals_value.scalar_type = "string";
+  if (request.comparison_value_present) {
+    // Other comparisons are rechecked on the source; equality alone can use
+    // the typed posting key without dropping candidates.
+    probe_request.equals_value = request.comparison_operator == "="
+        ? DocumentPathScalarFromTypedValue(request.comparison_value) : DocumentPathScalar{};
+  }
   probe_request.wildcard_path = request.wildcard_path;
   probe_request.projected_paths = request.projected_paths;
   const auto probe = ProbeDocumentPathPhysicalProvider(probe_request);
@@ -1904,6 +1956,9 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentInsertResult>(request, kOperation);
   }
+  if (!ValidDocumentFields(request))
+    return MakeApiBehaviorDiagnostic<EngineDocumentInsertResult>(request.context, kOperation,
+        MakeInvalidRequestDiagnostic(kOperation, "invalid typed document cell"));
   const auto canonical_uuid = IsDocumentIdentity;
   if ((!request.collection_uuid.is_nil() &&
        !canonical_uuid(request.collection_uuid)) ||
@@ -1972,7 +2027,8 @@ EngineDocumentFindResult EngineDocumentFind(const EngineDocumentFindRequest& req
            request.comparison_value.descriptor) ||
        request.comparison_value.descriptor.descriptor_kind != "scalar" ||
        (request.comparison_value.state != EngineValueState::value &&
-        request.comparison_value.state != EngineValueState::sql_null))) {
+        request.comparison_value.state != EngineValueState::sql_null) ||
+       DocumentPathScalarFromTypedValue(request.comparison_value).scalar_type.empty())) {
     return DiagnosticResult<EngineDocumentFindResult>(
         request.context, kOperation,
         "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1");
@@ -2117,6 +2173,9 @@ EngineDocumentUpdateResult EngineDocumentUpdate(const EngineDocumentUpdateReques
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentUpdateResult>(request, kOperation);
   }
+  if (!ValidDocumentFields(request))
+    return MakeApiBehaviorDiagnostic<EngineDocumentUpdateResult>(request.context, kOperation,
+        MakeInvalidRequestDiagnostic(kOperation, "invalid typed document cell"));
   auto result = EngineNoSqlPayloadAwarePersistedWriteResult<EngineDocumentUpdateResult>(
       request,
       kOperation,

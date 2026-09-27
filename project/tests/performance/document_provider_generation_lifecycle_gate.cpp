@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -20,6 +21,7 @@
 #include "nosql/nosql_provider_generation_store.hpp"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -669,6 +671,143 @@ void ProveNoProviderIndexParserOrLogFinalityAuthority() {
 
 }  // namespace
 
+void ProveNativeUuidDataPublicationAndReplay() {
+  TempDatabase database("uuid_data");
+  auto writer = Context(database.path, 800);
+  api::EngineColumnDefinition column;
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = "uuid";
+  column.descriptor.encoded_descriptor = "canonical=uuid;nullable=true";
+  scratchbird::tests::BindFixtureColumnDatatype(writer,
+      scratchbird::core::datatypes::CanonicalTypeId::uuid, column);
+  std::array<std::vector<std::uint8_t>, 4> values;
+  for (auto& bytes : values) bytes.resize(16);
+  values[1][6] = 0x40; values[1][8] = 0x80; values[1][15] = 1;
+  values[2].assign(16, 0xff);
+  for (std::size_t i = 0; i < 16; ++i) values[3][i] = static_cast<std::uint8_t>(i * 17);
+  for (const auto& bytes : values) {
+    api::EngineTypedValue value;
+    value.descriptor = column.descriptor;
+    value.binary_value = bytes;
+    api::EngineDocumentInsertRequest insert;
+    insert.context = writer;
+    insert.target_object.uuid = api::GenerateCrudEngineUuid("row");
+    insert.assignments = {{"user_uuid", value}};
+    auto missing = value;
+    missing.binary_value.clear(); missing.setState(api::EngineValueState::missing);
+    insert.assignments.push_back({"absent", missing});
+    const auto published = api::EngineDocumentInsert(insert);
+    Require(published.ok, "arbitrary binary16 document UUID publication failed");
+  }
+  api::EngineTypedValue null;
+  null.descriptor = column.descriptor;
+  // State is authoritative even when a legacy mirror has not been populated.
+  null.state = api::EngineValueState::sql_null;
+  api::EngineDocumentInsertRequest null_insert;
+  null_insert.context = writer;
+  null_insert.target_object.uuid = api::GenerateCrudEngineUuid("row");
+  null_insert.assignments = {{"user_uuid", null}};
+  Require(api::EngineDocumentInsert(null_insert).ok, "typed UUID NULL publication failed");
+  const auto generation = CurrentGeneration(writer);
+  const auto provider_before = ReadArtifactBytes(DocumentSidecar(database.path));
+  const auto artifact_before = ReadArtifactBytes(ArtifactPath(database.path));
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    auto bad = null;
+    bad.setState(api::EngineValueState::value);
+    bad.binary_value = values[1];
+    if (mutation == 0) bad.binary_value.pop_back();
+    if (mutation == 1) bad.binary_value.push_back(0);
+    if (mutation == 2) bad.encoded_value = "mixed carrier";
+    if (mutation == 3) { bad.binary_value.clear(); bad.encoded_value = "019f0000-0000-7000-8000-000000000001"; }
+    if (mutation == 4) bad.setState(api::EngineValueState::sql_null);
+    if (mutation == 5) bad.setState(api::EngineValueState::missing);
+    auto insert = null_insert;
+    insert.target_object.uuid = api::GenerateCrudEngineUuid("row");
+    insert.assignments = {{"user_uuid", bad}};
+    Require(!api::EngineDocumentInsert(insert).ok, "malformed UUID document insert accepted");
+    api::EngineDocumentUpdateRequest update;
+    static_cast<api::EngineApiRequest&>(update) = insert;
+    Require(!api::EngineDocumentUpdate(update).ok, "malformed UUID document update accepted");
+    Require(ReadArtifactBytes(DocumentSidecar(database.path)) == provider_before &&
+                ReadArtifactBytes(ArtifactPath(database.path)) == artifact_before &&
+                CurrentGeneration(writer).generation_uuid == generation.generation_uuid,
+            "malformed UUID mutation changed persisted document state");
+  }
+  CommitTransaction(writer);
+  api::EngineDocumentProviderCleanup(writer, false);
+  writer.statement.reset(); writer.session.reset();
+  auto reader = Context(database.path, 801, writer.database_uuid,
+                        writer.current_schema_uuid, &writer.owner_context);
+  api::DocumentPathProviderOpenRequest open;
+  open.artifact_path = ArtifactPath(database.path);
+  const auto reopened = api::OpenDocumentPathPhysicalProvider(open);
+  Require(reopened.ok && reopened.artifact.stats.path_count == 1 &&
+              reopened.artifact.postings.size() == 5,
+          "typed document paths were lost or missing paths invented on reopen");
+  api::EngineDocumentFindRequest all;
+  all.context = reader;
+  all.path = "user_uuid";
+  all.projected_paths = {"user_uuid"};
+  all.descriptors = {column.descriptor};
+  all.typed_rows_only = true;
+  all.physical_proof = Proof(reader, CurrentGeneration(reader));
+  const auto all_values = api::EngineDocumentFind(all);
+  Require(all_values.ok && all_values.typed_rows.size() == 5 &&
+              std::count_if(all_values.typed_rows.begin(), all_values.typed_rows.end(),
+                  [](const auto& row) { return row.values[0].value.isSqlNull() &&
+                      row.values[0].value.binary_value.empty() && row.values[0].value.encoded_value.empty(); }) == 1,
+          "UUID SQL NULL and nil UUID were conflated during replay or projection");
+  for (const auto& bytes : values) {
+    const std::string raw(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    Require(std::count_if(reopened.artifact.postings.begin(), reopened.artifact.postings.end(),
+                [&](const auto& posting) { return posting.scalar_type == "uuid" && posting.encoded_value == raw; }) == 1,
+            "durable UUID posting lost native type or bytes");
+    api::EngineDocumentFindRequest find;
+    find.context = reader;
+    find.path = "user_uuid";
+    find.projected_paths = {"user_uuid"};
+    find.descriptors = {column.descriptor};
+    find.typed_rows_only = true;
+    find.comparison_value_present = true;
+    find.comparison_operator = "=";
+    find.comparison_value.descriptor = column.descriptor;
+    find.comparison_value.binary_value = bytes;
+    find.physical_proof = Proof(reader, CurrentGeneration(reader));
+    find.require_benchmark_clean_index_runtime = true;
+    const auto found = api::EngineDocumentFind(find);
+    if (!found.ok) for (const auto& diagnostic : found.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    Require(found.ok && found.typed_rows.size() == 1 && found.typed_rows[0].values.size() == 1 &&
+                found.typed_rows[0].values[0].value.binary_value == bytes &&
+                found.typed_rows[0].values[0].value.encoded_value.empty() &&
+                !found.typed_rows[0].values[0].value.isSqlNull() &&
+                found.dml_summary.index_probes == 1 &&
+                found.base_row_mga_recheck_complete && found.security_recheck_complete,
+            "UUID equality after cache-independent replay lost data or authority");
+    find.typed_rows_only = false;
+    const auto generic = api::EngineDocumentFind(find);
+    Require(generic.ok && generic.result_shape.rows.size() == 1,
+            "generic document result publication failed");
+    const auto field = std::ranges::find_if(generic.result_shape.rows[0].fields,
+        [](const auto& value) { return value.first == "path:user_uuid"; });
+    Require(field != generic.result_shape.rows[0].fields.end() &&
+                field->second.binary_value == bytes && field->second.encoded_value.empty() &&
+                field->second.descriptor.canonical_type_name == "uuid",
+            "generic document result converted UUID data into untyped TEXT");
+    find.comparison_value = null;
+    const auto unknown = api::EngineDocumentFind(find);
+    Require(unknown.ok && unknown.typed_rows.empty(), "UUID NULL comparison was not unknown");
+  }
+  InsertDocument(reader, {{"note", "rebuild after replay"}});
+  CommitTransaction(reader);
+  const auto rebuilt = api::OpenDocumentPathPhysicalProvider(open);
+  Require(rebuilt.ok && rebuilt.artifact.stats.path_count == 2 &&
+              rebuilt.artifact.postings.size() == 6 &&
+              std::count_if(rebuilt.artifact.postings.begin(), rebuilt.artifact.postings.end(),
+                  [](const auto& posting) { return posting.scalar_type == "uuid" && posting.encoded_value.size() == 16; }) == 4,
+          "provider rebuild after replay lost retained UUID scalar datatypes");
+}
+
 int main() {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("document-provider-generation-native-fixture");
   try {
@@ -676,6 +815,7 @@ int main() {
     ProveProviderAndGenerationRepairLifecycle();
     ProveDropCleanupAndConcurrentLifecycle();
     ProveNoProviderIndexParserOrLogFinalityAuthority();
+    ProveNativeUuidDataPublicationAndReplay();
   } catch (const std::exception& ex) {
     std::cerr << "document_provider_generation_lifecycle_gate failed: "
               << ex.what() << '\n';

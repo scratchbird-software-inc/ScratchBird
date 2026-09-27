@@ -555,6 +555,30 @@ void DirectProviderScenario(const std::filesystem::path& base_path) {
   Require(built.artifact.stats.array_expansion_count == 1,
           "array expansion dictionary missing");
 
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    auto invalid = build;
+    auto& scalar = invalid.rows.front().values.front().value;
+    scalar = {"uuid", std::string(16, '\0'), false};
+    if (mutation == 0) scalar.encoded_value.pop_back();
+    if (mutation == 1) scalar.encoded_value.push_back('\0');
+    if (mutation == 2) scalar.scalar_type.clear();
+    if (mutation == 3) scalar.is_null = true;
+    const auto refused = api::BuildDocumentPathPhysicalProvider(invalid);
+    const std::string expected_detail = std::string("nosql.document_path_physical_provider:") +
+        api::kDocumentPathPhysicalProviderMalformedPostings;
+    Require(!refused.ok && refused.diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+                refused.diagnostic.detail == expected_detail,
+            "malformed typed scalar was accepted into the physical index");
+    api::DocumentPathProviderProbeRequest invalid_probe;
+    invalid_probe.artifact_path = artifact_path.string();
+    invalid_probe.path = "customer.id";
+    invalid_probe.equals_value = scalar;
+    const auto probe_refused = api::ProbeDocumentPathPhysicalProvider(invalid_probe);
+    Require(!probe_refused.ok && probe_refused.diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+                probe_refused.diagnostic.detail == expected_detail,
+            "malformed typed scalar produced a successful empty index probe");
+  }
+
   api::DocumentPathProviderProbeRequest probe;
   probe.artifact_path = artifact_path.string();
   probe.expected_identity = build.identity;

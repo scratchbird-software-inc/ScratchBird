@@ -415,6 +415,12 @@ std::optional<const char*> ValidateRows(
       return kDocumentPathPhysicalProviderInvalidUuid;
     }
     for (const auto& value : row.values) {
+      if (value.value.scalar_type.empty() ||
+          (value.value.is_null && !value.value.encoded_value.empty()) ||
+          (!value.value.is_null && value.value.scalar_type == "uuid" &&
+           value.value.encoded_value.size() != 16)) {
+        return kDocumentPathPhysicalProviderMalformedPostings;
+      }
       if (!IsSafePath(NormalizePath(value.path))) {
         return kDocumentPathPhysicalProviderUnsafePathToken;
       }
@@ -634,7 +640,10 @@ std::optional<const char*> ValidateParsedArtifact(
   for (const auto& posting : artifact.postings) {
     const auto path_it = paths.find(posting.path_id);
     if (posting.path_id == 0 || path_it == paths.end() ||
-        posting.scalar_type.empty() || !IsValidUuid(posting.document_uuid) ||
+        posting.scalar_type.empty() ||
+        (posting.scalar_type == "uuid" && posting.encoded_value.size() != 16) ||
+        (posting.scalar_type == "null" && !posting.encoded_value.empty()) ||
+        !IsValidUuid(posting.document_uuid) ||
         !IsValidUuid(posting.row_uuid) || !IsValidUuid(posting.version_uuid) ||
         !IsSafePath(posting.concrete_path) ||
         posting.array_position != FirstArrayPosition(posting.concrete_path) ||
@@ -1019,14 +1028,24 @@ DocumentPathProviderIdentity DocumentPathProviderIdentityForContext(
 DocumentPathScalar DocumentPathScalarFromTypedValue(
     const EngineTypedValue& value) {
   DocumentPathScalar scalar;
-  scalar.encoded_value = value.encoded_value;
-  scalar.is_null = value.is_null;
-  if (value.is_null) {
-    scalar.scalar_type = "null";
-  } else if (!value.descriptor.canonical_type_name.empty()) {
-    scalar.scalar_type = value.descriptor.canonical_type_name;
-  } else {
-    scalar.scalar_type = "string";
+  scalar.scalar_type = value.descriptor.canonical_type_name.empty()
+      ? "string" : value.descriptor.canonical_type_name;
+  scalar.is_null = value.isSqlNull();
+  // An empty scalar type is an invalid conversion, never a NULL or empty
+  // value. Callers validate it before publishing or probing an artifact.
+  if ((scalar.is_null && (!value.encoded_value.empty() || !value.binary_value.empty())) ||
+      (!scalar.is_null && value.state != EngineValueState::value) ||
+      (!value.encoded_value.empty() && !value.binary_value.empty()) ||
+      (!scalar.is_null && scalar.scalar_type == "uuid" &&
+       (!value.encoded_value.empty() || value.binary_value.size() != 16))) {
+    scalar.scalar_type.clear();
+    return scalar;
+  }
+  if (!scalar.is_null) {
+    if (!value.binary_value.empty())
+      scalar.encoded_value.assign(reinterpret_cast<const char*>(value.binary_value.data()),
+                                  value.binary_value.size());
+    else scalar.encoded_value = value.encoded_value;
   }
   return scalar;
 }
@@ -1179,6 +1198,11 @@ DocumentPathProviderResult DeleteOrUpdateDocumentPathPhysicalProvider(
 
 DocumentPathProviderProbeResult ProbeDocumentPathPhysicalProvider(
     const DocumentPathProviderProbeRequest& request) {
+  if (request.equals_value.scalar_type.empty() ||
+      (request.equals_value.is_null && !request.equals_value.encoded_value.empty()) ||
+      (!request.equals_value.is_null && request.equals_value.scalar_type == "uuid" &&
+       request.equals_value.encoded_value.size() != 16))
+    return ProbeFailure(kDocumentPathPhysicalProviderMalformedPostings);
   if (!IsSafePath(NormalizePath(request.path))) {
     return ProbeFailure(kDocumentPathPhysicalProviderUnsafePathToken);
   }
