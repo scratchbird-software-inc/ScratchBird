@@ -8,6 +8,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -754,28 +756,10 @@ std::filesystem::path TestDatabasePath() {
 }
 
 void RemoveTestDatabase() {
-  const auto path = TestDatabasePath();
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.catalog_object_events",
-                            ".sb.crud_events",
-                            ".sb.name_events",
-                            ".sb.mga_event_sequence_allocator",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_savepoints",
-                            ".sb.txn_publish",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(TestDatabasePath());
 }
 
-api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
+db::DatabaseCreateConfig CreateMinimalDatabaseForEngineDispatch() {
   RemoveTestDatabase();
   db::DatabaseCreateConfig create;
   create.path = TestDatabasePath().string();
@@ -794,22 +778,21 @@ api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
               << '\n';
   }
   Require(created.ok(), "CREATE TABLE engine dispatch test database create failed");
-  return create.database_uuid.value;
+  return create;
 }
 
-api::EngineRequestContext EngineContext(const api::EngineUuid& database_uuid) {
+api::EngineRequestContext EngineContext(const db::DatabaseCreateConfig& create) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-create-table-exact-route";
   context.database_path = TestDatabasePath().string();
-  context.database_uuid = database_uuid;
+  context.database_uuid = create.database_uuid.value;
+  context.default_root_uuid = create.filespace_uuid.value;
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020202");
   context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020203");
   context.current_schema_uuid = {};
   context.security_context_present = true;
   context.catalog_generation_id = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
@@ -851,8 +834,8 @@ std::string ResultFieldValue(const api::EngineRowValue& row,
   return {};
 }
 
-api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database_uuid) {
-  auto context = EngineContext(database_uuid);
+api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig& create) {
+  auto context = EngineContext(create);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
                                          "trace.create_table.exact_route.transaction.begin");
@@ -910,9 +893,9 @@ api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database
 
 api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_type_name,
                                                   std::string_view column_name,
-                                                  const api::EngineUuid& schema_uuid) {
+                                                  const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
-  request.target_schema.uuid = schema_uuid;
+  request.target_schema.uuid = context.current_schema_uuid;
   request.target_schema.object_kind = "schema";
   request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020206");
   request.target_object.object_kind = "table";
@@ -925,6 +908,9 @@ api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_typ
   column.descriptor.encoded_descriptor = std::string("type=") + std::string(canonical_type_name);
   column.ordinal = 0;
   column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+                   std::string(canonical_type_name)), column);
   request.columns.push_back(std::move(column));
   return request;
 }
@@ -945,14 +931,15 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                            std::string_view column_name,
                            bool temporary,
                            std::string_view on_commit_action) {
-  const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
-  auto context = BeginEngineTransaction(database_uuid);
+  const auto create = CreateMinimalDatabaseForEngineDispatch();
+  auto context = BeginEngineTransaction(create);
   context.current_schema_uuid = SchemaUuidForPath(context, "users.public");
   Require(!context.current_schema_uuid.is_nil(),
           "CREATE TABLE engine dispatch users.public schema missing");
   auto api_request = EngineCreateTableApiRequest(canonical_type_name,
                                                 column_name,
-                                                context.current_schema_uuid);
+                                                context);
+  const auto expected_column = api_request.columns.front();
   if (temporary) {
     api_request.option_envelopes.push_back("temporary:true");
     api_request.option_envelopes.push_back("temporary_scope:private");
@@ -1015,6 +1002,31 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
     }
   }
   Require(saw_table_create, "EngineCreateTable missing MGA table-create evidence");
+  const auto stored = api::LoadMgaRelationStoreState(context);
+  Require(stored.ok, "created relation metadata could not be read back");
+  const auto table = api::FindVisibleCrudTable(
+      stored.state.relation_metadata, result.api_result.primary_object.uuid,
+      context.local_transaction_id);
+  Require(table.has_value() && table->columns.size() == 1,
+          "CREATE TABLE did not persist relation metadata");
+  // bound_columns is a publication input, not reconstructed authority in the
+  // compatibility table record. Read the durable native storage descriptor.
+  const auto storage = api::LoadMgaRelationStorageDescriptor(
+      context, result.api_result.primary_object.uuid);
+  Require(storage.ok && storage.descriptor.columns.size() == 1 &&
+              storage.descriptor.relation_generation != 0 &&
+              storage.descriptor.primary_filespace_uuid == create.filespace_uuid.value,
+          "CREATE TABLE did not persist its native relation/filespace cohort");
+  const auto& actual_column = storage.descriptor.columns.front();
+  Require(actual_column.column_generation != 0 &&
+              actual_column.column_uuid == expected_column.requested_column_uuid &&
+              actual_column.value_descriptor.descriptor_uuid == expected_column.descriptor.descriptor_uuid &&
+              actual_column.value_descriptor.datatype_descriptor_uuid ==
+                  expected_column.descriptor.datatype_descriptor_uuid &&
+              actual_column.value_descriptor.datatype_descriptor_generation ==
+                  expected_column.descriptor.datatype_descriptor_generation &&
+              actual_column.value_descriptor.type_uuid == expected_column.descriptor.type_uuid,
+          "CREATE TABLE changed the bound native column/datatype identities");
   if (temporary) {
     Require(saw_temporary_scope, "EngineCreateTable missing temporary private scope evidence");
     Require(saw_temporary_on_commit, "EngineCreateTable missing temporary on-commit evidence");
