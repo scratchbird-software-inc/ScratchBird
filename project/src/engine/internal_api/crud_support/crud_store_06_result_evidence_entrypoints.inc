@@ -55,7 +55,8 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
       if (predicate.canonical_predicate_envelope == first_column) {
         in_list_key_values.reserve(predicate.bound_values.size());
         for (const auto& bound : predicate.bound_values) {
-          in_list_key_values.insert(bound.encoded_value);
+          if (const auto payload = CrudPredicateValuePayload(bound))
+            in_list_key_values.insert(*payload);
         }
         use_in_list_key_values = !in_list_key_values.empty();
       }
@@ -64,7 +65,10 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
       if (!use_in_list_key_values) {
         return EntryKeyMatchesPredicate(*selected, entry, predicate);
       }
-      return in_list_key_values.find(FirstCompositeComponent(entry.key_value)) !=
+      const auto logical_key = CrudIndexEntryLogicalKey(*selected, entry);
+      const auto first_key = CrudIndexKeyColumns(*selected).size() == 1
+          ? logical_key : FirstCompositeComponent(logical_key);
+      return in_list_key_values.find(first_key) !=
              in_list_key_values.end();
     };
     const auto row_matches_predicate = [&](const CrudRowVersionRecord& row) {

@@ -291,21 +291,24 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   const std::string first_column = columns.empty() ? index.column_name : columns.front();
   const std::string logical_entry_key =
       CrudIndexEntryLogicalKey(index, entry);
-  const std::string first_key = FirstCompositeComponent(logical_entry_key);
+  const std::string first_key = columns.size() == 1 ? logical_entry_key
+                                                   : FirstCompositeComponent(logical_entry_key);
   if (predicate.predicate_kind == "column_equals") {
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
-           first_key == predicate.bound_values.front().encoded_value;
+           CrudPredicateValuePayload(predicate.bound_values.front()) == first_key;
   }
   if (predicate.predicate_kind == "columns_all_equal") {
     const auto predicate_columns = Split(predicate.canonical_predicate_envelope, ',');
-    const auto key_parts = Split(entry.key_value, kCompositeSeparator);
+    const auto key_parts = columns.size() == 1
+        ? std::vector<std::string>{logical_entry_key}
+        : Split(logical_entry_key, kCompositeSeparator);
     if (predicate_columns.empty() || predicate.bound_values.size() < predicate_columns.size() ||
         columns.size() < predicate_columns.size() || key_parts.size() < predicate_columns.size()) {
       return false;
     }
     for (std::size_t index = 0; index < predicate_columns.size(); ++index) {
       if (columns[index] != predicate_columns[index] ||
-          key_parts[index] != predicate.bound_values[index].encoded_value) {
+          CrudPredicateValuePayload(predicate.bound_values[index]) != key_parts[index]) {
         return false;
       }
     }
@@ -314,14 +317,18 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   if (predicate.predicate_kind == "column_in_list") {
     if (predicate.canonical_predicate_envelope != first_column) { return false; }
     for (const auto& value : predicate.bound_values) {
-      if (first_key == value.encoded_value) { return true; }
+      if (CrudPredicateValuePayload(value) == first_key) { return true; }
     }
     return false;
   }
   if (predicate.predicate_kind == "column_range") {
     if (predicate.canonical_predicate_envelope != first_column) { return false; }
-    const bool lower_ok = predicate.bound_values.empty() || CompareCrudScalar(first_key, predicate.bound_values[0].encoded_value) >= 0;
-    const bool upper_ok = predicate.bound_values.size() < 2 || CompareCrudScalar(first_key, predicate.bound_values[1].encoded_value) <= 0;
+    const auto lower = predicate.bound_values.empty() ? std::optional<int>{0}
+        : CompareCrudPredicateValue(first_key, predicate.bound_values[0], CompareCrudScalar);
+    const auto upper = predicate.bound_values.size() < 2 ? std::optional<int>{0}
+        : CompareCrudPredicateValue(first_key, predicate.bound_values[1], CompareCrudScalar);
+    const bool lower_ok = lower && *lower >= 0;
+    const bool upper_ok = upper && *upper <= 0;
     return lower_ok && upper_ok;
   }
   if (predicate.predicate_kind == "text_term_contains") {

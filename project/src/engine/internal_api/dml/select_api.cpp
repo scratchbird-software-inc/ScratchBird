@@ -10,6 +10,7 @@
 #include "dml/dml_target_access_plan.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"
@@ -676,6 +677,15 @@ std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_SELECT_API_STUBS
 
 EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) {
+  for (const auto* predicate : {&request.select_predicate, &request.predicate}) {
+    for (const auto& value : predicate->bound_values) {
+      try { (void)CrudTypedValuePayload(value); }
+      catch (const std::invalid_argument& error) {
+        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context,
+            "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", error.what()));
+      }
+    }
+  }
   for (const auto* predicate : {&request.select_predicate, &request.predicate})
     if (const auto* error = DmlRowIdentityPredicateError(*predicate))
       return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "../api_types.hpp"
+#include <optional>
 #include <stdexcept>
 
 namespace scratchbird::engine::internal_api {
@@ -28,5 +29,34 @@ inline std::string CrudTypedValuePayload(const EngineTypedValue& value) {
       throw std::invalid_argument("UUID data requires binary16");
   }
   return value.encoded_value;
+}
+
+inline bool CrudUuidValue(const EngineTypedValue& value) {
+  const auto& type = value.descriptor.canonical_type_name;
+  return type == "uuid" || type == "uuid16" || type == "uuidv7";
+}
+
+// A NULL comparison is UNKNOWN. Malformed carriers are refused by the API;
+// internal predicates also fail closed if invoked without that preflight.
+inline std::optional<std::string> CrudPredicateValuePayload(const EngineTypedValue& value) {
+  if (value.isSqlNull()) return std::nullopt;
+  try { return CrudTypedValuePayload(value); }
+  catch (const std::invalid_argument&) { return std::nullopt; }
+}
+
+template <typename LegacyComparator>
+std::optional<int> CompareCrudPredicateValue(const std::string& left,
+                                            const EngineTypedValue& right,
+                                            LegacyComparator legacy_compare) {
+  const auto payload = CrudPredicateValuePayload(right);
+  if (!payload || left == "<NULL>") return std::nullopt;
+  if (CrudUuidValue(right)) {
+    if (left.size() != 16) return std::nullopt;
+    // Never reinterpret UUID octets that happen to spell digits as a number.
+    return left.compare(*payload);
+  }
+  if (!right.binary_value.empty() || right.descriptor.canonical_type_name == "binary")
+    return left.compare(*payload);
+  return legacy_compare(left, *payload);
 }
 } // namespace scratchbird::engine::internal_api

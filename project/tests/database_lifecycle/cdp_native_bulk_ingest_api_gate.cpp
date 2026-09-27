@@ -15,6 +15,7 @@
 #include "index_key_encoding.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -1969,8 +1970,8 @@ void TestTypedScalarRowPageStorage() {
   }
 }
 
-void TestNativeUuidBinaryIndexAndValues() {
-  auto fixture = MakeFixture("uuid_binary", 1650);
+void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
+  auto fixture = MakeFixture(unique ? "uuid_binary" : "uuid_binary_nonunique", 1650);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, 1660);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, 1661);
   auto metadata = Begin(fixture, "uuid-binary-metadata");
@@ -1981,7 +1982,7 @@ void TestNativeUuidBinaryIndexAndValues() {
   table.columns = {{"id", "canonical=int64"}, {"value", "canonical=uuid"}};
   auto index = IdIndex(fixture, metadata);
   index.column_name = "value";
-  index.unique = true;
+  index.unique = unique;
   Require(!PublishFixtureTable(metadata, table).error, "UUID bulk catalog publication failed");
   Require(!api::AppendMgaIndexMetadata(metadata, index).error, "UUID bulk index publication failed");
   Commit(metadata);
@@ -2055,6 +2056,81 @@ void TestNativeUuidBinaryIndexAndValues() {
   Require(entries == values.size() && actual_values == expected_values,
           "UUID index replay omitted or duplicated a value");
 
+  // A stored key is not sufficient: exercise each actual indexed lookup and
+  // retained row predicate. No SELECT scan fallback can satisfy these checks.
+  const auto predicate_state = api::BuildMgaRelationReadView(stored.state);
+  for (std::size_t ordinal = 0; ordinal < values.size(); ++ordinal) {
+    const std::string expected(reinterpret_cast<const char*>(values[ordinal].bytes.data()), 16);
+    for (const std::string kind : {"column_equals", "columns_all_equal", "column_in_list", "column_range"}) {
+      api::EnginePredicateEnvelope predicate;
+      predicate.predicate_kind = kind;
+      predicate.canonical_predicate_envelope = "value";
+      predicate.bound_values.push_back(IdentityScalarValue("uuid", values[ordinal]));
+      if (kind == "column_range") predicate.bound_values.push_back(predicate.bound_values.front());
+      const auto indexed = api::IndexedMgaRowsForPredicateForContext(
+          predicate_state, fixture.table_uuid, predicate, reader, 0);
+      Require(indexed.ok && indexed.index_used && !indexed.index_refused &&
+                  indexed.rows.size() == 1 &&
+                  api::CrudFieldValue(indexed.rows.front().values, "value") == expected,
+              "UUID indexed predicate lost or aliased binary value: " + kind + ":" + std::to_string(ordinal));
+      Require(api::CrudRowMatchesPredicate(indexed.rows.front(), predicate),
+              "UUID indexed row predicate disagrees with index");
+      if (ordinal < 9) {
+        api::EngineSelectRowsRequest select;
+        select.context = reader;
+        select.source_object.uuid = fixture.table_uuid;
+        select.source_object.object_kind = "table";
+        select.select_predicate = predicate;
+        select.select_projection.canonical_projection_envelopes.push_back("id");
+        const auto selected = api::EngineSelectRows(select);
+        RequireOk(selected, "UUID SELECT predicate failed");
+        const bool index_evidence = std::ranges::any_of(selected.evidence, [](const auto& item) {
+          return item.evidence_kind == "index_lookup";
+        });
+        Require(selected.visible_count == 1 && index_evidence,
+                "UUID SELECT required scan fallback instead of its actual index: " + kind);
+      }
+    }
+  }
+
+  // Bounds are raw bytes; all values fall between nil and max, without a
+  // numeric conversion or system UUID version/variant validation.
+  api::EnginePredicateEnvelope full_range;
+  full_range.predicate_kind = "column_range";
+  full_range.canonical_predicate_envelope = "value";
+  full_range.bound_values = {IdentityScalarValue("uuid", values[0]), IdentityScalarValue("uuid", values[1])};
+  const auto ranged = api::IndexedMgaRowsForPredicateForContext(
+      predicate_state, fixture.table_uuid, full_range, reader, 0);
+  Require(ranged.ok && ranged.index_used && ranged.rows.size() == values.size(),
+          "UUID index range did not preserve the complete 128-bit value domain");
+  api::CrudRowVersionRecord numeric_looking;
+  numeric_looking.values = {{"value", std::string(16, '9')}};
+  api::EnginePredicateEnvelope numeric_predicate;
+  numeric_predicate.canonical_predicate_envelope = "value";
+  numeric_predicate.bound_values = {BinaryScalarValue("uuid", std::vector<platform::u8>(16, '9'))};
+  numeric_predicate.bound_values.front().binary_value.back() = '8';
+  for (const std::string kind : {"column_equals", "column_in_list", "column_in_list_scalar_compare", "column_less_equal"}) {
+    numeric_predicate.predicate_kind = kind;
+    Require(!api::CrudRowMatchesPredicate(numeric_looking, numeric_predicate),
+            "UUID data was aliased by numeric coercion: " + kind);
+  }
+  numeric_predicate.predicate_kind = "column_greater";
+  Require(api::CrudRowMatchesPredicate(numeric_looking, numeric_predicate),
+          "UUID data byte ordering was replaced by numeric coercion");
+  for (const std::size_t width : {0u, 15u, 17u, 36u}) {
+    api::EngineSelectRowsRequest select;
+    select.context = reader;
+    select.source_object.uuid = fixture.table_uuid;
+    select.source_object.object_kind = "table";
+    select.select_predicate.predicate_kind = "column_equals";
+    select.select_predicate.canonical_predicate_envelope = "value";
+    auto malformed = IdentityScalarValue("uuid", values[2]);
+    malformed.binary_value.resize(width);
+    select.select_predicate.bound_values.push_back(std::move(malformed));
+    const auto refused = api::EngineSelectRows(select);
+    Require(!refused.ok && !refused.diagnostics.empty(), "malformed UUID predicate was not refused");
+  }
+
   actual_values.clear();
   for (std::size_t page_index = 0; page_index < (values.size() + 7) / 8; ++page_index) {
     const auto physical = ReadPhysicalPage(fixture, fixture.physical_page + page_index);
@@ -2069,6 +2145,8 @@ void TestNativeUuidBinaryIndexAndValues() {
   }
   Require(actual_values == expected_values, "UUID physical replay changed one or more of 128 bits");
   Rollback(reader);
+
+  if (!unique) return; // Duplicate refusal is a unique-index contract; all read checks ran above.
 
   // Nil and marker-shaped UUIDs are present data, never SQL NULL. The actual
   // committed unique index must reject them, even in a new statement/session.
@@ -2667,6 +2745,7 @@ int main(int argc, char** argv) {
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();
   TestNativeUuidBinaryIndexAndValues();
+  TestNativeUuidBinaryIndexAndValues(false);
   if (fixed_scalar_only) {
     std::cout << "native_fixed_scalar_bulk=passed uuid_values=137\n";
     return EXIT_SUCCESS;

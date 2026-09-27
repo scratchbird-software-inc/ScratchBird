@@ -15,6 +15,7 @@
 #include "api_diagnostics.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
 #include "crud_support/crud_store.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "secondary_index_delta_merge.hpp"
@@ -260,27 +261,32 @@ int CompareOverlayScalar(const std::string& left, const std::string& right) {
 bool OverlayPredicateSupported(const EnginePredicateEnvelope& predicate) {
   return predicate.predicate_kind == "column_equals" ||
          predicate.predicate_kind == "column_in_list" ||
-         predicate.predicate_kind == "column_range";
+         predicate.predicate_kind == "column_range" ||
+         (predicate.predicate_kind == "columns_all_equal" &&
+          predicate.bound_values.size() == 1 &&
+          predicate.canonical_predicate_envelope.find(',') == std::string::npos);
 }
 
 bool OverlayEntryMatchesPredicate(const SecondaryIndexKeyPayload& entry,
                                   const EnginePredicateEnvelope& predicate) {
-  const auto& key = entry.key;
-  if (predicate.predicate_kind == "column_equals") {
+  const auto& key = entry.key.rfind("SBKOBIN:", 0) == 0 ? entry.payload : entry.key;
+  if (predicate.predicate_kind == "column_equals" || predicate.predicate_kind == "columns_all_equal") {
     return !predicate.bound_values.empty() &&
-           key == predicate.bound_values.front().encoded_value;
+           CrudPredicateValuePayload(predicate.bound_values.front()) == key;
   }
   if (predicate.predicate_kind == "column_in_list") {
     for (const auto& bound : predicate.bound_values) {
-      if (key == bound.encoded_value) { return true; }
+      if (CrudPredicateValuePayload(bound) == key) { return true; }
     }
     return false;
   }
   if (predicate.predicate_kind == "column_range") {
-    const bool lower_ok = predicate.bound_values.empty() ||
-        CompareOverlayScalar(key, predicate.bound_values[0].encoded_value) >= 0;
-    const bool upper_ok = predicate.bound_values.size() < 2 ||
-        CompareOverlayScalar(key, predicate.bound_values[1].encoded_value) <= 0;
+    const auto lower = predicate.bound_values.empty() ? std::optional<int>{0}
+        : CompareCrudPredicateValue(key, predicate.bound_values[0], CompareOverlayScalar);
+    const auto upper = predicate.bound_values.size() < 2 ? std::optional<int>{0}
+        : CompareCrudPredicateValue(key, predicate.bound_values[1], CompareOverlayScalar);
+    const bool lower_ok = lower && *lower >= 0;
+    const bool upper_ok = upper && *upper <= 0;
     return lower_ok && upper_ok;
   }
   return false;
