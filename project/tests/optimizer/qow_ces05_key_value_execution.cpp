@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "canonical_query_execute.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "ast/ast.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
@@ -14,6 +17,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "model_family_coordinator.hpp"
 #include "model_family_executor.hpp"
+#include "memory.hpp"
 #include "nosql/key_value_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -125,10 +129,15 @@ struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
   platform::Uuid schema_uuid;
+  platform::Uuid reader_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   std::map<platform::Uuid, api::MgaRelationStorageDescriptor> descriptors;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
   }
@@ -136,31 +145,59 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NewNativeUuid(platform::UuidKind::principal);
-  context.session_uuid = NewNativeUuid(platform::UuidKind::object);
+  context.default_root_uuid = fixture.filespace_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 75;
-  context.security_epoch = 76;
-  context.resource_epoch = 77;
-  context.name_resolution_epoch = 78;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   return context;
 }
 
+bool MaterializeReader(const Fixture& fixture, api::EngineRequestContext* context) {
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(*context);
+  if (!loaded.ok) return Require(false, "reader security catalog load failed");
+  const auto& state = loaded.state;
+  api::DurableAuthorizationState authority;
+  authority.authority_uuid = context->database_uuid;
+  authority.security_context_generation = state.security_context_generation;
+  authority.security_epoch = state.security_generation;
+  authority.policy_epoch = state.policy_generation;
+  authority.catalog_generation_id = context->catalog_generation_id;
+  for (const auto& principal : state.principals)
+    if (!principal.deleted && principal.lifecycle_state == "active")
+      authority.principals.push_back({principal.principal_uuid, "principal", true, authority.security_epoch});
+  for (const auto& role : state.roles)
+    if (!role.deleted && role.lifecycle_state == "active")
+      authority.roles.push_back({role.role_uuid, true, authority.security_epoch});
+  for (const auto& membership : state.memberships)
+    if (!membership.revoked)
+      authority.memberships.push_back({membership.member_principal_uuid, "principal",
+          membership.container_uuid, membership.container_kind, true, authority.security_epoch});
+  for (const auto& grant : state.grants)
+    if (!grant.revoked)
+      authority.grants.push_back({grant.grant_uuid, grant.grantee_uuid, grant.grantee_kind,
+          grant.target_object_uuid, grant.privilege, grant.grant_effect == "deny", true, authority.security_epoch});
+  const auto bound = api::MaterializeDurableAuthorizationContext(authority,
+      {fixture.reader_uuid, authority.security_epoch, authority.policy_epoch, authority.catalog_generation_id});
+  if (!bound.ok) return Require(false, "reader durable authorization materialization failed");
+  context->principal_uuid = fixture.reader_uuid;
+  context->security_epoch = authority.security_epoch;
+  context->authorization_context = bound.context;
+  return Require(context->authorization_context.engine_owned_bootstrap_role_uuid.is_nil(),
+                 "key/value reader must not inherit bootstrap-owner privileges");
+}
+
 bool Begin(const Fixture& fixture, std::string request_id,
-           api::EngineRequestContext* context) {
+           api::EngineRequestContext* context, bool reader = false) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(fixture, std::move(request_id));
+  if (reader && !MaterializeReader(fixture, &request.context)) return false;
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) return Require(false, "transaction begin failed");
@@ -224,53 +261,40 @@ api::EngineColumnDefinition Column(const std::uint32_t ordinal,
   return column;
 }
 
-void AddAuthorization(api::EngineRequestContext* context,
-                      const std::string& right,
-                      const platform::Uuid& object_uuid) {
-  if (!context->authorization_context.present) {
-    auto& authorization = context->authorization_context;
-    authorization.present = true;
-    authorization.authority_uuid =
-        NewNativeUuid(platform::UuidKind::object);
-    authorization.principal_uuid = context->principal_uuid;
-    authorization.security_epoch = context->security_epoch;
-    authorization.policy_epoch = 79;
-    authorization.catalog_generation_id = context->catalog_generation_id;
-    authorization.effective_subjects.push_back(
-        {context->principal_uuid, "principal"});
-  }
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = NewNativeUuid(platform::UuidKind::object);
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = object_uuid;
-  grant.right = right;
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
-}
-
 bool MakeFixture(Fixture* fixture) {
-  fixture->directory = std::filesystem::temp_directory_path() /
-                       ("scratchbird_rcp075_key_value_" +
-                        std::to_string(Seed()));
-  std::error_code error;
-  if (!std::filesystem::create_directories(fixture->directory, error) ||
-      error) {
-    return Require(false, "fixture directory creation failed");
+  // Parallel test processes must never claim or remove each other's directory.
+  // The spelling here is only a temporary filesystem name, not engine identity.
+  for (unsigned attempt = 0; attempt < 32; ++attempt) {
+    const auto candidate = std::filesystem::temp_directory_path() /
+        ("scratchbird_rcp075_key_value_" + uuid::UuidToString(NewNativeUuid(platform::UuidKind::object)));
+    std::error_code error;
+    if (std::filesystem::create_directory(candidate, error)) {
+      fixture->directory = candidate;
+      break;
+    }
+    if (error && error != std::errc::file_exists)
+      return Require(false, "fixture directory creation failed");
   }
+  if (fixture->directory.empty()) return Require(false, "fixture directory reservation exhausted");
   fixture->database_path = fixture->directory / "key_value.sbdb";
   db::DatabaseCreateConfig create;
   create.path = fixture->database_path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
   create.creation_unix_epoch_millis = Seed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
-  if (!db::CreateDatabaseFile(create).ok()) {
+  const auto created_database = db::CreateDatabaseFile(create);
+  if (!created_database.ok()) {
+    std::cerr << created_database.diagnostic.diagnostic_code << ':'
+              << created_database.diagnostic.message_key << ':'
+              << created_database.diagnostic.remediation_hint << '\n';
     return Require(false, "fixture database creation failed");
   }
   fixture->database_uuid = create.database_uuid.value;
+  fixture->filespace_uuid = create.filespace_uuid.value;
+  fixture->owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture->session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture->owner_context);
   fixture->schema_uuid = NewNativeUuid(platform::UuidKind::schema);
 
   api::EngineRequestContext context;
@@ -309,6 +333,9 @@ bool MakeFixture(Fixture* fixture) {
       table.table_columns.push_back(
           Column(2, "expires_at", "timestamp_tz", true));
     }
+    for (auto& column : table.table_columns)
+      scratchbird::tests::BindFixtureColumnDatatype(table.context,
+          dt::CanonicalTypeIdFromStableName(column.descriptor.canonical_type_name), column);
     const auto created = api::EngineCreateTable(table);
     if (!created.ok) {
       for (const auto& diagnostic : created.diagnostics) {
@@ -334,8 +361,8 @@ bool MakeFixture(Fixture* fixture) {
   // signed key/value transaction inventory beginning at 800 is unchanged.
   const auto& join_descriptor =
       fixture->descriptors.at(kJoinObjectUuid);
-  api::EngineInsertRowsRequest join_rows;
-  join_rows.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> join_rows(
+      *fixture->session, context);
   join_rows.target_table.uuid = kJoinObjectUuid;
   join_rows.target_table.object_kind = "table";
   join_rows.require_generated_row_uuid = false;
@@ -359,10 +386,37 @@ bool MakeFixture(Fixture* fixture) {
   }
   const auto inserted_join_rows = api::EngineInsertRows(join_rows);
   if (!inserted_join_rows.ok || inserted_join_rows.inserted_count != 2) {
+    for (const auto& diagnostic : inserted_join_rows.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Rollback(context);
     return Require(false, "supplemental relational join rows failed");
   }
-  return Commit(context) && SetNextTransactionId(*fixture, 800);
+  // The reader is a real, non-administrative principal with only durable
+  // table-scoped SELECT grants. Clearing those grants in KV-30 must deny access.
+  api::EngineSecurityCreatePrincipalRequest reader;
+  reader.context = context;
+  reader.principal_uuid = fixture->reader_uuid = NewNativeUuid(platform::UuidKind::principal);
+  reader.principal_name = "key_value_reader";
+  reader.principal_kind = "service";
+  const auto reader_created = api::EngineSecurityCreatePrincipal(reader);
+  if (!Require(reader_created.ok && reader_created.principal_created, "reader principal creation failed"))
+    return false;
+  for (const auto& [object_uuid, name] : tables) {
+    (void)name;
+    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+    api::EngineSecurityGrantPrivilegeRequest grant;
+    grant.context = context;
+    grant.grant_uuid = NewNativeUuid(platform::UuidKind::object);
+    grant.grantee_uuid = fixture->reader_uuid;
+    grant.target_object_uuid = object_uuid;
+    grant.target_object_kind = "table";
+    grant.privilege = "SELECT";
+    const auto granted = api::EngineSecurityGrantPrivilege(grant);
+    if (!Require(granted.ok && granted.privilege_granted, "reader SELECT grant failed")) return false;
+  }
+  if (!Commit(context)) return false;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(fixture->owner_context);
+  return SetNextTransactionId(*fixture, 800);
 }
 
 api::EngineTypedValue TypedValue(const api::EngineDescriptor& descriptor,
@@ -396,8 +450,8 @@ bool Insert(const Fixture& fixture, const platform::Uuid& object_uuid,
             api::EngineRequestContext* retained_context = nullptr) {
   api::EngineRequestContext context;
   if (!Begin(fixture, "rcp075-insert", &context)) return false;
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = object_uuid;
   request.target_table.object_kind = "table";
   request.require_generated_row_uuid = false;
@@ -479,7 +533,7 @@ bool SeedFixtures(Fixture* fixture,
 
 bool PublishReaderContext(const Fixture& fixture,
                           api::EngineRequestContext* context) {
-  if (!Begin(fixture, "rcp075-reader", context)) return false;
+  if (!Begin(fixture, "rcp075-reader", context, true)) return false;
   context->statement_uuid = NewNativeUuid(platform::UuidKind::object);
   context->statement_receipt_uuid =
       NewNativeUuid(platform::UuidKind::object);
@@ -519,11 +573,6 @@ bool PublishReaderContext(const Fixture& fixture,
           snapshot.snapshot_vector.active_excluded_local_transaction_ids.end()) {
     return Require(false,
                    "signed high-water 900 / active-other [850] cohort drifted");
-  }
-  for (const auto object_uuid :
-       {kBaseObjectUuid, kDuplicateObjectUuid, kInvalidExpiryObjectUuid,
-        kJoinObjectUuid}) {
-    AddAuthorization(context, "SELECT", object_uuid);
   }
   return true;
 }
@@ -1471,8 +1520,8 @@ platform::Uuid CoreTypeUuid(const std::string_view stable_name) {
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       descriptor->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
@@ -1914,6 +1963,24 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
     type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
     type.type_uuid =
         column.value_descriptor.type_uuid;
+    const auto codec = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid,
+        context.datatype_catalog_generation,
+        context.datatype_registry_generation,
+        column.value_descriptor.datatype_descriptor_uuid,
+        column.value_descriptor.datatype_descriptor_generation);
+    if (!codec.ok || codec.row.type_uuid != type.type_uuid)
+      throw std::runtime_error("mixed-join column has no authoritative codec binding");
+    type.datatype_identity_authoritative = true;
+    type.descriptor_generation = codec.row.descriptor_generation;
+    type.type_generation = codec.row.type_generation;
+    type.codec_id = codec.row.codec_id;
+    type.codec_version = codec.row.codec_version;
+    type.codec_generation = codec.row.codec_generation;
+    type.statement_receipt_uuid = context.statement_receipt_uuid;
+    type.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+    type.datatype_catalog_generation = context.datatype_catalog_generation;
+    type.datatype_registry_generation = context.datatype_registry_generation;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -2002,6 +2069,56 @@ platform::Uuid ApiRowUuid(const api::EngineApiResult& result, std::size_t ordina
   return {};
 }
 
+// An execution attempt is a fresh runtime identity, not a deterministic hash
+// of the query. Compare every other envelope byte and all actual result cells.
+bool SameReplay(const sblr::CanonicalObjectFreeValuesExecutionResult& first,
+                const sblr::CanonicalObjectFreeValuesExecutionResult& second) {
+  const auto normalize = [](std::string bytes, platform::Uuid* attempt) {
+    std::size_t cursor = 0;
+    unsigned attempts = 0;
+    while (cursor < bytes.size()) {
+      const auto equals = bytes.find('=', cursor);
+      const auto colon = equals == std::string::npos ? equals : bytes.find(':', equals + 1);
+      if (colon == std::string::npos) return std::string{};
+      std::size_t size = 0;
+      const auto parsed = std::from_chars(bytes.data() + equals + 1, bytes.data() + colon, size);
+      if (parsed.ec != std::errc{} || parsed.ptr != bytes.data() + colon ||
+          size >= bytes.size() - colon) return std::string{};
+      const auto end = colon + 1 + size;
+      if (end >= bytes.size() || bytes[end] != '\n') return std::string{};
+      if (std::string_view(bytes).substr(cursor, equals - cursor) == "execution_attempt_uuid") {
+        if (++attempts != 1 || size != 16) return std::string{};
+        std::copy_n(bytes.begin() + colon + 1, 16, attempt->bytes.begin());
+        if (!uuid::IsEngineIdentityUuid(*attempt)) return std::string{};
+        std::fill_n(bytes.begin() + colon + 1, 16, '\0');
+      }
+      cursor = end + 1;
+    }
+    return attempts == 1 ? bytes : std::string{};
+  };
+  platform::Uuid first_attempt, second_attempt;
+  const auto first_bytes = normalize(first.canonical_result_bytes, &first_attempt);
+  const auto second_bytes = normalize(second.canonical_result_bytes, &second_attempt);
+  if (!first.api_result.ok || !second.api_result.ok || first_bytes.empty() ||
+      first_bytes != second_bytes || first_attempt == second_attempt) return false;
+  const auto& a = first.api_result.result_shape;
+  const auto& b = second.api_result.result_shape;
+  if (a.result_kind != b.result_kind || a.columns != b.columns ||
+      a.null_extended_columns != b.null_extended_columns || a.rows.size() != b.rows.size()) return false;
+  for (std::size_t i = 0; i < a.rows.size(); ++i) {
+    if (a.rows[i].requested_row_uuid != b.rows[i].requested_row_uuid ||
+        a.rows[i].fields.size() != b.rows[i].fields.size()) return false;
+    for (std::size_t j = 0; j < a.rows[i].fields.size(); ++j) {
+      const auto& [an, av] = a.rows[i].fields[j];
+      const auto& [bn, bv] = b.rows[i].fields[j];
+      if (an != bn || av.descriptor != bv.descriptor || av.state != bv.state ||
+          av.is_null != bv.is_null || av.encoded_value != bv.encoded_value ||
+          av.binary_value != bv.binary_value) return false;
+    }
+  }
+  return true;
+}
+
 bool ProductionCanonicalRoute(
     const Fixture& fixture,
     const api::EngineRequestContext& context) {
@@ -2041,6 +2158,22 @@ bool ProductionCanonicalRoute(
       {context, set_dag});
   const auto set_replay = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, set_dag});
+  bool replay_mutations_refused = !SameReplay(set_union, set_union);
+  if (set_replay.api_result.result_shape.rows.size() == 7 &&
+      !set_replay.api_result.result_shape.rows[6].fields.empty()) {
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+      auto changed = set_replay;
+      auto& field = changed.api_result.result_shape.rows[6].fields.front();
+      if (mutation == 0) field.second.binary_value.push_back(1);
+      if (mutation == 1) field.second.encoded_value = "illegal second carrier";
+      if (mutation == 2) field.second.state = api::EngineValueState::sql_null;
+      if (mutation == 3) field.first += "_wrong";
+      if (mutation == 4) changed.canonical_result_bytes += "unexpected=1:x\n";
+      replay_mutations_refused &= !SameReplay(set_union, changed);
+    }
+  } else {
+    replay_mutations_refused = false;
+  }
   const auto cross_join = sblr::ExecuteCanonicalCurrentHeapQuery(
       {context, KeyValueMixedJoinDag(context, descriptor, heap_descriptor,
                                      "join.cross.v1")});
@@ -2139,9 +2272,7 @@ bool ProductionCanonicalRoute(
       ApiRowField(recursive.api_result, 0, "key_count") == "6" &&
       ApiRowField(recursive.api_result, 1, "key_count") == "7" &&
       ApiRowField(recursive.api_result, 2, "key_count") == "8" &&
-      recursive_replay.api_result.ok &&
-      recursive_replay.canonical_result_bytes ==
-          recursive.canonical_result_bytes;
+      SameReplay(recursive, recursive_replay);
   const bool set_complete =
       set_union.profile_matched && set_union.optimizer_admitted &&
       set_union.optimizer_selected && set_union.physical_dag_published &&
@@ -2152,8 +2283,7 @@ bool ProductionCanonicalRoute(
       set_union.canonical_result_row_count == 7 &&
       ApiRowUuid(set_union.api_result, 6, "row_uuid") ==
           scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000099") &&
-      set_replay.api_result.ok &&
-      set_replay.canonical_result_bytes == set_union.canonical_result_bytes;
+      SameReplay(set_union, set_replay);
   const auto join_complete = [](const auto& execution,
                                 const std::size_t columns,
                                 const std::size_t rows) {
@@ -2177,7 +2307,7 @@ bool ProductionCanonicalRoute(
       join_complete(anti_join, 3, 5);
   if (!(complete(exact, 1) && complete(multi, 3) && complete(prefix, 6) &&
         composition_complete && cte_limit_complete && aggregate_complete &&
-        recursive_complete && set_complete && mixed_joins_complete)) {
+        recursive_complete && set_complete && mixed_joins_complete && replay_mutations_refused)) {
     const auto report = [](const std::string_view name, const auto& execution) {
       std::cerr << "QOW-CES05-KEY-VALUE summary " << name
                 << " profile=" << execution.profile_matched
@@ -2208,6 +2338,16 @@ bool ProductionCanonicalRoute(
     report("full_join", full_join);
     report("semi_join", semi_join);
     report("anti_join", anti_join);
+    std::cerr << "QOW-CES05-KEY-VALUE assertions unary=" << composition_complete
+              << " cte=" << cte_limit_complete << " aggregate=" << aggregate_complete
+              << " recursive=" << recursive_complete << " set=" << set_complete
+              << " mixed=" << mixed_joins_complete
+              << " recursive_replay=" << recursive_replay.api_result.ok
+              << " recursive_bytes=" << (recursive_replay.canonical_result_bytes == recursive.canonical_result_bytes)
+              << " set_replay=" << set_replay.api_result.ok
+              << " set_bytes=" << (set_replay.canonical_result_bytes == set_union.canonical_result_bytes)
+              << " set_uuid=" << (ApiRowUuid(set_union.api_result, 6, "row_uuid") ==
+                  scratchbird::tests::FixtureUuidLiteral("30000000-0000-7000-8000-000000000099")) << '\n';
     std::cerr << "QOW-CES05-KEY-VALUE values unary="
               << ApiRowField(unary.api_result, 0, "key") << ','
               << ApiRowField(unary.api_result, 1, "key") << ','
@@ -2228,8 +2368,78 @@ bool ProductionCanonicalRoute(
   return Require(
       complete(exact, 1) && complete(multi, 3) && complete(prefix, 6) &&
           composition_complete && cte_limit_complete && aggregate_complete &&
-          recursive_complete && set_complete && mixed_joins_complete,
+          recursive_complete && set_complete && mixed_joins_complete && replay_mutations_refused,
       "production key/value source/composition route did not complete");
+}
+
+bool NativeStorageBindingMatrix(const Fixture& fixture) {
+  const auto& source = fixture.descriptors.at(kBaseObjectUuid);
+  const auto context = BaseContext(fixture, "native-storage-admission");
+  if (!Require(api::ExactKeyValueStorageDescriptorV1(context, source),
+               "actual catalog-published key/value descriptor was refused")) {
+    for (const auto& column : source.columns) {
+      api::CatalogColumnMetadata metadata;
+      api::DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &metadata);
+      std::cerr << column.canonical_name_key << ':' << column.value_descriptor.descriptor_kind
+                << ':' << column.value_descriptor.canonical_type_name << " metadata fields=";
+      for (const auto& [key, value] : metadata.text) std::cerr << key << '=' << value << ',';
+      std::cerr << " identity fields=";
+      for (const auto& [key, value] : metadata.identities) { (void)value; std::cerr << key << ','; }
+      std::cerr << '\n';
+    }
+    return false;
+  }
+  bool passed = true;
+  for (const auto& column : source.columns)
+    passed &= Require(column.column_uuid != column.value_descriptor.descriptor_uuid,
+                      "fixture must exercise independently issued column and value identities");
+  auto canonical_kind = source;
+  for (auto& column : canonical_kind.columns)
+    column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
+  passed &= Require(api::ExactKeyValueStorageDescriptorV1(context, canonical_kind),
+                    "canonical scalar descriptor classification lost valid native bindings");
+  for (unsigned mutation = 0; mutation < 18; ++mutation) {
+    auto changed = source;
+    auto request_context = context;
+    auto& column = changed.columns.front();
+    switch (mutation) {
+      case 0: request_context.datatype_catalog_snapshot_uuid = {}; break;
+      case 1: ++request_context.datatype_catalog_generation; break;
+      case 2: ++request_context.datatype_registry_generation; break;
+      case 3: column.column_uuid = {}; break;
+      case 4: column.column_generation = 0; break;
+      case 5: column.value_descriptor.descriptor_uuid = {}; break;
+      case 6: column.value_descriptor.datatype_descriptor_uuid.bytes.back() ^= 1; break;
+      case 7: ++column.value_descriptor.datatype_descriptor_generation; break;
+      case 8: column.value_descriptor.type_uuid.bytes.back() ^= 1; break;
+      case 9: changed.columns[1].column_uuid = column.column_uuid; break;
+      case 10: changed.columns[1].value_descriptor.descriptor_uuid = column.value_descriptor.descriptor_uuid; break;
+      case 11: column.nullable = true; break;
+      case 12: column.value_descriptor.encoded_descriptor =
+          "canonical=text;type_uuid=019d0000-0000-7000-8000-00000000d714;nullable=false"; break;
+      case 13: {
+        api::CatalogColumnMetadata metadata;
+        if (!api::DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &metadata)) return false;
+        metadata.identities.at("type_uuid").bytes.back() ^= 1;
+        if (!api::EncodeCatalogColumnMetadata(metadata, &column.value_descriptor.encoded_descriptor)) return false;
+        break;
+      }
+      case 14: column.value_descriptor.descriptor_kind = "unknown"; break;
+      case 15: {
+        api::CatalogColumnMetadata metadata;
+        if (!api::DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &metadata)) return false;
+        metadata.text["unexpected"] = "not-authority";
+        if (!api::EncodeCatalogColumnMetadata(metadata, &column.value_descriptor.encoded_descriptor)) return false;
+        break;
+      }
+      case 16: column.column_uuid.bytes[6] = 0x40; break;
+      case 17: request_context.datatype_catalog_snapshot_uuid =
+          scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"); break;
+    }
+    passed &= Require(!api::ExactKeyValueStorageDescriptorV1(request_context, changed),
+                      "malformed or stale key/value native descriptor was admitted");
+  }
+  return passed;
 }
 
 bool CaseInventory(const std::set<std::string>& completed) {
@@ -2246,10 +2456,15 @@ bool CaseInventory(const std::set<std::string>& completed) {
 }  // namespace
 
 int main() {
+  auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "key_value_fixture";
+  if (!Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "key_value_fixture").ok(), "key/value memory configuration failed")) return 1;
   bool passed = true;
   Fixture fixture;
   api::EngineRequestContext active_other;
-  if (!MakeFixture(&fixture) || !SeedFixtures(&fixture, &active_other)) return 1;
+  if (!MakeFixture(&fixture) || !NativeStorageBindingMatrix(fixture) ||
+      !SeedFixtures(&fixture, &active_other)) return 1;
   api::EngineRequestContext context;
   if (!PublishReaderContext(fixture, &context)) {
     Rollback(active_other);

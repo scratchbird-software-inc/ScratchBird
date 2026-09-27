@@ -46,7 +46,10 @@ int main() {
   registry.descriptor_generation = 2; registry.type_generation = 3;
   registry.codec_id = "text.utf8"; registry.codec_version = 1; registry.codec_generation = 4;
   a::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = id; descriptor.type_uuid = registry.type_uuid;
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1112, 7);
+  descriptor.type_uuid = registry.type_uuid;
+  descriptor.datatype_descriptor_uuid = registry.descriptor_uuid;
+  descriptor.datatype_descriptor_generation = registry.descriptor_generation;
   descriptor.descriptor_kind = "canonical_type_descriptor"; descriptor.canonical_type_name = "text";
   a::CatalogColumnMetadata metadata;
   metadata.identities = {{"column_uuid", id}, {"type_uuid", registry.type_uuid},
@@ -56,7 +59,13 @@ int main() {
       {"codec_id", registry.codec_id}, {"codec_version", "1"}, {"codec_generation", "4"},
       {"null_encoding", std::to_string(registry.null_encoding_code)}};
   Check(a::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor));
-  auto admitted = [&] {return a::ExactKeyValueValueDescriptor(descriptor, "text", registry.type_uuid, &registry, id, false);};
+  auto admitted = [&] {return a::ExactKeyValueValueDescriptor(descriptor, "text", registry.type_uuid,
+      &registry, id, registry.descriptor_uuid, registry.descriptor_generation, false);};
+  Check(admitted());
+  descriptor.datatype_descriptor_uuid = {}; Check(!admitted());
+  descriptor.datatype_descriptor_uuid = registry.descriptor_uuid;
+  descriptor.datatype_descriptor_generation = 0; Check(!admitted());
+  descriptor.datatype_descriptor_generation = registry.descriptor_generation;
   Check(admitted());
   descriptor.type_uuid = id; Check(!admitted()); descriptor.type_uuid = registry.type_uuid;
   metadata.identities["codec_uuid"] = id;

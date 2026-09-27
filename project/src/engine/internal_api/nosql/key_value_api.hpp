@@ -158,6 +158,7 @@ struct EngineBoundKeyValueReadResultV1 : EngineApiResult {
 // and the engine-bound provider.  This is a read-only descriptor check; it
 // performs no MGA row access and owns no snapshot or finality decisions.
 bool ExactKeyValueStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor);
 
 EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(

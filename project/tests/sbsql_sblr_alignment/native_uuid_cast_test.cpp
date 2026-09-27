@@ -6,6 +6,9 @@
 #include "sblr/sblr_special_forms.hpp"
 #include "sblr/sblr_operator_runtime.hpp"
 #include "sblr/sblr_projection_value_runtime.hpp"
+#include "sblr/canonical_query_object_free_composition_support.hpp"
+#include "sblr/canonical_query_aggregate_registration.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -98,7 +101,107 @@ void NativeComparisons() {
   Truth(s::EvaluateSblrInListForm("in", low, {high}), false);
   Check(!Scalar(s::EvaluateSblrNullIfForm("nullif", low, high)).is_null, "NULLIF compared empty binary text fields");
 }
+void NativeUuidValues() {
+  namespace api = scratchbird::engine::internal_api;
+  api::TypedRelationalDag dag;
+  api::RelationalTypeDescriptor descriptor;
+  descriptor.descriptor_id = 1;
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2081, 1);
+  descriptor.type_uuid = s::ExactCanonicalCoreDatatypeTypeUuidV1("uuid");
+  descriptor.nullability = api::RelationalNullability::kNonNull;
+  Check(!descriptor.type_uuid.is_nil(), "VALUES UUID datatype absent from actual catalog");
+  dag.descriptors.push_back(descriptor);
+  api::RelationalDagNode node;
+  node.node_id = 1;
+  node.node_kind = api::RelationalDagNodeKind::kValues;
+  node.output_descriptor_ids = {1};
+  node.semantic_variant_id = "values.literal-table.v1";
+  dag.outputs.push_back({1, 1, 1, "uuid_value", 1, true, 0});
+  std::vector<std::vector<std::uint8_t>> expected;
+  for (unsigned pattern = 0; pattern < 130; ++pattern) {
+    std::vector<std::uint8_t> bytes(16);
+    if (pattern == 1) std::fill(bytes.begin(), bytes.end(), 0xff);
+    if (pattern >= 2) bytes[(pattern - 2) / 8] = std::uint8_t(1u << ((pattern - 2) % 8));
+    api::RelationalExpressionRecord literal;
+    literal.expression_id = pattern + 1;
+    literal.expression_kind = api::RelationalExpressionKind::kLiteral;
+    literal.result_descriptor_id = 1;
+    literal.literal_kind = api::RelationalLiteralKind::kUuid;
+    literal.literal_or_parameter_ref = std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    dag.expressions.push_back(std::move(literal));
+    dag.values_rows.push_back({pattern + 1, {pattern + 1}});
+    node.values_row_ids.push_back(pattern + 1);
+    expected.push_back(std::move(bytes));
+  }
+  dag.nodes.push_back(std::move(node));
+  s::plan::CanonicalLogicalRelationalNode logical;
+  logical.logical_node_id = 1;
+  const auto values = s::MaterializeValues(dag, logical, {});
+  if (!values.ok) std::cerr << values.detail << '\n';
+  Check(values.ok && values.batch.rows.size() == expected.size(), "native UUID VALUES materialization failed");
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    Check(values.batch.rows[i].values.size() == 1, "UUID VALUES row width changed");
+    const auto& value = values.batch.rows[i].values.front();
+    Check(value.state == api::EngineValueState::value && !value.is_null &&
+          value.encoded_value.empty() && value.binary_value == expected[i],
+          "VALUES reinterpreted or formatted a UUID data payload");
+  }
+  namespace exec = scratchbird::engine::executor;
+  exec::CanonicalDescriptorOrderTerm term;
+  term.expression_descriptor_id = 1;
+  std::vector<std::string> keys;
+  for (const auto& row : values.batch.rows) {
+    const auto key = exec::MakeCanonicalDescriptorEqualityKey(row.values.front(), term);
+    if (!key.diagnostic.ok) std::cerr << key.diagnostic.detail << '\n';
+    Check(key.diagnostic.ok, "native UUID equality key was refused");
+    keys.push_back(key.equality_key);
+  }
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    for (std::size_t j = 0; j < expected.size(); ++j) {
+      const int order = expected[i] < expected[j] ? -1 : expected[j] < expected[i] ? 1 : 0;
+      const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+          values.batch.rows[i].values.front(), values.batch.rows[j].values.front(), term);
+      Check(compared.diagnostic.ok && compared.comparison == order,
+            "UUID ordering lost native bits or used signed byte ordering");
+      Check((keys[i] == keys[j]) == (order == 0), "UUID equality keys collapsed distinct values");
+    }
+  }
+  const auto& native = values.batch.rows.front().values.front();
+  auto null = native;
+  null.is_null = true;
+  null.state = api::EngineValueState::sql_null;
+  null.binary_value.clear();
+  for (const auto placement : {exec::CanonicalDescriptorNullPlacement::first,
+                               exec::CanonicalDescriptorNullPlacement::last}) {
+    term.null_placement = placement;
+    const auto compared = exec::CompareCanonicalDescriptorOrderValues(native, null, term);
+    Check(compared.diagnostic.ok && compared.comparison ==
+          (placement == exec::CanonicalDescriptorNullPlacement::first ? 1 : -1),
+          "UUID ordering lost explicit NULL placement");
+  }
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto bad = native;
+    if (mutation == 0) bad.binary_value.resize(15);
+    if (mutation == 1) bad.binary_value.resize(17);
+    if (mutation == 2) bad.encoded_value = std::string(16, '\0');
+    if (mutation == 3) { bad.binary_value.clear(); bad.encoded_value = std::string(16, '\0'); }
+    if (mutation == 4) { bad.is_null = true; bad.state = api::EngineValueState::sql_null; }
+    Check(!exec::CompareCanonicalDescriptorOrderValues(bad, native, term).diagnostic.ok &&
+          !exec::CompareCanonicalDescriptorOrderValues(bad, null, term).diagnostic.ok &&
+          !exec::MakeCanonicalDescriptorEqualityKey(bad, term).diagnostic.ok,
+          "UUID order/equality accepted malformed native payload");
+  }
+  for (const auto& malformed : {std::string(15, '\0'), std::string(17, '\0'),
+                               std::string("00000000-0000-0000-0000-000000000000")}) {
+    auto changed = dag;
+    changed.expressions.front().literal_or_parameter_ref = malformed;
+    const auto refused = s::MaterializeValues(changed, logical, {});
+    Check(!refused.ok && refused.batch.rows.empty() && refused.result_bindings.empty(),
+          "malformed UUID VALUES literal published data");
+  }
+}
 int main() {
+  NativeUuidValues();
   NativeComparisons();
   const auto package = f::BuildStandardFunctionSeedPackage();
   const char* functions[] = {"data.scalar.cast", "sb.scalar.safe_cast", "sb.scalar.try_cast"};

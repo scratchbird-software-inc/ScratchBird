@@ -747,10 +747,16 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
                                       DatatypeTypeCodecIdentityRowV1*
                                           expected_registry_identity,
                                   const EngineUuid& expected_column_uuid,
+                                  const EngineUuid& expected_datatype_descriptor_uuid,
+                                  std::uint64_t expected_datatype_generation,
                                   const bool expected_nullable) {
+  const auto canonical_type = expected_type == "timestamp_tz" ? "timestamp" : expected_type;
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
-      descriptor.descriptor_kind != "canonical_type_descriptor" ||
-      descriptor.canonical_type_name != expected_type) {
+      (descriptor.descriptor_kind != "scalar" &&
+       descriptor.descriptor_kind != "canonical_type_descriptor") ||
+      descriptor.canonical_type_name != canonical_type ||
+      descriptor.datatype_descriptor_uuid != expected_datatype_descriptor_uuid ||
+      descriptor.datatype_descriptor_generation != expected_datatype_generation) {
     return false;
   }
   CatalogColumnMetadata metadata;
@@ -774,8 +780,6 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
         !identities.contains("datatype_descriptor_uuid") ||
         identities.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
-        descriptor.descriptor_uuid !=
-            expected_column_uuid ||
         !fields.contains("datatype_descriptor_generation") ||
         fields.at("datatype_descriptor_generation") !=
             std::to_string(expected_registry_identity->descriptor_generation) ||
@@ -802,17 +806,20 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
 }
 
 bool ExactKeyValueStorageDescriptorImpl(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 3> kNames{
       "key", "value", "expires_at"};
   static constexpr std::array<std::string_view, 3> kTypes{
       "text", "text", "timestamp_tz"};
   static constexpr std::array<bool, 3> kNullable{false, false, true};
-  if (descriptor.columns.size() != kNames.size()) return false;
+  if (descriptor.columns.size() != kNames.size() ||
+      ValidateMgaRelationStorageDescriptor(descriptor).error) return false;
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
   std::set<EngineUuid> column_uuids;
+  std::set<EngineUuid> value_descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
     // TIMESTAMP_TZ is the signed key/value storage semantic carried by the
@@ -833,8 +840,8 @@ bool ExactKeyValueStorageDescriptorImpl(
     const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
     const auto codec_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
-            manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+            context.datatype_catalog_snapshot_uuid,
+            context.datatype_catalog_generation, context.datatype_registry_generation, descriptor_uuid,
             descriptor_row.descriptor_epoch);
     const auto expected_type_uuid =
         codec_identity.ok ? codec_identity.row.type_uuid : descriptor_uuid;
@@ -845,7 +852,8 @@ bool ExactKeyValueStorageDescriptorImpl(
     }
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
-        column.value_descriptor.canonical_type_name != kTypes[ordinal] ||
+        column.value_descriptor.canonical_type_name !=
+            (kTypes[ordinal] == "timestamp_tz" ? "timestamp" : kTypes[ordinal]) ||
         column.nullable != kNullable[ordinal] || column.generated ||
         column.identity_column || column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
@@ -854,10 +862,12 @@ bool ExactKeyValueStorageDescriptorImpl(
         !CanonicalKeyValueUuid(
             column.value_descriptor.descriptor_uuid) ||
         !column_uuids.insert(column.column_uuid).second ||
+        !value_descriptor_uuids.insert(column.value_descriptor.descriptor_uuid).second ||
         !ExactKeyValueValueDescriptor(column.value_descriptor,
                                       kTypes[ordinal], expected_type_uuid,
                                       expected_registry_identity,
                                       column.column_uuid,
+                                      descriptor_uuid, descriptor_row.descriptor_epoch,
                                       kNullable[ordinal])) {
       return false;
     }
@@ -889,8 +899,9 @@ bool UnsignedUtf8Less(const std::string& left, const std::string& right) {
 }  // namespace
 
 bool ExactKeyValueStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
-  return ExactKeyValueStorageDescriptorImpl(descriptor);
+  return ExactKeyValueStorageDescriptorImpl(context, descriptor);
 }
 
 EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
@@ -1029,7 +1040,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "key/value persisted descriptor identity changed");
   }
-  if (!ExactKeyValueStorageDescriptorV1(persisted)) {
+  if (!ExactKeyValueStorageDescriptorV1(request.context, persisted)) {
     return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
                   "key/value storage descriptor is not exact before data access");
   }
@@ -1090,7 +1101,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
                   "key/value relation descriptor generation changed");
   }
 
-  if (!ExactKeyValueStorageDescriptorV1(read.descriptor)) {
+  if (!ExactKeyValueStorageDescriptorV1(request.context, read.descriptor)) {
     return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
                   "key/value storage descriptor is not key/value/expires_at");
   }

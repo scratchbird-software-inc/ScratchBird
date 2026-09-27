@@ -524,10 +524,24 @@ bool CompareOrderValues(
   const bool carries_binary_payload =
       !left.binary_value.empty() || !right.binary_value.empty();
   if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary &&
+      type_id != dt::CanonicalTypeId::uuid &&
       type_id != dt::CanonicalTypeId::int128) {
     *refusal_detail =
         "order operand carries binary payload for a non-binary type";
     return false;
+  }
+  if (type_id == dt::CanonicalTypeId::uuid ||
+      type_id == dt::CanonicalTypeId::binary) {
+    const auto canonical_binary = [type_id](const auto& value) {
+      return value.is_null ||
+             (value.encoded_value.empty() &&
+              (type_id != dt::CanonicalTypeId::uuid ||
+               value.binary_value.size() == 16));
+    };
+    if (!canonical_binary(left) || !canonical_binary(right)) {
+      *refusal_detail = "UUID/binary order operand has noncanonical payload";
+      return false;
+    }
   }
   if (type_id == dt::CanonicalTypeId::int128) {
     const auto canonical_int128 = [](const auto& value) {
@@ -551,7 +565,8 @@ bool CompareOrderValues(
           scratchbird::engine::internal_api::EngineValueState::sql_null;
   std::string left_encoded = left.encoded_value;
   std::string right_encoded = right.encoded_value;
-  if (!has_null && type_id == dt::CanonicalTypeId::binary) {
+  if (type_id == dt::CanonicalTypeId::binary ||
+      type_id == dt::CanonicalTypeId::uuid) {
     if (!left.binary_value.empty()) {
       left_encoded.assign(
           reinterpret_cast<const char*>(left.binary_value.data()),
@@ -605,10 +620,12 @@ bool CompareOrderValues(
   if (has_null) {
     dt::DatatypeComparisonRequest request;
     request.left.type_id = type_id;
+    request.left.encoded_value = left_encoded;
     request.left.is_null =
         left.state ==
         scratchbird::engine::internal_api::EngineValueState::sql_null;
     request.right.type_id = type_id;
+    request.right.encoded_value = right_encoded;
     request.right.is_null =
         right.state ==
         scratchbird::engine::internal_api::EngineValueState::sql_null;
@@ -1131,6 +1148,7 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
       value.descriptor.canonical_type_name);
   const std::size_t payload_bytes =
       (type_id == dt::CanonicalTypeId::binary ||
+       type_id == dt::CanonicalTypeId::uuid ||
        type_id == dt::CanonicalTypeId::int128) && !value.binary_value.empty()
           ? value.binary_value.size()
           : value.encoded_value.size();
@@ -1398,7 +1416,8 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
   }
 
   std::string encoded_value = value.encoded_value;
-  if (type_id == dt::CanonicalTypeId::binary &&
+  if ((type_id == dt::CanonicalTypeId::binary ||
+       type_id == dt::CanonicalTypeId::uuid) &&
       !value.binary_value.empty()) {
     encoded_value.assign(
         reinterpret_cast<const char*>(value.binary_value.data()),

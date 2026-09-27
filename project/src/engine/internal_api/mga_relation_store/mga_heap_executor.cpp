@@ -1052,7 +1052,18 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
               "heap value materialization exceeds the callback memory allowance",
               true);
         }
-        value.encoded_value = *encoded_value;
+        const auto& type = value.descriptor.canonical_type_name;
+        if (type == "uuid" || type == "uuidv7" || type == "binary" ||
+            type == "bytes" || type == "blob") {
+          if ((type == "uuid" || type == "uuidv7") &&
+              encoded_value->size() != 16) {
+            return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                           "stored UUID is not a native binary16 value", true);
+          }
+          value.binary_value.assign(encoded_value->begin(), encoded_value->end());
+        } else {
+          value.encoded_value = *encoded_value;
+        }
         value.state = api::EngineValueState::value;
       }
       tuple.values.push_back(std::move(value));

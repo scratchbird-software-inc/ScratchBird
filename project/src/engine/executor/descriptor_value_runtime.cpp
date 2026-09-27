@@ -1017,6 +1017,14 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
               "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
               row, column);
         }
+      } else if (IsUuidType(expected.descriptor) || IsBinaryType(expected.descriptor)) {
+        if (!value.encoded_value.empty() ||
+            (IsUuidType(expected.descriptor) && value.binary_value.size() != 16)) {
+          return ErrorDiagnostic(
+              "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+              "UUID/binary scalar requires its exclusive native binary payload",
+              row, column);
+        }
       } else if (RequiresExpandedScalarValidation(expected.descriptor)) {
         std::string detail;
         if (!ValidateExpandedScalarEncoding(expected.descriptor,
