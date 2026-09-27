@@ -604,7 +604,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
 
   ProcessAssociationRecord server_process;
   server_process.kind = ProcessAssociationKind::kServerProcess;
-  server_process.database_uuid = snapshot.database_uuid;
+  server_process.database_uuid = BinaryIdentity(snapshot.database_uuid);
   server_process.database_path = snapshot.database_path;
   server_process.component_uuid = "sb_server:" + std::to_string(registry.generation);
   server_process.process_uuid = server_process.component_uuid;
@@ -615,7 +615,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
 
   ProcessAssociationRecord manager;
   manager.kind = ProcessAssociationKind::kManager;
-  manager.database_uuid = snapshot.database_uuid;
+  manager.database_uuid = BinaryIdentity(snapshot.database_uuid);
   manager.database_path = snapshot.database_path;
   manager.manager_uuid = "sb_server_manager:" + std::to_string(registry.generation);
   manager.component_uuid = manager.manager_uuid;
@@ -633,7 +633,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
   if (context.config != nullptr && context.config->sbps_enabled) {
     ProcessAssociationRecord ipc;
     ipc.kind = ProcessAssociationKind::kIpcEndpoint;
-    ipc.database_uuid = snapshot.database_uuid;
+    ipc.database_uuid = BinaryIdentity(snapshot.database_uuid);
     ipc.database_path = snapshot.database_path;
     ipc.ipc_endpoint = context.config->sbps_endpoint.empty()
         ? "parser_server_ipc"
@@ -656,7 +656,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       }
       ProcessAssociationRecord listener;
       listener.kind = ProcessAssociationKind::kListener;
-      listener.database_uuid = snapshot.database_uuid;
+      listener.database_uuid = BinaryIdentity(snapshot.database_uuid);
       listener.database_path = snapshot.database_path;
       listener.listener_uuid = profile.listener_uuid;
       listener.component_uuid = profile.listener_uuid;
@@ -675,7 +675,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       if (!profile.parser_package_ref.empty()) {
         ProcessAssociationRecord parser;
         parser.kind = ProcessAssociationKind::kParser;
-        parser.database_uuid = snapshot.database_uuid;
+        parser.database_uuid = BinaryIdentity(snapshot.database_uuid);
         parser.database_path = snapshot.database_path;
         parser.listener_uuid = profile.listener_uuid;
         parser.parser_instance_uuid = profile.listener_uuid + ":parser_pool:" +
@@ -701,8 +701,8 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       ProcessAssociationRecord session_record;
       session_record.kind = ProcessAssociationKind::kSession;
       session_record.database_uuid = session.database_uuid.is_nil()
-          ? snapshot.database_uuid
-          : IdentityBytes(session.database_uuid);
+          ? BinaryIdentity(snapshot.database_uuid)
+          : session.database_uuid;
       session_record.database_path = session.database_path.empty()
           ? snapshot.database_path
           : session.database_path;
@@ -804,7 +804,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
       ModeBool(request.mode, "parser_fallback_required", false);
   auto association_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       association_registry,
-      snapshot.database_uuid,
+      BinaryIdentity(snapshot.database_uuid),
       snapshot.database_path,
       0,
       parser_fallback_requested,
@@ -814,7 +814,7 @@ ServerShutdownRuntimeSnapshot BuildShutdownRuntimeSnapshot(
   if (parser_fallback_required != parser_fallback_requested) {
     association_result = ApplyProcessAssociationScopeToShutdownSnapshot(
         association_registry,
-        snapshot.database_uuid,
+        BinaryIdentity(snapshot.database_uuid),
         snapshot.database_path,
         0,
         parser_fallback_required,

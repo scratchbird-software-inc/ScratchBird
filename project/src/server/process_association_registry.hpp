@@ -11,6 +11,7 @@
 #pragma once
 
 #include "maintenance_coordinator.hpp"
+#include "runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -33,7 +34,7 @@ enum class ProcessAssociationKind {
 
 struct ProcessAssociationRecord {
   ProcessAssociationKind kind = ProcessAssociationKind::kWorkerProcess;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string database_path;
   std::string engine_instance_uuid;
   std::string component_uuid;
@@ -90,13 +91,15 @@ void RegisterProcessAssociation(ProcessAssociationRegistry* registry,
                                 ProcessAssociationRecord record);
 ProcessAssociationScopeResult EvaluateProcessAssociationsForDatabase(
     const ProcessAssociationRegistry& registry,
-    const std::string& database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     const std::string& database_path,
     std::uint64_t shutdown_generation,
     bool parser_fallback_required);
+// database_path is a diagnostic/location hint only. A valid native node UUID
+// is mandatory, including when the registry contains just one database.
 ProcessAssociationScopeResult ApplyProcessAssociationScopeToShutdownSnapshot(
     const ProcessAssociationRegistry& registry,
-    const std::string& database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     const std::string& database_path,
     std::uint64_t shutdown_generation,
     bool parser_fallback_required,

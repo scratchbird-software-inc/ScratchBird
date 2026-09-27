@@ -17,6 +17,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace {
 
@@ -34,8 +35,11 @@ using scratchbird::server::ServerMaintenanceCoordinator;
 using scratchbird::server::ServerMaintenanceOperationRequest;
 using scratchbird::server::ServerShutdownRuntimeSnapshot;
 
-constexpr std::string_view kDatabaseUuid = "019e1300-0000-7000-8000-000000000001";
+constexpr auto kDatabaseUuid = scratchbird::tests::FixtureUuidLiteral(
+    "019e1300-0000-7000-8000-000000000001");
 constexpr std::string_view kDatabasePath = "/tmp/sb_dblc013d_process_association.sbdb";
+static_assert(!std::is_assignable_v<decltype(ProcessAssociationRecord::database_uuid)&,
+                                    std::string>);
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -55,7 +59,7 @@ bool HasDiagnostic(const scratchbird::server::ServerMaintenanceOperationResult& 
 ProcessAssociationRecord Base(ProcessAssociationKind kind, std::string_view component) {
   ProcessAssociationRecord record;
   record.kind = kind;
-  record.database_uuid = std::string(kDatabaseUuid);
+  record.database_uuid = kDatabaseUuid;
   record.database_path = std::string(kDatabasePath);
   record.component_uuid = std::string(component);
   record.process_uuid = std::string(component);
@@ -102,7 +106,7 @@ ProcessAssociationRegistry FreshRegistry() {
 
 ServerShutdownRuntimeSnapshot Snapshot() {
   ServerShutdownRuntimeSnapshot snapshot;
-  snapshot.database_uuid = std::string(kDatabaseUuid);
+  snapshot.database_uuid = scratchbird::wire::ManagementTargetBytes(kDatabaseUuid);
   snapshot.database_path = std::string(kDatabasePath);
   return snapshot;
 }
@@ -112,7 +116,7 @@ void TestFreshRegistryScopesAllRuntimeFamilies() {
   auto snapshot = Snapshot();
   const auto result = ApplyProcessAssociationScopeToShutdownSnapshot(
       registry,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       false,
@@ -142,7 +146,7 @@ void TestListenerFailureParserFallbackUsesEngineVisibleRegistry() {
   auto snapshot = Snapshot();
   const auto result = ApplyProcessAssociationScopeToShutdownSnapshot(
       registry,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       true,
@@ -165,7 +169,7 @@ void TestMissingAndStaleParserAssociationsFailClosed() {
   auto missing_snapshot = Snapshot();
   const auto missing_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       missing,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       true,
@@ -182,7 +186,7 @@ void TestMissingAndStaleParserAssociationsFailClosed() {
   auto stale_snapshot = Snapshot();
   const auto stale_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       stale,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       true,
@@ -196,7 +200,8 @@ void TestMissingAndStaleParserAssociationsFailClosed() {
 void TestCrossDatabaseAndStaleSessionAssociationsFailClosed() {
   auto registry = FreshRegistry();
   auto duplicate_route = Base(ProcessAssociationKind::kRoute, "route-013d-collision");
-  duplicate_route.database_uuid = "019e1300-0000-7000-8000-000000000002";
+  duplicate_route.database_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019e1300-0000-7000-8000-000000000002");
   duplicate_route.database_path = "/tmp/sb_dblc013d_other.sbdb";
   duplicate_route.route_uuid = "route-013d";
   RegisterProcessAssociation(&registry, duplicate_route);
@@ -204,7 +209,7 @@ void TestCrossDatabaseAndStaleSessionAssociationsFailClosed() {
   auto snapshot = Snapshot();
   const auto collision = ApplyProcessAssociationScopeToShutdownSnapshot(
       registry,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       false,
@@ -221,7 +226,7 @@ void TestCrossDatabaseAndStaleSessionAssociationsFailClosed() {
   auto stale_snapshot = Snapshot();
   const auto stale_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       stale_attachment,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       false,
@@ -242,7 +247,7 @@ void TestClusterRouteAndWrongAckGenerationFailClosed() {
   auto snapshot = Snapshot();
   const auto cluster_result = ApplyProcessAssociationScopeToShutdownSnapshot(
       registry,
-      std::string(kDatabaseUuid),
+      kDatabaseUuid,
       std::string(kDatabasePath),
       0,
       false,
@@ -274,9 +279,57 @@ void TestClusterRouteAndWrongAckGenerationFailClosed() {
           "wrong-generation acknowledgement diagnostic mismatch");
 }
 
+void TestNativeNodeIdentityCannotBeRescuedByPath() {
+  using scratchbird::server::EvaluateProcessAssociationsForDatabase;
+  auto registry = FreshRegistry();
+  auto other = kDatabaseUuid;
+  other.bytes.back() ^= 3;
+  for (auto& record : registry.records) record.database_uuid = other;
+  auto result = EvaluateProcessAssociationsForDatabase(
+      registry, kDatabaseUuid, std::string(kDatabasePath), 0, false);
+  Require(!result.scope_proven && result.associated_manager_count == 0 &&
+              result.associated_session_count == 0,
+          "same path rescued associations owned by a different binary node");
+  Require(result.diagnostic_detail == "target_database_has_no_associations",
+          "different binary node did not retain the owning scope refusal");
+
+  registry = FreshRegistry();
+  for (auto& record : registry.records) record.database_path = "/different/location";
+  result = EvaluateProcessAssociationsForDatabase(registry, kDatabaseUuid, {}, 0, false);
+  Require(result.scope_proven && result.required_acknowledgement_count == 5,
+          "location text replaced the exact native node identity");
+
+  auto raw = kDatabaseUuid;
+  raw.bytes[9] = 0; raw.bytes[10] = '\n'; raw.bytes[11] = 0xff;
+  for (auto& record : registry.records) record.database_uuid = raw;
+  result = EvaluateProcessAssociationsForDatabase(registry, raw, {}, 0, false);
+  Require(result.scope_proven && result.required_acknowledgement_count == 5,
+          "native node scope did not preserve embedded binary bytes");
+
+  for (unsigned variant = 0; variant != 3; ++variant) {
+    auto invalid = kDatabaseUuid;
+    if (variant == 0) invalid = {};
+    if (variant == 1) invalid.bytes[6] = 0x40;
+    if (variant == 2) invalid.bytes[8] = 0;
+    registry = FreshRegistry();
+    result = EvaluateProcessAssociationsForDatabase(
+        registry, invalid, std::string(kDatabasePath), 0, false);
+    Require(!result.scope_proven && result.required_acknowledgement_count == 0 &&
+                result.diagnostic_detail == "target_database_binary_identity_required",
+            "path or singleton registry rescued an invalid target identity");
+    registry.records.front().database_uuid = invalid;
+    result = EvaluateProcessAssociationsForDatabase(
+        registry, kDatabaseUuid, std::string(kDatabasePath), 0, false);
+    Require(!result.scope_proven && result.required_acknowledgement_count == 0 &&
+                result.diagnostic_detail == "association_database_binary_identity_required",
+            "valid neighboring records rescued an invalid association identity");
+  }
+}
+
 }  // namespace
 
 int main() {
+  TestNativeNodeIdentityCannotBeRescuedByPath();
   TestFreshRegistryScopesAllRuntimeFamilies();
   TestListenerFailureParserFallbackUsesEngineVisibleRegistry();
   TestMissingAndStaleParserAssociationsFailClosed();

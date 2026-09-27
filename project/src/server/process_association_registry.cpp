@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_PROCESS_ASSOCIATION_REGISTRY
 
 #include "process_association_registry.hpp"
+#include "uuid.hpp"
 
 #include <map>
 #include <set>
@@ -18,35 +19,23 @@ namespace scratchbird::server {
 
 namespace {
 
+using NativeUuid = scratchbird::core::platform::Uuid;
+
 bool EmptyScope(const ProcessAssociationRecord& record) {
-  return record.database_uuid.empty() && record.database_path.empty();
+  return record.database_uuid.is_nil() && record.database_path.empty();
 }
 
 bool DatabaseMatches(const ProcessAssociationRecord& record,
-                     const std::string& database_uuid,
-                     const std::string& database_path) {
-  if (!database_uuid.empty() && !record.database_uuid.empty() &&
-      record.database_uuid == database_uuid) {
-    return true;
-  }
-  if (!database_path.empty() && !record.database_path.empty() &&
-      record.database_path == database_path) {
-    return true;
-  }
-  return database_uuid.empty() && database_path.empty() && !EmptyScope(record);
+                     const NativeUuid& database_uuid) {
+  // Paths are location/presentation data, never a second source of identity.
+  return scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid) &&
+         record.database_uuid == database_uuid;
 }
 
 bool SameDatabaseScope(const ProcessAssociationRecord& left,
                        const ProcessAssociationRecord& right) {
-  if (!left.database_uuid.empty() && !right.database_uuid.empty() &&
-      left.database_uuid != right.database_uuid) {
-    return false;
-  }
-  if (!left.database_path.empty() && !right.database_path.empty() &&
-      left.database_path != right.database_path) {
-    return false;
-  }
-  return true;
+  return scratchbird::core::uuid::IsEngineIdentityUuid(left.database_uuid) &&
+         left.database_uuid == right.database_uuid;
 }
 
 bool IsStale(const ProcessAssociationRecord& record, std::uint64_t shutdown_generation) {
@@ -189,36 +178,37 @@ void RegisterProcessAssociation(ProcessAssociationRegistry* registry,
 
 ProcessAssociationScopeResult EvaluateProcessAssociationsForDatabase(
     const ProcessAssociationRegistry& registry,
-    const std::string& database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     const std::string& database_path,
     std::uint64_t shutdown_generation,
     bool parser_fallback_required) {
   ProcessAssociationScopeResult result;
+  (void)database_path;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid)) {
+    result.diagnostic_code = "ENGINE.DBLC_ASSOCIATION_SCOPE_AMBIGUOUS";
+    result.diagnostic_detail = "target_database_binary_identity_required";
+    return result;
+  }
   if (registry.records.empty()) {
     result.diagnostic_code = "ENGINE.DBLC_ASSOCIATION_SCOPE_AMBIGUOUS";
     result.diagnostic_detail = "association_registry_empty";
     return result;
   }
 
-  std::set<std::pair<std::string, std::string>> database_scopes;
   std::map<std::string, const ProcessAssociationRecord*> identities;
   for (const auto& record : registry.records) {
-    if (!EmptyScope(record)) {
-      database_scopes.insert({record.database_uuid, record.database_path});
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(record.database_uuid)) {
+      result.diagnostic_code = "ENGINE.DBLC_ASSOCIATION_SCOPE_AMBIGUOUS";
+      result.diagnostic_detail = "association_database_binary_identity_required";
+      return result;
     }
     AddRecordIdentities(&identities, &result, record);
-  }
-
-  if (database_uuid.empty() && database_path.empty() && database_scopes.size() != 1) {
-    result.ambiguous = true;
-    result.diagnostic_code = "ENGINE.DBLC_ASSOCIATION_SCOPE_AMBIGUOUS";
-    result.diagnostic_detail = "target_database_not_unique";
   }
 
   bool any_match = false;
   bool any_parser = false;
   for (const auto& record : registry.records) {
-    if (!DatabaseMatches(record, database_uuid, database_path)) continue;
+    if (!DatabaseMatches(record, database_uuid)) continue;
     any_match = true;
     if (record.cluster_authority_required && !record.cluster_authority_available) {
       result.cluster_fail_closed = true;
@@ -278,7 +268,7 @@ ProcessAssociationScopeResult EvaluateProcessAssociationsForDatabase(
 
 ProcessAssociationScopeResult ApplyProcessAssociationScopeToShutdownSnapshot(
     const ProcessAssociationRegistry& registry,
-    const std::string& database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     const std::string& database_path,
     std::uint64_t shutdown_generation,
     bool parser_fallback_required,
