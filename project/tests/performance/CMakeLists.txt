@@ -633,6 +633,7 @@ target_compile_features(document_provider_generation_lifecycle_gate PRIVATE cxx_
 target_link_libraries(
   document_provider_generation_lifecycle_gate
   PRIVATE
+    sb_engine
     sb_engine_internal_api
 )
 add_test(

@@ -3,6 +3,9 @@
 #include "uuid.hpp"
 #include <cstdlib>
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "ddl/create_api.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -110,13 +113,21 @@ api::EngineTypedValue Value(std::string value) {
   return typed;
 }
 
-api::EngineRequestContext Context(const std::filesystem::path& path,
+struct OwnedContext : api::EngineRequestContext {
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+};
+
+OwnedContext Context(const std::filesystem::path& path,
                                   std::uint64_t request_ordinal,
                                   api::EngineUuid database_uuid = {},
-                                  api::EngineUuid schema_uuid = {}) {
+                                  api::EngineUuid schema_uuid = {},
+                                  const api::EngineRequestContext* restored_owner = nullptr) {
   namespace db = scratchbird::storage::database;
   namespace uuid = scratchbird::core::uuid;
   using scratchbird::core::platform::UuidKind;
+  OwnedContext retained;
   api::EngineRequestContext context;
   context.request_id = "document-generation-fixture-" + std::to_string(request_ordinal);
   context.database_path = path.string();
@@ -124,7 +135,8 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
       ? api::GenerateCrudEngineUuid("database") : database_uuid;
   context.current_schema_uuid = schema_uuid.is_nil()
       ? api::GenerateCrudEngineUuid("schema") : schema_uuid;
-  if (!std::filesystem::exists(path)) {
+  const bool create_new = !std::filesystem::exists(path);
+  if (create_new) {
     db::DatabaseCreateConfig create;
     create.path = context.database_path;
     const auto database_id = uuid::MakeTypedUuid(UuidKind::database, context.database_uuid);
@@ -135,17 +147,23 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
     create.filespace_uuid = filespace_id.value;
     create.page_size = 16384;
     create.creation_unix_epoch_millis = 1790000000203;
-    create.allow_minimal_resource_bootstrap = true;
-    create.require_resource_seed_pack = false;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
     Require(db::CreateDatabaseFile(create).ok(), "fixture database creation failed");
+    const auto collection = context.current_schema_uuid;
+    context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    context.current_schema_uuid = collection;
+  } else {
+    Require(restored_owner != nullptr && restored_owner->database_uuid == database_uuid,
+            "restored fixture owner identity missing or mismatched");
+    context = *restored_owner;
+    context.database_path = path.string();
+    context.session_uuid = api::GenerateCrudEngineUuid("object");
+    context.current_schema_uuid = schema_uuid;
+    scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   }
-  context.catalog_generation_id = 101;
-  context.security_epoch = 102;
-  context.resource_epoch = 103;
-  context.cluster_authority_available = true;
-  context.security_context_present = true;
-  context.principal_uuid = api::GenerateCrudEngineUuid("principal");
-  context.session_uuid = api::GenerateCrudEngineUuid("object");
+  context.request_id = "document-generation-fixture-" + std::to_string(request_ordinal);
+  retained.owner_context = context;
+  retained.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
   api::EngineBeginTransactionRequest begin;
   begin.context = context;
   begin.isolation_level = "read_committed";
@@ -158,7 +176,18 @@ api::EngineRequestContext Context(const std::filesystem::path& path,
   context.local_transaction_id = begun.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  return context;
+  context.transaction_isolation_level = begun.isolation_level;
+  if (create_new) {
+    api::EngineCreateSchemaRequest schema;
+    schema.context = context;
+    schema.target_object.uuid = context.current_schema_uuid;
+    schema.target_object.object_kind = "schema";
+    schema.localized_names.push_back({"en", "primary", "", "document_schema", true});
+    Require(api::EngineCreateSchema(schema).ok, "document fixture schema creation failed");
+  }
+  retained.statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*retained.session, context);
+  static_cast<api::EngineRequestContext&>(retained) = retained.statement->context;
+  return retained;
 }
 
 void CommitTransaction(const api::EngineRequestContext& context) {
@@ -296,6 +325,12 @@ void CopyIfPresent(const std::filesystem::path& from,
                              std::filesystem::copy_options::overwrite_existing);
 }
 
+std::string ReadArtifactBytes(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  Require(static_cast<bool>(input), "fixture artifact cannot be read");
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 void ProveCloseReopenBackupRestoreAndProofRefusals() {
   TempDatabase database("persist_restore");
   auto writer = Context(database.path, 200);
@@ -343,10 +378,20 @@ void ProveCloseReopenBackupRestoreAndProofRefusals() {
   CopyIfPresent(GenerationSidecar(database.path), GenerationSidecar(restored_path));
   CopyIfPresent(DocumentSidecar(database.path), DocumentSidecar(restored_path));
   CopyIfPresent(ArtifactPath(database.path), ArtifactPath(restored_path));
+  // Restore the owning catalog companions too, not only the derived index.
+  const auto prefix = database.path.filename().string() + ".sb.";
+  for (const auto& entry : std::filesystem::directory_iterator(database.dir)) {
+    const auto name = entry.path().filename().string();
+    if (entry.is_regular_file() && name.starts_with(prefix))
+      CopyIfPresent(entry.path(), restored_path.string() +
+          name.substr(database.path.filename().string().size()));
+  }
   auto restored = Context(restored_path,
                           250,
                           writer.database_uuid,
-                          writer.current_schema_uuid);
+                          writer.current_schema_uuid,
+                          &writer.owner_context);
+  const auto restored_bytes = ReadArtifactBytes(GenerationSidecar(restored_path));
   const auto restored_generation = api::LoadNoSqlProviderGeneration(
       restored,
       api::EngineNoSqlProviderFamily::kDocument,
@@ -354,12 +399,40 @@ void ProveCloseReopenBackupRestoreAndProofRefusals() {
       generation.collection_uuid);
   Require(restored_generation.ok,
           "restored provider generation did not load from backup sidecar");
+  Require(restored_generation.metadata.database_uuid == generation.database_uuid &&
+              restored_generation.metadata.collection_uuid == generation.collection_uuid &&
+              restored_generation.metadata.generation_uuid == generation.generation_uuid &&
+              restored_generation.metadata.generation_id == generation.generation_id &&
+              ReadArtifactBytes(GenerationSidecar(restored_path)) == restored_bytes,
+          "restore read changed native identity or rewrote generation evidence");
   Require(restored_generation.metadata.database_identity == restored.database_path,
           "restored generation was not rebound to restored database path");
   auto restored_find = FindByTenant(restored,
                                     Proof(restored, restored_generation.metadata));
   Require(restored_find.ok, "restored provider generation could not route find");
   RequireNoDescriptorFallback(restored_find);
+
+  TempDatabase foreign_database("foreign_restore");
+  auto foreign = Context(foreign_database.path, 251);
+  CopyIfPresent(GenerationSidecar(database.path), GenerationSidecar(foreign_database.path));
+  const auto foreign_bytes = ReadArtifactBytes(GenerationSidecar(foreign_database.path));
+  Require(!api::LoadNoSqlProviderGeneration(foreign,
+              api::EngineNoSqlProviderFamily::kDocument, generation.provider_id,
+              generation.collection_uuid).ok,
+          "document generation was rebound to a foreign database UUID");
+  auto forged = static_cast<api::EngineRequestContext>(restored);
+  forged.database_path = foreign_database.path.string();
+  Require(!api::LoadNoSqlProviderGeneration(forged,
+              api::EngineNoSqlProviderFamily::kDocument, generation.provider_id,
+              generation.collection_uuid).ok &&
+              ReadArtifactBytes(GenerationSidecar(foreign_database.path)) == foreign_bytes,
+          "forged context bypassed destination header identity or rewrote foreign evidence");
+  forged.database_path = (foreign_database.dir / "missing.sbdb").string();
+  CopyIfPresent(GenerationSidecar(database.path), GenerationSidecar(forged.database_path));
+  Require(!api::LoadNoSqlProviderGeneration(forged,
+              api::EngineNoSqlProviderFamily::kDocument, generation.provider_id,
+              generation.collection_uuid).ok,
+          "document generation accepted a missing destination database");
 
   auto stale_proof = Proof(writer, generation);
   stale_proof.provider_contract.provider_generation.required_generation += 1;
@@ -411,9 +484,9 @@ void CorruptChecksum(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   std::string text((std::istreambuf_iterator<char>(in)),
                    std::istreambuf_iterator<char>());
-  const auto pos = text.find("STATS");
-  Require(pos != std::string::npos, "fixture artifact missing STATS tag");
-  text.replace(pos, 5, "STATE");
+  Require(text.size() > 53 && text.starts_with("SBDOCPATH"),
+          "fixture binary document artifact missing");
+  text.back() ^= 1;  // Alter the body without resealing its SHA-256 header.
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   out << text;
 }
@@ -597,6 +670,7 @@ void ProveNoProviderIndexParserOrLogFinalityAuthority() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("document-provider-generation-native-fixture");
   try {
     ProveCloseReopenBackupRestoreAndProofRefusals();
     ProveProviderAndGenerationRepairLifecycle();

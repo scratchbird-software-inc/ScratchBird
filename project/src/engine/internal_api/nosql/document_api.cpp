@@ -1195,7 +1195,9 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
   const auto descriptor_fields = [](const EngineDescriptor& descriptor)
       -> std::optional<CatalogColumnMetadata> {
     CatalogColumnMetadata fields;
-    if (descriptor.descriptor_kind == "canonical_type_descriptor") {
+    if ((descriptor.descriptor_kind == "canonical_type_descriptor" ||
+         descriptor.descriptor_kind == "scalar") &&
+        descriptor.encoded_descriptor.starts_with("SBMETA")) {
       if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields) ||
           BinaryCatalogUuid(fields, "type_uuid") != descriptor.type_uuid) return std::nullopt;
     } else if (descriptor.descriptor_kind == "scalar") {
@@ -1244,8 +1246,9 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
           !IsDocumentIdentity(column.column_uuid) ||
           !column_uuids.insert(column.column_uuid).second ||
           !QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
-          column.value_descriptor.descriptor_kind !=
-              "canonical_type_descriptor" ||
+          (column.value_descriptor.descriptor_kind != "canonical_type_descriptor" &&
+           column.value_descriptor.descriptor_kind != "scalar") ||
+          !column.value_descriptor.encoded_descriptor.starts_with("SBMETA") ||
           !fields.has_value()) {
         return false;
       }

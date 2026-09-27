@@ -12,6 +12,8 @@
 #include "crud_support/crud_store.hpp"
 #include "hash_digest.hpp"
 #include "catalog/binary_catalog_metadata.hpp"
+#include "database_format.hpp"
+#include "disk_device.hpp"
 #include "uuid.hpp"
 #include <tuple>
 
@@ -2030,6 +2032,33 @@ EngineNoSqlProviderGenerationMetadata CorruptGenerationRecord() {
   return metadata;
 }
 
+// A restored document index keeps its database/collection/generation UUIDs.
+// Its old pathname is a locator, not a second database identity. Verify the
+// actual destination header before rebasing that locator in the read view.
+// Sealed vector/search/rollup capabilities retain their separate path-bound
+// admission requirements and are never rewritten by this read operation.
+bool RebindRestoredDocumentLocation(const EngineRequestContext& context,
+                                   EngineNoSqlProviderGenerationMetadata* metadata) {
+  if (!metadata || metadata->family != EngineNoSqlProviderFamily::kDocument ||
+      !HasDefaultVectorAnnCarrier(*metadata) ||
+      !HasDefaultSearchSegmentCarrier(*metadata) ||
+      !HasDefaultTimeSeriesRollupCarrier(*metadata) ||
+      !IsValidUuid(context.database_uuid) || metadata->database_uuid != context.database_uuid ||
+      metadata->database_identity.empty() || context.database_path.empty()) return false;
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(context.database_path, error) || error) return false;
+  scratchbird::storage::disk::FileDevice device;
+  if (!device.Open(context.database_path,
+          scratchbird::storage::disk::FileOpenMode::open_existing_read_only).ok()) return false;
+  scratchbird::storage::disk::SerializedDatabaseHeader bytes{};
+  if (!device.ReadAt(0, bytes.data(), bytes.size()).ok()) return false;
+  const auto parsed = scratchbird::storage::disk::ParseDatabaseHeader(bytes);
+  if (!parsed.ok() || parsed.header.database_uuid.bytes != context.database_uuid.bytes)
+    return false;
+  metadata->database_identity = EngineNoSqlProviderDatabaseIdentity(context);
+  return true;
+}
+
 std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(const EngineRequestContext& context) {
   const auto cached = GenerationCache().find(StoreKey(context));
   if (cached != GenerationCache().end()) return cached->second;
@@ -2061,7 +2090,8 @@ std::vector<EngineNoSqlProviderGenerationMetadata> LoadLocked(const EngineReques
         const auto expected = MetadataPairs(metadata);
         const auto actual_map = PairMap(pairs);
         if (actual_map != PairMap(expected)) return corrupt(); // exact fields and value types
-        if (!BoundToContext(context, metadata)) return corrupt();
+        if (!BoundToContext(context, metadata) &&
+            !RebindRestoredDocumentLocation(context, &metadata)) return corrupt();
         loaded.push_back(std::move(metadata)); // retain duplicates for admission checks
       }
       if (in.bad()) return corrupt();

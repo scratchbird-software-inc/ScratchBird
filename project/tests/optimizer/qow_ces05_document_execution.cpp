@@ -7,8 +7,12 @@
 #include "model_family_executor.hpp"
 #include "logical_plan.hpp"
 #include "hash_digest.hpp"
+#include "uuid.hpp"
 
 #if defined(SB_CES05_PRODUCTION_QUERY_ROUTE)
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
@@ -28,6 +32,7 @@
 
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1315,7 +1320,11 @@ bool DeterministicReplay() {
   const auto first = exec::ExecuteModelFamilySourceV1(first_request);
   const auto second = exec::ExecuteModelFamilySourceV1(second_request);
   const auto first_bytes = CanonicalReplayBytes(first_plan, first);
-  const auto second_bytes = CanonicalReplayBytes(second_plan, second);
+  // A new publication owns a fresh UUIDv7. Compare every semantic and
+  // correlation field after rebasing only that publication handle.
+  auto replay_plan = second_plan;
+  replay_plan.physical_dag.selected_plan_uuid = first_plan.physical_dag.selected_plan_uuid;
+  const auto second_bytes = CanonicalReplayBytes(replay_plan, second);
   const auto first_digest = ReplayDigest(first_bytes);
   const auto second_digest = ReplayDigest(second_bytes);
   std::string first_output_bytes;
@@ -1326,9 +1335,12 @@ bool DeterministicReplay() {
   const auto first_output_digest = ReplayDigest(first_output_bytes);
   const auto expected_output_digest = ReplayDigest(expected_output_bytes);
   constexpr std::string_view kExpectedFixtureDigest =
-      "73c6e90362edd3e0f12d03fb73544812ddfad7b8569c4b4d2473ea8750c491c4";
+      "a12f5e2b01a582011380ac5144feedf492f3bed6b64665f2eb05692bb4f517b7";
   return Require(
       first_plan.accepted && second_plan.accepted && first.accepted &&
+          scratchbird::core::uuid::IsEngineIdentityUuid(first_plan.physical_dag.selected_plan_uuid) &&
+          scratchbird::core::uuid::IsEngineIdentityUuid(second_plan.physical_dag.selected_plan_uuid) &&
+          first_plan.physical_dag.selected_plan_uuid != second_plan.physical_dag.selected_plan_uuid &&
           second.accepted && first_bytes == second_bytes &&
           !first_digest.empty() && first_digest == second_digest &&
           first_output_bytes == expected_output_bytes &&
@@ -1533,14 +1545,22 @@ api::EngineUuid ProductionExactCoreTypeUuid(const std::string_view stable_name) 
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
-      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 std::optional<std::string> ProductionDescriptorField(
     const api::EngineDescriptor& descriptor, const std::string_view key) {
+  if (descriptor.encoded_descriptor.starts_with("SBMETA")) {
+    api::CatalogColumnMetadata metadata;
+    if (!api::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata))
+      return std::nullopt;
+    const auto found = metadata.text.find(std::string(key));
+    return found == metadata.text.end() ? std::nullopt
+                                       : std::optional<std::string>(found->second);
+  }
   const auto prefix = std::string(key) + "=";
   std::optional<std::string> value;
   std::size_t begin = 0;
@@ -1562,6 +1582,8 @@ struct ProductionFixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid schema_uuid;
   api::EngineUuid collection_uuid;
   api::EngineUuid other_collection_uuid;
@@ -1569,6 +1591,7 @@ struct ProductionFixture {
   api::MgaRelationStorageDescriptor other_collection_descriptor;
 
   ~ProductionFixture() {
+    session.reset();
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
   }
@@ -1588,14 +1611,15 @@ bool MakeProductionFixture(ProductionFixture* fixture) {
   create.database_uuid = ProductionUuid(platform::UuidKind::database);
   create.filespace_uuid = ProductionUuid(platform::UuidKind::filespace);
   create.creation_unix_epoch_millis = ProductionSeed();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     return Require(false, "production route database creation failed");
   }
   fixture->database_uuid = create.database_uuid.value;
+  fixture->owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture->session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture->owner_context);
   fixture->schema_uuid = ProductionNativeUuid(platform::UuidKind::schema);
   fixture->collection_uuid = ProductionNativeUuid(platform::UuidKind::object);
   fixture->other_collection_uuid =
@@ -1605,26 +1629,15 @@ bool MakeProductionFixture(ProductionFixture* fixture) {
 
 api::EngineRequestContext ProductionBaseContext(
     const ProductionFixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      ProductionNativeUuid(platform::UuidKind::principal);
-  context.session_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
+  context.current_schema_uuid = fixture.schema_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 73;
-  context.security_epoch = 74;
-  context.resource_epoch = 75;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 76;
   return context;
 }
 
@@ -1652,32 +1665,6 @@ bool CommitProductionTransaction(const api::EngineRequestContext& context) {
   request.context = context;
   return Require(api::EngineCommitTransaction(request).ok,
                  "production route transaction commit failed");
-}
-
-void AddProductionAuthorization(api::EngineRequestContext* context,
-                                const std::string& right,
-                                const api::EngineUuid& target_uuid) {
-  if (!context->authorization_context.present) {
-    context->authorization_context.present = true;
-    context->authorization_context.authority_uuid =
-        ProductionNativeUuid(platform::UuidKind::object);
-    context->authorization_context.principal_uuid = context->principal_uuid;
-    context->authorization_context.security_epoch = context->security_epoch;
-    context->authorization_context.policy_epoch = 77;
-    context->authorization_context.catalog_generation_id =
-        context->catalog_generation_id;
-    context->authorization_context.effective_subjects.push_back(
-        {context->principal_uuid, "principal"});
-  }
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = target_uuid;
-  grant.right = right;
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
 }
 
 api::EngineTypedValue ProductionText(std::string value) {
@@ -1736,6 +1723,8 @@ bool CreateProductionCollections(
         ProductionTextColumn(1, "payload_shadow", true));
     table.table_columns.push_back(
         ProductionTextColumn(2, "required_shadow", false));
+    for (auto& column : table.table_columns)
+      scratchbird::tests::BindFixtureColumnDatatype(context, dt::CanonicalTypeId::character, column);
     const auto created = api::EngineCreateTable(table);
     if (!created.ok) {
       for (const auto& diagnostic : created.diagnostics) {
@@ -1819,8 +1808,8 @@ void AddProductionOperand(sblr::SblrOperationEnvelope* envelope,
   operand.ordinal =
       static_cast<std::uint32_t>(envelope->operands.size() + 1);
   operand.value_kind = sblr::SblrValueKind::literal_typed;
-  operand.value_body.assign(16, 0);
-  operand.value_body.front() = 0x73;
+  const auto descriptor_uuid = scratchbird::tests::FixtureUuid(0x0730, operand.ordinal);
+  operand.value_body.assign(descriptor_uuid.bytes.begin(), descriptor_uuid.bytes.end());
   AppendLittleEndianU64(&operand.value_body, value.size());
   operand.value_body.insert(operand.value_body.end(), value.begin(),
                             value.end());
@@ -1840,7 +1829,31 @@ void AddProductionOperand(sblr::SblrOperationEnvelope* envelope,
 }
 
 void AddProductionDescriptor(sblr::SblrOperationEnvelope* envelope,
-                             const api::RelationalTypeDescriptor& descriptor) {
+                             const api::EngineRequestContext& context,
+                             api::RelationalTypeDescriptor descriptor,
+                             api::EngineUuid bound_datatype_uuid = {}) {
+  const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        candidate.catalog_generation != context.datatype_catalog_generation ||
+        candidate.registry_generation != context.datatype_registry_generation ||
+        (bound_datatype_uuid.is_nil() ? candidate.type_uuid != descriptor.type_uuid
+                                    : candidate.descriptor_uuid != bound_datatype_uuid)) continue;
+    if (identity) throw std::invalid_argument("ambiguous fixture descriptor codec");
+    identity = &candidate;
+  }
+  if (!identity || context.statement_receipt_uuid.is_nil())
+    throw std::invalid_argument("fixture descriptor has no admitted codec or receipt");
+  descriptor.datatype_identity_authoritative = true;
+  descriptor.descriptor_generation = identity->descriptor_generation;
+  descriptor.type_generation = identity->type_generation;
+  descriptor.codec_id = identity->codec_id;
+  descriptor.codec_version = identity->codec_version;
+  descriptor.codec_generation = identity->codec_generation;
+  descriptor.statement_receipt_uuid = context.statement_receipt_uuid;
+  descriptor.datatype_catalog_snapshot_uuid = context.datatype_catalog_snapshot_uuid;
+  descriptor.datatype_catalog_generation = context.datatype_catalog_generation;
+  descriptor.datatype_registry_generation = context.datatype_registry_generation;
   sblr::SblrOperand operand;
   operand.type = "relational_descriptor_v3";
   operand.name = "slot_" + std::to_string(descriptor.descriptor_id);
@@ -1888,8 +1901,8 @@ void SetProductionOperandText(sblr::SblrOperand* operand,
   if (operand == nullptr) return;
   operand->value.clear();
   operand->value_kind = sblr::SblrValueKind::literal_typed;
-  operand->value_body.assign(16, 0);
-  operand->value_body.front() = 0x73;
+  const auto descriptor_uuid = scratchbird::tests::FixtureUuid(0x0730, operand->ordinal);
+  operand->value_body.assign(descriptor_uuid.bytes.begin(), descriptor_uuid.bytes.end());
   AppendLittleEndianU64(&operand->value_body, value.size());
   operand->value_body.insert(operand->value_body.end(), value.begin(),
                              value.end());
@@ -1908,6 +1921,11 @@ std::string ProductionHex(const std::string_view value) {
 
 std::string ProductionDescriptorField(const std::string& encoded,
                                       const std::string_view key) {
+  api::CatalogColumnMetadata metadata;
+  if (api::DecodeCatalogColumnMetadata(encoded, &metadata)) {
+    const auto found = metadata.text.find(std::string(key));
+    return found == metadata.text.end() ? std::string{} : found->second;
+  }
   std::size_t offset = 0;
   while (offset <= encoded.size()) {
     const auto end = encoded.find(';', offset);
@@ -1995,7 +2013,8 @@ sblr::SblrOperationEnvelope ProductionDocumentEnvelope(
     const auto value = ProductionDescriptorField(descriptor_source.value_descriptor, key);
     if (value) *destination = static_cast<std::uint32_t>(std::stoul(*value));
   }
-  AddProductionDescriptor(&envelope, descriptor);
+  AddProductionDescriptor(&envelope, context, descriptor,
+      descriptor_source.value_descriptor.datatype_descriptor_uuid);
   std::uint32_t output_expression_id = 1;
   AddProductionExpression(&envelope,
       {1, api::RelationalExpressionKind::kIdentifier, {}, 1, {},
@@ -2096,11 +2115,11 @@ sblr::SblrOperationEnvelope ProductionDocumentUnnestEnvelope(
       std::to_string(
           context.snapshot_visible_through_local_transaction_id));
   AddProductionOperand(&envelope, "uint32", "relational_root_node_id", "1");
-  AddProductionDescriptor(&envelope, {1, document_descriptor_uuid, json_type_uuid, api::RelationalNullability::kNonNull});
-  AddProductionDescriptor(&envelope, {2, output_descriptor_uuid,
+  AddProductionDescriptor(&envelope, context, {1, document_descriptor_uuid, json_type_uuid, api::RelationalNullability::kNonNull});
+  AddProductionDescriptor(&envelope, context, {2, output_descriptor_uuid,
       mutation == ProductionUnnestMutation::output_type ? character_type_uuid : json_type_uuid,
       api::RelationalNullability::kNullable});
-  AddProductionDescriptor(&envelope, {3, path_descriptor_uuid, character_type_uuid, api::RelationalNullability::kNonNull});
+  AddProductionDescriptor(&envelope, context, {3, path_descriptor_uuid, character_type_uuid, api::RelationalNullability::kNonNull});
   AddProductionExpression(&envelope,
       {1, api::RelationalExpressionKind::kLiteral, {}, 1, {}, {}, api::RelationalLiteralKind::kDocument, {}, std::string(document)});
   AddProductionExpression(&envelope,
@@ -2182,8 +2201,8 @@ sblr::SblrOperationEnvelope ProductionDocumentUnnestFilterProjectLimitEnvelope(
         throw std::invalid_argument("native_producer_binding_encode_failed");
     }
   }
-  AddProductionDescriptor(&envelope, {4, ProductionNativeUuid(platform::UuidKind::object), boolean_type_uuid, api::RelationalNullability::kNonNull});
-  AddProductionDescriptor(&envelope, {5, ProductionNativeUuid(platform::UuidKind::object), int64_type_uuid, api::RelationalNullability::kNonNull});
+  AddProductionDescriptor(&envelope, context, {4, ProductionNativeUuid(platform::UuidKind::object), boolean_type_uuid, api::RelationalNullability::kNonNull});
+  AddProductionDescriptor(&envelope, context, {5, ProductionNativeUuid(platform::UuidKind::object), int64_type_uuid, api::RelationalNullability::kNonNull});
   AddProductionExpression(&envelope, {4, api::RelationalExpressionKind::kLiteral, {}, 4, {}, {}, api::RelationalLiteralKind::kBoolean, {}, "TRUE"});
   AddProductionExpression(&envelope, {5, api::RelationalExpressionKind::kIdentifier, {}, 2, {}, producer_descriptor_uuid});
   AddProductionExpression(&envelope, {6, api::RelationalExpressionKind::kLiteral, {}, 5, {}, {}, api::RelationalLiteralKind::kNumeric, {}, "2"});
@@ -2913,6 +2932,56 @@ bool HasProductionDiagnostic(const api::EngineApiResult& result,
   });
 }
 
+// Independently issued execution handles differ. All other envelope bytes,
+// descriptors, row identities and typed cell payloads must remain identical.
+template<class Result>
+bool SameProductionReplay(const Result& first, const Result& second) {
+  const auto normalize = [](std::string bytes, platform::Uuid* attempt) {
+    std::size_t cursor = 0;
+    unsigned attempts = 0;
+    while (cursor < bytes.size()) {
+      const auto equals = bytes.find('=', cursor);
+      const auto colon = equals == std::string::npos ? equals : bytes.find(':', equals + 1);
+      if (colon == std::string::npos) return std::string{};
+      std::size_t size = 0;
+      const auto parsed = std::from_chars(bytes.data() + equals + 1, bytes.data() + colon, size);
+      if (parsed.ec != std::errc{} || parsed.ptr != bytes.data() + colon ||
+          size >= bytes.size() - colon) return std::string{};
+      const auto end = colon + 1 + size;
+      if (end >= bytes.size() || bytes[end] != '\n') return std::string{};
+      if (std::string_view(bytes).substr(cursor, equals - cursor) == "execution_attempt_uuid") {
+        if (++attempts != 1 || size != 16) return std::string{};
+        std::copy_n(bytes.begin() + colon + 1, 16, attempt->bytes.begin());
+        if (!uuid::IsEngineIdentityUuid(*attempt)) return std::string{};
+        std::fill_n(bytes.begin() + colon + 1, 16, '\0');
+      }
+      cursor = end + 1;
+    }
+    return attempts == 1 ? bytes : std::string{};
+  };
+  platform::Uuid first_attempt, second_attempt;
+  const auto first_bytes = normalize(first.canonical_result_bytes, &first_attempt);
+  const auto second_bytes = normalize(second.canonical_result_bytes, &second_attempt);
+  if (!first.api_result.ok || !second.api_result.ok || first_bytes.empty() ||
+      first_bytes != second_bytes || first_attempt == second_attempt) return false;
+  const auto& a = first.api_result.result_shape;
+  const auto& b = second.api_result.result_shape;
+  if (a.result_kind != b.result_kind || a.columns != b.columns ||
+      a.null_extended_columns != b.null_extended_columns || a.rows.size() != b.rows.size()) return false;
+  for (std::size_t i = 0; i < a.rows.size(); ++i) {
+    if (a.rows[i].requested_row_uuid != b.rows[i].requested_row_uuid ||
+        a.rows[i].fields.size() != b.rows[i].fields.size()) return false;
+    for (std::size_t j = 0; j < a.rows[i].fields.size(); ++j) {
+      const auto& [an, av] = a.rows[i].fields[j];
+      const auto& [bn, bv] = b.rows[i].fields[j];
+      if (an != bn || av.descriptor != bv.descriptor || av.state != bv.state ||
+          av.is_null != bv.is_null || av.encoded_value != bv.encoded_value ||
+          av.binary_value != bv.binary_value) return false;
+    }
+  }
+  return true;
+}
+
 bool ProductionCanonicalQueryExecuteRoute() {
   ProductionFixture fixture;
   if (!MakeProductionFixture(&fixture)) return false;
@@ -2923,9 +2992,8 @@ bool ProductionCanonicalQueryExecuteRoute() {
     return false;
   }
   if (!CreateProductionCollections(&fixture, writer)) return false;
-  AddProductionAuthorization(&writer, "INSERT", fixture.collection_uuid);
-  AddProductionAuthorization(&writer, "INSERT",
-                             fixture.other_collection_uuid);
+  scratchbird::tests::FixtureEngineStatement writer_statement(*fixture.session, writer);
+  writer = writer_statement.context;
   if (!InsertProductionDocument(
           writer, fixture.collection_uuid,
           ProductionNativeUuid(platform::UuidKind::object),
@@ -2950,45 +3018,8 @@ bool ProductionCanonicalQueryExecuteRoute() {
                                   &context)) {
     return false;
   }
-  context.statement_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  if (!snapshot.ok) {
-    return Require(false, "production route statement snapshot publish failed");
-  }
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.statement_metadata_snapshot_visible_through_local_transaction_id =
-      context.snapshot_visible_through_local_transaction_id;
-  context.catalog_epoch_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 77;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  AddProductionAuthorization(&context, "SELECT", fixture.collection_uuid);
-  AddProductionAuthorization(&context, "SELECT",
-                             fixture.other_collection_uuid);
-  context.optimizer_capability_snapshot_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.optimizer_resource_snapshot_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.optimizer_route_snapshot_uuid =
-      ProductionNativeUuid(platform::UuidKind::object);
-  context.optimizer_route_epoch = 78;
-  context.optimizer_route_generation = 79;
+  scratchbird::tests::FixtureEngineStatement reader_statement(*fixture.session, context);
+  context = reader_statement.context;
   context.optimizer_memory_budget_bytes = 1024 * 1024;
   context.optimizer_maximum_candidate_count = 1024;
   context.optimizer_maximum_memo_groups = 1024;
@@ -3041,7 +3072,11 @@ bool ProductionCanonicalQueryExecuteRoute() {
       request.projected_path_nullable = {column->nullable};
       request.descriptors = {std::move(runtime_descriptor)};
     }
-    return api::EngineDocumentFind(request);
+    const auto found = api::EngineDocumentFind(request);
+    if (!found.ok)
+      for (const auto& diagnostic : found.diagnostics)
+        std::cerr << "direct document find " << path << ':' << diagnostic.code << ':' << diagnostic.detail << '\n';
+    return found;
   };
   bool passed = true;
   const auto collection_a =
@@ -3281,9 +3316,29 @@ bool ProductionCanonicalQueryExecuteRoute() {
           counted_unnest.canonical_result_column_count == 1 &&
           counted_unnest.canonical_result_row_count == 1 &&
           count_value == "3" && replayed_count.api_result.ok &&
-          replayed_count.canonical_result_bytes ==
-              counted_unnest.canonical_result_bytes,
+          SameProductionReplay(counted_unnest, replayed_count),
       "DOCUMENT_UNNEST global COUNT(*) did not publish one deterministic aggregate-root result");
+
+  // Prove the replay oracle cannot hide changed data behind handle rebasing.
+  if (replayed_count.api_result.ok &&
+      replayed_count.api_result.result_shape.rows.size() == 1 &&
+      replayed_count.api_result.result_shape.rows.front().fields.size() == 1) {
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto changed = replayed_count;
+      auto& row = changed.api_result.result_shape.rows.front();
+      auto& value = row.fields.front().second;
+      if (mutation == 0) value.encoded_value += "0";
+      if (mutation == 1) value.binary_value.push_back(0);
+      if (mutation == 2) value.setState(api::EngineValueState::sql_null);
+      if (mutation == 3) value.descriptor.descriptor_uuid = ProductionNativeUuid(platform::UuidKind::object);
+      if (mutation == 4) row.requested_row_uuid = ProductionNativeUuid(platform::UuidKind::row);
+      if (mutation == 5) row.fields.front().first += "changed";
+      if (mutation == 6) changed.canonical_result_bytes += "unexpected=1:x\n";
+      if (mutation == 7) changed.canonical_result_bytes = counted_unnest.canonical_result_bytes;
+      passed &= Require(!SameProductionReplay(counted_unnest, changed),
+                        "document replay comparison admitted mutated result or reused attempt identity");
+    }
+  }
 
   auto cancelled_count_context = context;
   cancelled_count_context.query_cancellation_requested = [] { return true; };
@@ -3348,11 +3403,9 @@ bool ProductionCanonicalQueryExecuteRoute() {
   };
   if (!cte_completed(inline_cte) || !cte_completed(materialized_cte) ||
       !replayed_inline_cte.api_result.ok ||
-      replayed_inline_cte.canonical_result_bytes !=
-          inline_cte.canonical_result_bytes ||
+      !SameProductionReplay(inline_cte, replayed_inline_cte) ||
       !replayed_materialized_cte.api_result.ok ||
-      replayed_materialized_cte.canonical_result_bytes !=
-          materialized_cte.canonical_result_bytes ||
+      !SameProductionReplay(materialized_cte, replayed_materialized_cte) ||
       !HasProductionEvidence(
           inline_cte.api_result, "canonical.document_cte_implementation",
           "cte.bound.inline.typed.v1") ||
@@ -3391,11 +3444,9 @@ bool ProductionCanonicalQueryExecuteRoute() {
   passed &= Require(
       cte_completed(inline_cte) && cte_completed(materialized_cte) &&
           replayed_inline_cte.api_result.ok &&
-          replayed_inline_cte.canonical_result_bytes ==
-              inline_cte.canonical_result_bytes &&
+          SameProductionReplay(inline_cte, replayed_inline_cte) &&
           replayed_materialized_cte.api_result.ok &&
-          replayed_materialized_cte.canonical_result_bytes ==
-              materialized_cte.canonical_result_bytes &&
+          SameProductionReplay(materialized_cte, replayed_materialized_cte) &&
           HasProductionEvidence(
               inline_cte.api_result,
               "canonical.document_cte_implementation",
@@ -3490,8 +3541,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           recursive_cte.canonical_result_row_count == 3 &&
           recursive_values == std::vector<std::string>{"3", "4", "5"} &&
           replayed_recursive_cte.api_result.ok &&
-          replayed_recursive_cte.canonical_result_bytes ==
-              recursive_cte.canonical_result_bytes &&
+          SameProductionReplay(recursive_cte, replayed_recursive_cte) &&
           HasProductionEvidence(
               recursive_cte.api_result,
               "canonical.document_recursive_cte_implementation",
@@ -3587,8 +3637,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           set_union.canonical_result_row_count == 4 &&
           set_items == std::vector<std::string>{"3", "1", "2", "4"} &&
           replayed_set_union.api_result.ok &&
-          replayed_set_union.canonical_result_bytes ==
-              set_union.canonical_result_bytes &&
+          SameProductionReplay(set_union, replayed_set_union) &&
           HasProductionEvidence(
               set_union.api_result,
               "canonical.document_set_implementation",
@@ -3696,8 +3745,7 @@ bool ProductionCanonicalQueryExecuteRoute() {
           window_items == std::vector<std::string>{"3", "1", "2"} &&
           row_numbers == std::vector<std::string>{"1", "2", "3"} &&
           replayed_row_number_window.api_result.ok &&
-          replayed_row_number_window.canonical_result_bytes ==
-              row_number_window.canonical_result_bytes &&
+          SameProductionReplay(row_number_window, replayed_row_number_window) &&
           HasProductionEvidence(
               row_number_window.api_result,
               "canonical.document_window_implementation",
@@ -3863,8 +3911,23 @@ bool ProductionCanonicalQueryExecuteRoute() {
        api::EngineApiRequest{}});
   passed &= Require(
       !bounded_unnest.api_result.ok &&
+          !bounded_unnest.physical_dag_executed &&
           !bounded_unnest.canonical_result_published &&
           HasProductionDiagnostic(bounded_unnest.api_result,
+                                  "QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1"),
+      "DOCUMENT_UNNEST undersized planner budget escaped admission");
+  // Each individual inventory fits, but simultaneous input + canonical JSON +
+  // expansion + exchange payloads exceed the admitted producer peak.
+  auto peak_context = context;
+  peak_context.optimizer_memory_budget_bytes = 64 * 1024;
+  const auto peak_document = std::string("{\"items\":[\"") +
+      std::string(peak_context.optimizer_memory_budget_bytes / 3, 'x') + "\"]}";
+  const auto peak_unnest = sblr::DispatchSblrOperation(
+      {peak_context, ProductionDocumentUnnestEnvelope(peak_context, peak_document),
+       api::EngineApiRequest{}});
+  passed &= Require(
+      !peak_unnest.api_result.ok && !peak_unnest.canonical_result_published &&
+          HasProductionDiagnostic(peak_unnest.api_result,
                                   "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"),
       "DOCUMENT_UNNEST combined canonical-input/expansion/batch peak escaped its bound");
 
@@ -3901,17 +3964,23 @@ bool ProductionCanonicalQueryExecuteRoute() {
                     "non-null missing document projection did not fail closed exactly");
 
   const auto expect_descriptor_substitution_refusal =
-      [&](auto mutation, const std::string_view detail) {
+      [&](auto mutation, const std::string_view detail,
+          std::string_view expected_diagnostic = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1") {
         auto substituted = fixture.collection_descriptor;
         mutation(substituted.columns.front());
         const auto refused = sblr::DispatchSblrOperation(
             {context, ProductionDocumentEnvelope(context, substituted),
              api::EngineApiRequest{}});
+        if (refused.api_result.ok || !HasProductionDiagnostic(
+                refused.api_result, expected_diagnostic))
+          for (const auto& diagnostic : refused.api_result.diagnostics)
+            std::cerr << detail << ':' << diagnostic.code << ':' << diagnostic.detail << '\n';
         return Require(
             !refused.api_result.ok &&
+                !refused.physical_dag_executed &&
                 !refused.canonical_result_published &&
                 HasProductionDiagnostic(refused.api_result,
-                                        "SB_MODEL_TYPED_EXCHANGE_INVALID_V1"),
+                                        expected_diagnostic),
             detail);
       };
   passed &= expect_descriptor_substitution_refusal(
@@ -3930,23 +3999,25 @@ bool ProductionCanonicalQueryExecuteRoute() {
       [](auto& column) {
         column.value_descriptor.type_uuid = ProductionNativeUuid(platform::UuidKind::object);
       },
-      "persisted document type UUID substitution was admitted");
+      "persisted document type UUID substitution was admitted",
+      "DATATYPE.DESCRIPTOR.INVALID");
   passed &= expect_descriptor_substitution_refusal(
       [](auto& column) { column.nullable = !column.nullable; },
       "persisted document nullability substitution was admitted");
   passed &= expect_descriptor_substitution_refusal(
       [](auto& column) {
-        column.value_descriptor.encoded_descriptor += ";width=1";
+        api::CatalogColumnMetadata fields;
+        if (!api::DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &fields))
+          throw std::invalid_argument("fixture persisted descriptor metadata is malformed");
+        fields.text["width"] = "1";
+        if (!api::EncodeCatalogColumnMetadata(fields, &column.value_descriptor.encoded_descriptor))
+          throw std::invalid_argument("fixture descriptor mutation encoding failed");
       },
       "persisted document optional descriptor substitution was admitted");
 
   auto denied_context = context;
-  std::erase_if(denied_context.authorization_context.grants,
-                [&](const auto& grant) {
-                  return grant.right == "SELECT" &&
-                         grant.target_uuid ==
-                             fixture.collection_uuid;
-                });
+  denied_context.authorization_context.engine_owned_bootstrap_role_uuid = {};
+  denied_context.authorization_context.grants.clear();
   const auto denied = sblr::DispatchSblrOperation(
       {denied_context,
        ProductionDocumentEnvelope(denied_context,
@@ -4186,6 +4257,9 @@ bool CatalogIdentity() {
 }  // namespace
 
 int main() {
+#if defined(SB_CES05_PRODUCTION_QUERY_ROUTE)
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("document-canonical-native-uuid");
+#endif
   bool passed = true;
   passed &= CatalogIdentity();
   passed &= PositiveBoundaryFallback();
