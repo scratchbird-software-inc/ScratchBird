@@ -57,7 +57,7 @@ void TestCompileTimeProviderMatrix() {
   Require(cluster_provider::ClusterProviderSupportsExecution() == info.supports_execution,
           "provider support helper disagrees with provider info");
 
-#if defined(SCRATCHBIRD_CLUSTER_PROVIDER_NO_CLUSTER)
+#if defined(SCRATCHBIRD_CLUSTER_PROVIDER_NO_CLUSTER) && !defined(SCRATCHBIRD_TEST_CLUSTER_PROVIDER_STUB)
   Require(info.provider_name == std::string_view("scratchbird.cluster.no_cluster_provider"),
           "default build did not link no-cluster provider");
   Require(info.provider_type == std::string_view("no_cluster"),
@@ -73,7 +73,7 @@ void TestCompileTimeProviderMatrix() {
           "default no-cluster exact diagnostic missing");
   Require(result.diagnostic_code == cluster_provider::kClusterPathAbsentCode,
           "agent boundary changed the provider's canonical execution refusal");
-#elif defined(SCRATCHBIRD_CLUSTER_PROVIDER_STUB)
+#elif defined(SCRATCHBIRD_CLUSTER_PROVIDER_STUB) || defined(SCRATCHBIRD_TEST_CLUSTER_PROVIDER_STUB)
   Require(info.provider_name ==
               std::string_view("scratchbird.cluster.compile_link_stub_provider"),
           "stub build did not link compile-link provider");

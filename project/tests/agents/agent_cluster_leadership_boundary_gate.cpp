@@ -159,7 +159,7 @@ void TestCompileLinkStubLeaseSurfacesFailClosed() {
             "compile-link stub lease surface did not fail closed");
     Require(HasDiagnostic(
                 result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                cluster_provider::kClusterPathAbsentCode),
             "compile-link stub lease surface exact diagnostic missing");
     Require(HasEvidence(result, "cluster_provider_type", "compile_link_stub"),
             "compile-link stub lease surface provider evidence missing");

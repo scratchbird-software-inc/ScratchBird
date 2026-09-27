@@ -118,6 +118,31 @@ class ReleaseContractOracles(unittest.TestCase):
         with patch.object(gate, "read_text", obsolete):
             self.refusal(lambda: gate.build_evidence(request), "cluster_surface_refusal_code_drift")
 
+    def test_agent_execution_refusal_is_not_a_handshake_diagnostic(self):
+        gate = load("public_cluster_build_matrix_gate.py")
+        gate.check_agent_cluster_boundary_proofs(PROJECT)
+        actual = gate.require_file
+        for filename in ("agent_cluster_provider_build_matrix_gate.cpp",
+                         "agent_cluster_provider_boundary_gate.cpp",
+                         "agent_cluster_leadership_boundary_gate.cpp"):
+            def obsolete(path, *args):
+                text = actual(path, *args)
+                if path.name == filename:
+                    text = text.replace("kClusterPathAbsentCode",
+                                        "kClusterHandshakeStubCompileLinkOnlyCode")
+                return text
+            with self.subTest(filename=filename), patch.object(gate, "require_file", obsolete):
+                self.refusal(lambda: gate.check_agent_cluster_boundary_proofs(PROJECT),
+                             filename + ":agent_cluster_stub_boundary_missing:kClusterPathAbsentCode")
+        # Handshake admission remains a separate non-execution contract.
+        gate.check_handshake_contract(PROJECT)
+        def missing_handshake(path, *args):
+            return actual(path, *args).replace("kClusterHandshakeStubCompileLinkOnlyCode",
+                                               "REMOVED_HANDSHAKE_REFUSAL")
+        with patch.object(gate, "require_file", missing_handshake):
+            self.refusal(lambda: gate.check_handshake_contract(PROJECT),
+                         "cluster_provider_handshake_contract_missing:kClusterHandshakeStubCompileLinkOnlyCode")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *remaining])

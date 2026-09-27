@@ -821,6 +821,20 @@ sb_agent_runtime_cpp_gate(
   "PFAR-002F;cluster_leadership_boundary"
 )
 
+# Exercise the non-executing provider's actual agent dispatch and lease paths
+# even in the default no-cluster build. This is routing/refusal coverage, not
+# a cluster implementation or a grant of cluster authority.
+foreach(boundary_gate IN ITEMS agent_cluster_provider_boundary_gate
+    agent_cluster_provider_build_matrix_gate agent_cluster_leadership_boundary_gate)
+  sb_agent_runtime_cpp_gate(${boundary_gate}_compile_link_stub
+    ${boundary_gate}.cpp "cluster_provider_boundary;compile_link_stub;binary_uuid")
+  target_sources(${boundary_gate}_compile_link_stub PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/cluster_provider_stub/stub_cluster_provider.cpp")
+  target_compile_definitions(${boundary_gate}_compile_link_stub PRIVATE
+    SCRATCHBIRD_TEST_CLUSTER_PROVIDER_STUB=1)
+  target_link_libraries(${boundary_gate}_compile_link_stub PRIVATE sb_engine_internal_api)
+endforeach()
+
 sb_agent_runtime_cpp_gate(
   agent_instance_identity_persistence_gate
   agent_instance_identity_persistence_gate.cpp
