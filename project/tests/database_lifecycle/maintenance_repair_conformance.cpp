@@ -8,6 +8,7 @@
 
 #include "../agents/agent_binary_identity_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
 #include "../support/binary_uuid_fixture.hpp"
@@ -25,6 +26,7 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "session_registry.hpp"
+#include "security/authorization_api.hpp"
 #include "startup_state.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
@@ -113,10 +115,13 @@ struct Fixture {
   std::string database_uuid;
   std::string filespace_uuid;
   scratchbird::core::platform::u32 page_size = 0;
+  api::EngineRequestContext owner_context;
+  api::EngineUuid auditor_uuid;
 };
 
 Fixture CreateOpenCleanDatabase(const std::filesystem::path& path,
-                                std::uint64_t now_millis) {
+                                std::uint64_t now_millis,
+                                bool credentialed = false) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now_millis).value;
@@ -126,6 +131,7 @@ Fixture CreateOpenCleanDatabase(const std::filesystem::path& path,
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  if (credentialed) scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ":"
@@ -147,6 +153,42 @@ Fixture CreateOpenCleanDatabase(const std::filesystem::path& path,
   fixture.database_uuid = UuidBytes(create.database_uuid);
   fixture.filespace_uuid = UuidBytes(create.filespace_uuid);
   fixture.page_size = created.state.header.page_size;
+  if (credentialed) {
+    fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    const auto transaction =
+        scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(path, "management identities");
+    auto context = fixture.owner_context;
+    context.transaction_uuid = transaction.transaction_uuid;
+    context.local_transaction_id = transaction.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id = transaction.snapshot_visible_through_local_transaction_id;
+    api::EngineSecurityCreatePrincipalRequest principal;
+    principal.context = context;
+    principal.principal_uuid = uuid::GenerateEngineIdentityV7(UuidKind::object, now_millis + 3).value.value;
+    principal.principal_name = "auditor";
+    principal.credential_fingerprint = create.bootstrap_credential_fingerprint;
+    const auto created_principal = api::EngineSecurityCreatePrincipal(principal);
+    for (const auto& d : created_principal.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
+    Require(created_principal.ok && created_principal.principal_created,
+            "durable management auditor creation failed");
+    fixture.auditor_uuid = principal.principal_uuid;
+    for (const auto privilege : {"OBS_CONFIG_INSPECT", "OBS_METRICS_READ_ALL"}) {
+      scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+      api::EngineSecurityGrantPrivilegeRequest grant;
+      grant.context = context;
+      grant.grant_uuid = uuid::GenerateEngineIdentityV7(UuidKind::object, now_millis + 4).value.value;
+      grant.grantee_uuid = fixture.auditor_uuid;
+      grant.target_object_uuid = create.database_uuid.value;
+      grant.target_object_kind = "database";
+      grant.privilege = privilege;
+      const auto granted = api::EngineSecurityGrantPrivilege(grant);
+      for (const auto& d : granted.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
+      Require(granted.ok && granted.privilege_granted, "durable auditor inspection grant failed");
+    }
+    scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(transaction);
+    fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    Require(db::MarkDatabaseCleanShutdown(path.string(), create.database_uuid.value).ok(),
+            "credentialed management fixture clean shutdown failed");
+  }
   return fixture;
 }
 
@@ -716,24 +758,16 @@ ServerSessionRegistry RegistryWithPrincipal(const Fixture& fixture,
   ServerSessionRegistry registry;
   ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_claim = std::string(principal);
+  session.principal_claim = principal == "admin" ? "fixture_owner" : std::string(principal);
   session.database_path = fixture.path.string();
   session.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
-  session.effective_user_uuid = sbps::MakeUuidV7Bytes();
-  session.embedded_in_process = true;
-  if (principal == "admin") {
-    session.engine_authorization_trace_tags = {
-        "security.fixture_trace_authority",
-        "right:OBS_MANAGEMENT_CONTROL",
-        "right:OBS_MANAGEMENT_INSPECT",
-        "right:OBS_CONFIG_CONTROL",
-        "right:SUPPORT_EXPORT"};
-  } else if (principal == "auditor") {
-    session.engine_authorization_trace_tags = {
-        "security.fixture_trace_authority",
-        "right:OBS_CONFIG_INSPECT",
-        "right:OBS_METRICS_READ_ALL"};
-  }
+  session.effective_user_uuid = (principal == "admin"
+      ? fixture.owner_context.principal_uuid : fixture.auditor_uuid).bytes;
+  session.principal_uuid = session.effective_user_uuid;
+  session.embedded_in_process = false;
+  session.security_epoch = fixture.owner_context.security_epoch;
+  session.catalog_generation = fixture.owner_context.catalog_generation_id;
+  session.policy_generation = fixture.owner_context.authorization_context.policy_epoch;
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
@@ -770,6 +804,10 @@ void TestManagementRoute(const Fixture& fixture) {
 
   auto enter = scratchbird::server::HandleServerManagementRequest(
       context, ManagementFrame(admin_uuid, "enter_restricted_open"));
+  for (const auto& d : enter.diagnostics) {
+    std::cerr << d.code << ':' << d.safe_message << '\n';
+    for (const auto& field : d.fields) std::cerr << field.key << '=' << field.value << '\n';
+  }
   Require(enter.accepted && !enter.error, "management restricted-open entry failed");
   const std::string enter_payload(enter.payload.begin(), enter.payload.end());
   Require(Contains(enter_payload, "restricted_open_enabled"),
@@ -801,6 +839,20 @@ void TestManagementRoute(const Fixture& fixture) {
   auto auditor_registry = RegistryWithPrincipal(fixture, "auditor", &auditor_uuid);
   auto auditor_context =
       ManagementContext(&config, &artifacts, &engine_state, &auditor_registry, &coordinator);
+  api::EngineAuthorizeRequest inspect;
+  inspect.context = fixture.owner_context;
+  inspect.context.principal_uuid = fixture.auditor_uuid;
+  inspect.context.session_uuid = scratchbird::core::platform::Uuid{auditor_uuid};
+  inspect.context.authorization_context =
+      scratchbird::server::MaterializeDurableManagementAuthorizationContext(
+          auditor_registry.sessions_by_uuid.at(inspect.context.session_uuid), inspect.context);
+  inspect.target_database.uuid = NativeFixtureIdentity(fixture.database_uuid);
+  inspect.target_database.object_kind = "database";
+  inspect.target_object = inspect.target_database;
+  inspect.required_right = "OBS_CONFIG_INSPECT";
+  const auto inspected = api::EngineAuthorize(inspect);
+  Require(inspected.ok && inspected.authorized,
+          "auditor refusal fixture lacks its actual durable inspection authority");
   auto denied = scratchbird::server::HandleServerManagementRequest(
       auditor_context, ManagementFrame(auditor_uuid, "verify_database"));
   Require(denied.error, "auditor unexpectedly admitted to verify management control");
@@ -1023,7 +1075,9 @@ int main() {
   TestStorageMaintenanceRepair(fixture);
   TestEngineLifecycleApi(fixture, corrupt_fixture);
   TestSblrLifecycleRoute(fixture);
-  TestManagementRoute(fixture);
+  const auto management_fixture = CreateOpenCleanDatabase(
+      temp_dir / "dblc010_management.sbdb", 1779300004000, true);
+  TestManagementRoute(management_fixture);
   TestRepairEvidenceAuthority(temp_dir);
 
   std::filesystem::remove_all(temp_dir);
