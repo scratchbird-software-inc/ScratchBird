@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import socket
@@ -85,7 +86,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def make_work_dir(preferred_root: Path) -> Path:
-    for root in (preferred_root, Path(tempfile.gettempdir()) / "cdpsec"):
+    roots = (preferred_root, Path(tempfile.gettempdir()) / "cdpsec", Path(tempfile.gettempdir()))
+    if os.name == "posix":
+        roots += (Path("/tmp"),)
+    for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix="c_", dir=root))
         probes = (
@@ -93,7 +97,7 @@ def make_work_dir(preferred_root: Path) -> Path:
             candidate / "inet" / "lc" / ("sbsql_" + ("0" * 32) + ".management.sock"),
             candidate / "embedded" / "e.sbdb",
         )
-        if max(len(str(path)) for path in probes) < 100:
+        if max(len(os.fsencode(path)) for path in probes) < 100:
             return candidate
         shutil.rmtree(candidate, ignore_errors=True)
     raise GateError("unable to allocate a short-enough CDP security/API workspace")

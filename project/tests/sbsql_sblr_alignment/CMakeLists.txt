@@ -1601,6 +1601,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_server_uuid_emission PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;concurrency;fork")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME sbsql_sblr_alignment_uuid_socket_workspace
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/uuid_socket_workspace_test.py)
+  set_tests_properties(sbsql_sblr_alignment_uuid_socket_workspace PROPERTIES
+    TIMEOUT 30 LABELS "sbsql_sblr_alignment;IA-06;binary_uuid;linux;real_socket;test_fixture")
   add_test(NAME sbsql_sblr_alignment_server_hello_native_identity
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/server_hello_native_identity_test.py
