@@ -830,7 +830,11 @@ void PopulateDirectUniqueViolationDiagnostic(
   const auto index = std::find_if(indexes.begin(), indexes.end(),
       [&](const auto& candidate) { return candidate.index_uuid == proof->index_uuid; });
   if (index != indexes.end()) {
-    *diagnostic = UniqueConflictDiagnostic(table, *index);
+    auto classified = UniqueConflictDiagnostic(table, *index);
+    // Preserve the actual proof path and redacted key length while assigning
+    // the catalog's canonical constraint category and binary index identity.
+    if (!diagnostic->detail.empty()) classified.detail += ":" + diagnostic->detail;
+    *diagnostic = std::move(classified);
   }
 }
 

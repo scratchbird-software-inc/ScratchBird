@@ -2082,6 +2082,16 @@ void TestNativeUuidBinaryIndexAndValues() {
     Require(!refused.ok && !refused.diagnostics.empty(),
             "UUID duplicate was accepted or lacked a refusal diagnostic at ordinal " +
                 std::to_string(ordinal));
+    const auto proof = std::find_if(refused.diagnostics.begin(), refused.diagnostics.end(),
+        [](const auto& diagnostic) {
+          return diagnostic.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION" &&
+              diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=16:key_redacted=true") !=
+                  std::string::npos;
+        });
+    Require(proof != refused.diagnostics.end(), "UUID duplicate lost its real binary-key proof detail");
+    Require(std::any_of(proof->identity_fields.begin(), proof->identity_fields.end(),
+        [&](const auto& field) { return field.first == "index_uuid" && field.second == fixture.index_uuid; }),
+        "UUID duplicate lost its bound binary index identity");
     Require(SelectCount(fixture, duplicate_context) == values.size(),
             "refused UUID duplicate changed visible rows");
     Rollback(duplicate_context);

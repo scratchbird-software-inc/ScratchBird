@@ -455,6 +455,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--sb-isql", required=True)
     parser.add_argument("--example-db-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
+    parser.add_argument("--baseline-only", action="store_true",
+                        help="run the real restart baseline without optional crash hooks")
     args = parser.parse_args(argv[1:])
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
@@ -469,6 +471,10 @@ def main(argv: list[str]) -> int:
         template = setup_template(args, work)
         run_no_fault_baseline(args, work, template)
         rows.append(("no_fault_baseline", "committed", "passed"))
+
+        if args.baseline_only:
+            print(f"sbsql_whole_store_restart_baseline=passed work={work}")
+            return 0
 
         for point in EARLY_BOUNDARIES:
             try:
@@ -507,7 +513,8 @@ def main(argv: list[str]) -> int:
         )
 
     covered = {row[0] for row in rows if row[2] == "passed"}
-    missing = set(REGISTERED_BOUNDARIES) - covered
+    required_cases = {"no_fault_baseline"} if args.baseline_only else set(REGISTERED_BOUNDARIES)
+    missing = required_cases - covered
     if missing:
         failures.append(f"registered boundaries without passing case: {sorted(missing)}")
     if failures:

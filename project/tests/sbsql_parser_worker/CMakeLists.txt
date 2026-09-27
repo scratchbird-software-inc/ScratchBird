@@ -6719,6 +6719,21 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_savepoint_refusal_full_route_gate PROPERTIES
       LABELS "savepoint;refusal_atomicity;real_server_route;restart_recovery;mga_transaction_regression"
       RUN_SERIAL TRUE TIMEOUT 2400)
+    add_test(
+      NAME sbsql_whole_store_restart_baseline_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_whole_store_recovery_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_whole_store_restart_baseline"
+              --baseline-only
+    )
+    set_tests_properties(sbsql_whole_store_restart_baseline_gate PROPERTIES
+      LABELS "binary_uuid;whole_store_recovery;real_server_route;restart_recovery;local_ipc_gate;mga_transaction_regression"
+      RUN_SERIAL TRUE TIMEOUT 900)
     if(SB_ENABLE_TEST_CRASH_INJECTION AND UNIX AND NOT WIN32)
       add_test(
         NAME sbsql_savepoint_recovery_full_route_gate
