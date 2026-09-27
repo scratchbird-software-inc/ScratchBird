@@ -451,7 +451,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
       persisted_relation.descriptor_uuid.is_nil() ||
       persisted_relation.descriptor_generation == 0 ||
-      !api::EngineGraphDescriptorCohortExact(persisted_relation)) {
+      !api::EngineGraphDescriptorCohortExact(input.context, persisted_relation)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent graph relation descriptor is invalid");
   }
@@ -471,29 +471,28 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       input.context.resource_epoch;
 
   // Consumer kinds are unique. Retain invocation-owned native identities.
-  std::array<api::EngineUuid, 29> owned_identities{};
+  std::array<api::EngineUuid, 28> owned_identities{};
   for (auto& identity : owned_identities) {
     const auto issued = core::uuid::IssueRuntimeIdentityV7();
     if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
                                "graph execution identity allocation failed");
     identity = *issued;
   }
-  const auto physical_alternative_uuid = owned_identities[0];
-  const auto provider_uuid = owned_identities[1];
+  const auto provider_uuid = owned_identities[0];
   const auto capability_uuid =
-      owned_identities[2];
+      owned_identities[1];
   const auto result_handle_uuid =
-      owned_identities[3];
+      owned_identities[2];
   const auto property_uuid =
-      owned_identities[4];
+      owned_identities[3];
   const auto security_receipt_uuid =
-      owned_identities[5];
+      owned_identities[4];
   const auto policy_snapshot_uuid =
-      owned_identities[6];
+      owned_identities[5];
   const auto statistics_snapshot_uuid =
-      owned_identities[7];
+      owned_identities[6];
   const auto resource_contract_uuid =
-      owned_identities[8];
+      owned_identities[7];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -890,7 +889,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                       prepared.detail);
       }
       prepared_filter = std::move(prepared);
-      filter_capability_uuid = owned_identities[9];
+      filter_capability_uuid = owned_identities[8];
       consumer_profile.implementation_id = "filter.3vl.row.v1";
       consumer_profile.capability_uuid = filter_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kFilter;
@@ -903,7 +902,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                       "graph PROJECT semantic is not canonical");
       }
-      project_capability_uuid = owned_identities[10];
+      project_capability_uuid = owned_identities[9];
       std::vector<const api::RelationalOutputRecord*> project_outputs;
       for (const auto& output : dag.outputs) {
         if (output.relation_node_id == consumer->node_id) {
@@ -1035,7 +1034,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                       prepared.detail);
       }
       prepared_sort = std::move(prepared);
-      sort_capability_uuid = owned_identities[11];
+      sort_capability_uuid = owned_identities[10];
       consumer_profile.implementation_id =
           prepared_sort->expression_ordering
               ? "sort.typed.expression-row.v1"
@@ -1252,8 +1251,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       composition_state.result_bindings.push_back(
           std::move(row_number_binding));
       prepared_row_number = std::move(row_number_column);
-      window_capability_uuid = owned_identities[12];
-      window_order_evidence_uuid = owned_identities[13];
+      window_capability_uuid = owned_identities[11];
+      window_order_evidence_uuid = owned_identities[12];
       consumer_profile.implementation_id = "window.row-number.v1";
       consumer_profile.capability_uuid = window_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kWindow;
@@ -1308,7 +1307,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       composition_state.batch.columns = {prepared.result_column};
       composition_state.result_bindings = prepared.result_bindings;
       prepared_count_star = std::move(prepared);
-      aggregate_capability_uuid = owned_identities[14];
+      aggregate_capability_uuid = owned_identities[13];
       consumer_profile.implementation_id = "aggregate.count-star.v1";
       consumer_profile.capability_uuid = aggregate_capability_uuid;
       consumer_profile.physical_node_kind =
@@ -1343,7 +1342,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       nonrecursive_cte_implementation_id =
           consumer->shareable ? "cte.bound.materialize.typed.v1"
                               : "cte.bound.inline.typed.v1";
-      cte_capability_uuid = owned_identities[15];
+      cte_capability_uuid = owned_identities[14];
       consumer_profile.implementation_id =
           nonrecursive_cte_implementation_id;
       consumer_profile.capability_uuid = cte_capability_uuid;
@@ -1392,7 +1391,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       limit_implementation_id = fetch_first_rows_only
                                     ? "fetch.native.rows-only.v1"
                                     : "limit.typed.v1";
-      limit_capability_uuid = owned_identities[16];
+      limit_capability_uuid = owned_identities[15];
       consumer_profile.implementation_id = limit_implementation_id;
       consumer_profile.capability_uuid = limit_capability_uuid;
       consumer_profile.physical_node_kind = exec::PhysicalNodeKind::kLimit;
@@ -1467,8 +1466,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
                     "graph UNION ALL VALUES memory bound was exceeded");
     }
     graph_set_values_memory_bytes = values_memory;
-    set_values_capability_uuid = owned_identities[17];
-    set_root_capability_uuid = owned_identities[18];
+    set_values_capability_uuid = owned_identities[16];
+    set_root_capability_uuid = owned_identities[17];
 
     LivePhysicalNodeProfile values_profile;
     values_profile.logical_node_id = logical_values->logical_node_id;
@@ -1562,8 +1561,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           "graph recursive payload peak exceeds its admitted memory budget");
     }
     prepared_recursive_cte = prepared;
-    recursive_term_capability_uuid = owned_identities[19];
-    recursive_root_capability_uuid = owned_identities[20];
+    recursive_term_capability_uuid = owned_identities[18];
+    recursive_root_capability_uuid = owned_identities[19];
 
     LivePhysicalNodeProfile term_profile;
     term_profile.logical_node_id = recursive_term->node_id;
@@ -1606,8 +1605,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
           "physical_graph_adjacency_scan_v1" ||
       physical.physical_dag.nodes.front().executor_capability_uuid !=
           planned.selected_candidate.capability_uuid ||
-      physical.physical_dag.nodes.front().selected_alternative_uuid !=
-          physical_alternative_uuid) {
+      !core::uuid::IsEngineIdentityUuid(
+          physical.physical_dag.nodes.front().selected_alternative_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(
+          physical.physical_dag.nodes.front().cost_vector_uuid) ||
+      physical.physical_dag.nodes.front().retained_cost.cost_vector_uuid !=
+          physical.physical_dag.nodes.front().cost_vector_uuid) {
     return refuse(physical.diagnostic_id.empty()
                       ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
                       : physical.diagnostic_id,
@@ -1719,8 +1722,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
         persisted_column->canonical_name_key != output.output_name_utf8 ||
         persisted_column->value_descriptor.descriptor_uuid !=
             descriptor->descriptor_uuid ||
-        persisted_column->value_descriptor.descriptor_kind !=
-            "canonical_type_descriptor" ||
+        (persisted_column->value_descriptor.descriptor_kind != "scalar" &&
+         persisted_column->value_descriptor.descriptor_kind !=
+            "canonical_type_descriptor") ||
         persisted_column->value_descriptor.canonical_type_name.empty() ||
         persisted_column->value_descriptor.encoded_descriptor.empty() ||
         !persisted_type_uuid.has_value() ||
@@ -1843,7 +1847,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_contract.descriptor_visibility.descriptor_generation =
       graph_request.provider_generation;
   provider_contract.descriptor_visibility.proof_uuid =
-      owned_identities[21];
+      owned_identities[20];
   provider_contract.security_redaction.proof_present = true;
   provider_contract.security_redaction.redaction_policy_bound = true;
   provider_contract.security_redaction.security_snapshot_bound = true;
@@ -1858,9 +1862,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_contract.index_generation.available_generation =
       graph_request.provider_generation;
   provider_contract.index_generation.index_uuid =
-      owned_identities[22];
+      owned_identities[21];
   provider_contract.index_generation.proof_uuid =
-      owned_identities[23];
+      owned_identities[22];
   provider_contract.delta_overlay.required = false;
   provider_contract.policy.proof_present = true;
   provider_contract.policy.allowed = true;
@@ -1880,7 +1884,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   provider_generation.redaction_epoch = planning.policy_epoch;
   provider_generation.catalog_epoch = generation;
   provider_generation.generation_uuid =
-      owned_identities[24];
+      owned_identities[23];
   provider_generation.provider_id = provider_contract.provider_id;
   provider_generation.provider_uuid = provider_uuid;
   provider_generation.database_uuid = input.context.database_uuid;
@@ -1895,7 +1899,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       "graph.provider.repair-metadata.v1";
   provider_generation.support_bundle_evidence_id = "graph.provider.support.v1";
   provider_generation.support_bundle_evidence_uuid =
-      owned_identities[25];
+      owned_identities[24];
   provider_contract.mga_recheck.proof_present = true;
   provider_contract.mga_recheck.row_mga_recheck_required = true;
   provider_contract.mga_recheck.row_security_recheck_required = true;
@@ -2027,7 +2031,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
             current_relation.descriptor.descriptor_generation !=
                 source_input.provider_generation ||
             !api::EngineGraphDescriptorCohortExact(
-                current_relation.descriptor)) {
+                graph_request.context, current_relation.descriptor)) {
           provider.diagnostic_id = "SB_MODEL_TYPED_EXCHANGE_INVALID_V1";
           provider.detail =
               "graph relation descriptor changed before provider execution";
@@ -2513,7 +2517,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
       return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                     "graph SORT comparison bound overflowed");
     }
-    const auto tie_uuid = owned_identities[26];
+    const auto tie_uuid = owned_identities[25];
     if (prepared_sort->expression_ordering) {
       selected.available_executors.push_back(
           MakeLiveExpressionSortRegistration(
@@ -2577,11 +2581,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      owned_identities[27];
+      owned_identities[26];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      owned_identities[28];
+      owned_identities[27];
   selected.result_publication_request.maximum_row_count =
       execution_row_bound;
   selected.result_publication_request.column_bindings =

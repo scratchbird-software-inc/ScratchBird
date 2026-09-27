@@ -2656,11 +2656,14 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         return finish_type(type_name);
       }
       if (*expression.literal_kind == api::RelationalLiteralKind::kUuid &&
-          expression.literal_or_parameter_ref->size() != 16) {
+          (expression.literal_typed_value_v1.has_value()
+               ? expression.literal_typed_value_v1->canonical_value_bytes.size()
+               : expression.literal_or_parameter_ref->size()) != 16) {
         *refusal_detail = "UUID literal requires exactly 16 binary bytes";
         return leave(false);
       }
-      if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {
+      if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean &&
+          expression.literal_or_parameter_ref.has_value()) {
         const auto boolean = UpperAscii(*expression.literal_or_parameter_ref);
         if (boolean != "TRUE" && boolean != "FALSE") {
           *refusal_detail = "boolean literal payload is invalid";
@@ -3352,6 +3355,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
          !digest.ok()||digest.digest!=typed.canonical_value_sha256){
         *refusal_detail="typed_value_v1 descriptor, state, bytes, or SHA differs";
         return false;
+      }
+      if (*expression.literal_kind == api::RelationalLiteralKind::kUuid) {
+        if (dt::CanonicalTypeIdFromStableName(inferred_type) !=
+                dt::CanonicalTypeId::uuid ||
+            typed.descriptor_generation !=
+                descriptors_.at(expression.result_descriptor_id)->descriptor_generation ||
+            typed.canonical_value_bytes.size() != 16) {
+          *refusal_detail = "typed UUID literal requires its native type, generation and 16 bytes";
+          return false;
+        }
+        // UUID values are arbitrary 128-bit data, not system identity handles.
+        literal.binary_value = typed.canonical_value_bytes;
+        return finish(std::move(literal));
       }
       const auto int64_value=DecodeSblrLiteralInt64LeV1(
           typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size());

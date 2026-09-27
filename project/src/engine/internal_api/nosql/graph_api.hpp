@@ -128,6 +128,7 @@ struct EngineGraphQueryRequest : EngineApiRequest {
 };
 struct EngineGraphQueryResult : EngineApiResult {};
 bool EngineGraphDescriptorCohortExact(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor);
 EngineGraphQueryResult EngineGraphQuery(const EngineGraphQueryRequest& request);
 

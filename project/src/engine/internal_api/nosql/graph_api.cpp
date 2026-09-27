@@ -97,68 +97,40 @@ const char* GraphCancellationDiagnostic(
 
 bool CanonicalUuid(const EngineUuid& value) { return core::uuid::IsEngineIdentityUuid(value); }
 
-bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
-                                  const std::string_view expected_type,
-                                  const EngineUuid& expected_type_uuid,
-                                  const scratchbird::core::datatypes::
-                                      DatatypeTypeCodecIdentityRowV1*
-                                          expected_registry_identity,
-                                  const EngineUuid& expected_column_uuid,
-                                  const bool expected_nullable) {
+bool ExactGraphValueDescriptor(
+    const EngineDescriptor& descriptor, const std::string_view expected_type,
+    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1& identity,
+    const EngineUuid& expected_column_uuid, const bool expected_nullable) {
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
-      descriptor.descriptor_kind != "canonical_type_descriptor" ||
-      descriptor.canonical_type_name != expected_type) {
-    return false;
-  }
+      (descriptor.descriptor_kind != "scalar" &&
+       descriptor.descriptor_kind != "canonical_type_descriptor") ||
+      descriptor.canonical_type_name != expected_type ||
+      descriptor.datatype_descriptor_uuid != identity.descriptor_uuid ||
+      descriptor.datatype_descriptor_generation != identity.descriptor_generation ||
+      descriptor.type_uuid != identity.type_uuid) return false;
   CatalogColumnMetadata metadata;
   if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) return false;
-  const auto& fields = metadata.text;
-  const auto& identities = metadata.identities;
-  const bool contextual_text = expected_type == "text";
-  if (fields.size() != (contextual_text ? 8U : 2U) ||
-      identities.size() != (contextual_text ? 4U : 1U) ||
-      !fields.contains("canonical") || !identities.contains("type_uuid") ||
-      !fields.contains("nullable") ||
-      fields.at("canonical") != expected_type ||
-      !CanonicalUuid(identities.at("type_uuid")) ||
-      identities.at("type_uuid") != expected_type_uuid ||
-      descriptor.type_uuid != expected_type_uuid ||
-      fields.at("nullable") != (expected_nullable ? "true" : "false") ||
-      (contextual_text &&
-       (expected_registry_identity == nullptr ||
-        !identities.contains("column_uuid") ||
-        identities.at("column_uuid") != expected_column_uuid ||
-        !identities.contains("datatype_descriptor_uuid") ||
-        identities.at("datatype_descriptor_uuid") !=
-            expected_registry_identity->descriptor_uuid ||
-        descriptor.descriptor_uuid !=
-            expected_column_uuid ||
-        !fields.contains("datatype_descriptor_generation") ||
-        fields.at("datatype_descriptor_generation") !=
-            std::to_string(expected_registry_identity->descriptor_generation) ||
-        !fields.contains("type_generation") ||
-        fields.at("type_generation") !=
-            std::to_string(expected_registry_identity->type_generation) ||
-        !identities.contains("codec_uuid") ||
-        identities.at("codec_uuid") != expected_registry_identity->codec_uuid ||
-        !fields.contains("codec_id") ||
-        fields.at("codec_id") != expected_registry_identity->codec_id ||
-        !fields.contains("codec_version") ||
-        fields.at("codec_version") !=
-            std::to_string(expected_registry_identity->codec_version) ||
-        !fields.contains("codec_generation") ||
-        fields.at("codec_generation") !=
-            std::to_string(expected_registry_identity->codec_generation) ||
-        !fields.contains("null_encoding") ||
-        fields.at("null_encoding") !=
-            std::to_string(expected_registry_identity->null_encoding_code))) ||
-      (!contextual_text && identities.contains("column_uuid"))) {
-    return false;
-  }
-  return true;
+  CatalogColumnMetadata expected;
+  expected.text = {
+      {"canonical", std::string(expected_type)},
+      {"nullable", expected_nullable ? "true" : "false"},
+      {"datatype_descriptor_generation", std::to_string(identity.descriptor_generation)},
+      {"type_generation", std::to_string(identity.type_generation)},
+      {"codec_id", identity.codec_id},
+      {"codec_version", std::to_string(identity.codec_version)},
+      {"codec_generation", std::to_string(identity.codec_generation)},
+      {"null_encoding", std::to_string(identity.null_encoding_code)}};
+  expected.identities = {{"type_uuid", identity.type_uuid},
+                         {"datatype_descriptor_uuid", identity.descriptor_uuid},
+                         {"codec_uuid", identity.codec_uuid}};
+  if (expected_type == "text")
+    expected.identities.emplace("column_uuid", expected_column_uuid);
+  // No spelling fallback, extra fields, stale codec tuple, or UUID shadow.
+  return metadata.text == expected.text && metadata.identities == expected.identities;
 }
 
 bool ExactGraphDescriptorCohort(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 9> kNames{
       "vertex_uuid",       "edge_uuid",       "path_uuid",
@@ -169,18 +141,15 @@ bool ExactGraphDescriptorCohort(
       "uint64", "text"};
   static constexpr std::array<bool, 9> kNullable{
       false, true, false, false, false, false, false, false, false};
-  if (descriptor.columns.size() != kNames.size()) return false;
+  if (descriptor.columns.size() != kNames.size() ||
+      ValidateMgaRelationStorageDescriptor(descriptor).error) return false;
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
+  std::set<EngineUuid> column_uuids;
+  std::set<EngineUuid> value_descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
-    for (std::size_t prior = 0; prior < ordinal; ++prior) {
-      if (descriptor.columns[prior].column_uuid ==
-          column.column_uuid) {
-        return false;
-      }
-    }
     const auto type_id =
         scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
             std::string(kTypes[ordinal]));
@@ -188,25 +157,15 @@ bool ExactGraphDescriptorCohort(
         scratchbird::core::datatypes::LookupDatatypeCatalogRow(
             manifest.manifest, type_id);
     if (!type_row.ok() || type_row.manifest.descriptor_rows.size() != 1 ||
-        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-      return false;
-    }
-    const auto& descriptor_row =
-        type_row.manifest.descriptor_rows.front();
-    const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
+        !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) return false;
+    const auto& descriptor_row = type_row.manifest.descriptor_rows.front();
     const auto codec_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
-            manifest.manifest.catalog_epoch, 1, descriptor_uuid,
-            descriptor_row.descriptor_epoch);
-    const auto expected_type_uuid =
-        codec_identity.ok ? codec_identity.row.type_uuid : descriptor_uuid;
-    const auto* expected_registry_identity =
-        codec_identity.ok ? &codec_identity.row : nullptr;
-    if (kTypes[ordinal] == "text" && expected_registry_identity == nullptr) {
-      return false;
-    }
-    if (column.ordinal != ordinal ||
+            context.datatype_catalog_snapshot_uuid,
+            context.datatype_catalog_generation, context.datatype_registry_generation,
+            descriptor_row.descriptor_uuid.value, descriptor_row.descriptor_epoch);
+    if (!codec_identity.ok ||
+        column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] ||
         column.nullable != kNullable[ordinal] || column.generated ||
         column.identity_column || !column.charset_uuid.is_nil() ||
@@ -214,14 +173,11 @@ bool ExactGraphDescriptorCohort(
         column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
-        !CanonicalUuid(column.column_uuid) ||
+        !column_uuids.insert(column.column_uuid).second ||
+        !value_descriptor_uuids.insert(column.value_descriptor.descriptor_uuid).second ||
         !ExactGraphValueDescriptor(column.value_descriptor, kTypes[ordinal],
-                                   expected_type_uuid,
-                                   expected_registry_identity,
-                                   column.column_uuid,
-                                   kNullable[ordinal])) {
-      return false;
-    }
+                                   codec_identity.row, column.column_uuid,
+                                   kNullable[ordinal])) return false;
   }
   return true;
 }
@@ -1375,7 +1331,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
       relation.storage_profile != "local_mga_rowstore_v1" ||
       relation.descriptor_uuid.is_nil() ||
       relation.descriptor_generation != request.provider_generation ||
-      !ExactGraphDescriptorCohort(relation)) {
+      !ExactGraphDescriptorCohort(request.context, relation)) {
     return invalid(kNoSqlProviderGenerationStale,
                    "persistent graph relation identity or generation drifted");
   }
@@ -1972,7 +1928,7 @@ EngineGraphWriteResult StructuredGraphWrite(
       loaded.descriptor.storage_profile != "local_mga_rowstore_v1" ||
       loaded.descriptor.descriptor_uuid.is_nil() ||
       loaded.descriptor.descriptor_generation != request.provider_generation ||
-      !ExactGraphDescriptorCohort(loaded.descriptor)) {
+      !ExactGraphDescriptorCohort(request.context, loaded.descriptor)) {
     return DiagnosticResult<EngineGraphWriteResult>(
         request.context, operation_id, kNoSqlProviderGenerationStale);
   }
@@ -2086,8 +2042,9 @@ EngineGraphWriteResult StructuredGraphWrite(
 }  // namespace
 
 bool EngineGraphDescriptorCohortExact(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
-  return ExactGraphDescriptorCohort(descriptor);
+  return ExactGraphDescriptorCohort(context, descriptor);
 }
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_GRAPH_API_BEHAVIOR
