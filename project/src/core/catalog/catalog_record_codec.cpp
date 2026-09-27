@@ -10,6 +10,7 @@
 #include "catalog_metric_current_value.hpp"
 #include "catalog_schema_definition.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
@@ -123,6 +124,11 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     }
   }
 
+  if (record.header.kind == CatalogRecordKind::storage_descriptor &&
+      !CatalogStoragePayloadMatchesHeader(record)) {
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
+                      "storage_binary_payload_or_header_invalid");
+  }
   if (IsCatalogSecurityRecordKind(record.header.kind) &&
       !CatalogSecurityPayloadMatchesHeader(record)) {
     return CodecError("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",

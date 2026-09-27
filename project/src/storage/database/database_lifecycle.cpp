@@ -17,6 +17,7 @@
 #include "catalog_database_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
 #include "catalog_filespace_record_codec.hpp"
+#include "catalog_storage_record_codec.hpp"
 #include "catalog_localized_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
@@ -474,13 +475,31 @@ u32 ParseU32Field(const std::map<std::string, std::string>& fields, const std::s
 DatabaseLifecycleResult ValidateFilespaceCatalogManifest(const std::vector<CatalogPageRow>& rows,
                                                          const TypedUuid& database_uuid,
                                                          const TypedUuid& first_filespace_uuid,
+                                                         u32 page_size,
                                                          const std::string& path) {
   u32 active_primary_count = 0;
   u32 first_filespace_count = 0;
+  scratchbird::core::platform::Uuid database_object{};
+  std::set<scratchbird::core::platform::Uuid> filespaces;
+  std::vector<CatalogTypedRecord> storage_records;
   for (const CatalogPageRow& row : rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok()) return PropagateDiagnostic(decoded.status, decoded.diagnostic);
+    if (decoded.record.header.kind == CatalogRecordKind::storage_descriptor) {
+      storage_records.push_back(decoded.record);
+      continue;
+    }
+    if (decoded.record.header.kind == CatalogRecordKind::database) {
+      const auto payload = scratchbird::core::catalog::DecodeCatalogDatabaseRecord(decoded.record.payload);
+      if (!payload.ok() || payload.record->database_uuid.value != database_uuid.value ||
+          !database_object.is_nil()) {
+        return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
+            "storage.database_lifecycle.filespace_manifest_field_mismatch", path, "database_catalog_owner");
+      }
+      database_object = decoded.record.header.object_uuid.value;
+      continue;
+    }
     if (decoded.record.header.kind != CatalogRecordKind::filespace) continue;
     const auto payload = scratchbird::core::catalog::DecodeCatalogFilespaceRecord(decoded.record.payload);
     if (!payload.ok()) {
@@ -489,6 +508,7 @@ DatabaseLifecycleResult ValidateFilespaceCatalogManifest(const std::vector<Catal
                             path, "filespace_binary_payload_invalid");
     }
     const auto& m = *payload.record;
+    filespaces.insert(m.filespace_uuid.value);
     if (m.database_uuid.kind != database_uuid.kind || m.database_uuid.value != database_uuid.value) {
       return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
                             "storage.database_lifecycle.filespace_manifest_field_mismatch",
@@ -551,6 +571,28 @@ DatabaseLifecycleResult ValidateFilespaceCatalogManifest(const std::vector<Catal
     return LifecycleError("SB-DB-LIFECYCLE-FIRST-FILESPACE-MANIFEST-MISSING",
                           "storage.database_lifecycle.first_filespace_manifest_missing",
                           path, "first_filespace_identity_count");
+  }
+  u32 primary_storage_count = 0;
+  for (const auto& record : storage_records) {
+    const auto decoded = scratchbird::core::catalog::DecodeCatalogStorageRecord(record.payload);
+    if (!decoded.ok() || database_object.is_nil() ||
+        record.header.parent_uuid.kind != UuidKind::object ||
+        record.header.parent_uuid.value != database_object ||
+        !filespaces.contains(decoded.record->filespace_uuid.value)) {
+      return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
+          "storage.database_lifecycle.filespace_manifest_field_mismatch", path, "storage_filespace_binding");
+    }
+    if (decoded.record->filespace_uuid.value == first_filespace_uuid.value) {
+      ++primary_storage_count;
+      if (decoded.record->page_size != page_size || decoded.record->creator_transaction_number != 1) {
+        return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
+            "storage.database_lifecycle.filespace_manifest_field_mismatch", path, "primary_storage_profile");
+      }
+    }
+  }
+  if (primary_storage_count != 1) {
+    return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
+        "storage.database_lifecycle.filespace_manifest_field_mismatch", path, "primary_storage_descriptor_count");
   }
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
@@ -2277,6 +2319,7 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
              !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              kind != CatalogRecordKind::metric_current_value &&
              kind != CatalogRecordKind::metric_descriptor &&
+             kind != CatalogRecordKind::storage_descriptor &&
              kind != CatalogRecordKind::schema &&
              kind != CatalogRecordKind::localized_name &&
              kind != CatalogRecordKind::localized_comment &&
@@ -2911,10 +2954,9 @@ std::vector<BootstrapRecordSeed> PackDefaultRegistryPolicyRecords(const LoadedPo
   return records;
 }
 
-std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCreateConfig& config,
-                                                               const LoadedPolicySeedPack& policy_seed_pack) {
+std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const LoadedPolicySeedPack& policy_seed_pack) {
   std::vector<BootstrapRecordSeed> records = PackDefaultRegistryPolicyRecords(policy_seed_pack);
-  const std::array<BootstrapRecordSeed, 13> additional_records = {{
+  const std::array<BootstrapRecordSeed, 12> additional_records = {{
       {CatalogRecordKind::config_profile, KeyValuePayload({{"profile_name", "default_local_node_profile"}, {"scope", "local_database"}, {"unsafe_combinations_fail_closed", "1"}})},
       {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "PUBLIC"}, {"ambient_rights", "minimal"}, {"connect_only", "1"}})},
       {CatalogRecordKind::group_account, KeyValuePayload({{"group_name", "DBA"}, {"operational_role", "database_administration"}, {"created_disabled", "1"}})},
@@ -2924,7 +2966,6 @@ std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCr
       {CatalogRecordKind::udr_package, KeyValuePayload({{"package_name", "system_builtin_udr_registry"}, {"trusted_engine_side", "1"}, {"registered", "1"}})},
       {CatalogRecordKind::parser_package, KeyValuePayload({{"package_name", "sbsql_parser_package"}, {"legacy_alias", "native_v3_parser_package"}, {"trusted", "0"}, {"one_instance_per_connection", "1"}})},
       {CatalogRecordKind::sblr_module, KeyValuePayload({{"module_name", "system_bootstrap_sblr"}, {"contains_sql_text", "0"}, {"engine_validated", "1"}})},
-      {CatalogRecordKind::storage_descriptor, KeyValuePayload({{"descriptor_name", "default_storage_profile"}, {"page_size", std::to_string(config.page_size)}, {"filespace_uuid", scratchbird::core::uuid::UuidToString(config.filespace_uuid.value)}})},
       {CatalogRecordKind::table_descriptor, KeyValuePayload({{"table_name", "sys.catalog.bootstrap_objects"}, {"system_table", "1"}, {"typed_catalog_records", "1"}})},
       {CatalogRecordKind::index_descriptor, KeyValuePayload({{"index_name", "sys.catalog.bootstrap_object_uuid_idx"}, {"system_index", "1"}, {"key", "object_uuid"}})},
       {CatalogRecordKind::toast_reference, KeyValuePayload({{"reference_name", "resource_seed_large_value_policy"}, {"page_type", "blob"}, {"content_addressed", "1"}})},
@@ -3344,7 +3385,24 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     domain_seed += 2;
   }
 
-  const auto bootstrap_records = DefaultBootstrapCatalogRecords(config, policy_seed_pack);
+  const auto storage_owner = GenerateEngineIdentityV7(UuidKind::object,
+      config.creation_unix_epoch_millis + 13999);
+  if (!storage_owner.ok()) return CatalogRowsBuildError(storage_owner.status, storage_owner.diagnostic);
+  const auto storage_payload = scratchbird::core::catalog::EncodeCatalogStorageRecord({
+      storage_owner.value, config.filespace_uuid, config.page_size,
+      kBootstrapCatalogTransactionId, "default_storage_profile"});
+  if (!storage_payload.ok()) {
+    const auto error = LifecycleError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
+        config.path, "storage_binary_payload_invalid");
+    return CatalogRowsBuildError(error.status, error.diagnostic);
+  }
+  typed = AddTypedCatalogRecord(&result.rows, CatalogRecordKind::storage_descriptor,
+      &ordinal, config.creation_unix_epoch_millis + 13998,
+      {storage_payload.bytes.begin(), storage_payload.bytes.end()},
+      database_object.value, storage_owner.value);
+  if (!typed.ok()) return typed;
+
+  const auto bootstrap_records = DefaultBootstrapCatalogRecords(policy_seed_pack);
   u64 bootstrap_seed = config.creation_unix_epoch_millis + 14000;
   scratchbird::core::platform::Uuid public_group_uuid{};
   for (const auto& bootstrap_record : bootstrap_records) {
@@ -6868,6 +6926,7 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     const auto filespace_manifest = ValidateFilespaceCatalogManifest(catalog_rows.rows,
                                                                      config.database_uuid,
                                                                      config.filespace_uuid,
+                                                                     config.page_size,
                                                                      config.path);
     if (!filespace_manifest.ok()) {
       return filespace_manifest;
@@ -7761,6 +7820,7 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   const auto filespace_manifest = ValidateFilespaceCatalogManifest(catalog_rows,
                                                                   database_uuid,
                                                                   startup_state.state.first_filespace_uuid,
+                                                                  parsed.header.page_size,
                                                                   config.path);
   if (!filespace_manifest.ok()) {
     return filespace_manifest;
@@ -8275,6 +8335,7 @@ DatabaseLifecycleResult DropDatabaseLifecycle(const DatabaseDropConfig& config) 
   const auto filespace_manifest = ValidateFilespaceCatalogManifest(catalog_rows,
                                                                   database_uuid,
                                                                   startup_state.state.first_filespace_uuid,
+                                                                  parsed_header.header.page_size,
                                                                   config.path);
   if (!filespace_manifest.ok()) {
     return filespace_manifest;
@@ -8500,6 +8561,7 @@ StartupWriteResult MarkDatabaseCleanShutdownImpl(
   const auto filespace_manifest = ValidateFilespaceCatalogManifest(catalog_rows,
                                                                   database_uuid,
                                                                   startup_state.state.first_filespace_uuid,
+                                                                  parsed_header.header.page_size,
                                                                   path);
   if (!filespace_manifest.ok()) {
     return StartupLifecyclePropagate(filespace_manifest.status, filespace_manifest.diagnostic);

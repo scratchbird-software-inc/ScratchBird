@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
 #include "catalog_metric_series.hpp"
@@ -149,6 +150,7 @@ void PageContainer(const cat::CatalogTypedRecord& record) {
 
 bool HasTypedFamilyPayload(cat::CatalogRecordKind kind) {
   return cat::IsCatalogSecurityRecordKind(kind) ||
+      kind == cat::CatalogRecordKind::storage_descriptor ||
       kind == cat::CatalogRecordKind::metric_descriptor ||
       kind == cat::CatalogRecordKind::metric_label_schema ||
       kind == cat::CatalogRecordKind::metric_series ||
@@ -157,6 +159,14 @@ bool HasTypedFamilyPayload(cat::CatalogRecordKind kind) {
 void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annotation) {
   if (!HasTypedFamilyPayload(record.header.kind)) {
     record.payload = annotation;
+    return;
+  }
+  if (record.header.kind == cat::CatalogRecordKind::storage_descriptor) {
+    const cat::CatalogStorageRecord storage{record.header.object_uuid,
+        {p::UuidKind::filespace, record.header.parent_uuid.value}, 16384, 1, annotation};
+    const auto encoded = cat::EncodeCatalogStorageRecord(storage);
+    Check(encoded.ok(), "typed storage payload fixture failed admission");
+    record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
     return;
   }
   if (cat::IsCatalogSecurityRecordKind(record.header.kind)) {

@@ -22,6 +22,7 @@ add_library(sb_core_catalog
   catalog_filespace_record_codec.cpp
   catalog_schema_record_codec.cpp
   catalog_security_record_codec.cpp
+  catalog_storage_record_codec.cpp
   catalog_schema_definition.cpp
   catalog_metric_retention_policy.cpp
   catalog_metric_descriptor.cpp

@@ -5,6 +5,14 @@ add_test(NAME sbsql_sblr_alignment_catalog_security_record COMMAND sbsql_sblr_al
 set_tests_properties(sbsql_sblr_alignment_catalog_security_record PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;security_catalog;component_regression;not_runtime_acceptance")
 
+add_executable(sbsql_sblr_alignment_catalog_storage_record catalog_storage_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_storage_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_storage_record PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_storage_record COMMAND sbsql_sblr_alignment_catalog_storage_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_storage_record PROPERTIES
+  TIMEOUT 120 LABELS "sbsql_sblr_alignment;binary_uuid;catalog_payload;real_storage;not_SQL_E2E")
+
 add_executable(sbsql_sblr_alignment_large_payload_binary large_payload_binary_test.cpp)
 target_compile_features(sbsql_sblr_alignment_large_payload_binary PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_large_payload_binary PRIVATE sb_storage_page)
@@ -1284,6 +1292,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_retention_policy
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
@@ -1312,6 +1321,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_descriptor
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
@@ -1341,6 +1351,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
@@ -1370,6 +1381,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_series
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
@@ -1400,6 +1412,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_binding
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp

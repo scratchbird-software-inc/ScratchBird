@@ -11,6 +11,7 @@
 #include "catalog_security_record_codec.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_filespace_record_codec.hpp"
+#include "catalog_storage_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
 #include "catalog_localized_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
@@ -296,6 +297,9 @@ void RequireAllTypedRecordsCreatedByTx1(const std::vector<DecodedRecord>& record
     }
     if(kind==catalog::CatalogRecordKind::filespace) {
       require_binary_tx1(catalog::DecodeCatalogFilespaceRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::storage_descriptor) {
+      require_binary_tx1(catalog::DecodeCatalogStorageRecord(bytes));continue;
     }
     if(kind==catalog::CatalogRecordKind::schema) {
       require_binary_tx1(catalog::DecodeCatalogSchemaRecord(bytes));continue;
