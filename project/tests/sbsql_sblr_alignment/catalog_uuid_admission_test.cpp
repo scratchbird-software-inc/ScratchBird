@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_record_codec.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
 #include "catalog_metric_series.hpp"
@@ -146,15 +147,27 @@ void PageContainer(const cat::CatalogTypedRecord& record) {
   Check(!page::ParseCatalogPageBody(corrupted, 10).ok(), "enclosing page accepted altered identity");
 }
 
-bool HasTypedMetricPayload(cat::CatalogRecordKind kind) {
-  return kind == cat::CatalogRecordKind::metric_descriptor ||
+bool HasTypedFamilyPayload(cat::CatalogRecordKind kind) {
+  return cat::IsCatalogSecurityRecordKind(kind) ||
+      kind == cat::CatalogRecordKind::metric_descriptor ||
       kind == cat::CatalogRecordKind::metric_label_schema ||
       kind == cat::CatalogRecordKind::metric_series ||
       kind == cat::CatalogRecordKind::metric_current_value;
 }
 void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annotation) {
-  if (!HasTypedMetricPayload(record.header.kind)) {
+  if (!HasTypedFamilyPayload(record.header.kind)) {
     record.payload = annotation;
+    return;
+  }
+  if (cat::IsCatalogSecurityRecordKind(record.header.kind)) {
+    cat::CatalogSecurityRecord security;
+    security.kind = record.header.kind;
+    security.identities.emplace(std::string(cat::CatalogSecurityPrimaryIdentityName(record.header.kind)),
+                                record.header.object_uuid.value);
+    security.attributes = {{"creator_tx", "1"}, {"description", annotation}};
+    const auto encoded = cat::EncodeCatalogSecurityRecord(security);
+    Check(encoded.ok(), "typed security payload fixture failed admission");
+    record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
     return;
   }
   namespace m = scratchbird::core::metrics;
@@ -230,7 +243,7 @@ int main() {
   const auto& descriptors = cat::BuiltinCatalogRecordDescriptors();
   for (const auto& descriptor : descriptors) {
     base.header.kind = descriptor.kind;
-    SetFamilyPayload(base, HasTypedMetricPayload(descriptor.kind) ?
+    SetFamilyPayload(base, HasTypedFamilyPayload(descriptor.kind) ?
         "ordinary=annotation" : std::string("ordinary=value\r\nwith\0binary", 27));
     Roundtrip(base);
     DecodeAdmission(base);
@@ -273,7 +286,7 @@ int main() {
       user.bytes[6] = static_cast<p::byte>((user.bytes[6] & 15) | (version << 4));
       record.payload = "ordinary_uuid=" + uuid::UuidToString(user);
       record.header.deleted = true;
-      if (HasTypedMetricPayload(record.header.kind)) {
+      if (HasTypedFamilyPayload(record.header.kind)) {
         // A registered typed family rejects arbitrary text, even when it
         // contains a valid UUID. Annotation text within that family is data.
         Refused(cat::EncodeCatalogTypedRecord(record, 17));
