@@ -587,6 +587,12 @@ void RequireIndexFamilyPersisted(const api::EngineRequestContext& context,
 }
 
 void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
+  auto missing_filespace = context;
+  missing_filespace.default_root_uuid = {};
+  const auto missing = CreateTable(missing_filespace, {});
+  Require(!missing.ok && FirstDetail(missing) ==
+              "ddl.create_table:bound_primary_filespace_identity_required",
+          "missing filespace identity must refuse before table publication instead of terminating");
   const auto table = CreateTable(context, {Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080803"), "inline_geom_idx", "rtree", {"geom"})});
   if (!table.ok) { std::cerr << FirstDetail(table) << '\n'; }
   Require(table.ok, "create table with inline advanced index failed");

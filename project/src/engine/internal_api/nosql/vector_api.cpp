@@ -11,6 +11,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_document.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
@@ -519,8 +520,9 @@ EngineUuid ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x02}},
-          2, 2, descriptor_uuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }

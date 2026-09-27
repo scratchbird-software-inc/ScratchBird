@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_catalog_manifest.hpp"
+#include "admitted_datatype_cohort.hpp"
 
 #include <algorithm>
 #include <array>
@@ -154,6 +155,12 @@ TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
     TypedUuid identity;
     identity.kind = UuidKind::object;
     identity.value = scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x40}};
+    return identity;
+  }
+  if (type_id == CanonicalTypeId::binary) {
+    TypedUuid identity;
+    identity.kind = UuidKind::object;
+    identity.value.bytes = {0x2d,0x01,0,0,0x62,0x69,0x7e,0x61,0xb2,0x79,0,0,0,0,0,0};
     return identity;
   }
   return StableDatatypeDescriptorUuid(type_id, stable_name);
@@ -473,8 +480,8 @@ CurrentDatatypeTypeCodecIdentityRowsV1() {
        "UTF-8", true, false, true, true, true, true,
        "CTB.TEXT.INVALID_ENCODING"},
   }};
-  static const std::array<DatatypeTypeCodecIdentityRowV1, 18> admitted = [&] {
-    std::array<DatatypeTypeCodecIdentityRowV1, 18> result{};
+  static const std::array<DatatypeTypeCodecIdentityRowV1, 31> admitted = [&] {
+    std::array<DatatypeTypeCodecIdentityRowV1, 31> result{};
     std::copy(rows.begin(), rows.end(), result.begin());
     std::copy(rows.begin(), rows.end(), result.begin() + 6);
     for (std::size_t i = 6; i < 12; ++i) {
@@ -527,6 +534,24 @@ CurrentDatatypeTypeCodecIdentityRowsV1() {
       static_cast<u32>(CanonicalTypeId::list), scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x42}}, true, true,
       "byte_sequence", "nullable_TEXT_list_SBTL0001", "",
       false, false, false, false, true, true, "DATATYPE.DESCRIPTOR.INVALID"};
+    // Immutable predecessors remain usable only with their exact receipts.
+    // V3 copies all twelve V2 rows and adds canonical native BINARY data.
+    std::copy_n(result.begin() + 6, 12, result.begin() + 18);
+    for (std::size_t index = 18; index < 30; ++index) {
+      result[index].catalog_snapshot_uuid = kDatatypeCohortV3;
+      result[index].catalog_generation = 3;
+      result[index].registry_generation = 3;
+    }
+    result[30] = {
+      kDatatypeCohortV3, 3, 3,
+      platform::Uuid{{0x2d,0x01,0,0,0x62,0x69,0x7e,0x61,0xb2,0x79,0,0,0,0,0,0}}, 1,
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x43}}, 1,
+      "datatype.binary.octets.v1", 1, 1, 0, true,
+      "binary", 0, 1, 0, false, 0, 0, 16777216, 0,
+      static_cast<u32>(CanonicalTypeId::binary),
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x44}}, true, true,
+      "byte_sequence", "exact_octets_without_text_conversion", "",
+      false, false, false, true, true, true, "DATATYPE.DESCRIPTOR.INVALID"};
     return result;
   }();
   return admitted;
@@ -568,10 +593,8 @@ DatatypeTypeCodecIdentityLookupV1 LookupCanonicalBooleanTypeCodecIdentityV1(
 
 bool IsExactCanonicalTextTypeCodecIdentityV1(
     const DatatypeTypeCodecIdentityRowV1& row) {
-  return ((row.catalog_snapshot_uuid == scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}} &&
-           row.catalog_generation == 1 && row.registry_generation == 1) ||
-          (row.catalog_snapshot_uuid == scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x02}} &&
-           row.catalog_generation == 2 && row.registry_generation == 2)) &&
+  return IsAdmittedDatatypeCohort(row.catalog_snapshot_uuid, row.catalog_generation,
+                                  row.registry_generation) &&
          row.descriptor_uuid ==
              scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x18}} &&
          row.descriptor_generation == 1 &&

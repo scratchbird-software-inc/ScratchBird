@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
     std::cerr << parser::MessageVectorToJson(messages) << '\n'; return 3;
   }
   const auto run = [&](std::string_view sql, std::string_view expected,
-                       std::size_t expected_uuid_atoms = 0) {
+                       std::size_t expected_uuid_atoms = 0, std::string_view expected_metadata = {}) {
     auto result = session.RunPipeline(sql, true);
     if (!result.accepted) {
       std::cerr << sql << '\n' << parser::MessageVectorToJson(result.messages) << '\n'; return false;
@@ -36,6 +36,12 @@ int main(int argc, char** argv) {
       if (!session.CloseCursorOnRoute(result.server_cursor_uuid).accepted) return false;
     } else if (result.server_row_count != 1) return false;
     namespace result_packet = scratchbird::wire::public_result;
+    if (!expected_metadata.empty()) {
+      const auto metadata = result_packet::Find(packet, "row_meta[0]");
+      if (!metadata || metadata->kind != result_packet::Kind::text || metadata->value != expected_metadata) {
+        std::cerr << "unexpected row metadata for " << sql << '\n'; return false;
+      }
+    }
     const auto row = result_packet::Find(packet, "row[0]");
     std::vector<result_packet::Field> values;
     if (!row || row->kind != result_packet::Kind::row ||
@@ -54,7 +60,26 @@ int main(int argc, char** argv) {
     }
     return true;
   };
+  if (std::string_view(argv[4]) == "initial0" &&
+      (!run("BEGIN TRANSACTION", {}) ||
+       !run("CREATE TABLE native_uuid_persistence (id UUID, payload BINARY, seq INTEGER, "
+            "nil_id UUID, max_id UUID, empty_payload BINARY)", {}) ||
+       !run("INSERT INTO native_uuid_persistence VALUES "
+            "(UUID '550e8400-e29b-41d4-a716-446655440000', X'00ff10', 7, "
+            "UUID '00000000-0000-0000-0000-000000000000', "
+            "UUID 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF', X'')", {}) ||
+       !run("CREATE TABLE native_uuid_explicit (id UUID, payload BINARY, null_id UUID, null_payload BINARY)", {}) ||
+       !run("INSERT INTO native_uuid_explicit (payload, id) VALUES "
+            "(X'ff0001', UUID '00000000-0000-0000-0000-000000000000')", {}) ||
+       !run("COMMIT TRANSACTION", {}))) return 5;
   if (!run("BEGIN TRANSACTION", {}) ||
+      !run("SELECT id, payload, seq, nil_id, max_id, empty_payload FROM native_uuid_persistence",
+           "row[0]=id=550e8400-e29b-41d4-a716-446655440000;payload=hex:00ff10;seq=7;"
+           "nil_id=00000000-0000-0000-0000-000000000000;"
+           "max_id=ffffffff-ffff-ffff-ffff-ffffffffffff;empty_payload=hex:", 3) ||
+      !run("SELECT id, payload, null_id, null_payload FROM native_uuid_explicit",
+           "row[0]=id=00000000-0000-0000-0000-000000000000;payload=hex:ff0001;null_id=;null_payload=hex:", 1,
+           "id:uuid:not_null;payload:binary:not_null;null_id:uuid:null;null_payload:binary:null") ||
       !run("SELECT ABS(-7) AS a, ABS(ABS(-3)) AS b", "row[0]=a=7;b=3") ||
       !run("SELECT SQRT(81) AS root, LOWER('MiXeD') AS lowered", "row[0]=root=9;lowered=mixed") ||
       !run("SELECT UUID '00000000-0000-0000-0000-000000000000' AS nil_value, "

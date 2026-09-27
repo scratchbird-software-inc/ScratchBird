@@ -14,6 +14,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_operations.hpp"
 #include "uuid.hpp"
 
@@ -68,8 +69,9 @@ core::platform::Uuid ExactCanonicalCoreDatatypeTypeUuidV1(
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      core::platform::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
-      2, 2, descriptor_uuid,
+      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
+      scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+      scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
   // Core rows that have a registered codec identity carry a distinct type
   // UUID (notably int64).  Older core rows still use their catalog descriptor

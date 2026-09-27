@@ -3,6 +3,8 @@
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "server/sblr_local_gateway.hpp"
+#include "engine/sblr/sblr_bound_column_identity.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -103,6 +105,38 @@ server::LocalSblrGatewayDecision Admit(const sblr::SblrOperationEnvelope& root,
 }
 }
 int main() {
+  auto create = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
+      "ddl.create_table", "SBLR_DDL_CREATE_TABLE", "native.column.gateway");
+  Text(create, "target_object_kind", "table");
+  Text(create, "table_name", "native_columns");
+  Text(create, "column_count", "1");
+  Text(create, "column_0_name", "id");
+  Text(create, "column_0_type", "uuid");
+  Text(create, "column_0_descriptor", "type=uuid;nullable=true");
+  Text(create, "column_0_nullable", "true");
+  Check(!Admit(create).ok, "unbound CREATE TABLE columns passed gateway");
+  sblr::SblrColumnIdentityBinding binding;
+  binding.column_uuid = scratchbird::tests::FixtureUuid(2092, 1);
+  binding.value_descriptor_uuid = scratchbird::tests::FixtureUuid(2092, 2);
+  binding.datatype_descriptor_uuid = scratchbird::tests::FixtureUuid(2092, 3);
+  binding.type_uuid = scratchbird::tests::FixtureUuid(2092, 4);
+  binding.datatype_descriptor_generation = 1;
+  sblr::AppendSblrColumnIdentityBinding(create, 0, binding);
+  Check(Admit(create).ok, "native CREATE TABLE column binding did not pass gateway");
+  for (unsigned flags = 1; flags != 8; ++flags)
+    Check(!Admit(create, flags).ok, "cluster-owned CREATE TABLE fell through locally");
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    auto bad = create;
+    switch (mutation) {
+      case 0: bad.operands.pop_back(); break;
+      case 1: bad.operands.back().value = "019d0000-0000-7000-8000-000000000001"; break;
+      case 2: bad.operands[8].value_body = bad.operands[7].value_body; break;
+      case 3: bad.operands[2].value_body.back() = '2'; break;
+      case 4: bad.operands[9].value_body[16] = 0; break;
+      case 5: Text(bad, "column_0_uuid", "019d0000-0000-7000-8000-000000000001"); break;
+    }
+    Check(!Admit(bad).ok, "malformed or mismatched CREATE TABLE bindings passed gateway");
+  }
   for (unsigned profile = 0; profile != 4; ++profile) {
     const auto root = Root(profile == 1 || profile == 2, profile == 2, profile == 3);
     Check(Admit(root).ok, "binary table identity did not pass DML gateway");

@@ -11,6 +11,7 @@
 #include "sblr_literal_runtime.hpp"
 
 #include "datatype_catalog_manifest.hpp"
+#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -773,8 +774,8 @@ bool SamePersistedRowDescriptor(
       // the full canonical boolean authority tuple.
       record_name(descriptor_uuid, row.stable_name);
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
-          2, 2, descriptor_uuid,
+          api::kBootstrapDatatypeCatalogUuid,
+          api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
           row.descriptor_epoch);
       if (!identity.ok || identity.row.type_uuid.is_nil()) continue;
       record_name(identity.row.type_uuid, row.stable_name);
@@ -2509,24 +2510,13 @@ bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
     // Literal codecs use distinct current descriptor and value-type
     // identities. Resolve those type UUIDs only through exact current registry
     // rows; never treat an arbitrary UUID as a datatype alias.
-    for (const auto stable_name : {std::string_view{"int64"},
-                                   std::string_view{"decimal"}, std::string_view{"real64"},
-                                   std::string_view{"uuid"}, std::string_view{"geometry"},
-                                   std::string_view{"uint64"}, std::string_view{"json_document"},
-                                   std::string_view{"list"},
-                                   std::string_view{"int32"}, std::string_view{"int128"},
-                                   std::string_view{"text"}}) {
-      const auto row = std::ranges::find_if(
-          core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
-            return candidate.stable_name == stable_name;
-          });
-      if (row == core_manifest.manifest.descriptor_rows.end()) continue;
+    for (const auto& row : core_manifest.manifest.descriptor_rows) {
       const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-          api::EngineUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x02}},
-          2, 2,
-          TypedUuidIdentity(row->descriptor_uuid), row->descriptor_epoch);
+          api::kBootstrapDatatypeCatalogUuid,
+          api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
+          TypedUuidIdentity(row.descriptor_uuid), row.descriptor_epoch);
       if (identity.ok && identity.row.type_uuid == descriptor.type_uuid) {
-        *canonical_type_name = row->stable_name;
+        *canonical_type_name = row.stable_name;
         return true;
       }
     }

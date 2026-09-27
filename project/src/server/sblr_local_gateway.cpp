@@ -5,6 +5,7 @@
 #include "uuid.hpp"
 #include <algorithm>
 #include "engine/sblr/sblr_bound_object_identity.hpp"
+#include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "engine/sblr/sblr_projection_uuid_literals.hpp"
 #include "engine/sblr/sblr_projection_binary_literals.hpp"
 #include <charconv>
@@ -215,8 +216,13 @@ using CanonicalTextOperandMap =
 
 std::optional<CanonicalTextOperandMap> DecodeCanonicalTypedTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
-    bool require_binary_target = false) {
+    bool require_binary_target = false, bool require_column_bindings = false) {
   if (operation.operands.empty()) return std::nullopt;
+  if (require_column_bindings) {
+    std::vector<scratchbird::engine::sblr::SblrColumnIdentityBinding> bindings;
+    if (!scratchbird::engine::sblr::DecodeSblrColumnIdentities(operation, &bindings) ||
+        bindings.empty()) return std::nullopt;
+  }
   if (require_binary_target) {
     scratchbird::engine::sblr::SblrBoundObjectIdentities identities;
     if (!scratchbird::engine::sblr::DecodeSblrBoundObjectIdentities(
@@ -230,6 +236,8 @@ std::optional<CanonicalTextOperandMap> DecodeCanonicalTypedTextOperands(
   values.reserve(operation.operands.size());
   for (std::size_t index = 0; index < operation.operands.size(); ++index) {
     const auto& operand = operation.operands[index];
+    if (require_column_bindings && scratchbird::engine::sblr::IsColumnIdentityRole(operand.name))
+      continue;  // Complete native column cohort validated above.
     if (require_binary_target && operand.name == "target_object_uuid")
       continue;  // Already validated as exactly one binary UUIDv7 above.
     if (operand.ordinal != index + 1 || operand.type != "text" ||
@@ -459,7 +467,7 @@ bool CanonicalPositiveDecimal(std::string_view value, std::uint64_t* decoded) {
 
 bool CanonicalCreateTableTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
-  const auto operands = DecodeCanonicalTypedTextOperands(operation);
+  const auto operands = DecodeCanonicalTypedTextOperands(operation, false, true);
   if (!operands) return false;
   const auto object_kind =
       CanonicalTextOperandValue(*operands, "target_object_kind");
@@ -515,7 +523,7 @@ bool CanonicalCreateTableTextOperands(
       ++expected_operand_count;
     }
   }
-  return operation.operands.size() == expected_operand_count;
+  return operation.operands.size() == expected_operand_count + 4 * column_count;
 }
 
 bool CanonicalInsertRowsTextOperands(

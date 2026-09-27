@@ -27,6 +27,7 @@
 #include "crud_support/crud_store.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/executor/model_family_executor.hpp"
 #include "engine/internal_api/mga_relation_store/mga_relation_descriptor.hpp"
@@ -835,8 +836,9 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       manifest_row.descriptor_epoch);
   if (!identity.ok) {
     const auto registered_identity = dt::LookupDatatypeTypeCodecIdentityV1(
-        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x02}},
-        2, 2, descriptor_uuid,
+        scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
+        scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+        scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
         manifest_row.descriptor_epoch);
     // A live registered identity may not be downgraded to a legacy
     // descriptor/type alias merely because its receipt is stale.  Only rows

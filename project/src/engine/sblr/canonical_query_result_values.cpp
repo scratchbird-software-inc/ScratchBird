@@ -50,7 +50,7 @@ bool MaterializePayload(const api::EngineTypedValue& value,
   if (value.binary_value.size() > maximum_payload) return false;
   const bool binary = !value.binary_value.empty();
   const auto type = column.transport.canonical_type_id;
-  if (type == dt::CanonicalTypeId::character || type == dt::CanonicalTypeId::json_document || type == dt::CanonicalTypeId::list) {
+  if (type == dt::CanonicalTypeId::character || type == dt::CanonicalTypeId::binary || type == dt::CanonicalTypeId::json_document || type == dt::CanonicalTypeId::list) {
     if (value.encoded_value.size() > maximum_payload) return false;
   } else if (value.encoded_value.size() > 128) {
     return false;
@@ -119,6 +119,12 @@ bool MaterializePayload(const api::EngineTypedValue& value,
         for (std::size_t i = 0; i < 8; ++i)
           (*payload)[i] = static_cast<std::uint8_t>(bits >> (8 * i));
       }
+      break;
+    case dt::CanonicalTypeId::binary:
+      // Both retained carriers contain octets, never hexadecimal text. Empty
+      // bytes remain a present value; SQL NULL is handled by the caller.
+      if (!binary) payload->assign(value.encoded_value.begin(), value.encoded_value.end());
+      if (column.width && payload->size() > *column.width) return false;
       break;
     case dt::CanonicalTypeId::uuid:
       // The retained columnar carrier uses a byte-preserving std::string.

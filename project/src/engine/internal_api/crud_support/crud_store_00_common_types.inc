@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by crud_store.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "crud_support/crud_store.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "catalog/binary_catalog_metadata.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <iterator>

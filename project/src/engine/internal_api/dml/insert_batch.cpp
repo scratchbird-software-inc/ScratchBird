@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include "dml/insert_batch.hpp"
 #include "dml/insert_descriptor_key.hpp"
+#include "crud_support/native_value_payload.hpp"
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
@@ -1571,7 +1572,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
         }
         const auto& typed = input_row.fields[index].second;
         row.values.push_back({input_row.fields[index].first,
-                              typed.is_null ? "<NULL>" : typed.encoded_value});
+                              CrudTypedValuePayload(typed)});
         consumed[index] = true;
         break;
       }
@@ -1582,7 +1583,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
       }
       const auto& typed = input_row.fields[index].second;
       row.values.push_back({input_row.fields[index].first,
-                            typed.is_null ? "<NULL>" : typed.encoded_value});
+                            CrudTypedValuePayload(typed)});
     }
   }
   MaterializeOmittedInsertColumns(row_encoder_plan, &row.values);

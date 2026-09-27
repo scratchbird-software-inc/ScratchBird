@@ -104,6 +104,11 @@ void NativeComparisons() {
 }
 void NativeBuiltinDescriptors() {
   namespace exec = scratchbird::engine::executor;
+  const auto binary = exec::MakeExecutorDescriptor("binary");
+  Check(binary.datatype_descriptor_uuid == scratchbird::tests::FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000") &&
+        binary.type_uuid == scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d743") &&
+        s::ExactCanonicalCoreDatatypeTypeUuidV1("binary") == binary.type_uuid,
+        "current binary datatype descriptor and type differ from independent registry identities");
   for (const auto* type : {"boolean", "int8", "int16", "int32", "int64", "uint8", "uint64",
                            "real64", "text", "uuid", "binary"}) {
     const auto descriptor = exec::MakeExecutorDescriptor(type);

@@ -922,6 +922,9 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
   context.database_path = FirstOpenDatabasePath(engine_state);
   context.database_uuid = FirstOpenDatabaseUuid(engine_state);
   context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
+  if (const auto* database = FirstOpenDatabase(engine_state)) {
+    context.default_root_uuid = database->filespace_uuid;
+  }
   context.statement_uuid = engine_api::EngineUuid{request.header.request_uuid};
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;

@@ -38,7 +38,7 @@ struct Vector {
 // Independent fixed identities and binary values; no registry/encoder lookup
 // participates in these expected values. These are synthetic internal contexts,
 // not receipt issuance, public-route or all-datatype acceptance evidence.
-const std::array<Vector, 12> vectors{{
+const std::array<Vector, 13> vectors{{
   {scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), "datatype.boolean.u8.v1", dt::CanonicalTypeId::boolean, 1, "true", {1}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717"), "datatype.int32.le.v1", dt::CanonicalTypeId::int32, 4, "-2147483648", {0,0,0,128}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"), "datatype.int64.le.v1", dt::CanonicalTypeId::int64, 8, "-9223372036854775808", {0,0,0,0,0,0,0,128}},
@@ -51,7 +51,7 @@ const std::array<Vector, 12> vectors{{
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73a"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73b"), "datatype.uint64.le.v1", dt::CanonicalTypeId::uint64, 8, "18446744073709551615", {255,255,255,255,255,255,255,255}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73d"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73e"), "datatype.json.utf8.v1", dt::CanonicalTypeId::json_document, 0, "[true,null]", {'[','t','r','u','e',',','n','u','l','l',']'}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d740"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d741"), "datatype.list.text.framed.v1", dt::CanonicalTypeId::list, 0, std::string("SBTL0001\x02\x00\x00\x00\x01\x03\x00\x00\x00;]\0\x00\x00\x00\x00\x00",25), {'S','B','T','L','0','0','0','1',2,0,0,0,1,3,0,0,0,';',']',0,0,0,0,0,0}}
-
+  ,{scratchbird::tests::FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d743"), "datatype.binary.octets.v1", dt::CanonicalTypeId::binary, 0, std::string("\0\xff\x10",3), {0,255,16}}
 }};
 struct Fixture {
   api::EngineRequestContext context;
@@ -65,6 +65,10 @@ struct Fixture {
     context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
     if (type >= 6) context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702");
     context.datatype_catalog_generation = context.datatype_registry_generation = type >= 6 ? 2 : 1;
+    if (type == 12) {
+      context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d703");
+      context.datatype_catalog_generation = context.datatype_registry_generation = 3;
+    }
     context.maximum_typed_result_transport_bytes_per_packet = 65536;
     metadata->statement_receipt_uuid = Bytes(context.statement_receipt_uuid);
     metadata->statement_snapshot_uuid = Bytes(context.statement_snapshot_uuid);
@@ -159,7 +163,27 @@ int main() try {
     Fixture f(9); f.Value().encoded_value = text;
     Check(!f.Run(), "UINT64 overflow or malformed value refused");
   }
-  constexpr std::size_t expected = 10 * 2 * 2 * 3 * 3 + 2 * 2 * 3 * 3;
+  for (bool binary : {false, true}) {
+    for (std::size_t size : {0U, 1U, 128U, 256U, 1024U}) {
+      Fixture f(12,1,1,binary);
+      std::vector<std::uint8_t> bytes(size);
+      for (std::size_t i = 0; i < size; ++i) bytes[i] = static_cast<std::uint8_t>(i);
+      f.Value().encoded_value.clear(); f.Value().binary_value.clear();
+      if (binary) f.Value().binary_value = bytes;
+      else f.Value().encoded_value.assign(bytes.begin(), bytes.end());
+      Check(f.Run(), "BINARY all octets and empty value publish");
+      Check(f.shape.query_values->rows[0].cells[0].canonical_payload == bytes,
+            "BINARY payload is not text or hexadecimal");
+      Check(f.shape.query_values->rows[0].cells[0].state == wire::TypedResultValueState::value_present,
+            "empty BINARY is not NULL");
+      if (size > 0) {
+        f.metadata->columns[0].width = size - 1;
+        Check(!f.Run(), "declared BINARY width enforced without truncation");
+      }
+    }
+  }
+  Reject(12, [](auto& f) { f.Value().binary_value = {0,255,16}; });
+  constexpr std::size_t expected = 11 * 2 * 2 * 3 * 3 + 2 * 2 * 3 * 3;
   std::cout << "expected_value_tuples=" << expected << '\n';
   std::size_t observed = 0;
   for (std::size_t type = 0; type < vectors.size(); ++type)

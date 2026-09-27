@@ -62,7 +62,16 @@ void Exact(const sb::NativeDescriptorBindingInput& d, const Expected& row) {
 }
 int main() {
   std::cout << "EXPECTED statement_profiles=384 literal_profiles=12 registry_rows=6\n";
-  Check(dt::CurrentDatatypeTypeCodecIdentityRowsV1().size() == 18, "six immutable plus twelve successor rows");
+  Check(dt::CurrentDatatypeTypeCodecIdentityRowsV1().size() == 31, "six V1 plus twelve V2 plus thirteen V3 rows");
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (row.catalog_snapshot_uuid != Fixed(0xd702)) continue;
+    const auto successor = dt::LookupDatatypeTypeCodecIdentityV1(Fixed(0xd703), 3, 3, row.descriptor_uuid, row.descriptor_generation);
+    Check(successor.ok && successor.row.type_uuid == row.type_uuid &&
+          successor.row.codec_uuid == row.codec_uuid && successor.row.codec_id == row.codec_id &&
+          successor.row.codec_generation == row.codec_generation &&
+          successor.row.canonical_value_bytes == row.canonical_value_bytes,
+          "V3 preserves each predecessor codec identity and representation");
+  }
   const std::array<Expected, 6> extension{{
       {Fixed(0xd731), Fixed(0xd732), "datatype.real64.ieee754.le.v1"},
       {Fixed(0xd734), Fixed(0xd735), "datatype.uuid.binary16.v1"},
@@ -257,6 +266,7 @@ int main() {
       Check(!sb::MatchesNativeNumericDescriptorRecord(altered,numeric),"missing binary numeric authority value refuses");
     }
   }
-  Check(checks == 6456 + 3 * 5, "fixed assertion population including three added registry types");
+  Check(checks == 6456 + 3 * 5 + 12,
+        "fixed assertion population including all twelve V3 inheritance checks");
   std::cout << "PASS checks=" << checks << "; component projection only; not runtime admission\n";
 }

@@ -1956,7 +1956,7 @@ void TestDmlRegistryBinaryProjection() {
   Require(!p::TypedUuid(Id(3), nullptr), "DML UUID conversion accepted null output");
   api::EngineRequestContext context;
   const auto rows = d::CurrentDatatypeTypeCodecIdentityRowsV1();
-  Require(rows.size() == 18, "six predecessor plus twelve successor datatype rows");
+  Require(rows.size() == 31, "six V1 plus twelve V2 plus thirteen V3 datatype rows");
   const auto state = [](const w::TypedUpdateDatatypeAuthorityRecord& v) {
     return std::tie(v.exact_bytes, v.datatype_ordinal, v.datatype_identity_code, v.null_encoding_code,
         v.byte_order_code, v.is_signed, v.descriptor_uuid, v.descriptor_generation,

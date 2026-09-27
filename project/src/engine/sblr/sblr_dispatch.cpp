@@ -12,6 +12,7 @@
 #include "native_row_field.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "sblr_bound_object_identity.hpp"
+#include "sblr_bound_column_identity.hpp"
 #include "sblr_projection_uuid_literals.hpp"
 #include "sblr_projection_binary_literals.hpp"
 #include "sblr_projection_value_runtime.hpp"
@@ -4727,6 +4728,11 @@ bool EncodeCompactCanonicalScalarBinary(
   if (binary_value == nullptr) return false;
   binary_value->clear();
   if (cell.is_null || cell.type == "null") return true;
+  if (cell.type == "uuid" || cell.type == "binary") {
+    if (cell.type == "uuid" && cell.value.size() != 16) return false;
+    binary_value->assign(cell.value.begin(), cell.value.end());
+    return true;
+  }
 
   const auto append_little_endian = [&](std::uint64_t value,
                                         std::size_t width) {
@@ -5117,6 +5123,7 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
       if (!EncodeCompactCanonicalScalarBinary(cell, &value.binary_value)) {
         return;
       }
+      if (type == "uuid" || type == "binary") value.encoded_value.clear();
       value.is_null = cell.is_null || type == "null";
       if (value.is_null) {
         value.encoded_value.clear();
@@ -5253,6 +5260,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     // the target. Keep the remaining roles in their typed envelope; never
     // convert them into empty or textual option-envelope identities.
     if (IsBoundObjectIdentityRole(operand.name) || IsRelatedObjectIdentityRole(operand.name) ||
+        IsColumnIdentityRole(operand.name) ||
         (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
@@ -7167,6 +7175,21 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
       column.descriptor.encoded_descriptor = column_descriptor;
       typed.table_columns.push_back(std::move(column));
     }
+  }
+  std::vector<SblrColumnIdentityBinding> column_bindings;
+  if (!DecodeSblrColumnIdentities(request.envelope, &column_bindings) ||
+      (!column_bindings.empty() && column_bindings.size() != typed.table_columns.size())) {
+    typed.table_columns.clear();
+    return typed;
+  }
+  for (std::size_t index = 0; index < column_bindings.size(); ++index) {
+    const auto& binding = column_bindings[index];
+    auto& column = typed.table_columns[index];
+    column.requested_column_uuid = binding.column_uuid;
+    column.descriptor.descriptor_uuid = binding.value_descriptor_uuid;
+    column.descriptor.datatype_descriptor_uuid = binding.datatype_descriptor_uuid;
+    column.descriptor.datatype_descriptor_generation = binding.datatype_descriptor_generation;
+    column.descriptor.type_uuid = binding.type_uuid;
   }
   typed.table_constraints = base.constraints;
   typed.table_indexes = base.indexes;
@@ -10781,6 +10804,19 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     result.api_result = FailureResult(
         request.context, request.envelope.operation_id, "SBLR.OPERAND_INVALID",
         "engine.sblr.dispatch.bound_object_identity_invalid", detail);
+    return result;
+  }
+  std::vector<SblrColumnIdentityBinding> column_bindings;
+  const bool column_options = std::ranges::any_of(request.api_request.option_envelopes,
+      [](const auto& option) {
+        return IsColumnIdentityRole(std::string_view(option).substr(0, option.find(':')));
+      });
+  if (column_options || !DecodeSblrColumnIdentities(request.envelope, &column_bindings) ||
+      (!column_bindings.empty() && !request.api_request.columns.empty())) {
+    constexpr const char* detail = "Column bindings require complete distinct native identities without text or mixed request carriers";
+    result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
+    result.api_result = FailureResult(request.context, request.envelope.operation_id,
+        "SBLR.OPERAND_INVALID", "engine.sblr.dispatch.column_identity_invalid", detail);
     return result;
   }
   if (request.envelope.operation_id == "query.evaluate_projection" &&

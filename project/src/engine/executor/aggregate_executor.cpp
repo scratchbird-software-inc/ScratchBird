@@ -10,6 +10,7 @@
 
 #include "aggregate_executor_internal.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_document.hpp"
 #include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
@@ -250,9 +251,9 @@ scratchbird::engine::internal_api::EngineUuid ExactCoreAggregateTypeUuid(
   const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = scratchbird::core::datatypes::
       LookupDatatypeTypeCodecIdentityV1(
-          scratchbird::core::platform::Uuid{{
-              0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x02}},
-          2, 2, descriptor_uuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogUuid,
+          scratchbird::engine::internal_api::kBootstrapDatatypeCatalogGeneration,
+          scratchbird::engine::internal_api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
           found->descriptor_epoch);
   return identity.ok ? identity.row.type_uuid
                      : scratchbird::engine::internal_api::EngineUuid{};

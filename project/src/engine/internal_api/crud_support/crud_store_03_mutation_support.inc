@@ -166,7 +166,7 @@ bool IsApproximateCrudIndexFamily(const std::string& family) {
 
 std::vector<std::pair<std::string, std::string>> RowValuePairs(const EngineRowValue& row) {
   std::vector<std::pair<std::string, std::string>> values;
-  for (const auto& [field, typed] : row.fields) { values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value}); }
+  for (const auto& [field, typed] : row.fields) { values.push_back({field, CrudTypedValuePayload(typed)}); }
   return values;
 }
 

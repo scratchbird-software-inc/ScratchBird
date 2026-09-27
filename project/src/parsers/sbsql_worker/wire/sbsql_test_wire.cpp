@@ -12,6 +12,8 @@
 
 #include "wire/sbsql_test_wire.hpp"
 #include "engine/sblr/native_row_field.hpp"
+#include "engine/sblr/sblr_bound_column_identity.hpp"
+#include "wire/native_insert_literals.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "engine/sblr/relational_identity_codec.hpp"
@@ -19882,6 +19884,65 @@ BuildCanonicalDmlPlanImportRowsSubmission(
       *envelope, statement_context, session);
 }
 
+bool BindCanonicalCreateTableColumns(engine::sblr::SblrOperationEnvelope* envelope,
+    const ParserStatementContext& context) {
+  namespace dt = core::datatypes;
+  if (!envelope || envelope->operation_id != "ddl.create_table" ||
+      !core::uuid::IsEngineIdentityUuid(context.literal_catalog_snapshot_uuid) ||
+      !context.literal_catalog_generation) return false;
+  const auto text = [&](std::string_view name) -> std::optional<std::string> {
+    std::optional<std::string> value;
+    for (const auto& operand : envelope->operands) {
+      if (operand.name != name) continue;
+      if (value || operand.type != "text" ||
+          operand.value_kind != engine::sblr::SblrValueKind::literal_typed ||
+          operand.value_body.size() < 24) return std::nullopt;
+      value = std::string(operand.value_body.begin() + 24, operand.value_body.end());
+    }
+    return value;
+  };
+  const auto count_text = text("column_count");
+  if (!count_text) return false;
+  std::size_t count = 0;
+  const auto parsed = std::from_chars(count_text->data(), count_text->data() + count_text->size(), count);
+  if (parsed.ec != std::errc{} || parsed.ptr != count_text->data() + count_text->size() ||
+      !count || count > engine::sblr::kSblrOperationMaximumOperands / 4) return false;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return false;
+  std::vector<engine::sblr::SblrColumnIdentityBinding> bindings;
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto name = text("column_" + std::to_string(index) + "_type");
+    if (!name) return false;
+    const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
+        dt::CanonicalTypeIdFromStableName(*name));
+    if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return false;
+    const auto& descriptor = row.manifest.descriptor_rows.front();
+    engine::sblr::SblrColumnIdentityBinding binding;
+    binding.column_uuid = NewCreatedObjectUuid("column");
+    binding.value_descriptor_uuid = NewCreatedObjectUuid("descriptor");
+    binding.datatype_descriptor_uuid = descriptor.descriptor_uuid.value;
+    binding.datatype_descriptor_generation = descriptor.descriptor_epoch;
+    binding.type_uuid = descriptor.descriptor_uuid.value;
+    bool registered = false, matched = false;
+    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (candidate.descriptor_uuid != binding.datatype_descriptor_uuid) continue;
+      registered = true;
+      if (candidate.catalog_snapshot_uuid != context.literal_catalog_snapshot_uuid ||
+          candidate.catalog_generation != context.literal_catalog_generation ||
+          candidate.descriptor_generation != binding.datatype_descriptor_generation) continue;
+      if (matched) return false;
+      matched = true;
+      binding.type_uuid = candidate.type_uuid;
+    }
+    if (registered && !matched) return false;
+    bindings.push_back(binding);
+  }
+  for (std::size_t index = 0; index < bindings.size(); ++index)
+    engine::sblr::AppendSblrColumnIdentityBinding(*envelope, index, bindings[index]);
+  std::vector<engine::sblr::SblrColumnIdentityBinding> decoded;
+  return engine::sblr::DecodeSblrColumnIdentities(*envelope, &decoded) && decoded == bindings;
+}
+
 std::optional<ParserCanonicalSblrSubmission>
 BuildCanonicalRouteTextSubmission(
     std::string_view encoded,
@@ -19928,6 +19989,8 @@ BuildCanonicalRouteTextSubmission(
     if (end == std::string_view::npos) break;
     begin = end + 1;
   }
+  if (*operation_id == "ddl.create_table" &&
+      !BindCanonicalCreateTableColumns(&*envelope, statement_context)) return std::nullopt;
   if (!target_uuid.is_nil()) {
     if (!core::uuid::IsEngineIdentityUuid(target_uuid) ||
         std::ranges::any_of(envelope->operands, [](const auto& operand) {
@@ -20504,6 +20567,7 @@ struct FastInsertValuesRoutePlan {
   ObjectReference target;
   std::vector<std::vector<FastInsertValueField>> rows;
   std::size_t column_count{0};
+  bool column_list_present{true};
 };
 
 struct FastCopyFromStdinRoutePlan {
@@ -20779,18 +20843,19 @@ public:
     if (!ConsumeQualifiedNameParts(&target_parts, &target_quoted)) return std::nullopt;
 
     std::vector<std::string> column_names;
-    if (!ConsumeChar('(')) return std::nullopt;
-    for (;;) {
+    const bool column_list_present = ConsumeChar('(');
+    if (column_list_present) for (;;) {
       std::string column_name;
       bool column_quoted = false;
       if (!ConsumeIdentifier(&column_name, &column_quoted)) return std::nullopt;
       (void)column_quoted;
       column_names.push_back(std::move(column_name));
+      if (column_names.size() > 16384) return std::nullopt;
       if (ConsumeChar(',')) continue;
       if (!ConsumeChar(')')) return std::nullopt;
       break;
     }
-    if (column_names.empty()) return std::nullopt;
+    if (column_list_present && column_names.empty()) return std::nullopt;
     if (!ConsumeKeyword("VALUES")) return std::nullopt;
 
     FastInsertValuesRoutePlan plan;
@@ -20799,22 +20864,26 @@ public:
     plan.target.quoted = target_quoted;
     plan.target.object_class = "relation";
     plan.column_count = column_names.size();
+    plan.column_list_present = column_list_present;
 
     for (;;) {
       if (!ConsumeChar('(')) return std::nullopt;
       std::vector<FastInsertValueField> row;
       row.reserve(column_names.size());
-      for (std::size_t column_index = 0; column_index < column_names.size(); ++column_index) {
+      for (std::size_t column_index = 0;; ++column_index) {
+        if (column_index >= 16384) return std::nullopt;
+        if (column_list_present && column_index >= column_names.size()) return std::nullopt;
         FastInsertValueField field;
-        field.name = column_names[column_index];
+        if (column_list_present) field.name = column_names[column_index];
         if (!ConsumeLiteralValue(&field)) return std::nullopt;
         row.push_back(std::move(field));
-        if (column_index + 1 < column_names.size() && !ConsumeChar(',')) {
-          return std::nullopt;
-        }
+        if (!ConsumeChar(',')) break;
       }
       if (!ConsumeChar(')')) return std::nullopt;
+      if (plan.rows.empty() && !column_list_present) plan.column_count = row.size();
+      if (row.size() != plan.column_count || row.empty()) return std::nullopt;
       plan.rows.push_back(std::move(row));
+      if (plan.rows.size() > 1000000) return std::nullopt;
       if (ConsumeChar(',')) continue;
       break;
     }
@@ -21459,12 +21528,18 @@ std::string BuildFastInsertNativeBulkEnvelope(
   AppendRouteTextOperand(&out, "sblr.rowset_default_markers_absent", "true");
   AppendRouteTextOperand(&out, "insert_values_row_count", std::to_string(plan.rows.size()));
   AppendRouteTextOperand(&out, "insert_values_column_count", std::to_string(plan.column_count));
-  AppendRouteTextOperand(&out, "insert_values_column_list_present", "true");
+  AppendRouteTextOperand(&out, "insert_values_column_list_present", plan.column_list_present ? "true" : "false");
   AppendRouteTextOperand(&out, "insert_values_compact_format", "sbsql.insert_values.cells.v1");
   AppendRouteTextOperand(&out, "insert_values_compact_payload", FastInsertCompactPayload(plan));
   AppendRouteTextOperand(&out, "insert_values_parser_executes_sql", "false");
   AppendRouteTextOperand(&out, "sblr.canonical_rowset_shared_shape", "true");
-  AppendRouteTextOperand(&out, "sblr.fast_insert_values_lowering", "true");
+  if (plan.column_list_present) {
+    AppendRouteTextOperand(&out, "sblr.fast_insert_values_lowering", "true");
+  } else {
+    for (std::size_t index = 0; index < plan.column_count; ++index)
+      AppendRouteTextOperand(&out, "insert_values_descriptor_column_" + std::to_string(index),
+                             plan.rows.front()[index].name);
+  }
   return out;
 }
 
@@ -26490,9 +26565,8 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
   const auto lookup_object_class =
       model_relation_lookup ? std::string_view{"relation"} : object_class;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    resolved =
-        embedded_client_->ResolveNamePublic(session_, presented_name, quoted,
-                                            lookup_object_class, config_);
+    resolved = embedded_client_->ResolveNamePublic(session_, presented_name, quoted,
+                                                   lookup_object_class, config_);
   } else {
     ParserTransactionSelector transaction;
     transaction.local_transaction_id = session_.local_transaction_id;
@@ -27247,15 +27321,62 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.cached_authorization_authority = false;
         result.cached_finality_authority = false;
 
-        auto resolved = ResolveNameOnRoute(fast_insert->target.presented_name,
-                                           fast_insert->target.quoted,
-                                           fast_insert->target.object_class);
+        auto resolved = fast_insert->column_list_present
+            ? ResolveNameOnRoute(fast_insert->target.presented_name,
+                                 fast_insert->target.quoted, fast_insert->target.object_class)
+            : ResolveNameOnRouteUncached(fast_insert->target.presented_name,
+                                         fast_insert->target.quoted, fast_insert->target.object_class);
+        if (!fast_insert->column_list_present && config_.embedded_engine_direct && embedded_client_) {
+          const std::vector<ipc::PublicRelationResolutionRequest> requests{
+              {fast_insert->target.presented_name, fast_insert->target.quoted, fast_insert->target.object_class}};
+          auto results = embedded_client_->ResolveRelationDescriptorsPublic(session_, requests, config_);
+          if (results.size() == 1) resolved = std::move(results.front());
+          else {
+            resolved.resolved = false;
+            resolved.messages.diagnostics.push_back(MakeDiagnostic(
+                "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_BATCH_INVALID", "ERROR",
+                "The relation descriptor request returned an invalid result count.", "sbp_sbsql.wire"));
+          }
+        }
         mark_phase("fast_insert_resolve_target");
         if (!resolved.resolved) {
           result.messages = std::move(resolved.messages);
           result.accepted = false;
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
+        }
+        if (!fast_insert->column_list_present) {
+          const auto& projection = resolved.relation_descriptor;
+          if (!projection.present || projection.relation_uuid != resolved.object_uuid ||
+              projection.columns.size() != fast_insert->column_count) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBSQL.NATIVE_BINDING.COLUMN_COUNT_MISMATCH", "ERROR",
+                "INSERT without a column list requires the exact target column projection.",
+                "sbp_sbsql.wire"));
+            return result;
+          }
+          for (auto& row : fast_insert->rows) for (std::size_t index = 0; index < row.size(); ++index)
+            row[index].name = projection.columns[index].canonical_name_key;
+        }
+        for (auto& row : fast_insert->rows) for (auto& field : row) {
+          if (field.is_null) continue;
+          if (field.type_name == "uuid") {
+            const auto value = DecodeInsertUuidDataLiteral(field.value);
+            if (!value) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "SBSQL.UUID.INVALID_LITERAL", "ERROR", "Invalid UUID literal.", "sbp_sbsql.wire"));
+              return result;
+            }
+            field.value = *value;
+          } else if (field.type_name == "binary") {
+            const auto value = DecodeInsertBinaryLiteral(field.value);
+            if (!value) {
+              result.messages.diagnostics.push_back(MakeDiagnostic(
+                  "SBSQL.BINARY.INVALID_LITERAL", "ERROR", "Invalid hexadecimal binary literal.", "sbp_sbsql.wire"));
+              return result;
+            }
+            field.value = *value;
+          }
         }
         session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
         session_.security_policy_epoch =

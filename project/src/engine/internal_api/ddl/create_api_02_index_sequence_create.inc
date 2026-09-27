@@ -236,6 +236,10 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_identities_required"));
   }
+  if (!core::uuid::IsEngineIdentityUuid(request.context.default_root_uuid)) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "bound_primary_filespace_identity_required"));
+  }
   const auto loaded = LoadCrudState(request.context);
   if (!loaded.ok) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", loaded.diagnostic);
@@ -466,23 +470,9 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     EngineUuid engine_type_uuid =
         type_row.manifest.descriptor_rows.front().descriptor_uuid.value;
     const EngineUuid engine_datatype_descriptor_uuid = engine_type_uuid;
-    const bool persist_full_registry_tuple =
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::boolean ||
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::int32 ||
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::int64 ||
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::int128 ||
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::decimal ||
-        canonical_type_id ==
-            scratchbird::core::datatypes::CanonicalTypeId::character ||
-        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::uint64 ||
-        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::real64 ||
-        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::uuid ||
-        canonical_type_id == scratchbird::core::datatypes::CanonicalTypeId::geometry;
+    const bool persist_full_registry_tuple = std::ranges::any_of(
+        scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1(),
+        [&](const auto& row) { return row.descriptor_uuid == engine_datatype_descriptor_uuid; });
     // Fresh descriptors for the manifest-admitted datatype rows are issued
     // only from the exact datatype receipt carried by this DDL request. Other
     // canonical types retain their existing catalog projection and cannot be
