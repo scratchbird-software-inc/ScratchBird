@@ -239,6 +239,22 @@ void NativeUuidValues() {
   namespace exec = scratchbird::engine::executor;
   exec::CanonicalDescriptorOrderTerm term;
   term.expression_descriptor_id = 1;
+  auto sorted_bytes = expected;
+  std::sort(sorted_bytes.begin(), sorted_bytes.end(), [](const auto& a, const auto& b) {
+    for (unsigned byte = 0; byte < 16; ++byte)
+      if (a[byte] != b[byte]) return a[byte] < b[byte];
+    return false;
+  });
+  for (bool ascending : {true, false}) {
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    const auto sorted = exec::SortDescriptorBatchByColumn(values.batch, 0, ascending, &diagnostic);
+    Check(diagnostic.ok && sorted.rows.size() == sorted_bytes.size(), "native descriptor sort failed");
+    for (std::size_t i = 0; i < sorted_bytes.size(); ++i)
+      Check(sorted.rows[i].values.front().binary_value ==
+                sorted_bytes[ascending ? i : sorted_bytes.size() - i - 1] &&
+            sorted.rows[i].values.front().encoded_value.empty(),
+            "descriptor sort compared missing text instead of native UUID bytes");
+  }
   std::vector<std::string> keys;
   for (const auto& row : values.batch.rows) {
     const auto key = exec::MakeCanonicalDescriptorEqualityKey(row.values.front(), term);
@@ -294,6 +310,8 @@ void NativeUuidValues() {
     Check(!api::QowApplyCanonicalDescriptorCoercionV1(bad, native.descriptor, true, &output, &category, &detail),
           "canonical coercion accepted malformed UUID carrier");
     exec::DescriptorRuntimeDiagnostic diagnostic;
+    const auto sorted = exec::SortDescriptorBatchByColumn(malformed_batch, 0, true, &diagnostic);
+    Check(!diagnostic.ok && sorted.rows.empty(), "descriptor sort admitted a malformed UUID carrier");
     (void)exec::CastDescriptorValue(bad, native.descriptor, &diagnostic);
     Check(!diagnostic.ok, "executor cast accepted malformed UUID carrier");
     (void)exec::ExtractDescriptorField(bad, "version", &diagnostic);
@@ -308,7 +326,38 @@ void NativeUuidValues() {
           "malformed UUID VALUES literal published data");
   }
 }
+void NativeBinarySort() {
+  namespace exec = scratchbird::engine::executor;
+  using Cell = std::optional<std::vector<std::uint8_t>>;
+  const std::vector<Cell> input = {std::vector<std::uint8_t>{0xff}, std::nullopt,
+      std::vector<std::uint8_t>{0, 0}, std::vector<std::uint8_t>{},
+      std::vector<std::uint8_t>{0x80}, std::vector<std::uint8_t>{0}};
+  const std::vector<Cell> expected = {std::nullopt, std::vector<std::uint8_t>{},
+      std::vector<std::uint8_t>{0}, std::vector<std::uint8_t>{0, 0},
+      std::vector<std::uint8_t>{0x80}, std::vector<std::uint8_t>{0xff}};
+  exec::DescriptorBatch batch;
+  const auto descriptor = exec::MakeExecutorDescriptor("binary");
+  batch.columns.push_back({"bytes", descriptor, true});
+  for (const auto& cell : input) {
+    auto value = exec::MakeExecutorValue(descriptor, {}, !cell.has_value());
+    if (cell) value.binary_value = *cell;
+    batch.rows.push_back({{value}});
+  }
+  for (bool ascending : {true, false}) {
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    const auto sorted = exec::SortDescriptorBatchByColumn(batch, 0, ascending, &diagnostic);
+    Check(diagnostic.ok && sorted.rows.size() == expected.size(), "binary descriptor sort failed");
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const auto& cell = expected[ascending ? i : expected.size() - i - 1];
+      const auto& actual = sorted.rows[i].values.front();
+      Check(actual.is_null == !cell.has_value() && actual.encoded_value.empty() &&
+            actual.binary_value == cell.value_or(std::vector<std::uint8_t>{}),
+            "binary sort lost unsigned order, prefix order, or NULL/empty distinction");
+    }
+  }
+}
 int main() {
+  NativeBinarySort();
   NativeBuiltinDescriptors();
   NativeUuidValues();
   NativeComparisons();

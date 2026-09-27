@@ -128,6 +128,8 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
   MaterializedSetOperationPlanningState result;
   std::uint64_t collation_comparison_count = 0;
   if (!prepared.ok || !left.ok || !right.ok ||
+      left.batch.columns.size() != prepared.result_columns.size() ||
+      right.batch.columns.size() != prepared.result_columns.size() ||
       (profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal &&
        profile.alignment !=
            exec::CanonicalSetOperationAlignment::kByName) ||
@@ -165,6 +167,15 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
     return result;
   }
 
+  for (const auto* batch : {&left.batch, &right.batch}) {
+    std::vector<std::uint32_t> ids;
+    for (const auto& column : batch->columns) ids.push_back(column.descriptor_id);
+    const auto valid = exec::ValidateCanonicalDescriptorBatch(*batch, ids);
+    if (!valid.ok) {
+      result.values.detail = valid.diagnostic_code + ":" + valid.detail;
+      return result;
+    }
+  }
   result.values.ok = true;
   result.values.batch.columns = prepared.result_columns;
   result.values.result_bindings = prepared.result_bindings;
@@ -242,30 +253,17 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
           return false;
         }
         for (auto& row : batch->rows) {
-          dt::DatatypeCastRequest conversion;
-          conversion.value.type_id = source_type;
-          conversion.value.encoded_value =
-              row.values[column].encoded_value;
-          conversion.value.is_null =
-              row.values[column].state ==
-              api::EngineValueState::sql_null;
-          conversion.target_type_id = target_type;
-          const auto cast = dt::CastDatatypeValue(conversion);
-          if (!cast.ok()) {
-            conversion_detail =
-                cast.diagnostic.diagnostic_code.empty()
-                    ? "set-operation planning lossless cast refused"
-                    : cast.diagnostic.diagnostic_code;
+          api::EngineTypedValue validated, converted;
+          std::string category;
+          if (!api::QowApplyCanonicalDescriptorCoercionV1(
+                  row.values[column], row.values[column].descriptor, false,
+                  &validated, &category, &conversion_detail) ||
+              !api::QowApplyCanonicalDescriptorCoercionV1(
+                  row.values[column], prepared.result_columns[column].descriptor,
+                  false, &converted, &category, &conversion_detail)) {
             return false;
           }
-          row.values[column].descriptor =
-              prepared.result_columns[column].descriptor;
-          row.values[column].encoded_value = cast.value.encoded_value;
-          row.values[column].binary_value.clear();
-          row.values[column].is_null = cast.value.is_null;
-          row.values[column].state =
-              cast.value.is_null ? api::EngineValueState::sql_null
-                                 : api::EngineValueState::value;
+          row.values[column] = std::move(converted);
         }
         batch->columns[column].descriptor =
             prepared.result_columns[column].descriptor;
@@ -308,6 +306,7 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
       std::string token;
       std::string detail;
       if (!EncodeCanonicalScalarEqualityKey(value, &token, &detail)) {
+        result.values.ok = false;
         result.values.detail =
             "set-operation planning equality key: " + detail;
         return false;

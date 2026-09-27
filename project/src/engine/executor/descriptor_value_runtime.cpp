@@ -1632,7 +1632,16 @@ DescriptorBatch SortDescriptorBatchByColumn(const DescriptorBatch& input,
     return {};
   }
   DescriptorBatch output = input;
-  if (IsInt64Type(input.columns[column].descriptor)) {
+  if (IsUuidType(input.columns[column].descriptor) || IsBinaryType(input.columns[column].descriptor)) {
+    std::stable_sort(output.rows.begin(), output.rows.end(), [&](const auto& lhs, const auto& rhs) {
+      const auto& l = lhs.values[column];
+      const auto& r = rhs.values[column];
+      const bool ln = l.state == EngineValueState::sql_null;
+      const bool rn = r.state == EngineValueState::sql_null;
+      if (ln != rn) return ascending ? ln : rn;
+      return ascending ? l.binary_value < r.binary_value : r.binary_value < l.binary_value;
+    });
+  } else if (IsInt64Type(input.columns[column].descriptor)) {
     std::stable_sort(output.rows.begin(), output.rows.end(), [&](const auto& lhs, const auto& rhs) {
       const auto l = DecodeInt64Value(lhs.values[column]);
       const auto r = DecodeInt64Value(rhs.values[column]);

@@ -5070,30 +5070,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         const auto target_type = dt::CanonicalTypeIdFromStableName(
             request.result_columns[column].descriptor.canonical_type_name);
         for (auto& row : batch->rows) {
-          dt::DatatypeCastRequest source_validation;
-          source_validation.value.type_id = source_type;
-          source_validation.value.encoded_value =
-              row.values[column].encoded_value;
-          source_validation.value.is_null =
-              row.values[column].state == api::sql_null;
-          source_validation.target_type_id = source_type;
-          const auto validated = dt::CastDatatypeValue(source_validation);
-          if (!validated.ok()) {
-            reconciliation_detail =
-                validated.diagnostic.diagnostic_code.empty()
-                    ? "set-operation source value is not canonical"
-                    : validated.diagnostic.diagnostic_code;
-            return false;
-          }
-          dt::DatatypeCastRequest conversion;
-          conversion.value = source_validation.value;
-          conversion.target_type_id = target_type;
-          const auto cast = dt::CastDatatypeValue(conversion);
-          if (!cast.ok()) {
-            reconciliation_detail =
-                cast.diagnostic.diagnostic_code.empty()
-                    ? "set-operation lossless implicit cast refused"
-                    : cast.diagnostic.diagnostic_code;
+          internal_api::EngineTypedValue validated, converted;
+          std::string category;
+          if (!internal_api::QowApplyCanonicalDescriptorCoercionV1(
+                  row.values[column], row.values[column].descriptor, false,
+                  &validated, &category, &reconciliation_detail) ||
+              !internal_api::QowApplyCanonicalDescriptorCoercionV1(
+                  row.values[column], request.result_columns[column].descriptor,
+                  false, &converted, &category, &reconciliation_detail)) {
             return false;
           }
           if (memory_ledger.enforced) {
@@ -5110,7 +5094,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
             }
             const auto old_payload_bytes =
                 old_encoded_bytes + old_binary_bytes;
-            const auto new_payload_bytes = cast.value.encoded_value.size();
+            const auto new_payload_bytes =
+                converted.encoded_value.size() + converted.binary_value.size();
             if (old_payload_bytes > *component_payload_bytes ||
                 new_payload_bytes >
                     std::numeric_limits<std::size_t>::max() -
@@ -5128,13 +5113,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                 new_payload_bytes;
           }
           if (source_type != target_type) ++coerced_value_count;
-          row.values[column].descriptor =
-              request.result_columns[column].descriptor;
-          row.values[column].encoded_value = cast.value.encoded_value;
-          row.values[column].binary_value.clear();
-          row.values[column].is_null = cast.value.is_null;
-          row.values[column].state =
-              cast.value.is_null ? api::sql_null : api::value;
+          row.values[column] = std::move(converted);
         }
         batch->columns[column].descriptor =
             request.result_columns[column].descriptor;
@@ -9098,30 +9077,14 @@ ConvertWindowAssignmentValue(
           true)) {
     return fail("window value descriptor attributes differ from the result");
   }
-  dt::DatatypeCastRequest conversion;
-  conversion.value.type_id = source_type;
-  conversion.value.encoded_value = source.encoded_value;
-  conversion.value.is_null = source.state == api::EngineValueState::sql_null;
-  conversion.target_type_id = target_type;
-  const auto cast = dt::CastDatatypeValue(conversion);
-  if (!cast.ok()) {
-    std::string cast_detail = cast.diagnostic.diagnostic_code.empty()
-                                  ? "window assignment conversion failed"
-                                  : cast.diagnostic.diagnostic_code;
-    if (!cast.diagnostic.arguments.empty()) {
-      cast_detail += ":" + cast.diagnostic.arguments.front().value;
-    }
+  api::EngineTypedValue validated, converted;
+  std::string category, cast_detail;
+  if (!api::QowApplyCanonicalDescriptorCoercionV1(
+          source, source.descriptor, false, &validated, &category, &cast_detail) ||
+      !api::QowApplyCanonicalDescriptorCoercionV1(
+          source, target, false, &converted, &category, &cast_detail)) {
     return fail(std::move(cast_detail));
   }
-  api::EngineTypedValue converted;
-  converted.descriptor = target;
-  converted.encoded_value = cast.value.encoded_value;
-  if (source_type == target_type && !cast.value.is_null) {
-    converted.binary_value = source.binary_value;
-  }
-  converted.is_null = cast.value.is_null;
-  converted.state = cast.value.is_null ? api::EngineValueState::sql_null
-                                       : api::EngineValueState::value;
   return converted;
 }
 

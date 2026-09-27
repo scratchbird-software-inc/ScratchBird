@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+using scratchbird::tests::FixtureUuidLiteral;
 
 #include <cstdlib>
 #include <iostream>
@@ -38,11 +40,11 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
-  return {"019f0000-0000-7200-8000-00000000f861",
-          "019f0000-0000-7200-8000-00000000f862",
+    const api::EngineUuid& statement_snapshot_uuid) {
+  return {FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f861"),
+          FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f862"),
           statement_snapshot_uuid,
-          "019f0000-0000-7200-8000-00000000f863",
+          FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f863"),
           kOwnerLocalTransactionId,
           0,
           kOldestActiveLocalTransactionId,
@@ -87,12 +89,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   for (auto& node : dag->nodes) {
     node.mga_statement_context = context;
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000f864";
+        FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f864");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000f865";
+        FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f865");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000f866";
+        FixtureUuidLiteral("019f0000-0000-7200-8000-00000000f866");
     node.memory_bytes_required = 1;
     node.engine_capability_validated = true;
   }
@@ -107,15 +109,15 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
                                  const std::string_view type_name,
-                                 const std::string_view type_uuid) {
+                                 const api::EngineUuid& type_uuid) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::string(type_name);
-  descriptor.encoded_descriptor = "type_uuid=" + std::string(type_uuid) +
-                                  ";nullability=nullable";
+  descriptor.type_uuid = type_uuid;
+  descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }
 
@@ -152,38 +154,38 @@ exec::CanonicalSetOperationAllRequest Request(
     const exec::CanonicalSetOperationKind operation,
     const exec::CanonicalSetOperationQuantifier quantifier) {
   const auto left_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000004701", "int32",
-      "019f0000-0000-7300-8000-000000004701");
+      FixtureUuidLiteral("019f0000-0000-7200-8000-000000004701"), "int32",
+      FixtureUuidLiteral("019f0000-0000-7300-8000-000000004701"));
   const auto right_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000004702", "int64",
-      "019f0000-0000-7300-8000-000000004702");
+      FixtureUuidLiteral("019f0000-0000-7200-8000-000000004702"), "int64",
+      FixtureUuidLiteral("019f0000-0000-7300-8000-000000004702"));
   const auto result_descriptor = Descriptor(
-      "019f0000-0000-7200-8000-000000004703", "int64",
-      "019f0000-0000-7300-8000-000000004702");
+      FixtureUuidLiteral("019f0000-0000-7200-8000-000000004703"), "int64",
+      FixtureUuidLiteral("019f0000-0000-7300-8000-000000004702"));
 
   exec::CanonicalSetOperationAllRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000004704";
+      FixtureUuidLiteral("019f0000-0000-7200-8000-000000004704");
   request.physical_dag.root_physical_node_id = 4703;
   request.physical_dag.local_transaction_id = 4704;
   request.physical_dag.statement_snapshot_id = 4705;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000004711"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004711")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000004712"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004712")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000004713"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004713")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000004714"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004714")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000004715"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004715")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000004716"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004716")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000004717"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004717")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000004718"},
+       FixtureUuidLiteral("019f0000-0000-7200-8000-000000004718")},
   };
   const std::string quantifier_name =
       quantifier == exec::CanonicalSetOperationQuantifier::kAll
@@ -263,8 +265,8 @@ bool ValidateSetOperationTypeReconciliation() {
               api::EngineValueState::sql_null &&
           result.output_batch.rows[3].values[0].encoded_value == "3" &&
           result.output_batch.rows[0].values[0]
-                  .descriptor.descriptor_uuid.canonical ==
-              request.result_columns[0].descriptor.descriptor_uuid.canonical &&
+                  .descriptor.descriptor_uuid ==
+              request.result_columns[0].descriptor.descriptor_uuid &&
           result.mga_statement_context.visible_committed_high_watermark == 0 &&
           exec::PhysicalMgaStatementContextEqual(
               result.mga_statement_context,
@@ -303,8 +305,8 @@ bool ValidateSetOperationTypeReconciliation() {
   request = Request(exec::CanonicalSetOperationKind::kUnion,
                     exec::CanonicalSetOperationQuantifier::kDistinct);
   const auto narrow_result = Descriptor(
-      request.result_columns[0].descriptor.descriptor_uuid.canonical, "int32",
-      "019f0000-0000-7300-8000-000000004701");
+      request.result_columns[0].descriptor.descriptor_uuid, "int32",
+      FixtureUuidLiteral("019f0000-0000-7300-8000-000000004701"));
   request.result_columns[0].descriptor = narrow_result;
   result = exec::ExecuteCanonicalSetOperationDistinct(request);
   passed &= Require(
@@ -317,8 +319,8 @@ bool ValidateSetOperationTypeReconciliation() {
   request = Request(exec::CanonicalSetOperationKind::kUnion,
                     exec::CanonicalSetOperationQuantifier::kDistinct);
   const auto unsigned_left = Descriptor(
-      request.left_batch.columns[0].descriptor.descriptor_uuid.canonical,
-      "uint32", "019f0000-0000-7300-8000-000000004721");
+      request.left_batch.columns[0].descriptor.descriptor_uuid,
+      "uint32", FixtureUuidLiteral("019f0000-0000-7300-8000-000000004721"));
   ReplaceBatchDescriptor(&request.left_batch, unsigned_left);
   result = exec::ExecuteCanonicalSetOperationDistinct(request);
   passed &= Require(
@@ -341,9 +343,9 @@ bool ValidateSetOperationTypeReconciliation() {
   request = Request(exec::CanonicalSetOperationKind::kUnion,
                     exec::CanonicalSetOperationQuantifier::kDistinct);
   const auto unknown_left = Descriptor(
-      request.left_batch.columns[0].descriptor.descriptor_uuid.canonical,
+      request.left_batch.columns[0].descriptor.descriptor_uuid,
       "qow_unknown_integer",
-      "019f0000-0000-7300-8000-000000004722");
+      FixtureUuidLiteral("019f0000-0000-7300-8000-000000004722"));
   ReplaceBatchDescriptor(&request.left_batch, unknown_left);
   result = exec::ExecuteCanonicalSetOperationDistinct(request);
   passed &= Require(
@@ -413,7 +415,9 @@ bool ValidateSetOperationTypeReconciliation() {
 
 }  // namespace
 
+#ifndef QOW_QRY_016_TYPE_FIXTURE_ONLY
 int main() {
   return ValidateSetOperationTypeReconciliation() ? EXIT_SUCCESS
                                                    : EXIT_FAILURE;
 }
+#endif
