@@ -8,6 +8,7 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
@@ -154,6 +155,16 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     }
     const auto decoded = catalog::DecodeCatalogTypedRecord(row);
     Require(decoded.ok(), "typed catalog record decode failed");
+    if (catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) {
+      const auto security = catalog::DecodeCatalogSecurityRecord(decoded.record.header.kind, decoded.record.payload);
+      Require(security.ok(), "imported native security payload did not decode");
+      auto fields = security.record->attributes;
+      // Readable assertions only; no textual identities persist in the catalog.
+      for (const auto& [name, identity] : security.record->identities)
+        fields.emplace(name, uuid::UuidToString(identity));
+      records.push_back({decoded.record, std::move(fields)});
+      continue;
+    }
     records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
   }
   Require(!records.empty(), "no typed catalog records were decoded");

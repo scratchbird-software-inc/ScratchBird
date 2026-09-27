@@ -8,6 +8,7 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
@@ -143,30 +144,33 @@ db::DatabaseLifecycleResult CreateCommitted(Cleanup* cleanup,
   return created;
 }
 
-std::map<std::string, std::string> ParseFields(const std::string& payload) {
-  std::map<std::string, std::string> fields;
-  std::stringstream lines(payload);
-  std::string line;
-  while (std::getline(lines, line)) {
-    std::stringstream tokens(line);
-    std::string token;
-    while (tokens >> token) {
-      const auto split = token.find('=');
-      if (split != std::string::npos) {
-        fields[token.substr(0, split)] = token.substr(split + 1);
-      }
-    }
-  }
+// Human-readable fixture inputs only: production records remain native binary.
+std::map<std::string, std::string> FixtureFields(const catalog::CatalogTypedRecord& record) {
+  const auto decoded = catalog::DecodeCatalogSecurityRecord(record.header.kind, record.payload);
+  Require(decoded.ok(), "security fixture payload decode failed");
+  auto fields = decoded.record->attributes;
+  for (const auto& [name, identity] : decoded.record->identities)
+    fields.emplace(name, uuid::UuidToString(identity));
   return fields;
 }
 
 std::string SerializeFields(
+    catalog::CatalogRecordKind kind,
     const std::map<std::string, std::string>& fields) {
-  std::string payload;
-  for (const auto& field : fields) {
-    payload += field.first + "=" + field.second + "\n";
+  catalog::CatalogSecurityRecord record;
+  record.kind = kind;
+  for (const auto& [name, value] : fields) {
+    if (name.ends_with("_uuid")) {
+      const auto parsed = uuid::ParseTypedUuid(UuidKind::object, value);
+      Require(parsed.ok(), "security fixture identity parse failed");
+      record.identities.emplace(name, parsed.value.value);
+    } else {
+      record.attributes.emplace(name, value);
+    }
   }
-  return payload;
+  const auto encoded = catalog::EncodeCatalogSecurityRecord(record);
+  Require(encoded.ok(), "security fixture payload encode failed");
+  return std::string(encoded.bytes.begin(), encoded.bytes.end());
 }
 
 std::vector<page::CatalogPageRow> ReadCatalogRows(
@@ -243,15 +247,26 @@ void MutateOneTypedRecord(const std::filesystem::path& path,
     }
     const auto decoded = catalog::DecodeCatalogTypedRecord(row);
     Require(decoded.ok(), "tamper typed record decode failed");
-    auto fields = ParseFields(decoded.record.payload);
+    if (!catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) continue;
+    auto fields = FixtureFields(decoded.record);
     if (!mutated && predicate(decoded.record, fields)) {
       auto record = decoded.record;
       mutator(&record, &fields);
-      record.payload = SerializeFields(fields);
+      record.payload = SerializeFields(record.header.kind, fields);
+      // Construct valid framing first, then inject the requested header/payload
+      // mismatch below. Production encoding must never admit that mismatch.
+      const auto requested_object = record.header.object_uuid;
+      const auto security = catalog::DecodeCatalogSecurityRecord(record.header.kind, record.payload);
+      Require(security.ok(), "mutated security fixture decode failed");
+      record.header.object_uuid.value = security.record->Identity(
+          catalog::CatalogSecurityPrimaryIdentityName(record.header.kind));
       const auto encoded = catalog::EncodeCatalogTypedRecord(record,
                                                               row.ordinal);
       Require(encoded.ok(), "tamper typed record encode failed");
       row = encoded.row;
+      Require(row.payload.size() >= 96, "typed fixture header missing");
+      std::copy(requested_object.value.bytes.begin(), requested_object.value.bytes.end(),
+                row.payload.begin() + 56);
       mutated = true;
     }
   }
@@ -479,6 +494,8 @@ void TestSemanticTamperRejection(Cleanup* cleanup) {
           (*fields)["create_time_only"] = "1";
           (*fields)["creator_tx"] = "1";
           (*fields)["policy_generation"] = "1";
+          (*fields)["security_context_authority_version"] = "1";
+          (*fields)["security_context_generation"] = "1";
           (*fields)["active"] = "1";
         });
     RequireReaderRejects(path, "duplicate canonical SYSARCH role was admitted");
@@ -512,6 +529,65 @@ void TestForbiddenSecuritySidecars(Cleanup* cleanup) {
   RequireReaderRejects(path, "local-password sidecar was admitted");
 }
 
+void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
+  for (const char* fault : {"", "after_copy_before_rewrite",
+                            "after_rewrite_sync_before_publish", "after_publish_before_ack"}) {
+    std::filesystem::path path;
+    const auto created = CreateCommitted(cleanup, "native_generation_repair", &path);
+    const auto before = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(before.ok() && before.state.present, "generation repair baseline missing");
+    auto rows = ReadCatalogRows(path, created.state.header.page_size);
+    unsigned stripped = 0;
+    for (auto& row : rows) {
+      if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+      auto outer = catalog::DecodeCatalogTypedRecord(row);
+      Require(outer.ok(), "generation fixture outer decode failed");
+      if (!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind)) continue;
+      auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind, outer.record.payload);
+      Require(security.ok(), "generation fixture native decode failed");
+      if (!security.record->attributes.contains("security_context_authority_version")) continue;
+      security.record->attributes.erase("security_context_authority_version");
+      security.record->attributes.erase("security_context_generation");
+      const auto encoded = catalog::EncodeCatalogSecurityRecord(*security.record);
+      Require(encoded.ok(), "generation fixture native encode failed");
+      outer.record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
+      const auto framed = catalog::EncodeCatalogTypedRecord(outer.record, row.ordinal);
+      Require(framed.ok(), "generation fixture outer encode failed");
+      row = framed.row;
+      ++stripped;
+    }
+    Require(stripped == 3, "generation fixture did not select all three bootstrap owners");
+    WriteCatalogRows(path, created.state.header.page_size, rows);
+    db::DatabaseOpenConfig open;
+    open.path = path.string(); open.read_only = true;
+    const auto readonly = db::OpenDatabaseFile(open);
+    Require(!readonly.ok() && readonly.diagnostic.diagnostic_code == "FORMAT.UPGRADE_REQUIRED",
+            "read-only missing generation did not require explicit writable repair");
+    open.read_only = false;
+    open.security_context_migration_fault_injection_point = fault;
+    const auto repaired = db::OpenDatabaseFile(open);
+    Require(repaired.ok() == std::string_view(fault).empty(), "generation repair fault finality incorrect");
+    open.security_context_migration_fault_injection_point.clear();
+    Require(db::OpenDatabaseFile(open).ok(), "generation repair did not recover on reopen");
+    const auto after = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(after.ok() && after.state.present && after.state.committed_by_inventory &&
+            after.state.security_context_generation == 1 &&
+            after.state.principal_uuid.value == before.state.principal_uuid.value &&
+            after.state.sysarch_role_uuid.value == before.state.sysarch_role_uuid.value &&
+            after.state.membership_uuid.value == before.state.membership_uuid.value &&
+            after.state.credential_fingerprint == before.state.credential_fingerprint,
+            "native generation repair changed security ownership or credential authority");
+    for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+      if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+      const auto outer = catalog::DecodeCatalogTypedRecord(row);
+      Require(outer.ok(), "repaired catalog framing invalid");
+      if (catalog::IsCatalogSecurityRecordKind(outer.record.header.kind))
+        Require(catalog::DecodeCatalogSecurityRecord(outer.record.header.kind, outer.record.payload).ok(),
+                "generation repair appended text to a binary security record");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -529,6 +605,7 @@ int main() {
   TestReplayRefused(&cleanup);
   TestCredentialEnvelopeRefusedAndRedacted(&cleanup);
   TestSemanticTamperRejection(&cleanup);
+  TestNativeSecurityGenerationRepair(&cleanup);
   TestForbiddenSecuritySidecars(&cleanup);
   return EXIT_SUCCESS;
 }

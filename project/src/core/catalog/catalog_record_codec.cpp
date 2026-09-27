@@ -9,6 +9,7 @@
 #include "catalog_record_codec.hpp"
 #include "catalog_metric_current_value.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
@@ -122,6 +123,11 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     }
   }
 
+  if (IsCatalogSecurityRecordKind(record.header.kind) &&
+      !CatalogSecurityPayloadMatchesHeader(record)) {
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",
+                      "security_binary_payload_or_header_invalid");
+  }
   if ((record.header.kind == CatalogRecordKind::metric_current_value ||
        IsCatalogMetricCurrentValuePayload(record.payload)) &&
       !CatalogMetricCurrentValueMatchesHeader(record))

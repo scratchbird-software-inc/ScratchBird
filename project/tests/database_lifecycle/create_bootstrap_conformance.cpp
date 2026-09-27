@@ -8,10 +8,15 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_filespace_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
 #include "catalog_localized_record_codec.hpp"
+#include "catalog_resource_record_codec.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_current_value.hpp"
+#include "catalog_metric_retention_policy.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
@@ -239,6 +244,16 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     }
     Require(decoded.ok(), "typed catalog record decode failed");
     const auto kind=decoded.record.header.kind;
+    if (catalog::IsCatalogSecurityRecordKind(kind)) {
+      const auto security = catalog::DecodeCatalogSecurityRecord(kind, decoded.record.payload);
+      Require(security.ok(), "binary security catalog payload decode failed");
+      auto fields = security.record->attributes;
+      // Formatting is confined to this test's human-readable assertions.
+      for (const auto& [name, identity] : security.record->identities)
+        fields.emplace(name, uuid::UuidToString(identity));
+      records.push_back({decoded.record, std::move(fields)});
+      continue;
+    }
     const bool binary=kind==catalog::CatalogRecordKind::database ||
         kind==catalog::CatalogRecordKind::filespace || kind==catalog::CatalogRecordKind::schema ||
         kind==catalog::CatalogRecordKind::localized_name || kind==catalog::CatalogRecordKind::localized_comment;
@@ -291,7 +306,42 @@ void RequireAllTypedRecordsCreatedByTx1(const std::vector<DecodedRecord>& record
     if(kind==catalog::CatalogRecordKind::localized_comment) {
       require_binary_tx1(catalog::DecodeCatalogLocalizedComment(bytes));continue;
     }
+    if(kind==catalog::CatalogRecordKind::charset) {
+      require_binary_tx1(catalog::DecodeCatalogCharsetRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::charset_alias) {
+      require_binary_tx1(catalog::DecodeCatalogResourceAliasRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::collation) {
+      require_binary_tx1(catalog::DecodeCatalogCollationRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::timezone) {
+      require_binary_tx1(catalog::DecodeCatalogResourceAliasRecord(bytes));continue;
+    }
+    const auto require_metric_tx1=[](const auto& definition) {
+      Require(definition.origin_local_transaction_id == 1 &&
+              definition.origin_transaction_uuid.kind == UuidKind::transaction &&
+              uuid::IsEngineIdentityUuid(definition.origin_transaction_uuid.value),
+              "binary metric catalog origin is not bootstrap tx1");
+    };
+    if(kind==catalog::CatalogRecordKind::metric_descriptor) {
+      const auto decoded=catalog::DecodeCatalogMetricDescriptor(bytes);
+      Require(decoded.ok(), "binary metric descriptor did not decode");
+      require_metric_tx1(*decoded.record);continue;
+    }
+    if(kind==catalog::CatalogRecordKind::metric_current_value) {
+      const auto decoded=catalog::DecodeCatalogMetricCurrentValue(bytes);
+      Require(decoded.ok(), "binary metric value did not decode");
+      require_metric_tx1(decoded.record->descriptor);continue;
+    }
+    if(catalog::IsCatalogMetricRetentionPolicyPayload(bytes)) {
+      const auto decoded=catalog::DecodeCatalogMetricRetentionPolicy(bytes);
+      Require(decoded.ok(), "binary metric retention did not decode");
+      require_metric_tx1(*decoded.record);continue;
+    }
     const auto found = record.fields.find("creator_tx");
+    if (found == record.fields.end())
+      std::cerr << "missing_creator_tx_kind=" << static_cast<unsigned>(kind) << '\n';
     Require(found != record.fields.end(), "typed catalog record payload is missing creator_tx");
     Require(found->second == "1", "typed catalog record payload was not created by tx1");
   }

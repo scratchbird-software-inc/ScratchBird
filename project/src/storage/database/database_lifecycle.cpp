@@ -19,6 +19,7 @@
 #include "catalog_filespace_record_codec.hpp"
 #include "catalog_localized_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
+#include "catalog_security_record_codec.hpp"
 #include "resource_artifact_content_codec.hpp"
 #include "cluster_catalog_schema_versioning.hpp"
 #include "agent_engine_lifecycle.hpp"
@@ -2272,7 +2273,8 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
           "catalog.record_codec.fields_missing", {}, "filespace_binary_payload_invalid");
       return CatalogRowsBuildError(refused.status, refused.diagnostic);
     }
-  } else if (!scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
+  } else if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(kind) &&
+             !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              kind != CatalogRecordKind::metric_current_value &&
              kind != CatalogRecordKind::metric_descriptor &&
              kind != CatalogRecordKind::schema &&
@@ -2314,6 +2316,41 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
 
   CatalogRowsBuildResult result;
   result.status = DatabaseLifecycleOkStatus();
+  return result;
+}
+
+CatalogRowsBuildResult AddSecurityCatalogRecord(
+    std::vector<CatalogPageRow>* rows, u32* ordinal, u64 identity_seed,
+    scratchbird::core::catalog::CatalogSecurityRecord record,
+    TypedUuid parent_object_uuid,
+    scratchbird::core::platform::Uuid* created_object = nullptr) {
+  namespace catalog = scratchbird::core::catalog;
+  const auto primary_name = std::string(catalog::CatalogSecurityPrimaryIdentityName(record.kind));
+  if (primary_name.empty()) {
+    const auto error = LifecycleError("CATALOG.INVALID_INPUT",
+        "catalog.security_record.invalid", {}, "security_record_kind_invalid");
+    return CatalogRowsBuildError(error.status, error.diagnostic);
+  }
+  // Allocate at creation only. A supplied nil/malformed identity is never
+  // replaced by a newly generated owner to make an invalid record succeed.
+  if (!record.identities.contains(primary_name)) {
+    const auto issued = GenerateEngineIdentityV7(UuidKind::object, identity_seed + 1);
+    if (!issued.ok()) return CatalogRowsBuildError(issued.status, issued.diagnostic);
+    record.identities.emplace(primary_name, issued.value.value);
+  }
+  record.attributes.try_emplace("creator_tx", std::to_string(kBootstrapCatalogTransactionId));
+  const auto encoded = catalog::EncodeCatalogSecurityRecord(record);
+  if (!encoded.ok()) {
+    const auto error = LifecycleError("CATALOG.INVALID_INPUT",
+        "catalog.security_record.invalid", {}, "security_binary_payload_invalid");
+    return CatalogRowsBuildError(error.status, error.diagnostic);
+  }
+  TypedUuid object;
+  object.kind = UuidKind::object;
+  object.value = record.Identity(primary_name);
+  const auto result = AddTypedCatalogRecord(rows, record.kind, ordinal, identity_seed,
+      std::string(encoded.bytes.begin(), encoded.bytes.end()), parent_object_uuid, object);
+  if (result.ok() && created_object) *created_object = object.value;
   return result;
 }
 
@@ -2610,23 +2647,20 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     TypedUuid role_uuid;
     parsed_uuid = ParsePolicyObjectUuid(role.role_uuid, &role_uuid);
     if (!parsed_uuid.ok()) { return parsed_uuid; }
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::role_account,
-        ordinal,
-        seed,
-        KeyValuePayload({{"role_uuid", role.role_uuid},
-                         {"role_code", role.role_code},
+    scratchbird::core::catalog::CatalogSecurityRecord record;
+    record.kind = CatalogRecordKind::role_account;
+    record.identities = {{"role_uuid", role_uuid.value},
+                         {"policy_pack_uuid", policy_pack_uuid.value}};
+    record.attributes = {{"role_code", role.role_code},
                          {"description", role.description},
                          {"default_assignment", role.default_assignment},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
                          {"policy_generation", std::to_string(pack.image.policy_generation)},
                          {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
                          {"loaded_at_database_create", "1"},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}}),
-        security_parent_uuid,
-        role_uuid);
+                         {"engine_owned", "1"}};
+    typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
+                                     security_parent_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -2635,69 +2669,76 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
     TypedUuid group_uuid;
     parsed_uuid = ParsePolicyObjectUuid(group.group_uuid, &group_uuid);
     if (!parsed_uuid.ok()) { return parsed_uuid; }
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::group_account,
-        ordinal,
-        seed,
-        KeyValuePayload({{"group_uuid", group.group_uuid},
-                         {"group_code", group.group_code},
+    scratchbird::core::catalog::CatalogSecurityRecord record;
+    record.kind = CatalogRecordKind::group_account;
+    record.identities = {{"group_uuid", group_uuid.value},
+                         {"policy_pack_uuid", policy_pack_uuid.value}};
+    record.attributes = {{"group_code", group.group_code},
                          {"description", group.description},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
                          {"policy_generation", std::to_string(pack.image.policy_generation)},
                          {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
                          {"loaded_at_database_create", "1"},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}}),
-        security_parent_uuid,
-        group_uuid);
+                         {"engine_owned", "1"}};
+    typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
+                                     security_parent_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
 
   for (const auto& membership : pack.memberships) {
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::grant_record,
-        ordinal,
-        seed,
-        KeyValuePayload({{"grant_class", "group_membership"},
-                         {"member_uuid", membership.member_uuid},
+    TypedUuid member_uuid, parent_uuid;
+    parsed_uuid = ParsePolicyObjectUuid(membership.member_uuid, &member_uuid);
+    if (!parsed_uuid.ok()) return parsed_uuid;
+    parsed_uuid = ParsePolicyObjectUuid(membership.parent_uuid, &parent_uuid);
+    if (!parsed_uuid.ok()) return parsed_uuid;
+    scratchbird::core::catalog::CatalogSecurityRecord record;
+    record.kind = CatalogRecordKind::grant_record;
+    record.identities = {{"member_uuid", member_uuid.value},
+                         {"parent_uuid", parent_uuid.value},
+                         {"policy_pack_uuid", policy_pack_uuid.value}};
+    record.attributes = {{"grant_class", "group_membership"},
                          {"member_kind", membership.member_kind},
-                         {"parent_uuid", membership.parent_uuid},
                          {"parent_kind", membership.parent_kind},
                          {"effect", "allow"},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
                          {"policy_generation", std::to_string(pack.image.policy_generation)},
                          {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
                          {"loaded_at_database_create", "1"},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}}),
-        security_parent_uuid);
+                         {"engine_owned", "1"}};
+    typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
+                                     security_parent_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
 
   for (const auto& grant : pack.grants) {
-    typed = AddTypedCatalogRecord(
-        rows,
-        CatalogRecordKind::grant_record,
-        ordinal,
-        seed,
-        KeyValuePayload({{"grant_uuid", grant.grant_uuid},
-                         {"grant_class", "privilege"},
-                         {"subject_uuid", grant.subject_uuid},
+    TypedUuid grant_uuid, subject_uuid, target_uuid;
+    parsed_uuid = ParsePolicyObjectUuid(grant.grant_uuid, &grant_uuid);
+    if (!parsed_uuid.ok()) return parsed_uuid;
+    parsed_uuid = ParsePolicyObjectUuid(grant.subject_uuid, &subject_uuid);
+    if (!parsed_uuid.ok()) return parsed_uuid;
+    scratchbird::core::catalog::CatalogSecurityRecord record;
+    record.kind = CatalogRecordKind::grant_record;
+    record.identities = {{"grant_uuid", grant_uuid.value},
+                         {"subject_uuid", subject_uuid.value},
+                         {"policy_pack_uuid", policy_pack_uuid.value}};
+    if (!grant.target_uuid.empty()) {
+      parsed_uuid = ParsePolicyObjectUuid(grant.target_uuid, &target_uuid);
+      if (!parsed_uuid.ok()) return parsed_uuid;
+      record.identities.emplace("target_uuid", target_uuid.value);
+    }
+    record.attributes = {{"grant_class", "privilege"},
                          {"subject_kind", grant.subject_kind},
-                         {"target_uuid", grant.target_uuid},
                          {"right", grant.right},
                          {"effect", grant.effect},
-                         {"policy_pack_uuid", pack.image.policy_pack_uuid},
                          {"policy_generation", std::to_string(pack.image.policy_generation)},
                          {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
                          {"loaded_at_database_create", "1"},
                          {"identity_authority", "uuid"},
-                         {"engine_owned", "1"}}),
-        security_parent_uuid);
+                         {"engine_owned", "1"}};
+    typed = AddSecurityCatalogRecord(rows, ordinal, seed, std::move(record),
+                                     security_parent_uuid);
     if (!typed.ok()) { return typed; }
     seed += 4;
   }
@@ -2920,13 +2961,10 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   const u32 policy_generation = policy_seed_pack.image.active
                                     ? policy_seed_pack.image.policy_generation
                                     : 1;
-  auto typed = AddTypedCatalogRecord(
-      rows,
-      CatalogRecordKind::role_account,
-      ordinal,
-      identity_seed,
-      KeyValuePayload({{"role_uuid", kCanonicalSysarchRoleObjectUuid},
-                       {"role_code", "ROLE_SYSARCH"},
+  scratchbird::core::catalog::CatalogSecurityRecord role_record;
+  role_record.kind = CatalogRecordKind::role_account;
+  role_record.identities = {{"role_uuid", parsed_sysarch.value.value}};
+  role_record.attributes = {{"role_code", "ROLE_SYSARCH"},
                        {"authority_class", "engine_owned_sysarch"},
                        {"engine_owned", "1"},
                        {"identity_authority", "uuid"},
@@ -2936,9 +2974,9 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"policy_generation", std::to_string(policy_generation)},
                        {"security_context_authority_version", "1"},
                        {"security_context_generation", "1"},
-                       {"active", "1"}}),
-      security_parent_uuid,
-      parsed_sysarch.value);
+                       {"active", "1"}};
+  auto typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed,
+      std::move(role_record), security_parent_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -2956,19 +2994,10 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   if (!principal.ok()) {
     return CatalogRowsBuildError(principal.status, principal.diagnostic);
   }
-  TypedUuid principal_object_uuid;
-  principal_object_uuid.kind = UuidKind::object;
-  principal_object_uuid.value = principal.value.value;
-  const std::string principal_uuid_text =
-      scratchbird::core::uuid::UuidToString(principal.value.value);
-
-  typed = AddTypedCatalogRecord(
-      rows,
-      CatalogRecordKind::user_account,
-      ordinal,
-      identity_seed + 4,
-      KeyValuePayload({{"principal_uuid", principal_uuid_text},
-                       {"principal_name", config.bootstrap_principal_name},
+  scratchbird::core::catalog::CatalogSecurityRecord principal_record;
+  principal_record.kind = CatalogRecordKind::user_account;
+  principal_record.identities = {{"principal_uuid", principal.value.value}};
+  principal_record.attributes = {{"principal_name", config.bootstrap_principal_name},
                        {"credential_fingerprint", config.bootstrap_credential_fingerprint},
                        {"kind", "user"},
                        {"principal_kind", "user"},
@@ -2980,9 +3009,9 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"security_context_generation", "1"},
                        {"identity_authority", "uuid"},
                        {"create_time_only", "1"},
-                       {"bootstrap_principal", "1"}}),
-      security_parent_uuid,
-      principal_object_uuid);
+                       {"bootstrap_principal", "1"}};
+  typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 4,
+      std::move(principal_record), security_parent_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -2992,22 +3021,18 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   if (!membership.ok()) {
     return CatalogRowsBuildError(membership.status, membership.diagnostic);
   }
-  const std::string membership_uuid_text =
-      scratchbird::core::uuid::UuidToString(membership.value.value);
-  typed = AddTypedCatalogRecord(
-      rows,
-      CatalogRecordKind::grant_record,
-      ordinal,
-      identity_seed + 8,
-      KeyValuePayload({{"membership_uuid", membership_uuid_text},
-                       {"grant_uuid", membership_uuid_text},
-                       {"grant_class", "role_membership"},
-                       {"member_uuid", principal_uuid_text},
+  scratchbird::core::catalog::CatalogSecurityRecord membership_record;
+  membership_record.kind = CatalogRecordKind::grant_record;
+  membership_record.identities = {
+      {"membership_uuid", membership.value.value},
+      {"grant_uuid", membership.value.value},
+      {"member_uuid", principal.value.value},
+      {"principal_uuid", principal.value.value},
+      {"parent_uuid", parsed_sysarch.value.value},
+      {"role_uuid", parsed_sysarch.value.value}};
+  membership_record.attributes = {{"grant_class", "role_membership"},
                        {"member_kind", "principal"},
-                       {"parent_uuid", kCanonicalSysarchRoleObjectUuid},
                        {"parent_kind", "role"},
-                       {"principal_uuid", principal_uuid_text},
-                       {"role_uuid", kCanonicalSysarchRoleObjectUuid},
                        {"active", "1"},
                        {"security_generation", "1"},
                        {"creator_tx", std::to_string(kBootstrapCatalogTransactionId)},
@@ -3015,9 +3040,9 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
                        {"security_context_authority_version", "1"},
                        {"security_context_generation", "1"},
                        {"identity_authority", "uuid"},
-                       {"create_time_only", "1"}}),
-      security_parent_uuid,
-      membership.value);
+                       {"create_time_only", "1"}};
+  typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 8,
+      std::move(membership_record), security_parent_uuid);
   if (!typed.ok()) {
     return typed;
   }
@@ -3318,13 +3343,29 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
 
   const auto bootstrap_records = DefaultBootstrapCatalogRecords(config, policy_seed_pack);
   u64 bootstrap_seed = config.creation_unix_epoch_millis + 14000;
+  scratchbird::core::platform::Uuid public_group_uuid{};
   for (const auto& bootstrap_record : bootstrap_records) {
-    typed = AddTypedCatalogRecord(&result.rows,
+    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(bootstrap_record.kind)) {
+      scratchbird::core::catalog::CatalogSecurityRecord record;
+      record.kind = bootstrap_record.kind;
+      record.attributes = ParseKeyValuePayload(bootstrap_record.payload);
+      const bool public_group = record.kind == CatalogRecordKind::group_account &&
+          record.attributes.at("group_name") == "PUBLIC";
+      if (record.kind == CatalogRecordKind::grant_record) {
+        record.identities.emplace("target_uuid", public_group_uuid);
+        record.attributes.erase("target");
+      }
+      typed = AddSecurityCatalogRecord(&result.rows, &ordinal, bootstrap_seed,
+          std::move(record), database_object.value,
+          public_group ? &public_group_uuid : nullptr);
+    } else {
+      typed = AddTypedCatalogRecord(&result.rows,
                                   bootstrap_record.kind,
                                   &ordinal,
                                   bootstrap_seed,
                                   bootstrap_record.payload,
                                   database_object.value);
+    }
     if (!typed.ok()) { return typed; }
     bootstrap_seed += 4;
   }
@@ -4257,13 +4298,8 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
     if (!decoded.ok()) {
       continue;
     }
-    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
-        || decoded.record.header.kind == CatalogRecordKind::filespace
-        || decoded.record.header.kind == CatalogRecordKind::schema
-        || decoded.record.header.kind == CatalogRecordKind::localized_name
-        || decoded.record.header.kind == CatalogRecordKind::localized_comment
-        ? std::map<std::string, std::string>{}
-        : ParseKeyValuePayload(decoded.record.payload);
+    if (decoded.record.header.kind != CatalogRecordKind::policy) continue;
+    const auto fields = ParseKeyValuePayload(decoded.record.payload);
     if (decoded.record.header.kind == CatalogRecordKind::policy) {
       const auto policy_class = fields.find("policy_class");
       if (policy_class == fields.end()) {
@@ -5406,6 +5442,8 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
   if (generation == nullptr) {
     return BootstrapSecurityContextAuthorityClass::invalid;
   }
+  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  if (!sysarch.ok()) return BootstrapSecurityContextAuthorityClass::invalid;
   *generation = 0;
   u32 relevant = 0;
   u32 current = 0;
@@ -5414,17 +5452,14 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok() || decoded.record.header.deleted) continue;
-    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
-        || decoded.record.header.kind == CatalogRecordKind::filespace
-        || decoded.record.header.kind == CatalogRecordKind::schema
-        || decoded.record.header.kind == CatalogRecordKind::localized_name
-        || decoded.record.header.kind == CatalogRecordKind::localized_comment
-        ? std::map<std::string, std::string>{}
-        : ParseKeyValuePayload(decoded.record.payload);
+    if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) continue;
+    auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+        decoded.record.header.kind, decoded.record.payload);
+    if (!security.ok()) return BootstrapSecurityContextAuthorityClass::invalid;
+    const auto& fields = security.record->attributes;
     const bool relevant_role =
         decoded.record.header.kind == CatalogRecordKind::role_account &&
-        fields.contains("role_uuid") &&
-        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+        security.record->Identity("role_uuid") == sysarch.value.value;
     const bool relevant_principal =
         decoded.record.header.kind == CatalogRecordKind::user_account &&
         fields.contains("bootstrap_principal") &&
@@ -5433,8 +5468,7 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
         decoded.record.header.kind == CatalogRecordKind::grant_record &&
         fields.contains("grant_class") &&
         fields.at("grant_class") == "role_membership" &&
-        fields.contains("role_uuid") &&
-        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+        security.record->Identity("role_uuid") == sysarch.value.value;
     if (!relevant_role && !relevant_principal && !relevant_membership) {
       continue;
     }
@@ -5474,22 +5508,21 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
 bool AddBootstrapSecurityContextAuthorityToRows(
     std::vector<CatalogPageRow>* rows) {
   if (rows == nullptr) return false;
+  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  if (!sysarch.ok()) return false;
   u32 updated = 0;
   for (auto& row : *rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok() || decoded.record.header.deleted) continue;
-    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
-        || decoded.record.header.kind == CatalogRecordKind::filespace
-        || decoded.record.header.kind == CatalogRecordKind::schema
-        || decoded.record.header.kind == CatalogRecordKind::localized_name
-        || decoded.record.header.kind == CatalogRecordKind::localized_comment
-        ? std::map<std::string, std::string>{}
-        : ParseKeyValuePayload(decoded.record.payload);
+    if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) continue;
+    auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+        decoded.record.header.kind, decoded.record.payload);
+    if (!security.ok()) return false;
+    const auto& fields = security.record->attributes;
     const bool relevant_role =
         decoded.record.header.kind == CatalogRecordKind::role_account &&
-        fields.contains("role_uuid") &&
-        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+        security.record->Identity("role_uuid") == sysarch.value.value;
     const bool relevant_principal =
         decoded.record.header.kind == CatalogRecordKind::user_account &&
         fields.contains("bootstrap_principal") &&
@@ -5498,8 +5531,7 @@ bool AddBootstrapSecurityContextAuthorityToRows(
         decoded.record.header.kind == CatalogRecordKind::grant_record &&
         fields.contains("grant_class") &&
         fields.at("grant_class") == "role_membership" &&
-        fields.contains("role_uuid") &&
-        fields.at("role_uuid") == kCanonicalSysarchRoleObjectUuid;
+        security.record->Identity("role_uuid") == sysarch.value.value;
     if (!relevant_role && !relevant_principal && !relevant_membership) {
       continue;
     }
@@ -5508,11 +5540,11 @@ bool AddBootstrapSecurityContextAuthorityToRows(
       return false;
     }
     auto record = decoded.record;
-    if (!record.payload.empty() && record.payload.back() != '\n') {
-      record.payload.push_back('\n');
-    }
-    record.payload.append("security_context_authority_version=1\n");
-    record.payload.append("security_context_generation=1\n");
+    security.record->attributes["security_context_authority_version"] = "1";
+    security.record->attributes["security_context_generation"] = "1";
+    const auto payload = scratchbird::core::catalog::EncodeCatalogSecurityRecord(*security.record);
+    if (!payload.ok()) return false;
+    record.payload.assign(payload.bytes.begin(), payload.bytes.end());
     const auto encoded = EncodeCatalogTypedRecord(record, row.ordinal);
     if (!encoded.ok()) return false;
     row = encoded.row;
@@ -7232,11 +7264,13 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     return propagate(tx1.status, tx1.diagnostic);
   }
 
+  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  if (!sysarch.ok()) return propagate(sysarch.status, sysarch.diagnostic);
   DatabaseBootstrapSecurityCatalogState state;
   state.committed_by_inventory = true;
   std::set<std::string> principal_names;
-  std::set<std::string> principal_uuids;
-  std::set<std::string> membership_uuids;
+  std::set<scratchbird::core::platform::Uuid> principal_uuids;
+  std::set<scratchbird::core::platform::Uuid> membership_uuids;
   std::set<std::string> credential_salts;
   u32 sysarch_count = 0;
   u32 bootstrap_principal_count = 0;
@@ -7267,21 +7301,18 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     if (decoded.record.header.deleted) {
       continue;
     }
-    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
-        || decoded.record.header.kind == CatalogRecordKind::filespace
-        || decoded.record.header.kind == CatalogRecordKind::schema
-        || decoded.record.header.kind == CatalogRecordKind::localized_name
-        || decoded.record.header.kind == CatalogRecordKind::localized_comment
-        ? std::map<std::string, std::string>{}
-        : ParseKeyValuePayload(decoded.record.payload);
+    if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) continue;
+    const auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+        decoded.record.header.kind, decoded.record.payload);
+    if (!security.ok()) return fail("CATALOG.INVALID_INPUT",
+        "catalog.security_record.invalid", "security_binary_payload_invalid");
+    const auto& fields = security.record->attributes;
 
     if (decoded.record.header.kind == CatalogRecordKind::role_account) {
       const std::string role_code = fields.count("role_code") == 0
                                         ? std::string{}
                                         : fields.at("role_code");
-      const std::string role_uuid = fields.count("role_uuid") == 0
-                                        ? std::string{}
-                                        : fields.at("role_uuid");
+      const auto role_uuid = security.record->Identity("role_uuid");
       const std::string role_name = fields.count("role_name") == 0
                                         ? std::string{}
                                         : fields.at("role_name");
@@ -7292,18 +7323,15 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
             role_name);
       }
       if (role_code != "ROLE_SYSARCH" &&
-          role_uuid != kCanonicalSysarchRoleObjectUuid &&
+          role_uuid != sysarch.value.value &&
           (fields.count("authority_class") == 0 ||
            fields.at("authority_class") != "engine_owned_sysarch")) {
         continue;
       }
       ++sysarch_count;
-      const std::string header_uuid = decoded.record.header.object_uuid.valid()
-                                          ? scratchbird::core::uuid::UuidToString(
-                                                decoded.record.header.object_uuid.value)
-                                          : std::string{};
-      if (header_uuid != kCanonicalSysarchRoleObjectUuid ||
-          role_uuid != kCanonicalSysarchRoleObjectUuid ||
+      const auto header_uuid = decoded.record.header.object_uuid.value;
+      if (header_uuid != sysarch.value.value ||
+          role_uuid != sysarch.value.value ||
           role_code != "ROLE_SYSARCH" ||
           !exact_field(fields, "authority_class", "engine_owned_sysarch") ||
           !exact_field(fields, "engine_owned", "1") ||
@@ -7318,13 +7346,9 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID",
             "storage.database_lifecycle.bootstrap_security_sysarch_provenance_invalid",
-            header_uuid + ":" + role_uuid + ":" + role_code);
+            role_code);
       }
-      const auto parsed_role = ParseTypedUuid(UuidKind::object, role_uuid);
-      if (!parsed_role.ok()) {
-        return propagate(parsed_role.status, parsed_role.diagnostic);
-      }
-      state.sysarch_role_uuid = parsed_role.value;
+      state.sysarch_role_uuid = decoded.record.header.object_uuid;
       state.creator_tx = ParseU64Field(fields, "creator_tx");
       state.policy_generation = ParseU32Field(fields, "policy_generation");
       state.security_context_generation =
@@ -7354,17 +7378,12 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         continue;
       }
       ++bootstrap_principal_count;
-      const std::string principal_uuid = fields.count("principal_uuid") == 0
-                                             ? std::string{}
-                                             : fields.at("principal_uuid");
+      const auto principal_uuid = security.record->Identity("principal_uuid");
       const std::string fingerprint =
           fields.count("credential_fingerprint") == 0
               ? std::string{}
               : fields.at("credential_fingerprint");
-      const std::string header_uuid = decoded.record.header.object_uuid.valid()
-                                          ? scratchbird::core::uuid::UuidToString(
-                                                decoded.record.header.object_uuid.value)
-                                          : std::string{};
+      const auto header_uuid = decoded.record.header.object_uuid.value;
       BootstrapCredentialFingerprintFields fingerprint_fields;
       const bool fingerprint_valid = ParseBootstrapCredentialFingerprint(
           fingerprint,
@@ -7387,15 +7406,10 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID",
             "storage.database_lifecycle.bootstrap_security_principal_invalid",
-            principal_name + ":" + principal_uuid);
+            principal_name);
       }
-      const auto parsed_principal = ParseTypedUuid(UuidKind::principal,
-                                                  principal_uuid);
-      if (!parsed_principal.ok()) {
-        return propagate(parsed_principal.status,
-                         parsed_principal.diagnostic);
-      }
-      state.principal_uuid = parsed_principal.value;
+      state.principal_uuid.kind = UuidKind::principal;
+      state.principal_uuid.value = principal_uuid;
       state.principal_name = principal_name;
       state.credential_fingerprint = fingerprint;
       if (state.creator_tx != ParseU64Field(fields, "creator_tx") ||
@@ -7412,29 +7426,21 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     }
 
     if (decoded.record.header.kind == CatalogRecordKind::grant_record &&
-        (exact_field(fields, "role_uuid", kCanonicalSysarchRoleObjectUuid) ||
-         exact_field(fields, "parent_uuid", kCanonicalSysarchRoleObjectUuid))) {
+        (security.record->Identity("role_uuid") == sysarch.value.value ||
+         security.record->Identity("parent_uuid") == sysarch.value.value)) {
       ++bootstrap_membership_count;
-      const std::string membership_uuid =
-          fields.count("membership_uuid") == 0
-              ? std::string{}
-              : fields.at("membership_uuid");
-      const std::string member_uuid = fields.count("member_uuid") == 0
-                                          ? std::string{}
-                                          : fields.at("member_uuid");
-      const std::string header_uuid = decoded.record.header.object_uuid.valid()
-                                          ? scratchbird::core::uuid::UuidToString(
-                                                decoded.record.header.object_uuid.value)
-                                          : std::string{};
+      const auto membership_uuid = security.record->Identity("membership_uuid");
+      const auto member_uuid = security.record->Identity("member_uuid");
+      const auto header_uuid = decoded.record.header.object_uuid.value;
       if (!membership_uuids.insert(membership_uuid).second ||
-          (!header_uuid.empty() && header_uuid != membership_uuid) ||
-          !exact_field(fields, "grant_uuid", membership_uuid) ||
+          header_uuid != membership_uuid ||
+          security.record->Identity("grant_uuid") != membership_uuid ||
           !exact_field(fields, "grant_class", "role_membership") ||
           !exact_field(fields, "member_kind", "principal") ||
-          !exact_field(fields, "parent_uuid", kCanonicalSysarchRoleObjectUuid) ||
+          security.record->Identity("parent_uuid") != sysarch.value.value ||
           !exact_field(fields, "parent_kind", "role") ||
-          !exact_field(fields, "principal_uuid", member_uuid) ||
-          !exact_field(fields, "role_uuid", kCanonicalSysarchRoleObjectUuid) ||
+          security.record->Identity("principal_uuid") != member_uuid ||
+          security.record->Identity("role_uuid") != sysarch.value.value ||
           !exact_field(fields, "active", "1") ||
           !exact_field(fields, "security_generation", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
@@ -7446,21 +7452,12 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID",
             "storage.database_lifecycle.bootstrap_security_membership_invalid",
-            membership_uuid);
+            "bootstrap_membership");
       }
-      const auto parsed_membership = ParseTypedUuid(UuidKind::object,
-                                                   membership_uuid);
-      if (!parsed_membership.ok()) {
-        return propagate(parsed_membership.status,
-                         parsed_membership.diagnostic);
-      }
-      const auto parsed_member = ParseTypedUuid(UuidKind::principal,
-                                                member_uuid);
-      if (!parsed_member.ok()) {
-        return propagate(parsed_member.status, parsed_member.diagnostic);
-      }
-      state.membership_uuid = parsed_membership.value;
-      membership_principal_uuid = parsed_member.value;
+      state.membership_uuid.kind = UuidKind::object;
+      state.membership_uuid.value = membership_uuid;
+      membership_principal_uuid.kind = UuidKind::principal;
+      membership_principal_uuid.value = member_uuid;
       if (state.policy_generation != ParseU32Field(fields,
                                                    "policy_generation") ||
           state.security_context_generation !=
@@ -7468,7 +7465,7 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
             "storage.database_lifecycle.bootstrap_security_generation_mismatch",
-            membership_uuid);
+            "bootstrap_membership");
       }
     }
   }

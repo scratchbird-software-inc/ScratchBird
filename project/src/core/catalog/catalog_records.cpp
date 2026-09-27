@@ -163,7 +163,7 @@ const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors() {
       Descriptor(CatalogRecordKind::user_account, CatalogRecordScope::local_database, "user_account", true, true, true, true, false),
       Descriptor(CatalogRecordKind::group_account, CatalogRecordScope::local_database, "group_account", true, true, true, true, false),
       Descriptor(CatalogRecordKind::role_account, CatalogRecordScope::local_database, "role_account", true, true, true, true, false),
-      Descriptor(CatalogRecordKind::grant_record, CatalogRecordScope::local_database, "grant_record", false, true, true, true, false),
+      Descriptor(CatalogRecordKind::grant_record, CatalogRecordScope::local_database, "grant_record", true, true, true, true, false),
       Descriptor(CatalogRecordKind::masking_policy, CatalogRecordScope::local_database, "masking_policy", true, true, true, true, false),
       Descriptor(CatalogRecordKind::rls_policy, CatalogRecordScope::local_database, "rls_policy", true, true, true, true, false),
       Descriptor(CatalogRecordKind::udr_package, CatalogRecordScope::local_database, "udr_package", true, true, true, true, false),
