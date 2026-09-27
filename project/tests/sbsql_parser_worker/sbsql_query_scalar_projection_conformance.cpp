@@ -1220,7 +1220,12 @@ void EncodeDescriptor(SblrOperand* operand, const api::RelationalTypeDescriptor&
 }
 
 NativeRelationalBindingContext GroupedSumBindingContext(
-    const AstDocument& ast) {
+    const AstDocument& ast, std::uint64_t cohort = 1) {
+  constexpr std::array catalog_snapshots{
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d702"),
+      scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d703")};
+  Require(cohort >= 1 && cohort <= catalog_snapshots.size(), "unknown test datatype cohort");
   auto context = TableSelectBindingContext();
   context.descriptors.clear();
   context.expressions.clear();
@@ -1254,7 +1259,7 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   constexpr auto kInt128TypeUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d715");
   constexpr auto kSumFunctionUuid = scratchbird::tests::FixtureUuidLiteral("019de5fc-2400-72e4-8549-82b2eef5a777");
   constexpr auto kStatementReceiptUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
-  constexpr auto kDatatypeCatalogSnapshotUuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
+  const auto kDatatypeCatalogSnapshotUuid = catalog_snapshots[cohort - 1];
   constexpr auto kKeyColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000318d");
   constexpr auto kValueColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7600-8000-00000000318e");
 
@@ -1272,8 +1277,8 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   key_descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
   key_descriptor.datatype_catalog_snapshot_uuid =
       kDatatypeCatalogSnapshotUuid;
-  key_descriptor.datatype_catalog_generation = 1;
-  key_descriptor.datatype_registry_generation = 1;
+  key_descriptor.datatype_catalog_generation = cohort;
+  key_descriptor.datatype_registry_generation = cohort;
   context.descriptors.push_back(key_descriptor);
 
   NativeDescriptorBindingInput value_descriptor = key_descriptor;
@@ -1294,8 +1299,8 @@ NativeRelationalBindingContext GroupedSumBindingContext(
   result_descriptor.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003190");
   result_descriptor.datatype_catalog_snapshot_uuid =
       kDatatypeCatalogSnapshotUuid;
-  result_descriptor.datatype_catalog_generation = 1;
-  result_descriptor.datatype_registry_generation = 1;
+  result_descriptor.datatype_catalog_generation = cohort;
+  result_descriptor.datatype_registry_generation = cohort;
   context.descriptors.push_back(result_descriptor);
 
   context.expressions.push_back(
@@ -1469,7 +1474,7 @@ PipelineArtifacts RunAuthoritativeTextJoinPipeline() {
   return artifacts;
 }
 
-PipelineArtifacts RunGroupedSumPipeline() {
+PipelineArtifacts RunGroupedSumPipeline(std::uint64_t cohort = 1) {
   constexpr std::string_view kSql =
       "SELECT customer_id, SUM(total_amount) FROM benchmark_orders "
       "GROUP BY customer_id";
@@ -1477,7 +1482,7 @@ PipelineArtifacts RunGroupedSumPipeline() {
   const auto session = ParserSession();
   artifacts.cst = BuildCst(kSql);
   artifacts.ast = BuildAst(artifacts.cst);
-  auto native_context = GroupedSumBindingContext(artifacts.ast);
+  auto native_context = GroupedSumBindingContext(artifacts.ast, cohort);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(),
                             session, {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")},
                             &native_context);
@@ -8157,8 +8162,8 @@ void RequireCurrentValueFormProjectionLowering() {
           "server admission did not require public ABI for current_value_form/current_timestamp route");
 }
 
-void RequireGroupedSumInt128Lowering() {
-  const auto artifacts = RunGroupedSumPipeline();
+void RequireGroupedSumInt128LoweringForCohort(std::uint64_t cohort) {
+  const auto artifacts = RunGroupedSumPipeline(cohort);
   if (!artifacts.bound.bound) {
     for (const auto& diagnostic : artifacts.bound.messages.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -8263,7 +8268,22 @@ void RequireGroupedSumInt128Lowering() {
       "GROUP BY customer_id";
   const auto cst = BuildCst(kSql);
   const auto ast = BuildAst(cst);
-  auto malformed_context = GroupedSumBindingContext(ast);
+  auto malformed_context = GroupedSumBindingContext(ast, cohort);
+  std::size_t authoritative_descriptors = 0;
+  for (const auto& operand : artifacts.envelope.operands) {
+    if (operand.type != "relational_descriptor_v3") continue;
+    const auto wire = DecodeDescriptor(operand);
+    const auto& expected = malformed_context.descriptors.front();
+    Require(wire.datatype_identity_authoritative &&
+                wire.datatype_catalog_snapshot_uuid == expected.datatype_catalog_snapshot_uuid &&
+                wire.datatype_catalog_generation == cohort &&
+                wire.datatype_registry_generation == cohort &&
+                wire.statement_receipt_uuid == expected.statement_receipt_uuid,
+            "grouped SUM lowering changed its native catalog cohort or receipt");
+    ++authoritative_descriptors;
+  }
+  Require(authoritative_descriptors == 3,
+          "grouped SUM did not transport exactly three authoritative descriptors");
   malformed_context.descriptors.back().type_uuid =
       scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712");
   const auto malformed =
@@ -8276,7 +8296,7 @@ void RequireGroupedSumInt128Lowering() {
                   }),
           "catalog grouped SUM accepted a noncanonical result type UUID");
 
-  auto stale_generation_context = GroupedSumBindingContext(ast);
+  auto stale_generation_context = GroupedSumBindingContext(ast, cohort);
   stale_generation_context.descriptors.front().descriptor_generation = 2;
   const auto stale_generation =
       BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
@@ -8284,7 +8304,7 @@ void RequireGroupedSumInt128Lowering() {
   Require(!stale_generation.bound,
           "catalog grouped SUM accepted a stale source descriptor generation");
 
-  auto cross_receipt_context = GroupedSumBindingContext(ast);
+  auto cross_receipt_context = GroupedSumBindingContext(ast, cohort);
   cross_receipt_context.descriptors.back().statement_receipt_uuid =
       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7160-8000-000000003191");
   const auto cross_receipt =
@@ -8292,6 +8312,70 @@ void RequireGroupedSumInt128Lowering() {
               {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")}, &cross_receipt_context);
   Require(!cross_receipt.bound,
           "catalog grouped SUM accepted cross-receipt result identity");
+
+  const auto other_cohort = GroupedSumBindingContext(ast, cohort == 3 ? 1 : 3);
+  const auto mutate = [&](auto& descriptor, unsigned mutation) {
+    switch (mutation) {
+      case 0: descriptor.datatype_catalog_snapshot_uuid.bytes[15] = 0xef; break;
+      case 1: ++descriptor.datatype_catalog_generation; break;
+      case 2: ++descriptor.datatype_registry_generation; break;
+      case 3: descriptor.codec_id += ".substituted"; break;
+      case 4: ++descriptor.codec_version; break;
+      case 5: ++descriptor.codec_generation; break;
+      case 6: ++descriptor.type_generation; break;
+      case 7: ++descriptor.descriptor_generation; break;
+      case 8: descriptor.statement_receipt_uuid.bytes[15] ^= 1; break;
+      case 9: descriptor.type_uuid.bytes[15] = 0xef; break;
+      case 10:
+        descriptor.datatype_catalog_snapshot_uuid =
+            other_cohort.descriptors.front().datatype_catalog_snapshot_uuid;
+        descriptor.datatype_catalog_generation =
+            other_cohort.descriptors.front().datatype_catalog_generation;
+        descriptor.datatype_registry_generation =
+            other_cohort.descriptors.front().datatype_registry_generation;
+        break;
+    }
+  };
+  for (std::size_t slot = 0; slot < 3; ++slot) {
+    for (unsigned mutation = 0; mutation < 11; ++mutation) {
+      auto forged_context = GroupedSumBindingContext(ast, cohort);
+      mutate(forged_context.descriptors[slot], mutation);
+      Require(!BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
+                  {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")},
+                  &forged_context).bound,
+              "grouped SUM binder accepted substituted native datatype authority");
+      auto forged = artifacts.envelope;
+      const auto operand = std::ranges::find_if(forged.operands, [&](const auto& candidate) {
+        return candidate.type == "relational_descriptor_v3" &&
+               candidate.name == "slot_" + std::to_string(slot + 1);
+      });
+      Require(operand != forged.operands.end(), "grouped SUM wire descriptor is absent");
+      auto wire = DecodeDescriptor(*operand);
+      mutate(wire, mutation);
+      EncodeDescriptor(&*operand, wire);
+      Require(!VerifySblrEnvelope(forged).admitted,
+              "grouped SUM verifier accepted substituted native datatype authority");
+    }
+  }
+  // A common but unregistered cohort is not rescued by cross-slot agreement.
+  auto unregistered_context = GroupedSumBindingContext(ast, cohort);
+  auto unregistered_wire = artifacts.envelope;
+  for (auto& descriptor : unregistered_context.descriptors) mutate(descriptor, 0);
+  for (auto& operand : unregistered_wire.operands) {
+    if (operand.type != "relational_descriptor_v3") continue;
+    auto descriptor = DecodeDescriptor(operand);
+    mutate(descriptor, 0);
+    EncodeDescriptor(&operand, descriptor);
+  }
+  Require(!BindAst(ast, cst, ParserConfigForTest(), ParserSession(),
+                  {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")},
+                  &unregistered_context).bound &&
+              !VerifySblrEnvelope(unregistered_wire).admitted,
+          "grouped SUM accepted a consistently unregistered datatype cohort");
+}
+
+void RequireGroupedSumInt128Lowering() {
+  for (std::uint64_t cohort : {1, 2, 3}) RequireGroupedSumInt128LoweringForCohort(cohort);
 }
 
 void RequireAuthoritativeTextJoinDescriptorTransport() {

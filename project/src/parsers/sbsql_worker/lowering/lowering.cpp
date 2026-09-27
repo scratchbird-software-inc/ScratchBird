@@ -9,6 +9,7 @@
 #include "lowering/lowering.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "binder/relational_property_identity.hpp"
+#include "common/native_datatype_codec_identity.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
@@ -46830,10 +46831,10 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                  descriptor.type_generation == 1 &&
                  descriptor.codec_version == 1 &&
                  descriptor.codec_generation == 1 &&
-                 descriptor.datatype_catalog_snapshot_uuid ==
-                     scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
-                 descriptor.datatype_catalog_generation == 1 &&
-                 descriptor.datatype_registry_generation == 1 &&
+                 MatchesNativeDatatypeCodecIdentity(
+                     descriptor, bigint
+                         ? scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}}
+                         : kInt128DescriptorUuid) &&
                  (bigint || int128);
         }) ||
         std::ranges::count_if(graph.descriptors, is_bigint) != 2 ||

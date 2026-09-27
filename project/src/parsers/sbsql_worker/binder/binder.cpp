@@ -8,6 +8,7 @@
 
 #include "binder/binder.hpp"
 #include "binder/relational_property_identity.hpp"
+#include "common/native_datatype_codec_identity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10227,13 +10228,9 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
                         input_descriptor->second->codec_generation == 1 &&
                         IsEngineIdentityUuid(
                             input_descriptor->second->statement_receipt_uuid) &&
-                        input_descriptor->second
-                                ->datatype_catalog_snapshot_uuid ==
-                            Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
-                        input_descriptor->second
-                                ->datatype_catalog_generation == 1 &&
-                        input_descriptor->second
-                                ->datatype_registry_generation == 1;
+                        MatchesNativeDatatypeCodecIdentity(
+                            *input_descriptor->second,
+                            Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x11}});
                }));
       const bool grouped_sum_result_identity_exact =
           !aggregate_grouped_sum_int128 ||
@@ -10249,10 +10246,9 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
            descriptor->second->codec_generation == 1 &&
            IsEngineIdentityUuid(
                descriptor->second->statement_receipt_uuid) &&
-           descriptor->second->datatype_catalog_snapshot_uuid ==
-               Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
-           descriptor->second->datatype_catalog_generation == 1 &&
-           descriptor->second->datatype_registry_generation == 1 &&
+           MatchesNativeDatatypeCodecIdentity(
+               *descriptor->second,
+               Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x14}}) &&
            std::ranges::all_of(
                relation_binding.columns, [&](const auto& column) {
                  const auto input_descriptor =

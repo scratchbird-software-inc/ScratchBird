@@ -61,7 +61,7 @@ target_include_directories(sbl_sbsql_parser_pipeline PUBLIC
 )
 target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC
   sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec
-  sbl_sbsql_reservation_projection)
+  sbl_sbsql_reservation_projection sb_core_datatypes)
 
 set(SBSQL_PARSER_WORKER_CORE_SOURCES
   embedded/embedded_engine_client.cpp

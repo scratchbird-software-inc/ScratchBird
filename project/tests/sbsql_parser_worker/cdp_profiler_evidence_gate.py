@@ -433,6 +433,10 @@ def grouped_sum_int128_script(prefix: str, inputs: dict[str, Path]) -> str:
         f"INSERT INTO {all_null} (group_id, amount) VALUES "
         "(2, NULL), (2, NULL);",
         f"SELECT group_id, SUM(amount) FROM {all_null} GROUP BY group_id;",
+        # SBsql renders the result's SQL NULL flag as '(null)'. A subsequent
+        # real update and aggregate distinguishes SQL NULL from numeric zero.
+        f"UPDATE {all_null} SET amount = 0 WHERE group_id = 2;",
+        f"SELECT group_id, SUM(amount) FROM {all_null} GROUP BY group_id;",
         "",
     ])
 
@@ -447,7 +451,7 @@ WORKLOADS: tuple[Workload, ...] = (
         "grouped_sum_int128",
         "aggregate",
         4,
-        ("1|9223372036854775808", "2|"),
+        ("1|9223372036854775808", "2|(null)", "2|0"),
         grouped_sum_int128_script,
     ),
 )
