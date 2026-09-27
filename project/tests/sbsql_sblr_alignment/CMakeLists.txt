@@ -9908,6 +9908,16 @@ foreach(native_component IN ITEMS udr_registry_binary_file udr_native_registry c
     TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;native_binding;not_runtime_acceptance")
 endforeach()
 
+add_executable(sbsql_sblr_alignment_auth_provider_native_policy
+  auth_provider_native_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_auth_provider_native_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_auth_provider_native_policy PRIVATE
+  sb_engine_internal_api sb_core_agents sb_engine_api_diagnostics)
+add_test(NAME sbsql_sblr_alignment_auth_provider_native_policy
+  COMMAND sbsql_sblr_alignment_auth_provider_native_policy)
+set_tests_properties(sbsql_sblr_alignment_auth_provider_native_policy PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;native_binding;not_runtime_acceptance;sbsql_sblr_alignment_auth_provider_native_policy")
+
 # Component tests include the implementation under test, but its referenced
 # runtime services still come from the production libraries.
 foreach(query_component IN ITEMS query_native_memory window_native_identity spatial_columnar_native_binding)

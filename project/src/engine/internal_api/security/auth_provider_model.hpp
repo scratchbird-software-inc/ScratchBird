@@ -12,6 +12,7 @@
 #include "security/security_model.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -69,13 +70,16 @@ struct AuthProviderDecision {
   EngineApiDiagnostic diagnostic;
   SecurityRowFields rows;
   std::vector<EngineEvidenceReference> evidence;
+  // The policy actually evaluated. Reload must not rebuild it and issue a
+  // different identity after evaluation.
+  std::optional<AuthProviderPolicy> evaluated_policy;
 };
 
 std::string CanonicalAuthProviderFamily(std::string provider_family);
 bool IsKnownAuthProviderFamily(const std::string& provider_family);
 bool AuthProviderFamilySupportsAuthn(const std::string& provider_family);
 AuthProviderDescriptor AuthProviderDescriptorFromRequest(const EngineApiRequest& request);
-AuthProviderPolicy AuthProviderPolicyFromRequest(const EngineApiRequest& request);
+std::optional<AuthProviderPolicy> AuthProviderPolicyFromRequest(const EngineApiRequest& request);
 std::string AuthProviderOptionValue(const EngineApiRequest& request, const std::string& prefix);
 bool AuthProviderOptionBool(const EngineApiRequest& request, const std::string& prefix, bool fallback = false);
 bool AuthProviderOptionPresent(const EngineApiRequest& request, const std::string& exact_value);

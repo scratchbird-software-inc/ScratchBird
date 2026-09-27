@@ -8,7 +8,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
-#include <stdexcept>
 #include "security/auth_provider_model.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
@@ -478,21 +477,31 @@ AuthProviderDescriptor AuthProviderDescriptorFromRequest(const EngineApiRequest&
   return descriptor;
 }
 
-EngineUuid AuthProviderIdentityOption(const EngineApiRequest& request, std::string_view prefix) {
-  const auto bytes=AuthProviderOptionValue(request,std::string(prefix));
-  if(bytes.empty())return {};
-  EngineUuid identity;
-  if(!ReadMetadataUuid(bytes,&identity))throw std::invalid_argument("auth_provider_binary_identity_required");
-  return identity;
+bool AuthProviderIdentityOption(const EngineApiRequest& request,
+                                std::string_view name, EngineUuid* identity) {
+  const std::string prefix = std::string(name) + ":";
+  const bool present = std::any_of(
+      request.option_envelopes.begin(), request.option_envelopes.end(),
+      [&](const auto& option) { return option.starts_with(prefix); });
+  // Absence and an explicitly empty identity are different. In particular,
+  // empty, duplicate or textual input must never become a new identity.
+  return !present || ReadSecurityIdentityOption(request, name, identity);
 }
 
-AuthProviderPolicy AuthProviderPolicyFromRequest(const EngineApiRequest& request) {
+std::optional<AuthProviderPolicy> AuthProviderPolicyFromRequest(const EngineApiRequest& request) {
   AuthProviderPolicy policy;
   policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider:"));
   if (policy.provider_family.empty()) { policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider_family:")); }
   policy.provider_uuid = request.target_object.uuid;
-  if (policy.provider_uuid.is_nil()) { policy.provider_uuid = AuthProviderIdentityOption(request, "provider_uuid:"); }
-  policy.policy_uuid = AuthProviderIdentityOption(request, "policy_uuid:");
+  EngineUuid option_provider;
+  if ((!policy.provider_uuid.is_nil() && !core::uuid::IsEngineIdentityUuid(policy.provider_uuid)) ||
+      !AuthProviderIdentityOption(request, "provider_uuid", &option_provider) ||
+      !AuthProviderIdentityOption(request, "policy_uuid", &policy.policy_uuid) ||
+      (!policy.provider_uuid.is_nil() && !option_provider.is_nil() &&
+       policy.provider_uuid != option_provider)) {
+    return std::nullopt;
+  }
+  if (policy.provider_uuid.is_nil()) { policy.provider_uuid = option_provider; }
   if (policy.policy_uuid.is_nil()) { policy.policy_uuid = GenerateCrudEngineUuid("policy"); }
   policy.enabled = AuthProviderOptionBool(request, "provider_enabled:", true) && !AuthProviderOptionPresent(request, "provider:disabled");
   policy.allow_password_compat = AuthProviderOptionBool(request, "allow_password_compat:", false);
@@ -595,7 +604,12 @@ AuthProviderDecision EvaluateAuthProviderPolicy(const EngineApiRequest& request)
       scratchbird::core::metrics::Labels({{"component", "security.auth_provider"}, {"policy_family", "auth_provider"}}),
       1.0,
       "policy_runtime");
-  const auto policy = AuthProviderPolicyFromRequest(request);
+  auto parsed_policy = AuthProviderPolicyFromRequest(request);
+  if (!parsed_policy) {
+    return Fail(request, "SECURITY.AUTHORITY.INVALID",
+                "auth_provider_binary_identity_required");
+  }
+  const auto& policy = *parsed_policy;
   const bool login_flow = AuthProviderOptionPresent(request, "auth_flow:login");
   if (!login_flow && !HasAdmin(request.context) && !SecurityContextHasRight(request.context, "CONNECT")) {
     return Fail(request, "SECURITY.AUTHORIZATION.DENIED", "provider_policy_requires_authority");
@@ -644,6 +658,7 @@ AuthProviderDecision EvaluateAuthProviderPolicy(const EngineApiRequest& request)
   AddRow(&decision, "stale_behavior", policy.stale_behavior);
   AddRow(&decision, "group_behavior", policy.group_behavior);
   AddRow(&decision, "cache_bounds", policy.cache_bounds);
+  decision.evaluated_policy = std::move(parsed_policy);
   return decision;
 }
 

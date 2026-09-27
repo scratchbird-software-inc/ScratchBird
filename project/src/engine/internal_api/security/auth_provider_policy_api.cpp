@@ -16,13 +16,15 @@ namespace scratchbird::engine::internal_api {
 EngineReloadAuthProviderPolicyResult EngineReloadAuthProviderPolicy(const EngineReloadAuthProviderPolicyRequest& request) {
   auto decision = EvaluateAuthProviderPolicy(request);
   if (!decision.ok) {
-    auto result = SecurityFailure<EngineReloadAuthProviderPolicyResult>(request.context, "security.reload_auth_provider_policy", decision.diagnostic);
+    // ApplyAuthProviderDecision owns the refusal and its diagnostic. Do not
+    // append the same diagnostic once here and a second time below.
+    auto result = SecuritySuccess<EngineReloadAuthProviderPolicyResult>(request.context, "security.reload_auth_provider_policy");
     ApplyAuthProviderDecision(&result, decision);
     return result;
   }
   auto result = PersistedRecordResult<EngineReloadAuthProviderPolicyResult>(request, "security.reload_auth_provider_policy", "security_auth_provider_policy", true, "active");
   if (!result.ok) { return result; }
-  result.policy = AuthProviderPolicyFromRequest(request);
+  result.policy = std::move(*decision.evaluated_policy);
   result.reloaded = true;
   AddSecurityEvidence(&result, "auth_provider_policy_reloaded", result.policy.policy_uuid);
   AddSecurityRow(&result, {{"policy_uuid", result.policy.policy_uuid},
