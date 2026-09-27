@@ -137,8 +137,10 @@ using MgaTransactionalIndexProvider =
     MgaOrderedBtreeTransactionalIndexProvider;
 
 // Commit-barrier proof for transaction-owned mutations in every admitted
-// native index family. A missing insert or retire record blocks inventory
-// finality. The ordered-B-tree name remains as a compatibility entry point.
+// native index family. Each insert or retire requires a base record or an
+// exact durable non-unique delta bound to the inventory and real row version.
+// Missing or altered effects block finality; unique indexes remain synchronous.
+// The ordered-B-tree name remains as a compatibility entry point.
 DmlTransactionalIndexProviderResult
 ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
     const EngineRequestContext& context,

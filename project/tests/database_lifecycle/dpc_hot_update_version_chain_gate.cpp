@@ -7,9 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "secondary_index_delta_ledger.hpp"
@@ -17,8 +20,10 @@
 #include "uuid.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -113,12 +118,16 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid non_unique_index_uuid;
   api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -126,23 +135,9 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
-  context.security_context_present = true;
-  context.identifier_profile_uuid = "sbsql_v3";
-  context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -217,19 +212,22 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DPC-026 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "dpc026-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+      context, Table(fixture, context), {"character", "character", "character"},
+      {Index(fixture, context, fixture.non_unique_index_uuid, "name", false),
+       Index(fixture, context, fixture.unique_index_uuid, "id", true)}),
                       "DPC-026 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -241,7 +239,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                           Index(fixture, context, fixture.unique_index_uuid,
                                 "id", true)),
                       "DPC-026 unique index metadata append failed");
+  fixture.schema_uuid = context.current_schema_uuid;
   Commit(context);
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "native-dpc-session"));
   return fixture;
 }
 
@@ -250,8 +251,8 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       std::string id,
                                       std::string name,
                                       std::string note) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(name), std::move(note)));
@@ -266,8 +267,8 @@ api::EngineUpdateRowsResult UpdateNameNote(
     std::string name,
     std::string note,
     std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
@@ -287,8 +288,8 @@ api::EngineUpdateRowsResult UpdateIdNameNote(
     std::string name,
     std::string note,
     std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate.predicate_kind = "column_equals";
@@ -314,8 +315,8 @@ api::EngineSelectRowsResult SelectEquals(const Fixture& fixture,
                                          const api::EngineRequestContext& context,
                                          std::string column,
                                          std::string value) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = EqualsPredicate(std::move(column), std::move(value));
@@ -772,9 +773,80 @@ void ValidateDeferredChangedKeyDeltasAndNonKeySkip() {
   Rollback(rollback_reader);
 }
 
+void WriteLedger(const Fixture& fixture,
+                 const idx::PersistentSecondaryIndexDeltaLedger& ledger) {
+  const auto encoded = idx::EncodePersistentSecondaryIndexDeltaLedger(ledger, {});
+  Require(encoded.ok(), "DPC-026 native ledger mutation could not be encoded");
+  std::ofstream file(fixture.database_path.string() + ".sb.mga_secondary_index_delta_ledger",
+                     std::ios::binary | std::ios::trunc);
+  file.write(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
+  file.close();
+  Require(file.good(), "DPC-026 native ledger mutation could not be written");
+}
+
+void ValidateDeferredCommitIdentityProofs() {
+  for (const std::string mutation : {"missing_after", "index", "table", "row", "version",
+                                     "transaction", "local_transaction", "key", "kind"}) {
+    auto fixture = MakeFixture("native-proof-" + mutation, 9000);
+    SeedCommittedRow(fixture, "native-row", "before");
+    auto writer = Begin(fixture, "native-deferred-proof");
+    const auto updated = UpdateNameNote(fixture, writer, "native-row", "after", "note1",
+                                        DeferredOptions());
+    RequireOk(updated, "DPC-026 deferred native proof update failed");
+    const auto state = api::BuildMgaRelationReadView(LoadState(fixture, writer));
+    Require(api::ValidateTransactionalIndexMutationSetForCommit(writer, state).ok,
+            "DPC-026 complete native delta proof was not admitted");
+    const auto original = LoadLedger(fixture);
+    auto altered = original;
+    auto after = std::find_if(altered.records.begin(), altered.records.end(), [&](const auto& r) {
+      return r.delta.local_transaction_id == writer.local_transaction_id &&
+             r.delta.delta_kind == idx::SecondaryIndexDeltaKind::update_after;
+    });
+    Require(after != altered.records.end(), "DPC-026 native after-delta missing");
+    if (mutation == "missing_after") altered.records.erase(after);
+    else if (mutation == "index") after->delta.index_uuid = NewUuid(platform::UuidKind::object, 1);
+    else if (mutation == "table") after->delta.table_uuid = NewUuid(platform::UuidKind::object, 2);
+    else if (mutation == "row") after->delta.row_uuid = NewUuid(platform::UuidKind::row, 3);
+    else if (mutation == "version") after->delta.version_uuid = NewUuid(platform::UuidKind::row, 4);
+    else if (mutation == "transaction") after->delta.transaction_uuid = NewUuid(platform::UuidKind::transaction, 5);
+    else if (mutation == "local_transaction") ++after->delta.local_transaction_id;
+    else if (mutation == "key") after->delta.key_payload = api::EncodeCrudPairs(
+        {{"key", "wrong"}, {"payload", "after"}, {"family", api::kCrudIndexFamilyBtree}});
+    else if (mutation == "kind") after->delta.delta_kind = idx::SecondaryIndexDeltaKind::insert;
+    WriteLedger(fixture, altered);
+    api::EngineCommitTransactionRequest request;
+    request.context = writer;
+    const auto refused = api::EngineCommitTransaction(request);
+    const bool exact_refusal = std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(),
+        [](const auto& d) { return d.detail.find("INDEX.TRANSACTIONAL_PROVIDER.") != std::string::npos; });
+    if (refused.ok || !exact_refusal) {
+      std::cerr << "native delta mutation=" << mutation << '\n';
+      for (const auto& diagnostic : refused.diagnostics)
+        std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Require(!refused.ok && exact_refusal, "DPC-026 altered native delta proof crossed commit barrier");
+    const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+    Require(inventory.ok(), "DPC-026 inventory unreadable after refused commit");
+    namespace mga = scratchbird::transaction::mga;
+    const auto transaction = mga::LookupLocalTransaction(inventory.inventory,
+        mga::MakeLocalTransactionId(writer.local_transaction_id));
+    Require(transaction.ok() && !mga::HasCommittedInventoryOutcome(transaction.entry),
+            "DPC-026 refused native delta commit published finality");
+    WriteLedger(fixture, original);
+    Commit(writer);
+    auto reader = Begin(fixture, "native-deferred-proof-reader");
+    RequireLookupNote(fixture, reader, "after", "note1",
+                      "DPC-026 restored native delta did not commit and publish");
+    RequireLookupCount(fixture, reader, "name", "before", 0,
+                       "DPC-026 retired key survived restored delta commit");
+    Rollback(reader);
+  }
+}
+
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("dpc_hot_update_version_chain_gate-native");
   Require(kHotUpdateSearchKey == "DPC_HOT_UPDATE_SHAPE",
           "DPC-026 hot update search key drifted");
   Require(kGateSearchKey == "DPC_HOT_UPDATE_VERSION_CHAIN_GATE",
@@ -784,5 +856,6 @@ int main() {
   ValidateDisabledBaselineChurnAndRollback();
   ValidateSynchronousChangedKeyCommitAndRollback();
   ValidateDeferredChangedKeyDeltasAndNonKeySkip();
+  ValidateDeferredCommitIdentityProofs();
   return EXIT_SUCCESS;
 }

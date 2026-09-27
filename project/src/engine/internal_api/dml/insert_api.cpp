@@ -1366,8 +1366,7 @@ std::vector<CrudIndexRecord> SynchronousInsertIndexes(
   std::vector<CrudIndexRecord> indexes;
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action !=
-            InsertIndexMaintenanceAction::committed_delta_ledger ||
-        IsAdmittedMgaTransactionalIndexFamily(entry.index)) {
+            InsertIndexMaintenanceAction::committed_delta_ledger) {
       indexes.push_back(entry.index);
     }
   }

@@ -12,6 +12,8 @@
 
 #include "api_diagnostics.hpp"
 #include "index_family_registry.hpp"
+#include "local_transaction_store.hpp"
+#include "transaction_state.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -108,6 +110,124 @@ bool HasEntry(const RelationReadSnapshot& state,
                             creator_tx);
       });
 }
+
+// A deferred mutation is a durable, exact alternative representation of a
+// non-unique index effect, not an exemption from the commit barrier. Resolve
+// its native transaction identity through the inventory and its key/payload
+// through the real row version. No caller-supplied success flag is authority.
+class DeferredIndexProofs {
+ public:
+  DeferredIndexProofs(const EngineRequestContext& context,
+                     const RelationReadSnapshot& state)
+      : context_(context), state_(state) {}
+
+  bool Mutation(const CrudIndexRecord& index, const CrudRowVersionRecord& row,
+                const CrudRowVersionRecord* predecessor, const std::string& key,
+                bool retire) {
+    using Kind = core_index::SecondaryIndexDeltaKind;
+    if (retire && predecessor == nullptr) return false;
+    return Match(index, row.row_uuid,
+                 retire && !row.deleted ? predecessor->version_uuid : row.version_uuid,
+                 row.creator_tx,
+                 retire ? (row.deleted ? Kind::delete_row : Kind::update_before)
+                        : (predecessor == nullptr ? Kind::insert : Kind::update_after),
+                 key, retire ? predecessor->values : row.values);
+  }
+
+  bool Membership(const CrudIndexRecord& index, const CrudRowVersionRecord& row,
+                  const std::string& key) {
+    const CrudRowVersionRecord* version = &row;
+    for (std::size_t depth = 0; version && depth <= state_.row_versions.size(); ++depth) {
+      if (version->row_uuid != row.row_uuid || version->table_uuid != index.table_uuid)
+        return false;
+      const auto keys = CrudIndexKeysForValues(index, version->values);
+      if (!version->deleted && std::find(keys.begin(), keys.end(), key) != keys.end() &&
+          Match(index, row.row_uuid, version->version_uuid, version->creator_tx,
+                version->previous_version_uuid.is_nil()
+                    ? core_index::SecondaryIndexDeltaKind::insert
+                    : core_index::SecondaryIndexDeltaKind::update_after,
+                key, version->values)) return true;
+      if (version->previous_version_uuid.is_nil()) return false;
+      version = FindVersion(state_, index.table_uuid, version->previous_version_uuid);
+    }
+    return false;
+  }
+
+  const EngineApiDiagnostic& diagnostic() const { return diagnostic_; }
+
+ private:
+  bool Load() {
+    if (loaded_) return !diagnostic_.error;
+    loaded_ = true;
+    ledger_ = LoadMgaSecondaryIndexDeltaLedger(context_);
+    if (!ledger_.ok) { diagnostic_ = ledger_.diagnostic; return false; }
+    if (ledger_.ledger.records.empty()) return true;
+    const auto recovery = core_index::ClassifySecondaryIndexDeltaLedgerForRecovery(ledger_.ledger);
+    if (!recovery.ok() ||
+        recovery.action == core_index::SecondaryIndexDeltaLedgerRecoveryAction::fail_closed ||
+        recovery.action == core_index::SecondaryIndexDeltaLedgerRecoveryAction::refuse_open ||
+        recovery.action == core_index::SecondaryIndexDeltaLedgerRecoveryAction::rebuild_from_authoritative_base) {
+      diagnostic_ = Refuse("INDEX.TRANSACTIONAL_PROVIDER.DELTA_PROOF_INVALID",
+          "index.transactional_provider.delta_proof_invalid", "delta_ledger_recovery_refused");
+      return false;
+    }
+    inventory_ = storage::database::AcquireLocalTransactionInventorySnapshot(context_.database_path);
+    if (!inventory_.ok()) {
+      diagnostic_ = Refuse("INDEX.TRANSACTIONAL_PROVIDER.DELTA_PROOF_INVALID",
+          "index.transactional_provider.delta_proof_invalid", "delta_inventory_unavailable");
+      return false;
+    }
+    return true;
+  }
+
+  bool Match(const CrudIndexRecord& index, const EngineUuid& row_uuid,
+             const EngineUuid& version_uuid, std::uint64_t creator_tx,
+             core_index::SecondaryIndexDeltaKind kind, const std::string& key,
+             const std::vector<std::pair<std::string, std::string>>& values) {
+    if (index.unique || ResolvedFamily(index) == "unique_btree" ||
+        (index.family != kCrudIndexFamilyBtree && index.family != kCrudIndexFamilyHash &&
+         index.family != kCrudIndexFamilyBitmap) || !Load()) return false;
+    const auto expected = EncodeCrudPairs({{"key", key},
+        {"payload", CrudFieldValue(values, index.column_name)}, {"family", index.family}});
+    for (const auto& record : ledger_.ledger.records) {
+      const auto& delta = record.delta;
+      if (delta.index_uuid.value != index.index_uuid || delta.table_uuid.value != index.table_uuid ||
+          delta.row_uuid.value != row_uuid || delta.version_uuid.value != version_uuid ||
+          delta.local_transaction_id != creator_tx || delta.delta_kind != kind ||
+          delta.key_payload != expected ||
+          (record.commit_state != core_index::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
+           record.commit_state != core_index::SecondaryIndexDeltaLedgerCommitState::committed_premerge)) continue;
+      if (!inventory_.snapshot) return false;
+      namespace mga = scratchbird::transaction::mga;
+      const auto transaction = mga::LookupLocalTransaction(
+          inventory_.snapshot->inventory, mga::MakeLocalTransactionId(creator_tx));
+      if (!transaction.ok() ||
+          transaction.entry.identity.transaction_uuid.kind != delta.transaction_uuid.kind ||
+          transaction.entry.identity.transaction_uuid.value != delta.transaction_uuid.value ||
+          (creator_tx == context_.local_transaction_id &&
+           delta.transaction_uuid.value != context_.transaction_uuid)) {
+        diagnostic_ = Refuse("INDEX.TRANSACTIONAL_PROVIDER.DELTA_PROOF_INVALID",
+            "index.transactional_provider.delta_proof_invalid", "delta_transaction_identity_mismatch");
+        return false;
+      }
+      const auto found = state_.transactions.find(creator_tx);
+      if (found == state_.transactions.end()) continue;
+      const auto inventory_state = mga::InventoryVisibilityState(transaction.entry);
+      if (creator_tx == context_.local_transaction_id &&
+          ((found->second == "active" && inventory_state == mga::TransactionState::active) ||
+           (found->second == "prepared" && inventory_state == mga::TransactionState::prepared))) return true;
+      if (found->second == "committed" && mga::HasCommittedInventoryOutcome(transaction.entry)) return true;
+    }
+    return false;
+  }
+
+  const EngineRequestContext& context_;
+  const RelationReadSnapshot& state_;
+  bool loaded_ = false;
+  MgaSecondaryIndexDeltaLedgerResult ledger_;
+  storage::database::LocalTransactionInventorySnapshotResult inventory_;
+  EngineApiDiagnostic diagnostic_ = OkDiagnostic();
+};
 
 void AddProviderEvidence(
     const EngineRequestContext& context,
@@ -408,18 +528,19 @@ MgaOrderedBtreeTransactionalIndexProvider::ResolveVisibleEntry(
                        return candidate.index_uuid != index.index_uuid;
                      }),
       selected.indexes.end());
-  std::string evidence_id;
-  auto rows = IndexedCrudRowsForPredicateForContext(
-      selected, index.table_uuid, predicate, context_, limit, &evidence_id);
+  auto lookup = IndexedMgaRowsForPredicateForContext(
+      selected, index.table_uuid, predicate, context_, limit);
+  if (!lookup.ok) return Failure(context_, &index, "ResolveVisibleEntry", lookup.diagnostic);
   DmlTransactionalIndexProviderResult result;
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   result.lifecycle_state = "resolved_with_mga_recheck";
-  result.visible_entry_count = rows.size();
-  result.rows = std::move(rows);
+  result.visible_entry_count = lookup.rows.size();
+  result.rows = std::move(lookup.rows);
   AddProviderEvidence(context_, &index, "ResolveVisibleEntry", &result.evidence);
   result.evidence.push_back({"transactional_index_resolution_evidence",
-                             std::move(evidence_id)});
+                             std::move(lookup.index_evidence_id)});
+  result.evidence.insert(result.evidence.end(), lookup.evidence.begin(), lookup.evidence.end());
   return result;
 }
 
@@ -463,6 +584,7 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
   }
 
   std::map<std::string, EngineUuid> unique_rows_by_key;
+  DeferredIndexProofs deferred(context_, state);
   std::uint64_t expected = 0;
   for (const auto& row :
        VisibleCrudRowsForContext(state, index.table_uuid, context_)) {
@@ -482,6 +604,9 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
         candidate = true;
         break;
       }
+      if (!candidate) candidate = deferred.Membership(index, row, key);
+      if (!candidate && deferred.diagnostic().error)
+        return Failure(context_, &index, "ValidateAgainstRelation", deferred.diagnostic());
       if (!candidate) {
         return Failure(
             context_, &index, "ValidateAgainstRelation",
@@ -572,6 +697,7 @@ ValidateTransactionalIndexMutationSetForCommit(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state) {
   MgaOrderedBtreeTransactionalIndexProvider provider(context, nullptr);
+  DeferredIndexProofs deferred(context, state);
   DmlTransactionalIndexProviderResult result;
   result.ok = true;
   result.diagnostic = OkDiagnostic();
@@ -624,7 +750,10 @@ ValidateTransactionalIndexMutationSetForCommit(
       if (predecessor != nullptr && (row.deleted || keys_changed)) {
         for (const auto& key : old_keys) {
           if (!HasEntry(state, index, row.row_uuid, row.version_uuid, key,
-                        "retire", context.local_transaction_id)) {
+                        "retire", context.local_transaction_id) &&
+              !deferred.Mutation(index, row, predecessor, key, true)) {
+            if (deferred.diagnostic().error)
+              return Failure(context, &index, "ValidateTransactionMutationSet", deferred.diagnostic());
             return Failure(
                 context, &index, "ValidateTransactionMutationSet",
                 Refuse("INDEX.TRANSACTIONAL_PROVIDER.RETIRE_ENTRY_MISSING",
@@ -638,7 +767,10 @@ ValidateTransactionalIndexMutationSetForCommit(
       if (predecessor == nullptr || keys_changed) {
         for (const auto& key : new_keys) {
           if (!HasEntry(state, index, row.row_uuid, row.version_uuid, key, {},
-                        context.local_transaction_id)) {
+                        context.local_transaction_id) &&
+              !deferred.Mutation(index, row, predecessor, key, false)) {
+            if (deferred.diagnostic().error)
+              return Failure(context, &index, "ValidateTransactionMutationSet", deferred.diagnostic());
             return Failure(
                 context, &index, "ValidateTransactionMutationSet",
                 Refuse("INDEX.TRANSACTIONAL_PROVIDER.INSERT_ENTRY_MISSING",

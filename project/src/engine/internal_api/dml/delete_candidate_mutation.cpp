@@ -182,6 +182,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
       const auto keys = CrudIndexKeysForValues(plan.index, row.values);
       const auto payload = CrudFieldValue(row.values, plan.index.column_name);
       for (const auto& key : keys) {
+        if (plan.action == DeleteIndexMaintenanceAction::tombstone_delta_ledger) continue;
         if (retires.size() + deltas.size() + candidates.size() >= b.resource_budget.maximum_effects ||
             !Add(2 * (sizeof(DmlTransactionalIndexEntryRequest) + key.size() + payload.size() + 1024), budget / 2, &staged_bytes))
           return fail(Error("index_effect_or_memory_bound"));

@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
@@ -135,12 +137,16 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid schema_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid non_unique_index_uuid;
   api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -148,23 +154,9 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
-  context.security_context_present = true;
-  context.identifier_profile_uuid = "sbsql_v3";
-  context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
+  context.current_schema_uuid = fixture.schema_uuid;
   return context;
 }
 
@@ -239,8 +231,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -250,12 +241,16 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(created.ok(), "DPC-027 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 12);
 
   auto context = Begin(fixture, "dpc027-metadata");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
+  RequireDiagnosticOk(scratchbird::tests::PublishMgaTableFixture(
+      context, Table(fixture, context), {"character", "character", "character"},
+      {Index(fixture, context, fixture.non_unique_index_uuid, "name", false),
+       Index(fixture, context, fixture.unique_index_uuid, "id", true)}),
                       "DPC-027 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -267,7 +262,10 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                           Index(fixture, context, fixture.unique_index_uuid,
                                 "id", true)),
                       "DPC-027 unique index metadata append failed");
+  fixture.schema_uuid = context.current_schema_uuid;
   Commit(context);
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "native-dpc-session"));
   return fixture;
 }
 
@@ -285,8 +283,8 @@ api::EngineInsertRowsResult InsertRows(
     const api::EngineRequestContext& context,
     const std::vector<RowSpec>& rows,
     std::vector<std::string> options = {}) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.estimated_row_count = rows.size();
@@ -300,8 +298,8 @@ api::EngineUpdateRowsResult UpdateAllNames(
     const api::EngineRequestContext& context,
     std::string name,
     std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.assignments.push_back({"name", TextValue(std::move(name))});
@@ -316,8 +314,8 @@ api::EngineUpdateRowsResult UpdateHotNote(
     std::string name,
     std::string note,
     std::vector<std::string> options = {}) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = EqualsPredicate("id", std::move(id));
@@ -332,8 +330,8 @@ api::EngineDeleteRowsResult DeleteRow(
     const api::EngineRequestContext& context,
     api::EngineUuid row_uuid,
     std::vector<std::string> options = {}) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "row_uuid_match";
@@ -345,8 +343,8 @@ api::EngineDeleteRowsResult DeleteRow(
 
 api::EngineSelectRowsResult SelectAll(const Fixture& fixture,
                                       const api::EngineRequestContext& context) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   return api::EngineSelectRows(request);
@@ -355,8 +353,8 @@ api::EngineSelectRowsResult SelectAll(const Fixture& fixture,
 api::EngineSelectRowsResult SelectName(const Fixture& fixture,
                                        const api::EngineRequestContext& context,
                                        std::string name) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = EqualsPredicate("name", std::move(name));
@@ -455,7 +453,8 @@ std::uint64_t EvidenceCounter(const std::vector<api::EngineEvidenceReference>& e
 
 std::uint64_t CountBaseIndexEntries(const Fixture& fixture,
                                     const api::EngineRequestContext& context,
-                                    const api::EngineUuid& index_uuid) {
+                                    const api::EngineUuid& index_uuid,
+                                    std::string_view entry_kind = {}) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   if (!loaded.ok) {
     std::cerr << loaded.diagnostic.code << ':' << loaded.diagnostic.detail << '\n';
@@ -463,7 +462,8 @@ std::uint64_t CountBaseIndexEntries(const Fixture& fixture,
   Require(loaded.ok, "DPC-027 relation store load failed");
   std::uint64_t count = 0;
   for (const auto& entry : loaded.state.index_entries) {
-    if (entry.table_uuid == fixture.table_uuid && entry.index_uuid == index_uuid) {
+    if (entry.table_uuid == fixture.table_uuid && entry.index_uuid == index_uuid &&
+        (entry_kind.empty() || entry.entry_kind == entry_kind)) {
       ++count;
     }
   }
@@ -630,6 +630,7 @@ std::uint64_t MergeDeltas(const Fixture& fixture,
 }
 
 struct LaneObservation {
+  std::uint64_t base_retire_writes = 0;
   TableSnapshot snapshot;
   std::uint64_t base_index_writes = 0;
   std::uint64_t delta_records = 0;
@@ -718,6 +719,8 @@ LaneObservation RunUpdateLane(bool deferred) {
                                         : "dpc027-update-baseline");
   const auto before_base =
       CountBaseIndexEntries(fixture, writer, fixture.non_unique_index_uuid);
+  const auto before_retires =
+      CountBaseIndexEntries(fixture, writer, fixture.non_unique_index_uuid, "retire");
   const auto updated =
       UpdateAllNames(fixture,
                      writer,
@@ -743,6 +746,8 @@ LaneObservation RunUpdateLane(bool deferred) {
   const auto after_base =
       CountBaseIndexEntries(fixture, reader, fixture.non_unique_index_uuid);
   observation.base_index_writes = after_base - before_base;
+  observation.base_retire_writes =
+      CountBaseIndexEntries(fixture, reader, fixture.non_unique_index_uuid, "retire") - before_retires;
   observation.delta_records =
       CountLedgerRecordsForIndex(fixture, fixture.non_unique_index_uuid);
   if (deferred) {
@@ -916,7 +921,8 @@ void PrintProofRow(const ProofRow& row) {
             << ",lane=" << row.lane
             << ",baseline_mode=" << row.baseline_mode
             << ",optimized_mode=" << row.optimized_mode
-            << ",run_count=" << kRunCount
+            << ",run_count=1"
+            << ",planned_repetitions=" << kRunCount
             << ",baseline_row_count=" << row.baseline.snapshot.row_count
             << ",optimized_row_count=" << row.optimized.snapshot.row_count
             << ",result_hash=" << row.optimized.snapshot.hash
@@ -978,8 +984,9 @@ void ProveUpdateLane() {
   row.baseline = RunUpdateLane(false);
   row.optimized = RunUpdateLane(true);
   RequireEquivalentSnapshots(row);
-  Require(row.baseline.base_index_writes == row.baseline.snapshot.row_count,
-          "DPC-027 update baseline did not synchronously write new base entries");
+  Require(row.baseline.base_index_writes == row.baseline.snapshot.row_count * 2 &&
+              row.baseline.base_retire_writes == row.baseline.snapshot.row_count,
+          "DPC-027 update baseline did not write one retire and one new membership per row");
   Require(row.optimized.base_index_writes == 0,
           "DPC-027 update deferred path wrote foreground non-unique base entries");
   Require(row.optimized.delta_records == row.optimized.snapshot.row_count * 2,
@@ -1002,6 +1009,9 @@ void ProveDeleteLane() {
   RequireEquivalentSnapshots(row);
   Require(row.optimized.deleted_count > 0,
           "DPC-027 delete lane did not delete deterministic rows");
+  Require(row.baseline.base_index_writes == row.baseline.deleted_count &&
+              row.optimized.base_index_writes == 0,
+          "DPC-027 deferred delete duplicated synchronous retire work");
   Require(row.optimized.delta_records == row.optimized.deleted_count,
           "DPC-027 delete tombstone delta count changed");
   Require(row.optimized.merge_cleaned_records == row.optimized.delta_records,
@@ -1036,16 +1046,19 @@ void ProveHotRowLane() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("dpc_deferred_index_hot_update_benchmark_gate-native");
   Require(kGateSearchKey == "DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_GATE",
           "DPC-027 gate search key drifted");
   Require(kBenchmarkOutputSearchKey ==
               "DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_OUTPUT",
           "DPC-027 benchmark output search key drifted");
 
-  ProveLoadLane();
-  ProveUpdateLane();
-  ProveDeleteLane();
-  ProveHotRowLane();
+  for (std::uint32_t run = 0; run < kRunCount; ++run) {
+    ProveLoadLane();
+    ProveUpdateLane();
+    ProveDeleteLane();
+    ProveHotRowLane();
+  }
 
   std::cout << kGateSearchKey << "=passed "
             << "DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_OUTPUT=retained "

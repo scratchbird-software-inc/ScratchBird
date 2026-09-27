@@ -54,7 +54,7 @@ bool IsUniqueIndex(const CrudIndexRecord& index) {
 
 bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
   return !IsUniqueIndex(index) &&
-         (index.family == kCrudIndexFamilyHash ||
+         (index.family == kCrudIndexFamilyBtree || index.family == kCrudIndexFamilyHash ||
           index.family == kCrudIndexFamilyBitmap);
 }
 

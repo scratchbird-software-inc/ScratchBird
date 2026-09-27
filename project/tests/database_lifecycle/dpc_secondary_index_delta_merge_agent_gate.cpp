@@ -529,8 +529,8 @@ void ValidateAuthoritativeMergeDrainsIntoBase() {
     }
     return count;
   };
-  Require(count_delta_base_entries() == 1,
-          "DPC-024 auxiliary delta bypassed the mandatory transactional base entry");
+  Require(count_delta_base_entries() == 0,
+          "DPC-024 deferred delta was duplicated in a synchronous base entry");
   const auto ledger_before = LoadLedger(fixture);
   const auto merge = api::MergeMgaSecondaryIndexDeltasForIndex(
       BaseContext(fixture, "dpc024-merge"),
@@ -544,7 +544,7 @@ void ValidateAuthoritativeMergeDrainsIntoBase() {
   Require(HasMergedCleanedRecord(LoadLedger(fixture)),
           "DPC-024 merged ledger state was not retained deterministically");
   Require(count_delta_base_entries() == 1,
-          "DPC-024 idempotent merge duplicated or dropped the existing base entry");
+          "DPC-024 merge did not publish exactly one formerly deferred base entry");
   const auto repeated = api::MergeMgaSecondaryIndexDeltasForIndex(
       BaseContext(fixture, "dpc024-repeated-merge"),
       MergeRequest(fixture, MaxLedgerLocalTransactionId(ledger_before)));

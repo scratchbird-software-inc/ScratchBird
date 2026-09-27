@@ -63,7 +63,8 @@ bool IsUniqueIndex(const CrudIndexRecord& index) {
 }
 
 bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
-  return !IsUniqueIndex(index) && index.family == kCrudIndexFamilyHash;
+  return !IsUniqueIndex(index) &&
+         (index.family == kCrudIndexFamilyBtree || index.family == kCrudIndexFamilyHash);
 }
 
 bool AssignmentTouchesColumn(const std::vector<std::string>& assigned_columns, const std::string& column) {

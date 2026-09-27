@@ -2761,9 +2761,7 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
   }
   for (std::size_t entry_index = 0; entry_index < batch_context.index_plan.entries.size(); ++entry_index) {
     const auto& entry = batch_context.index_plan.entries[entry_index];
-    if (!IsSynchronousUpdateIndexAction(entry.action) &&
-        entry.action !=
-            UpdateIndexMaintenanceAction::committed_delta_ledger) {
+    if (!IsSynchronousUpdateIndexAction(entry.action)) {
       continue;
     }
     if (!IsAdmittedMgaTransactionalIndexFamily(entry.index)) {
@@ -2943,9 +2941,7 @@ EngineApiDiagnostic PrepareSynchronousDeleteIndexRetires(
   std::vector<DmlTransactionalIndexEntryRequest> requests;
   for (const auto& plan_entry : batch_context.index_plan.entries) {
     if (plan_entry.action !=
-            DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite &&
-        plan_entry.action !=
-            DeleteIndexMaintenanceAction::tombstone_delta_ledger) {
+            DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite) {
       continue;
     }
     if (!IsAdmittedMgaTransactionalIndexFamily(plan_entry.index)) {

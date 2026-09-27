@@ -1,4 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -96,12 +99,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid id_index_uuid;
   api::EngineUuid schema_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
@@ -109,24 +115,9 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.current_schema_uuid = fixture.schema_uuid;
-  context.security_context_present = true;
-  context.identifier_profile_uuid = "sbsql_v3";
-  context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -171,22 +162,6 @@ api::CrudTableRecord Table(const Fixture& fixture,
   return table;
 }
 
-api::CrudIndexRecord IdIndex(const Fixture& fixture,
-                             const api::EngineRequestContext& context) {
-  api::CrudIndexRecord index;
-  index.creator_tx = context.local_transaction_id;
-  index.index_uuid = fixture.id_index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "id";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.default_name = "ipar_long_snapshot_id_pk";
-  index.unique = true;
-  index.key_envelopes.push_back("id");
-  index.key_envelopes.push_back("unique");
-  return index;
-}
-
 Fixture MakeFixture() {
   Fixture fixture;
   fixture.salt = NowMillis();
@@ -201,22 +176,39 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = NowMillis() + fixture.salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   Require(db::CreateDatabaseFile(create).ok(), "IPAR-P2-04 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
-  fixture.schema_uuid = NewIdentity(platform::UuidKind::schema, fixture.salt + 10);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 11);
-  fixture.id_index_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 12);
 
   auto context = Begin(fixture, "ipar-p204-metadata", "read_committed");
-  RequireDiagnosticOk(api::AppendMgaTableMetadata(context, Table(fixture, context)),
-                      "IPAR-P2-04 table metadata append failed");
-  RequireDiagnosticOk(api::AppendMgaIndexMetadata(context, IdIndex(fixture, context)),
-                      "IPAR-P2-04 id index metadata append failed");
+  const auto table = scratchbird::tests::PublishDdlTableFixture(
+      context, Table(fixture, context), {"character", "character"});
+  Require(table.table_uuid == fixture.table_uuid && table.columns.size() == 2,
+          "IPAR-P2-04 native table publication changed identity or shape");
+  api::CatalogColumnMetadata primary;
+  Require(api::DecodeCatalogColumnMetadata(table.columns.front().second, &primary) &&
+              primary.identities.contains("candidate_key_constraint_uuid") &&
+              primary.identities.contains("support_uuid"),
+          "IPAR-P2-04 native primary-key constraint and support identities missing");
+  fixture.id_index_uuid = primary.identities.at("support_uuid");
+  const auto published = api::LoadMgaRelationStoreState(context);
+  Require(published.ok, "IPAR-P2-04 published primary-key index unreadable");
+  bool exact_support = false;
+  for (const auto& index : published.state.relation_metadata.indexes) {
+    exact_support = exact_support ||
+        (index.index_uuid == fixture.id_index_uuid &&
+         index.table_uuid == fixture.table_uuid && index.unique &&
+         index.family == api::kCrudIndexFamilyBtree && index.column_name == "id");
+  }
+  Require(exact_support, "IPAR-P2-04 primary-key backing index is not published");
+  fixture.schema_uuid = context.current_schema_uuid;
   Commit(context);
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "native-ipar-session"));
   return fixture;
 }
 
@@ -232,8 +224,8 @@ api::EngineInsertRowsResult InsertRow(const Fixture& fixture,
                                       const api::EngineRequestContext& context,
                                       std::string id,
                                       std::string payload) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(payload)));
@@ -245,8 +237,8 @@ api::EngineUpdateRowsResult UpdatePayload(const Fixture& fixture,
                                           const api::EngineRequestContext& context,
                                           std::string id,
                                           std::string payload) {
-  api::EngineUpdateRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.update_predicate = IdEquals(std::move(id));
@@ -257,8 +249,8 @@ api::EngineUpdateRowsResult UpdatePayload(const Fixture& fixture,
 api::EngineSelectRowsResult SelectById(const Fixture& fixture,
                                        const api::EngineRequestContext& context,
                                        std::string id) {
-  api::EngineSelectRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> request(
+      *fixture.session, context);
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_predicate = IdEquals(std::move(id));
@@ -359,6 +351,7 @@ void ValidateLongSnapshotVersionChainPressure() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("ipar_long_snapshot_version_chain_gate-native");
   ValidateLongSnapshotVersionChainPressure();
   return EXIT_SUCCESS;
 }

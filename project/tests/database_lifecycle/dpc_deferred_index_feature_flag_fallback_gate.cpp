@@ -1,6 +1,7 @@
 #include "dml/mga_relation_read_view.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -49,6 +50,12 @@ api::EngineRequestContext Context(std::string request_id) {
   context.database_uuid = scratchbird::tests::FixtureUuid(1208, 1301);
   context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1302);
   context.transaction_uuid = scratchbird::tests::FixtureUuid(1208, 1303);
+  // Pure policy-planner fixture coordinates, not an authenticated execution receipt.
+  context.statement_uuid = scratchbird::tests::FixtureUuid(1208, 1304);
+  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1305);
+  context.statement_snapshot_uuid = scratchbird::tests::FixtureUuid(1208, 1306);
+  context.statement_metadata_snapshot_uuid = scratchbird::tests::FixtureUuid(1208, 1307);
+  context.optimizer_resource_snapshot_uuid = scratchbird::tests::FixtureUuid(1208, 1308);
   context.local_transaction_id = 42;
   context.snapshot_visible_through_local_transaction_id = 42;
   context.security_context_present = true;
@@ -215,6 +222,10 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
 
 void RequireInsertSynchronous(const api::InsertBatchContext& context,
                               std::string_view reason) {
+  if (!context.accepted) {
+    for (const auto& diagnostic : context.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(context.accepted, "DPC-020 insert context was refused");
   Require(!context.delta_ledger_policy.enabled,
           "DPC-020 insert enabled deferred maintenance without runtime admission");
@@ -284,11 +295,11 @@ void RequireDeleteSynchronous(const api::DeleteBatchContext& context,
           "DPC-020 delete selected tombstone delta ledger while runtime gate was closed");
   Require(HasDeleteAction(context.index_plan,
                           scratchbird::tests::FixtureUuid(1486, 102),
-                          api::DeleteIndexMaintenanceAction::visibility_recheck_only),
-          "DPC-020 delete did not use visibility recheck fallback");
+                          api::DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite),
+          "DPC-020 delete did not use synchronous transactional retirement");
   Require(HasDeleteAction(context.index_plan,
                           scratchbird::tests::FixtureUuid(1486, 101),
-                          api::DeleteIndexMaintenanceAction::visibility_recheck_only),
+                          api::DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite),
           "DPC-020 delete did not keep unique index synchronous-safe");
 
   api::EngineApiResult result;
@@ -405,13 +416,32 @@ void ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly() {
           "DPC-020 delete selected tombstone delta ledger for unique index");
   Require(HasDeleteAction(delete_context.index_plan,
                           scratchbird::tests::FixtureUuid(1486, 101),
-                          api::DeleteIndexMaintenanceAction::visibility_recheck_only),
-          "DPC-020 delete did not preserve unique visibility recheck");
+                          api::DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite),
+          "DPC-020 delete did not preserve unique synchronous retirement");
+}
+
+
+void ValidateMissingNativeMemoryIdentitiesRefused() {
+  for (int field = 0; field != 5; ++field) {
+    auto request = InsertRequest();
+    switch (field) {
+      case 0: request.context.statement_uuid = {}; break;
+      case 1: request.context.session_uuid = {}; break;
+      case 2: request.context.statement_snapshot_uuid = {}; break;
+      case 3: request.context.statement_metadata_snapshot_uuid = {}; break;
+      case 4: request.context.optimizer_resource_snapshot_uuid = {}; break;
+    }
+    const auto refused = api::BeginInsertBatchContext(request, State(), Table(), Indexes());
+    Require(!refused.accepted && refused.memory_arena_fail_closed &&
+                refused.fallback_reason == "insert_memory_arena_refused",
+            "DPC-020 incomplete native memory identity was admitted");
+  }
 }
 
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("dpc020-policy-planner");
   Require(!kFeatureFlagSearchKey.empty(), "DPC-020 feature flag search key missing");
   Require(!kGateSearchKey.empty(), "DPC-020 gate search key missing");
 
@@ -419,6 +449,7 @@ int main() {
   ValidateExplicitOffAndProofsWithoutRuntime();
   ValidateRuntimeOnStillNeedsProofs();
   ValidateRuntimeOnWithProofsAdmitsNonUniqueOnly();
+  ValidateMissingNativeMemoryIdentitiesRefused();
 
   return EXIT_SUCCESS;
 }
