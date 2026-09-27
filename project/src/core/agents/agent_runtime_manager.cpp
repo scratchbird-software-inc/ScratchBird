@@ -11,6 +11,7 @@
 #include "agent_runtime_manager.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace scratchbird::core::agents {
@@ -297,7 +298,7 @@ void AddDiagnostic(AgentRuntimeManagerSnapshot* snapshot, std::string diagnostic
   }
 }
 
-void AddDecision(AgentRuntimeManagerSnapshot* snapshot,
+bool AddDecision(AgentRuntimeManagerSnapshot* snapshot,
                  std::string agent_type_id,
                  bool database_applicable,
                  bool selected,
@@ -305,11 +306,31 @@ void AddDecision(AgentRuntimeManagerSnapshot* snapshot,
                  bool failed_closed,
                  bool cluster_path_failed_closed,
                  std::string diagnostic_code,
-                 std::string detail) {
+                 std::string detail,
+                 std::optional<std::string_view> policy_uuid = std::nullopt,
+                 std::optional<std::string_view> instance_uuid = std::nullopt,
+                 std::optional<std::string_view> retirement_evidence_uuid = std::nullopt) {
   if (snapshot == nullptr) {
-    return;
+    return false;
   }
   AgentRuntimeSelectionDecision decision;
+  const auto identity = [&](std::optional<std::string_view> raw,
+                            scratchbird::core::platform::Uuid* output,
+                            const char* role) {
+    if (!raw) return true;
+    *output = BinaryIdentity(*raw);
+    if (!output->is_nil()) return true;
+    snapshot->status = AgentError("ENGINE.AGENT_RUNTIME_MANAGER.IDENTITY_INVALID", role);
+    snapshot->state = AgentRuntimeManagerState::failed;
+    snapshot->ordinary_admission_allowed = false;
+    snapshot->supervised_agents.clear();
+    snapshot->selection_decisions.clear();
+    return false;
+  };
+  if (!identity(policy_uuid, &decision.policy_uuid, "policy_uuid") ||
+      !identity(instance_uuid, &decision.instance_uuid, "instance_uuid") ||
+      !identity(retirement_evidence_uuid, &decision.retirement_evidence_uuid,
+                "retirement_evidence_uuid")) return false;
   decision.agent_type_id = std::move(agent_type_id);
   decision.database_applicable = database_applicable;
   decision.selected = selected;
@@ -319,6 +340,7 @@ void AddDecision(AgentRuntimeManagerSnapshot* snapshot,
   decision.diagnostic_code = std::move(diagnostic_code);
   decision.detail = std::move(detail);
   snapshot->selection_decisions.push_back(std::move(decision));
+  return true;
 }
 
 void PublishSupervisionHealth(AgentRuntimeManagerSnapshot* snapshot,
@@ -573,9 +595,10 @@ AgentRuntimeManagerSnapshot SelectStandaloneDatabaseLocalAgents(
     auto policy = agent_policies.front();
     policy.activation = EffectiveActivationForLifecycle(policy.activation, evidence.lifecycle_mode);
     if (!policy.enabled || policy.activation == AgentActivationProfile::disabled) {
-      AddDecision(&snapshot, descriptor.type_id, true, false, true, false,
+      if (!AddDecision(&snapshot, descriptor.type_id, true, false, true, false,
                   mixed_cluster_path_agent,
-                  "ENGINE.AGENT_RUNTIME_MANAGER.POLICY_DISABLED", policy.policy_uuid);
+                  "ENGINE.AGENT_RUNTIME_MANAGER.POLICY_DISABLED", "policy_disabled",
+                  policy.policy_uuid)) return snapshot;
       continue;
     }
     const auto policy_status = ValidateAgentPolicy(policy, descriptor);
@@ -591,16 +614,18 @@ AgentRuntimeManagerSnapshot SelectStandaloneDatabaseLocalAgents(
     const AgentInstanceRecord* persisted = FindPersistedInstance(config.persisted_instances, instance_uuid);
     if (persisted != nullptr && persisted->state == AgentLifecycleState::retired) {
       if (persisted->retirement_evidence_uuid.empty()) {
-        AddDecision(&snapshot, descriptor.type_id, true, false, false, true, false,
-                    "SB_AGENT_INSTANCE.RETIREMENT_EVIDENCE_REQUIRED", instance_uuid);
+        if (!AddDecision(&snapshot, descriptor.type_id, true, false, false, true, false,
+                    "SB_AGENT_INSTANCE.RETIREMENT_EVIDENCE_REQUIRED", "retirement_evidence_required",
+                    policy.policy_uuid, instance_uuid)) return snapshot;
         AddDiagnostic(&snapshot,
                       "SB_AGENT_INSTANCE.RETIREMENT_EVIDENCE_REQUIRED:" + descriptor.type_id);
       } else {
         snapshot.supervised_agents.push_back(*persisted);
-        AddDecision(&snapshot, descriptor.type_id, true, false, true, false,
+        if (!AddDecision(&snapshot, descriptor.type_id, true, false, true, false,
                     mixed_cluster_path_agent,
-                    "ENGINE.AGENT_RUNTIME_MANAGER.INSTANCE_RETIRED",
-                    persisted->retirement_evidence_uuid);
+                    "ENGINE.AGENT_RUNTIME_MANAGER.INSTANCE_RETIRED", "instance_retired",
+                    policy.policy_uuid, instance_uuid,
+                    persisted->retirement_evidence_uuid)) return snapshot;
       }
       continue;
     }
@@ -636,14 +661,15 @@ AgentRuntimeManagerSnapshot SelectStandaloneDatabaseLocalAgents(
       ++instance.crash_loop_count;
     }
     snapshot.supervised_agents.push_back(std::move(instance));
-    AddDecision(&snapshot, descriptor.type_id, true, true, false, false,
+    if (!AddDecision(&snapshot, descriptor.type_id, true, true, false, false,
                 mixed_cluster_path_agent,
                 mixed_cluster_path_agent
                     ? "ENGINE.AGENT_RUNTIME_MANAGER.LOCAL_PROJECTION_SELECTED_CLUSTER_PATH_FAIL_CLOSED"
                     : "ENGINE.AGENT_RUNTIME_MANAGER.SELECTED",
                 mixed_cluster_path_agent
-                    ? policy.policy_uuid + ":cluster_metric_dependency_fail_closed"
-                    : policy.policy_uuid);
+                    ? "cluster_metric_dependency_fail_closed"
+                    : "policy_selected",
+                policy.policy_uuid, instance_uuid)) return snapshot;
     if (mixed_cluster_path_agent) {
       AddDiagnostic(&snapshot,
                     "ENGINE.AGENT_RUNTIME_MANAGER.LOCAL_PROJECTION_SELECTED_CLUSTER_PATH_FAIL_CLOSED:" +

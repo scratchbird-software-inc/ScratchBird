@@ -86,6 +86,10 @@ struct AgentRuntimeSelectionDecision {
   bool cluster_path_failed_closed = false;
   std::string diagnostic_code;
   std::string detail;
+  // Optional structured references, never embedded in diagnostic text.
+  scratchbird::core::platform::Uuid policy_uuid;
+  scratchbird::core::platform::Uuid instance_uuid;
+  scratchbird::core::platform::Uuid retirement_evidence_uuid;
 };
 
 struct AgentRuntimeManagerSnapshot {

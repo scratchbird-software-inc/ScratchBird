@@ -595,9 +595,16 @@ int main(int argc, char** argv) {
     for (const auto& diagnostic : management.messages.diagnostics) {
       if (diagnostic.code == options.expected_code) code_match = true;
     }
+    const auto management_display = scratchbird::cli::RenderBinaryStatus(management.payload);
+    if (management.payload.starts_with(scratchbird::wire::public_result::kMagic) &&
+        !management_display) {
+      std::cerr << "invalid management binary status packet\n";
+      return 2;
+    }
+    const auto& payload_text = management_display ? *management_display : management.payload;
     const bool payload_match =
         options.expected_payload_contains.empty() ||
-        management.payload.find(options.expected_payload_contains) !=
+        payload_text.find(options.expected_payload_contains) !=
             std::string::npos;
     const bool error = !management.accepted;
     const bool expectation_match =
@@ -621,7 +628,7 @@ int main(int argc, char** argv) {
                 << JsonEscape(management.messages.diagnostics[i].code)
                 << '"';
     }
-    std::cout << "],\"payload\":\"" << JsonEscape(management.payload)
+    std::cout << "],\"payload\":\"" << JsonEscape(payload_text)
               << "\"}}\n";
     if (!disconnected) {
       std::cerr << scratchbird::parser::ipc::MessageVectorToJson(
@@ -1068,7 +1075,12 @@ int main(int argc, char** argv) {
   const auto codes = scratchbird::server::sbps::DecodeMessageVectorDiagnosticCodes(
       response->payload);
   const std::string payload_bytes(response->payload.begin(), response->payload.end());
-  const std::string payload_text = scratchbird::cli::RenderBinaryStatus(payload_bytes).value_or(payload_bytes);
+  const auto status_display = scratchbird::cli::RenderBinaryStatus(payload_bytes);
+  if (payload_bytes.starts_with(scratchbird::wire::public_result::kMagic) && !status_display) {
+    std::cerr << "invalid binary status packet\n";
+    return 2;
+  }
+  const std::string payload_text = status_display.value_or(payload_bytes);
   bool code_match = options.expected_code.empty();
   for (const auto& code : codes) {
     if (code == options.expected_code) code_match = true;

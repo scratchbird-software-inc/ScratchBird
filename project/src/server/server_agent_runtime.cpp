@@ -1703,6 +1703,11 @@ void ServerAgentRuntime::RecordWorkerTick(std::size_t worker_index,
     case ServerAgentActionOutcome::kNone:
       break;
   }
+  // An idle heartbeat advances tick/fairness counters, not action history.
+  // Preserve the latest real decision (including failure) until another
+  // action supersedes it, so an idle tick cannot report away a failed action.
+  if (action_outcome == ServerAgentActionOutcome::kNone &&
+      !evidence.last_action_outcome.empty() && evidence.last_action_outcome != "none") return;
   evidence.last_action = std::move(last_action);
   evidence.last_action_outcome = std::string(AgentActionOutcomeName(action_outcome));
   evidence.last_diagnostic_code = std::move(diagnostic_code);

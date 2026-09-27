@@ -565,7 +565,14 @@ void WriteSelectionDecisionJson(scratchbird::wire::binary_status::Stream* out,
        << "\"cluster_path_failed_closed\":"
        << (decision.cluster_path_failed_closed ? "true" : "false") << ","
        << "\"diagnostic_code\":\"" << JsonEscape(decision.diagnostic_code) << "\","
-       << "\"detail\":\"" << JsonEscape(decision.detail) << "\"}";
+       << "\"detail\":\"" << JsonEscape(decision.detail) << "\"";
+  if (!decision.policy_uuid.is_nil())
+    *out << ",\"policy_uuid\":\"" << scratchbird::wire::binary_status::Identity(decision.policy_uuid) << '"';
+  if (!decision.instance_uuid.is_nil())
+    *out << ",\"instance_uuid\":\"" << scratchbird::wire::binary_status::Identity(decision.instance_uuid) << '"';
+  if (!decision.retirement_evidence_uuid.is_nil())
+    *out << ",\"retirement_evidence_uuid\":\"" << scratchbird::wire::binary_status::Identity(decision.retirement_evidence_uuid) << '"';
+  *out << '}';
 }
 
 void WriteTickHealthRecordJson(scratchbird::wire::binary_status::Stream* out,

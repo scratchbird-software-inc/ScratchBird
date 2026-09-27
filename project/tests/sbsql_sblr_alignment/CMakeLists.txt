@@ -9967,6 +9967,20 @@ set_tests_properties(sbsql_sblr_alignment_parameter_slot_binary_hash PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;parameter_authority;component_codec;not_e2e"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_agent_selection_binary_identity
+  agent_selection_binary_identity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_agent_selection_binary_identity PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_agent_selection_binary_identity PRIVATE sb_core_agents)
+add_test(NAME sbsql_sblr_alignment_agent_selection_binary_identity
+  COMMAND sbsql_sblr_alignment_agent_selection_binary_identity)
+set_tests_properties(sbsql_sblr_alignment_agent_selection_binary_identity PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;agent_status;component_codec;not_e2e" TIMEOUT 60)
+
+add_test(NAME sbsql_sblr_alignment_binary_status_client
+  COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/binary_status_client_test.py)
+set_tests_properties(sbsql_sblr_alignment_binary_status_client PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;agent_status;client_display;not_e2e" TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_execute_result_cursor_identity_framing
   execute_result_cursor_identity_framing_test.cpp)
 target_compile_features(sbsql_sblr_alignment_execute_result_cursor_identity_framing PRIVATE cxx_std_23)

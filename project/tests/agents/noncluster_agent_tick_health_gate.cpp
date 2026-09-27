@@ -205,6 +205,12 @@ void TestDisabledPoliciesProduceExactRefusalForEveryNonClusterAgent() {
   auto request = ValidRequest();
   request.use_explicit_policy_state = true;
   request.policies = DisabledPoliciesForAllNonClusterAgents();
+  // Disabled work must still report the actual policy decision when a live
+  // metric source is absent. The separate enabled-policy cases retain exact
+  // missing-metric refusals and security checks below.
+  for (const auto& descriptor : agents::CanonicalAgentRegistry())
+    for (const auto& dependency : descriptor.metric_dependencies)
+      request.missing_metric_families.push_back(dependency.metric_family);
 
   const auto result =
       agents::BuildNonClusterAgentTickHealthSnapshot(request);

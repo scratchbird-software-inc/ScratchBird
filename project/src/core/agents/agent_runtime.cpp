@@ -2681,6 +2681,19 @@ AgentTickHealthResult BuildNonClusterAgentTickHealthSnapshot(
       continue;
     }
 
+    // A valid disabled/operator-only policy performs no autonomous work.
+    // Preserve policy and security validation above, but do not demand live
+    // metric providers or execution resources for an action that cannot run.
+    if (!policy->enabled || policy->activation == AgentActivationProfile::disabled ||
+        policy->action_mode == "disabled") {
+      const bool cluster_path_failed_closed = !request.context.cluster_authority_available &&
+          std::any_of(descriptor.metric_dependencies.begin(), descriptor.metric_dependencies.end(),
+                      [](const auto& dependency) { return dependency.cluster_only; });
+      result.records.push_back(ClassifyRunnableTickHealthRecord(
+          descriptor, *policy, request.context, cluster_path_failed_closed));
+      continue;
+    }
+
     bool cluster_path_failed_closed = false;
     std::vector<AgentDependencyDiagnostic> dependency_diagnostics;
     const auto metric_status = ResolveNonClusterTickMetricDependencies(

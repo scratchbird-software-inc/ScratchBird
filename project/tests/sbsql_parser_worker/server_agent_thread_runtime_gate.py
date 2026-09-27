@@ -22,6 +22,9 @@ from typing import Any, Callable
 
 import live_server_agent_storage_benchmark_gate as live
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "support"))
+from binary_status_client import render_binary_status, status_failure_display
+
 
 class GateError(RuntimeError):
     pass
@@ -34,11 +37,11 @@ def require(condition: bool, message: str) -> None:
 
 def read_status(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(render_binary_status(path.read_bytes()))
     except FileNotFoundError as exc:
         raise GateError(f"agent_runtime_status_missing:{path}") from exc
-    except json.JSONDecodeError as exc:
-        raise GateError(f"agent_runtime_status_not_json:{path}") from exc
+    except ValueError as exc:
+        raise GateError(f"agent_runtime_status_invalid:{path}:{exc}") from exc
     status = payload.get("server_agent_runtime", {})
     require(isinstance(status, dict), "server_agent_runtime_object_missing")
     return status
@@ -214,7 +217,7 @@ def main() -> int:
         status_files = sorted(parsed.work.glob("**/sb_server.agent_runtime.json"))
         for path in status_files:
             print(f"--- {path} ---", file=sys.stderr)
-            print(path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
+            print(status_failure_display(path.read_bytes()), file=sys.stderr)
         live.dump_logs(parsed.work)
         return 1
     finally:

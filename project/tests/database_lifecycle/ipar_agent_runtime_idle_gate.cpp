@@ -11,6 +11,7 @@
 #include "server_agent_runtime.hpp"
 #include "uuid.hpp"
 #include "time.hpp"
+#include "../../drivers/tool/cli/binary_status_display.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -233,6 +234,10 @@ void TestLiveRuntimeIdleAndStop() {
           "IPAR agent runtime woke more than one worker per scheduler tick");
   Require(idle.durable_lease_count >= 1,
           "IPAR agent runtime did not acquire durable worker leases");
+  if (idle.total_actions_accepted < 1)
+    for (const auto& worker : idle.workers)
+      std::cerr << worker.agent_type_id << ':' << worker.last_diagnostic_code
+                << ':' << worker.last_diagnostic_detail << '\n';
   Require(idle.total_actions_accepted >= 1,
           "IPAR agent runtime did not perform a live bounded agent action");
   RequireFairWorkerProgress(idle, 2);
@@ -261,7 +266,10 @@ void TestLiveRuntimeIdleAndStop() {
   Require(stopped_source.idle_state == "idle",
           "IPAR agent lifecycle source did not report idle after Stop");
 
-  const auto status_json = ReadFile(config.control_dir / "sb_server.agent_runtime.json");
+  const auto status_packet = ReadFile(config.control_dir / "sb_server.agent_runtime.json");
+  const auto display = scratchbird::cli::RenderBinaryStatus(status_packet);
+  Require(display.has_value(), "IPAR status file must be a valid binary status packet");
+  const auto& status_json = *display;
   Require(status_json.find("\"started\":false") != std::string::npos,
           "IPAR agent runtime status file did not record stopped state");
   Require(status_json.find("\"stopping\":false") != std::string::npos,
@@ -358,7 +366,10 @@ void TestFailureDiagnosticsAndFairness() {
   Require(!stopped.started,
           "IPAR failure/fairness runtime remained started after Stop");
 
-  const auto status_json = ReadFile(config.control_dir / "sb_server.agent_runtime.json");
+  const auto status_packet = ReadFile(config.control_dir / "sb_server.agent_runtime.json");
+  const auto display = scratchbird::cli::RenderBinaryStatus(status_packet);
+  Require(display.has_value(), "IPAR status file must be a valid binary status packet");
+  const auto& status_json = *display;
   Require(Contains(status_json, "\"total_actions_failed\":1"),
           "IPAR status JSON did not record failed action count");
   Require(Contains(status_json, "\"total_actions_refused\":1"),
