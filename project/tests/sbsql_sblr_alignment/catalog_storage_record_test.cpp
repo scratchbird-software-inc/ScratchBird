@@ -264,6 +264,7 @@ void Durable(const fs::path& root, p::u64 millis) {
 }
 int main() {
   fs::path root;
+  bool owns_root = false;
   try {
     Codec();
     const auto millis = static_cast<p::u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -271,14 +272,15 @@ int main() {
     const auto id = u::GenerateEngineIdentityV7(p::UuidKind::object, millis);
     Check(id.ok(), "workspace identity");
     root = fs::temp_directory_path() / ("sb_storage_payload_" + u::UuidToString(id.value.value));
-    Check(fs::create_directory(root), "unique private test directory");
+    owns_root = fs::create_directory(root);
+    Check(owns_root, "unique private test directory");
     Durable(root, millis);
     fs::remove_all(root);
     std::cout << "PASS " << checks << " checks;8192 UUID octet cases;real create/reopen/tamper\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "FAIL " << e.what() << '\n';
-    if (!root.empty()) fs::remove_all(root);
+    if (owns_root) fs::remove_all(root);
     return 1;
   }
 }
