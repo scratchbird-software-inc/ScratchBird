@@ -214,6 +214,9 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
 api::DmlTargetAccessPlanRequest BasePlanRequest(
     const api::EngineUuid& relation_uuid) {
   api::DmlTargetAccessPlanRequest request;
+  static const auto database_uuid =
+      NativeIdentity(platform::UuidKind::database, 1702300000000ull, 0x30);
+  request.database_uuid = database_uuid;
   request.mutation_kind = "orh_230_locator_batch";
   request.relation_uuid = relation_uuid;
   request.access_descriptor_present = true;
@@ -241,6 +244,8 @@ api::DmlTargetAccessPlan RowUuidListPlan(
   request.row_uuids = row_uuids;
   auto plan = api::BuildDmlTargetAccessPlan(request);
   Require(plan.ok, "row uuid list access plan failed");
+  Require(plan.database_uuid == request.database_uuid,
+          "row UUID access plan lost its native database identity");
   return plan;
 }
 
@@ -496,10 +501,34 @@ void TestFailClosedLocatorAndRouteLimits() {
   const api::EngineUuid index_uuid =
       NativeIdentity(platform::UuidKind::object, 1702300201000ull, 0x42);
 
+  auto invalid_node = BasePlanRequest(table_uuid);
+  invalid_node.predicate_kind = "row_uuid_in_list";
+  invalid_node.row_uuids.push_back(
+      NativeIdentity(platform::UuidKind::row, 1702300202000ull, 0x43));
+  invalid_node.database_uuid = {};
+  Require(!api::BuildDmlTargetAccessPlan(invalid_node).ok,
+          "missing node UUID was admitted to a row access plan");
+  invalid_node.database_uuid = BasePlanRequest(table_uuid).database_uuid;
+  invalid_node.database_uuid.bytes[6] = 0x40;
+  Require(!api::BuildDmlTargetAccessPlan(invalid_node).ok,
+          "non-v7 node UUID was admitted to a row access plan");
+
   auto empty = BasePlanRequest(table_uuid);
   empty.predicate_kind = "row_uuid_in_list";
   const auto empty_plan = api::BuildDmlTargetAccessPlan(empty);
-  Require(!empty_plan.ok, "empty row-locator list produced accepted plan");
+  Require(empty_plan.ok && empty_plan.estimated_rows == 0 &&
+              empty_plan.access_kind == api::DmlTargetAccessKind::row_uuid_list,
+          "empty candidate set did not produce an exact zero-row plan");
+  auto empty_request = BaseStreamRequest(
+      api::DmlRowLocatorStreamConsumer::update, empty_plan);
+  const auto empty_stream = api::BuildDmlRowLocatorStream(empty_request);
+  Require(empty_stream.ok && empty_stream.locators.empty() &&
+              empty_stream.source == api::DmlRowLocatorStreamSource::row_uuid_list &&
+              !empty_stream.table_scan_fallback,
+          "empty candidate set accessed rows or fell back to a table scan");
+  empty_request.access_plan_engine_authority_proof = false;
+  Require(!api::BuildDmlRowLocatorStream(empty_request).ok,
+          "empty candidate set bypassed plan authority validation");
 
   auto stale = BasePlanRequest(table_uuid);
   stale.predicate_kind = "scalar_eq";
