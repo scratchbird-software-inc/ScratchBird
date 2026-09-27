@@ -9,7 +9,10 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "registry/function_seed_registry.hpp"
+#include "datatype_catalog_manifest.hpp"
 
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -58,12 +61,27 @@ void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
 }
 
+std::vector<std::uint8_t> FixtureBinary(std::string_view hex) {
+  Require(hex.size() % 2 == 0, "binary fixture length must be even");
+  std::vector<std::uint8_t> bytes;
+  for (std::size_t at = 0; at < hex.size(); at += 2) {
+    unsigned byte = 0;
+    const auto parsed = std::from_chars(hex.data() + at, hex.data() + at + 2, byte, 16);
+    Require(parsed.ec == std::errc{} && parsed.ptr == hex.data() + at + 2,
+            "binary fixture must contain exact hexadecimal bytes");
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  }
+  return bytes;
+}
+
 struct Expression {
   std::string type;
   std::string value;
   bool is_null = false;
   std::string function_id;
   std::vector<Expression> arguments;
+  api::EngineUuid bound_function_uuid;
+  bool omit_function_identity{false};
 };
 
 Expression Literal(std::string type,
@@ -116,12 +134,45 @@ void AppendExpression(sblr::SblrOperationEnvelope* envelope,
   AppendTextOperand(envelope, prefix + "expr_kind",
                     is_function ? "function" : "literal");
   AppendTextOperand(envelope, prefix + "type", expression.type);
-  AppendTextOperand(envelope, prefix + "value", expression.value);
+  if (!is_function && expression.type == "binary" && !expression.is_null) {
+    const auto bytes = FixtureBinary(expression.value);
+    namespace dt = scratchbird::core::datatypes;
+    const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto descriptor = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::binary);
+    Require(catalog.ok() && descriptor.ok(), "binary fixture datatype is unavailable");
+    sblr::SblrOperand operand;
+    operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+    operand.type = "binary"; operand.name = prefix + "value";
+    operand.value_kind = sblr::SblrValueKind::literal_typed;
+    const auto& id = descriptor.manifest.descriptor_rows.front().descriptor_uuid.value;
+    operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+    for (unsigned n = 0; n < 8; ++n)
+      operand.value_body.push_back(static_cast<std::uint8_t>(static_cast<std::uint64_t>(bytes.size()) >> (8 * n)));
+    operand.value_body.insert(operand.value_body.end(), bytes.begin(), bytes.end());
+    envelope->operands.push_back(std::move(operand));
+  } else AppendTextOperand(envelope, prefix + "value", expression.value);
   AppendTextOperand(envelope, prefix + "is_null",
                     expression.is_null ? "true" : "false");
   if (!is_function) return;
 
   AppendTextOperand(envelope, prefix + "function_id", expression.function_id);
+  // Explicit component fixture binding; never ask executable dispatch to infer
+  // an identity from the display label.
+  if (!expression.omit_function_identity) {
+    static const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+    auto uuid = expression.bound_function_uuid;
+    if (uuid.is_nil()) {
+      const auto* function = package.registry.Lookup(expression.function_id);
+      Require(function != nullptr, "fixture callable is absent from the engine registry: " + expression.function_id);
+      uuid = function->function_uuid;
+    }
+    sblr::SblrOperand identity;
+    identity.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+    identity.type = "uuid"; identity.name = prefix + "function_uuid";
+    identity.value_kind = sblr::SblrValueKind::uuid_ref;
+    identity.value_body.assign(uuid.bytes.begin(), uuid.bytes.end());
+    envelope->operands.push_back(std::move(identity));
+  }
   AppendTextOperand(envelope, prefix + "function_arg_count",
                     std::to_string(expression.arguments.size()));
   for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
@@ -508,7 +559,8 @@ int main() {
                                         std::string_view expected_hex) {
     const auto& value = fields[index].second;
     Require(value.descriptor.canonical_type_name == "binary" &&
-                !value.is_null && value.encoded_value == expected_hex &&
+                !value.is_null && value.encoded_value.empty() &&
+                value.binary_value == FixtureBinary(expected_hex) &&
                 value.binary_value.size() == 1 &&
                 value.binary_value.front() == expected,
             "octet_from_int64 projection value drifted");
@@ -1224,10 +1276,22 @@ int main() {
                {Literal("int64", "8"), Literal("int64", "64")}),
       "SB_DIAG_FUNCTION_NUMERIC_DOMAIN");
 
-  RequireFailedBeforeRow(ProfiledDateAdd(
+  auto unbound_alias = ProfiledDateAdd(
       "date", "2004-01-31", "month", "1",
-      "firebird.calendar_month.v1", "int64", "date_add"),
-      "SB_DIAG_FUNCTION_NOT_REGISTERED");
+      "firebird.calendar_month.v1", "int64", "date_add");
+  // A spelling-only call must now fail at binary binding, before callable
+  // lookup. Preserve the no-execution/no-row assertion at this earlier gate.
+  unbound_alias.omit_function_identity = true;
+  RequireFailedBeforeRow(unbound_alias, "SBLR.PLAN_TREE.INVALID_HANDLE");
+  // Conversely the label must not overrule a real binary callable binding.
+  auto bound_alias = unbound_alias;
+  bound_alias.omit_function_identity = false;
+  const auto functions = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  bound_alias.bound_function_uuid = functions.registry.Lookup(kDateAdd)->function_uuid;
+  const auto bound_alias_result = Dispatch({{"bound_alias", bound_alias}});
+  RequireSuccessfulProjection(bound_alias_result, 1);
+  Require(bound_alias_result.api_result.result_shape.rows.front().fields.front().second.encoded_value == "2004-02-29",
+          "display alias must not overrule the bound calendar-month callable");
   RequireFailedBeforeRow(ProfiledDateAdd(
       "date", "2004-01-31", "month", "1.0",
       "firebird.calendar_month.v1", "numeric.fixed"));

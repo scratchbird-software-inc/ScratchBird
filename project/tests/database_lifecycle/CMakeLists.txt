@@ -889,6 +889,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     PRIVATE
       sb_engine_internal_api
       sb_engine_sblr
+      sb_engine_functions
   )
 
   add_test(

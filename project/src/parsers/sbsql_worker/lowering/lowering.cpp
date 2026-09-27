@@ -28795,6 +28795,29 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
       value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
       value.canonical_value_body.insert(value.canonical_value_body.end(), uuid.bytes.begin(), uuid.bytes.end());
       envelope->operands.push_back(std::move(value));
+    } else if (item.expression_kind == "literal" && item.type_name == "binary" && !item.is_null) {
+      const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto row = core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, core::datatypes::CanonicalTypeId::binary);
+      if (item.value.size() % 2 || !catalog.ok() || !row.ok() || row.manifest.descriptor_rows.size() != 1) {
+        complete = false; return;
+      }
+      SblrOperand value{"binary", prefix + "value", {}};
+      value.canonical_value_kind = static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
+      const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.canonical_value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+      const auto byte_count = static_cast<std::uint64_t>(item.value.size() / 2);
+      for (unsigned n = 0; n < 8; ++n)
+        value.canonical_value_body.push_back(static_cast<std::uint8_t>(byte_count >> (8 * n)));
+      for (std::size_t at = 0; at < item.value.size(); at += 2) {
+        unsigned byte = 0;
+        const auto parsed = std::from_chars(item.value.data() + at, item.value.data() + at + 2, byte, 16);
+        if (parsed.ec != std::errc{} || parsed.ptr != item.value.data() + at + 2) {
+          complete = false; return;
+        }
+        value.canonical_value_body.push_back(static_cast<std::uint8_t>(byte));
+      }
+      envelope->operands.push_back(std::move(value));
     } else {
       text(prefix + "value", item.is_null ? "" : item.value);
     }
@@ -28834,7 +28857,7 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
     emit(emit, info.items[i], "projection_" + std::to_string(i) + "_");
   if (!complete) {
     envelope->messages.diagnostics.push_back(MakeDiagnostic(
-        "SBLR.OPERAND_INVALID", "ERROR", "Scalar UUID literals require a canonical datatype and exactly 16 value bytes",
+        "SBLR.OPERAND_INVALID", "ERROR", "Scalar UUID/binary literals require a canonical datatype and exact native value bytes",
         "sbp_sbsql.scalar_lowering"));
     return;
   }
@@ -42436,15 +42459,10 @@ SblrEnvelope LowerExactDiagnosticRefusal(
 
 } // namespace
 
-bool HasScalarProjectionFunctionDemand(const CstDocument& cst,
+bool HasScalarProjectionDemand(const CstDocument& cst,
     const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   const auto projection = AnalyzeScalarProjection(cst, resolved_object_uuids);
-  if (!projection.active || !projection.valid) return false;
-  const auto function = [&](const auto& self, const ScalarProjectionItem& item) -> bool {
-    return item.expression_kind == "function" ||
-        std::ranges::any_of(item.arguments, [&](const auto& child) { return self(self, child); });
-  };
-  return std::ranges::any_of(projection.items, [&](const auto& item) { return function(function, item); });
+  return projection.active && projection.valid;
 }
 
 CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(

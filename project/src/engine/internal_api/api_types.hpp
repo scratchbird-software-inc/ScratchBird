@@ -298,6 +298,7 @@ struct EngineProjectionEnvelope {
   // UUID scalar literals retain all 128 data bits (including nil/non-v7).
   // Paths identify expression occurrences; these values confer no authority.
   std::vector<std::pair<std::string, EngineUuid>> uuid_literals;
+  std::vector<std::pair<std::string, std::vector<std::uint8_t>>> binary_literals;
 };
 
 struct EngineOrderingEnvelope {

@@ -67,6 +67,10 @@ int main(int argc, char** argv) {
            "UUID_TO_STRING(UUID 'ffffffff-ffff-ffff-ffff-ffffffffffff') AS spelling",
            "row[0]=id=550e8400-e29b-41d4-a716-446655440000;"
            "spelling=ffffffff-ffff-ffff-ffff-ffffffffffff", 1) ||
+      !run("SELECT ENCODE(X'00ff10', 'hex') AS encoded, DECODE('00ff10', 'hex') AS decoded, "
+           "ENCODE(X'', 'hex') AS empty", "row[0]=encoded=00ff10;decoded=hex:00ff10;empty=") ||
+      !run("SELECT UUID '550e8400-e29b-41d4-a716-446655440000' AS id, X'00ff10' AS bytes_value",
+           "row[0]=id=550e8400-e29b-41d4-a716-446655440000;bytes_value=hex:00ff10", 1) ||
       !run("ROLLBACK TRANSACTION", {})) return 4;
   std::cout << "builtin_function_binary_process=passed phase=" << argv[4] << '\n';
   return 0;

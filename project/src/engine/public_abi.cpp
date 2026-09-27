@@ -3829,7 +3829,15 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
       }
       kind = public_result::Kind::uuid;
     }
-    else if (type == "bytea" || type == "binary" || type == "varbinary" || type == "list<text nullable>") kind = public_result::Kind::bytes;
+    else if (type == "bytea" || type == "binary" || type == "varbinary") {
+      if ((!bytes.empty() && !value.binary_value.empty()) ||
+          (value.is_null && (!bytes.empty() || !value.binary_value.empty())))
+        throw std::invalid_argument("public_result_binary_carrier_invalid");
+      if (!value.binary_value.empty())
+        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
+      kind = public_result::Kind::bytes;
+    }
+    else if (type == "list<text nullable>") kind = public_result::Kind::bytes;
     fields.push_back({name, kind, std::move(bytes)});
   }
   return public_record(std::move(fields));

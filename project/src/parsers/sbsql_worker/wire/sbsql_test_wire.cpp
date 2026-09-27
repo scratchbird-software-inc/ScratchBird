@@ -19240,10 +19240,10 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalScalarProjectionSubmi
     } else {
       if (!source.value.empty()) return std::nullopt;
       const auto function = FindDmlObjectIdentity(lowered, source.name);
-      const bool uuid_literal = source.type == "uuid" && source.name.starts_with("projection_") &&
+      const bool native_literal = (source.type == "uuid" || source.type == "binary") && source.name.starts_with("projection_") &&
           source.name.ends_with("_value") && source.canonical_value_kind ==
               static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
-      if (!function && !uuid_literal) return std::nullopt;
+      if (!function && !native_literal) return std::nullopt;
       engine::sblr::SblrOperand operand;
       operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
       operand.type = source.type;
@@ -27638,7 +27638,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     return result;
   }
   std::optional<ParserStatementContext> native_statement_context;
-  const bool scalar_function_demand = HasScalarProjectionFunctionDemand(cst, resolved_object_uuids);
+  const bool scalar_projection_demand = HasScalarProjectionDemand(cst, resolved_object_uuids);
   std::optional<NativeRelationalBindingContext> native_binding_context;
   std::optional<LiteralPrebindState> literal_prebind_state;
   std::optional<ContextualTextPrebindStateV2> contextual_text_prebind_state;
@@ -27779,7 +27779,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     admitted_savepoint_handle_ = named->second;
   }
-  if (compile_or_submit && (ast.native_relational.recognized() || scalar_function_demand || canonical_txn_begin ||
+  if (compile_or_submit && (ast.native_relational.recognized() || scalar_projection_demand || canonical_txn_begin ||
                  canonical_txn_set_characteristics ||
                  canonical_txn_commit || canonical_txn_rollback ||
                  canonical_txn_savepoint || canonical_txn_release_savepoint ||
@@ -29655,7 +29655,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         native_submission = BuildCanonicalRouteTextSubmission(
             *route, *native_statement_context, session_);
       }
-    } else if (scalar_function_demand && lowered.operation_id == "query.evaluate_projection") {
+    } else if (scalar_projection_demand && lowered.operation_id == "query.evaluate_projection") {
       native_submission = BuildCanonicalScalarProjectionSubmission(
           lowered, *native_statement_context, session_);
     } else if (exact_security_privilege_projection_route.has_value()) {

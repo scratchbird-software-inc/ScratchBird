@@ -28,6 +28,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <charconv>
+#include <stdexcept>
 #include <initializer_list>
 #include <iostream>
 #include <string>
@@ -57,7 +59,22 @@ namespace sblr = canonical_test_sblr;
 
 constexpr auto kTargetUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101");
 
+std::vector<std::uint8_t> FixtureHexBytes(std::string_view hex) {
+  if (hex.size() % 2) throw std::invalid_argument("odd binary fixture length");
+  std::vector<std::uint8_t> bytes;
+  for (std::size_t at = 0; at < hex.size(); at += 2) {
+    unsigned byte = 0;
+    const auto parsed = std::from_chars(hex.data() + at, hex.data() + at + 2, byte, 16);
+    if (parsed.ec != std::errc{} || parsed.ptr != hex.data() + at + 2)
+      throw std::invalid_argument("malformed binary fixture");
+    bytes.push_back(static_cast<std::uint8_t>(byte));
+  }
+  return bytes;
+}
+
 bool ScalarFixtureValueEquals(const api::EngineTypedValue& value, std::string_view expected) {
+  if (value.descriptor.canonical_type_name == "binary")
+    return value.encoded_value.empty() && value.binary_value == FixtureHexBytes(expected);
   if (value.descriptor.canonical_type_name != "uuid") return value.encoded_value == expected;
   // Test oracle presentation only; the actual engine value must remain raw16.
   const auto identity = scratchbird::core::uuid::ParseUuid(std::string(expected));
@@ -1693,21 +1710,8 @@ sblr::SblrOperationEnvelope FloatLiteralEngineEnvelope() {
 }
 
 sblr::SblrOperationEnvelope BinaryLiteralEngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("query.evaluate_projection",
-                                         "SBLR_QUERY_EVALUATE_PROJECTION",
-                                         "trace.query.scalar_projection.binary_literal");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "projection_count", "1"});
-  envelope.operands.push_back({"text", "projection_0_name", "binary_value"});
-  envelope.operands.push_back({"text", "projection_0_expr_kind", "literal"});
-  envelope.operands.push_back({"text", "projection_0_type", "binary"});
-  envelope.operands.push_back({"text", "projection_0_value", "00ff10"});
-  envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  return envelope;
+  return EngineEnvelopeFromParserEnvelope(RunPipeline(
+      "SELECT X'00ff10' AS binary_value").envelope);
 }
 
 sblr::SblrOperationEnvelope UuidLiteralEngineEnvelope() {
@@ -1896,6 +1900,22 @@ void AppendFunctionProjectionOperand(sblr::SblrOperationEnvelope& envelope,
       value.value_body.assign(id.bytes.begin(), id.bytes.end());
       value.value_body.push_back(16); value.value_body.insert(value.value_body.end(), 7, 0);
       value.value_body.insert(value.value_body.end(), uuid.value.bytes.begin(), uuid.value.bytes.end());
+      envelope.operands.push_back(std::move(value));
+    } else if (arg.type == "binary" && !arg.is_null) {
+      const auto bytes = FixtureHexBytes(arg.value);
+      const auto catalog = scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto descriptor = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, scratchbird::core::datatypes::CanonicalTypeId::binary);
+      Require(catalog.ok() && descriptor.ok(), "binary fixture datatype must be valid");
+      sblr::SblrOperand value;
+      value.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+      value.type = "binary"; value.name = arg_prefix + "_value";
+      value.value_kind = sblr::SblrValueKind::literal_typed;
+      const auto& id = descriptor.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.value_body.assign(id.bytes.begin(), id.bytes.end());
+      for (unsigned n = 0; n < 8; ++n)
+        value.value_body.push_back(static_cast<std::uint8_t>(static_cast<std::uint64_t>(bytes.size()) >> (8 * n)));
+      value.value_body.insert(value.value_body.end(), bytes.begin(), bytes.end());
       envelope.operands.push_back(std::move(value));
     } else envelope.operands.push_back({"text", arg_prefix + "_value", arg.value});
     envelope.operands.push_back({"text", arg_prefix + "_is_null", arg.is_null ? "true" : "false"});
@@ -8994,7 +9014,7 @@ void RequireEngineDispatch() {
           "engine binary literal scalar projection column count mismatch");
   Require(binary_literal_row.fields[0].first == "binary_value" &&
               binary_literal_row.fields[0].second.descriptor.canonical_type_name == "binary" &&
-              binary_literal_row.fields[0].second.encoded_value == "00ff10" &&
+              ScalarFixtureValueEquals(binary_literal_row.fields[0].second, "00ff10") &&
               !binary_literal_row.fields[0].second.is_null,
           "engine binary literal scalar projection field mismatch");
 
@@ -9997,7 +10017,7 @@ void RequireEngineTemporalSessionProviderFunctionDispatch() {
           "engine now provider scalar projection mismatch");
   for (std::size_t index = 10; index < 16; ++index) {
     Require(row.fields[index].second.descriptor.canonical_type_name == "uuid" &&
-                row.fields[index].second.encoded_value == "550e8400-e29b-41d4-a716-446655440000",
+                ScalarFixtureValueEquals(row.fields[index].second, "550e8400-e29b-41d4-a716-446655440000"),
             "engine deterministic uuid provider scalar projection mismatch");
   }
 }
@@ -11135,8 +11155,51 @@ void RequireBinaryBuiltinBinding() {
           "binder must reject ambiguous engine projection");
 }
 
+void RequireBinaryScalarLiteralBinding() {
+  const auto parsed = RunPipeline("SELECT ENCODE(X'00ff10', 'hex') AS encoded, "
+      "DECODE('00ff10', 'hex') AS decoded, ENCODE(X'', 'hex') AS empty");
+  if (!parsed.verifier.admitted) {
+    for (const auto& diagnostic : parsed.envelope.messages.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    for (const auto& diagnostic : parsed.verifier.messages.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  Require(parsed.verifier.admitted, "binary scalar SQL must lower to canonical SBLR");
+  auto canonical = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      EngineEnvelopeFromParserEnvelope(parsed.envelope));
+  const auto result = sblr::DispatchSblrOperation({EngineContext(), canonical, {}});
+  Require(result.api_result.ok && result.api_result.result_shape.rows.size() == 1,
+      "native binary scalar literals must execute");
+  const auto& row = result.api_result.result_shape.rows.front();
+  Require(row.fields.size() == 3 && row.fields[0].second.encoded_value == "00ff10" &&
+      row.fields[1].second.encoded_value.empty() &&
+      row.fields[1].second.binary_value == std::vector<std::uint8_t>{0, 255, 16} &&
+      row.fields[2].second.encoded_value.empty() && !row.fields[2].second.isSqlNull(),
+      "binary scalar literal results must preserve bytes and empty non-NULL values");
+  for (unsigned mutation = 0; mutation < 6; ++mutation) {
+    auto bad = canonical;
+    auto literal = std::ranges::find(bad.operands, std::string{"projection_0_arg_0_value"}, &sblr::SblrOperand::name);
+    Require(literal != bad.operands.end() && literal->value_body.size() == 27,
+        "binary scalar literal requires its exact native frame");
+    if (mutation == 0) literal->value_body.pop_back();
+    if (mutation == 1) literal->value_body[16] = 4;
+    if (mutation == 2) literal->value_body[0] ^= 1;
+    if (mutation == 3) literal->value = "00ff10";
+    if (mutation == 4) literal->name = "projection_99_value";
+    if (mutation == 5) {
+      auto duplicate = *literal;
+      duplicate.ordinal = static_cast<std::uint32_t>(bad.operands.size() + 1);
+      bad.operands.push_back(std::move(duplicate));
+    }
+    const auto rejected = scratchbird::engine::sblr::DispatchSblrOperation({EngineContext(), bad, {}});
+    Require(!rejected.api_result.ok && rejected.api_result.result_shape.rows.empty(),
+        "malformed binary literal must fail without rows");
+  }
+}
+
 int main(int argc, char** argv) {
   RequireBinaryBuiltinBinding();
+  RequireBinaryScalarLiteralBinding();
   if (argc == 2 && std::string_view(argv[1]) == "--binary-function-binding-only") return 0;
   RequireScalarLowering();
   RequireFunctionProjectionLowering();

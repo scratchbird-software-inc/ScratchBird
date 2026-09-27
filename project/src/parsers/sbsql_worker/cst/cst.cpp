@@ -77,7 +77,7 @@ std::string CanonicalTextForToken(const Token& token,
   if (alias != nullptr && !alias->canonical_text.empty()) {
     return ToUpperAscii(alias->canonical_text);
   }
-  if (token.kind == TokenKind::kStringLiteral && token.text.empty() &&
+  if ((token.kind == TokenKind::kStringLiteral || token.kind == TokenKind::kBinaryLiteral) && token.text.empty() &&
       !token.raw_text.empty()) {
     return token.raw_text;
   }

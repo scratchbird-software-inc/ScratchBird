@@ -13,6 +13,7 @@
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "sblr_bound_object_identity.hpp"
 #include "sblr_projection_uuid_literals.hpp"
+#include "sblr_projection_binary_literals.hpp"
 #include "sblr_projection_value_runtime.hpp"
 
 #include <stdexcept>
@@ -5254,7 +5255,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     if (IsBoundObjectIdentityRole(operand.name) || IsRelatedObjectIdentityRole(operand.name) ||
         (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
-          IsProjectionUuidLiteral(operand)))) continue;
+          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
     auto operand_value = OperandExecutionValue(operand);
     const bool binary_row = operand.type.starts_with("row_field_binary16.") ||
                             operand.type.starts_with("row_null_field_binary16.");
@@ -10783,12 +10784,13 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
   if (request.envelope.operation_id == "query.evaluate_projection" &&
-      !ProjectSblrUuidLiterals(request.envelope, &request.api_request, &identity_failure)) {
+      (!ProjectSblrUuidLiterals(request.envelope, &request.api_request, &identity_failure) ||
+       !ProjectSblrBinaryLiterals(request.envelope, &request.api_request, &identity_failure))) {
     if (identity_failure == SblrIdentityProjectionFailure::allocation_failed) {
       result.resource_exhausted = true;
       return result;
     }
-    constexpr const char* detail = "Projection UUID literals require a unique Core-typed binary16 body";
+    constexpr const char* detail = "Projection UUID/binary literals require a unique Core-typed native byte body";
     result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
     result.api_result = FailureResult(request.context, request.envelope.operation_id,
         "SBLR.OPERAND_INVALID", "engine.sblr.dispatch.uuid_literal_invalid", detail);
@@ -11099,7 +11101,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       if (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionFunctionIdentityRole(operand.name) ||
          (request.envelope.operation_id == "query.evaluate_projection" &&
-          IsProjectionUuidLiteral(operand)))) continue;
+          (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
       if (operand.value_kind != SblrValueKind::literal_typed ||
           operand.value_body.size() < 24) {
         const std::string detail =

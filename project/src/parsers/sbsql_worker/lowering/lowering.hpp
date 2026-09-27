@@ -74,7 +74,7 @@ struct SblrVerifierResult {
 };
 
 // Syntax demand only: no function identities are generated here.
-bool HasScalarProjectionFunctionDemand(const CstDocument& cst,
+bool HasScalarProjectionDemand(const CstDocument& cst,
     const std::vector<core::platform::Uuid>& resolved_object_uuids = {});
 
 enum class CentralImportCommandDisposition {

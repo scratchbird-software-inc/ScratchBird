@@ -6,6 +6,7 @@
 #include <algorithm>
 #include "engine/sblr/sblr_bound_object_identity.hpp"
 #include "engine/sblr/sblr_projection_uuid_literals.hpp"
+#include "engine/sblr/sblr_projection_binary_literals.hpp"
 #include <charconv>
 #include <limits>
 #include <optional>
@@ -328,9 +329,12 @@ bool CanonicalBoundScalarProjectionOperands(
   std::unordered_set<std::string> names;
   std::unordered_set<std::string> functions;
   scratchbird::engine::internal_api::EngineApiRequest literal_projection;
-  if (!sblr::ProjectSblrUuidLiterals(operation, &literal_projection)) return false;
+  if (!sblr::ProjectSblrUuidLiterals(operation, &literal_projection) ||
+      !sblr::ProjectSblrBinaryLiterals(operation, &literal_projection)) return false;
   std::unordered_set<std::string> literals;
   for (const auto& [path, value] : literal_projection.projection.uuid_literals) literals.insert(path);
+  std::unordered_set<std::string> binary_literals;
+  for (const auto& [path, value] : literal_projection.projection.binary_literals) binary_literals.insert(path);
   for (std::size_t i = 0; i < operation.operands.size(); ++i) {
     const auto& operand = operation.operands[i];
     if (operand.ordinal != i + 1 || operand.value_flags != 0 || !operand.value.empty() ||
@@ -344,7 +348,7 @@ bool CanonicalBoundScalarProjectionOperands(
       std::copy_n(operand.value_body.begin(), 16, identity.bytes.begin());
       if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity) ||
           !functions.insert(std::string(path)).second) return false;
-    } else if (!sblr::IsProjectionUuidLiteral(operand)) {
+    } else if (!sblr::IsProjectionUuidLiteral(operand) && !sblr::IsProjectionBinaryLiteral(operand)) {
       auto text_operand = operand;
       text_operand.ordinal = static_cast<std::uint32_t>(text_operation.operands.size() + 1);
       text_operation.operands.push_back(std::move(text_operand));
@@ -378,10 +382,13 @@ bool CanonicalBoundScalarProjectionOperands(
     if (literals.erase(prefix)) {
       if (*kind != "literal" || *type != "uuid" || *is_null != "false" ||
           CanonicalTextOperandValue(*text, prefix + "value")) return false;
+    } else if (binary_literals.erase(prefix)) {
+      if (*kind != "literal" || *type != "binary" || *is_null != "false" ||
+          CanonicalTextOperandValue(*text, prefix + "value")) return false;
     } else {
       const auto value = read(prefix + "value");
       if (!value || (*is_null == "true" && !value->empty()) ||
-          (*kind == "literal" && *type == "uuid" && *is_null == "false")) return false;
+          (*kind == "literal" && (*type == "uuid" || *type == "binary") && *is_null == "false")) return false;
     }
     for (const auto* field : {"name", "expr_opcode", "literal_family", "interval_qualifier", "interval_unit",
          "interval_literal_payload", "function_id", "operator_id", "canonical_operator_id", "special_form_id",
@@ -403,7 +410,7 @@ bool CanonicalBoundScalarProjectionOperands(
   };
   for (std::size_t i = 0; i < *count; ++i)
     if (!visit(visit, "projection_" + std::to_string(i) + "_", 1)) return false;
-  return functions.empty() && literals.empty() && consumed.size() == text->size();
+  return functions.empty() && literals.empty() && binary_literals.empty() && consumed.size() == text->size();
 }
 
 bool CanonicalTransactionCharacteristicsTextOperands(
