@@ -629,6 +629,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(cdp_copy_append_batching_gate PRIVATE cxx_std_20)
   target_link_libraries(cdp_copy_append_batching_gate
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
@@ -650,6 +651,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(sblr_plan_import_rows_conformance PRIVATE cxx_std_23)
   target_link_libraries(sblr_plan_import_rows_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
@@ -763,6 +765,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(cdp_statistics_access_path_gate PRIVATE cxx_std_20)
   target_link_libraries(cdp_statistics_access_path_gate
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api

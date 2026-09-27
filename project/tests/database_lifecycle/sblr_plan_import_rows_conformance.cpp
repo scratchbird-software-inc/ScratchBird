@@ -9,6 +9,8 @@
 // SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "dml/import_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
@@ -139,6 +141,9 @@ struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
   platform::Uuid filespace_uuid;
   platform::Uuid schema_uuid;
   platform::Uuid principal_uuid;
@@ -150,6 +155,8 @@ struct Fixture {
   api::MgaRelationStorageDescriptor relation_descriptor;
 
   ~Fixture() {
+    statements.clear();
+    session.reset();
     std::error_code ignored;
     if (!root.empty()) std::filesystem::remove_all(root, ignored);
   }
@@ -157,8 +164,7 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
@@ -210,59 +216,11 @@ void Rollback(const api::EngineRequestContext& context) {
 api::EngineRequestContext AttachStatementReceipt(
     const Fixture& fixture,
     api::EngineRequestContext context) {
-  context.statement_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context.statement_snapshot_uuid = {};
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  RequireOk(snapshot, "plan-import statement snapshot publication failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.statement_snapshot_generation =
-      snapshot.snapshot_vector
-          .publication_inventory_next_local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context.statement_metadata_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
-  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object);
-  context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid =
-      NewIdentity(platform::UuidKind::object);
-
-  auto& authorization = context.authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid =
-      NewIdentity(platform::UuidKind::object);
-  authorization.security_context_generation = 1;
-  authorization.principal_uuid = context.principal_uuid;
-  authorization.security_epoch = context.security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  authorization.effective_subjects.push_back(subject);
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      NewIdentity(platform::UuidKind::object);
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = fixture.table_uuid;
-  grant.right = "INSERT";
-  grant.security_epoch = context.security_epoch;
-  authorization.grants.push_back(std::move(grant));
-  return context;
+  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+      *fixture.session, context);
+  const auto issued = statement->context;
+  fixture.statements.push_back(std::move(statement));
+  return issued;
 }
 
 api::SblrExecutorAvailabilityRowIdentity PlanImportAvailabilityIdentity() {
@@ -292,8 +250,7 @@ Fixture MakeFixture() {
   create.database_uuid = NewUuid(platform::UuidKind::database);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
   create.creation_unix_epoch_millis = NowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -304,9 +261,10 @@ Fixture MakeFixture() {
 
   fixture.database_uuid = create.database_uuid.value;
   fixture.filespace_uuid = create.filespace_uuid.value;
-  fixture.schema_uuid = NewIdentity(platform::UuidKind::schema);
-  fixture.principal_uuid = NewIdentity(platform::UuidKind::principal);
-  fixture.session_uuid = NewIdentity(platform::UuidKind::session);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object);
 
   auto metadata = Begin(fixture, "plan-import-metadata");
@@ -315,12 +273,13 @@ Fixture MakeFixture() {
   table.table_uuid = fixture.table_uuid;
   table.default_name = "plan_import_target";
   table.columns.push_back({"payload", "canonical=character"});
-  Require(!api::AppendMgaTableMetadata(metadata, table).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(metadata, table, {"character"}).error,
           "plan-import table metadata append failed");
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               metadata, table, {}, &fixture.relation_descriptor)
-               .error,
+  fixture.schema_uuid = metadata.current_schema_uuid;
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(metadata, fixture.table_uuid);
+  Require(descriptor.ok,
           "plan-import relation descriptor persistence failed");
+  fixture.relation_descriptor = descriptor.descriptor;
   Commit(metadata);
 
   auto ended = Begin(fixture, "plan-import-ended-transaction");
@@ -576,6 +535,8 @@ void RequireRelationStateEqual(const api::MgaRelationStoreState& before,
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "sblr-plan-import-native-fixture");
   auto fixture = MakeFixture();
   const auto binder_context =
       WithOnlyTraceTag(fixture.planning_context, kBinderTag);
@@ -767,6 +728,7 @@ int main() {
   opcode_invalid.operation_id = "dml.update_rows";
   opcode_invalid.descriptor_ref = {};
   opcode_invalid.context.authorization_context.grants.clear();
+  opcode_invalid.context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   opcode_invalid.context.local_transaction_id = 0;
   opcode_invalid.context.transaction_uuid = {};
   require_higher_precedence(opcode_invalid, "SBLR.OPCODE_INVALID", 0,
@@ -779,6 +741,7 @@ int main() {
 
   auto security_denied = request;
   security_denied.context.authorization_context.grants.clear();
+  security_denied.context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   security_denied.context.local_transaction_id = 0;
   security_denied.context.transaction_uuid = {};
   ++security_denied.context.statement_snapshot_generation;

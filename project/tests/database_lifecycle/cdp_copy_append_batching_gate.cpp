@@ -1,4 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +11,7 @@
 
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
+#include "ddl/create_api.hpp"
 #include "dml/import_api.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -92,12 +95,17 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
   api::EngineUuid filespace_uuid;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
+    statements.clear();
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -192,14 +200,11 @@ std::string FirstNonEmptyFieldValue(const api::EngineResultShape& result,
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
   context.default_root_uuid = fixture.filespace_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -238,32 +243,6 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "CDP-011 rollback failed");
 }
 
-api::CrudTableRecord Table(const Fixture& fixture,
-                           const api::EngineRequestContext& context) {
-  api::CrudTableRecord table;
-  table.creator_tx = context.local_transaction_id;
-  table.table_uuid = fixture.table_uuid;
-  table.default_name = "cdp_copy_append_batching";
-  table.columns.push_back({"id", "canonical=character;primary_key=true"});
-  table.columns.push_back({"note", "canonical=character"});
-  return table;
-}
-
-api::CrudIndexRecord UniqueIdIndex(const Fixture& fixture,
-                                   const api::EngineRequestContext& context) {
-  api::CrudIndexRecord index;
-  index.creator_tx = context.local_transaction_id;
-  index.index_uuid = fixture.index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "id";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.unique = true;
-  index.key_envelopes.push_back("id");
-  index.key_envelopes.push_back("unique");
-  return index;
-}
-
 Fixture MakeFixture(std::string name, platform::u64 salt) {
   Fixture fixture;
   fixture.salt = salt;
@@ -277,8 +256,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = MillisSeed() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -288,34 +266,67 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(created.ok(), "CDP-011 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
   fixture.filespace_uuid = create.filespace_uuid.value;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
-
   auto metadata = Begin(fixture, "cdp011-metadata");
-  const auto table_record = Table(fixture, metadata);
-  const auto table = api::AppendMgaTableMetadata(metadata, table_record);
-  Require(!table.error, "CDP-011 table metadata append failed");
-  const auto index = api::AppendMgaIndexMetadata(metadata, UniqueIdIndex(fixture, metadata));
-  Require(!index.error, "CDP-011 unique index metadata append failed");
-  api::MgaRelationStorageDescriptor relation_descriptor;
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               metadata, table_record, {}, &relation_descriptor)
-               .error,
-          "CDP-011 relation descriptor persistence failed");
+  api::EngineCreateSchemaRequest schema;
+  schema.context = metadata;
+  schema.target_object.uuid = NewIdentity(platform::UuidKind::schema, salt + 12);
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "cdp_copy", true});
+  RequireOk(api::EngineCreateSchema(schema), "CDP-011 schema publication failed");
+  metadata.current_schema_uuid = schema.target_object.uuid;
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  api::EngineCreateTableRequest table;
+  table.context = metadata;
+  table.target_schema.uuid = metadata.current_schema_uuid;
+  table.target_schema.object_kind = "schema";
+  table.requested_table_uuid = fixture.table_uuid;
+  table.table_names.push_back({"en", "primary", "", "cdp_copy_append_batching", true});
+  for (const std::string column_name : {"id", "note"}) {
+    api::EngineColumnDefinition column;
+    column.names.push_back({"en", "primary", "", column_name, true});
+    column.ordinal = table.table_columns.size();
+    column.nullable = column_name != "id";
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = "text";
+    column.descriptor.encoded_descriptor = column_name == "id"
+        ? "type=text;primary_key=true;nullable=false" : "type=text";
+    scratchbird::tests::BindFixtureColumnDatatype(metadata,
+        scratchbird::core::datatypes::CanonicalTypeId::character, column);
+    table.table_columns.push_back(std::move(column));
+  }
+  RequireOk(api::EngineCreateTable(table), "CDP-011 table and primary-key publication failed");
+  const auto stored = api::LoadMgaRelationStoreState(metadata);
+  Require(stored.ok, "CDP-011 relation metadata readback failed");
+  const auto indexes = api::VisibleCrudIndexesForTable(
+      stored.state.relation_metadata, fixture.table_uuid, metadata.local_transaction_id);
+  Require(indexes.size() == 1 && indexes.front().unique &&
+              !indexes.front().index_uuid.is_nil() && indexes.front().column_name == "id" &&
+              indexes.front().key_envelopes == std::vector<std::string>{"id", "primary_key"},
+          "CDP-011 primary-key backing index did not persist exactly");
+  fixture.index_uuid = indexes.front().index_uuid;
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(metadata, fixture.table_uuid);
+  Require(descriptor.ok && descriptor.descriptor.columns.size() == 2 &&
+              !descriptor.descriptor.columns.front().nullable &&
+              descriptor.descriptor.indexes.size() == 1 &&
+              descriptor.descriptor.indexes.front().index_uuid == fixture.index_uuid,
+          "CDP-011 relation descriptor or primary-key support binding did not persist");
   Commit(metadata);
   return fixture;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows,
     std::vector<std::string> options,
     std::string reject_mode = "fail_fast",
     api::EngineApiU64 reject_limit_rows = 10) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.source.source_kind = "csv_stream";
@@ -336,61 +347,11 @@ api::EngineExecuteImportRowsRequest ImportRequest(
 api::EngineRequestContext AttachPlanStatementReceipt(
     const Fixture& fixture,
     api::EngineRequestContext context) {
-  const platform::u64 identity_salt =
-      fixture.salt + context.local_transaction_id * 32;
-  context.statement_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 1);
-  context.statement_snapshot_uuid = {};
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  RequireOk(snapshot, "CDP-011 plan statement snapshot publication failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.statement_snapshot_generation =
-      snapshot.snapshot_vector
-          .publication_inventory_next_local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 2);
-  context.statement_metadata_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 3);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
-  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 4);
-  context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 5);
-
-  auto& authorization = context.authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 6);
-  authorization.security_context_generation = 1;
-  authorization.principal_uuid = context.principal_uuid;
-  authorization.security_epoch = context.security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  authorization.effective_subjects.push_back(subject);
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      NewIdentity(platform::UuidKind::object, identity_salt + 7);
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = fixture.table_uuid;
-  grant.right = "INSERT";
-  grant.security_epoch = context.security_epoch;
-  authorization.grants.push_back(std::move(grant));
-  return context;
+  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+      *fixture.session, context);
+  const auto issued_context = statement->context;
+  fixture.statements.push_back(std::move(statement));
+  return issued_context;
 }
 
 api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
@@ -469,8 +430,20 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
 
 api::EngineApiU64 SelectCount(const Fixture& fixture,
                               const api::EngineRequestContext& context) {
+  // Plan consumers already hold a live receipt retained by this fixture.
+  // Reuse it; passing its engine-owned fields to acquisition is forbidden.
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+  if (context.statement_receipt_uuid.is_nil()) {
+    statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+        *fixture.session, context);
+  } else {
+    Require(std::any_of(fixture.statements.begin(), fixture.statements.end(),
+                       [&](const auto& live) {
+                         return live->context.statement_receipt_uuid == context.statement_receipt_uuid;
+                       }), "CDP-011 select context has no retained live receipt");
+  }
   api::EngineSelectRowsRequest request;
-  request.context = context;
+  request.context = statement ? statement->context : context;
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   request.select_projection.canonical_projection_envelopes.push_back("id");
@@ -670,8 +643,8 @@ api::EngineApiRequest SblrApiRequest(const Fixture& fixture,
 
 void SeedCommittedRow(const Fixture& fixture, std::string id, std::string note) {
   auto context = Begin(fixture, "cdp011-seed");
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(std::move(id), std::move(note)));
@@ -789,6 +762,8 @@ void TestPlanContractIsCompleteAndExecutionBound() {
 
   auto denied = request;
   denied.context.authorization_context.grants.clear();
+  // Removing explicit grants alone does not remove the owner's implicit role.
+  denied.context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   RequirePlanRefusal(api::EnginePlanImportRows(denied),
                      "SECURITY.ACCESS_DENIED",
                      "CDP-011 denied INSERT plan was not refused");
@@ -953,6 +928,7 @@ void TestRollbackInvisibilityAndCommittedReopenVisibility() {
 void TestSblrExecuteImportRowsDispatchesToExecutor() {
   auto fixture = MakeFixture("sblr_execute", 4500);
   auto context = Begin(fixture, "cdp011-sblr-execute");
+  context = AttachPlanStatementReceipt(fixture, std::move(context));
   sblr::SblrDispatchRequest dispatch;
   dispatch.context = context;
   dispatch.envelope = ExecuteImportEnvelope(fixture);
