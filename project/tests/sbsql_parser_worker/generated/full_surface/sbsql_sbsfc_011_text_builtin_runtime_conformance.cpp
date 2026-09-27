@@ -40,7 +40,7 @@ SblrValue TextValue(std::string input) {
   return value;
 }
 
-SblrValue UuidValue(std::string input) {
+SblrValue LegacyTextUuidValue(std::string input) {
   SblrValue value = TextValue(std::move(input));
   value.descriptor_id = "uuid";
   return value;
@@ -206,6 +206,20 @@ bool ExpectTextDescriptor(std::string_view case_id,
   if (value.is_null || value.text_value != expected || value.descriptor_id != descriptor) {
     std::cerr << case_id << ": expected " << descriptor << " " << expected << ", got "
               << value.descriptor_id << " " << value.text_value << "\n";
+    return false;
+  }
+  return true;
+}
+
+bool ExpectUuid(std::string_view case_id,
+                const scratchbird::engine::sblr::SblrResult& result,
+                const scratchbird::engine::sblr::SblrUuid& expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  const auto& value = result.scalar_values.front();
+  std::vector<std::uint8_t> bytes;
+  if (!scratchbird::engine::sblr::CopySblrUuidPayload(value, &bytes) ||
+      value.uuid_value != expected || bytes.size() != 16) {
+    std::cerr << case_id << ": expected exact native UUID bytes without a text carrier\n";
     return false;
   }
   return true;
@@ -785,14 +799,13 @@ int main() {
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
 
-  ok = ExpectTextDescriptor("SBSQL-6250A4C72894-uuid-from-string-valid",
+  constexpr auto kDataUuid = scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000");
+  ok = ExpectUuid("SBSQL-6250A4C72894-uuid-from-string-valid",
                             Run(registry, "sb.scalar.uuid_from_string", {TextValue("550e8400-e29b-41d4-a716-446655440000")}),
-                            "uuid",
-                            "550e8400-e29b-41d4-a716-446655440000") && ok;
-  ok = ExpectTextDescriptor("SBSQL-81D063680A39-uuid-from-string-uppercase",
+                            kDataUuid) && ok;
+  ok = ExpectUuid("SBSQL-81D063680A39-uuid-from-string-uppercase",
                             Run(registry, "sb.scalar.uuid_from_string", {TextValue("550E8400-E29B-41D4-A716-446655440000")}),
-                            "uuid",
-                            "550e8400-e29b-41d4-a716-446655440000") && ok;
+                            kDataUuid) && ok;
   ok = ExpectFailure("SBSQL-6250A4C72894-uuid-from-string-invalid",
                      Run(registry, "sb.scalar.uuid_from_string", {TextValue("550e8400e29b41d4a716446655440000")}),
                      SblrStatusCode::execution_failed,
@@ -802,18 +815,44 @@ int main() {
                   "uuid") && ok;
 
   ok = ExpectText("SBSQL-051F74FD6FF7-uuid-to-string-valid",
-                  Run(registry, "sb.scalar.uuid_to_string", {UuidValue("550e8400-e29b-41d4-a716-446655440000")}),
+                  Run(registry, "sb.scalar.uuid_to_string", {scratchbird::engine::sblr::MakeSblrUuidValue(kDataUuid)}),
                   "550e8400-e29b-41d4-a716-446655440000") && ok;
   ok = ExpectText("SBSQL-B260A8B5877E-uuid-to-string-uppercase",
-                  Run(registry, "sb.scalar.uuid_to_string", {UuidValue("550E8400-E29B-41D4-A716-446655440000")}),
+                  Run(registry, "sb.scalar.uuid_to_string", {scratchbird::engine::sblr::MakeSblrUuidValue(
+                      scratchbird::tests::FixtureUuidLiteral("550E8400-E29B-41D4-A716-446655440000"))}),
                   "550e8400-e29b-41d4-a716-446655440000") && ok;
   ok = ExpectFailure("SBSQL-051F74FD6FF7-uuid-to-string-invalid",
-                     Run(registry, "sb.scalar.uuid_to_string", {UuidValue("not-a-uuid")}),
+                     Run(registry, "sb.scalar.uuid_to_string", {LegacyTextUuidValue("not-a-uuid")}),
                      SblrStatusCode::execution_failed,
                      "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
   ok = ExpectNull("SBSQL-B260A8B5877E-uuid-to-string-null",
                   Run(registry, "sb.scalar.uuid_to_string", {NullValue("uuid")}),
                   "character") && ok;
+
+  for (const auto& invalid : {LegacyTextUuidValue("550e8400-e29b-41d4-a716-446655440000"),
+                             TextValue("550e8400-e29b-41d4-a716-446655440000"),
+                             BinaryValue(std::vector<std::uint8_t>(16, 0))}) {
+    ok = ExpectFailure("uuid-to-string-reject-non-uuid-carrier",
+        Run(registry, "sb.scalar.uuid_to_string", {invalid}),
+        SblrStatusCode::execution_failed, "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
+  }
+  auto dirty_uuid = scratchbird::engine::sblr::MakeSblrUuidValue(kDataUuid);
+  dirty_uuid.text_value = "550e8400-e29b-41d4-a716-446655440000";
+  ok = ExpectFailure("uuid-to-string-reject-dual-carrier",
+      Run(registry, "sb.scalar.uuid_to_string", {dirty_uuid}),
+      SblrStatusCode::execution_failed, "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
+  ok = ExpectFailure("uuid-from-string-reject-legacy-uuid-carrier",
+      Run(registry, "sb.scalar.uuid_from_string", {LegacyTextUuidValue("550e8400-e29b-41d4-a716-446655440000")}),
+      SblrStatusCode::execution_failed, "SB_DIAG_FUNCTION_INVALID_INPUT") && ok;
+  for (const auto& [text, uuid] : std::vector<std::pair<std::string, scratchbird::engine::sblr::SblrUuid>>{
+      {"00000000-0000-0000-0000-000000000000", {}},
+      {"ffffffff-ffff-ffff-ffff-ffffffffffff", scratchbird::tests::FixtureUuidLiteral("ffffffff-ffff-ffff-ffff-ffffffffffff")},
+      {"00000000-0000-0000-0000-000000000001", scratchbird::tests::FixtureUuidLiteral("00000000-0000-0000-0000-000000000001")}}) {
+    ok = ExpectUuid("uuid-from-string-all-data-bits", Run(registry, "sb.scalar.uuid_from_string", {TextValue(text)}), uuid) && ok;
+    ok = ExpectText("uuid-to-string-all-data-bits", Run(registry, "sb.scalar.uuid_to_string", {scratchbird::engine::sblr::MakeSblrUuidValue(uuid)}), text) && ok;
+    ok = ExpectUuid("text-to-uuid-all-data-bits", RunDataScalarEntrypoint("data.scalar.text_to_uuid", {TextValue(text)}), uuid) && ok;
+    ok = ExpectText("uuid-to-text-all-data-bits", RunDataScalarEntrypoint("data.scalar.uuid_to_text", {scratchbird::engine::sblr::MakeSblrUuidValue(uuid)}), text) && ok;
+  }
 
   ok = ExpectUint64("SBSQL-8681F20399C3-digest-fnv64",
                     Run(registry, "sb.scalar.digest", {TextValue("hello"), TextValue("fnv64")}),

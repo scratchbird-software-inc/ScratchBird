@@ -3732,10 +3732,10 @@ SessionOperationResult HandleAcquireStatementContext(
     }
   }
   if (native_projection_v11) {
-    // Unified preliminary bootstrap extension v73.  Every field, including
+    // Unified preliminary bootstrap extension v74.  Every field, including
     // the decoded MGA relation per-pass ceiling, comes only from the immutable
     // engine receipt view.
-    PutU16(&result.payload, 73);
+    PutU16(&result.payload, 74);
     PutU16(&result.payload, 0);
     PutUuid(&result.payload, (view.receipt_uuid.bytes));
     PutUuid(&result.payload,
@@ -3876,6 +3876,13 @@ SessionOperationResult HandleAcquireStatementContext(
     PutU64(&result.payload,
            view.stmt_free_executor_availability_generation);
     PutU64(&result.payload, view.catalog_generation_id);
+    std::vector<std::uint8_t> function_projection;
+    if (!scratchbird::wire::EncodeBuiltinFunctionIdentities(
+            view.builtin_function_identities, &function_projection)) {
+      return refuse("SBLR.OPERAND_INVALID", "builtin_function_projection_invalid");
+    }
+    result.payload.insert(result.payload.end(), function_projection.begin(),
+                          function_projection.end());
   }
   mark_acquire_phase("response_payload_projection");
   if (const char* trace_path =

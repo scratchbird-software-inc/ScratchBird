@@ -2976,17 +2976,21 @@
   if (IdIs(id, {"data.scalar.uuid_to_text", "sb.fn.encoding.uuid_to_text", "uuid_to_text"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "uuid_to_text expects one argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-    return MakeFunctionSuccess(request, {MakeTextValue("character", ValueAsText(request.arguments[0].value))});
+    std::vector<std::uint8_t> bytes;
+    if (!sblr::CopySblrUuidPayload(request.arguments[0].value, &bytes))
+      return RefuseFunctionInvalidInput(request, "uuid_to_text expects a native binary UUID value");
+    return MakeFunctionSuccess(request, {MakeTextValue("character",
+        core::uuid::UuidToString(request.arguments[0].value.uuid_value))});
   }
 
   if (IdIs(id, {"data.scalar.text_to_uuid", "sb.fn.encoding.text_to_uuid", "text_to_uuid"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "text_to_uuid expects one argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    const auto text = ValueAsText(request.arguments[0].value);
-    if (text.size() != 36 || text[8] != '-' || text[13] != '-' || text[18] != '-' || text[23] != '-') {
+    sblr::SblrUuid uuid;
+    if (!ParseUuidCharacterValue(request.arguments[0].value, &uuid)) {
       return RefuseFunctionInvalidInput(request, "text_to_uuid expects canonical UUID text");
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", text)});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(uuid)});
   }
 
   if (IdIs(id, {"data.scalar.array", "data.scalar.list", "sb.fn.collection.array", "array_construct", "json_array"})) {

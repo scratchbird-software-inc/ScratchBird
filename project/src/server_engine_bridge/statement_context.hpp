@@ -12,6 +12,7 @@
 #include "query/contextual_text_literal_authority.hpp"
 #include "scratchbird/engine/engine.h"
 #include "wire/diagnostic_identity_projection_codec.hpp"
+#include "wire/parser_server_ipc/builtin_function_identity_projection.hpp"
 
 #include <cstdint>
 #include <array>
@@ -1388,6 +1389,7 @@ struct StatementContextReceiptView {
   scratchbird::engine::internal_api::EngineUuid max_function_uuid;
   std::vector<StatementAggregateFunctionProfile> aggregate_function_profiles;
   std::vector<StatementWindowFunctionProfile> window_function_profiles;
+  std::vector<scratchbird::wire::BuiltinFunctionIdentity> builtin_function_identities;
   std::vector<StatementDescriptorProfile> descriptor_profiles;
   std::vector<StatementRelationOccurrenceMappingV1>
       relation_occurrence_mappings;

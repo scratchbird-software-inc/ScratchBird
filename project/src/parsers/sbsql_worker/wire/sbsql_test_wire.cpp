@@ -19225,6 +19225,37 @@ bool AppendCanonicalRouteTextOperand(
   return true;
 }
 
+std::optional<ParserCanonicalSblrSubmission> BuildCanonicalScalarProjectionSubmission(
+    const SblrEnvelope& lowered, const ParserStatementContext& statement_context,
+    const SessionContext& session) {
+  if (lowered.operation_id != "query.evaluate_projection" ||
+      lowered.messages.has_errors() || !ValidateBoundObjectIdentityOperands(lowered))
+    return std::nullopt;
+  auto envelope = BuildCanonicalRegistryEnvelope(lowered.operation_id, statement_context, session);
+  if (!envelope) return std::nullopt;
+  for (const auto& source : lowered.operands) {
+    if (source.canonical_value_kind == 0 && source.canonical_value_body.empty()) {
+      if (!AppendCanonicalRouteTextOperand(&*envelope, statement_context,
+                                          source.type, source.name, source.value)) return std::nullopt;
+    } else {
+      if (!source.value.empty()) return std::nullopt;
+      const auto function = FindDmlObjectIdentity(lowered, source.name);
+      const bool uuid_literal = source.type == "uuid" && source.name.starts_with("projection_") &&
+          source.name.ends_with("_value") && source.canonical_value_kind ==
+              static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
+      if (!function && !uuid_literal) return std::nullopt;
+      engine::sblr::SblrOperand operand;
+      operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
+      operand.type = source.type;
+      operand.name = source.name;
+      operand.value_kind = static_cast<engine::sblr::SblrValueKind>(source.canonical_value_kind);
+      operand.value_body = source.canonical_value_body;
+      envelope->operands.push_back(std::move(operand));
+    }
+  }
+  return BuildCanonicalRegistryOperationSubmission(*envelope, statement_context, session);
+}
+
 struct LoweredJsonStringField {
   bool present{false};
   bool valid{true};
@@ -27607,6 +27638,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     return result;
   }
   std::optional<ParserStatementContext> native_statement_context;
+  const bool scalar_function_demand = HasScalarProjectionFunctionDemand(cst, resolved_object_uuids);
   std::optional<NativeRelationalBindingContext> native_binding_context;
   std::optional<LiteralPrebindState> literal_prebind_state;
   std::optional<ContextualTextPrebindStateV2> contextual_text_prebind_state;
@@ -27747,7 +27779,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     admitted_savepoint_handle_ = named->second;
   }
-  if (compile_or_submit && (ast.native_relational.recognized() || canonical_txn_begin ||
+  if (compile_or_submit && (ast.native_relational.recognized() || scalar_function_demand || canonical_txn_begin ||
                  canonical_txn_set_characteristics ||
                  canonical_txn_commit || canonical_txn_rollback ||
                  canonical_txn_savepoint || canonical_txn_release_savepoint ||
@@ -28014,7 +28046,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
         }
-        if (!canonical_txn_begin && !canonical_txn_set_characteristics &&
+        if (ast.native_relational.recognized() && !canonical_txn_begin && !canonical_txn_set_characteristics &&
             !canonical_txn_commit &&
             !canonical_txn_rollback && !canonical_txn_savepoint &&
             !canonical_txn_release_savepoint &&
@@ -29096,7 +29128,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   }
   auto bound = BindAst(
       ast, cst, binding_config, session_, resolved_object_uuids,
-      native_binding_context.has_value() ? &*native_binding_context : nullptr);
+      native_binding_context.has_value() ? &*native_binding_context : nullptr,
+      native_statement_context ? native_statement_context->builtin_function_identities
+                               : std::vector<scratchbird::wire::BuiltinFunctionIdentity>{});
   if (native_statement_context.has_value()) {
     bound.command_registry_snapshot_uuid =
         native_statement_context->catalog_epoch_uuid;
@@ -29621,6 +29655,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         native_submission = BuildCanonicalRouteTextSubmission(
             *route, *native_statement_context, session_);
       }
+    } else if (scalar_function_demand && lowered.operation_id == "query.evaluate_projection") {
+      native_submission = BuildCanonicalScalarProjectionSubmission(
+          lowered, *native_statement_context, session_);
     } else if (exact_security_privilege_projection_route.has_value()) {
       const auto route =
           BuildCanonicalSecurityPrivilegeProjectionRouteTextEnvelope(

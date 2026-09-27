@@ -4662,8 +4662,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v11_projection.response_schema_id ==
                   sbps::kSchemaAcquireStatementContextResultV11 &&
               v11_layout.has_value() && v11_layout->profile_count == 646 &&
-              v11_projection.payload.size() == v11_trailer + 808 &&
-              PayloadU16(v11_projection.payload, v11_extension) == 73 &&
+              v11_projection.payload.size() > v11_trailer + 812 &&
+              PayloadU16(v11_projection.payload, v11_extension) == 74 &&
               ipc::DecodeNativeStatementContextResultPayloadV11(
                   v11_projection.payload, &v11_context) &&
               v11_context
@@ -4678,8 +4678,35 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
               v11_context
                       .preliminary_stmt_free_executor_availability_generation !=
                   0 &&
-              v11_context.preliminary_statement_catalog_generation != 0,
+              v11_context.preliminary_statement_catalog_generation != 0 &&
+              !v11_context.builtin_function_identities.empty(),
           "native V11 MGA scan-byte projection drifted");
+  {
+    const auto abs = std::ranges::find(v11_context.builtin_function_identities,
+        std::string{"sb.scalar.abs"}, &scratchbird::wire::BuiltinFunctionIdentity::canonical_id);
+    Require(abs != v11_context.builtin_function_identities.end() &&
+        abs->function_uuid.bytes == std::array<std::uint8_t, 16>{
+            0x01,0x9d,0xe5,0xfc,0x24,0x00,0x76,0x71,0x9f,0x1b,0x53,0x50,0xd1,0x34,0xab,0x0f},
+        "engine must project the executable ABS identity rather than its parser surface UUID");
+    for (const auto tail : {std::size_t{0}, std::size_t{1}, std::size_t{3},
+                           v11_projection.payload.size() - v11_trailer - 809}) {
+      auto mutation = v11_projection.payload;
+      mutation.resize(v11_trailer + 808 + tail);
+      ipc::ParserStatementContext refused;
+      Require(!ipc::DecodeNativeStatementContextResultPayloadV11(mutation, &refused),
+              "truncated builtin identity cohort must be refused");
+    }
+    auto mutation = v11_projection.payload;
+    mutation.push_back(0);
+    ipc::ParserStatementContext refused;
+    Require(!ipc::DecodeNativeStatementContextResultPayloadV11(mutation, &refused),
+            "trailing builtin identity bytes must be refused");
+    mutation = v11_projection.payload;
+    mutation[v11_trailer + 808 + 2] = 0;
+    mutation[v11_trailer + 808 + 3] = 0;
+    Require(!ipc::DecodeNativeStatementContextResultPayloadV11(mutation, &refused),
+            "empty builtin identity cohort must be refused");
+  }
   {
     auto mutation = v11_projection.payload;
     SetPayloadU64(&mutation, v11_trailer + 768, 0);

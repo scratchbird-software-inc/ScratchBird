@@ -5,9 +5,12 @@
 #include "uuid.hpp"
 #include <algorithm>
 #include "engine/sblr/sblr_bound_object_identity.hpp"
+#include "engine/sblr/sblr_projection_uuid_literals.hpp"
+#include <charconv>
 #include <limits>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/hash/hash_digest.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
@@ -316,87 +319,91 @@ bool CanonicalEvaluateProjectionTextOperands(
       *parser_bound == "false" && name_text && *name_text == "false";
 }
 
-bool CanonicalSecurityPrivilegeProjectionTextOperands(
+// Structural local routing only. The engine still owns expression binding,
+// catalog visibility, function dispatch and every security/dependency gate.
+bool CanonicalBoundScalarProjectionOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
-  const auto operands = DecodeCanonicalTypedTextOperands(operation);
-  if (!operands) return false;
-
-  const auto projection_count =
-      CanonicalTextOperandValue(*operands, "projection_count");
-  const auto projection_name =
-      CanonicalTextOperandValue(*operands, "projection_0_name");
-  const auto expression_kind =
-      CanonicalTextOperandValue(*operands, "projection_0_expr_kind");
-  const auto expression_opcode =
-      CanonicalTextOperandValue(*operands, "projection_0_expr_opcode");
-  const auto type =
-      CanonicalTextOperandValue(*operands, "projection_0_type");
-  const auto value =
-      CanonicalTextOperandValue(*operands, "projection_0_value");
-  const auto is_null =
-      CanonicalTextOperandValue(*operands, "projection_0_is_null");
-  const auto function_id =
-      CanonicalTextOperandValue(*operands, "projection_0_function_id");
-  const auto argument_count = CanonicalTextOperandValue(
-      *operands, "projection_0_function_arg_count");
-  if (!projection_count || *projection_count != "1" || !projection_name ||
-      projection_name->empty() || !expression_kind ||
-      *expression_kind != "function" || !expression_opcode ||
-      *expression_opcode != "SBLR_FUNCTION_CALL" || !type ||
-      *type != "boolean" || !value || !value->empty() || !is_null ||
-      *is_null != "false" || !function_id || !argument_count) {
-    return false;
+  namespace sblr = scratchbird::engine::sblr;
+  sblr::SblrOperationEnvelope text_operation;
+  std::unordered_set<std::string> names;
+  std::unordered_set<std::string> functions;
+  scratchbird::engine::internal_api::EngineApiRequest literal_projection;
+  if (!sblr::ProjectSblrUuidLiterals(operation, &literal_projection)) return false;
+  std::unordered_set<std::string> literals;
+  for (const auto& [path, value] : literal_projection.projection.uuid_literals) literals.insert(path);
+  for (std::size_t i = 0; i < operation.operands.size(); ++i) {
+    const auto& operand = operation.operands[i];
+    if (operand.ordinal != i + 1 || operand.value_flags != 0 || !operand.value.empty() ||
+        !names.insert(operand.name).second) return false;
+    if (sblr::IsProjectionFunctionIdentityRole(operand.name)) {
+      std::string_view path;
+      if (!sblr::DecodeProjectionFunctionIdentityPath(operand.name, &path) ||
+          operand.type != "uuid" || operand.value_kind != sblr::SblrValueKind::uuid_ref ||
+          operand.value_body.size() != 16) return false;
+      scratchbird::core::platform::Uuid identity;
+      std::copy_n(operand.value_body.begin(), 16, identity.bytes.begin());
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity) ||
+          !functions.insert(std::string(path)).second) return false;
+    } else if (!sblr::IsProjectionUuidLiteral(operand)) {
+      auto text_operand = operand;
+      text_operand.ordinal = static_cast<std::uint32_t>(text_operation.operands.size() + 1);
+      text_operation.operands.push_back(std::move(text_operand));
+    }
   }
-
-  std::size_t expected_argument_count = 0;
-  if (*function_id == "sb.scalar.policy_blocked" ||
-      *function_id == "sb.scalar.policy_blocked_diagnostic") {
-    if (*argument_count != "0") return false;
-  } else if (*function_id == "sb.scalar.has_table_privilege" ||
-      *function_id == "sb.scalar.has_function_privilege" ||
-      *function_id == "sb.scalar.has_schema_privilege") {
-    if (*argument_count == "2") {
-      expected_argument_count = 2;
-    } else if (*argument_count == "3") {
-      expected_argument_count = 3;
+  const auto text = DecodeCanonicalTypedTextOperands(text_operation);
+  if (!text) return false;
+  std::unordered_set<std::string> consumed;
+  const auto read = [&](const std::string& name) -> std::optional<std::string_view> {
+    const auto value = CanonicalTextOperandValue(*text, name);
+    if (value) consumed.insert(name);
+    return value;
+  };
+  const auto number = [&](const std::string& name) -> std::optional<std::size_t> {
+    const auto value = read(name);
+    if (!value || value->empty() || (value->size() > 1 && value->front() == '0')) return std::nullopt;
+    std::size_t result = 0;
+    const auto parsed = std::from_chars(value->data(), value->data() + value->size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value->data() + value->size() || result > 4096) return std::nullopt;
+    return result;
+  };
+  const auto count = number("projection_count");
+  if (!count || *count == 0) return false;
+  std::size_t nodes = 0;
+  const auto visit = [&](const auto& self, const std::string& prefix, std::size_t depth) -> bool {
+    if (depth > 64 || ++nodes > 4096) return false;
+    const auto kind = read(prefix + "expr_kind");
+    const auto type = read(prefix + "type");
+    const auto is_null = read(prefix + "is_null");
+    if (!kind || !type || type->empty() || !is_null || (*is_null != "true" && *is_null != "false")) return false;
+    if (literals.erase(prefix)) {
+      if (*kind != "literal" || *type != "uuid" || *is_null != "false" ||
+          CanonicalTextOperandValue(*text, prefix + "value")) return false;
     } else {
-      return false;
+      const auto value = read(prefix + "value");
+      if (!value || (*is_null == "true" && !value->empty()) ||
+          (*kind == "literal" && *type == "uuid" && *is_null == "false")) return false;
     }
-  } else if (*function_id == "sb.scalar.has_column_privilege") {
-    if (*argument_count == "3") {
-      expected_argument_count = 3;
-    } else if (*argument_count == "4") {
-      expected_argument_count = 4;
-    } else {
-      return false;
-    }
-  } else {
-    return false;
-  }
-  if (operands->size() != 9 + expected_argument_count * 5) return false;
-
-  for (std::size_t index = 0; index < expected_argument_count; ++index) {
-    const std::string prefix =
-        "projection_0_arg_" + std::to_string(index) + "_";
-    const auto name = CanonicalTextOperandValue(*operands, prefix + "name");
-    const auto kind =
-        CanonicalTextOperandValue(*operands, prefix + "expr_kind");
-    const auto argument_type =
-        CanonicalTextOperandValue(*operands, prefix + "type");
-    const auto argument_value =
-        CanonicalTextOperandValue(*operands, prefix + "value");
-    const auto argument_is_null =
-        CanonicalTextOperandValue(*operands, prefix + "is_null");
-    if (!name || *name != "arg" + std::to_string(index) || !kind ||
-        *kind != "literal" || !argument_type || *argument_type != "text" ||
-        !argument_value || argument_value->empty() ||
-        argument_value->size() > 4096 ||
-        argument_value->find('\0') != std::string_view::npos ||
-        !argument_is_null || *argument_is_null != "false") {
-      return false;
-    }
-  }
-  return true;
+    for (const auto* field : {"name", "expr_opcode", "literal_family", "interval_qualifier", "interval_unit",
+         "interval_literal_payload", "function_id", "operator_id", "canonical_operator_id", "special_form_id",
+         "sblr_binding", "engine_entrypoint", "time_series_window_expr_present", "time_series_window_interval_type",
+         "time_series_window_interval_value", "time_series_window_interval_unit", "parameter_marker_kind",
+         "parameter_descriptor_kind", "parameter_ordinal", "parameter_name_descriptor", "reference_name", "reference_binding"})
+      read(prefix + field);
+    std::optional<std::size_t> arguments;
+    if (*kind == "function") {
+      if (functions.erase(prefix) != 1) return false;
+      arguments = number(prefix + "function_arg_count");
+    } else if (*kind == "operator") arguments = number(prefix + "operator_arg_count");
+    else if (*kind == "special_form") arguments = number(prefix + "special_form_arg_count");
+    else if (*kind == "literal" || *kind == "parameter" || *kind == "reference") arguments = 0;
+    if (!arguments) return false;
+    for (std::size_t i = 0; i < *arguments; ++i)
+      if (!self(self, prefix + "arg_" + std::to_string(i) + "_", depth + 1)) return false;
+    return true;
+  };
+  for (std::size_t i = 0; i < *count; ++i)
+    if (!visit(visit, "projection_" + std::to_string(i) + "_", 1)) return false;
+  return functions.empty() && literals.empty() && consumed.size() == text->size();
 }
 
 bool CanonicalTransactionCharacteristicsTextOperands(
@@ -1753,9 +1760,8 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
       stream.ok && stream.stream.operations.size() == 3 &&
       exact_evaluate_projection && !request.cluster_context_active &&
       !request.cluster_transaction_active && !request.route_fence_present &&
-      (CanonicalEvaluateProjectionTextOperands(stream.stream.operations[1]) ||
-       CanonicalSecurityPrivilegeProjectionTextOperands(
-           stream.stream.operations[1]));
+      (CanonicalBoundScalarProjectionOperands(stream.stream.operations[1]) ||
+       CanonicalEvaluateProjectionTextOperands(stream.stream.operations[1]));
   if (exact_evaluate_projection && !exact_local_evaluate_projection) {
     return Refuse(
         request,

@@ -5472,11 +5472,27 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr
+      sb_engine_functions
   )
   add_test(
     NAME sbsql_query_scalar_projection_conformance
     COMMAND sbsql_query_scalar_projection_conformance
   )
+  add_test(NAME sbsql_builtin_function_binary_binding_conformance
+    COMMAND sbsql_query_scalar_projection_conformance --binary-function-binding-only)
+  set_tests_properties(sbsql_builtin_function_binary_binding_conformance PROPERTIES
+    LABELS "binary_uuid;sbsql_parser_worker;function_binding")
+  if(TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server AND TARGET public_driver_test_database_seed AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(sbsql_builtin_function_process_client builtin_function_process_client.cpp)
+    target_compile_features(sbsql_builtin_function_process_client PRIVATE cxx_std_23)
+    target_link_libraries(sbsql_builtin_function_process_client PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr)
+    add_dependencies(sbsql_builtin_function_process_client public_driver_test_database_seed)
+    add_test(NAME sbsql_builtin_function_binary_process_e2e
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/builtin_function_process_e2e.py
+        --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_builtin_function_process_client>)
+    set_tests_properties(sbsql_builtin_function_binary_process_e2e PROPERTIES
+      LABELS "binary_uuid;sbsql_parser_worker;function_binding;process_e2e" TIMEOUT 600)
+  endif()
   set_tests_properties(sbsql_query_scalar_projection_conformance PROPERTIES
     LABELS "sbsql_query_scalar_projection_conformance;SBSFC-010;SBSFC-011;SBSFC-012;SBSFC-013;SBSFC-014;SBSFC-014R-Y;SBSFC-016R-G;SBSFC-016R-H;SBSFC-016R-I;SBSFC-016R-J;SBSFC-016R-K;SBSFC-016R-L;SBSFC-021;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
   )

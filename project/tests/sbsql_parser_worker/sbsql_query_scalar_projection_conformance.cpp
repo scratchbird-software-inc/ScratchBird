@@ -17,6 +17,10 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "engine/functions/registry/function_seed_registry.hpp"
+#include "engine/sblr/sblr_opcode_stream.hpp"
+#include "server/sblr_local_gateway.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
 
 #include <algorithm>
 #include <array>
@@ -52,6 +56,14 @@ inline SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
 namespace sblr = canonical_test_sblr;
 
 constexpr auto kTargetUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101");
+
+bool ScalarFixtureValueEquals(const api::EngineTypedValue& value, std::string_view expected) {
+  if (value.descriptor.canonical_type_name != "uuid") return value.encoded_value == expected;
+  // Test oracle presentation only; the actual engine value must remain raw16.
+  const auto identity = scratchbird::core::uuid::ParseUuid(std::string(expected));
+  return identity.ok() && value.encoded_value.empty() && value.binary_value.size() == 16 &&
+      std::equal(identity.value.bytes.begin(), identity.value.bytes.end(), value.binary_value.begin());
+}
 
 struct ScalarLiteralGrammarRowEvidence {
   std::string_view surface_id;
@@ -575,6 +587,22 @@ sblr::SblrOperationEnvelope EngineEnvelopeFromParserEnvelope(const SblrEnvelope&
   envelope.requires_transaction_context = true;
   envelope.requires_cluster_authority = false;
 
+  if (parser_envelope.operation_id == "query.evaluate_projection") {
+    for (const auto& source : parser_envelope.operands) {
+      scratchbird::engine::sblr::SblrOperand operand;
+      operand.ordinal = source.canonical_value_kind == 0 ? 0 :
+          static_cast<std::uint32_t>(envelope.operands.size() + 1);
+      operand.type = source.type;
+      operand.name = source.name;
+      operand.value = source.value;
+      if (source.canonical_value_kind != 0)
+        operand.value_kind = static_cast<scratchbird::engine::sblr::SblrValueKind>(source.canonical_value_kind);
+      operand.value_body = source.canonical_value_body;
+      envelope.operands.push_back(std::move(operand));
+    }
+    return envelope;
+  }
+
   std::size_t index = 0;
   while (index < parser_envelope.payload.size()) {
     const std::size_t key_start_quote = parser_envelope.payload.find('"', index);
@@ -1057,6 +1085,7 @@ void RequireLogicalExpressionGrammarRegistryEvidence() {
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
+  session.admitted_parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003114");
   session.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003111");
   session.connection_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003112");
   session.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003113");
@@ -1138,11 +1167,20 @@ PipelineArtifacts RunPipeline(std::string_view sql, std::vector<api::EngineUuid>
   artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
   auto native_context = TableSelectBindingContext();
+  static const auto builtin_functions = [] {
+    std::vector<scratchbird::wire::BuiltinFunctionIdentity> result;
+    const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+    for (const auto& entry : package.registry.Entries())
+      if (entry.catalog_visible) result.push_back({entry.function_id, entry.function_uuid});
+    return result;
+  }();
   artifacts.bound = BindAst(
       artifacts.ast, artifacts.cst, ParserConfigForTest(), session, resolved,
       artifacts.ast.native_relational.recognized() && !resolved.empty()
           ? &native_context
-          : nullptr);
+          : nullptr, builtin_functions);
+  if (artifacts.bound.native_relational.bound)
+    artifacts.bound.command_registry_snapshot_uuid = native_context.catalog_epoch_uuid;
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -1407,6 +1445,7 @@ PipelineArtifacts RunAuthoritativeTextJoinPipeline() {
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst,
                             ParserConfigForTest(), session, {},
                             &native_context);
+  artifacts.bound.command_registry_snapshot_uuid = native_context.catalog_epoch_uuid;
   artifacts.envelope =
       LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
@@ -1425,6 +1464,7 @@ PipelineArtifacts RunGroupedSumPipeline() {
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(),
                             session, {scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003101")},
                             &native_context);
+  artifacts.bound.command_registry_snapshot_uuid = native_context.catalog_epoch_uuid;
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -1671,22 +1711,8 @@ sblr::SblrOperationEnvelope BinaryLiteralEngineEnvelope() {
 }
 
 sblr::SblrOperationEnvelope UuidLiteralEngineEnvelope() {
-  auto envelope = sblr::MakeSblrEnvelope("query.evaluate_projection",
-                                         "SBLR_QUERY_EVALUATE_PROJECTION",
-                                         "trace.query.scalar_projection.uuid_literal");
-  envelope.requires_security_context = true;
-  envelope.requires_transaction_context = true;
-  envelope.requires_cluster_authority = false;
-  envelope.contains_sql_text = false;
-  envelope.parser_resolved_names_to_uuids = true;
-  envelope.operands.push_back({"text", "projection_count", "1"});
-  envelope.operands.push_back({"text", "projection_0_name", "uuid_value"});
-  envelope.operands.push_back({"text", "projection_0_expr_kind", "literal"});
-  envelope.operands.push_back({"text", "projection_0_type", "uuid"});
-  envelope.operands.push_back({"text", "projection_0_value",
-                               "550e8400-e29b-41d4-a716-446655440000"});
-  envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  return envelope;
+  return EngineEnvelopeFromParserEnvelope(RunPipeline(
+      "SELECT UUID '550e8400-e29b-41d4-a716-446655440000' AS uuid_value").envelope);
 }
 
 sblr::SblrOperationEnvelope DateLiteralEngineEnvelope() {
@@ -1821,6 +1847,21 @@ struct FunctionProjectionArg {
   bool is_null{false};
 };
 
+void AppendFixtureFunctionIdentity(sblr::SblrOperationEnvelope& envelope,
+    std::string name, std::string_view function_id) {
+  static const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  const auto* function = package.registry.Lookup(function_id);
+  Require(function != nullptr, std::string("component fixture callable is not registered: ") + std::string(function_id));
+  envelope.operands.push_back({"text", name, std::string(function_id)});
+  sblr::SblrOperand identity;
+  identity.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+  identity.type = "uuid";
+  identity.name = name.substr(0, name.size() - 11) + "function_uuid";
+  identity.value_kind = sblr::SblrValueKind::uuid_ref;
+  identity.value_body.assign(function->function_uuid.bytes.begin(), function->function_uuid.bytes.end());
+  envelope.operands.push_back(std::move(identity));
+}
+
 void AppendFunctionProjectionOperand(sblr::SblrOperationEnvelope& envelope,
                                      std::size_t projection_index,
                                      std::string_view name,
@@ -1834,14 +1875,29 @@ void AppendFunctionProjectionOperand(sblr::SblrOperationEnvelope& envelope,
   envelope.operands.push_back({"text", prefix + "_type", std::string(result_type)});
   envelope.operands.push_back({"text", prefix + "_value", ""});
   envelope.operands.push_back({"text", prefix + "_is_null", "false"});
-  envelope.operands.push_back({"text", prefix + "_function_id", std::string(function_id)});
+  AppendFixtureFunctionIdentity(envelope, prefix + "_function_id", function_id);
   envelope.operands.push_back({"text", prefix + "_function_arg_count", std::to_string(args.size())});
   std::size_t arg_index = 0;
   for (const auto& arg : args) {
     const std::string arg_prefix = prefix + "_arg_" + std::to_string(arg_index);
     envelope.operands.push_back({"text", arg_prefix + "_expr_kind", "literal"});
     envelope.operands.push_back({"text", arg_prefix + "_type", arg.type});
-    envelope.operands.push_back({"text", arg_prefix + "_value", arg.value});
+    if (arg.type == "uuid" && !arg.is_null) {
+      const auto uuid = scratchbird::core::uuid::ParseUuid(arg.value);
+      const auto catalog = scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto descriptor = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, scratchbird::core::datatypes::CanonicalTypeId::uuid);
+      Require(uuid.ok() && catalog.ok() && descriptor.ok(), "UUID fixture data and datatype must be valid");
+      sblr::SblrOperand value;
+      value.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
+      value.type = "uuid"; value.name = arg_prefix + "_value";
+      value.value_kind = sblr::SblrValueKind::literal_typed;
+      const auto& id = descriptor.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.value_body.assign(id.bytes.begin(), id.bytes.end());
+      value.value_body.push_back(16); value.value_body.insert(value.value_body.end(), 7, 0);
+      value.value_body.insert(value.value_body.end(), uuid.value.bytes.begin(), uuid.value.bytes.end());
+      envelope.operands.push_back(std::move(value));
+    } else envelope.operands.push_back({"text", arg_prefix + "_value", arg.value});
     envelope.operands.push_back({"text", arg_prefix + "_is_null", arg.is_null ? "true" : "false"});
     ++arg_index;
   }
@@ -1938,7 +1994,7 @@ sblr::SblrOperationEnvelope FunctionProjectionEngineEnvelope(std::string arg_typ
   envelope.operands.push_back({"text", "projection_0_type", "real64"});
   envelope.operands.push_back({"text", "projection_0_value", ""});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.cot"});
+  AppendFixtureFunctionIdentity(envelope, "projection_0_function_id", "sb.scalar.cot");
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", std::move(arg_type)});
@@ -3075,7 +3131,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_type", "character"});
   envelope.operands.push_back({"text", "projection_0_value", ""});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.lower"});
+  AppendFixtureFunctionIdentity(envelope, "projection_0_function_id", "sb.scalar.lower");
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
@@ -3088,7 +3144,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_1_type", "character"});
   envelope.operands.push_back({"text", "projection_1_value", ""});
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_1_function_id", "sb.scalar.upper"});
+  AppendFixtureFunctionIdentity(envelope, "projection_1_function_id", "sb.scalar.upper");
   envelope.operands.push_back({"text", "projection_1_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_1_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_1_arg_0_type", "text"});
@@ -3101,7 +3157,7 @@ sblr::SblrOperationEnvelope TextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_2_type", "int64"});
   envelope.operands.push_back({"text", "projection_2_value", ""});
   envelope.operands.push_back({"text", "projection_2_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_2_function_id", "sb.scalar.length"});
+  AppendFixtureFunctionIdentity(envelope, "projection_2_function_id", "sb.scalar.length");
   envelope.operands.push_back({"text", "projection_2_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_2_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_2_arg_0_type", "text"});
@@ -3127,7 +3183,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_0_type", "int64"});
   envelope.operands.push_back({"text", "projection_0_value", ""});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_0_function_id", "sb.scalar.octet_length"});
+  AppendFixtureFunctionIdentity(envelope, "projection_0_function_id", "sb.scalar.octet_length");
   envelope.operands.push_back({"text", "projection_0_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_0_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_0_arg_0_type", "text"});
@@ -3140,7 +3196,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_1_type", "int64"});
   envelope.operands.push_back({"text", "projection_1_value", ""});
   envelope.operands.push_back({"text", "projection_1_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_1_function_id", "sb.scalar.bit_length"});
+  AppendFixtureFunctionIdentity(envelope, "projection_1_function_id", "sb.scalar.bit_length");
   envelope.operands.push_back({"text", "projection_1_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_1_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_1_arg_0_type", "text"});
@@ -3153,7 +3209,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_2_type", "character"});
   envelope.operands.push_back({"text", "projection_2_value", ""});
   envelope.operands.push_back({"text", "projection_2_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_2_function_id", "sb.scalar.reverse"});
+  AppendFixtureFunctionIdentity(envelope, "projection_2_function_id", "sb.scalar.reverse");
   envelope.operands.push_back({"text", "projection_2_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_2_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_2_arg_0_type", "text"});
@@ -3166,7 +3222,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_3_type", "int64"});
   envelope.operands.push_back({"text", "projection_3_value", ""});
   envelope.operands.push_back({"text", "projection_3_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_3_function_id", "sb.scalar.ascii"});
+  AppendFixtureFunctionIdentity(envelope, "projection_3_function_id", "sb.scalar.ascii");
   envelope.operands.push_back({"text", "projection_3_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_3_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_3_arg_0_type", "text"});
@@ -3179,7 +3235,7 @@ sblr::SblrOperationEnvelope MoreTextFunctionProjectionEngineEnvelope() {
   envelope.operands.push_back({"text", "projection_4_type", "character"});
   envelope.operands.push_back({"text", "projection_4_value", ""});
   envelope.operands.push_back({"text", "projection_4_is_null", "false"});
-  envelope.operands.push_back({"text", "projection_4_function_id", "sb.scalar.chr"});
+  AppendFixtureFunctionIdentity(envelope, "projection_4_function_id", "sb.scalar.chr");
   envelope.operands.push_back({"text", "projection_4_function_arg_count", "1"});
   envelope.operands.push_back({"text", "projection_4_arg_0_expr_kind", "literal"});
   envelope.operands.push_back({"text", "projection_4_arg_0_type", "bigint"});
@@ -5417,7 +5473,7 @@ void RequireSbsfc016ReferenceSystemVariableProjectionLowering() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine reference system variable scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -5523,7 +5579,7 @@ void RequireSbsfc016ReferenceContextProjectionLowering() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine reference context scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -6756,7 +6812,7 @@ void RequireSbsfc016ReferenceAliasFunctionProjectionLowering() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine reference alias function scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -8172,7 +8228,10 @@ void RequireGroupedSumInt128Lowering() {
   Require(std::ranges::any_of(
               artifacts.envelope.operands, [](const auto& operand) {
                 scratchbird::engine::sblr::RelationalNodeBindingRecord value;
-                return operand.type == "relational_node_binding_v1" &&
+                return operand.type == "relational_node_binding_v2" &&
+                    operand.value.empty() &&
+                    operand.canonical_value_kind == static_cast<std::uint16_t>(
+                        scratchbird::engine::sblr::SblrValueKind::relational_node_binding) &&
                     scratchbird::engine::sblr::DecodeRelationalNodeBindingV1(
                         operand.canonical_value_body.data(), operand.canonical_value_body.size(), &value) &&
                     value.semantic_variant_id == "aggregate.grouped-int64-key-sum.v1";
@@ -8967,8 +9026,8 @@ void RequireEngineDispatch() {
           "engine UUID literal scalar projection column count mismatch");
   Require(uuid_literal_row.fields[0].first == "uuid_value" &&
               uuid_literal_row.fields[0].second.descriptor.canonical_type_name == "uuid" &&
-              uuid_literal_row.fields[0].second.encoded_value ==
-                  "550e8400-e29b-41d4-a716-446655440000" &&
+              ScalarFixtureValueEquals(uuid_literal_row.fields[0].second,
+                  "550e8400-e29b-41d4-a716-446655440000") &&
               !uuid_literal_row.fields[0].second.is_null,
           "engine UUID literal scalar projection field mismatch");
 
@@ -9670,7 +9729,7 @@ void RequireEngineTextJsonFuzzyFunctionDispatch() {
           "engine right function scalar projection mismatch");
   Require(row.fields[3].first == "uuid_value" &&
               row.fields[3].second.descriptor.canonical_type_name == "uuid" &&
-              row.fields[3].second.encoded_value == "550e8400-e29b-41d4-a716-446655440000",
+              ScalarFixtureValueEquals(row.fields[3].second, "550e8400-e29b-41d4-a716-446655440000"),
           "engine uuid_from_string function scalar projection mismatch");
   Require(row.fields[4].first == "uuid_text" &&
               row.fields[4].second.encoded_value == "550e8400-e29b-41d4-a716-446655440000",
@@ -9784,7 +9843,7 @@ void RequireEngineVectorFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine vector scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -9842,7 +9901,7 @@ void RequireEngineBinaryCryptoFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine binary/crypto scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10031,7 +10090,7 @@ void RequireEngineTemporalConstructorFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine temporal constructor scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10071,7 +10130,7 @@ void RequireEngineTemporalFieldArithmeticFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine temporal field/arithmetic scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10114,7 +10173,7 @@ void RequireEngineTemporalDateTimeBatchFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine temporal date/time batch scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10159,7 +10218,7 @@ void RequireEngineProceduralContextFunctionDispatch() {
                                std::string_view expected) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(row.fields[index].second, expected),
             std::string("engine procedural/context scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10303,7 +10362,7 @@ void RequireEngineSbsfc016LanguagePolicyDispatch() {
             label + " SBSFC-016 language policy descriptor mismatch");
     Require(!actual.second.is_null,
             label + " SBSFC-016 language policy unexpectedly returned null");
-    Require(actual.second.encoded_value == expected.expected_value,
+    Require(ScalarFixtureValueEquals(actual.second, expected.expected_value),
             label + " SBSFC-016 language policy value mismatch");
   }
 }
@@ -10344,7 +10403,7 @@ void RequireEngineSbsfc016MetadataDispatch() {
             label + " SBSFC-016 metadata descriptor mismatch");
     Require(!actual.second.is_null,
             label + " SBSFC-016 metadata unexpectedly returned null");
-    Require(actual.second.encoded_value == expected.expected_value,
+    Require(ScalarFixtureValueEquals(actual.second, expected.expected_value),
             label + " SBSFC-016 metadata value mismatch");
   }
 }
@@ -10930,7 +10989,155 @@ void RequireEngineExtendedOperatorProjectionDispatch() {
 
 }  // namespace
 
-int main() {
+void RequireBinaryBuiltinBinding() {
+  namespace wire = scratchbird::wire;
+  const auto package = scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  const auto* abs = package.registry.Lookup("sb.scalar.abs");
+  const auto* sqrt = package.registry.Lookup("sb.scalar.sqrt");
+  Require(abs && sqrt, "actual engine builtin registry missing ABS or SQRT");
+  std::vector<wire::BuiltinFunctionIdentity> rows{{abs->function_id, abs->function_uuid},
+                                                {sqrt->function_id, sqrt->function_uuid}};
+  std::vector<std::uint8_t> encoded;
+  Require(wire::EncodeBuiltinFunctionIdentities(rows, &encoded), "binary function projection encode failed");
+  const auto first_uuid_offset = 6 + rows[0].canonical_id.size();
+  Require(encoded.size() == 4 + 18 * rows.size() + rows[0].canonical_id.size() + rows[1].canonical_id.size() &&
+          std::equal(abs->function_uuid.bytes.begin(), abs->function_uuid.bytes.end(), encoded.begin() + first_uuid_offset),
+          "function projection must use exact raw16 identities");
+  std::vector<wire::BuiltinFunctionIdentity> decoded;
+  Require(wire::DecodeBuiltinFunctionIdentities(encoded, &decoded) && decoded.size() == 2 &&
+          decoded[0].function_uuid == abs->function_uuid && decoded[1].function_uuid == sqrt->function_uuid,
+          "function identity codec roundtrip failed");
+  const auto rejects = [&](const std::vector<std::uint8_t>& bad) {
+    auto output = rows;
+    Require(!wire::DecodeBuiltinFunctionIdentities(bad, &output) && output.size() == rows.size() &&
+            output[0].function_uuid == rows[0].function_uuid && output[1].function_uuid == rows[1].function_uuid,
+            "invalid function projection must not replace previously bound identities");
+  };
+  for (std::size_t i = 0; i < encoded.size(); ++i) rejects({encoded.begin(), encoded.begin() + i});
+  auto bad = encoded; bad.push_back(0); rejects(bad);
+  bad = encoded; bad[0] = 2; rejects(bad);
+  bad = encoded; bad[2] = 0; rejects(bad);
+  bad = encoded; bad[first_uuid_offset + 6] = 0x40; rejects(bad);
+  bad = encoded; std::fill_n(bad.begin() + first_uuid_offset, 16, 0); rejects(bad);
+  bad = encoded;
+  std::copy_n(bad.begin() + first_uuid_offset, 16,
+      bad.begin() + first_uuid_offset + 18 + rows[1].canonical_id.size()); rejects(bad);
+  auto duplicate = rows; duplicate[1].canonical_id = duplicate[0].canonical_id;
+  auto preserved = encoded;
+  Require(!wire::EncodeBuiltinFunctionIdentities(duplicate, &preserved) && preserved == encoded,
+          "ambiguous names must be rejected atomically");
+
+  const auto artifacts = RunPipeline("SELECT ABS(-7) AS a, ABS(ABS(-3)) AS b");
+  Require(artifacts.bound.bound && artifacts.verifier.admitted, "nested builtin scalar binding failed");
+  std::size_t identities = 0;
+  for (const auto& operand : artifacts.envelope.operands) {
+    if (!operand.name.ends_with("function_uuid")) continue;
+    Require(operand.value.empty() && operand.canonical_value_body.size() == 16 &&
+            std::equal(abs->function_uuid.bytes.begin(), abs->function_uuid.bytes.end(), operand.canonical_value_body.begin()),
+            "nested ABS must bind the execution registry identity");
+    ++identities;
+  }
+  Require(identities == 3, "all nested function occurrences need binary identities");
+  const auto gateway = [&](SblrEnvelope lowered, unsigned flags = 0) {
+    auto root = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+        EngineEnvelopeFromParserEnvelope(lowered));
+    sblr::SblrOpcodeStream stream;
+    stream.package_descriptor_uuid = root.parser_package_uuid;
+    stream.registry_snapshot_uuid = root.registry_snapshot_uuid;
+    const auto frame = [&](bool begin) {
+      auto result = sblr::MakeSblrEnvelope(
+          begin ? "engine.op.package_begin" : "engine.op.package_end",
+          begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END", "scalar.binary.gateway");
+      sblr::SblrOperand operand;
+      operand.ordinal = 1; operand.type = begin ? "package.header" : "package.footer";
+      operand.name = "package_descriptor"; operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+      operand.value_body.assign(stream.package_descriptor_uuid.bytes.begin(), stream.package_descriptor_uuid.bytes.end());
+      result.operands.push_back(std::move(operand));
+      return result;
+    };
+    stream.operations = {frame(true), root, frame(false)};
+    scratchbird::server::LocalSblrGatewayRequest request;
+    request.canonical_sbos = sblr::EncodeSblrOpcodeStream(stream);
+    request.root_operation_id = root.operation_id;
+    request.root_opcode = root.opcode; request.root_opcode_code = root.opcode_code;
+    request.route_snapshot_uuid = root.registry_snapshot_uuid;
+    request.security_snapshot_uuid = root.parser_package_uuid;
+    request.route_epoch = request.route_generation = request.security_epoch = request.security_observation_generation = 1;
+    request.route_snapshot_engine_owned = request.security_snapshot_engine_owned = true;
+    request.cluster_context_active = flags & 1;
+    request.cluster_transaction_active = flags & 2;
+    request.route_fence_present = flags & 4;
+    return scratchbird::server::AdmitLocalNoClusterSblrGateway(request);
+  };
+  const auto admitted = gateway(artifacts.envelope);
+  if (!admitted.ok) std::cerr << "scalar_gateway=" << admitted.diagnostic_id << '\n';
+  Require(admitted.ok, "canonical binary scalar vector must reach its engine executor");
+  for (unsigned flag : {1u, 2u, 4u})
+    Require(!gateway(artifacts.envelope, flag).ok, "scalar routing must retain cluster/fence separation");
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto invalid = artifacts.envelope;
+    auto identity = std::ranges::find(invalid.operands, std::string{"projection_0_function_uuid"}, &SblrOperand::name);
+    if (mutation == 0) invalid.operands.erase(identity);
+    if (mutation == 1) identity->canonical_value_body[6] = 0x40;
+    if (mutation == 2) identity->canonical_value_body.pop_back();
+    if (mutation == 3) identity->name = "projection_99_function_uuid";
+    if (mutation == 4) invalid.operands.push_back(*identity);
+    Require(!gateway(invalid).ok, "gateway must reject missing malformed duplicate or orphan callable identity");
+  }
+  auto envelope = EngineEnvelopeFromParserEnvelope(artifacts.envelope);
+  sblr::SblrDispatchRequest request;
+  request.context = EngineContext(); request.envelope = envelope;
+  auto executed = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : executed.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  for (const auto& diagnostic : executed.api_result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(executed.accepted && executed.api_result.ok && executed.api_result.result_shape.rows.size() == 1 && executed.api_result.result_shape.rows[0].fields.size() == 2 &&
+          executed.api_result.result_shape.rows[0].fields[0].second.encoded_value == "7" &&
+          executed.api_result.result_shape.rows[0].fields[1].second.encoded_value == "3",
+          "UUID-bound nested ABS must execute and publish actual values");
+  auto mislabeled = artifacts.envelope;
+  for (auto& operand : mislabeled.operands)
+    if (operand.name == "projection_0_function_id") operand.value = "sb.scalar.sqrt";
+  request.envelope = EngineEnvelopeFromParserEnvelope(mislabeled);
+  const auto label_result = sblr::DispatchSblrOperation(request);
+  Require(label_result.accepted && label_result.api_result.ok &&
+          label_result.api_result.result_shape.rows.size() == 1 &&
+          label_result.api_result.result_shape.rows[0].fields[0].second.encoded_value == "7",
+          "a misleading display label must not override the bound ABS UUID");
+  auto missing = artifacts.envelope;
+  std::erase_if(missing.operands, [](const auto& operand) { return operand.name == "projection_1_arg_0_function_uuid"; });
+  request.envelope = EngineEnvelopeFromParserEnvelope(missing);
+  const auto refused = sblr::DispatchSblrOperation(request);
+  Require(!refused.api_result.ok && refused.api_result.result_shape.rows.empty() &&
+          std::ranges::any_of(refused.api_result.diagnostics, [](const auto& diagnostic) {
+            return diagnostic.code == "SBLR.PLAN_TREE.INVALID_HANDLE";
+          }), "nested function cannot execute using a label without its binary identity");
+  for (const auto& [spelling, expected] : std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>>{
+      {"00000000-0000-0000-0000-000000000000", {}},
+      {"ffffffff-ffff-ffff-ffff-ffffffffffff", {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff}},
+      {"550e8400-e29b-41d4-a716-446655440000", {0x55,0x0e,0x84,0x00,0xe2,0x9b,0x41,0xd4,0xa7,0x16,0x44,0x66,0x55,0x44,0x00,0x00}}}) {
+    const auto literal = RunPipeline("SELECT UUID '" + spelling + "' AS id, ABS(-1) AS n");
+    Require(literal.verifier.admitted, "data UUID syntax must not impose the system-v7 restriction");
+    request.envelope = EngineEnvelopeFromParserEnvelope(literal.envelope);
+    const auto value = sblr::DispatchSblrOperation(request);
+    Require(value.accepted && value.api_result.ok && value.api_result.result_shape.rows.size() == 1,
+            "SQL data UUID literal must execute with its native binary carrier");
+    const auto& field = value.api_result.result_shape.rows[0].fields[0].second;
+    Require(field.encoded_value.empty() && field.binary_value.size() == 16 &&
+            std::equal(expected.begin(), expected.end(), field.binary_value.begin()),
+            "SQL data UUID must retain all 128 bits without a text carrier");
+  }
+  auto unbound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), ParserSession());
+  Require(LowerToSblr(unbound, artifacts.cst, ParserSession()).messages.has_errors(),
+          "parser surface metadata cannot substitute for absent engine binding");
+  Require(!BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), ParserSession(), {}, nullptr, duplicate).bound,
+          "binder must reject ambiguous engine projection");
+}
+
+int main(int argc, char** argv) {
+  RequireBinaryBuiltinBinding();
+  if (argc == 2 && std::string_view(argv[1]) == "--binary-function-binding-only") return 0;
   RequireScalarLowering();
   RequireFunctionProjectionLowering();
   RequireNumericFunctionProjectionLowering();

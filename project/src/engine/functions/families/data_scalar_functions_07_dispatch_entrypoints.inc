@@ -563,21 +563,22 @@
   if (IdIs(id, {"data.scalar.uuid_from_string", "sb.fn.uuid.from_string", "sb.scalar.uuid_from_string", "uuid_from_string"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "uuid_from_string expects canonical UUID text");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("uuid")});
-    std::string canonical;
-    if (!CanonicalizeUuidText(ValueAsText(request.arguments[0].value), &canonical)) {
+    sblr::SblrUuid uuid;
+    if (!ParseUuidCharacterValue(request.arguments[0].value, &uuid)) {
       return RefuseFunctionInvalidInput(request, "uuid_from_string expects canonical UUID text");
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", std::move(canonical))});
+    return MakeFunctionSuccess(request, {sblr::MakeSblrUuidValue(uuid)});
   }
 
   if (IdIs(id, {"data.scalar.uuid_to_string", "sb.fn.uuid.to_string", "sb.scalar.uuid_to_string", "uuid_to_string"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "uuid_to_string expects a UUID value");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-    std::string canonical;
-    if (!CanonicalizeUuidText(ValueAsText(request.arguments[0].value), &canonical)) {
-      return RefuseFunctionInvalidInput(request, "uuid_to_string expects canonical UUID text");
+    std::vector<std::uint8_t> bytes;
+    if (!sblr::CopySblrUuidPayload(request.arguments[0].value, &bytes)) {
+      return RefuseFunctionInvalidInput(request, "uuid_to_string expects a native binary UUID value");
     }
-    return MakeFunctionSuccess(request, {MakeTextValue("character", std::move(canonical))});
+    return MakeFunctionSuccess(request, {MakeTextValue("character",
+        core::uuid::UuidToString(request.arguments[0].value.uuid_value))});
   }
 
   if (id == "sb.uuid.generate_v4") {

@@ -10,6 +10,7 @@
 
 #include "../../core/platform/runtime_platform.hpp"
 #include "../../core/uuid/uuid.hpp"
+#include "builtin_function_identity_projection.hpp"
 
 #include <array>
 #include <cstdint>
@@ -184,6 +185,7 @@ struct ParserStatementContext {
   scratchbird::core::platform::Uuid max_function_uuid;
   std::vector<AggregateFunctionProfile> aggregate_function_profiles;
   std::vector<WindowFunctionProfile> window_function_profiles;
+  std::vector<scratchbird::wire::BuiltinFunctionIdentity> builtin_function_identities;
   std::vector<DescriptorProfile> descriptor_profiles;
   std::vector<LiteralStatementDescriptorProfileV1>
       literal_statement_descriptor_profiles;

@@ -2551,11 +2551,11 @@ bool DecodeAcquireStatementContextPayloadV11(
   }
   const auto wire_extension_version = GetU16(payload, offset);
   const auto extension_version =
-      wire_extension_version >= 27 && wire_extension_version <= 73
+      wire_extension_version >= 27 && wire_extension_version <= 74
           ? static_cast<std::uint16_t>(26)
           : wire_extension_version;
   const bool recognized_extended_wire =
-      wire_extension_version >= 27 && wire_extension_version <= 73;
+      wire_extension_version >= 27 && wire_extension_version <= 74;
   if ((payload.size() == offset + 76 && wire_extension_version != 2) ||
       (payload.size() == offset + 156 && extension_version != 3) ||
       (payload.size() == offset + 228 && extension_version != 4) ||
@@ -2719,6 +2719,10 @@ bool DecodeAcquireStatementContextPayloadV11(
       if (wire_extension_version == 71) return 776;
       if (wire_extension_version == 72) return 800;
       if (wire_extension_version == 73) return 808;
+      if (wire_extension_version == 74) {
+        const auto prefix_bytes = offset + 260 + static_cast<std::size_t>(row_count) * 72;
+        return payload.size() >= prefix_bytes ? payload.size() - prefix_bytes : 0;
+      }
       if (extension_version == 6) return 80;
       if (extension_version == 7) return 104;
       if (extension_version >= 8 && extension_version <= 26) {
@@ -2729,6 +2733,7 @@ bool DecodeAcquireStatementContextPayloadV11(
     if ((diagnostic_snapshot_uuid[6] & 0xf0) != 0x70 ||
         (diagnostic_snapshot_uuid[8] & 0xc0) != 0x80 || diagnostic_generation == 0 ||
         row_count == 0 || row_bytes != 72 || row_count > 4096 ||
+        (wire_extension_version == 74 && expected_trailer_bytes < 812) ||
         payload.size() != offset + 260 + static_cast<std::size_t>(row_count) * 72 +
                               expected_trailer_bytes) {
       return false;
@@ -3088,6 +3093,10 @@ bool DecodeAcquireStatementContextPayloadV11(
         context->preliminary_statement_catalog_generation =
             statement_catalog_generation;
       }
+      if (wire_extension_version == 74 &&
+          !scratchbird::wire::DecodeBuiltinFunctionIdentities(
+              std::span<const std::uint8_t>(payload).subspan(trailer + 808),
+              &context->builtin_function_identities)) return false;
     }
   }
   context->literal_preliminary_receipt_uuid =

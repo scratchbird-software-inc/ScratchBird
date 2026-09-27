@@ -22,6 +22,7 @@
 #include "engine/statement_relation_occurrence_mapping.hpp"
 #include "engine/internal_api/query/result_metadata.hpp"
 #include "canonical_aggregate_registry.hpp"
+#include "engine/functions/registry/function_seed_registry.hpp"
 #include "core/agents/resource_governance_admission.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -6614,6 +6615,20 @@ sb_engine_status_t AcquireStatementContextReceipt(
     }
     view.window_function_profiles.push_back(
         {entry.abi_version, entry.builtin_id, entry.function_uuid, true});
+  }
+
+  // Publish the exact immutable execution registry, not parser surface UUIDs.
+  // Metadata availability does not bypass execution-time policy/dependency gates.
+  static const auto builtin_functions =
+      scratchbird::engine::functions::BuildStandardFunctionSeedPackage();
+  for (const auto& entry : builtin_functions.registry.Entries()) {
+    if (entry.catalog_visible)
+      view.builtin_function_identities.push_back({entry.function_id, entry.function_uuid});
+  }
+  if (!scratchbird::wire::ValidBuiltinFunctionIdentities(view.builtin_function_identities)) {
+    return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4044,
+                       "ENGINE.STATEMENT_CONTEXT.FUNCTION_REGISTRY_UNAVAILABLE",
+                       "engine.statement_context.function_registry_unavailable");
   }
 
   // Numeric and Boolean statement descriptors represent canonical core scalar

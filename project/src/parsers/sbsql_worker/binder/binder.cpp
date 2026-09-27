@@ -12969,7 +12969,8 @@ BoundStatement BindAst(const AstDocument& ast,
                        const ParserConfig& config,
                        const SessionContext& session,
                        const std::vector<Uuid>& resolved_object_uuids,
-                       const NativeRelationalBindingContext* native_binding_context) {
+                       const NativeRelationalBindingContext* native_binding_context,
+                       const std::vector<scratchbird::wire::BuiltinFunctionIdentity>& builtin_functions) {
   BoundStatement bound;
   bound.parser_api_major = config.parser_api_major;
   bound.protocol_version = config.protocol_version;
@@ -12993,6 +12994,14 @@ BoundStatement BindAst(const AstDocument& ast,
   bound.messages = ast.messages;
   PopulateAuthorityMetadata(&bound, ast);
   if (bound.messages.has_errors()) return bound;
+  if (!builtin_functions.empty() &&
+      !scratchbird::wire::ValidBuiltinFunctionIdentities(builtin_functions)) {
+    bound.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Builtin function binding requires an unambiguous binary UUIDv7 cohort",
+        "sbp_sbsql.binder"));
+    return bound;
+  }
+  bound.builtin_function_identities = builtin_functions;
   if (CreateTableDeclaresNonStorableRowset(cst)) {
     bound.messages.diagnostics.push_back(MakeDiagnostic(
         "SBSQL.TYPE.DESCRIPTOR_UNSUPPORTED", "ERROR",

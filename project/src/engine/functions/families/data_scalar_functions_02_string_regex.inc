@@ -2270,6 +2270,34 @@ bool CanonicalizeUuidText(const std::string& text, std::string* out) {
   return true;
 }
 
+// Only explicit string-conversion functions call this adapter. The input is
+// character data, never a text-backed UUID or an executable object identity.
+bool ParseUuidCharacterValue(const sblr::SblrValue& value,
+                             sblr::SblrUuid* output) {
+  if (!output || value.is_null || value.payload_kind != sblr::SblrValuePayloadKind::text ||
+      (value.descriptor_id != "character" && value.descriptor_id != "text" &&
+       value.descriptor_id != "varchar" && value.descriptor_id != "string") ||
+      !value.uuid_value.is_nil() || !value.binary_value.empty() ||
+      !value.uuid_array_value.empty() || value.has_int64_value ||
+      value.has_uint64_value || value.has_real64_value ||
+      (!value.text_value.empty() && !value.encoded_value.empty() &&
+       value.text_value != value.encoded_value)) return false;
+  const auto& text = value.text_value.empty() ? value.encoded_value : value.text_value;
+  if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+      text[18] != '-' || text[23] != '-') return false;
+  sblr::SblrUuid decoded;
+  std::size_t at = 0;
+  for (auto& byte : decoded.bytes) {
+    if (at == 8 || at == 13 || at == 18 || at == 23) ++at;
+    const auto high = HexValue(text[at++]);
+    const auto low = HexValue(text[at++]);
+    if (high < 0 || low < 0) return false;
+    byte = static_cast<std::uint8_t>((high << 4) | low);
+  }
+  *output = decoded;  // All 128-bit data values are valid, including nil/max.
+  return true;
+}
+
 bool LooksIpv4(const std::string& value) {
   int dots = 0;
   int digits = 0;

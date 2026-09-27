@@ -11,6 +11,7 @@
 #include "binder/relational_property_identity.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
+#include "core/datatypes/datatype_catalog_manifest.hpp"
 
 #include "expression/expression_catalog.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -28715,24 +28716,125 @@ void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info)
   }
 }
 
-void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProjectionInfo& info) {
+void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProjectionInfo& info,
+    const std::vector<scratchbird::wire::BuiltinFunctionIdentity>& builtin_functions) {
   if (!info.active || !info.valid) return;
   std::vector<std::pair<std::string, core::platform::Uuid>> functions;
+  bool complete = true;
   const auto collect = [&](const auto& self, const ScalarProjectionItem& item,
                            const std::string& prefix) -> void {
-    if (!item.function_uuid.is_nil())
+    if (!item.function_uuid.is_nil()) {
       functions.emplace_back(prefix + "function_uuid", item.function_uuid);
+    } else if (item.expression_kind == "function") {
+      const auto found = std::ranges::find(builtin_functions, item.function_id,
+          &scratchbird::wire::BuiltinFunctionIdentity::canonical_id);
+      if (found == builtin_functions.end()) complete = false;
+      else functions.emplace_back(prefix + "function_uuid", found->function_uuid);
+    }
     for (std::size_t i = 0; i < item.arguments.size(); ++i)
       self(self, item.arguments[i], prefix + "arg_" + std::to_string(i) + "_");
   };
   for (std::size_t i = 0; i < info.items.size(); ++i)
     collect(collect, info.items[i], "projection_" + std::to_string(i) + "_");
+  if (!complete) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Scalar calls require engine-issued binary function bindings",
+        "sbp_sbsql.scalar_lowering"));
+    return;
+  }
+  for (const auto& [path, identity] : functions) {
+    if (std::ranges::find(envelope->resolved_object_uuids, identity) == envelope->resolved_object_uuids.end())
+      envelope->resolved_object_uuids.push_back(identity);
+  }
   std::vector<std::pair<std::string_view, core::platform::Uuid>> bindings;
   bindings.reserve(functions.size());
   for (const auto& [path, identity] : functions) bindings.emplace_back(path, identity);
   if (!AppendBoundDmlObjectIdentities(envelope, bindings)) {
     envelope->messages.diagnostics.push_back(MakeDiagnostic(
         "SBLR.OPERAND_INVALID", "ERROR", "Scalar calls require complete bound binary function identities",
+        "sbp_sbsql.scalar_lowering"));
+    return;
+  }
+  const auto text = [&](const std::string& name, const std::string& value) {
+    envelope->operands.push_back({"text", name, value});
+  };
+  text("projection_count", std::to_string(info.items.size()));
+  const auto emit = [&](const auto& self, const ScalarProjectionItem& item,
+                        const std::string& prefix) -> void {
+    text(prefix + "expr_kind", item.expression_kind);
+    text(prefix + "type", item.type_name);
+    text(prefix + "is_null", item.is_null ? "true" : "false");
+    if (item.expression_kind == "literal" && item.type_name == "uuid" && !item.is_null) {
+      // SQL data UUIDs include nil/max and older versions. Identity parsing
+      // would incorrectly impose system-identity restrictions on these bits.
+      core::platform::Uuid uuid;
+      bool valid_uuid = item.value.size() == 36;
+      std::size_t input = 0;
+      for (std::size_t byte = 0; valid_uuid && byte < 16; ++byte) {
+        if (byte == 4 || byte == 6 || byte == 8 || byte == 10)
+          valid_uuid = item.value[input++] == '-';
+        unsigned value = 0;
+        const auto parsed = std::from_chars(item.value.data() + input,
+            item.value.data() + input + 2, value, 16);
+        valid_uuid = valid_uuid && parsed.ec == std::errc{} &&
+            parsed.ptr == item.value.data() + input + 2;
+        uuid.bytes[byte] = static_cast<std::uint8_t>(value);
+        input += 2;
+      }
+      const auto catalog = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto row = core::datatypes::LookupDatatypeCatalogRow(
+          catalog.manifest, core::datatypes::CanonicalTypeId::uuid);
+      if (!valid_uuid || !catalog.ok() || !row.ok() || row.manifest.descriptor_rows.size() != 1) {
+        complete = false; return;
+      }
+      SblrOperand value{"uuid", prefix + "value", {}};
+      value.canonical_value_kind = static_cast<std::uint16_t>(engine::sblr::SblrValueKind::literal_typed);
+      const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+      value.canonical_value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+      value.canonical_value_body.push_back(16);
+      value.canonical_value_body.insert(value.canonical_value_body.end(), 7, 0);
+      value.canonical_value_body.insert(value.canonical_value_body.end(), uuid.bytes.begin(), uuid.bytes.end());
+      envelope->operands.push_back(std::move(value));
+    } else {
+      text(prefix + "value", item.is_null ? "" : item.value);
+    }
+    const auto optional = [&](const char* key, const std::string& value) {
+      if (!value.empty()) text(prefix + key, value);
+    };
+    optional("name", item.name);
+    optional("literal_family", item.literal_family);
+    optional("interval_qualifier", item.interval_qualifier);
+    optional("interval_unit", item.interval_unit);
+    optional("interval_literal_payload", item.interval_literal_payload);
+    optional("function_id", item.function_id);
+    optional("operator_id", item.operator_id);
+    optional("canonical_operator_id", item.canonical_operator_id);
+    optional("special_form_id", item.special_form_id);
+    optional("sblr_binding", item.sblr_binding);
+    optional("engine_entrypoint", item.engine_entrypoint);
+    if (item.time_series_window_expr) {
+      text(prefix + "time_series_window_expr_present", "true");
+      optional("time_series_window_interval_type", item.time_series_window_interval_type);
+      optional("time_series_window_interval_value", item.time_series_window_interval_value);
+      optional("time_series_window_interval_unit", item.time_series_window_interval_unit);
+    }
+    optional("parameter_marker_kind", item.parameter_marker_kind);
+    optional("parameter_descriptor_kind", item.parameter_descriptor_kind);
+    optional("parameter_ordinal", item.parameter_ordinal);
+    optional("parameter_name_descriptor", item.parameter_name_descriptor);
+    optional("reference_name", item.reference_name);
+    optional("reference_binding", item.reference_binding);
+    if (item.expression_kind == "function") text(prefix + "function_arg_count", std::to_string(item.arguments.size()));
+    if (item.expression_kind == "operator") text(prefix + "operator_arg_count", std::to_string(item.arguments.size()));
+    if (item.expression_kind == "special_form") text(prefix + "special_form_arg_count", std::to_string(item.arguments.size()));
+    for (std::size_t i = 0; i < item.arguments.size(); ++i)
+      self(self, item.arguments[i], prefix + "arg_" + std::to_string(i) + "_");
+  };
+  for (std::size_t i = 0; i < info.items.size(); ++i)
+    emit(emit, info.items[i], "projection_" + std::to_string(i) + "_");
+  if (!complete) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Scalar UUID literals require a canonical datatype and exactly 16 value bytes",
         "sbp_sbsql.scalar_lowering"));
     return;
   }
@@ -42334,6 +42436,17 @@ SblrEnvelope LowerExactDiagnosticRefusal(
 
 } // namespace
 
+bool HasScalarProjectionFunctionDemand(const CstDocument& cst,
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
+  const auto projection = AnalyzeScalarProjection(cst, resolved_object_uuids);
+  if (!projection.active || !projection.valid) return false;
+  const auto function = [&](const auto& self, const ScalarProjectionItem& item) -> bool {
+    return item.expression_kind == "function" ||
+        std::ranges::any_of(item.arguments, [&](const auto& child) { return self(self, child); });
+  };
+  return std::ranges::any_of(projection.items, [&](const auto& item) { return function(function, item); });
+}
+
 CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
     const std::vector<CanonicalNamedWindowDefinition>& definitions,
     const std::vector<std::string>& referenced_names,
@@ -43847,7 +43960,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateVectorSearchAuthority(&envelope, vector_search);
   PopulateVectorCollectionOperationAuthority(&envelope, vector_collection_operation);
   PopulateMultiModelNoSqlAuthority(&envelope, multimodel_nosql);
-  PopulateScalarProjectionAuthority(&envelope, scalar_projection);
+  PopulateScalarProjectionAuthority(&envelope, scalar_projection, bound.builtin_function_identities);
   PopulateTableJoinAuthority(&envelope, table_join);
   PopulateTableSetOperationAuthority(&envelope, table_set_operation);
   PopulateTableSampleAuthority(&envelope, table_sample);

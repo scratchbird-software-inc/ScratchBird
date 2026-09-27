@@ -627,6 +627,7 @@ struct BoundStatement {
   bool requires_transaction_authority{false};
   bool requires_cluster_profile{false};
   bool exact_refusal_required{false};
+  std::vector<scratchbird::wire::BuiltinFunctionIdentity> builtin_function_identities;
   std::vector<scratchbird::core::platform::Uuid> resolved_object_uuids;
   std::vector<scratchbird::core::platform::Uuid> descriptor_refs;
   std::vector<std::string> policy_refs;
@@ -645,6 +646,7 @@ BoundStatement BindAst(const AstDocument& ast,
                        const ParserConfig& config,
                        const SessionContext& session,
                        const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids = {},
-                       const NativeRelationalBindingContext* native_binding_context = nullptr);
+                       const NativeRelationalBindingContext* native_binding_context = nullptr,
+                       const std::vector<scratchbird::wire::BuiltinFunctionIdentity>& builtin_functions = {});
 
 } // namespace scratchbird::parser::sbsql
