@@ -2940,24 +2940,27 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
     const DatabaseCreateConfig& config,
     const LoadedPolicySeedPack& policy_seed_pack,
     TypedUuid security_parent_uuid) {
-  for (const auto& role : policy_seed_pack.roles) {
-    if (role.role_uuid == kCanonicalSysarchRoleObjectUuid ||
-        role.role_code == "ROLE_SYSARCH") {
-      const auto error = LifecycleError(
-          "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE",
-          "storage.database_lifecycle.bootstrap_security_sysarch_duplicate",
-          config.path,
-          role.role_uuid + ":" + role.role_code);
-      return CatalogRowsBuildError(error.status, error.diagnostic);
-    }
-  }
-
   const auto parsed_sysarch =
       ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
   if (!parsed_sysarch.ok()) {
     return CatalogRowsBuildError(parsed_sysarch.status,
                                  parsed_sysarch.diagnostic);
   }
+  for (const auto& role : policy_seed_pack.roles) {
+    TypedUuid role_uuid;
+    const auto parsed_role = ParsePolicyObjectUuid(role.role_uuid, &role_uuid);
+    if (!parsed_role.ok()) return parsed_role;
+    if (role_uuid.value == parsed_sysarch.value.value ||
+        role.role_code == "ROLE_SYSARCH") {
+      const auto error = LifecycleError(
+          "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE",
+          "storage.database_lifecycle.bootstrap_security_sysarch_duplicate",
+          config.path,
+          role.role_code);
+      return CatalogRowsBuildError(error.status, error.diagnostic);
+    }
+  }
+
   const u32 policy_generation = policy_seed_pack.image.active
                                     ? policy_seed_pack.image.policy_generation
                                     : 1;

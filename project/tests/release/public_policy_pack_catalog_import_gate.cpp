@@ -12,6 +12,7 @@
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
+#include "hash_digest.hpp"
 #include "page_header.hpp"
 #include "page_manager.hpp"
 #include "uuid.hpp"
@@ -22,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -402,11 +404,90 @@ void RunHashMismatchCase() {
           "hash-mismatched policy pack did not fail with content hash diagnostic");
 }
 
+void RunNativeReservedRoleIdentityCases() {
+  const std::string original = "018f7a10-1280-7000-8000-000000000100";
+  for (const std::string replacement : {
+           "018f7a10-1280-7000-8000-000000000105",
+           "018F7A10-1280-7000-8000-000000000105",
+           "018F7A10-1280-7000-8000-000000000106"}) {
+    const auto root = UniquePath("sb_policy_native_reserved_role");
+    const auto database_path = root / "test.sbdb";
+    struct Cleanup {
+      std::filesystem::path root;
+      ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
+    } cleanup{root};
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, root,
+                          std::filesystem::copy_options::recursive);
+    const auto read = [](const auto& path) {
+      std::ifstream input(path, std::ios::binary);
+      Require(static_cast<bool>(input), "reserved role fixture read failed");
+      return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    const auto write = [](const auto& path, const std::string& content) {
+      std::ofstream output(path, std::ios::binary | std::ios::trunc);
+      output.write(content.data(), content.size());
+      Require(static_cast<bool>(output), "reserved role fixture write failed");
+    };
+    const auto replace_all = [](std::string& text, const std::string& from, const std::string& to) {
+      for (std::size_t at = 0; (at = text.find(from, at)) != text.npos; at += to.size())
+        text.replace(at, from.size(), to);
+    };
+    const auto sha = [](const std::string& text) {
+      // Policy-pack digest normalization is CRLF to LF; retain every other byte.
+      std::string canonical;
+      for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+        canonical.push_back(text[i]);
+      }
+      const auto hash = scratchbird::core::hash::ComputeSha256Digest(
+          reinterpret_cast<const scratchbird::core::platform::byte*>(canonical.data()), canonical.size());
+      Require(hash.ok(), "reserved role fixture digest failed");
+      return scratchbird::core::hash::HexLower(hash.digest);
+    };
+    auto manifest = read(root / "POLICY_PACK_MANIFEST.json");
+    const std::regex entry(R"re("path"\s*:\s*"([^"]+)"\s*,\s*"sha256"\s*:\s*"([0-9a-f]{64})")re");
+    std::string aggregate;
+    unsigned files = 0;
+    // Iterate a stable original manifest; replacements below only update hashes.
+    const auto original_manifest = manifest;
+    for (auto it = std::sregex_iterator(original_manifest.begin(), original_manifest.end(), entry);
+         it != std::sregex_iterator(); ++it) {
+      const auto relative = (*it)[1].str();
+      auto content = read(root / relative);
+      replace_all(content, original, replacement);
+      write(root / relative, content);
+      const auto digest = sha(content);
+      replace_all(manifest, (*it)[2].str(), digest);
+      aggregate += relative; aggregate.push_back('\0'); aggregate += digest; aggregate.push_back('\n');
+      ++files;
+    }
+    Require(files == 9, "reserved role fixture content manifest coverage changed");
+    const std::regex aggregate_field(R"re("content_sha256"\s*:\s*"([0-9a-f]{64})")re");
+    std::smatch aggregate_match;
+    Require(std::regex_search(manifest, aggregate_match, aggregate_field), "aggregate digest field missing");
+    manifest.replace(aggregate_match.position(1), aggregate_match.length(1), sha(aggregate));
+    write(root / "POLICY_PACK_MANIFEST.json", manifest);
+    auto create = BaseCreateConfig(database_path, CurrentUnixMillis());
+    create.policy_seed_pack_root = root.string();
+    const auto result = db::CreateDatabaseFile(create);
+    if (replacement.ends_with("106")) {
+      Require(result.ok() && result.create_finality == db::DatabaseCreateFinalityClass::committed,
+              "valid nonreserved uppercase UUID was refused");
+    } else {
+      Require(!result.ok() && result.diagnostic.diagnostic_code == "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-DUPLICATE" &&
+              result.create_finality == db::DatabaseCreateFinalityClass::not_published &&
+              !std::filesystem::exists(database_path),
+              "reserved binary role identity bypassed prepublication duplicate protection");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
   ConfigureMemoryFixture();
   RunSuccessfulImportCase();
   RunHashMismatchCase();
+  RunNativeReservedRoleIdentityCases();
   return EXIT_SUCCESS;
 }
