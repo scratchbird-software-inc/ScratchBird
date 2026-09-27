@@ -8,8 +8,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
 #include "ddl/create_api.hpp"
@@ -17,6 +21,7 @@
 #include "dml/select_api.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "memory.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "prepared_metadata_binding.hpp"
 #include "sblr_dispatch.hpp"
@@ -25,7 +30,6 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
-#include "../release/public_release_authz_fixture.hpp"
 #include "../sbsql_parser_worker/canonical_sblr_admission_test_helper.hpp"
 
 #include <chrono>
@@ -36,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -90,6 +95,7 @@ struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
   platform::Uuid principal_uuid;
   platform::Uuid session_uuid;
   platform::Uuid schema_uuid;
@@ -97,8 +103,23 @@ struct Fixture {
   platform::Uuid procedure_uuid;
   platform::Uuid column_uuid;
   std::uint64_t salt = 0;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
+
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture& operator=(const Fixture&) = delete;
+  Fixture(Fixture&& other)
+      : directory(std::exchange(other.directory, {})),
+        database_path(std::move(other.database_path)), database_uuid(other.database_uuid),
+        filespace_uuid(other.filespace_uuid), principal_uuid(other.principal_uuid),
+        session_uuid(other.session_uuid), schema_uuid(other.schema_uuid),
+        table_uuid(other.table_uuid), procedure_uuid(other.procedure_uuid),
+        column_uuid(other.column_uuid), salt(other.salt),
+        engine_session(std::move(other.engine_session)) {}
 
   ~Fixture() {
+    engine_session.reset();
+    if (directory.empty()) return;
     std::error_code ignored;
     std::filesystem::remove_all(directory, ignored);
   }
@@ -106,11 +127,14 @@ struct Fixture {
 
 Fixture CreateFixture() {
   Fixture fixture;
+  const auto path_nonce = std::chrono::steady_clock::now().time_since_epoch();
+  // UUIDv7 timestamps are milliseconds, not native steady-clock ticks. Keep
+  // the higher-resolution nonce only for the unique temporary path.
   fixture.salt = static_cast<std::uint64_t>(
-      std::chrono::steady_clock::now().time_since_epoch().count());
+      std::chrono::duration_cast<std::chrono::milliseconds>(path_nonce).count());
   fixture.directory = std::filesystem::temp_directory_path() /
                       ("scratchbird_routine_delete_range_" +
-                       std::to_string(fixture.salt));
+                       std::to_string(path_nonce.count()));
   std::filesystem::create_directories(fixture.directory);
   fixture.database_path = fixture.directory / "routine.sbdb";
 
@@ -122,21 +146,25 @@ Fixture CreateFixture() {
       NewTypedUuid(platform::UuidKind::filespace, fixture.salt + 2);
   create.creation_unix_epoch_millis = 1950000000000ull + fixture.salt + 3;
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "routine vertical-slice database creation failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
   fixture.principal_uuid =
-      NewUuid(platform::UuidKind::principal, fixture.salt + 4);
+      scratchbird::tests::BootstrapFixtureOwnerContext(create).principal_uuid;
   fixture.session_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 5);
   fixture.schema_uuid =
       NewUuid(platform::UuidKind::schema, fixture.salt + 6);
   fixture.table_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 7);
+  auto owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  owner.session_uuid = fixture.session_uuid;
+  // Keep one owning engine/session alive for the entire transaction fixture.
+  fixture.engine_session = std::make_shared<scratchbird::tests::FixtureEngineSession>(owner);
   return fixture;
 }
 
@@ -147,19 +175,18 @@ api::EngineRequestContext Begin(Fixture& fixture, std::uint64_t ordinal) {
       "routine-delete-range-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
   begin.context.database_uuid = fixture.database_uuid;
+  begin.context.default_root_uuid = fixture.filespace_uuid;
   begin.context.principal_uuid = fixture.principal_uuid;
   begin.context.session_uuid = fixture.session_uuid;
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
-  begin.context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  begin.context.datatype_catalog_generation = 1;
-  begin.context.datatype_registry_generation = 1;
+  begin.context.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
+  begin.context.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
+  begin.context.datatype_registry_generation = api::kBootstrapDatatypeRegistryGeneration;
   begin.context.security_epoch = 1;
   begin.context.resource_epoch = 1;
   begin.context.name_resolution_epoch = 1;
-  begin.context.trace_tags.push_back("right:CATALOG_MUTATE");
-  scratchbird::tests::release::GrantMaterializedRights(
-      &begin.context, {"CATALOG_MUTATE"});
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(begin.context);
   begin.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(begin);
   RequireOk(begun, "routine vertical-slice transaction begin failed");
@@ -228,14 +255,31 @@ void CreateTableAndRows(Fixture& fixture,
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "integer";
   column.descriptor.encoded_descriptor = "type=integer";
+  namespace dt = scratchbird::core::datatypes;
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "routine fixture datatype catalog is unavailable");
+  const auto datatype = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::int32);
+  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
+          "routine fixture integer datatype is not catalog-bound");
+  const auto& published = datatype.manifest.descriptor_rows.front();
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+      context.datatype_registry_generation, published.descriptor_uuid.value,
+      published.descriptor_epoch);
+  Require(binding.ok, "routine fixture integer codec is not catalog-bound");
+  column.requested_column_uuid = api::GenerateCrudEngineUuid("column");
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
+  column.descriptor.type_uuid = binding.row.type_uuid;
   column.ordinal = 0;
   column.nullable = false;
   table.table_columns.push_back(column);
   RequireOk(api::EngineCreateTable(table),
             "routine vertical-slice table create failed");
 
-  api::EngineInsertRowsRequest insert;
-  insert.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> insert(
+      *fixture.engine_session, context);
   insert.target_table.uuid = fixture.table_uuid;
   insert.target_table.object_kind = "table";
   for (std::int64_t value = 1; value <= 10; ++value) {
@@ -360,12 +404,28 @@ sblr::SblrOperationEnvelope MakeInvokeEnvelope(
 
 api::EngineInvokeExecutableObjectResult ExecuteInvoke(
     const Fixture& fixture,
-    const api::EngineRequestContext& context,
+    const scratchbird::tests::FixtureEngineStatement& statement,
     std::string lower,
     std::string upper,
-    bool include_upper = true) {
+    bool include_upper = true,
+    const platform::Uuid* transaction_override = nullptr) {
   api::EngineInvokeExecutableObjectRequest request;
-  request.context = context;
+  request.context = statement.context;
+  // This component route binds the persisted routine version selected by the
+  // live statement. Never invent its identity, generation, or metadata epoch.
+  const auto metadata = api::LoadExecutableObjectLifecycleState(request.context);
+  Require(metadata.ok, "routine statement metadata load failed");
+  for (const auto& object : metadata.state.objects) {
+    if (object.object_uuid != fixture.procedure_uuid) continue;
+    request.context.prepared_metadata_required_object_uuid = object.object_uuid;
+    request.context.prepared_metadata_required_executable_generation = object.executable_generation;
+    request.context.prepared_metadata_required_metadata_epoch = object.metadata_epoch;
+  }
+  Require(!request.context.prepared_metadata_required_object_uuid.is_nil(),
+          "routine statement did not select its persisted executable");
+  // Fault injection belongs after receipt acquisition: this case tests the
+  // routine boundary's exact-selector check, not malformed fixture admission.
+  if (transaction_override) request.context.transaction_uuid = *transaction_override;
   request.operation_id = "routine.procedure_invoke";
   request.target_object.uuid = fixture.procedure_uuid;
   request.target_object.object_kind = "procedure";
@@ -453,31 +513,11 @@ class PrivatePreparedMetadataSession {
  public:
   explicit PrivatePreparedMetadataSession(const Fixture& fixture)
       : principal_uuid_(PublicUuid(fixture.principal_uuid)),
-        session_uuid_(PublicUuid(fixture.session_uuid)) {
-    const std::string path = fixture.database_path.string();
-    sb_engine_open_params_v1_t open{};
-    open.struct_size = sizeof(open);
-    open.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    open.database_path_utf8 = path.data();
-    open.database_path_size = path.size();
-    open.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    Require(sb_engine_open(&open, &engine_, nullptr) == SB_ENGINE_STATUS_OK &&
-                engine_ != nullptr,
-            "routine private bridge engine open failed");
-
-    sb_engine_session_params_v1_t session{};
-    session.struct_size = sizeof(session);
-    session.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    session.effective_user_uuid = principal_uuid_;
-    session.session_uuid = session_uuid_;
-    session.default_language_utf8 = "en";
-    session.default_language_size = 2;
-    session.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
-    Require(sb_engine_session_begin(
-                engine_, &session, &session_, nullptr) ==
-                SB_ENGINE_STATUS_OK &&
-                session_ != nullptr,
-            "routine private bridge session begin failed");
+        session_uuid_(PublicUuid(fixture.session_uuid)),
+        owner_(fixture.engine_session), session_(owner_->get()) {
+    // Reuse the live owning engine/session; its constructor checked both
+    // public open and session admission before any fixture transactions.
+    Require(session_ != nullptr, "routine private bridge has no owning session");
   }
 
   PrivatePreparedMetadataSession(const PrivatePreparedMetadataSession&) = delete;
@@ -488,15 +528,6 @@ class PrivatePreparedMetadataSession {
     if (binding_ != nullptr) {
       (void)bridge::ReleasePreparedMetadataBinding(binding_);
     }
-    if (session_ != nullptr) {
-      sb_engine_session_end_params_v1_t end{};
-      end.struct_size = sizeof(end);
-      end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-      end.rollback_active_transactions = 1;
-      end.cancel_open_results = 1;
-      (void)sb_engine_session_end(session_, &end, nullptr);
-    }
-    if (engine_ != nullptr) { (void)sb_engine_close(engine_, nullptr); }
   }
 
   std::string Bind(const std::vector<std::uint8_t>& envelope,
@@ -620,7 +651,7 @@ class PrivatePreparedMetadataSession {
 
   sb_engine_uuid_t principal_uuid_{};
   sb_engine_uuid_t session_uuid_{};
-  sb_engine_handle_t engine_ = nullptr;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> owner_;
   sb_engine_session_t session_ = nullptr;
   bridge::PreparedMetadataBindingHandle binding_ = nullptr;
 };
@@ -739,6 +770,17 @@ void RequireApiOk(const api::EngineApiResult& result,
 }  // namespace
 
 int main() {
+  scratchbird::core::memory::AllocationPolicy memory_policy;
+  memory_policy.policy_name = "routine_delete_column_range_vertical_slice";
+  memory_policy.hard_limit_bytes = 64ull * 1024 * 1024;
+  memory_policy.soft_limit_bytes = 48ull * 1024 * 1024;
+  memory_policy.per_context_limit_bytes = 32ull * 1024 * 1024;
+  memory_policy.page_buffer_pool_limit_bytes = 16ull * 1024 * 1024;
+  memory_policy.track_allocations = true;
+  memory_policy.zero_memory_on_release = true;
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      memory_policy, "routine_delete_column_range_vertical_slice");
+  Require(memory.ok() && memory.fixture_mode, "routine memory fixture configuration failed");
   Fixture fixture = CreateFixture();
 
   auto setup = Begin(fixture, 1);
@@ -797,6 +839,10 @@ int main() {
   // private bridge must be able to refresh metadata without replacing this
   // engine-owned transaction data boundary.
   auto old_data_context = Begin(fixture, 2);
+  // Pin the real statement metadata before later ALTERs, retaining its owning
+  // receipt throughout invocation. Reacquisition would select newer metadata.
+  scratchbird::tests::FixtureEngineStatement old_data_statement(
+      *fixture.engine_session, old_data_context);
   Require(old_data_context.snapshot_visible_through_local_transaction_id ==
               setup.local_transaction_id,
           "routine old data snapshot did not preserve its begin boundary");
@@ -872,14 +918,15 @@ int main() {
   auto stale_context = old_data_context;
   stale_context.transaction_uuid =
       NewUuid(platform::UuidKind::transaction, fixture.salt + 1000);
-  const auto stale = ExecuteInvoke(fixture, stale_context, "4", "7");
+  const auto stale = ExecuteInvoke(fixture, old_data_statement, "4", "7", true,
+                                   &stale_context.transaction_uuid);
   Require(!stale.ok && !stale.diagnostics.empty() &&
               stale.diagnostics.front().code ==
                   api::kExecutableObjectDiagnosticExactMgaSelectorMismatch,
           "routine invocation admitted a mismatched MGA transaction selector");
 
   const auto missing_argument =
-      ExecuteInvoke(fixture, old_data_context, "4", "", false);
+      ExecuteInvoke(fixture, old_data_statement, "4", "", false);
   Require(!missing_argument.ok &&
               !missing_argument.diagnostics.empty() &&
               missing_argument.diagnostics.front().code ==
@@ -898,7 +945,7 @@ int main() {
                       "4"),
           "routine atomicity ALTER did not stage generation four");
 
-  const auto invoked = ExecuteInvoke(fixture, old_data_context, "4", "7");
+  const auto invoked = ExecuteInvoke(fixture, old_data_statement, "4", "7");
   RequireApiOk(invoked, "routine engine invocation failed");
   Require(invoked.result_shape.result_kind ==
                   "routine.procedure.result.v1" &&
