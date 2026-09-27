@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -66,6 +69,8 @@ constexpr std::string_view kPlanImportPublicAbiProofTarget =
 
 api::EngineRequestContext g_engine_context;
 bool g_engine_context_ready = false;
+std::unique_ptr<scratchbird::tests::FixtureEngineSession> g_engine_session;
+std::unique_ptr<scratchbird::tests::FixtureEngineStatement> g_plan_statement;
 
 struct DmlSurfaceEvidence {
   std::string_view surface_id;
@@ -990,26 +995,12 @@ std::filesystem::path TestDatabasePath() {
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.crud_events",
-                            ".sb.name_events",
-                            ".sb.transaction_inventory",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  g_plan_statement.reset();
+  g_engine_session.reset();
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
 }
 
-api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
+db::DatabaseCreateConfig CreateMinimalDatabaseForEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   db::DatabaseCreateConfig create;
@@ -1020,8 +1011,7 @@ api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779821600001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779821600002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -1029,24 +1019,18 @@ api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "DML exact-route engine dispatch database create failed");
-  return create.database_uuid.value;
+  return create;
 }
 
-api::EngineRequestContext EngineContextForDatabase(const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+api::EngineRequestContext EngineContextForDatabase(const db::DatabaseCreateConfig& create) {
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "sbsql-dml-exact-route";
   context.database_path = TestDatabasePath().string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002122");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002123");
   context.security_context_present = true;
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
   context.name_resolution_epoch = 1;
   context.trace_tags.push_back("right:DML_ROUTE_TEST");
   return context;
@@ -1065,8 +1049,8 @@ void ApplyRegisteredFixtureEnvelopeIdentity(
   envelope->parser_resolved_names_to_uuids = true;
 }
 
-api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database_uuid) {
-  auto context = EngineContextForDatabase(database_uuid);
+api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig& create) {
+  auto context = EngineContextForDatabase(create);
   auto envelope = sblr::MakeSblrEnvelope("transaction.begin",
                                          "SBLR_TRANSACTION_BEGIN",
                                          "trace.dml.exact_route.transaction.begin");
@@ -1093,7 +1077,7 @@ api::EngineRequestContext BeginEngineTransaction(const api::EngineUuid& database
   return context;
 }
 
-api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
+api::EngineApiRequest EngineCreateCustomerTableApiRequest(const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
   request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002130");
   request.target_schema.object_kind = "schema";
@@ -1109,6 +1093,8 @@ api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
   id_column.descriptor.encoded_descriptor = "type=text";
   id_column.ordinal = 0;
   id_column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, id_column);
   request.columns.push_back(std::move(id_column));
 
   api::EngineColumnDefinition name_column;
@@ -1119,6 +1105,8 @@ api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
   name_column.descriptor.encoded_descriptor = "type=text";
   name_column.ordinal = 1;
   name_column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, name_column);
   request.columns.push_back(std::move(name_column));
   return request;
 }
@@ -1132,8 +1120,8 @@ api::EngineApiRequest EngineCreateSchemaApiRequest() {
 }
 
 void PrepareEngineDispatchContext() {
-  const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
-  auto context = BeginEngineTransaction(database_uuid);
+  const auto create = CreateMinimalDatabaseForEngineDispatch();
+  auto context = BeginEngineTransaction(create);
   auto schema_envelope = sblr::MakeSblrEnvelope("ddl.create_schema",
                                                 "SBLR_DDL_CREATE_SCHEMA",
                                                 "trace.dml.exact_route.seed_schema");
@@ -1167,7 +1155,7 @@ void PrepareEngineDispatchContext() {
   const sblr::SblrDispatchRequest request{
       context,
       envelope,
-      EngineCreateCustomerTableApiRequest()};
+      EngineCreateCustomerTableApiRequest(context)};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -1180,6 +1168,7 @@ void PrepareEngineDispatchContext() {
   Require(result.dispatched_to_api, "seed table dispatch did not route to engine API");
   Require(result.api_result.ok, "seed table create did not return success");
   g_engine_context = context;
+  g_engine_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
   g_engine_context_ready = true;
 }
 
@@ -1950,52 +1939,10 @@ api::EngineUuid PlanFixtureUuid(std::uint64_t salt) {
 
 api::EngineRequestContext AttachPlanStatementAuthority(
     api::EngineRequestContext context) {
-  const auto salt = context.local_transaction_id * 32;
-  context.statement_uuid = PlanFixtureUuid(salt + 1);
-  context.statement_snapshot_uuid = {};
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  Require(snapshot.ok, "plan-import statement snapshot publication failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.statement_snapshot_generation =
-      snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid = PlanFixtureUuid(salt + 2);
-  context.statement_metadata_snapshot_uuid = PlanFixtureUuid(salt + 3);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
-  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid = PlanFixtureUuid(salt + 4);
-  context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid = PlanFixtureUuid(salt + 5);
-
-  auto& authorization = context.authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid = PlanFixtureUuid(salt + 6);
-  authorization.security_context_generation = 1;
-  authorization.principal_uuid = context.principal_uuid;
-  authorization.security_epoch = context.security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context.catalog_generation_id;
-  authorization.effective_subjects.clear();
-  authorization.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  authorization.grants.clear();
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = PlanFixtureUuid(salt + 7);
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000002101");
-  grant.right = "INSERT";
-  grant.security_epoch = context.security_epoch;
-  authorization.grants.push_back(std::move(grant));
-  return context;
+  Require(g_engine_session != nullptr, "plan-import requires a live engine session");
+  g_plan_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(
+      *g_engine_session, context);
+  return g_plan_statement->context;
 }
 
 api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
@@ -5034,6 +4981,7 @@ int main(int argc, char** argv) {
                        "right.write",
                        "insert");
   PrepareEngineDispatchContext();
+  RequireExactPlanImportDispatch();
   RequireInsertSourceExactRouteEvidence();
   RequireInsertValuesKeywordStringLiteralEvidence();
   RequireExactLowering("UPDATE customer SET name = 'x'",
