@@ -24,20 +24,16 @@
                              state->index_entries.end());
 }
 
-std::string FirstCompositeComponent(const std::string& key) {
-  const auto pos = key.find(kCompositeSeparator);
-  if (pos == std::string::npos) { return key; }
-  return key.substr(0, pos);
-}
-
 std::string BuildCompositeKey(const std::vector<std::pair<std::string, std::string>>& values,
                               const std::vector<std::string>& columns) {
-  std::string key;
+  if (columns.empty()) return {};
+  if (columns.size() == 1) return CrudFieldValue(values, columns.front());
+  std::vector<std::string> components;
+  components.reserve(columns.size());
   for (const auto& column : columns) {
-    if (!key.empty()) { key.push_back(kCompositeSeparator); }
-    key += CrudFieldValue(values, column);
+    components.push_back(CrudFieldValue(values, column));
   }
-  return key;
+  return EncodeCompositeLogicalKey({components.begin(), components.end()});
 }
 
 std::vector<std::string> TokenizeCrudText(const std::string& value) {
@@ -291,17 +287,18 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   const std::string first_column = columns.empty() ? index.column_name : columns.front();
   const std::string logical_entry_key =
       CrudIndexEntryLogicalKey(index, entry);
-  const std::string first_key = columns.size() == 1 ? logical_entry_key
-                                                   : FirstCompositeComponent(logical_entry_key);
+  const auto components = columns.size() > 1
+      ? DecodeCompositeLogicalKey(logical_entry_key, columns.size())
+      : std::optional<std::vector<std::string_view>>{{logical_entry_key}};
+  if (!components || components->empty()) return false;
+  const std::string first_key(components->front());
   if (predicate.predicate_kind == "column_equals") {
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
            CrudPredicateValuePayload(predicate.bound_values.front()) == first_key;
   }
   if (predicate.predicate_kind == "columns_all_equal") {
     const auto predicate_columns = Split(predicate.canonical_predicate_envelope, ',');
-    const auto key_parts = columns.size() == 1
-        ? std::vector<std::string>{logical_entry_key}
-        : Split(logical_entry_key, kCompositeSeparator);
+    const auto& key_parts = *components;
     if (predicate_columns.empty() || predicate.bound_values.size() < predicate_columns.size() ||
         columns.size() < predicate_columns.size() || key_parts.size() < predicate_columns.size()) {
       return false;

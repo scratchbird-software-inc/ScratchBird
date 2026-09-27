@@ -1970,6 +1970,152 @@ void TestTypedScalarRowPageStorage() {
   }
 }
 
+void TestNativeUuidCompositeIndex() {
+  auto fixture = MakeFixture("uuid_compound_binary", 1750);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, 1760);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, 1761);
+  auto metadata = Begin(fixture, "uuid-compound-metadata");
+  api::CrudTableRecord table;
+  table.creator_tx = metadata.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "uuid_compound_values";
+  table.columns = {{"left", "canonical=uuid"}, {"right", "canonical=uuid"}};
+  auto index = IdIndex(fixture, metadata);
+  index.column_name = "left";
+  index.key_envelopes = {"left", "right", "unique"};
+  index.unique = true;
+  Require(!PublishFixtureTable(metadata, table).error, "compound UUID catalog publication failed");
+  Require(!api::AppendMgaIndexMetadata(metadata, index).error, "compound UUID index publication failed");
+  Commit(metadata);
+
+  std::vector<api::EngineRowValue> rows;
+  std::vector<std::pair<platform::Uuid, platform::Uuid>> values;
+  for (unsigned position = 0; position < 16; ++position) {
+    platform::Uuid left, right;
+    left.bytes[position] = 0x1f;
+    right.bytes.fill(0xff);
+    right.bytes[15 - position] = 0;
+    values.push_back({left, right});
+    values.push_back({left, left}); // Same leading key; suffix must distinguish.
+  }
+  values.push_back({{}, {}});
+  for (const auto& [left, right] : values) {
+    api::EngineRowValue row;
+    row.fields = {{"left", IdentityScalarValue("uuid", left)},
+                  {"right", IdentityScalarValue("uuid", right)}};
+    rows.push_back(std::move(row));
+  }
+  auto writer = Begin(fixture, "uuid-compound-insert");
+  auto request = NativeRequest(fixture, writer, rows);
+  request.option_envelopes.push_back("physical_mga_cow.rows_per_page=8");
+  const auto inserted = api::EngineExecuteNativeBulkIngest(request);
+  RequireOk(inserted, "compound UUID insert failed");
+  Require(inserted.inserted_rows == rows.size() &&
+              EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == rows.size(),
+          "compound UUID insert lost rows or used an untyped physical key");
+  Commit(writer);
+  fixture.session.reset();
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "uuid-compound-reopen"));
+  auto reader = Begin(fixture, "uuid-compound-reader");
+  const auto loaded = api::LoadMgaRelationStoreState(reader);
+  Require(loaded.ok, "compound UUID durable index reload failed");
+  const auto state = api::BuildMgaRelationReadView(loaded.state);
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto datatype = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::uuid);
+  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
+          "compound UUID comparison descriptor unavailable");
+  std::set<std::string> expected_keys, actual_keys;
+  for (const auto& [left, right] : values) {
+    // Independent byte oracle: no call to the producer's key encoder. Each
+    // component has nonnull rank, scalar kind, binary descriptor and epoch,
+    // absent collation, and a zero-escaped raw16 payload plus terminator.
+    std::string expected = "SBKOBIN:SBKO";
+    for (const auto& value : {left, right}) {
+      expected.append("\x7f\0\0\0\1", 5);
+      const auto& descriptor = datatype.manifest.descriptor_rows.front();
+      expected.push_back(static_cast<char>(descriptor.descriptor_uuid.kind));
+      expected.append(reinterpret_cast<const char*>(descriptor.descriptor_uuid.value.bytes.data()), 16);
+      for (int shift = 56; shift >= 0; shift -= 8)
+        expected.push_back(static_cast<char>((descriptor.descriptor_epoch >> shift) & 0xff));
+      expected.push_back('\0');
+      for (const auto byte : value.bytes) {
+        expected.push_back(static_cast<char>(byte));
+        if (byte == 0) expected.push_back(static_cast<char>(0xff));
+      }
+      expected.append(2, '\0');
+    }
+    expected_keys.insert(std::move(expected));
+  }
+  for (const auto& entry : state.index_entries) {
+    if (entry.index_uuid == fixture.index_uuid) actual_keys.insert(entry.key_value);
+  }
+  Require(actual_keys == expected_keys, "compound UUID physical replay differs from descriptor-bound key oracle");
+  for (const auto& [left, right] : values) {
+    for (const std::string kind : {"columns_all_equal", "column_equals", "column_in_list", "column_range"}) {
+    api::EnginePredicateEnvelope predicate;
+    predicate.predicate_kind = kind;
+    predicate.canonical_predicate_envelope = kind == "columns_all_equal" ? "left,right" : "left";
+    predicate.bound_values = {IdentityScalarValue("uuid", left)};
+    if (kind == "columns_all_equal") predicate.bound_values.push_back(IdentityScalarValue("uuid", right));
+    if (kind == "column_range") predicate.bound_values.push_back(IdentityScalarValue("uuid", left));
+    const auto expected_count = kind == "columns_all_equal" ? 1u :
+        static_cast<unsigned>(std::count_if(values.begin(), values.end(),
+            [&](const auto& pair) { return pair.first == left; }));
+    const auto found = api::IndexedMgaRowsForPredicateForContext(
+        state, fixture.table_uuid, predicate, reader, 0);
+    Require(found.ok && found.index_used && !found.index_refused && found.rows.size() == expected_count &&
+                std::all_of(found.rows.begin(), found.rows.end(),
+                    [&](const auto& row) { return api::CrudRowMatchesPredicate(row, predicate); }),
+            "compound UUID durable index did not return the exact tuple without scan fallback");
+    }
+  }
+  // A corrupt projection is an index integrity error, never a successful
+  // empty result. Inject into a read snapshot; durable pages remain untouched.
+  for (const std::string malformed : {std::string("legacy\x1f" "tuple"), std::string("SBCLKEY1")}) {
+    auto corrupt = state;
+    bool changed = false;
+    for (auto& entry : corrupt.index_entries) {
+      if (entry.index_uuid != fixture.index_uuid) continue;
+      entry.payload_value = malformed;
+      changed = true;
+      break;
+    }
+    Require(changed, "compound corruption probe found no persisted index entry");
+    api::EnginePredicateEnvelope predicate;
+    predicate.predicate_kind = "column_equals";
+    predicate.canonical_predicate_envelope = "left";
+    predicate.bound_values = {IdentityScalarValue("uuid", values.front().first)};
+    const auto refused = api::IndexedMgaRowsForPredicateForContext(
+        corrupt, fixture.table_uuid, predicate, reader, 0);
+    constexpr std::string_view expected_detail =
+        "mga.secondary_index_delta_overlay:compound_index_logical_key_framing_invalid";
+    if (refused.ok || !refused.index_refused || !refused.rows.empty() ||
+        refused.diagnostic.detail != expected_detail) {
+      std::cerr << "compound corruption: ok=" << refused.ok << " index_refused="
+                << refused.index_refused << " rows=" << refused.rows.size()
+                << " diagnostic=" << refused.diagnostic.code << ':'
+                << refused.diagnostic.detail << '\n';
+    }
+    Require(!refused.ok && refused.index_refused && refused.rows.empty() &&
+                refused.diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+                refused.diagnostic.detail == expected_detail,
+            "malformed compound projection published an empty success or scan fallback");
+  }
+  Require(SelectCount(fixture, reader) == values.size(), "compound UUID reopened row count changed");
+  Rollback(reader);
+  for (const std::size_t duplicate : {std::size_t{0}, values.size() - 1}) {
+    auto context = Begin(fixture, "uuid-compound-duplicate");
+    const auto refused = api::EngineExecuteNativeBulkIngest(
+        NativeRequest(fixture, context, {rows[duplicate]}));
+    Require(!refused.ok && !refused.diagnostics.empty() &&
+                refused.diagnostics.front().code == "CLI.CONSTRAINT_UNIQUE_VIOLATION",
+            "compound UUID committed duplicate was not rejected as a unique conflict");
+    Require(SelectCount(fixture, context) == values.size(), "compound UUID refused duplicate changed rows");
+    Rollback(context);
+  }
+}
+
 void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
   auto fixture = MakeFixture(unique ? "uuid_binary" : "uuid_binary_nonunique", 1650);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, 1660);
@@ -2746,6 +2892,7 @@ int main(int argc, char** argv) {
   TestMalformedInlineFixedTypedValueRefuses();
   TestNativeUuidBinaryIndexAndValues();
   TestNativeUuidBinaryIndexAndValues(false);
+  TestNativeUuidCompositeIndex();
   if (fixed_scalar_only) {
     std::cout << "native_fixed_scalar_bulk=passed uuid_values=137\n";
     return EXIT_SUCCESS;

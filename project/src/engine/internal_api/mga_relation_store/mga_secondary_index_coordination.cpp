@@ -371,7 +371,9 @@ MgaIndexedRowsLookupResult RefuseIndexedLookup(std::string detail,
   MgaIndexedRowsLookupResult result;
   result.ok = false;
   result.index_refused = true;
-  result.diagnostic = diagnostic.error ? std::move(diagnostic)
+  // A default diagnostic is error-shaped but carries no code. Do not let it
+  // erase the real refusal reason supplied by the index owner.
+  result.diagnostic = diagnostic.error && !diagnostic.code.empty() ? std::move(diagnostic)
                                        : MakeInvalidRequestDiagnostic(
                                              "mga.secondary_index_delta_overlay",
                                              std::move(detail));
@@ -1823,6 +1825,15 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     return result;
   }
 
+  // A compound index needs at least two key envelopes. Avoid an extra entry
+  // pass for ordinary scalar indexes; the owner still classifies directives.
+  if (selected->key_envelopes.size() > 1) {
+    for (const auto& entry : state.index_entries) {
+      if (entry.index_uuid != selected->index_uuid || entry.table_uuid != table_uuid) continue;
+      if (!CrudIndexEntryLogicalKeyValid(*selected, entry))
+        return RefuseIndexedLookup("compound_index_logical_key_framing_invalid");
+    }
+  }
   if (IsUniqueMgaIndex(*selected)) {
     result.rows = IndexedCrudRowsForPredicateForContext(
         state,

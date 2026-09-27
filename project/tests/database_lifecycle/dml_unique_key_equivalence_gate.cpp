@@ -5,6 +5,7 @@
 // separate real client/listener/parser/server differential gate.
 #include "dml/direct_bulk_append_cache.hpp"
 #include "dml/insert_batch.hpp"
+#include "crud_support/composite_logical_key.hpp"
 #include "index_key_encoding.hpp"
 #include "uuid.hpp"
 
@@ -43,6 +44,84 @@ std::string TypedKey(const api::EngineUuid& index_uuid, unsigned char value) {
   return key;
 }
 
+void CompositeBinaryKeys(const api::CrudIndexRecord& base) {
+  auto index = base;
+  index.creator_tx = 7;
+  index.column_name = "left";
+  index.key_envelopes = {"left", "right", "unique"};
+  const auto key = [&](const std::string& left, const std::string& right) {
+    const auto keys = api::CrudIndexKeysForValues(index, {{"left", left}, {"right", right}});
+    Require(keys.size() == 1, "compound logical key cardinality changed");
+    return keys.front();
+  };
+  Require(key("", "a") != key("a", ""), "empty leading compound component was lost");
+  Require(key("a\x1f", "b") != key("a", "\x1f" "b"),
+          "compound component delimiter aliased distinct tuples");
+  const auto empty = key("", "");
+  const auto empty_parts = api::DecodeCompositeLogicalKey(empty, 2);
+  Require(empty_parts && empty_parts->size() == 2 && (*empty_parts)[0].empty() &&
+              (*empty_parts)[1].empty(), "empty compound tuple did not round trip");
+  for (unsigned position = 0; position < 16; ++position) {
+    for (unsigned octet = 0; octet < 256; ++octet) {
+      std::string left(16, '\0'), right(16, static_cast<char>(0xff));
+      left[position] = static_cast<char>(octet);
+      right[15 - position] = static_cast<char>(octet);
+      const auto encoded = key(left, right);
+      const auto parts = api::DecodeCompositeLogicalKey(encoded, 2);
+      Require(parts && (*parts)[0] == left && (*parts)[1] == right,
+              "compound UUID projection changed arbitrary user bits");
+      Require(encoded.size() == 52 && encoded.substr(16, 16) == left &&
+                  encoded.substr(36, 16) == right,
+              "compound UUID components are not exact binary16");
+      for (std::size_t width = 0; width < encoded.size(); ++width)
+        Require(!api::DecodeCompositeLogicalKey(std::string_view(encoded).substr(0, width), 2),
+                "truncated compound key accepted");
+      Require(!api::DecodeCompositeLogicalKey(encoded, 3) &&
+                  !api::DecodeCompositeLogicalKey(encoded + "x", 2) &&
+                  !api::DecodeCompositeLogicalKey(left + '\x1f' + right, 2),
+              "compound key admitted wrong arity, trailing bytes, or legacy delimiters");
+
+      // Exercise the actual compound index consumers, including the separate
+      // IN-list fast path, against an explicit component-level row snapshot.
+      api::CrudState state;
+      state.transactions[7] = "active";
+      state.indexes.push_back(index);
+      api::CrudRowVersionRecord row;
+      row.creator_tx = 7;
+      row.table_uuid = index.table_uuid;
+      row.row_uuid = index.table_uuid;
+      row.version_uuid = index.index_uuid;
+      row.values = {{"left", left}, {"right", right}};
+      state.row_versions.push_back(row);
+      api::CrudIndexEntryRecord entry;
+      entry.creator_tx = 7;
+      entry.table_uuid = index.table_uuid;
+      entry.index_uuid = index.index_uuid;
+      entry.row_uuid = row.row_uuid;
+      entry.version_uuid = row.version_uuid;
+      entry.key_value = encoded;
+      state.index_entries.push_back(entry);
+      const auto uuid_value = [](const std::string& bytes) {
+        api::EngineTypedValue value;
+        value.descriptor.canonical_type_name = "uuid";
+        value.binary_value.assign(bytes.begin(), bytes.end());
+        return value;
+      };
+      for (const std::string kind : {"column_equals", "columns_all_equal", "column_in_list", "column_range"}) {
+        api::EnginePredicateEnvelope predicate;
+        predicate.predicate_kind = kind;
+        predicate.canonical_predicate_envelope = kind == "columns_all_equal" ? "left,right" : "left";
+        predicate.bound_values = {uuid_value(left)};
+        if (kind == "columns_all_equal") predicate.bound_values.push_back(uuid_value(right));
+        if (kind == "column_range") predicate.bound_values.push_back(uuid_value(left));
+        const auto rows = api::IndexedCrudRowsForPredicate(state, index.table_uuid, predicate, 7, 0, nullptr);
+        Require(rows.size() == 1 && rows.front().values == row.values,
+                "compound indexed predicate truncated or lost raw UUID components");
+      }
+    }
+  }
+}
+
 int main() {
   api::CrudIndexRecord index;
   index.index_uuid.bytes = {0x01, 0x9f, 0x30, 0, 0, 0, 0x70, 0,
@@ -54,6 +133,7 @@ int main() {
   index.unique = true;
   index.family = api::kCrudIndexFamilyBtree;
   index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  CompositeBinaryKeys(index);
   api::EngineRequestContext context;
   context.local_transaction_id = 7;
   api::MgaRelationReadView view;

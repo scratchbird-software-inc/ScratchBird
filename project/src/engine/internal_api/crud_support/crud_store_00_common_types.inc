@@ -10,6 +10,7 @@
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "crud_support/crud_store.hpp"
 #include "crud_support/native_value_payload.hpp"
+#include "crud_support/composite_logical_key.hpp"
 #include "catalog/binary_catalog_metadata.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <iterator>
@@ -42,7 +43,6 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 constexpr const char* kCrudMagic = "SBCRUD2";
-constexpr char kCompositeSeparator = '\x1f';
 constexpr const char* kCrudLargeValueLocatorPrefix = "SBCRLV02";
 constexpr std::size_t kCrudLargeValueChunkBytes = 2048;
 

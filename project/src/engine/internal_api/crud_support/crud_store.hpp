@@ -342,6 +342,8 @@ std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
                                                 const std::vector<std::pair<std::string, std::string>>& values);
 std::string CrudIndexEntryLogicalKey(const CrudIndexRecord& index,
                                      const CrudIndexEntryRecord& entry);
+bool CrudIndexEntryLogicalKeyValid(const CrudIndexRecord& index,
+                                    const CrudIndexEntryRecord& entry);
 bool CrudIndexEntryMatchesLogicalKey(const CrudIndexRecord& index,
                                      const CrudIndexEntryRecord& entry,
                                      const std::string& logical_key);

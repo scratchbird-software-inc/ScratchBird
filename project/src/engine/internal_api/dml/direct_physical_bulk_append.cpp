@@ -2261,6 +2261,51 @@ bool DirectBuildTypedSimpleIndexKey(
       *typed, encoded_key, stats);
 }
 
+bool DirectBuildTypedCompoundIndexKey(
+    const CrudIndexRecord& index, const EngineRowValue& input_row,
+    const InsertRowEncoderPlan& row_encoder_plan,
+    const DirectIndexDatatypeBindings& datatypes,
+    std::string* encoded_key, bool* contains_null,
+    DirectTypedIndexKeyStats* stats) {
+  namespace idx = scratchbird::core::index;
+  const auto columns = DirectIndexKeyColumns(index);
+  const auto family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
+  if (columns.size() < 2 || (!index.predicate_kind.empty() && index.predicate_kind != "where_true") ||
+      (family != kCrudIndexFamilyBtree && family != kCrudIndexFamilyHash && family != "unique_btree"))
+    return false;
+  std::vector<idx::IndexKeyEncodingComponent> components;
+  bool null_key = false;
+  for (const auto& column : columns) {
+    std::string target_type_name;
+    const auto* typed = DirectTypedValueForColumn(input_row, row_encoder_plan, column, &target_type_name);
+    const auto binding = datatypes.find(column);
+    if (!typed || binding == datatypes.end()) return false;
+    const auto type = static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code);
+    idx::IndexKeyEncodingComponent component;
+    component.ordinal = static_cast<std::uint32_t>(components.size());
+    component.type_descriptor_uuid = {UuidKind::object, binding->second.descriptor_uuid};
+    component.type_descriptor_epoch = binding->second.descriptor_generation;
+    component.kind = type == dt::CanonicalTypeId::character
+        ? idx::IndexKeyComponentKind::collation_key : idx::IndexKeyComponentKind::scalar;
+    component.is_null = typed->isSqlNull();
+    null_key = null_key || component.is_null;
+    if (!component.is_null && !DirectSortableTypedIndexPayload(type, *typed, &component.payload))
+      return false;
+    components.push_back(std::move(component));
+  }
+  const auto encoded = idx::EncodeIndexKey(components, {});
+  if (!encoded.ok()) return false;
+  encoded_key->assign(kDirectSbkoBinaryPrefix);
+  encoded_key->append(reinterpret_cast<const char*>(encoded.encoded.data()), encoded.encoded.size());
+  *contains_null = null_key;
+  if (stats) {
+    ++stats->typed_key_candidates;
+    ++stats->typed_key_encoded;
+    ++stats->sbkobin_keys;
+  }
+  return true;
+}
+
 DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
     const std::vector<CrudIndexRecord>& indexes,
     const DirectIndexDatatypeBindings& datatypes,
@@ -2328,12 +2373,17 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
       const auto& values = logical_value_batch[row_index];
       const std::string payload = CrudFieldValue(values, index.column_name);
       for (const auto& key : CrudIndexKeysForValues(index, values)) {
-        entries.push_back({key,
-                           payload,
+        std::string physical_key;
+        bool null_key = false;
+        const bool typed = row_encoder_plan && row_index < typed_input_rows.size() &&
+            DirectBuildTypedCompoundIndexKey(index, typed_input_rows[row_index],
+                *row_encoder_plan, datatypes, &physical_key, &null_key, typed_key_stats);
+        entries.push_back({typed ? std::move(physical_key) : key,
+                           typed ? key : payload,
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
                            static_cast<std::uint64_t>(row_index),
-                           DirectIndexValuesContainNull(index, values)});
+                           typed ? null_key : DirectIndexValuesContainNull(index, values)});
       }
     }
   }

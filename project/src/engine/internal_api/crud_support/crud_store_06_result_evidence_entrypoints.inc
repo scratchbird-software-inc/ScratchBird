@@ -66,8 +66,12 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
         return EntryKeyMatchesPredicate(*selected, entry, predicate);
       }
       const auto logical_key = CrudIndexEntryLogicalKey(*selected, entry);
-      const auto first_key = CrudIndexKeyColumns(*selected).size() == 1
-          ? logical_key : FirstCompositeComponent(logical_key);
+      const auto arity = CrudIndexKeyColumns(*selected).size();
+      const auto components = arity > 1
+          ? DecodeCompositeLogicalKey(logical_key, arity)
+          : std::optional<std::vector<std::string_view>>{{logical_key}};
+      if (!components || components->empty()) return false;
+      const std::string first_key(components->front());
       return in_list_key_values.find(first_key) !=
              in_list_key_values.end();
     };

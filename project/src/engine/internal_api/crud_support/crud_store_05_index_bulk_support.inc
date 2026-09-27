@@ -436,15 +436,23 @@ std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
 std::string CrudIndexEntryLogicalKey(const CrudIndexRecord& index,
                                      const CrudIndexEntryRecord& entry) {
   // The typed direct-ingest lane persists order-preserving key bytes as an
-  // SBKOBIN envelope.  For a simple scalar index its payload remains the
-  // canonical logical value used by row-version validation and predicates.
+  // SBKOBIN envelope. Its payload retains the logical value or binary-framed
+  // compound tuple used by row-version validation and predicates.
   // Keep the physical key for ordering, but compare the logical payload at
   // row/index consistency boundaries.
   const auto columns = CrudIndexKeyColumns(index);
-  if (columns.size() == 1 && entry.key_value.rfind("SBKOBIN:", 0) == 0) {
+  if (!columns.empty() && entry.key_value.rfind("SBKOBIN:", 0) == 0) {
     return entry.payload_value;
   }
   return entry.key_value;
+}
+
+bool CrudIndexEntryLogicalKeyValid(const CrudIndexRecord& index,
+                                    const CrudIndexEntryRecord& entry) {
+  const auto arity = CrudIndexKeyColumns(index).size();
+  if (arity <= 1) return true;
+  const auto logical = CrudIndexEntryLogicalKey(index, entry);
+  return DecodeCompositeLogicalKey(logical, arity).has_value();
 }
 
 bool CrudIndexEntryMatchesLogicalKey(const CrudIndexRecord& index,
