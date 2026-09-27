@@ -81,10 +81,14 @@ std::filesystem::path TestPath() {
 catalog_api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
-  create.database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, 1779810040000).value;
-  create.filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810040001).value;
+  const auto now = CurrentUnixMillis();
+  const auto database = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
+  const auto filespace = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now);
+  Require(database.ok() && filespace.ok(), "name registry database identity generation failed");
+  create.database_uuid = database.value;
+  create.filespace_uuid = filespace.value;
   create.page_size = 16384;
-  create.creation_unix_epoch_millis = 1779810040002;
+  create.creation_unix_epoch_millis = now;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
@@ -107,9 +111,9 @@ catalog_api::EngineRequestContext BaseContext(const std::filesystem::path& path,
   context.database_path = path.string();
   context.database_uuid = database_uuid;
   context.principal_uuid = std::move(principal);
-  const auto session = uuid::GenerateEngineIdentityV7(UuidKind::session, CurrentUnixMillis());
-  Require(session.ok(), "name registry session identity generation failed");
-  context.session_uuid = session.value.value;
+  const auto session = uuid::IssueRuntimeIdentityV7();
+  Require(session.has_value(), "name registry session identity generation failed");
+  context.session_uuid = *session;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = std::move(language);

@@ -560,8 +560,8 @@ void ExercisePlanCacheEpoch(TempFixture& fixture,
                   stats_snapshot));
   RequireEngineOk(miss, "CDP-024 optimizer plan cache miss request failed");
   RequirePlanCacheEvidence(miss, "miss");
-  Require(HasEvidence(miss, "optimizer_live_plan_cache_binding",
-                      fixture.table_uuid),
+  Require(HasEvidence(miss, "descriptor", fixture.table_uuid) &&
+              !HasEvidence(miss, "descriptor_unavailable", fixture.table_uuid),
           "CDP-024 plan cache did not bind descriptor UUID");
   Require(CountValue(miss) == "3",
           "CDP-024 optimizer plan cache miss changed query result");

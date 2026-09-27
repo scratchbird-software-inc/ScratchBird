@@ -9,7 +9,9 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "management/memory_management_api.hpp"
+#include "mga_relation_store/mga_metadata_record_codec.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +19,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -69,15 +72,135 @@ bool HasDiagnostic(const engine::EngineApiResult& result,
   return false;
 }
 
-std::string ReadText(const std::filesystem::path& path) {
+std::string ReadBytes(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   Require(static_cast<bool>(in), "failed to open expected memory catalog");
   return std::string(std::istreambuf_iterator<char>(in),
                      std::istreambuf_iterator<char>());
 }
 
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
+struct MemoryCatalogRecord {
+  std::vector<std::string> key;
+  std::vector<std::pair<std::string, std::string>> identities;
+  std::string attributes;
+};
+
+std::vector<MemoryCatalogRecord> ReadMemoryCatalog(
+    const std::filesystem::path& path, std::size_t expected_count) {
+  const auto bytes = ReadBytes(path);
+  std::vector<std::string> frames;
+  Require(engine::DecodeMgaMetadataStream(
+              {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()},
+              &frames),
+          "memory catalog binary stream framing/checksum invalid");
+  Require(frames.size() == expected_count, "memory catalog record count mismatch");
+  std::vector<MemoryCatalogRecord> records;
+  for (const auto& frame : frames) {
+    std::vector<std::string> fields;
+    Require(engine::DecodeMgaMetadataFields(frame, &fields) &&
+                fields.size() == 4 && fields[0] == "memory.catalog.v2",
+            "memory catalog binary record format mismatch");
+    MemoryCatalogRecord record;
+    Require(engine::DecodeMgaMetadataFields(fields[1], &record.key),
+            "memory catalog binary key invalid");
+    Require(engine::DecodeMetadataPairs(fields[2], &record.identities),
+            "memory catalog binary identity fields invalid");
+    record.attributes = std::move(fields[3]);
+    Require(record.attributes.find("_uuid=") == std::string::npos,
+            "memory catalog retained a textual UUID shadow");
+    records.push_back(std::move(record));
+  }
+  return records;
+}
+
+void RequireUuidBytes(std::string_view bytes, const engine::EngineUuid& expected) {
+  Require(bytes.size() == 16 &&
+              std::equal(expected.bytes.begin(), expected.bytes.end(),
+                         reinterpret_cast<const std::uint8_t*>(bytes.data())),
+          "memory catalog UUID must be exact binary16 with no text shadow");
+}
+
+void RequireIdentity(const MemoryCatalogRecord& record, std::string_view name,
+                     const engine::EngineUuid& expected) {
+  Require(record.identities.size() == 1 && record.identities[0].first == name,
+          "memory catalog identity field mismatch");
+  RequireUuidBytes(record.identities[0].second, expected);
+}
+
+void RequireAttribute(const MemoryCatalogRecord& record, std::string_view name,
+                      std::string_view expected) {
+  // Match complete fields, not a substring in an unrelated value or record.
+  std::string_view remaining = record.attributes;
+  std::size_t matches = 0;
+  while (!remaining.empty()) {
+    const auto delimiter = remaining.find('|');
+    const auto field = remaining.substr(0, delimiter);
+    const auto equals = field.find('=');
+    if (equals != std::string_view::npos && field.substr(0, equals) == name) {
+      ++matches;
+      Require(field.substr(equals + 1) == expected,
+              "memory catalog attribute value mismatch");
+    }
+    if (delimiter == std::string_view::npos) break;
+    remaining.remove_prefix(delimiter + 1);
+  }
+  Require(matches == 1, "memory catalog attribute missing or duplicated");
+}
+
+void RequireCatalogReplayAndCorruptionRefusal(
+    const std::filesystem::path& path,
+    const engine::EngineMemoryManagementRequest& request,
+    std::size_t expected_count) {
+  const auto original = ReadBytes(path);
+  const auto replay = engine::EnginePlanMemoryManagementOperation(request);
+  RequireOk(replay, "memory catalog binary replay/upsert failed");
+  Require(replay.durable_catalog_record_count == expected_count &&
+              ReadBytes(path) == original,
+          "memory catalog upsert duplicated or changed existing records");
+
+  auto write = [&](const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    Require(static_cast<bool>(out), "memory catalog corruption setup failed");
+  };
+  auto corrupt_checksum = original;
+  Require(!corrupt_checksum.empty(), "memory catalog cannot be empty");
+  corrupt_checksum.back() ^= 1;
+  std::vector<std::string> corruptions{
+           "format=ScratchBirdMemoryPolicyCatalog|version=1\n",
+           original.substr(0, original.size() - 1), original + '\0',
+           corrupt_checksum};
+  std::vector<std::string> frames, fields, key;
+  Require(engine::DecodeMgaMetadataStream(
+              {reinterpret_cast<const std::uint8_t*>(original.data()), original.size()},
+              &frames) && !frames.empty() &&
+              engine::DecodeMgaMetadataFields(frames.front(), &fields) &&
+              fields.size() == 4 && engine::DecodeMgaMetadataFields(fields[1], &key) &&
+              key.size() >= 3,
+          "memory catalog semantic corruption setup failed");
+  auto non_v7 = key[1];
+  Require(non_v7.size() == 16, "memory catalog original node UUID width invalid");
+  non_v7[6] = static_cast<char>((static_cast<unsigned char>(non_v7[6]) & 15) | 0x40);
+  for (const auto& invalid : std::vector<std::string>{
+           "019e4000-0000-7000-8000-000000000001", std::string(16, '\0'), non_v7}) {
+    key[1] = invalid;
+    fields[1] = engine::EncodeMgaMetadataFields(key);
+    auto corrupt = engine::EncodeMgaMetadataFields(fields);
+    for (std::size_t n = 1; n < frames.size(); ++n) corrupt += frames[n];
+    corruptions.push_back(std::move(corrupt));
+  }
+  for (const auto& corrupt : corruptions) {
+    write(corrupt);
+    const auto refused = engine::EnginePlanMemoryManagementOperation(request);
+    Require(!refused.ok &&
+                HasDiagnostic(refused, "MEMORY.CATALOG_READ_FAILED") &&
+                !refused.durable_state_changed && ReadBytes(path) == corrupt,
+            "memory catalog accepted or overwrote corrupt/legacy storage");
+  }
+  write(original);
+  RequireOk(engine::EnginePlanMemoryManagementOperation(request),
+            "memory catalog replay failed after restoring original bytes");
 }
 
 engine::EngineRequestContext Context(bool control = false,
@@ -471,21 +594,15 @@ void TestAutomationDurableReportCatalogPersistence() {
                       "sys.memory_report_catalog"),
           "memory report catalog evidence missing");
 
-  const auto catalog = ReadText(catalog_path);
-  Require(Contains(catalog, "format=ScratchBirdMemoryPolicyCatalog|version=1"),
-          "memory report catalog format header missing");
-  Require(Contains(catalog, "catalog=sys.memory_report_catalog"),
-          "memory report catalog name missing");
-  Require(Contains(catalog, "report_generation=3"),
-          "memory report generation missing");
-  Require(Contains(catalog, "recommendation_uuid=019e4000-0000-7000-8000-000000000020"),
-          "memory report recommendation UUID missing");
-  Require(Contains(catalog, "report_bounded=true"),
-          "memory report bounded evidence missing");
-  Require(Contains(catalog, "report_redaction_validated=true"),
-          "memory report redaction evidence missing");
-  Require(Contains(catalog, "metrics_contract_present=true"),
-          "memory report metrics-contract evidence missing");
+  const auto catalog = ReadMemoryCatalog(catalog_path, 1).front();
+  Require(catalog.key.size() == 3 && catalog.key[0] == "sys.memory_report_catalog" &&
+              catalog.key[2] == "3", "memory report catalog key mismatch");
+  RequireUuidBytes(catalog.key[1], request.context.database_uuid);
+  RequireIdentity(catalog, "recommendation_uuid", request.automation.recommendation_uuid);
+  RequireAttribute(catalog, "report_bounded", "true");
+  RequireAttribute(catalog, "report_redaction_validated", "true");
+  RequireAttribute(catalog, "metrics_contract_present", "true");
+  RequireCatalogReplayAndCorruptionRefusal(catalog_path, request, 1);
 }
 
 void TestAutomationSafeExecutorSurfaces() {
@@ -605,21 +722,17 @@ void TestObjectResidencyDurableCatalogPersistence() {
                       "persisted"),
           "memory residency restart warmup evidence missing");
 
-  const auto catalog = ReadText(catalog_path);
-  Require(Contains(catalog, "format=ScratchBirdMemoryPolicyCatalog|version=1"),
-          "memory residency catalog format header missing");
-  Require(Contains(catalog, "catalog=sys.memory_object_residency_policy"),
-          "memory residency catalog name missing");
-  Require(Contains(catalog, "object_uuid=019e4000-0000-7000-8000-000000000030"),
-          "memory residency object UUID missing");
-  Require(Contains(catalog, "residency_class=warm_on_open"),
-          "memory residency class missing");
-  Require(Contains(catalog, "page_types=row_data,index_btree_leaf"),
-          "memory residency page-type scope missing");
-  Require(Contains(catalog, "restart_warmup_manifest_persisted=true"),
-          "memory residency restart warmup persistence missing");
-  Require(Contains(catalog, "heat_history_generation=44"),
-          "memory residency heat history generation missing");
+  const auto catalog = ReadMemoryCatalog(catalog_path, 1).front();
+  Require(catalog.key.size() == 3 && catalog.key[0] == "sys.memory_object_residency_policy",
+          "memory residency catalog key mismatch");
+  RequireUuidBytes(catalog.key[1], request.context.database_uuid);
+  RequireUuidBytes(catalog.key[2], request.object_residency.object_uuid);
+  RequireIdentity(catalog, "filespace_uuid", request.object_residency.filespace_uuid);
+  RequireAttribute(catalog, "residency_class", "warm_on_open");
+  RequireAttribute(catalog, "page_types", "row_data,index_btree_leaf");
+  RequireAttribute(catalog, "restart_warmup_manifest_persisted", "true");
+  RequireAttribute(catalog, "heat_history_generation", "44");
+  RequireCatalogReplayAndCorruptionRefusal(catalog_path, request, 1);
 }
 
 void TestRateLimitDescriptorSurfaces() {
@@ -680,19 +793,15 @@ void TestRateLimitDurableCatalogPersistence() {
                       "sys.memory_rate_limit_policy"),
           "memory rate-limit catalog evidence missing");
 
-  const auto catalog = ReadText(catalog_path);
-  Require(Contains(catalog, "format=ScratchBirdMemoryPolicyCatalog|version=1"),
-          "memory rate-limit catalog format header missing");
-  Require(Contains(catalog, "catalog=sys.memory_rate_limit_policy"),
-          "memory rate-limit catalog name missing");
-  Require(Contains(catalog, "limit_class=cache_flush_abuse"),
-          "memory rate-limit class missing");
-  Require(Contains(catalog, "action=throttle"),
-          "memory rate-limit action missing");
-  Require(Contains(catalog, "limit_per_window=4"),
-          "memory rate-limit window count missing");
-  Require(Contains(catalog, "window_seconds=60"),
-          "memory rate-limit window seconds missing");
+  const auto catalog = ReadMemoryCatalog(catalog_path, 1).front();
+  Require(catalog.key.size() == 3 && catalog.key[0] == "sys.memory_rate_limit_policy" &&
+              catalog.key[2] == "cache_flush_abuse", "memory rate-limit catalog key mismatch");
+  RequireUuidBytes(catalog.key[1], request.context.database_uuid);
+  Require(catalog.identities.empty(), "memory rate-limit has unexpected identity fields");
+  RequireAttribute(catalog, "action", "throttle");
+  RequireAttribute(catalog, "limit_per_window", "4");
+  RequireAttribute(catalog, "window_seconds", "60");
+  RequireCatalogReplayAndCorruptionRefusal(catalog_path, request, 1);
 }
 
 void TestRateLimitLiveExecutorSurfaces() {
@@ -908,23 +1017,29 @@ void TestPolicyMigrationDurableCatalogPersistence() {
   Require(downgrade_result.memory_policy_schema_migration_persisted,
           "memory downgrade compatibility record was not persisted");
 
-  const auto catalog = ReadText(catalog_path);
-  Require(Contains(catalog, "format=ScratchBirdMemoryPolicyCatalog|version=1"),
-          "memory policy migration catalog format header missing");
-  Require(Contains(catalog, "catalog=sys.memory_policy_migration_catalog"),
-          "memory policy migration catalog name missing");
-  Require(Contains(catalog, "profile_uuid=019e4000-0000-7000-8000-000000000040"),
-          "memory policy migration profile UUID missing");
-  Require(Contains(catalog, "policy_uuid=019e4000-0000-7000-8000-000000000041"),
-          "memory policy migration policy UUID missing");
-  Require(Contains(catalog, "target_policy_version=3"),
-          "memory policy migration target version missing");
-  Require(Contains(catalog, "derivative_state_migration_persisted=true"),
-          "memory derivative migration persistence missing");
-  Require(Contains(catalog, "recovery_checkpoint_persisted=true"),
-          "memory policy migration recovery checkpoint missing");
-  Require(Contains(catalog, "downgrade_compatibility_recorded=true"),
-          "memory downgrade compatibility record missing");
+  const auto catalog = ReadMemoryCatalog(catalog_path, 2);
+  std::size_t upgrades = 0, downgrades = 0;
+  for (const auto& record : catalog) {
+    Require(record.key.size() == 5 && record.key[0] == "sys.memory_policy_migration_catalog",
+            "memory policy migration catalog key mismatch");
+    RequireUuidBytes(record.key[1], request.context.database_uuid);
+    RequireUuidBytes(record.key[2], request.migration.policy_uuid);
+    RequireIdentity(record, "profile_uuid", request.migration.profile_uuid);
+    RequireAttribute(record, "recovery_checkpoint_persisted", "true");
+    if (record.key[3] == "3") {
+      ++upgrades;
+      Require(record.key[4] == "3", "memory migration target schema version mismatch");
+      RequireAttribute(record, "derivative_state_migration_persisted", "true");
+      RequireAttribute(record, "downgrade_compatibility_recorded", "false");
+    } else {
+      ++downgrades;
+      Require(record.key[3] == "2" && record.key[4] == "2",
+              "memory downgrade target versions mismatch");
+      RequireAttribute(record, "downgrade_compatibility_recorded", "true");
+    }
+  }
+  Require(upgrades == 1 && downgrades == 1, "memory migration records missing or duplicated");
+  RequireCatalogReplayAndCorruptionRefusal(catalog_path, request, 2);
 }
 
 void TestCommonAuthorityAndTransactionRefusals() {

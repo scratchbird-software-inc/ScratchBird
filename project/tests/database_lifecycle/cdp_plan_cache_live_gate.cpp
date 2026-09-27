@@ -292,7 +292,8 @@ int main() {
   RequireOk(first, "first cached plan request failed");
   Require(HasEvidence(first, "optimizer_live_plan_cache", "miss"),
           "first cached plan request did not miss");
-  Require(HasEvidence(first, "optimizer_live_plan_cache_binding", table_uuid),
+  Require(HasEvidence(first, "descriptor", table_uuid) &&
+              !HasEvidence(first, "descriptor_unavailable", table_uuid),
           "plan cache did not bind through descriptor UUID");
   Require(CountValue(first) == "3", "first cached plan changed query result");
 
