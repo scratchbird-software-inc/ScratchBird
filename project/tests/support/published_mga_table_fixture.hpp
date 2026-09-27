@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "../../src/engine/internal_api/catalog/catalog_object_lifecycle.hpp"
+#include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 #include "../../src/engine/internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "../../src/engine/internal_api/mga_relation_store/mga_relation_store.hpp"
 #include "../../src/core/datatypes/datatype_catalog_manifest.hpp"
@@ -64,6 +65,24 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
     column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
     column.descriptor.type_uuid = binding.row.type_uuid;
     column.descriptor.encoded_descriptor = table.columns[i].second;
+    api::CatalogColumnMetadata attributes;
+    if (!api::AdmitCatalogColumnMetadata(table.columns[i].second, &attributes))
+      throw std::invalid_argument("fixture column metadata is invalid");
+    const auto boolean_attribute = [&](const char* key) -> std::optional<bool> {
+      const auto it = attributes.text.find(key);
+      if (it == attributes.text.end()) return std::nullopt;
+      if (it->second == "true") return true;
+      if (it->second == "false") return false;
+      throw std::invalid_argument("fixture column boolean attribute is invalid");
+    };
+    const auto nullable = boolean_attribute("nullable");
+    const auto not_null = boolean_attribute("not_null");
+    const bool primary_key = boolean_attribute("primary_key").value_or(false) ||
+        boolean_attribute("pk").value_or(false);
+    if ((nullable && not_null && *nullable == *not_null) ||
+        (primary_key && ((nullable && *nullable) || (not_null && !*not_null))))
+      throw std::invalid_argument("fixture column nullability attributes conflict");
+    column.nullable = primary_key ? false : nullable.value_or(!not_null.value_or(false));
     table.bound_columns.push_back(std::move(column));
   }
   api::EngineCatalogCreateObjectRequest request;

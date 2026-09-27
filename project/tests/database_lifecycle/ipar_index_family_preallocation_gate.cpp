@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +10,7 @@
 
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/insert_api.hpp"
 #include "index_family_registry.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -96,12 +98,15 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u64 salt = 0;
   api::EngineRequestContext context;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -183,15 +188,10 @@ api::CrudIndexRecord Index(const Fixture& fixture, const FamilyCase& family) {
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -233,8 +233,7 @@ Fixture MakeFixture(const FamilyCase& family, platform::u64 salt) {
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = 4096;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -244,17 +243,28 @@ Fixture MakeFixture(const FamilyCase& family, platform::u64 salt) {
   Require(created.ok(), "IPAR-P4-02 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.context = Begin(fixture, "ipar-p4-02-metadata-" + family.label);
 
-  const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
+  const auto table_record = Table(fixture);
+  const auto table = scratchbird::tests::PublishMgaTableFixture(
+      fixture.context, table_record,
+      std::vector<std::string>(table_record.columns.size(), "character"), {Index(fixture, family)});
   Require(!table.error, "IPAR-P4-02 table metadata append failed");
   const auto index = Index(fixture, family);
   const auto metadata = api::AppendMgaIndexMetadata(fixture.context, index);
   Require(!metadata.error, "IPAR-P4-02 index metadata append failed");
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(fixture.context, fixture.table_uuid);
+  Require(descriptor.ok && descriptor.descriptor.columns.size() == table_record.columns.size() &&
+              !descriptor.descriptor.columns.front().nullable &&
+              descriptor.descriptor.indexes.size() == 1 &&
+              descriptor.descriptor.indexes.front().index_uuid == fixture.index_uuid,
+          "IPAR-P4-02 native column nullability or index binding did not persist");
   Require(!api::CrudIndexKeysForValues(index, api::RowValuePairs(Row(family.label, 1))).empty(),
           "IPAR-P4-02 index family produced no keys for the proof row");
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.context);
   return fixture;
 }
 
@@ -336,11 +346,11 @@ void RequireIndexPreallocationEvidence(
   Require(!family.label.empty(), "IPAR-P4-02 family label missing");
 }
 
-api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(Fixture& fixture,
                                            const FamilyCase& family,
                                            std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = "ipar-p4-02-insert-" + family.label;
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -582,6 +592,8 @@ void AssertNoAdvertisedUnsupportedCompleteFamilies(
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "ipar-index-family-preallocation-native-fixture");
   const platform::u64 salt = TimeSeed();
   std::set<idx::IndexFamily> exercised;
   const auto families = FamilyCases();

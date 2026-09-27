@@ -1,4 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +10,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "ddl/create_api.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -76,6 +80,8 @@ struct Fixture {
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u32 page_size = 0;
@@ -83,6 +89,7 @@ struct Fixture {
   api::EngineRequestContext context;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -122,36 +129,16 @@ api::CrudTableRecord Table(const Fixture& fixture) {
   table.creator_tx = fixture.context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "ipar_page_size_preallocation";
-  table.columns.push_back({"id", "canonical=character;primary_key=true;not_null=true"});
-  table.columns.push_back({"note", "canonical=character"});
+  table.columns.push_back({"id", "type=text;primary_key=true;nullable=false"});
+  table.columns.push_back({"note", "type=text"});
   return table;
 }
 
-api::CrudIndexRecord UniqueIdIndex(const Fixture& fixture) {
-  api::CrudIndexRecord index;
-  index.creator_tx = fixture.context.local_transaction_id;
-  index.index_uuid = fixture.index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "id";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.default_name = "ipar_page_size_preallocation_id_pk";
-  index.unique = true;
-  index.key_envelopes.push_back("id");
-  index.key_envelopes.push_back("unique");
-  return index;
-}
-
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -194,8 +181,7 @@ Fixture MakeFixture(platform::u32 page_size, platform::u64 salt) {
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
   create.page_size = page_size;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -207,14 +193,54 @@ Fixture MakeFixture(platform::u32 page_size, platform::u64 salt) {
           "IPAR preallocation database page size drifted");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
-  fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
   fixture.context = Begin(fixture, "ipar-page-size-preallocation-metadata");
 
-  const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
-  Require(!table.error, "IPAR preallocation table metadata append failed");
-  const auto index = api::AppendMgaIndexMetadata(fixture.context, UniqueIdIndex(fixture));
-  Require(!index.error, "IPAR preallocation index metadata append failed");
+  api::EngineCreateSchemaRequest schema;
+  schema.context = fixture.context;
+  schema.target_object.uuid = NewIdentity(platform::UuidKind::object, salt + 12);
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "ipar_preallocation", true});
+  RequireOk(api::EngineCreateSchema(schema), "IPAR preallocation schema publication failed");
+  fixture.context.current_schema_uuid = schema.target_object.uuid;
+  api::EngineCreateTableRequest table;
+  table.context = fixture.context;
+  table.target_schema.uuid = fixture.context.current_schema_uuid;
+  table.target_schema.object_kind = "schema";
+  table.requested_table_uuid = fixture.table_uuid;
+  table.table_names.push_back({"en", "primary", "", "ipar_page_size_preallocation", true});
+  for (const auto& [name, metadata] : Table(fixture).columns) {
+    api::EngineColumnDefinition column;
+    column.names.push_back({"en", "primary", "", name, true});
+    column.ordinal = table.table_columns.size();
+    column.nullable = name != "id";
+    column.descriptor.descriptor_kind = "scalar";
+    column.descriptor.canonical_type_name = "text";
+    column.descriptor.encoded_descriptor = metadata;
+    scratchbird::tests::BindFixtureColumnDatatype(
+        fixture.context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
+    table.table_columns.push_back(std::move(column));
+  }
+  // Publish the PRIMARY KEY through DDL so its support UUID and constraint
+  // binding are real catalog authority, not a disconnected metadata index.
+  RequireOk(api::EngineCreateTable(table), "IPAR preallocation table publication failed");
+  const auto stored = api::LoadMgaRelationStoreState(fixture.context);
+  Require(stored.ok, "IPAR preallocation metadata readback failed");
+  const auto indexes = api::VisibleCrudIndexesForTable(
+      stored.state.relation_metadata, fixture.table_uuid, fixture.context.local_transaction_id);
+  Require(indexes.size() == 1 && !indexes.front().index_uuid.is_nil() &&
+              indexes.front().unique && indexes.front().column_name == "id" &&
+              indexes.front().key_envelopes == std::vector<std::string>{"id", "primary_key"},
+          "IPAR preallocation unique backing index did not persist exactly");
+  fixture.index_uuid = indexes.front().index_uuid;
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(fixture.context, fixture.table_uuid);
+  Require(descriptor.ok && descriptor.descriptor.columns.size() == 2 &&
+              !descriptor.descriptor.columns.front().nullable &&
+              descriptor.descriptor.indexes.size() == 1 &&
+              descriptor.descriptor.indexes.front().index_uuid == fixture.index_uuid,
+          "IPAR primary-key nullability or support index binding did not persist");
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.context);
   return fixture;
 }
 
@@ -381,11 +407,11 @@ void RequireCopyIngestionSizeHintEvidence(
           "IPAR COPY ingestion returned before flushing writer tasks");
 }
 
-api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(Fixture& fixture,
                                            std::string request_id,
                                            std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -398,12 +424,12 @@ api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
   return request;
 }
 
-api::EngineExecuteImportRowsRequest ImportRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> ImportRequest(
     Fixture& fixture,
     std::string request_id,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteImportRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteImportRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
@@ -459,6 +485,8 @@ void VerifyPageSize(platform::u32 page_size, platform::u64 salt) {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "ipar-page-size-preallocation-native-fixture");
   const platform::u64 salt = TimeSeed();
   const std::vector<platform::u32> page_sizes = {
       4096, 8192, 16384, 32768, 65536, 131072};
