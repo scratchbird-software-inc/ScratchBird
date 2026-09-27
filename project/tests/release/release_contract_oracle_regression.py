@@ -28,6 +28,38 @@ def load(filename):
 
 
 class ReleaseContractOracles(unittest.TestCase):
+    def test_generated_fixture_manifest_rejects_content_and_membership_drift(self):
+        gate = load("public_generated_source_provenance.py")
+        manifest = PROJECT / gate.DETERMINISTIC_MANIFEST
+        expected = gate.read_manifest(manifest)
+        changed = [dict(row) for row in expected]
+        changed[0]['sha256'] = '0' * 64
+        for actual in (changed, expected[1:]):
+            with self.subTest(count=len(actual)), patch.object(gate, 'generated_artifact_rows', return_value=actual):
+                self.refusal(lambda: gate.check_manifest_drift(ROOT, manifest),
+                             'deterministic_artifact_manifest_drift')
+
+    def test_diagnostic_matrix_uses_current_cluster_absence_contract(self):
+        gate = load("public_diagnostic_matrix_generator.py")
+        rows = gate.validate_rows(PROJECT)
+        row = next(r for r in rows if r['area'] == 'cluster_boundary')
+        self.assertEqual(row['code'], 'PROCESS.CLUSTER_PATH_ABSENT')
+        self.assertEqual(row['message_key'], 'PROCESS.CLUSTER_PATH_ABSENT.safe')
+        self.assertEqual(row['compatibility_status'], 'unsupported_stable')
+        actual = gate.require_file
+        # Both the production definition and its separate public test remain
+        # required. An old refusal must not satisfy the current source oracle.
+        for relative in (row['source_path'], row['public_test_path']):
+            def obsolete(project_root, path):
+                text = actual(project_root, path)
+                if path == relative:
+                    text = text.replace('PROCESS.CLUSTER_PATH_ABSENT',
+                                        'SBLR.CLUSTER.SUPPORT_NOT_ENABLED')
+                return text
+            with self.subTest(path=relative), patch.object(gate, 'require_file', obsolete):
+                self.refusal(lambda: gate.validate_rows(PROJECT),
+                             'missing_token:' + relative + ':PROCESS.CLUSTER_PATH_ABSENT')
+
     def refusal(self, callback, reason):
         stream = io.StringIO()
         with contextlib.redirect_stderr(stream), self.assertRaises(SystemExit) as raised:
