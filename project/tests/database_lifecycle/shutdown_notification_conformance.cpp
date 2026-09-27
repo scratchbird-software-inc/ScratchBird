@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "manager_control.hpp"
 #include "sbps.hpp"
 #include "uuid.hpp"
@@ -23,6 +25,7 @@
 namespace {
 
 namespace db = scratchbird::storage::database;
+namespace api = scratchbird::engine::internal_api;
 namespace uuid = scratchbird::core::uuid;
 namespace sbps = scratchbird::server::sbps;
 using scratchbird::core::platform::UuidKind;
@@ -71,6 +74,8 @@ std::filesystem::path MakeTempDir() {
 struct Fixture {
   std::filesystem::path path;
   scratchbird::core::platform::Uuid database_uuid;
+  api::EngineRequestContext owner_context;
+  api::EngineUuid other_principal_uuid;
 };
 
 Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t now_millis) {
@@ -80,14 +85,33 @@ Fixture CreateActiveDatabase(const std::filesystem::path& path, std::uint64_t no
   create.filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now_millis + 1).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = now_millis + 2;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-011 notification database create failed");
   const auto opened = db::OpenDatabaseFile({path.string(), false, false, false});
   Require(opened.ok(), "DBLC-011 notification database open failed");
-  return Fixture{path, create.database_uuid.value};
+  Fixture fixture{path, create.database_uuid.value};
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  const auto transaction =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(path, "shutdown identities");
+  api::EngineSecurityCreatePrincipalRequest principal;
+  principal.context = fixture.owner_context;
+  principal.context.transaction_uuid = transaction.transaction_uuid;
+  principal.context.local_transaction_id = transaction.local_transaction_id;
+  principal.context.snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  principal.principal_uuid = uuid::GenerateEngineIdentityV7(UuidKind::object, now_millis + 3).value.value;
+  principal.principal_name = "alice";
+  principal.credential_fingerprint = create.bootstrap_credential_fingerprint;
+  const auto created_principal = api::EngineSecurityCreatePrincipal(principal);
+  for (const auto& d : created_principal.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
+  Require(created_principal.ok && created_principal.principal_created,
+          "durable shutdown second principal creation failed");
+  fixture.other_principal_uuid = principal.principal_uuid;
+  scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(transaction);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  return fixture;
 }
 
 ServerBootstrapConfig Config(const Fixture& fixture) {
@@ -166,17 +190,17 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
   session.connection_uuid = sbps::MakeUuidV7Bytes();
   session.session_uuid = sbps::MakeUuidV7Bytes();
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
-  session.principal_claim = std::string(principal);
-  session.embedded_in_process = true;
+  session.principal_claim = principal == "admin" ? "fixture_owner" : std::string(principal);
+  session.embedded_in_process = false;
   session.database_path = fixture.path.string();
   session.database_uuid = fixture.database_uuid;
-  session.effective_user_uuid = sbps::MakeUuidV7Bytes();
+  session.effective_user_uuid = (principal == "admin"
+      ? fixture.owner_context.principal_uuid : fixture.other_principal_uuid).bytes;
+  session.principal_uuid = session.effective_user_uuid;
+  session.security_epoch = fixture.owner_context.security_epoch;
+  session.catalog_generation = fixture.owner_context.catalog_generation_id;
+  session.policy_generation = fixture.owner_context.authorization_context.policy_epoch;
   session.local_transaction_id = local_transaction_id;
-  if (principal == "admin") {
-    session.engine_authorization_trace_tags = {
-        "security.fixture_trace_authority",
-        "right:OBS_MANAGEMENT_CONTROL"};
-  }
   registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   registry->auth_contexts_by_uuid[scratchbird::core::platform::Uuid{session.auth_context_uuid}] = session;
   return session.session_uuid;
@@ -225,7 +249,18 @@ void TestManagementShutdownNotifiesAndStopsOnlyTargetDatabase(const std::filesys
   ParserPackageRegistry parser_registry;
   ServerSessionRegistry registry;
   const auto admin_uuid = AddSession(&registry, fixture, "admin");
-  (void)AddSession(&registry, fixture, "alice");
+  const auto alice_uuid = AddSession(&registry, fixture, "alice");
+  // Inject corrupt cross-node registry state without opening a second node.
+  // Its identical path must not make it a member of this shutdown scope.
+  auto foreign = registry.sessions_by_uuid.at(scratchbird::core::platform::Uuid{alice_uuid});
+  foreign.session_uuid = sbps::MakeUuidV7Bytes();
+  foreign.connection_uuid = sbps::MakeUuidV7Bytes();
+  foreign.auth_context_uuid = sbps::MakeUuidV7Bytes();
+  foreign.database_uuid.bytes[15] ^= 0x80;
+  const auto foreign_session_uuid = scratchbird::core::platform::Uuid{foreign.session_uuid};
+  registry.sessions_by_uuid.emplace(foreign_session_uuid, foreign);
+  registry.auth_contexts_by_uuid.emplace(
+      scratchbird::core::platform::Uuid{foreign.auth_context_uuid}, foreign);
 
   auto context = Context(&config,
                          &artifacts,
@@ -239,6 +274,10 @@ void TestManagementShutdownNotifiesAndStopsOnlyTargetDatabase(const std::filesys
       ManagementFrame(admin_uuid,
                       "shutdown_database",
                       "acknowledgements_satisfied:true;drain_complete:true"));
+  for (const auto& d : response.diagnostics) {
+    std::cerr << d.code << ':' << d.safe_message << '\n';
+    for (const auto& field : d.fields) std::cerr << field.key << '=' << field.value << '\n';
+  }
   Require(response.accepted && !response.error, "management shutdown route failed");
   const std::string payload(response.payload.begin(), response.payload.end());
   Require(Contains(payload, "\"outcome\":\"shutdown_clean\""),
@@ -246,7 +285,12 @@ void TestManagementShutdownNotifiesAndStopsOnlyTargetDatabase(const std::filesys
   Require(Contains(payload, "\"shutdown_notification_count\":6"),
           "shutdown route payload missing target notification count");
   Require(coordinator.state == "closed_clean", "coordinator did not close target database cleanly");
-  Require(registry.sessions_by_uuid.empty(), "shutdown did not close target database sessions");
+  Require(registry.sessions_by_uuid.size() == 1 &&
+              registry.sessions_by_uuid.contains(foreign_session_uuid),
+          "shutdown did not close exactly its target database sessions");
+  Require(registry.sessions_by_uuid.at(foreign_session_uuid).database_uuid == foreign.database_uuid &&
+              registry.auth_contexts_by_uuid.contains(scratchbird::core::platform::Uuid{foreign.auth_context_uuid}),
+          "equal-path foreign session was rebound or disconnected");
   Require(listeners.profiles[0].state == "stopped", "target listener was not stopped");
   Require(listeners.profiles[1].state == "running", "unrelated listener was incorrectly stopped");
 }
@@ -319,6 +363,8 @@ void TestParserFallbackAvailableClosesThroughEngineVisibleAssociation(const std:
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "database_lifecycle_shutdown_notification_conformance");
   const auto temp_dir = MakeTempDir();
   TestManagementShutdownNotifiesAndStopsOnlyTargetDatabase(temp_dir);
   TestParserFallbackRefusesMissingAssociation(temp_dir);
