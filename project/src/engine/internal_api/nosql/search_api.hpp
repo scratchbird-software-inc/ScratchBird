@@ -159,6 +159,7 @@ struct EngineBoundSearchReadResultV1 {
 // the provider boundary. It is catalog-only and owns no MGA row visibility or
 // transaction-finality decisions.
 bool ExactBoundSearchStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor,
     const EngineUuid& collection_uuid);
 

@@ -623,6 +623,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   target_compile_features(qow_ces05_search_execution_test_v1 PRIVATE
     cxx_std_23)
   target_link_libraries(qow_ces05_search_execution_test_v1 PRIVATE
+    sb_engine
     sb_engine_sblr
     sb_core_hash
     sb_core_uuid
@@ -641,6 +642,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   target_compile_definitions(qow_ces05_search_production_route_test_v1 PRIVATE
     SB_CES05_SEARCH_PRODUCTION_QUERY_ROUTE=1)
   target_link_libraries(qow_ces05_search_production_route_test_v1 PRIVATE
+    sb_engine
     sb_engine_sblr
     sb_core_hash
     sb_core_uuid
@@ -1096,6 +1098,7 @@ add_executable(qow_ces05_search_execution_test_v1
   qow_ces05_search_execution.cpp)
 target_compile_features(qow_ces05_search_execution_test_v1 PRIVATE cxx_std_23)
 target_link_libraries(qow_ces05_search_execution_test_v1 PRIVATE
+  sb_engine
   sb_engine_sblr
   sb_core_hash
   sb_core_uuid
@@ -1114,6 +1117,7 @@ target_compile_features(qow_ces05_search_production_route_test_v1 PRIVATE
 target_compile_definitions(qow_ces05_search_production_route_test_v1 PRIVATE
   SB_CES05_SEARCH_PRODUCTION_QUERY_ROUTE=1)
 target_link_libraries(qow_ces05_search_production_route_test_v1 PRIVATE
+  sb_engine
   sb_engine_sblr
   sb_core_hash
   sb_core_uuid

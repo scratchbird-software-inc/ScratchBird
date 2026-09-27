@@ -1788,6 +1788,17 @@ GenerationRecordKey GenerationKey(const EngineNoSqlProviderGenerationMetadata& m
   return {metadata.family, metadata.provider_id, metadata.collection_uuid};
 }
 
+bool SamePublishedProvider(const EngineNoSqlProviderGenerationMetadata& left,
+                           const EngineNoSqlProviderGenerationMetadata& right) {
+  if (left.family != right.family || left.collection_uuid != right.collection_uuid)
+    return false;
+  // Native provider identity is independent of its implementation/display label.
+  // The legacy label-only API cannot replace a natively identified provider.
+  if (!left.provider_uuid.is_nil() || !right.provider_uuid.is_nil())
+    return left.provider_uuid == right.provider_uuid;
+  return left.provider_id == right.provider_id;
+}
+
 bool BoundToContext(const EngineRequestContext& context,
                     const EngineNoSqlProviderGenerationMetadata& metadata) {
   return IsValidUuid(context.database_uuid) && IsValidUuid(metadata.database_uuid) &&
@@ -2251,8 +2262,7 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
       writable.family == EngineNoSqlProviderFamily::kSearch) {
     std::size_t matching = 0;
     for (const auto& existing : generations) {
-      if (!Matches(existing, writable.family, writable.provider_id,
-                   writable.collection_uuid)) {
+      if (!SamePublishedProvider(existing, writable)) {
         continue;
       }
       ++matching;
@@ -2275,10 +2285,7 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
       std::remove_if(generations.begin(),
                      generations.end(),
                      [&](const EngineNoSqlProviderGenerationMetadata& existing) {
-                       return Matches(existing,
-                                      writable.family,
-                                      writable.provider_id,
-                                      writable.collection_uuid);
+                       return SamePublishedProvider(existing, writable);
                      }),
       generations.end());
   generations.push_back(writable);
@@ -2306,6 +2313,9 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
+  if (std::ranges::any_of(loaded, [](const auto& item) { return !item.persistence_valid; }))
+    return Failure(context, "nosql.provider_generation.load",
+                   kNoSqlProviderGenerationMetadataMissing);
   std::size_t matching_vector_carriers = 0;
   std::size_t matching_search_carriers = 0;
   for (const auto& metadata : loaded) {
@@ -2364,6 +2374,9 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
+  if (std::ranges::any_of(loaded, [](const auto& item) { return !item.persistence_valid; }))
+    return Failure(context, "nosql.provider_generation.load",
+                   kNoSqlProviderGenerationMetadataMissing);
   std::size_t matching_vector_carriers = 0;
   std::size_t matching_search_carriers = 0;
   for (const auto& metadata : loaded) {

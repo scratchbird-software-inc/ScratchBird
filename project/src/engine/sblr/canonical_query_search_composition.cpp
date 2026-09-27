@@ -639,7 +639,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent search relation descriptor is invalid");
   }
-  if (!api::ExactBoundSearchStorageDescriptorV1(persisted_relation,
+  if (!api::ExactBoundSearchStorageDescriptorV1(input.context, persisted_relation,
                                                  object_uuid)) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                   "persistent search relation type binding is not exact");
@@ -755,12 +755,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       owned_identities[6];
   const auto resource_contract_uuid =
       owned_identities[7];
-  const auto suffix = std::to_string(source->node_id) +
-                      ".physical_search_rank_scan_v1";
-  const auto alternative_uuid =
-      owned_identities[8];
-  const auto physical_cost_uuid =
-      owned_identities[9];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -1816,10 +1810,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
           "physical_search_rank_scan_v1" ||
       search_physical->executor_capability_uuid !=
           capability_uuid ||
-      search_physical->selected_alternative_uuid !=
-          alternative_uuid ||
-      search_physical->cost_vector_uuid !=
-          physical_cost_uuid) {
+      !core::uuid::IsEngineIdentityUuid(search_physical->selected_alternative_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(search_physical->cost_vector_uuid) ||
+      search_physical->retained_cost.cost_vector_uuid != search_physical->cost_vector_uuid) {
     return refuse(
         physical.diagnostic_id.empty()
             ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
@@ -1858,7 +1851,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
       persisted_relation.descriptor_uuid;
   search_request.expected_descriptor_generation =
       persisted_relation.descriptor_generation;
-  search_request.selected_alternative_uuid = alternative_uuid;
+  search_request.selected_alternative_uuid = search_physical->selected_alternative_uuid;
   search_request.selected_provider_uuid = provider_uuid;
   search_request.selected_capability_uuid = capability_uuid;
   search_request.selected_implementation_id = "physical_search_rank_scan_v1";
@@ -1906,7 +1899,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(
   source_input.operation_id = planning.operation_id;
   source_input.object_uuid = object_uuid;
   source_input.physical_node_id = search_physical->physical_node_id;
-  source_input.selected_alternative_uuid = alternative_uuid;
+  source_input.selected_alternative_uuid = search_physical->selected_alternative_uuid;
   source_input.capability_uuid = capability_uuid;
   source_input.provider_uuid = provider_uuid;
   source_input.provider_generation = persisted_relation.descriptor_generation;
