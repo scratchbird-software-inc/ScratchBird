@@ -10,6 +10,7 @@
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
+#include "builtin_function_identity_fixture.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "rendering/rendering.hpp"
@@ -149,12 +150,14 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline(std::string_view sql) {
+PipelineArtifacts RunPipeline(std::string_view sql, bool bind_functions = true) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
   artifacts.cst = BuildCst(std::string(sql));
   artifacts.ast = BuildAst(artifacts.cst);
-  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session);
+  artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session,
+      {}, nullptr, bind_functions ? scratchbird::tests::FixtureCallableBindings()
+                                  : std::vector<scratchbird::wire::BuiltinFunctionIdentity>{});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
@@ -211,6 +214,10 @@ void RequireExactLowering(const JsonCase& test_case,
   if (!test_case.function_id.empty()) {
     Require(Contains(artifacts.envelope.payload, test_case.function_id),
             "SBSFC-061 payload missing JSON function id");
+    Require(scratchbird::tests::FixtureCallableBound(artifacts.envelope, test_case.function_id),
+            "SBSFC-061 callable does not carry its actual binary engine identity");
+    Require(!RunPipeline(test_case.sql, false).verifier.admitted,
+            "SBSFC-061 spelling-only call acquired executable authority");
   }
   if (!test_case.operator_id.empty()) {
     Require(Contains(artifacts.envelope.payload, test_case.operator_id),
@@ -290,7 +297,7 @@ sblr::SblrOperationEnvelope EngineEnvelope(const JsonCase& test_case) {
   envelope.operands.push_back({"text", "projection_0_value", ""});
   envelope.operands.push_back({"text", "projection_0_is_null", "false"});
   if (test_case.expression_kind == "function") {
-    envelope.operands.push_back({"text", "projection_0_function_id", std::string(test_case.function_id)});
+    scratchbird::tests::AppendFixtureCallable(envelope, test_case.function_id);
     envelope.operands.push_back({"text", "projection_0_function_arg_count",
                                  std::to_string(test_case.args.size())});
     for (std::size_t index = 0; index < test_case.args.size(); ++index) {
@@ -345,7 +352,7 @@ void RequireEngineDispatch(const JsonCase& test_case) {
   Require(field.second.encoded_value == test_case.expected_value,
           "SBSFC-061 result value mismatch");
   if (!test_case.function_id.empty()) {
-    Require(HasEvidence(result.api_result, "function_runtime", test_case.function_id),
+    Require(scratchbird::tests::FixtureCallableEvidence(result.api_result, test_case.function_id),
             "SBSFC-061 result missing function runtime evidence");
   }
   Require(HasEvidence(result.api_result,

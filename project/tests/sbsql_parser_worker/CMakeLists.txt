@@ -3720,6 +3720,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr
+      sb_engine_functions
   )
   add_test(
     NAME sbsql_sbsfc_060r_xml_grammar_exact_route_conformance
@@ -3740,6 +3741,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr
+      sb_engine_functions
   )
   add_test(
     NAME sbsql_sbsfc_061_json_grammar_exact_route_conformance
