@@ -271,9 +271,13 @@ int main() try {
     right.encoded_value = bytes;
     int comparison = 99;
     std::string detail;
+    Check(!api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail),
+          "UUID comparison accepted a binary payload in the text carrier");
+    right.encoded_value.clear();
+    right.binary_value.assign(bytes.begin(),bytes.end());
     Check(api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail) && comparison == 0,
-          "binary-vector and retained binary-string UUID carriers did not compare equally");
-    right.encoded_value.back() = '\x7f';
+          "identical native UUID carriers did not compare equally");
+    right.binary_value.back() = 0x7f;
     Check(api::QowCompareCanonicalNonCollatedScalarsV1(left,right,&comparison,&detail) && comparison > 0,
           "UUID octet ordering drifted");
     left.binary_value.pop_back();
@@ -412,7 +416,7 @@ int main() try {
     Check(!f.Run() && !f.shape.query_metadata, "missing ambiguous or cyclic CTE producer refused");
   }
   }
-  Check(checks == 6561 + 8 + 5, "fixed check population including binary/outer-join regressions");
+  Check(checks == 6561 + 8 + 5 + 1, "fixed check population including binary/outer-join and text-carrier refusal regressions");
   std::cout << "PASS schema_tuples=" << cases << " checks=" << checks << '\n';
   return 0;
 } catch (const std::exception& e) {

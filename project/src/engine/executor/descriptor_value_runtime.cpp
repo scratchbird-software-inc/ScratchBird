@@ -8,6 +8,8 @@
 
 #include "descriptor_value_runtime.hpp"
 #include "../internal_api/catalog/column_metadata_codec.hpp"
+#include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
@@ -738,6 +740,38 @@ EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name, std::st
   descriptor.encoded_descriptor = encoded_descriptor.empty()
                                       ? "canonical_type=" + descriptor.canonical_type_name
                                       : std::move(encoded_descriptor);
+  // Internal builtin values carry the compiled Core datatype identity. This
+  // constructor neither resolves user-defined names nor binds a column or a
+  // request-specific catalog occurrence; those callers retain their bindings.
+  namespace dt = scratchbird::core::datatypes;
+  namespace api = scratchbird::engine::internal_api;
+  struct BuiltinIdentity {
+    api::EngineUuid descriptor_uuid;
+    api::EngineUuid type_uuid;
+    std::uint64_t generation;
+  };
+  static const auto identities = [] {
+    std::map<CanonicalTypeId, BuiltinIdentity> bindings;
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return bindings;
+    for (const auto& datatype : manifest.manifest.descriptor_rows) {
+      const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
+          api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+          api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
+          datatype.descriptor_epoch);
+      bindings.emplace(datatype.type_id, BuiltinIdentity{
+          datatype.descriptor_uuid.value,
+          codec.ok ? codec.row.type_uuid : datatype.descriptor_uuid.value,
+          datatype.descriptor_epoch});
+    }
+    return bindings;
+  }();
+  const auto identity = identities.find(CanonicalDescriptorTypeId(descriptor));
+  if (identity == identities.end()) return descriptor;
+  descriptor.descriptor_uuid = identity->second.descriptor_uuid;
+  descriptor.datatype_descriptor_uuid = identity->second.descriptor_uuid;
+  descriptor.datatype_descriptor_generation = identity->second.generation;
+  descriptor.type_uuid = identity->second.type_uuid;
   return descriptor;
 }
 
@@ -1414,6 +1448,13 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
             "DATATYPE.DESCRIPTOR.INVALID",
             "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
             row, column);
+      }
+      if ((IsUuidType(bound_column.descriptor) || IsBinaryType(bound_column.descriptor)) &&
+          (!value.encoded_value.empty() ||
+           (IsUuidType(bound_column.descriptor) && value.binary_value.size() != 16))) {
+        return ErrorDiagnostic(
+            "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+            "canonical UUID/binary value requires its exclusive native payload", row, column);
       }
     }
   }
@@ -2260,6 +2301,32 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     SetDiagnostic(diagnostic, source_validation);
     return {};
   }
+  if (IsUuidType(value.descriptor) || IsUuidType(target_descriptor)) {
+    namespace dt = scratchbird::core::datatypes;
+    dt::DatatypeCastRequest request;
+    request.value.type_id = CanonicalDescriptorTypeId(value.descriptor);
+    request.value.is_null = value.state == EngineValueState::sql_null;
+    request.target_type_id = CanonicalDescriptorTypeId(target_descriptor);
+    request.explicit_cast = true;
+    if (!request.value.is_null) {
+      if (IsUuidType(value.descriptor) || IsBinaryType(value.descriptor)) {
+        request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+      } else {
+        request.value.encoded_value = value.encoded_value;
+      }
+    }
+    const auto cast = dt::CastDatatypeValue(request);
+    if (!cast.ok()) {
+      SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED",
+                                               cast.diagnostic.diagnostic_code));
+      return {};
+    }
+    auto output = MakeExecutorValue(target_descriptor, {}, cast.value.is_null);
+    if (!cast.value.is_null)
+      output.binary_value.assign(cast.value.encoded_value.begin(), cast.value.encoded_value.end());
+    SetDiagnostic(diagnostic, OkDiagnostic());
+    return output;
+  }
   if (value.state == EngineValueState::sql_null) {
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, {}, true);
@@ -2422,9 +2489,10 @@ EngineTypedValue ExtractDescriptorField(const EngineTypedValue& value,
     }
     if (IsUuidType(value.descriptor)) {
       const std::string field = LowerAscii(field_name);
-      if (field == "version" && value.encoded_value.size() == 36) {
+      if (field == "version" && value.binary_value.size() == 16) {
         SetDiagnostic(diagnostic, OkDiagnostic());
-        return MakeExecutorValue(MakeExecutorDescriptor("uint8"), std::string(1, value.encoded_value[14]), false);
+        return MakeExecutorValue(MakeExecutorDescriptor("uint8"),
+                                 std::to_string(value.binary_value[6] >> 4), false);
       }
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_EXTRACT_FIELD_UNSUPPORTED", field_name));
       return {};

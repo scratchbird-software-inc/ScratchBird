@@ -263,8 +263,7 @@ MaterializedValues MaterializeValues(
         result.result_bindings.clear();
         return result;
       }
-      // Only the int64 compatibility consumer needs a decimal projection.
-      // UUID and binary literals retain their canonical native payloads.
+      // int64 decimal projection.
       if (value.descriptor.canonical_type_name == "int64" && !value.binary_value.empty()) {
         std::int64_t decoded = 0;
         if (!DecodeCanonicalInt64Scalar(value, &decoded, &result.detail)) {

@@ -8,6 +8,7 @@
 #include "sblr/sblr_projection_value_runtime.hpp"
 #include "sblr/canonical_query_object_free_composition_support.hpp"
 #include "sblr/canonical_query_aggregate_registration.hpp"
+#include "internal_api/query/expression_api.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -101,6 +102,94 @@ void NativeComparisons() {
   Truth(s::EvaluateSblrInListForm("in", low, {high}), false);
   Check(!Scalar(s::EvaluateSblrNullIfForm("nullif", low, high)).is_null, "NULLIF compared empty binary text fields");
 }
+void NativeBuiltinDescriptors() {
+  namespace exec = scratchbird::engine::executor;
+  for (const auto* type : {"boolean", "int8", "int16", "int32", "int64", "uint8", "uint64",
+                           "real64", "text", "uuid", "binary"}) {
+    const auto descriptor = exec::MakeExecutorDescriptor(type);
+    const auto expected = s::ExactCanonicalCoreDatatypeTypeUuidV1(
+        std::string_view(type) == "text" ? "character" : type);
+    Check(!expected.is_nil() && !descriptor.descriptor_uuid.is_nil() &&
+          descriptor.type_uuid == expected &&
+          descriptor.datatype_descriptor_uuid == descriptor.descriptor_uuid &&
+          descriptor.datatype_descriptor_generation != 0,
+          "internal builtin descriptor omitted its actual catalog identity");
+  }
+  Check(exec::MakeExecutorDescriptor("bigint").type_uuid == exec::MakeExecutorDescriptor("int64").type_uuid &&
+        exec::MakeExecutorDescriptor("bytes").type_uuid == exec::MakeExecutorDescriptor("binary").type_uuid,
+        "internal datatype aliases did not retain the actual Core type identity");
+  Check(exec::MakeExecutorDescriptor("unknown_user_type").descriptor_uuid.is_nil(),
+        "builtin constructor invented a user-defined datatype binding");
+  exec::DescriptorRuntimeDiagnostic diagnostic;
+  const auto cast = exec::CastDescriptorValue(exec::EncodeTextValue("42"),
+      exec::MakeExecutorDescriptor("int64"), &diagnostic);
+  Check(diagnostic.ok && cast.encoded_value == "42" && cast.binary_value.empty(),
+        "bound internal scalar constructors could not execute their ordinary cast");
+}
+
+void NativeExecutorUuidValue(const scratchbird::engine::internal_api::EngineTypedValue& native) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace exec = scratchbird::engine::executor;
+  const auto descriptor = [](const char* name, unsigned ordinal) {
+    api::EngineDescriptor value;
+    value.descriptor_kind = "scalar";
+    value.canonical_type_name = name;
+    value.descriptor_uuid = scratchbird::tests::FixtureUuid(2085, ordinal);
+    value.type_uuid = s::ExactCanonicalCoreDatatypeTypeUuidV1(
+        std::string_view(name) == "text" ? "character" : name);
+    value.encoded_descriptor = "nullability=nullable";
+    Check(!value.type_uuid.is_nil(), "cast datatype absent from actual catalog");
+    return value;
+  };
+  const auto binary = descriptor("binary", 1), uuid = descriptor("uuid", 2), text = descriptor("text", 3);
+  const auto preserved = [&](const auto& result, const auto& target) {
+    Check(result.descriptor == target && result.state == api::EngineValueState::value &&
+          !result.is_null && result.encoded_value.empty() && result.binary_value == native.binary_value,
+          "descriptor cast or bound function changed native UUID data");
+  };
+  exec::DescriptorRuntimeDiagnostic diagnostic;
+  const auto bytes = exec::CastDescriptorValue(native, binary, &diagnostic);
+  Check(diagnostic.ok, "executor UUID to binary cast refused"); preserved(bytes, binary);
+  const auto restored = exec::CastDescriptorValue(bytes, uuid, &diagnostic);
+  Check(diagnostic.ok, "executor binary to UUID cast refused"); preserved(restored, uuid);
+  const auto rebound = exec::CastDescriptorValue(native, uuid, &diagnostic);
+  Check(diagnostic.ok, "executor UUID descriptor rebind refused"); preserved(rebound, uuid);
+  const auto version = exec::ExtractDescriptorField(native, "version", &diagnostic);
+  Check(diagnostic.ok && version.encoded_value == std::to_string(native.binary_value[6] >> 4) &&
+        version.binary_value.empty() && !version.is_null, "UUID version extraction did not read native bits");
+  api::EngineTypedValue coerced;
+  std::string category, detail;
+  Check(api::QowApplyCanonicalDescriptorCoercionV1(native, binary, true, &coerced, &category, &detail),
+        "canonical UUID to binary coercion refused"); preserved(coerced, binary);
+  Check(!api::QowApplyCanonicalDescriptorCoercionV1(native, binary, false, &coerced, &category, &detail),
+        "UUID to binary was silently admitted as an implicit cast");
+  api::EngineCanonicalExpressionEvaluationRequest request;
+  request.consumer = api::EngineCanonicalExpressionConsumer::projection;
+  request.operation = api::EngineCanonicalExpressionOperation::scalar_function;
+  request.precomputed_value = native;
+  request.result_descriptor = uuid;
+  api::EngineCanonicalExpressionEvaluationResult result;
+  Check(api::QowEvaluateCanonicalTypedExpressionV1(request, &result, &detail),
+        "bound native UUID function result was refused"); preserved(result.value, uuid);
+  auto null = native;
+  null.binary_value.clear(); null.is_null = true; null.state = api::EngineValueState::sql_null;
+  const auto null_bytes = exec::CastDescriptorValue(null, binary, &diagnostic);
+  Check(diagnostic.ok && null_bytes.is_null && null_bytes.state == api::EngineValueState::sql_null &&
+        null_bytes.binary_value.empty() && null_bytes.encoded_value.empty(), "UUID cast lost payload-free NULL");
+  for (const auto& source : {native, null}) {
+    (void)exec::CastDescriptorValue(source, text, &diagnostic);
+    Check(!diagnostic.ok, "executor admitted UUID to text cast");
+  }
+  auto rendered = null;
+  rendered.descriptor = text;
+  (void)exec::CastDescriptorValue(rendered, uuid, &diagnostic);
+  Check(!diagnostic.ok, "NULL text cast bypassed UUID conversion admission");
+  rendered.state = api::EngineValueState::value; rendered.is_null = false;
+  rendered.encoded_value = "00000000-0000-0000-0000-000000000000";
+  (void)exec::CastDescriptorValue(rendered, uuid, &diagnostic);
+  Check(!diagnostic.ok, "executor interpreted textual UUID data as a native UUID");
+}
+
 void NativeUuidValues() {
   namespace api = scratchbird::engine::internal_api;
   api::TypedRelationalDag dag;
@@ -145,6 +234,7 @@ void NativeUuidValues() {
     Check(value.state == api::EngineValueState::value && !value.is_null &&
           value.encoded_value.empty() && value.binary_value == expected[i],
           "VALUES reinterpreted or formatted a UUID data payload");
+    NativeExecutorUuidValue(value);
   }
   namespace exec = scratchbird::engine::executor;
   exec::CanonicalDescriptorOrderTerm term;
@@ -164,6 +254,11 @@ void NativeUuidValues() {
       Check(compared.diagnostic.ok && compared.comparison == order,
             "UUID ordering lost native bits or used signed byte ordering");
       Check((keys[i] == keys[j]) == (order == 0), "UUID equality keys collapsed distinct values");
+      int scalar_order = 0;
+      std::string detail;
+      Check(api::QowCompareCanonicalNonCollatedScalarsV1(
+          values.batch.rows[i].values.front(), values.batch.rows[j].values.front(), &scalar_order, &detail) &&
+          scalar_order == order, "canonical scalar UUID comparison lost native bits");
     }
   }
   const auto& native = values.batch.rows.front().values.front();
@@ -186,10 +281,23 @@ void NativeUuidValues() {
     if (mutation == 2) bad.encoded_value = std::string(16, '\0');
     if (mutation == 3) { bad.binary_value.clear(); bad.encoded_value = std::string(16, '\0'); }
     if (mutation == 4) { bad.is_null = true; bad.state = api::EngineValueState::sql_null; }
+    auto malformed_batch = values.batch;
+    malformed_batch.rows.front().values.front() = bad;
+    Check(!exec::ValidateCanonicalDescriptorBatch(malformed_batch, {1}).ok,
+          "canonical descriptor batch accepted malformed UUID carrier");
     Check(!exec::CompareCanonicalDescriptorOrderValues(bad, native, term).diagnostic.ok &&
           !exec::CompareCanonicalDescriptorOrderValues(bad, null, term).diagnostic.ok &&
           !exec::MakeCanonicalDescriptorEqualityKey(bad, term).diagnostic.ok,
           "UUID order/equality accepted malformed native payload");
+    api::EngineTypedValue output;
+    std::string category, detail;
+    Check(!api::QowApplyCanonicalDescriptorCoercionV1(bad, native.descriptor, true, &output, &category, &detail),
+          "canonical coercion accepted malformed UUID carrier");
+    exec::DescriptorRuntimeDiagnostic diagnostic;
+    (void)exec::CastDescriptorValue(bad, native.descriptor, &diagnostic);
+    Check(!diagnostic.ok, "executor cast accepted malformed UUID carrier");
+    (void)exec::ExtractDescriptorField(bad, "version", &diagnostic);
+    Check(!diagnostic.ok, "UUID extraction accepted malformed UUID carrier");
   }
   for (const auto& malformed : {std::string(15, '\0'), std::string(17, '\0'),
                                std::string("00000000-0000-0000-0000-000000000000")}) {
@@ -201,6 +309,7 @@ void NativeUuidValues() {
   }
 }
 int main() {
+  NativeBuiltinDescriptors();
   NativeUuidValues();
   NativeComparisons();
   const auto package = f::BuildStandardFunctionSeedPackage();

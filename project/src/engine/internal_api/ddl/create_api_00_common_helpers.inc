@@ -882,10 +882,26 @@ std::string ColumnDescriptorForName(const std::vector<std::pair<std::string, std
 }
 
 bool DescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
-  return descriptor == "opaque_extension" || StartsWithLocal(descriptor, "opaque_extension;") ||
-         descriptor.find("canonical=opaque_extension") != std::string::npos ||
-         descriptor.find("canonical_type=opaque_extension") != std::string::npos ||
-         descriptor.find("base_type=opaque_extension") != std::string::npos;
+  if (descriptor.empty()) return false;  // Missing columns have their own refusal.
+  if (descriptor == "opaque_extension") return true;
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor, &fields)) return true;
+  namespace dt = scratchbird::core::datatypes;
+  static const auto opaque = [] {
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) return EngineUuid{};
+    const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::opaque_extension);
+    return row.ok() && row.manifest.descriptor_rows.size() == 1
+        ? row.manifest.descriptor_rows.front().descriptor_uuid.value : EngineUuid{};
+  }();
+  if (opaque.is_nil()) return true;
+  const auto datatype = fields.identities.find("datatype_descriptor_uuid");
+  if (datatype != fields.identities.end() && datatype->second == opaque) return true;
+  for (const auto* key : {"type", "canonical", "canonical_type", "base_type"}) {
+    const auto field = fields.text.find(key);
+    if (field != fields.text.end() && field->second == "opaque_extension") return true;
+  }
+  return false;
 }
 
 std::string ColumnNameFromIndexEnvelope(const std::string& envelope) {

@@ -71,6 +71,9 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
   if (input.state != EngineValueState::value) return false;
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::binary;
+  if (binary && (!input.encoded_value.empty() ||
+      (type == core::datatypes::CanonicalTypeId::uuid && input.binary_value.size() != 16)))
+    return false;
   if (!input.binary_value.empty()) {
     if (!binary || !input.encoded_value.empty()) return false;
     bytes->assign(reinterpret_cast<const char*>(input.binary_value.data()),
@@ -97,11 +100,11 @@ bool QowCanonicalComparableEncodingV1(
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
   if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::binary) {
-    if (!value.binary_value.empty() && !value.encoded_value.empty()) return false;
-    const auto size = value.binary_value.empty() ? value.encoded_value.size() : value.binary_value.size();
+    if (!value.encoded_value.empty()) return false;
+    const auto size = value.binary_value.size();
     if (type_id == dt::CanonicalTypeId::uuid && size != 16) return false;
-    if (value.binary_value.empty()) *encoded_value = value.encoded_value;
-    else encoded_value->assign(reinterpret_cast<const char*>(value.binary_value.data()), size);
+    if (!value.binary_value.empty())
+      encoded_value->assign(reinterpret_cast<const char*>(value.binary_value.data()), size);
     return true;
   }
   if (value.binary_value.empty()) {
@@ -1829,6 +1832,13 @@ bool QowEvaluateCanonicalTypedExpressionV1(
         *refusal_detail =
             "bound function result or target descriptor is invalid";
         return false;
+      }
+      if (source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary ||
+          result_type == dt::CanonicalTypeId::uuid || result_type == dt::CanonicalTypeId::binary) {
+        std::string cast_category;
+        return QowApplyCanonicalDescriptorCoercionV1(
+            function_value, request.result_descriptor, false, &result->value,
+            &cast_category, refusal_detail);
       }
       dt::DatatypeCastRequest cast_request;
       cast_request.value.type_id = source_type;

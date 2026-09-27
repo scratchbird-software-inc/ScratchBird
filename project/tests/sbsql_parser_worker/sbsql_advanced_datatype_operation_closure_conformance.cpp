@@ -7,11 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "query/expression_api.hpp"
@@ -43,7 +46,7 @@ using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000080801";
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000080802";
-constexpr std::string_view kInlineIndexUuid = "019f0000-0000-7000-8000-000000080803";
+constexpr auto kInlineIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080803");
 constexpr std::string_view kSblrProducerUuid = "019f0000-0000-7000-8000-000000080821";
 constexpr std::string_view kSblrRegistryUuid = "019f0000-0000-7000-8000-000000080822";
 
@@ -71,9 +74,14 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
   for (const auto suffix : {".sb.api_events",
+                            ".sb.api_events.v2",
+                            ".sb.catalog_object_events",
                             ".sb.crud_events",
                             ".sb.domain_events",
                             ".sb.name_events",
+                            ".sb.name_events.v2",
+                            ".sb.txn_publish",
+                            ".sb.mga_event_sequence_allocator",
                             ".sb.transaction_inventory",
                             ".sb.mga_row_versions",
                             ".sb.mga_relation_metadata",
@@ -88,7 +96,7 @@ void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   }
 }
 
-api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateFixtureDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -97,8 +105,7 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810600001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810600002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -106,27 +113,15 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "advanced datatype closure database create failed");
-  return create.database_uuid.value;
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
-                                        const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+                                        api::EngineRequestContext context) {
   context.request_id = "sbsql-advanced-datatype-operation-closure";
   context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080811");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080812");
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080801");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.trace_tags.push_back("advanced_datatype_operation_closure");
   return context;
 }
@@ -177,6 +172,15 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind && (std::holds_alternative<std::string>(evidence.evidence_id) && std::get<std::string>(evidence.evidence_id) == id)) { return true; }
+  }
+  return false;
+}
+
+bool HasEvidence(const api::EngineApiResult& result,
+                 std::string_view kind, const api::EngineUuid& id) {
+  for (const auto& evidence : result.evidence) {
+    const auto* identity = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && identity && *identity == id) return true;
   }
   return false;
 }
@@ -509,7 +513,8 @@ api::EngineLocalizedName Name(std::string text) {
   return {"en", "primary", "", std::move(text), true};
 }
 
-api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::string name, std::string type, std::uint32_t ordinal) {
   api::EngineColumnDefinition column;
   column.requested_column_uuid =
       scratchbird::tests::FixtureUuid(1385, ordinal + 1);
@@ -520,6 +525,8 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
   }
   column.ordinal = ordinal;
   column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      dt::CanonicalTypeIdFromStableName(column.descriptor.canonical_type_name), column);
   return column;
 }
 
@@ -543,13 +550,13 @@ api::EngineCreateTableResult CreateTable(const api::EngineRequestContext& contex
   request.target_schema.object_kind = "schema";
   request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080802");
   request.table_names.push_back(Name("cbq008_table"));
-  request.table_columns.push_back(Column("id", "int64", 0));
-  request.table_columns.push_back(Column("geom", "point", 1));
-  request.table_columns.push_back(Column("embedding", "dense_vector", 2));
-  request.table_columns.push_back(Column("body", "text", 3));
-  request.table_columns.push_back(Column("observed_at", "timestamp", 4));
-  request.table_columns.push_back(Column("graph_path", "graph_path", 5));
-  request.table_columns.push_back(Column("secret_payload", "opaque_extension", 6));
+  request.table_columns.push_back(Column(context, "id", "int64", 0));
+  request.table_columns.push_back(Column(context, "geom", "point", 1));
+  request.table_columns.push_back(Column(context, "embedding", "dense_vector", 2));
+  request.table_columns.push_back(Column(context, "body", "text", 3));
+  request.table_columns.push_back(Column(context, "observed_at", "timestamp", 4));
+  request.table_columns.push_back(Column(context, "graph_path", "graph_path", 5));
+  request.table_columns.push_back(Column(context, "secret_payload", "opaque_extension", 6));
   request.table_indexes = std::move(inline_indexes);
   return api::EngineCreateTable(request);
 }
@@ -622,8 +629,35 @@ void RequireAdvancedIndexDDL(const api::EngineRequestContext& context) {
           "unsupported expression index diagnostic drifted");
 
   rejected = CreateIndex(context, Index(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000080835"), "opaque_idx", "btree", {"secret_payload"}));
+  if (rejected.ok || FirstDetail(rejected) != "ddl.create_index:opaque_column_index_denied")
+    std::cerr << "opaque index ok=" << rejected.ok << " diagnostic=" << FirstDetail(rejected) << '\n';
   Require(!rejected.ok && FirstDetail(rejected) == "ddl.create_index:opaque_column_index_denied",
           "opaque column index diagnostic drifted");
+
+  const std::vector<std::pair<std::string, std::vector<std::string>>> opaque_profiles = {
+      {"btree", {"id", "include:secret_payload"}},
+      {"partial", {"id", "where_eq:secret_payload=42"}},
+      {"partial", {"id", "where_mod_eq:secret_payload:2=0"}},
+      {"expression", {"lower:secret_payload"}},
+      {"btree", {"desc:secret_payload"}},
+  };
+  for (std::size_t i = 0; i < opaque_profiles.size(); ++i) {
+    const auto index_uuid = scratchbird::tests::FixtureUuid(1386, i + 1);
+    const auto& [family, keys] = opaque_profiles[i];
+    const auto result = CreateIndex(context, Index(index_uuid,
+        "opaque_indirect_" + std::to_string(i), family, keys));
+    if (result.ok || FirstDetail(result) != "ddl.create_index:opaque_column_index_denied")
+      std::cerr << "opaque profile=" << i << " diagnostic=" << FirstDetail(result) << '\n';
+    Require(!result.ok && FirstDetail(result) == "ddl.create_index:opaque_column_index_denied",
+            "indirect opaque column index was not refused");
+    const auto loaded = api::LoadMgaRelationStoreState(context);
+    Require(loaded.ok, "MGA metadata load after refused index failed");
+    const auto state = api::BuildMgaRelationReadView(loaded.state);
+    Require(state.indexes.size() == positive_indexes.size() + 1,
+            "refused opaque index changed persisted index count");
+    for (const auto& index : state.indexes)
+      Require(index.index_uuid != index_uuid, "refused opaque index retained metadata");
+  }
 }
 
 void RequireDescriptorRuntimeDatatypeSlice() {
@@ -749,17 +783,19 @@ void RequireDescriptorRuntimeDatatypeSlice() {
               result.encoded_value == "5",
           "descriptor text length extract failed");
 
-  result = exec::ExtractDescriptorField(exec::MakeExecutorValue(exec::MakeExecutorDescriptor("binary"), "abcd", false),
+  auto native_binary = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("binary"), {}, false);
+  native_binary.binary_value = {'a', 'b', 'c', 'd'};
+  result = exec::ExtractDescriptorField(native_binary,
                                         "octet_length",
                                         &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "uint64" &&
               result.encoded_value == "4",
           "descriptor binary octet length extract failed");
 
-  result = exec::ExtractDescriptorField(
-      exec::MakeExecutorValue(exec::MakeExecutorDescriptor("uuid"),
-                              "550e8400-e29b-41d4-a716-446655440000",
-                              false),
+  auto native_uuid = exec::MakeExecutorValue(exec::MakeExecutorDescriptor("uuid"), {}, false);
+  constexpr auto uuid_data = scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000");
+  native_uuid.binary_value.assign(uuid_data.bytes.begin(), uuid_data.bytes.end());
+  result = exec::ExtractDescriptorField(native_uuid,
       "version",
       &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "uint8" &&
@@ -770,6 +806,10 @@ void RequireDescriptorRuntimeDatatypeSlice() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "advanced_datatype_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      memory_policy, "advanced_datatype_fixture").ok(), "fixture memory configuration failed");
   if (argc == 2 &&
       std::string_view(argv[1]) ==
           "--bounded-signed-integer-descriptor-only") {
@@ -790,9 +830,9 @@ int main(int argc, char** argv) {
 
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
-  const auto database_uuid = CreateMinimalDatabase(path);
-  const auto context = BeginTransaction(EngineContext(path, database_uuid));
+  const auto context = BeginTransaction(EngineContext(path, CreateFixtureDatabase(path)));
   CreateSchema(context);
   RequireAdvancedIndexDDL(context);
+  RemoveDatabaseArtifacts(path);
   return EXIT_SUCCESS;
 }
