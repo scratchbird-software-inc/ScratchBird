@@ -2271,6 +2271,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "dpc_secondary_index_delta_merge_agent_gate;DPC-024;DPC_TEST_INDEX_DELTA_MERGE;secondary_index_delta_ledger;delta_merge;resource_governor;mga_transaction_regression;database_lifecycle"
   )
 
+  add_test(NAME dpc_secondary_index_empty_binary_restart_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/secondary_index_empty_binary_restart_gate.py"
+            --probe $<TARGET_FILE:dpc_secondary_index_delta_merge_agent_gate>)
+  set_tests_properties(dpc_secondary_index_empty_binary_restart_gate PROPERTIES
+    LABELS "DPC-024;secondary_index_delta_ledger;binary_uuid;empty_key;process_restart;mga_transaction_regression;database_lifecycle"
+    TIMEOUT 1200)
+
   add_executable(dpc_secondary_index_delta_recovery_repair_gate
     dpc_secondary_index_delta_recovery_repair_gate.cpp
   )

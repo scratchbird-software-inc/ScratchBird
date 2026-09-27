@@ -25,6 +25,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -33,6 +34,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -212,11 +214,25 @@ struct Fixture {
   api::EngineUuid non_unique_index_uuid;
   api::EngineUuid unique_index_uuid;
   platform::u64 salt = 0;
+  bool use_btree = false;
+  bool keep_files = false;
+
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture& operator=(const Fixture&) = delete;
+  Fixture(Fixture&& other)
+      : dir(std::exchange(other.dir, {})),
+        database_path(std::move(other.database_path)),
+        database_uuid(other.database_uuid), filespace_uuid(other.filespace_uuid),
+        owner_context(std::move(other.owner_context)), session(std::move(other.session)),
+        table_uuid(other.table_uuid), non_unique_index_uuid(other.non_unique_index_uuid),
+        unique_index_uuid(other.unique_index_uuid), salt(other.salt),
+        use_btree(other.use_btree), keep_files(other.keep_files) {}
 
   ~Fixture() {
     session.reset();
     std::error_code ignored;
-    if (!dir.empty()) { std::filesystem::remove_all(dir, ignored); }
+    if (!keep_files && !dir.empty()) { std::filesystem::remove_all(dir, ignored); }
   }
 };
 
@@ -288,51 +304,22 @@ api::CrudIndexRecord Index(const Fixture& fixture,
   index.index_uuid = std::move(index_uuid);
   index.table_uuid = fixture.table_uuid;
   index.column_name = std::move(column);
-  // Deferred insertion currently admits non-unique hash indexes. Keep the
-  // unique B-tree on its exact synchronous maintenance path.
-  index.family = unique ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash;
-  index.profile = unique ? api::kCrudIndexProfileRowStoreScalarBtreeV1 : std::string{};
+  // Unique maintenance is synchronous; both hash and nonunique B-tree also
+  // exercise the durable deferred path in the restart matrix.
+  const bool btree = unique || fixture.use_btree;
+  index.family = btree ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash;
+  index.profile = btree ? api::kCrudIndexProfileRowStoreScalarBtreeV1 : std::string{};
   index.unique = unique;
   index.key_envelopes.push_back(index.column_name);
   if (unique) { index.key_envelopes.push_back("unique"); }
   return index;
 }
 
-Fixture MakeFixture(std::string name, platform::u64 salt) {
-  Fixture fixture;
-  fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_dpc024_" + name + "_" +
-                 std::to_string(NowMillis() + salt));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "dpc024.sbdb";
-
-  db::DatabaseCreateConfig create;
-  create.path = fixture.database_path.string();
-  create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
-  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
-  create.creation_unix_epoch_millis = NowMillis() + salt + 3;
-  create.require_resource_seed_pack = true;
-  create.resource_seed_pack_root =
-      (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path()
-          .parent_path() / "resources/seed-packs/initial-resource-pack").string();
-  create.bootstrap_principal_name = "dpc_merge_owner";
-  create.require_bootstrap_principal = true;
-  create.allow_uncredentialed_bootstrap = false;
-  create.bootstrap_credential_fingerprint =
-      "local-password-pbkdf2-sha256:v1:iterations=600000:"
-      "salt=0123456789abcdef0123456789abcdef:"
-      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
-  create.allow_overwrite = true;
-  const auto created = db::CreateDatabaseFile(create);
-  Require(created.ok(), "DPC-024 database create failed");
-
-  fixture.database_uuid = create.database_uuid.value;
-  fixture.filespace_uuid = create.filespace_uuid.value;
+void InitializeFixtureOwner(Fixture& fixture) {
   auto& owner = fixture.owner_context;
   owner.database_uuid = fixture.database_uuid;
   owner.database_path = fixture.database_path.string();
-  owner.default_root_uuid = created.state.filespace_uuid.value;
+  owner.default_root_uuid = fixture.filespace_uuid;
   owner.session_uuid = NewIdentity(platform::UuidKind::object, 0);
   owner.datatype_catalog_snapshot_uuid = api::kBootstrapDatatypeCatalogUuid;
   owner.datatype_catalog_generation = api::kBootstrapDatatypeCatalogGeneration;
@@ -372,6 +359,45 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
        authority.catalog_generation_id});
   Require(materialized.ok, "IPAR unique-probe durable authorization unavailable");
   owner.authorization_context = materialized.context;
+}
+
+Fixture MakeFixture(std::string name, platform::u64 salt,
+                    std::filesystem::path explicit_dir = {},
+                    bool use_btree = false, bool keep_files = false) {
+  Fixture fixture;
+  fixture.salt = salt;
+  fixture.use_btree = use_btree;
+  fixture.keep_files = keep_files;
+  fixture.dir = explicit_dir.empty()
+      ? std::filesystem::temp_directory_path() /
+            ("scratchbird_dpc024_" + name + "_" + std::to_string(NowMillis() + salt))
+      : std::move(explicit_dir);
+  std::filesystem::create_directories(fixture.dir);
+  fixture.database_path = fixture.dir / "dpc024.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
+  create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
+  create.creation_unix_epoch_millis = NowMillis() + salt + 3;
+  create.require_resource_seed_pack = true;
+  create.resource_seed_pack_root =
+      (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path()
+          .parent_path() / "resources/seed-packs/initial-resource-pack").string();
+  create.bootstrap_principal_name = "dpc_merge_owner";
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
+  create.bootstrap_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=0123456789abcdef0123456789abcdef:"
+      "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "DPC-024 database create failed");
+
+  fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
+  InitializeFixtureOwner(fixture);
 
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.non_unique_index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
@@ -681,65 +707,77 @@ void ValidateRefusalDiagnostics() {
           "DPC-024 corrupt ledger diagnostic changed");
 }
 
+void VerifyIndexedKey(const Fixture& fixture, const std::string& key,
+                      std::uint64_t count, bool overlay) {
+  auto reader = Begin(fixture, "empty-key-reader");
+  const auto result = SelectEquals(fixture, reader, "name", key);
+  RequireOk(result, "empty key lookup failed");
+  Require(result.visible_count == count, "empty key lookup returned wrong rows");
+  Require(result.result_shape.rows.size() == count,
+          "empty key result publication has the wrong row count");
+  if (count != 0) Require(HasEvidence(result.evidence, "index_lookup"),
+                         "empty key index result was replaced by a heap scan");
+  for (const auto& row : result.result_shape.rows) {
+    const auto value = std::find_if(row.fields.begin(), row.fields.end(), [](const auto& field) {
+      return field.first == "name";
+    });
+    Require(value != row.fields.end() && !value->second.isSqlNull() &&
+                value->second.encoded_value == key,
+            "empty or embedded-NUL key bytes changed in the result");
+  }
+  Require(HasEvidence(result.evidence, "mga_secondary_index_delta_overlay_used") == overlay,
+          "empty key lookup used the wrong index publication path");
+  Rollback(reader);
+}
+
+void MergeIndexedKey(const Fixture& fixture, bool deferred, std::uint64_t expected) {
+  const auto ledger = LoadLedger(fixture);
+  if (!deferred) {
+    Require(ledger.records.empty(), "synchronous key mutation unexpectedly wrote deferred deltas");
+    return;
+  }
+  const auto request = MergeRequest(fixture, MaxLedgerLocalTransactionId(ledger));
+  const auto merged = api::MergeMgaSecondaryIndexDeltasForIndex(
+      BaseContext(fixture, "empty-key-merge"), request);
+  if (!merged.ok) std::cerr << merged.diagnostic.code << ':' << merged.diagnostic.detail << '\n';
+  Require(merged.ok && merged.merged_count == expected && merged.cleaned_count == expected,
+          "empty key merge did not publish and clean the exact delta count");
+  const auto repeated = api::MergeMgaSecondaryIndexDeltasForIndex(
+      BaseContext(fixture, "empty-key-repeated-merge"), request);
+  Require(repeated.ok && repeated.merged_count == 0 && repeated.cleaned_count == 0,
+          "empty key repeated merge was not idempotent");
+}
+
+void UpdateIndexedKey(Fixture& fixture, const std::string& value,
+                      bool commit, bool deferred) {
+  auto writer = Begin(fixture, "empty-key-update");
+  {
+    ProbeStatement statement(*fixture.session, writer);
+    api::EngineUpdateRowsRequest request;
+    request.context = statement.context;
+    request.target_table.uuid = fixture.table_uuid;
+    request.target_table.object_kind = "table";
+    request.update_predicate.predicate_kind = "column_equals";
+    request.update_predicate.canonical_predicate_envelope = "id";
+    request.update_predicate.bound_values.push_back(TextValue("empty-id"));
+    request.assignments.push_back({"name", TextValue(value)});
+    if (deferred) request.option_envelopes = DeferredOptions();
+    const auto updated = api::EngineUpdateRows(request);
+    RequireOk(updated, "empty key update failed");
+    Require(updated.updated_count == 1, "empty key update did not change exactly one row");
+  }
+  if (commit) Commit(writer); else Rollback(writer);
+}
+
 void ValidateEmptyKeyMutationAndMerge(const std::string& original_key, bool deferred) {
   auto fixture = MakeFixture("empty_key", 4000);
   const auto row_uuid = SeedCommittedRow(fixture, "empty-id", original_key, deferred);
   const auto lookup = [&](const std::string& key, std::uint64_t count, bool overlay) {
-    auto reader = Begin(fixture, "empty-key-reader");
-    const auto result = SelectEquals(fixture, reader, "name", key);
-    RequireOk(result, "empty key lookup failed");
-    Require(result.visible_count == count, "empty key lookup returned wrong rows");
-    Require(result.result_shape.rows.size() == count,
-            "empty key result publication has the wrong row count");
-    if (count != 0) Require(HasEvidence(result.evidence, "index_lookup"),
-                           "empty key index result was replaced by a heap scan");
-    for (const auto& row : result.result_shape.rows) {
-      const auto value = std::find_if(row.fields.begin(), row.fields.end(), [](const auto& field) {
-        return field.first == "name";
-      });
-      Require(value != row.fields.end() && !value->second.isSqlNull() &&
-                  value->second.encoded_value == key,
-              "empty or embedded-NUL key bytes changed in the result");
-    }
-    Require(HasEvidence(result.evidence, "mga_secondary_index_delta_overlay_used") == (overlay && deferred),
-            "empty key lookup used the wrong index publication path");
-    Rollback(reader);
+    VerifyIndexedKey(fixture, key, count, overlay && deferred);
   };
-  const auto merge = [&](std::uint64_t expected) {
-    const auto ledger = LoadLedger(fixture);
-    if (!deferred) {
-      Require(ledger.records.empty(), "synchronous key mutation unexpectedly wrote deferred deltas");
-      return;
-    }
-    const auto request = MergeRequest(fixture, MaxLedgerLocalTransactionId(ledger));
-    const auto merged = api::MergeMgaSecondaryIndexDeltasForIndex(
-        BaseContext(fixture, "empty-key-merge"), request);
-    if (!merged.ok) std::cerr << merged.diagnostic.code << ':' << merged.diagnostic.detail << '\n';
-    Require(merged.ok && merged.merged_count == expected && merged.cleaned_count == expected,
-            "empty key merge did not publish and clean the exact delta count");
-    const auto repeated = api::MergeMgaSecondaryIndexDeltasForIndex(
-        BaseContext(fixture, "empty-key-repeated-merge"), request);
-    Require(repeated.ok && repeated.merged_count == 0 && repeated.cleaned_count == 0,
-            "empty key repeated merge was not idempotent");
-  };
+  const auto merge = [&](std::uint64_t expected) { MergeIndexedKey(fixture, deferred, expected); };
   const auto update = [&](const std::string& value, bool commit) {
-    auto writer = Begin(fixture, "empty-key-update");
-    {
-      ProbeStatement statement(*fixture.session, writer);
-      api::EngineUpdateRowsRequest request;
-      request.context = statement.context;
-      request.target_table.uuid = fixture.table_uuid;
-      request.target_table.object_kind = "table";
-      request.update_predicate.predicate_kind = "column_equals";
-      request.update_predicate.canonical_predicate_envelope = "id";
-      request.update_predicate.bound_values.push_back(TextValue("empty-id"));
-      request.assignments.push_back({"name", TextValue(value)});
-      if (deferred) request.option_envelopes = DeferredOptions();
-      const auto updated = api::EngineUpdateRows(request);
-      RequireOk(updated, "empty key update failed");
-      Require(updated.updated_count == 1, "empty key update did not change exactly one row");
-    }
-    if (commit) Commit(writer); else Rollback(writer);
+    UpdateIndexedKey(fixture, value, commit, deferred);
   };
   lookup(original_key, 1, true);
   merge(1);
@@ -864,9 +902,139 @@ void ValidateMalformedKeyPayloadRefusals() {
           "restored empty-key payload did not merge successfully");
 }
 
+// Test coordination only, never production database authority: raw binary UUIDs
+// identify the already-published fixture. Each reader reopens the actual node
+// and reconstructs authorization from its durable bootstrap/security catalog.
+constexpr std::array<char, 8> kRestartFixtureMagic{'S','B','K','E','Y','0','0','1'};
+
+void WriteRestartFixture(const Fixture& fixture) {
+  std::ofstream out(fixture.dir / "restart-fixture.bin", std::ios::binary | std::ios::trunc);
+  out.write(kRestartFixtureMagic.data(), kRestartFixtureMagic.size());
+  for (const auto* identity : {&fixture.database_uuid, &fixture.filespace_uuid,
+                              &fixture.table_uuid, &fixture.non_unique_index_uuid,
+                              &fixture.unique_index_uuid,
+                              &fixture.owner_context.current_schema_uuid}) {
+    Require(uuid::IsEngineIdentityUuid(*identity), "restart fixture identity is not native UUIDv7");
+    out.write(reinterpret_cast<const char*>(identity->bytes.data()), identity->bytes.size());
+  }
+  out.close();
+  Require(out.good(), "restart fixture handoff write failed");
+}
+
+void ReadRestartFixture(Fixture& fixture, const std::filesystem::path& dir,
+                        bool use_btree) {
+  fixture.dir = dir;
+  fixture.database_path = dir / "dpc024.sbdb";
+  fixture.use_btree = use_btree;
+  fixture.keep_files = true;
+  std::ifstream in(dir / "restart-fixture.bin", std::ios::binary);
+  std::array<char, 8> magic{};
+  in.read(magic.data(), magic.size());
+  Require(in.good() && magic == kRestartFixtureMagic, "restart fixture handoff header invalid");
+  for (auto* identity : {&fixture.database_uuid, &fixture.filespace_uuid,
+                        &fixture.table_uuid, &fixture.non_unique_index_uuid,
+                        &fixture.unique_index_uuid,
+                        &fixture.owner_context.current_schema_uuid}) {
+    in.read(reinterpret_cast<char*>(identity->bytes.data()), identity->bytes.size());
+    Require(in.good() && uuid::IsEngineIdentityUuid(*identity),
+            "restart fixture binary identity invalid or truncated");
+  }
+  Require(in.peek() == std::char_traits<char>::eof(), "restart fixture handoff has trailing bytes");
+  db::DatabaseOpenConfig open;
+  open.path = fixture.database_path.string();
+  const auto reopened = db::OpenDatabaseFile(open);
+  Require(reopened.ok() && reopened.state.database_uuid.value == fixture.database_uuid &&
+              reopened.state.filespace_uuid.value == fixture.filespace_uuid,
+          "fresh process did not reopen the actual published node");
+  InitializeFixtureOwner(fixture);
+  fixture.session = std::make_shared<ProbeSession>(BaseContext(fixture, "restart-session"));
+  const auto loaded = api::LoadMgaRelationStoreState(BaseContext(fixture, "restart-index-catalog"));
+  Require(loaded.ok, "restart index catalog unreadable");
+  const auto index = std::find_if(loaded.state.relation_metadata.indexes.begin(),
+                                loaded.state.relation_metadata.indexes.end(),
+      [&](const auto& item) { return item.index_uuid == fixture.non_unique_index_uuid; });
+  Require(index != loaded.state.relation_metadata.indexes.end() &&
+              index->table_uuid == fixture.table_uuid && !index->unique &&
+              index->family == (use_btree ? api::kCrudIndexFamilyBtree : api::kCrudIndexFamilyHash),
+          "restart handoff does not match the persisted index family/identity");
+}
+
+void RunRestartPhase(std::string_view phase, const std::filesystem::path& root) {
+  Require(phase == "prepare" || phase == "update" || phase == "delete" || phase == "absent",
+          "unknown index restart phase");
+  std::size_t completed = 0;
+  for (const bool btree : {false, true}) {
+    for (const bool deferred : {false, true}) {
+      for (const bool binary_key : {false, true}) {
+        const std::string name = std::string(btree ? "btree" : "hash") +
+            (deferred ? "_deferred" : "_synchronous") + (binary_key ? "_nul" : "_empty");
+        const auto dir = root / name;
+        const std::string key = binary_key ? std::string("k\0x", 3) : std::string{};
+        if (phase == "prepare") {
+          auto fixture = MakeFixture(name, 6000 + completed * 100, dir, btree, true);
+          (void)SeedCommittedRow(fixture, "empty-id", key, deferred);
+          VerifyIndexedKey(fixture, key, 1, deferred);
+          MergeIndexedKey(fixture, deferred, 1);
+          VerifyIndexedKey(fixture, key, 1, false);
+          WriteRestartFixture(fixture);
+        } else {
+          Fixture fixture;
+          ReadRestartFixture(fixture, dir, btree);
+          if (phase == "update") {
+            VerifyIndexedKey(fixture, key, 1, false);
+            UpdateIndexedKey(fixture, "replacement", true, deferred);
+            VerifyIndexedKey(fixture, key, 0, deferred);
+            VerifyIndexedKey(fixture, "replacement", 1, deferred);
+            MergeIndexedKey(fixture, deferred, 2);
+            UpdateIndexedKey(fixture, key, false, deferred);
+            VerifyIndexedKey(fixture, key, 0, false);
+            VerifyIndexedKey(fixture, "replacement", 1, false);
+            UpdateIndexedKey(fixture, key, true, deferred);
+            MergeIndexedKey(fixture, deferred, 2);
+            VerifyIndexedKey(fixture, key, 1, false);
+          } else if (phase == "delete") {
+            VerifyIndexedKey(fixture, key, 1, false);
+            VerifyIndexedKey(fixture, "replacement", 0, false);
+            auto writer = Begin(fixture, "restart-delete");
+            {
+              ProbeStatement statement(*fixture.session, writer);
+              api::EngineDeleteRowsRequest request;
+              request.context = statement.context;
+              request.target_table.uuid = fixture.table_uuid;
+              request.target_table.object_kind = "table";
+              request.delete_predicate.predicate_kind = "column_equals";
+              request.delete_predicate.canonical_predicate_envelope = "id";
+              request.delete_predicate.bound_values.push_back(TextValue("empty-id"));
+              request.tombstone_only = true;
+              if (deferred) request.option_envelopes = DeferredOptions();
+              const auto deleted = api::EngineDeleteRows(request);
+              RequireOk(deleted, "restart empty/binary-key delete failed");
+              Require(deleted.deleted_count == 1, "restart delete changed the wrong number of rows");
+            }
+            Commit(writer);
+            VerifyIndexedKey(fixture, key, 0, deferred);
+            MergeIndexedKey(fixture, deferred, 1);
+          } else {
+            VerifyIndexedKey(fixture, key, 0, false);
+            auto reader = Begin(fixture, "restart-absence");
+            const auto result = SelectEquals(fixture, reader, "id", "empty-id");
+            RequireOk(result, "restart deleted-row lookup failed");
+            Require(result.visible_count == 0 && result.result_shape.rows.empty(),
+                    "deleted row reappeared after process restart");
+            Rollback(reader);
+          }
+        }
+        ++completed;
+      }
+    }
+  }
+  Require(completed == 8, "restart phase omitted an index/key/publication profile");
+  std::cout << "restart_phase=" << phase << " profiles=" << completed << '\n';
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   auto policy=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name="secondary_index_merge_admission_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
@@ -874,6 +1042,11 @@ int main() {
           "secondary index fixture memory policy failed");
   Require(kMergeSearchKey == "DPC_SECONDARY_INDEX_DELTA_MERGE_AGENT_GATE",
           "DPC-024 gate search key drifted");
+  if (argc == 4 && std::string_view(argv[1]) == "--restart-phase") {
+    RunRestartPhase(argv[2], argv[3]);
+    return EXIT_SUCCESS;
+  }
+  Require(argc == 1, "unexpected index merge gate arguments");
   ValidateAuthoritativeMergeDrainsIntoBase();
   ValidateHorizonRetainsFutureAndResourceRefuses();
   ValidateRefusalDiagnostics();
