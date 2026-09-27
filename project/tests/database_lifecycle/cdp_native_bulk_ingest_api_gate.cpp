@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -11,6 +12,7 @@
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_operations.hpp"
+#include "index_key_encoding.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
 #include "memory.hpp"
@@ -36,6 +38,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -122,8 +125,22 @@ struct Fixture {
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
   platform::u64 salt = 0;
+  mutable platform::u64 physical_page = 0;
+  platform::u32 page_size = 0;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture& operator=(const Fixture&) = delete;
+  Fixture(Fixture&& other)
+      : dir(std::exchange(other.dir, {})), database_path(std::move(other.database_path)),
+        database_uuid(other.database_uuid), table_uuid(other.table_uuid),
+        index_uuid(other.index_uuid), salt(other.salt), physical_page(other.physical_page), page_size(other.page_size),
+        owner_context(std::move(other.owner_context)), session(std::move(other.session)) {}
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -227,22 +244,34 @@ void RequireDiagnostic(const api::EngineApiResult& result,
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 101);
-  context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
+}
+
+// Publish actual native column identities using the explicitly declared types;
+// the compatibility descriptor strings are never reconstructed as UUID authority.
+api::EngineApiDiagnostic PublishFixtureTable(
+    api::EngineRequestContext& context, const api::CrudTableRecord& table) {
+  std::vector<std::string> types;
+  for (const auto& column : table.columns) {
+    api::CatalogColumnMetadata metadata;
+    Require(api::AdmitCatalogColumnMetadata(column.second, &metadata),
+            "CDP-040 fixture column metadata invalid");
+    const auto type = metadata.text.find("canonical");
+    Require(type != metadata.text.end(), "CDP-040 fixture column type missing");
+    types.push_back(type->second);
+  }
+  return scratchbird::tests::PublishMgaTableFixture(context, table, types);
+}
+
+void StartFixtureSession(Fixture& fixture, const api::EngineRequestContext& metadata) {
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "cdp040-session"));
 }
 
 api::EngineRequestContext Begin(const Fixture& fixture, std::string request_id) {
@@ -404,8 +433,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -415,15 +443,18 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(created.ok(), "CDP-040 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.page_size = create.page_size;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-metadata");
-  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
+  const auto table = PublishFixtureTable(metadata, Table(fixture, metadata));
   Require(!table.error, "CDP-040 table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(metadata, Index(fixture, metadata));
   Require(!index.error, "CDP-040 index metadata append failed");
   Commit(metadata);
+  StartFixtureSession(fixture, metadata);
   return fixture;
 }
 
@@ -441,22 +472,24 @@ Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 int64 index database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.page_size = create.page_size;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "cdp040-int64-index-metadata");
-  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
+  const auto table = PublishFixtureTable(metadata, Table(fixture, metadata));
   Require(!table.error, "CDP-040 int64 index table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(metadata, IdIndex(fixture, metadata));
   Require(!index.error, "CDP-040 int64 index metadata append failed");
   Commit(metadata);
+  StartFixtureSession(fixture, metadata);
   return fixture;
 }
 
@@ -475,17 +508,18 @@ Fixture MakeTypedScalarFixture(std::string name,
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 typed scalar database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.page_size = create.page_size;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-typed-scalar-metadata");
-  const auto table = api::AppendMgaTableMetadata(
+  const auto table = PublishFixtureTable(
       metadata, TypedScalarTable(fixture, metadata));
   Require(!table.error, "CDP-040 typed scalar table metadata append failed");
   if (with_typed_scalar_indexes) {
@@ -498,6 +532,7 @@ Fixture MakeTypedScalarFixture(std::string name,
     }
   }
   Commit(metadata);
+  StartFixtureSession(fixture, metadata);
   return fixture;
 }
 
@@ -724,17 +759,18 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 descriptor payload database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.page_size = create.page_size;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-descriptor-payload-metadata");
-  const auto table = api::AppendMgaTableMetadata(
+  const auto table = PublishFixtureTable(
       metadata, DescriptorPayloadTable(fixture, metadata));
   Require(!table.error, "CDP-040 descriptor payload table metadata append failed");
   if (with_descriptor_indexes) {
@@ -752,6 +788,7 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
     }
   }
   Commit(metadata);
+  StartFixtureSession(fixture, metadata);
   return fixture;
 }
 
@@ -776,12 +813,12 @@ std::vector<api::EngineRowValue> DescriptorPayloadRows() {
   return rows;
 }
 
-api::EngineExecuteNativeBulkIngestRequest NativeRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> NativeRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteNativeBulkIngestRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest>
+      request(*fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
@@ -789,6 +826,18 @@ api::EngineExecuteNativeBulkIngestRequest NativeRequest(
   request.import_policy.reject_mode = "fail_fast";
   request.import_policy.reject_payload_policy = "diagnostic_only";
   request.import_policy.resume_policy = "fail_closed";
+  // This physical-page component probe owns a destination beyond the current
+  // node file; bootstrap/catalog pages must never be overwritten by a fixed
+  // test page number. Reuse that page for this fixture's subsequent mutations.
+  if (fixture.physical_page == 0) {
+    Require(fixture.page_size != 0, "CDP-040 fixture page geometry unavailable");
+    fixture.physical_page =
+        (std::filesystem::file_size(fixture.database_path) + fixture.page_size - 1) /
+        fixture.page_size + 64;
+  }
+  request.option_envelopes.push_back("physical_mga_cow.required=true");
+  request.option_envelopes.push_back("physical_mga_cow.page_number=" +
+                                    std::to_string(fixture.physical_page));
   return request;
 }
 
@@ -1499,7 +1548,8 @@ void TestApiAndSblrAcceptedRoutes() {
 
   auto sblr_context = Begin(fixture, "cdp040-sblr-accepted");
   sblr::SblrDispatchRequest dispatch;
-  dispatch.context = sblr_context;
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, sblr_context);
+  dispatch.context = statement.context;
   dispatch.envelope = NativeEnvelope();
   dispatch.api_request = SblrApiRequest(fixture, Rows("sblr", 2));
   const auto sblr_result = sblr::DispatchSblrOperation(dispatch);
@@ -1548,7 +1598,7 @@ void TestNullAndCharacterRowPageStorage() {
           "CDP-040 null/character row was not visible in writer transaction");
   Commit(context);
 
-  const auto page = ReadPhysicalPage(fixture, 1024);
+  const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
   Require(page.visible_rows.size() == 1,
           "CDP-040 null/character physical row-page visible count drifted");
   api::EngineApiU64 null_cells = 0;
@@ -1587,8 +1637,8 @@ void TestTypedInt64IndexKeysUseBinaryOrder() {
                       "direct_index_key_typed_fallback") == 0,
           "CDP-040 typed int64 index fell back to display text");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_sbkohex_keys") == 2,
-          "CDP-040 typed int64 index did not emit store-safe SBKOHEX keys");
+                      "direct_index_key_sbkobin_keys") == 2,
+          "CDP-040 typed int64 index did not emit store-safe SBKOBIN keys");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   if (!loaded.ok && !loaded.diagnostic.code.empty()) {
@@ -1608,10 +1658,10 @@ void TestTypedInt64IndexKeysUseBinaryOrder() {
       key_ten = entry.key_value;
     }
   }
-  Require(key_two.rfind("SBKOHEX:", 0) == 0,
-          "CDP-040 int64 value 2 index key was not SBKOHEX");
-  Require(key_ten.rfind("SBKOHEX:", 0) == 0,
-          "CDP-040 int64 value 10 index key was not SBKOHEX");
+  Require(key_two.rfind("SBKOBIN:", 0) == 0,
+          "CDP-040 int64 value 2 index key was not SBKOBIN");
+  Require(key_ten.rfind("SBKOBIN:", 0) == 0,
+          "CDP-040 int64 value 10 index key was not SBKOBIN");
   Require(key_two < key_ten,
           "CDP-040 typed int64 index key sorted as display text");
   Commit(context);
@@ -1639,8 +1689,8 @@ void TestTypedInt64IndexKeysUseFullSignedSortOrder() {
                       "direct_index_key_typed_fallback") == 0,
           "CDP-040 typed int64 signed sort fell back to display text");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_sbkohex_keys") == 5,
-          "CDP-040 typed int64 signed sort did not emit SBKOHEX keys");
+                      "direct_index_key_sbkobin_keys") == 5,
+          "CDP-040 typed int64 signed sort did not emit SBKOBIN keys");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "CDP-040 typed int64 signed sort state reload failed");
@@ -1652,8 +1702,8 @@ void TestTypedInt64IndexKeysUseFullSignedSortOrder() {
   }
   const std::vector<std::string> order = {"-257", "-1", "0", "2", "256"};
   for (const auto& value : order) {
-    Require(keys_by_value[value].rfind("SBKOHEX:", 0) == 0,
-            "CDP-040 signed int64 sort key was not SBKOHEX");
+    Require(keys_by_value[value].rfind("SBKOBIN:", 0) == 0,
+            "CDP-040 signed int64 sort key was not SBKOBIN");
   }
   for (std::size_t index = 1; index < order.size(); ++index) {
     Require(keys_by_value[order[index - 1]] < keys_by_value[order[index]],
@@ -1678,8 +1728,8 @@ void TestTypedNullIndexKeyUsesNullOrder() {
                       "direct_index_key_typed_fallback") == 0,
           "CDP-040 typed null index fell back to display text");
   Require(EvidenceU64(result.evidence,
-                      "direct_index_key_sbkohex_keys") == 2,
-          "CDP-040 typed null index did not emit SBKOHEX keys");
+                      "direct_index_key_sbkobin_keys") == 2,
+          "CDP-040 typed null index did not emit SBKOBIN keys");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "CDP-040 typed null index state reload failed");
@@ -1695,13 +1745,26 @@ void TestTypedNullIndexKeyUsesNullOrder() {
       key_zero = entry.key_value;
     }
   }
-  Require(key_null.rfind("SBKOHEX:", 0) == 0,
-          "CDP-040 null index key was not SBKOHEX");
-  Require(key_zero.rfind("SBKOHEX:", 0) == 0,
-          "CDP-040 value index key beside null was not SBKOHEX");
+  Require(key_null.rfind("SBKOBIN:", 0) == 0,
+          "CDP-040 null index key was not SBKOBIN");
+  Require(key_zero.rfind("SBKOBIN:", 0) == 0,
+          "CDP-040 value index key beside null was not SBKOBIN");
   Require(key_null < key_zero,
           "CDP-040 typed null index key did not sort before non-null value");
   Commit(context);
+
+  auto null_context = Begin(fixture, "cdp040-typed-distinct-nulls");
+  auto first_null = NullInt64IndexedRow();
+  auto second_null = NullInt64IndexedRow();
+  first_null.requested_row_uuid = {};
+  second_null.requested_row_uuid = {};
+  auto null_request = NativeRequest(fixture, null_context, {first_null, second_null});
+  null_request.option_envelopes.push_back("physical_mga_cow.row_offset=2");
+  const auto nulls = api::EngineExecuteNativeBulkIngest(null_request);
+  RequireOk(nulls, "actual SQL NULLs lost nulls-distinct unique-index semantics");
+  Require(nulls.inserted_rows == 2 && SelectCount(fixture, null_context) == 4,
+          "actual SQL NULL duplicate rows were omitted");
+  Rollback(null_context);
 }
 
 void TestTypedScalarIndexKeysUseBinaryPayloads() {
@@ -1719,8 +1782,8 @@ void TestTypedScalarIndexKeysUseBinaryPayloads() {
       EvidenceU64(result.evidence, "direct_index_key_typed_encoded");
   const auto fallback =
       EvidenceU64(result.evidence, "direct_index_key_typed_fallback");
-  const auto sbkohex =
-      EvidenceU64(result.evidence, "direct_index_key_sbkohex_keys");
+  const auto sbkobin =
+      EvidenceU64(result.evidence, "direct_index_key_sbkobin_keys");
   Require(candidates == expected,
           "CDP-040 typed scalar indexes did not inspect every typed key: expected " +
               std::to_string(expected) + " got " +
@@ -1731,21 +1794,21 @@ void TestTypedScalarIndexKeysUseBinaryPayloads() {
   Require(fallback == 0,
           "CDP-040 typed scalar indexes fell back to display text: " +
               std::to_string(fallback));
-  Require(sbkohex == expected,
-          "CDP-040 typed scalar indexes did not emit SBKOHEX keys: expected " +
-              std::to_string(expected) + " got " + std::to_string(sbkohex));
+  Require(sbkobin == expected,
+          "CDP-040 typed scalar indexes did not emit SBKOBIN keys: expected " +
+              std::to_string(expected) + " got " + std::to_string(sbkobin));
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "CDP-040 typed scalar index state reload failed");
-  api::EngineApiU64 sbkohex_count = 0;
+  api::EngineApiU64 sbkobin_count = 0;
   for (const auto& entry : loaded.state.index_entries) {
     if (entry.table_uuid == fixture.table_uuid &&
-        entry.key_value.rfind("SBKOHEX:", 0) == 0) {
-      ++sbkohex_count;
+        entry.key_value.rfind("SBKOBIN:", 0) == 0) {
+      ++sbkobin_count;
     }
   }
-  Require(sbkohex_count == expected,
-          "CDP-040 typed scalar persisted index keys were not all SBKOHEX");
+  Require(sbkobin_count == expected,
+          "CDP-040 typed scalar persisted index keys were not all SBKOBIN");
   Commit(context);
 }
 
@@ -1860,7 +1923,7 @@ void TestTypedScalarRowPageStorage() {
           "CDP-040 scoped typed-row persistence reinterpreted lexical int32 bytes");
   Commit(context);
 
-  const auto page = ReadPhysicalPage(fixture, 1024);
+  const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
   Require(page.visible_rows.size() == 2,
           "CDP-040 typed scalar physical row-page visible count drifted");
   std::map<dt::CanonicalTypeId, api::EngineApiU64> recovered_counts;
@@ -1906,6 +1969,154 @@ void TestTypedScalarRowPageStorage() {
   }
 }
 
+void TestNativeUuidBinaryIndexAndValues() {
+  auto fixture = MakeFixture("uuid_binary", 1650);
+  fixture.table_uuid = NewIdentity(platform::UuidKind::object, 1660);
+  fixture.index_uuid = NewIdentity(platform::UuidKind::object, 1661);
+  auto metadata = Begin(fixture, "uuid-binary-metadata");
+  api::CrudTableRecord table;
+  table.creator_tx = metadata.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "uuid_binary_values";
+  table.columns = {{"id", "canonical=int64"}, {"value", "canonical=uuid"}};
+  auto index = IdIndex(fixture, metadata);
+  index.column_name = "value";
+  index.unique = true;
+  Require(!PublishFixtureTable(metadata, table).error, "UUID bulk catalog publication failed");
+  Require(!api::AppendMgaIndexMetadata(metadata, index).error, "UUID bulk index publication failed");
+  Commit(metadata);
+
+  std::vector<platform::Uuid> values(9);
+  values[1].bytes.fill(0xff);
+  values[2].bytes = {0x00,0x11,0x22,0x33,0x44,0x55,0x46,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff};
+  values[3].bytes = {0xff,0xee,0xdd,0xcc,0xbb,0xaa,0x19,0x88,0x87,0x66,0x55,0x44,0x33,0x22,0x11,0x00};
+  values[4].bytes.fill(0x55);
+  values[5].bytes.fill(0xaa);
+  // UUID data can contain legacy NULL and composite delimiter bytes anywhere.
+  values[6].bytes = {'<','N','U','L','L','>',0,1,2,3,4,5,6,7,8,9};
+  values[7].bytes = {9,8,7,6,5,4,3,2,1,0,'<','N','U','L','L','>'};
+  values[8].bytes = {0x1f,'<','N','U','L','L','>',0x1f,0,0xff,1,2,3,4,5,6};
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    platform::Uuid value;
+    value.bytes[bit / 8] = static_cast<std::uint8_t>(1u << (bit % 8));
+    values.push_back(value);
+  }
+  std::vector<api::EngineRowValue> rows;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    api::EngineRowValue row;
+    row.fields = {{"id", ScalarValue("int64", std::to_string(i))},
+                  {"value", IdentityScalarValue("uuid", values[i])}};
+    rows.push_back(std::move(row));
+  }
+  auto context = Begin(fixture, "uuid-binary-insert");
+  auto request = NativeRequest(fixture, context, rows);
+  request.option_envelopes.push_back("physical_mga_cow.rows_per_page=8");
+  const auto inserted = api::EngineExecuteNativeBulkIngest(request);
+  RequireOk(inserted, "UUID binary bulk insert failed");
+  Require(inserted.inserted_rows == values.size() &&
+              EvidenceU64(inserted.evidence, "direct_index_key_typed_fallback") == 0 &&
+              EvidenceU64(inserted.evidence, "direct_index_key_sbkobin_keys") == values.size(),
+          "UUID bulk used a textual index fallback or lost rows");
+  Commit(context);
+
+  // Close the engine session and create an independent one; the physical read
+  // below additionally validates the committed row-page bytes.
+  fixture.session.reset();
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      BaseContext(fixture, "uuid-binary-reopen"));
+  auto reader = Begin(fixture, "uuid-binary-read");
+  const auto stored = api::LoadMgaRelationStoreState(reader);
+  Require(stored.ok, "UUID binary index replay failed");
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto type = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::uuid);
+  Require(type.ok() && type.manifest.descriptor_rows.size() == 1, "UUID datatype absent");
+  const auto descriptor = type.manifest.descriptor_rows.front().descriptor_uuid;
+  std::set<std::string> expected_values, actual_values;
+  for (const auto& value : values)
+    expected_values.emplace(reinterpret_cast<const char*>(value.bytes.data()), 16);
+  std::size_t entries = 0;
+  for (const auto& entry : stored.state.index_entries) {
+    if (entry.index_uuid != fixture.index_uuid) continue;
+    ++entries;
+    Require(entry.payload_value.size() == 16 &&
+                expected_values.contains(entry.payload_value),
+            "UUID index logical payload is not exact binary16");
+    scratchbird::core::index::IndexKeyEncodingComponent component;
+    component.type_descriptor_uuid = descriptor;
+    component.payload.assign(entry.payload_value.begin(), entry.payload_value.end());
+    const auto encoded = scratchbird::core::index::EncodeIndexKey({component}, {});
+    Require(encoded.ok(), "independent canonical UUID key encoding failed");
+    const std::string expected = std::string("SBKOBIN:") +
+        std::string(reinterpret_cast<const char*>(encoded.encoded.data()), encoded.encoded.size());
+    Require(entry.key_value == expected,
+            "stored UUID key differs from independent canonical binary encoding");
+    actual_values.insert(entry.payload_value);
+  }
+  Require(entries == values.size() && actual_values == expected_values,
+          "UUID index replay omitted or duplicated a value");
+
+  actual_values.clear();
+  for (std::size_t page_index = 0; page_index < (values.size() + 7) / 8; ++page_index) {
+    const auto physical = ReadPhysicalPage(fixture, fixture.physical_page + page_index);
+    for (const auto& row : physical.visible_rows) {
+      for (const auto& cell : row.cells) {
+        if (cell.value.type_id != dt::CanonicalTypeId::uuid) continue;
+        Require(!cell.value.is_null && cell.value.payload.size() == 16,
+                "UUID physical cell lost its binary width or became NULL");
+        actual_values.emplace(reinterpret_cast<const char*>(cell.value.payload.data()), 16);
+      }
+    }
+  }
+  Require(actual_values == expected_values, "UUID physical replay changed one or more of 128 bits");
+  Rollback(reader);
+
+  // Nil and marker-shaped UUIDs are present data, never SQL NULL. The actual
+  // committed unique index must reject them, even in a new statement/session.
+  for (const std::size_t ordinal : {0u, 2u, 6u, 7u, 8u}) {
+    auto duplicate_context = Begin(fixture, "uuid-binary-duplicate");
+    api::EngineRowValue duplicate;
+    duplicate.fields = {{"id", ScalarValue("int64", "1000")},
+                        {"value", IdentityScalarValue("uuid", values[ordinal])}};
+    const auto refused = api::EngineExecuteNativeBulkIngest(
+        NativeRequest(fixture, duplicate_context, {duplicate}));
+    Require(!refused.ok && !refused.diagnostics.empty(),
+            "UUID duplicate was accepted or lacked a refusal diagnostic at ordinal " +
+                std::to_string(ordinal));
+    Require(SelectCount(fixture, duplicate_context) == values.size(),
+            "refused UUID duplicate changed visible rows");
+    Rollback(duplicate_context);
+  }
+
+  for (const std::size_t width : {0u, 15u, 17u, 36u}) {
+    auto malformed_context = Begin(fixture, "uuid-binary-invalid-width");
+    api::EngineRowValue malformed;
+    malformed.fields = {{"id", ScalarValue("int64", "2000")},
+                        {"value", BinaryScalarValue("uuid", std::vector<std::uint8_t>(width, 0x41))}};
+    const auto refused = api::EngineExecuteNativeBulkIngest(
+        NativeRequest(fixture, malformed_context, {malformed}));
+    Require(!refused.ok && !refused.diagnostics.empty(), "malformed UUID width was accepted");
+    Require(SelectCount(fixture, malformed_context) == values.size(),
+            "malformed UUID width changed visible rows");
+    Rollback(malformed_context);
+  }
+
+  for (const bool null_with_payload : {false, true}) {
+    auto malformed_context = Begin(fixture, "uuid-binary-ambiguous-carrier");
+    auto value = IdentityScalarValue("uuid", values[2]);
+    if (null_with_payload) value.is_null = true;
+    else value.encoded_value = "00112233-4455-4677-8899-aabbccddeeff";
+    api::EngineRowValue malformed;
+    malformed.fields = {{"id", ScalarValue("int64", "3000")}, {"value", value}};
+    const auto refused = api::EngineExecuteNativeBulkIngest(
+        NativeRequest(fixture, malformed_context, {malformed}));
+    Require(!refused.ok && !refused.diagnostics.empty(),
+            "dual UUID carrier or payload-bearing SQL NULL was accepted");
+    Require(SelectCount(fixture, malformed_context) == values.size(),
+            "malformed UUID carrier changed visible rows");
+    Rollback(malformed_context);
+  }
+}
+
 void TestMalformedInlineFixedTypedValueRefuses() {
   auto fixture = MakeTypedScalarFixture("malformed_inline_fixed", 1600);
   auto context = Begin(fixture, "cdp040-malformed-inline-fixed");
@@ -1941,7 +2152,7 @@ void TestDescriptorPayloadRowPageStorage() {
           "CDP-040 descriptor payload rows were not visible in writer transaction");
   Commit(context);
 
-  const auto page = ReadPhysicalPage(fixture, 1024);
+  const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
   Require(page.visible_rows.size() == 2,
           "CDP-040 descriptor physical row-page visible count drifted");
   std::map<dt::CanonicalTypeId, api::EngineApiU64> recovered_counts;
@@ -1978,28 +2189,28 @@ void TestDescriptorPayloadIndexKeysUseBinaryPayloads() {
       EvidenceU64(result.evidence, "direct_index_key_typed_encoded");
   const auto fallback =
       EvidenceU64(result.evidence, "direct_index_key_typed_fallback");
-  const auto sbkohex =
-      EvidenceU64(result.evidence, "direct_index_key_sbkohex_keys");
+  const auto sbkobin =
+      EvidenceU64(result.evidence, "direct_index_key_sbkobin_keys");
   Require(candidates == expected,
           "CDP-040 descriptor payload indexes did not inspect every typed key");
   Require(encoded == expected,
           "CDP-040 descriptor payload indexes did not encode every typed key");
   Require(fallback == 0,
           "CDP-040 descriptor payload indexes fell back to display text");
-  Require(sbkohex == expected,
-          "CDP-040 descriptor payload indexes did not emit SBKOHEX keys");
+  Require(sbkobin == expected,
+          "CDP-040 descriptor payload indexes did not emit SBKOBIN keys");
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "CDP-040 descriptor payload index state reload failed");
-  api::EngineApiU64 sbkohex_count = 0;
+  api::EngineApiU64 sbkobin_count = 0;
   for (const auto& entry : loaded.state.index_entries) {
     if (entry.table_uuid == fixture.table_uuid &&
-        entry.key_value.rfind("SBKOHEX:", 0) == 0) {
-      ++sbkohex_count;
+        entry.key_value.rfind("SBKOBIN:", 0) == 0) {
+      ++sbkobin_count;
     }
   }
-  Require(sbkohex_count == expected,
-          "CDP-040 descriptor payload persisted index keys were not SBKOHEX");
+  Require(sbkobin_count == expected,
+          "CDP-040 descriptor payload persisted index keys were not SBKOBIN");
   Commit(context);
 }
 
@@ -2031,20 +2242,22 @@ Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 opaque payload database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.page_size = create.page_size;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
 
   auto metadata = Begin(fixture, "cdp040-opaque-payload-metadata");
-  const auto table = api::AppendMgaTableMetadata(
+  const auto table = PublishFixtureTable(
       metadata, OpaqueRenderOnlyPayloadTable(fixture, metadata, type_name));
   Require(!table.error, "CDP-040 opaque payload table metadata append failed");
   Commit(metadata);
+  StartFixtureSession(fixture, metadata);
   return fixture;
 }
 
@@ -2102,7 +2315,7 @@ void TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow() {
             "CDP-040 explicit opaque payload row was not visible in writer transaction");
     Commit(context);
 
-    const auto page = ReadPhysicalPage(fixture, 1024);
+    const auto page = ReadPhysicalPage(fixture, fixture.physical_page);
     Require(page.visible_rows.size() == 1,
             "CDP-040 explicit opaque physical row-page visible count drifted");
     api::EngineApiU64 recovered_opaque_cells = 0;
@@ -2430,7 +2643,9 @@ void TestSblrRegistryEntry() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
+  Require(argc == 1 || fixed_scalar_only, "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
   TestSblrRegistryEntry();
   TestApiAndSblrAcceptedRoutes();
@@ -2441,6 +2656,11 @@ int main() {
   TestTypedScalarIndexKeysUseBinaryPayloads();
   TestTypedScalarRowPageStorage();
   TestMalformedInlineFixedTypedValueRefuses();
+  TestNativeUuidBinaryIndexAndValues();
+  if (fixed_scalar_only) {
+    std::cout << "native_fixed_scalar_bulk=passed uuid_values=137\n";
+    return EXIT_SUCCESS;
+  }
   TestDescriptorPayloadRowPageStorage();
   TestDescriptorPayloadIndexKeysUseBinaryPayloads();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();

@@ -1956,7 +1956,15 @@ void TestDmlRegistryBinaryProjection() {
   Require(!p::TypedUuid(Id(3), nullptr), "DML UUID conversion accepted null output");
   api::EngineRequestContext context;
   const auto rows = d::CurrentDatatypeTypeCodecIdentityRowsV1();
-  Require(rows.size() == 31, "six V1 plus twelve V2 plus thirteen V3 datatype rows");
+  Require(rows.size() == 62, "immutable datatype cohort inventory V1-V4");
+  std::array<std::size_t, 4> cohort_counts{};
+  for (const auto& row : rows) {
+    Require(row.catalog_generation >= 1 && row.catalog_generation <= 4,
+            "unexpected datatype cohort generation");
+    ++cohort_counts[row.catalog_generation - 1];
+  }
+  Require(cohort_counts == std::array<std::size_t, 4>{6, 12, 13, 31},
+          "six V1 plus twelve V2 plus thirteen V3 plus thirty-one V4 datatype rows");
   const auto state = [](const w::TypedUpdateDatatypeAuthorityRecord& v) {
     return std::tie(v.exact_bytes, v.datatype_ordinal, v.datatype_identity_code, v.null_encoding_code,
         v.byte_order_code, v.is_signed, v.descriptor_uuid, v.descriptor_generation,

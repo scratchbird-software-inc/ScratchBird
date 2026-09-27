@@ -204,7 +204,8 @@ def require_last_unique_probe_used_index(route: StartedRoute) -> None:
     last = lines[-1] if lines else ""
     required = (
         "bulk_unique_proof_persisted_conflict",
-        "key=SBKOHEX:",
+        "key_bytes=",
+        "key_redacted=true",
     )
     missing = [token for token in required if token not in last]
     if missing:
@@ -212,6 +213,8 @@ def require_last_unique_probe_used_index(route: StartedRoute) -> None:
             "unique probe: ordinary SBSql duplicate check did not require the "
             f"persisted index path ({missing}): {last if last else '<empty trace>'}"
         )
+    if "key=" in last or "SBKOHEX:" in last or "SBKOBIN:" in last:
+        raise WholeStoreRecoveryError("unique probe: raw persisted key leaked into diagnostic text")
 
 
 def verify_reopened_state(

@@ -505,6 +505,25 @@ void BulkConstraintProofPathUsesSortedUniqueEvidence() {
               "SB-BULK-CONSTRAINT-UNIQUE-PERSISTED-CONFLICT",
           "bulk visible conflict diagnostic drifted");
 
+  // Binary keys include native UUIDs and arbitrary user octets; none may be
+  // interpolated into diagnostic text, even when the bytes happen to be ASCII.
+  for (const std::string key : {std::string("private-user-key"),
+                               std::string("SBKOBIN:SBKO\0\xff\r\n", 16)}) {
+    auto binary_conflict = visible_conflict;
+    binary_conflict.unique_proofs[0].incoming_keys[0].encoded_key = key;
+    binary_conflict.unique_proofs[0].visible_keys[0].encoded_key = key;
+    const auto refused = bulk::ProveBulkConstraints(binary_conflict);
+    Require(!refused.ok() && refused.diagnostic.diagnostic_code ==
+                "SB-BULK-CONSTRAINT-UNIQUE-PERSISTED-CONFLICT",
+            "binary persisted duplicate did not retain exact conflict diagnostic");
+    Require(refused.diagnostic.arguments.size() == 1 &&
+                refused.diagnostic.arguments[0].key == "detail" &&
+                refused.diagnostic.arguments[0].value ==
+                    "bulk_unique_proof_persisted_conflict:key_bytes=" +
+                        std::to_string(key.size()) + ":key_redacted=true",
+            "bulk duplicate diagnostic leaked or reinterpreted key bytes");
+  }
+
   auto unsafe = BulkRequest();
   unsafe.unique_proofs[0].incoming_keys = {BulkRef('d', '1', 1201)};
   unsafe.unique_proofs[0].incoming_keys[0].encoded_key = "SBK1legacy";

@@ -291,9 +291,150 @@ void TestTextExactDescriptorTypeCodecIdentity() {
          "MDF-012 wrong text snapshot UUID was admitted");
 }
 
+void TestFixedScalarSuccessorCohort() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  constexpr auto snapshot = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d704");
+  struct Expected {
+    dt::CanonicalTypeId type;
+    scratchbird::core::platform::Uuid descriptor, value_type, codec;
+    const char* codec_id;
+    std::uint32_t width;
+  };
+  const std::array<Expected, 18> expected{{
+    {dt::CanonicalTypeId::int8,
+     FixtureUuidLiteral("64000000-696e-7438-8000-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d800"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d801"), "datatype.int8.le.v1", 1},
+    {dt::CanonicalTypeId::int16,
+     FixtureUuidLiteral("65000000-696e-7431-b600-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d802"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d803"), "datatype.int16.le.v1", 2},
+    {dt::CanonicalTypeId::uint8,
+     FixtureUuidLiteral("78000000-7569-7e74-b800-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d804"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d805"), "datatype.uint8.le.v1", 1},
+    {dt::CanonicalTypeId::uint16,
+     FixtureUuidLiteral("79000000-7569-7e74-b136-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d806"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d807"), "datatype.uint16.le.v1", 2},
+    {dt::CanonicalTypeId::uint32,
+     FixtureUuidLiteral("7a000000-7569-7e74-b332-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d808"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d809"), "datatype.uint32.le.v1", 4},
+    {dt::CanonicalTypeId::uint128,
+     FixtureUuidLiteral("7c000000-7569-7e74-b132-380000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80a"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80b"), "datatype.uint128.le.v1", 16},
+    {dt::CanonicalTypeId::bfloat16,
+     FixtureUuidLiteral("8a000000-6266-7c6f-a174-313600000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80c"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80d"), "datatype.bfloat16.ieee754.le.v1", 2},
+    {dt::CanonicalTypeId::real16,
+     FixtureUuidLiteral("8b000000-7265-716c-b136-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80e"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d80f"), "datatype.real16.ieee754.le.v1", 2},
+    {dt::CanonicalTypeId::real32,
+     FixtureUuidLiteral("8c000000-7265-716c-b332-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d810"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d811"), "datatype.real32.ieee754.le.v1", 4},
+    {dt::CanonicalTypeId::real128,
+     FixtureUuidLiteral("8e000000-7265-716c-b132-380000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d812"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d813"), "datatype.real128.ieee754.le.v1", 16},
+    {dt::CanonicalTypeId::ip_address,
+     FixtureUuidLiteral("d2000000-6970-7f61-a464-726573730000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d814"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d815"), "datatype.ip_address.network.v1", 16},
+    {dt::CanonicalTypeId::network_prefix,
+     FixtureUuidLiteral("d3000000-071d-7477-af72-6b5f70726566"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d816"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d817"), "datatype.network_prefix.network.v1", 18},
+    {dt::CanonicalTypeId::mac_address,
+     FixtureUuidLiteral("d4000000-6d61-735f-a164-647265737300"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d818"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d819"), "datatype.mac_address.network.v1", 8},
+    {dt::CanonicalTypeId::enum_value,
+     FixtureUuidLiteral("6c020000-656e-756d-9f76-616c75650000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81a"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81b"), "datatype.enum_value.binary16.v1", 16},
+    {dt::CanonicalTypeId::date,
+     FixtureUuidLiteral("90010000-6461-7465-8000-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81c"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d"), "datatype.date.days.le.v1", 4},
+    {dt::CanonicalTypeId::time,
+     FixtureUuidLiteral("91010000-7469-7d65-8000-000000000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81e"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81f"), "datatype.time.nanos.le.v1", 8},
+    {dt::CanonicalTypeId::timestamp,
+     FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d820"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d821"), "datatype.timestamp.utc_tuple.le.v1", 16},
+    {dt::CanonicalTypeId::interval,
+     FixtureUuidLiteral("93010000-696e-7465-b276-616c00000000"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d822"),
+     FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d823"), "datatype.interval.tuple.le.v1", 16},
+  }};
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "V4 manifest load failed");
+  std::array<std::size_t, 4> counts{};
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    Require(row.catalog_generation >= 1 && row.catalog_generation <= 4 &&
+                row.registry_generation == row.catalog_generation,
+            "codec cohort generation not exact");
+    ++counts[row.catalog_generation - 1];
+  }
+  Require(counts == std::array<std::size_t, 4>{6, 12, 13, 31},
+          "successor changed immutable predecessor rows");
+  std::set<scratchbird::core::platform::Uuid> identities;
+  for (const auto& item : expected) {
+    const auto descriptor = dt::LookupDatatypeCatalogRow(manifest.manifest, item.type);
+    Require(descriptor.ok() && descriptor.manifest.descriptor_rows.size() == 1 &&
+                descriptor.manifest.descriptor_rows.front().descriptor_uuid.value == item.descriptor,
+            "V4 manifest descriptor identity differs from registry");
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 4, item.descriptor, 1);
+    Require(binding.ok && binding.row.type_uuid == item.value_type &&
+                binding.row.type_generation == 1 && binding.row.codec_uuid == item.codec &&
+                binding.row.codec_id == item.codec_id && binding.row.codec_version == 1 &&
+                binding.row.codec_generation == 1 && binding.row.canonical_value_bytes == item.width &&
+                binding.row.canonical_value_minimum_bytes == item.width &&
+                binding.row.canonical_value_maximum_bytes == item.width &&
+                binding.row.canonical_value_exact_bytes == item.width &&
+                !binding.row.canonical_value_variable_width && binding.row.null_supported &&
+                binding.row.sql_null_requires_zero_payload &&
+                binding.row.canonical_binary_type_code == static_cast<std::uint32_t>(item.type),
+            "V4 exact scalar tuple or representation differs");
+    for (const auto identity : {item.descriptor, item.value_type, item.codec})
+      Require(identities.insert(identity).second, "V4 descriptor/type/codec identities alias");
+    for (unsigned bit = 0; bit < 128; ++bit) {
+      auto altered = item.descriptor;
+      altered.bytes[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      Require(!dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 4, altered, 1).ok,
+              "V4 altered descriptor admitted");
+      auto other_snapshot = snapshot;
+      other_snapshot.bytes[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      Require(!dt::LookupDatatypeTypeCodecIdentityV1(other_snapshot, 4, 4, item.descriptor, 1).ok,
+              "V4 altered snapshot admitted");
+    }
+    Require(!dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 3, 4, item.descriptor, 1).ok &&
+                !dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 3, item.descriptor, 1).ok &&
+                !dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 4, item.descriptor, 2).ok &&
+                !dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 4, item.value_type, 1).ok &&
+                !dt::LookupDatatypeTypeCodecIdentityV1(snapshot, 4, 4, item.codec, 1).ok,
+            "V4 mismatched cohort or substituted identity admitted");
+    for (unsigned generation = 1; generation <= 3; ++generation) {
+      auto predecessor = snapshot;
+      predecessor.bytes.back() = static_cast<std::uint8_t>(generation);
+      Require(!dt::LookupDatatypeTypeCodecIdentityV1(predecessor, generation, generation,
+                                                    item.descriptor, 1).ok,
+              "V4-only scalar leaked into predecessor cohort");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
+  TestFixedScalarSuccessorCohort();
   // MDF-012-CURRENT-CORE-DATATYPE-CATALOG-MANIFEST
   // DEFER-DTYPE-DESCRIPTOR-IMPLEMENTATION
   // DEFER-DTYPE-CATALOG-DDL

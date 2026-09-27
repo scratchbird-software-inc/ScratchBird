@@ -2439,6 +2439,32 @@ bool NativeStorageBindingMatrix(const Fixture& fixture) {
     passed &= Require(!api::ExactKeyValueStorageDescriptorV1(request_context, changed),
                       "malformed or stale key/value native descriptor was admitted");
   }
+  // V4 adds a distinct native timestamp type/codec binding. Admission must
+  // validate the whole tuple, not just accept the newly present fields.
+  for (unsigned mutation = 0; mutation < 13; ++mutation) {
+    auto changed = source;
+    auto& descriptor = changed.columns[2].value_descriptor;
+    api::CatalogColumnMetadata metadata;
+    if (!api::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) return false;
+    switch (mutation) {
+      case 0: metadata.identities.at("type_uuid").bytes.back() ^= 1; break;
+      case 1: metadata.identities.at("datatype_descriptor_uuid").bytes.back() ^= 1; break;
+      case 2: metadata.identities.at("codec_uuid").bytes.back() ^= 1; break;
+      case 3: metadata.text.at("type_generation") = "2"; break;
+      case 4: metadata.text.at("datatype_descriptor_generation") = "2"; break;
+      case 5: metadata.text.at("codec_generation") = "2"; break;
+      case 6: metadata.text.at("codec_version") = "2"; break;
+      case 7: metadata.text.at("codec_id") += ".forged"; break;
+      case 8: metadata.text.at("null_encoding") = "0"; break;
+      case 9: metadata.identities.erase("codec_uuid"); break;
+      case 10: metadata.identities["column_uuid"] = changed.columns[2].column_uuid; break;
+      case 11: descriptor.type_uuid = descriptor.datatype_descriptor_uuid; break;
+      case 12: ++descriptor.datatype_descriptor_generation; break;
+    }
+    if (!api::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor)) return false;
+    passed &= Require(!api::ExactKeyValueStorageDescriptorV1(context, changed),
+                      "malformed native timestamp binding was admitted");
+  }
   return passed;
 }
 

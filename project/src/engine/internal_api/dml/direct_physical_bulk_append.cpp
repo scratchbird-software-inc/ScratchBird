@@ -31,6 +31,7 @@
 #include "dml/write_result_policy.hpp"
 #include "bulk_placement_order.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "domain_support/domain_store.hpp"
 #include "ipar_fault_injection.hpp"
 #include "metric_contracts.hpp"
@@ -1049,6 +1050,7 @@ struct DirectPrecomputedIndexEntry {
   EngineUuid row_uuid;
   EngineUuid version_uuid;
   std::uint64_t source_ordinal = 0;
+  bool null_key = false;
 };
 
 using DirectPrecomputedIndexEntryMap =
@@ -1068,8 +1070,37 @@ struct DirectTypedIndexKeyStats {
   std::uint64_t typed_key_candidates = 0;
   std::uint64_t typed_key_encoded = 0;
   std::uint64_t typed_key_fallback = 0;
-  std::uint64_t sbkohex_keys = 0;
+  std::uint64_t sbkobin_keys = 0;
 };
+
+using DirectIndexDatatypeBindings =
+    std::map<std::string, dt::DatatypeTypeCodecIdentityRowV1>;
+
+bool DirectBindIndexDatatypes(const EngineRequestContext& context,
+                             const MgaRelationStorageDescriptor& descriptor,
+                             DirectIndexDatatypeBindings* output) {
+  if (output == nullptr || descriptor.relation_uuid.is_nil() ||
+      descriptor.database_uuid != context.database_uuid || descriptor.columns.empty())
+    return false;
+  DirectIndexDatatypeBindings bound;
+  std::set<EngineUuid> columns, values;
+  for (const auto& column : descriptor.columns) {
+    const auto& value = column.value_descriptor;
+    const auto row = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, value.datatype_descriptor_uuid,
+        value.datatype_descriptor_generation);
+    if (!core::uuid::IsEngineIdentityUuid(column.column_uuid) || !column.column_generation ||
+        !core::uuid::IsEngineIdentityUuid(value.descriptor_uuid) ||
+        !columns.insert(column.column_uuid).second || !values.insert(value.descriptor_uuid).second ||
+        !row.ok || row.row.type_uuid != value.type_uuid ||
+        row.row.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::unknown) ||
+        !bound.emplace(column.canonical_name_key, row.row).second)
+      return false;
+  }
+  *output = std::move(bound);
+  return true;
+}
 
 struct DirectStageSimpleIndexPrecomputePlan {
   CrudIndexRecord index;
@@ -1083,7 +1114,26 @@ struct DirectStageSimpleIndexPrecomputePlan {
   std::string non_null_encoded_key_prefix;
 };
 
-inline constexpr std::string_view kDirectSbkoHexPrefix = "SBKOHEX:";
+inline constexpr std::string_view kDirectSbkoBinaryPrefix = "SBKOBIN:";
+
+bool DirectEncodedScalarKeyIsNull(std::string_view key) {
+  // The producer's explicit canonical NULL rank, never a payload substring.
+  constexpr std::size_t rank_offset = kDirectSbkoBinaryPrefix.size() + 4;
+  if (key.size() < kDirectSbkoBinaryPrefix.size() + 35 ||
+      !key.starts_with("SBKOBIN:SBKO")) return false;
+  const auto rank = static_cast<unsigned char>(key[rank_offset]);
+  return rank == 0x00 || rank == 0xff;
+}
+
+bool DirectIndexValuesContainNull(
+    const CrudIndexRecord& index,
+    const std::vector<std::pair<std::string, std::string>>& values) {
+  for (const auto& column : DirectIndexKeyColumns(index)) {
+    const auto* value = DirectFieldValuePtr(values, column);
+    if (value == nullptr || DirectNullValue(*value)) return true;
+  }
+  return false;
+}
 
 int DirectCompareUnsignedText(std::string_view left, std::string_view right) {
   const auto count = std::min(left.size(), right.size());
@@ -1100,61 +1150,47 @@ int DirectCompareUnsignedText(std::string_view left, std::string_view right) {
   return left.size() < right.size() ? -1 : (right.size() < left.size() ? 1 : 0);
 }
 
-std::string DirectHexEncodeBytes(
-    std::span<const scratchbird::core::platform::byte> bytes) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(bytes.size() * 2);
-  for (const auto value : bytes) {
-    out.push_back(kHex[(value >> 4) & 0x0f]);
-    out.push_back(kHex[value & 0x0f]);
-  }
-  return out;
-}
-
-void DirectAppendHexByte(std::string* out, unsigned char value) {
+void DirectAppendBinaryByte(std::string* out, unsigned char value) {
   if (out == nullptr) {
     return;
   }
-  static constexpr char kHex[] = "0123456789abcdef";
-  out->push_back(kHex[(value >> 4) & 0x0f]);
-  out->push_back(kHex[value & 0x0f]);
+  out->push_back(static_cast<char>(value));
 }
 
-void DirectAppendHexU32(std::string* out, std::uint32_t value) {
+void DirectAppendBinaryU32(std::string* out, std::uint32_t value) {
   for (int shift = 24; shift >= 0; shift -= 8) {
-    DirectAppendHexByte(out, static_cast<unsigned char>((value >> shift) & 0xffu));
+    DirectAppendBinaryByte(out, static_cast<unsigned char>((value >> shift) & 0xffu));
   }
 }
 
-void DirectAppendHexU64(std::string* out, std::uint64_t value) {
+void DirectAppendBinaryU64(std::string* out, std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8) {
-    DirectAppendHexByte(out, static_cast<unsigned char>((value >> shift) & 0xffu));
+    DirectAppendBinaryByte(out, static_cast<unsigned char>((value >> shift) & 0xffu));
   }
 }
 
-void DirectAppendHexTypedUuid(std::string* out, const TypedUuid& uuid) {
-  DirectAppendHexByte(out, static_cast<unsigned char>(uuid.kind));
+void DirectAppendBinaryTypedUuid(std::string* out, const TypedUuid& uuid) {
+  DirectAppendBinaryByte(out, static_cast<unsigned char>(uuid.kind));
   for (const auto value : uuid.value.bytes) {
-    DirectAppendHexByte(out, static_cast<unsigned char>(value));
+    DirectAppendBinaryByte(out, static_cast<unsigned char>(value));
   }
 }
 
-void DirectAppendEscapedPayloadHex(
+void DirectAppendEscapedPayloadBinary(
     std::string* out,
     std::span<const scratchbird::core::platform::byte> payload) {
   for (const auto value : payload) {
     const auto byte_value = static_cast<unsigned char>(value);
-    DirectAppendHexByte(out, byte_value);
+    DirectAppendBinaryByte(out, byte_value);
     if (byte_value == 0x00) {
-      DirectAppendHexByte(out, 0xff);
+      DirectAppendBinaryByte(out, 0xff);
     }
   }
-  DirectAppendHexByte(out, 0x00);
-  DirectAppendHexByte(out, 0x00);
+  DirectAppendBinaryByte(out, 0x00);
+  DirectAppendBinaryByte(out, 0x00);
 }
 
-bool DirectEncodeSingleComponentIndexKeyHex(
+bool DirectEncodeSingleComponentIndexKeyBinary(
     scratchbird::core::index::IndexKeyComponentKind kind,
     const TypedUuid& type_descriptor_uuid,
     bool is_null,
@@ -1164,46 +1200,46 @@ bool DirectEncodeSingleComponentIndexKeyHex(
     return false;
   }
   encoded_key->clear();
-  encoded_key->reserve(kDirectSbkoHexPrefix.size() + 96 +
+  encoded_key->reserve(kDirectSbkoBinaryPrefix.size() + 96 +
                        sortable_payload.size() * 2);
-  encoded_key->append(kDirectSbkoHexPrefix);
-  DirectAppendHexByte(encoded_key, 'S');
-  DirectAppendHexByte(encoded_key, 'B');
-  DirectAppendHexByte(encoded_key, 'K');
-  DirectAppendHexByte(encoded_key, 'O');
-  DirectAppendHexByte(encoded_key, is_null ? 0x00 : 0x7f);
-  DirectAppendHexU32(encoded_key, static_cast<std::uint32_t>(kind));
-  DirectAppendHexTypedUuid(encoded_key, type_descriptor_uuid);
-  DirectAppendHexU64(encoded_key, 1);
-  DirectAppendHexByte(encoded_key, 0);
+  encoded_key->append(kDirectSbkoBinaryPrefix);
+  DirectAppendBinaryByte(encoded_key, 'S');
+  DirectAppendBinaryByte(encoded_key, 'B');
+  DirectAppendBinaryByte(encoded_key, 'K');
+  DirectAppendBinaryByte(encoded_key, 'O');
+  DirectAppendBinaryByte(encoded_key, is_null ? 0x00 : 0x7f);
+  DirectAppendBinaryU32(encoded_key, static_cast<std::uint32_t>(kind));
+  DirectAppendBinaryTypedUuid(encoded_key, type_descriptor_uuid);
+  DirectAppendBinaryU64(encoded_key, 1);
+  DirectAppendBinaryByte(encoded_key, 0);
   if (!is_null) {
-    DirectAppendEscapedPayloadHex(encoded_key, sortable_payload);
+    DirectAppendEscapedPayloadBinary(encoded_key, sortable_payload);
   }
   return true;
 }
 
-std::string DirectSingleComponentIndexKeyPrefixHex(
+std::string DirectSingleComponentIndexKeyPrefixBinary(
     scratchbird::core::index::IndexKeyComponentKind kind,
     const TypedUuid& type_descriptor_uuid) {
   if (!type_descriptor_uuid.valid()) {
     return {};
   }
   std::string out;
-  out.reserve(kDirectSbkoHexPrefix.size() + 96);
-  out.append(kDirectSbkoHexPrefix);
-  DirectAppendHexByte(&out, 'S');
-  DirectAppendHexByte(&out, 'B');
-  DirectAppendHexByte(&out, 'K');
-  DirectAppendHexByte(&out, 'O');
-  DirectAppendHexByte(&out, 0x7f);
-  DirectAppendHexU32(&out, static_cast<std::uint32_t>(kind));
-  DirectAppendHexTypedUuid(&out, type_descriptor_uuid);
-  DirectAppendHexU64(&out, 1);
-  DirectAppendHexByte(&out, 0);
+  out.reserve(kDirectSbkoBinaryPrefix.size() + 96);
+  out.append(kDirectSbkoBinaryPrefix);
+  DirectAppendBinaryByte(&out, 'S');
+  DirectAppendBinaryByte(&out, 'B');
+  DirectAppendBinaryByte(&out, 'K');
+  DirectAppendBinaryByte(&out, 'O');
+  DirectAppendBinaryByte(&out, 0x7f);
+  DirectAppendBinaryU32(&out, static_cast<std::uint32_t>(kind));
+  DirectAppendBinaryTypedUuid(&out, type_descriptor_uuid);
+  DirectAppendBinaryU64(&out, 1);
+  DirectAppendBinaryByte(&out, 0);
   return out;
 }
 
-bool DirectEncodeSingleComponentIndexKeyHexFromPrefix(
+bool DirectEncodeSingleComponentIndexKeyBinaryFromPrefix(
     std::string_view non_null_prefix,
     bool is_null,
     std::span<const scratchbird::core::platform::byte> sortable_payload,
@@ -1214,11 +1250,11 @@ bool DirectEncodeSingleComponentIndexKeyHexFromPrefix(
   encoded_key->clear();
   encoded_key->reserve(non_null_prefix.size() + sortable_payload.size() * 2 + 4);
   encoded_key->append(non_null_prefix);
-  DirectAppendEscapedPayloadHex(encoded_key, sortable_payload);
+  DirectAppendEscapedPayloadBinary(encoded_key, sortable_payload);
   return true;
 }
 
-bool DirectEncodeSingleComponentIndexKeyHexFromPrefixInline(
+bool DirectEncodeSingleComponentIndexKeyBinaryFromPrefixInline(
     std::string_view non_null_prefix,
     std::span<const scratchbird::core::platform::byte> sortable_payload,
     std::string* encoded_key) {
@@ -1228,25 +1264,25 @@ bool DirectEncodeSingleComponentIndexKeyHexFromPrefixInline(
   encoded_key->clear();
   encoded_key->reserve(non_null_prefix.size() + sortable_payload.size() * 2 + 4);
   encoded_key->append(non_null_prefix);
-  DirectAppendEscapedPayloadHex(encoded_key, sortable_payload);
+  DirectAppendEscapedPayloadBinary(encoded_key, sortable_payload);
   return true;
 }
 
-bool DirectSbkoHexPayload(std::string_view key, std::string* payload) {
-  if (payload == nullptr || key.rfind(kDirectSbkoHexPrefix, 0) != 0) {
+bool DirectSbkoBinaryPayload(std::string_view key, std::string* payload) {
+  if (payload == nullptr || key.rfind(kDirectSbkoBinaryPrefix, 0) != 0) {
     return false;
   }
-  *payload = std::string(key.substr(kDirectSbkoHexPrefix.size()));
+  *payload = std::string(key.substr(kDirectSbkoBinaryPrefix.size()));
   return true;
 }
 
 int DirectCompareEncodedIndexKey(std::string_view left,
                                  std::string_view right) {
-  if (left.rfind(kDirectSbkoHexPrefix, 0) == 0 &&
-      right.rfind(kDirectSbkoHexPrefix, 0) == 0) {
+  if (left.rfind(kDirectSbkoBinaryPrefix, 0) == 0 &&
+      right.rfind(kDirectSbkoBinaryPrefix, 0) == 0) {
     return DirectCompareUnsignedText(
-        left.substr(kDirectSbkoHexPrefix.size()),
-        right.substr(kDirectSbkoHexPrefix.size()));
+        left.substr(kDirectSbkoBinaryPrefix.size()),
+        right.substr(kDirectSbkoBinaryPrefix.size()));
   }
   if (scratchbird::core::index::IsOrderPreservingIndexKeyEncoding(left) &&
       scratchbird::core::index::IsOrderPreservingIndexKeyEncoding(right)) {
@@ -1256,11 +1292,11 @@ int DirectCompareEncodedIndexKey(std::string_view left,
       return compare.comparison;
     }
   }
-  std::string left_sbkohex;
-  std::string right_sbkohex;
-  if (DirectSbkoHexPayload(left, &left_sbkohex) &&
-      DirectSbkoHexPayload(right, &right_sbkohex)) {
-    return DirectCompareUnsignedText(left_sbkohex, right_sbkohex);
+  std::string left_sbkobin;
+  std::string right_sbkobin;
+  if (DirectSbkoBinaryPayload(left, &left_sbkobin) &&
+      DirectSbkoBinaryPayload(right, &right_sbkobin)) {
+    return DirectCompareUnsignedText(left_sbkobin, right_sbkobin);
   }
   return DirectCompareUnsignedText(left, right);
 }
@@ -1380,7 +1416,7 @@ bool DirectPrecomputedEntriesRequireEncodedCompare(
                                   IsOrderPreservingIndexKeyEncoding(
                                       entry.encoded_key) ||
                               entry.encoded_key.rfind(
-                                  kDirectSbkoHexPrefix, 0) == 0;
+                                  kDirectSbkoBinaryPrefix, 0) == 0;
                      });
 }
 
@@ -1494,14 +1530,14 @@ scratchbird::core::bulk_load::BulkConstraintProofKeyRef DirectProofKey(
     std::string key,
     EngineUuid row_uuid,
     EngineUuid version_uuid,
-    std::uint64_t source_ordinal) {
+    std::uint64_t source_ordinal,
+    std::optional<bool> null_key = std::nullopt) {
   scratchbird::core::bulk_load::BulkConstraintProofKeyRef ref;
   ref.encoded_key = std::move(key);
   ref.row_uuid = std::move(row_uuid);
   ref.version_uuid = std::move(version_uuid);
   ref.source_ordinal = source_ordinal;
-  ref.null_key = ref.encoded_key.find("<NULL>") != std::string::npos ||
-                 DirectNullValue(ref.encoded_key);
+  ref.null_key = null_key.value_or(DirectNullValue(ref.encoded_key));
   return ref;
 }
 
@@ -1533,7 +1569,7 @@ void AddVisibleRowKeysForProof(
     return;
   }
   // Recheck membership through the exact visible MGA row version. A stored
-  // typed key (SBKOHEX) is not byte-equal to its logical field spelling; using
+  // typed key (SBKOBIN) is not byte-equal to its logical field spelling; using
   // that comparison discards real persisted conflicts after UPDATE/rollback.
   // Row identity alone is insufficient because predecessor keys can remain
   // physically present after their version becomes invisible.
@@ -1592,7 +1628,7 @@ void AddVisibleRowKeysForSortedBuild(
       input.payload_value = entry.payload_value;
       input.source_ordinal = ordinal++;
       input.null_key = DirectNullValue(input.encoded_key) ||
-                       input.encoded_key.find("<NULL>") != std::string::npos;
+                       DirectEncodedScalarKeyIsNull(input.encoded_key);
       keys->push_back(std::move(input));
     }
     return;
@@ -1608,9 +1644,7 @@ void AddVisibleRowKeysForSortedBuild(
       input.version_uuid = row.version_uuid;
       input.payload_value = CrudFieldValue(row.values, index.column_name);
       input.source_ordinal = ordinal++;
-      input.null_key = DirectNullValue(input.encoded_key) ||
-                       input.encoded_key.find("<NULL>") !=
-                           std::string::npos;
+      input.null_key = DirectIndexValuesContainNull(index, row.values);
       keys->push_back(std::move(input));
     }
   }
@@ -1631,7 +1665,7 @@ void AddVisibleRowKeysForSortedBuild(
     input.payload_value = entry.payload_value;
     input.source_ordinal = ordinal++;
     input.null_key = DirectNullValue(input.encoded_key) ||
-                     input.encoded_key.find("<NULL>") != std::string::npos;
+                     DirectEncodedScalarKeyIsNull(input.encoded_key);
     keys->push_back(std::move(input));
   }
 }
@@ -1663,7 +1697,7 @@ void AddCachedConflictingVisibleKeysForSortedBuild(
     input.payload_value = by_key->second.payload_value;
     input.source_ordinal = ordinal++;
     input.null_key = DirectNullValue(input.encoded_key) ||
-                     input.encoded_key.find("<NULL>") != std::string::npos;
+                     DirectEncodedScalarKeyIsNull(input.encoded_key);
     keys->push_back(std::move(input));
   }
 }
@@ -1746,7 +1780,7 @@ void AddCachedConflictingVisibleKeysForProof(
     keys->push_back(DirectProofKey(incoming.encoded_key,
                                    incoming.row_uuid,
                                    incoming.version_uuid,
-                                   ordinal++));
+                                   ordinal++, incoming.null_key));
   }
 }
 
@@ -1850,7 +1884,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
               DirectProofKey(CrudIndexEntryLogicalKey(*support_index, logical_entry),
                              entry.row_uuid,
                              entry.version_uuid,
-                             entry.source_ordinal));
+                             entry.source_ordinal, entry.null_key));
         }
       } else {
         for (std::size_t row_index = 0; row_index < staged_rows.size();
@@ -1862,7 +1896,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                 DirectProofKey(key,
                                staged_rows[row_index].row_uuid,
                                staged_rows[row_index].version_uuid,
-                               row_index));
+                               row_index, DirectIndexValuesContainNull(*support_index, values)));
           }
         }
       }
@@ -1976,7 +2010,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
             DirectProofKey(CrudIndexEntryLogicalKey(index, logical_entry),
                            entry.row_uuid,
                            entry.version_uuid,
-                           entry.source_ordinal));
+                           entry.source_ordinal, entry.null_key));
       }
     } else {
       for (std::size_t row_index = 0; row_index < staged_rows.size();
@@ -1987,7 +2021,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
               DirectProofKey(key,
                              staged_rows[row_index].row_uuid,
                              staged_rows[row_index].version_uuid,
-                             row_index));
+                             row_index, DirectIndexValuesContainNull(index, values)));
         }
       }
     }
@@ -2343,7 +2377,7 @@ bool DirectBuildTypedSimpleIndexKeyFromTyped(
       target_type == dt::CanonicalTypeId::character
           ? scratchbird::core::index::IndexKeyComponentKind::collation_key
           : scratchbird::core::index::IndexKeyComponentKind::scalar;
-  if (!DirectEncodeSingleComponentIndexKeyHex(component_kind,
+  if (!DirectEncodeSingleComponentIndexKeyBinary(component_kind,
                                              type_descriptor_uuid,
                                              typed.isSqlNull(),
                                              sortable_payload,
@@ -2353,7 +2387,7 @@ bool DirectBuildTypedSimpleIndexKeyFromTyped(
   }
   if (stats != nullptr) {
     ++stats->typed_key_encoded;
-    ++stats->sbkohex_keys;
+    ++stats->sbkobin_keys;
   }
   return true;
 }
@@ -2363,6 +2397,7 @@ bool DirectBuildTypedSimpleIndexKey(
     const std::string& column_name,
     const EngineRowValue& input_row,
     const InsertRowEncoderPlan& row_encoder_plan,
+    const DirectIndexDatatypeBindings& datatypes,
     std::string* encoded_key,
     DirectTypedIndexKeyStats* stats) {
   if (encoded_key == nullptr) {
@@ -2375,27 +2410,17 @@ bool DirectBuildTypedSimpleIndexKey(
     if (stats != nullptr) { ++stats->typed_key_fallback; }
     return false;
   }
-  const dt::CanonicalTypeId target_type =
-      dt::CanonicalTypeIdFromStableName(target_type_name);
-  dt::CanonicalTypeId effective_target_type = target_type;
-  if (effective_target_type == dt::CanonicalTypeId::unknown) {
-    effective_target_type =
-        dt::CanonicalTypeIdFromStableName(typed->descriptor.canonical_type_name);
-  }
-  if (effective_target_type == dt::CanonicalTypeId::unknown) {
-    if (stats != nullptr) { ++stats->typed_key_fallback; }
-    return false;
-  }
+  const auto binding = datatypes.find(column_name);
+  if (binding == datatypes.end()) return false;
   return DirectBuildTypedSimpleIndexKeyFromTyped(
-      effective_target_type,
-      BindDirectTypedUuid(UuidKind::object, index.index_uuid),
-      *typed,
-      encoded_key,
-      stats);
+      static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code),
+      {UuidKind::object, binding->second.descriptor_uuid},
+      *typed, encoded_key, stats);
 }
 
 DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
     const std::vector<CrudIndexRecord>& indexes,
+    const DirectIndexDatatypeBindings& datatypes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
     std::span<const EngineRowValue> typed_input_rows = {},
@@ -2441,6 +2466,7 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
                                                            simple_column,
                                                            typed_input_rows[row_index],
                                                            *row_encoder_plan,
+                                                           datatypes,
                                                            &encoded_key,
                                                            typed_key_stats);
         }
@@ -2449,7 +2475,9 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
                            *value,
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
-                           static_cast<std::uint64_t>(row_index)});
+                           static_cast<std::uint64_t>(row_index),
+                           typed_key_built ? DirectEncodedScalarKeyIsNull(encoded_key)
+                                           : DirectNullValue(*value)});
       }
       continue;
     }
@@ -2461,7 +2489,8 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
                            payload,
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
-                           static_cast<std::uint64_t>(row_index)});
+                           static_cast<std::uint64_t>(row_index),
+                           DirectIndexValuesContainNull(index, values)});
       }
     }
   }
@@ -2486,7 +2515,7 @@ std::vector<DirectStageSimpleIndexPrecomputePlan>
 DirectBuildStageSimpleIndexPrecomputePlan(
     const std::vector<CrudIndexRecord>& indexes,
     const InsertRowEncoderPlan& row_encoder_plan,
-    const EngineRowValue* first_typed_row = nullptr) {
+    const DirectIndexDatatypeBindings& datatypes) {
   std::vector<DirectStageSimpleIndexPrecomputePlan> plans;
   plans.reserve(indexes.size());
   for (const auto& index : indexes) {
@@ -2500,27 +2529,17 @@ DirectBuildStageSimpleIndexPrecomputePlan(
       plans.clear();
       return plans;
     }
-    dt::CanonicalTypeId target_type = dt::CanonicalTypeIdFromStableName(
-        row_encoder_plan.columns[*ordinal].canonical_type_name);
-    if (target_type == dt::CanonicalTypeId::unknown &&
-        first_typed_row != nullptr &&
-        *ordinal < first_typed_row->fields.size()) {
-      target_type = dt::CanonicalTypeIdFromStableName(
-          first_typed_row->fields[*ordinal].second.descriptor.canonical_type_name);
-    }
-    const TypedUuid type_descriptor_uuid =
-        BindDirectTypedUuid(UuidKind::object, index.index_uuid);
-    if (target_type == dt::CanonicalTypeId::unknown ||
-        !type_descriptor_uuid.valid()) {
-      plans.clear();
-      return plans;
-    }
+    const auto binding = datatypes.find(column_name);
+    if (binding == datatypes.end()) return {};
+    const auto target_type =
+        static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code);
+    const TypedUuid type_descriptor_uuid{UuidKind::object, binding->second.descriptor_uuid};
     const auto component_kind =
         target_type == dt::CanonicalTypeId::character
             ? scratchbird::core::index::IndexKeyComponentKind::collation_key
             : scratchbird::core::index::IndexKeyComponentKind::scalar;
     const std::string non_null_prefix =
-        DirectSingleComponentIndexKeyPrefixHex(component_kind,
+        DirectSingleComponentIndexKeyPrefixBinary(component_kind,
                                               type_descriptor_uuid);
     if (non_null_prefix.empty()) {
       plans.clear();
@@ -2583,12 +2602,13 @@ void DirectAppendStageSimpleIndexEntries(
             &encoded_key,
             typed_key_stats);
       } else {
-        typed_key_built = DirectBuildTypedSimpleIndexKey(plan.index,
-                                                         plan.column_name,
-                                                         *typed_input_row,
-                                                         *row_encoder_plan,
-                                                         &encoded_key,
-                                                         typed_key_stats);
+        const auto* typed = DirectTypedValueForColumn(
+            *typed_input_row, *row_encoder_plan, plan.column_name, nullptr);
+        if (typed != nullptr) {
+          typed_key_built = DirectBuildTypedSimpleIndexKeyFromTyped(
+              plan.target_type, plan.type_descriptor_uuid, *typed,
+              &encoded_key, typed_key_stats);
+        }
       }
     }
     if (field_value.second.empty() && !typed_key_built) {
@@ -2598,7 +2618,9 @@ void DirectAppendStageSimpleIndexEntries(
                                       field_value.second,
                                       row.row_uuid,
                                       row.version_uuid,
-                                      source_ordinal};
+                                      source_ordinal,
+                                      typed_key_built ? DirectEncodedScalarKeyIsNull(encoded_key)
+                                                      : DirectNullValue(field_value.second)};
     DirectTrackPrecomputedIndexEntryOrder(plan.index_uuid,
                                           entry,
                                           order_states);
@@ -2641,7 +2663,7 @@ void DirectAppendStageSimpleTypedIndexEntries(
                       : DirectTypedValueTextPayload(typed),
         row.row_uuid,
         row.version_uuid,
-        source_ordinal};
+        source_ordinal, typed.isSqlNull()};
     DirectTrackPrecomputedIndexEntryOrder(plan.index_uuid,
                                           entry,
                                           order_states);
@@ -3336,7 +3358,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
                                               ref.tag,
                                               &inline_payload,
                                               &inline_size) &&
-      DirectEncodeSingleComponentIndexKeyHexFromPrefixInline(
+      DirectEncodeSingleComponentIndexKeyBinaryFromPrefixInline(
           non_null_encoded_key_prefix,
           std::span<const scratchbird::core::platform::byte>(
               inline_payload.data(),
@@ -3345,7 +3367,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
     *payload_value = DirectNativePacketPayloadText(frame, ref);
     if (stats != nullptr) {
       ++stats->typed_key_encoded;
-      ++stats->sbkohex_keys;
+      ++stats->sbkobin_keys;
     }
     return true;
   }
@@ -3356,12 +3378,12 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
     return false;
   }
   const bool encoded =
-      DirectEncodeSingleComponentIndexKeyHexFromPrefix(
+      DirectEncodeSingleComponentIndexKeyBinaryFromPrefix(
           non_null_encoded_key_prefix,
           ref.is_null,
           sortable_payload,
           encoded_key) ||
-      DirectEncodeSingleComponentIndexKeyHex(component_kind,
+      DirectEncodeSingleComponentIndexKeyBinary(component_kind,
                                              type_descriptor_uuid,
                                              ref.is_null,
                                              sortable_payload,
@@ -3374,7 +3396,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
                                : DirectNativePacketPayloadText(frame, ref);
   if (stats != nullptr) {
     ++stats->typed_key_encoded;
-    ++stats->sbkohex_keys;
+    ++stats->sbkobin_keys;
   }
   return true;
 }
@@ -3443,12 +3465,13 @@ void DirectAppendStageSimpleNativePacketIndexEntries(
       payload_value = typed.is_null ? std::string(kDirectNullMarker)
                                     : DirectTypedValueTextPayload(typed);
     }
+    const bool null_key = DirectEncodedScalarKeyIsNull(encoded_key);
     DirectPrecomputedIndexEntry entry{
         std::move(encoded_key),
         std::move(payload_value),
         row.row_uuid,
         row.version_uuid,
-        source_ordinal};
+        source_ordinal, null_key};
     DirectTrackPrecomputedIndexEntryOrder(plan.index_uuid,
                                           entry,
                                           order_states);
@@ -4102,8 +4125,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
         input.version_uuid = staged_rows[row_index].version_uuid;
         input.payload_value = CrudFieldValue(values, index.column_name);
         input.source_ordinal = static_cast<std::uint64_t>(row_index);
-        input.null_key = DirectNullValue(input.encoded_key) ||
-                         input.encoded_key.find("<NULL>") != std::string::npos;
+        input.null_key = DirectIndexValuesContainNull(index, values);
         build.rows.push_back(std::move(input));
       }
     }
@@ -4935,7 +4957,7 @@ void WriteDirectBulkPhaseTrace(
         evidence.evidence_kind == "direct_index_key_typed_candidates" ||
         evidence.evidence_kind == "direct_index_key_typed_encoded" ||
 	        evidence.evidence_kind == "direct_index_key_typed_fallback" ||
-	        evidence.evidence_kind == "direct_index_key_sbkohex_keys" ||
+	        evidence.evidence_kind == "direct_index_key_sbkobin_keys" ||
 	        evidence.evidence_kind == "native_bulk_payload_validation_route" ||
 	        evidence.evidence_kind == "native_bulk_typed_logical_batch_bypass" ||
 	        evidence.evidence_kind == "native_bulk_typed_logical_batch_bypass_reason" ||
@@ -5887,6 +5909,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          DirectSteadyClock::now());
   }
 
+  DirectIndexDatatypeBindings index_datatypes;
+  if (!DirectBindIndexDatatypes(request.context, relation_descriptor, &index_datatypes)) {
+    return DirectBulkFailure(request,
+        MakeEngineApiDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+            "dml.direct_physical_bulk_append.datatype_binding_invalid",
+            "published column datatype does not match the exact live cohort", true),
+        "native_index_datatype_binding_invalid");
+  }
+
   const DirectGeneratedCounterPlan generated_counter_plan =
       DirectBuildGeneratedCounterPlan(request, *table);
   if (generated_counter_requested && !generated_counter_plan.ok) {
@@ -5932,6 +5963,17 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      summary);
     AddInsertBatchEvidenceToResult(batch_context, &failure);
     return failure;
+  }
+  for (auto& column : batch_context.row_encoder_plan.columns) {
+    const auto binding = index_datatypes.find(column.column_name);
+    if (binding == index_datatypes.end()) {
+      return DirectBulkFailure(request,
+          MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                       "row_encoder_column_binding_missing"),
+          "row_encoder_column_binding_missing");
+    }
+    column.canonical_type_name = dt::CanonicalTypeName(
+        static_cast<dt::CanonicalTypeId>(binding->second.canonical_binary_type_code));
   }
   const auto strict_eligibility_start = DirectSteadyClock::now();
   const auto bulk_validation = ValidateStrictBulkLoadEligibility(batch_context, *table);
@@ -6186,9 +6228,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
               ? DirectBuildStageSimpleIndexPrecomputePlan(
                     synchronous_indexes,
                     batch_context.row_encoder_plan,
-                    request.borrowed_input_rows.empty()
-                        ? nullptr
-                        : &request.borrowed_input_rows.front())
+                    index_datatypes)
               : std::vector<DirectStageSimpleIndexPrecomputePlan>{};
   bool precompute_simple_indexes_during_stage =
       can_precompute_simple_indexes_during_stage &&
@@ -7700,8 +7740,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         precompute.typed_key_stats.typed_key_encoded;
     direct_typed_index_key_stats.typed_key_fallback +=
         precompute.typed_key_stats.typed_key_fallback;
-    direct_typed_index_key_stats.sbkohex_keys +=
-        precompute.typed_key_stats.sbkohex_keys;
+    direct_typed_index_key_stats.sbkobin_keys +=
+        precompute.typed_key_stats.sbkobin_keys;
     result.evidence.push_back({"native_bulk_index_precompute_route",
                                "async_native_packet_overlap"});
   }
@@ -7813,6 +7853,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 		              batch_context.row_encoder_plan);
 		      direct_precomputed_index_entries =
 		          DirectPrecomputeIndexEntries(synchronous_indexes,
+                                               index_datatypes,
 		                                       staged_rows,
 		                                       logical_value_batch,
 		                                       shared_typed_input_rows
@@ -7834,8 +7875,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           {"direct_index_key_typed_fallback",
            std::to_string(direct_typed_index_key_stats.typed_key_fallback)});
       result.evidence.push_back(
-          {"direct_index_key_sbkohex_keys",
-           std::to_string(direct_typed_index_key_stats.sbkohex_keys)});
+          {"direct_index_key_sbkobin_keys",
+           std::to_string(direct_typed_index_key_stats.sbkobin_keys)});
     }
     mark_phase("index_exact_key_precompute");
   }
@@ -8673,6 +8714,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         }
         direct_precomputed_index_entries =
             DirectPrecomputeIndexEntries(sorted_index_build.retail_indexes,
+                                         index_datatypes,
                                          staged_rows,
                                          logical_value_batch);
         mark_phase("index_exact_key_precompute");

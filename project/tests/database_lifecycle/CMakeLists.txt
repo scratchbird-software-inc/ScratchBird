@@ -25,16 +25,19 @@ if(NOT TARGET sb_server_legacy_diagnostic_rendering)
                    ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
 endif()
 
+# Binary-key equivalence is a normal invariant, independent of optional route
+# selection fault-injection hooks.
+add_executable(dml_unique_key_equivalence_unit dml_unique_key_equivalence_gate.cpp)
+target_compile_features(dml_unique_key_equivalence_unit PRIVATE cxx_std_23)
+target_link_libraries(dml_unique_key_equivalence_unit PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)
+add_test(NAME dml_unique_key_equivalence_unit COMMAND dml_unique_key_equivalence_unit)
+set_tests_properties(dml_unique_key_equivalence_unit PROPERTIES
+  LABELS "database_lifecycle;dml_optimization_equivalence;binary_uuid;unit")
+
 if(SB_ENABLE_TEST_DML_ROUTE_SELECTION)
   add_executable(dml_optimization_history_probe dml_optimization_history_probe.cpp)
   target_compile_features(dml_optimization_history_probe PRIVATE cxx_std_23)
   target_link_libraries(dml_optimization_history_probe PRIVATE sb_engine_internal_api sb_storage_database sb_core_uuid)
-  add_executable(dml_unique_key_equivalence_unit dml_unique_key_equivalence_gate.cpp)
-  target_compile_features(dml_unique_key_equivalence_unit PRIVATE cxx_std_23)
-  target_link_libraries(dml_unique_key_equivalence_unit PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)
-  add_test(NAME dml_unique_key_equivalence_unit COMMAND dml_unique_key_equivalence_unit)
-  set_tests_properties(dml_unique_key_equivalence_unit PROPERTIES
-    LABELS "database_lifecycle;dml_optimization_equivalence;unit")
   add_executable(dml_inventory_snapshot_probe dml_inventory_snapshot_probe.cpp)
   target_compile_features(dml_inventory_snapshot_probe PRIVATE cxx_std_20)
   target_link_libraries(dml_inventory_snapshot_probe PRIVATE sb_storage_database)
@@ -689,6 +692,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(cdp_native_bulk_ingest_api_gate PROPERTIES
     LABELS "cdp_native_bulk_ingest_api_gate;CDP-040;CDP_P4_NATIVE_INGEST_READY;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
   )
+  add_test(NAME cdp_native_fixed_scalar_uuid_bulk_gate
+    COMMAND cdp_native_bulk_ingest_api_gate --native-fixed-scalars)
+  set_tests_properties(cdp_native_fixed_scalar_uuid_bulk_gate PROPERTIES
+    LABELS "CDP-040;binary_uuid;native_datatype_cohort;database_lifecycle_storage;mga_transaction_regression")
 
   add_executable(cdp_page_filespace_demand_gate
     cdp_page_filespace_demand_gate.cpp

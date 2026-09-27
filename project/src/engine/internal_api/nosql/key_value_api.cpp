@@ -764,8 +764,9 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
   const auto& fields = metadata.text;
   const auto& identities = metadata.identities;
   const bool contextual_text = expected_type == "text";
-  if (fields.size() != (contextual_text ? 8U : 2U) ||
-      identities.size() != (contextual_text ? 4U : 1U) ||
+  const bool native_codec = expected_registry_identity != nullptr;
+  if (fields.size() != (native_codec ? 8U : 2U) ||
+      identities.size() != (native_codec ? (contextual_text ? 4U : 3U) : 1U) ||
       !fields.contains("canonical") || !identities.contains("type_uuid") ||
       !fields.contains("nullable") ||
       fields.at("canonical") != expected_type ||
@@ -774,10 +775,11 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
       descriptor.type_uuid != expected_type_uuid ||
       fields.at("nullable") != (expected_nullable ? "true" : "false") ||
       (contextual_text &&
-       (expected_registry_identity == nullptr ||
+       (!native_codec ||
         !identities.contains("column_uuid") ||
-        identities.at("column_uuid") != expected_column_uuid ||
-        !identities.contains("datatype_descriptor_uuid") ||
+        identities.at("column_uuid") != expected_column_uuid)) ||
+      (native_codec &&
+       (!identities.contains("datatype_descriptor_uuid") ||
         identities.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
         !fields.contains("datatype_descriptor_generation") ||

@@ -9,7 +9,7 @@ namespace scratchbird::engine::internal_api {
 // are for bootstrap publishers, not a fallback for statement consumers: those
 // must use and validate their live receipt's exact datatype catalog cohort.
 inline constexpr core::platform::Uuid kBootstrapDatatypeCatalogUuid{{
-    0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x03}};
-inline constexpr std::uint64_t kBootstrapDatatypeCatalogGeneration = 3;
-inline constexpr std::uint64_t kBootstrapDatatypeRegistryGeneration = 3;
+    0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x04}};
+inline constexpr std::uint64_t kBootstrapDatatypeCatalogGeneration = 4;
+inline constexpr std::uint64_t kBootstrapDatatypeRegistryGeneration = 4;
 }  // namespace scratchbird::engine::internal_api

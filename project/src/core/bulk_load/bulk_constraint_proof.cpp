@@ -100,9 +100,10 @@ bool UnsafeLegacyKey(const BulkConstraintProofKeyRef& ref) {
 
 std::string ConflictDetail(const std::string& reason,
                            const std::string& key) {
-  // Identity references are separately carried as binary evidence. Text
-  // detail contains only the diagnostic reason and the user key value.
-  return reason + ":key=" + key;
+  // Keys can contain catalog UUIDs and arbitrary private user octets. Keep
+  // them out of text diagnostics; identity evidence has its own binary carrier.
+  return reason + ":key_bytes=" + std::to_string(key.size()) +
+         ":key_redacted=true";
 }
 
 BulkConstraintProofResult Refuse(BulkConstraintProofResult result,

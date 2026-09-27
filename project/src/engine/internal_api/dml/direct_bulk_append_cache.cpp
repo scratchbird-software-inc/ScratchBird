@@ -209,7 +209,7 @@ bool DirectBuildAppendIndexConflictCaches(
     if (!DirectIndexIsUnique(index)) {
       continue;
     }
-    // Proofs compare provider logical keys. Physical scalar SBKOHEX entries
+    // Proofs compare provider logical keys. Physical scalar SBKOBIN entries
     // and ordinary logical entries can coexist in the same canonical index.
     // Incrementally project each validated cache record; a partial raw-key
     // match is never evidence that all incoming logical keys were checked.

@@ -34,13 +34,13 @@ std::string TypedKey(const api::EngineUuid& index_uuid, unsigned char value) {
   component.payload = {0x80, 0, 0, 0, 0, 0, 0, value};
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test typed key encoding failed");
-  std::string text = "SBKOHEX:";
-  constexpr char digits[] = "0123456789abcdef";
-  for (const auto byte : encoded.encoded) {
-    text += digits[byte >> 4];
-    text += digits[byte & 15];
-  }
-  return text;
+  std::string key = "SBKOBIN:";
+  key.append(reinterpret_cast<const char*>(encoded.encoded.data()), encoded.encoded.size());
+  Require(key.size() == 8 + encoded.encoded.size(), "binary key was text encoded");
+  Require(std::equal(index_uuid.bytes.begin(), index_uuid.bytes.end(),
+                    reinterpret_cast<const unsigned char*>(key.data() + 18)),
+          "binary key descriptor identity is not exact binary16");
+  return key;
 }
 
 int main() {

@@ -48,7 +48,7 @@ bool DirectAppendIndexEntryCacheAvailable(
 
 // False means cache authority was lost; callers must reload or refuse before
 // accepting a proof. keys_by_index contains provider logical keys, not a mix
-// of logical keys and physical SBKOHEX representations.
+// of logical keys and physical SBKOBIN representations.
 bool DirectBuildAppendIndexConflictCaches(
     const EngineRequestContext& context,
     const EngineUuid& table_uuid,

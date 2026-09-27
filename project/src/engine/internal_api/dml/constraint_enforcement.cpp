@@ -460,9 +460,11 @@ std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const MgaRelation
   return std::nullopt;
 }
 
-bool AnyNullKey(const std::vector<std::string>& keys) {
-  for (const auto& key : keys) {
-    if (key.find("<NULL>") != std::string::npos) { return true; }
+bool AnyNullIndexComponent(
+    const CrudIndexRecord& index,
+    const std::vector<std::pair<std::string, std::string>>& values) {
+  for (const auto& column : KeyColumnsForIndex(index)) {
+    if (FieldValue(values, column) == "<NULL>") { return true; }
   }
   return false;
 }
@@ -702,7 +704,7 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
     ConstraintDmlValidationCache* cache) {
   const auto keys = CrudIndexKeysForValues(index, values);
   if (keys.empty()) { return std::nullopt; }
-  if (nulls_distinct && AnyNullKey(keys)) { return std::nullopt; }
+  if (nulls_distinct && AnyNullIndexComponent(index, values)) { return std::nullopt; }
   if (HasIndexBackedUniquePreflightProof(cache, context, index, row_uuid, keys)) {
     return std::nullopt;
   }
@@ -1432,7 +1434,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
         const auto descriptor_keys = CrudIndexKeysForValues(*support_index, values);
         const bool preflight_proven =
             !descriptor_keys.empty() &&
-            !(nulls_distinct && AnyNullKey(descriptor_keys)) &&
+            !(nulls_distinct && AnyNullIndexComponent(*support_index, values)) &&
             HasIndexBackedUniquePreflightProof(cache,
                                                context,
                                                *support_index,
