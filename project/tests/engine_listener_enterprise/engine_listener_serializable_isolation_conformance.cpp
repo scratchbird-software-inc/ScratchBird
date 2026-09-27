@@ -184,6 +184,7 @@ struct ApiFixture {
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
   api::EngineUuid table_uuid;
+  api::EngineUuid primary_index_uuid;
   api::EngineRequestContext owner;
   std::shared_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
 
@@ -384,6 +385,7 @@ ApiFixture MakeApiFixture() {
         << " family=" << index.family << " profile=" << index.profile << '\n';
     throw std::runtime_error("serializable fixture actual primary-key support index missing");
   }
+  fixture.primary_index_uuid = indexes.front().index_uuid;
   Commit(metadata);
   return fixture;
 }
@@ -464,9 +466,44 @@ bool SerializableIntegratedEngineApiProof() {
   Commit(unique_writer);
   auto duplicate_writer = Begin(fixture, "eler021-unique-duplicate", "read_committed");
   const auto duplicate = InsertRow(fixture, duplicate_writer, "001", "duplicate");
+  if (duplicate.ok || FirstDiagnosticCode(duplicate) != "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") {
+    PrintDiagnostics(duplicate);
+    const auto state = api::LoadMgaRelationStoreState(duplicate_writer);
+    for (const auto& table : state.state.relation_metadata.tables) {
+      if (table.table_uuid != fixture.table_uuid) continue;
+      for (const auto& [name, encoded] : table.columns) {
+        api::CatalogColumnMetadata fields;
+        if (api::AdmitCatalogColumnMetadata(encoded, &fields)) {
+          std::cerr << "column=" << name;
+          for (const auto* flag : {"primary_key", "pk", "unique"}) {
+            const auto found = fields.text.find(flag);
+            if (found != fields.text.end()) std::cerr << ' ' << flag << '=' << found->second;
+          }
+          std::cerr << '\n';
+        }
+      }
+    }
+    for (const auto& index : state.state.relation_metadata.indexes) {
+      if (index.table_uuid != fixture.table_uuid) continue;
+      std::cerr << "index_column=" << index.column_name << " unique=" << index.unique;
+      for (const auto& key : index.key_envelopes) std::cerr << " key=" << key;
+      std::cerr << '\n';
+    }
+  }
   ok = Require(!duplicate.ok && FirstDiagnosticCode(duplicate) ==
       "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
       "real primary-key fixture did not reject duplicate insertion") && ok;
+  bool exact_primary_proof = false;
+  for (const auto& diagnostic : duplicate.diagnostics) {
+    if (diagnostic.code != "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION" ||
+        diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=3:key_redacted=true") ==
+            std::string::npos) continue;
+    for (const auto& [field, identity] : diagnostic.identity_fields)
+      if (field == "index_uuid" && identity == fixture.primary_index_uuid)
+        exact_primary_proof = true;
+  }
+  ok = Require(exact_primary_proof,
+      "primary-key refusal lost its actual redacted proof or binary support-index identity") && ok;
   const auto retained = SelectRange(fixture, duplicate_writer, "001", "001");
   ok = Require(retained.ok && retained.result_shape.rows.size() == 1,
       "duplicate refusal changed the committed primary-key row count") && ok;

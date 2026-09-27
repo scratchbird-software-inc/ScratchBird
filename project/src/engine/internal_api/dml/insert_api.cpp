@@ -1824,6 +1824,9 @@ EngineInsertRowsResult ConvertDirectPhysicalInsertResult(
   result.operation_id = "dml.insert_rows";
   result.diagnostics = std::move(direct_result.diagnostics);
   for (auto& diagnostic : result.diagnostics) {
+    // The bound constraint owner has already classified this as PRIMARY KEY.
+    // Its retained uniqueness-proof detail must not reclassify it as UNIQUE.
+    if (diagnostic.code == "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") continue;
     constexpr std::string_view kDirectOperationPrefix =
         "dml.direct_physical_bulk_append:";
     if (StartsWith(diagnostic.detail, kDirectOperationPrefix)) {

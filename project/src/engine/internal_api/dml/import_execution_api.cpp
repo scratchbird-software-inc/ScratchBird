@@ -685,6 +685,8 @@ EngineTypedValue RejectBoolValue(bool value) {
 }
 
 EngineApiDiagnostic NormalizeImportRejectDiagnostic(EngineApiDiagnostic diagnostic) {
+  // Preserve the catalog owner's category, binary identity, and proof detail.
+  if (diagnostic.code == "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") return diagnostic;
   const bool unique_conflict =
       diagnostic.detail.find("unique_index_duplicate") != std::string::npos ||
       diagnostic.detail.find("bulk_unique_proof_persisted_conflict") != std::string::npos ||

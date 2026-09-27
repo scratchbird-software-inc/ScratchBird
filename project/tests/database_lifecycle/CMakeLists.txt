@@ -695,7 +695,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_test(NAME cdp_native_fixed_scalar_uuid_bulk_gate
     COMMAND cdp_native_bulk_ingest_api_gate --native-fixed-scalars)
   set_tests_properties(cdp_native_fixed_scalar_uuid_bulk_gate PROPERTIES
-    LABELS "CDP-040;binary_uuid;native_datatype_cohort;database_lifecycle_storage;mga_transaction_regression")
+    LABELS "cdp_native_fixed_scalar_uuid_bulk_gate;CDP-040;binary_uuid;native_datatype_cohort;database_lifecycle_storage;mga_transaction_regression")
 
   add_executable(cdp_page_filespace_demand_gate
     cdp_page_filespace_demand_gate.cpp
@@ -2283,7 +2283,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
             "${CMAKE_CURRENT_SOURCE_DIR}/secondary_index_empty_binary_restart_gate.py"
             --probe $<TARGET_FILE:dpc_secondary_index_delta_merge_agent_gate>)
   set_tests_properties(dpc_secondary_index_empty_binary_restart_gate PROPERTIES
-    LABELS "DPC-024;secondary_index_delta_ledger;binary_uuid;empty_key;process_restart;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_secondary_index_empty_binary_restart_gate;DPC-024;secondary_index_delta_ledger;binary_uuid;empty_key;process_restart;mga_transaction_regression;database_lifecycle"
     TIMEOUT 1200)
 
   add_executable(dpc_secondary_index_delta_recovery_repair_gate
