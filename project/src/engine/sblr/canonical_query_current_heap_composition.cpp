@@ -547,8 +547,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
   api::EngineUuid filter_capability_uuid;
   if (filter_composition) {
     std::string detail;
-    if (filter_node->semantic_variant_id !=
-            "filter.catalog-column-numeric-comparison.v1" ||
+    if ((filter_node->semantic_variant_id !=
+             "filter.catalog-column-numeric-comparison.v1" &&
+         filter_node->semantic_variant_id !=
+             "filter.catalog-column-uuid-comparison.v1") ||
         filter_node->bound_expression_ids.size() != 1 ||
         filter_node->output_descriptor_ids !=
             scan_node->output_descriptor_ids ||
@@ -567,7 +569,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
          filter_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kFilter,
          exec::PhysicalNodeKind::kFilter,
-         "canonical.heap.filter.catalog-column-numeric-comparison.v1",
+         "canonical.heap." + filter_node->semantic_variant_id,
          1, planning_request.optimizer_request.resource.memory_budget_bytes,
          1, 1});
   }

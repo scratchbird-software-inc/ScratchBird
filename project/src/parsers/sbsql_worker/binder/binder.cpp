@@ -9,6 +9,7 @@
 #include "binder/binder.hpp"
 #include "binder/relational_property_identity.hpp"
 #include "common/native_datatype_codec_identity.hpp"
+#include "common/native_uuid_literal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9749,7 +9750,8 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
                NativeExpressionAstKind::kVariable) ||
           (filter_literal->expression_kind ==
                NativeExpressionAstKind::kLiteral &&
-           filter_literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
+           filter_literal->literal_kind != NativeLiteralAstKind::kNumeric &&
+           filter_literal->literal_kind != NativeLiteralAstKind::kUuid) ||
           (filter_literal->expression_kind ==
                NativeExpressionAstKind::kParameter &&
            filter_literal->literal_kind.has_value()) ||
@@ -9760,10 +9762,17 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
           !filter_literal->operator_name.empty()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog WHERE requires one bound numeric column comparison");
+            "catalog WHERE requires one bound numeric or UUID column comparison");
         return RefusedBoundAst(std::move(bound));
       }
-      if (filter_literal->expression_kind == NativeExpressionAstKind::kLiteral) {
+      if (filter_literal->literal_kind == NativeLiteralAstKind::kUuid &&
+          !NativeUuidLiteralBytes(filter_literal->spelling)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog WHERE UUID literal is malformed");
+        return RefusedBoundAst(std::move(bound));
+      }
+      if (filter_literal->expression_kind == NativeExpressionAstKind::kLiteral &&
+          filter_literal->literal_kind == NativeLiteralAstKind::kNumeric) {
         std::uint64_t parsed = 0;
         const auto [end, error] = std::from_chars(
             filter_literal->spelling.data(),
@@ -10551,6 +10560,24 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
         return RefusedBoundAst(std::move(bound));
       }
       negotiated_literal_binding = &*literal_binding;
+      if (filter_literal->literal_kind == NativeLiteralAstKind::kUuid) {
+        const auto source_descriptor = descriptor_by_id.find(column->descriptor_id);
+        const auto& value_descriptor = *descriptor_by_id.at(literal_binding->descriptor_id);
+        const auto manifest = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+        const auto uuid = core::datatypes::LookupDatatypeCatalogRow(
+            manifest.manifest, core::datatypes::CanonicalTypeId::uuid);
+        if (source_descriptor == descriptor_by_id.end() || !manifest.ok() ||
+            !uuid.ok() || uuid.manifest.descriptor_rows.size() != 1 ||
+            !carries_complete_authority(value_descriptor) ||
+            !same_immutable_datatype_authority(*source_descriptor->second, value_descriptor) ||
+            !MatchesNativeDatatypeCodecIdentity(value_descriptor,
+                uuid.manifest.descriptor_rows.front().descriptor_uuid.value) ||
+            value_descriptor.nullability != BoundNullability::kNonNull) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+              "catalog UUID comparison requires exact statement-owned UUID datatype authority");
+          return RefusedBoundAst(std::move(bound));
+        }
+      }
       used_descriptor_ids.insert(literal_binding->descriptor_id);
     }
     if (used_descriptor_ids.size() != descriptor_by_id.size()) {
@@ -10918,7 +10945,9 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
       bound_filter.predicate_expression_ids = {predicate_id};
       bound_filter.bound_expression_ids = {predicate_id};
       bound_filter.semantic_variant_id =
-          "filter.catalog-column-numeric-comparison.v1";
+          filter_literal->literal_kind == NativeLiteralAstKind::kUuid
+              ? "filter.catalog-column-uuid-comparison.v1"
+              : "filter.catalog-column-numeric-comparison.v1";
       bound.relations.push_back(std::move(bound_filter));
     }
     if (aggregate_composition) {

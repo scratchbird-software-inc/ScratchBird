@@ -6155,14 +6155,15 @@ class NativeRelationalParser final {
       if (left == nullptr || right == nullptr || !accepted_operator ||
           left->expression_kind != NativeExpressionAstKind::kIdentifier ||
           !((right->expression_kind == NativeExpressionAstKind::kLiteral &&
-            right->literal_kind == NativeLiteralAstKind::kNumeric) ||
+            (right->literal_kind == NativeLiteralAstKind::kNumeric ||
+             right->literal_kind == NativeLiteralAstKind::kUuid)) ||
             right->expression_kind == NativeExpressionAstKind::kParameter ||
             right->expression_kind == NativeExpressionAstKind::kVariable) ||
           !left->child_expression_ids.empty() ||
           !right->child_expression_ids.empty()) {
         Refuse("catalog_select_where_profile_unsupported",
                "bounded catalog WHERE requires an identifier comparison to "
-               "an unsigned numeric literal, structural parameter occurrence, or structural variable occurrence");
+               "an unsigned numeric or UUID literal, structural parameter occurrence, or structural variable occurrence");
         return FinishRefusal();
       }
       const bool wildcard_projection =

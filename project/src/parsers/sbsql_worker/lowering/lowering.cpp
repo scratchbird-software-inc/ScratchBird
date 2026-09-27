@@ -10,6 +10,7 @@
 #include "lowering/relational_identity_operand.hpp"
 #include "binder/relational_property_identity.hpp"
 #include "common/native_datatype_codec_identity.hpp"
+#include "common/native_uuid_literal.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
@@ -33414,7 +33415,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   };
 
   const auto emit_expression = [&](const BoundExpressionAstRecord& expression) {
-    auto operand = MakeRelationalExpressionOperand(expression);
+    auto canonical = expression;
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+        expression.literal_kind == NativeLiteralAstKind::kUuid) {
+      const auto bytes = expression.literal_or_parameter_ref
+          ? NativeUuidLiteralBytes(*expression.literal_or_parameter_ref) : std::nullopt;
+      if (!bytes) {
+        AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
+                                        "UUID literal spelling is malformed");
+        return false;
+      }
+      canonical.literal_or_parameter_ref =
+          std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+    }
+    auto operand = MakeRelationalExpressionOperand(canonical);
     if (!operand) {
       AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
                                       "relational expression requires its canonical binary identity carrier");
@@ -36582,8 +36596,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.predicate_expression_ids.size() != 1 ||
           relation.bound_expression_ids !=
               relation.predicate_expression_ids ||
-          relation.semantic_variant_id !=
-              "filter.catalog-column-numeric-comparison.v1") {
+          (relation.semantic_variant_id !=
+               "filter.catalog-column-numeric-comparison.v1" &&
+           relation.semantic_variant_id !=
+               "filter.catalog-column-uuid-comparison.v1")) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed catalog WHERE fields are outside the bounded profile");
@@ -37865,6 +37881,25 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool exact_lossless_signed_comparison =
         identifier_signed_rank != 0 && operand_signed_rank == 4 &&
         identifier_signed_rank <= operand_signed_rank;
+    const bool exact_uuid_comparison = [&] {
+      if (!literal || literal->expression_kind != NativeExpressionAstKind::kLiteral ||
+          literal->literal_kind != NativeLiteralAstKind::kUuid ||
+          !literal->literal_or_parameter_ref ||
+          !NativeUuidLiteralBytes(*literal->literal_or_parameter_ref) ||
+          identifier_descriptor == native.descriptors.end() ||
+          literal_descriptor == native.descriptors.end()) return false;
+      const auto manifest = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto uuid = core::datatypes::LookupDatatypeCatalogRow(
+          manifest.manifest, core::datatypes::CanonicalTypeId::uuid);
+      return manifest.ok() && uuid.ok() && uuid.manifest.descriptor_rows.size() == 1 &&
+          MatchesNativeDatatypeCodecIdentity(*identifier_descriptor,
+              uuid.manifest.descriptor_rows.front().descriptor_uuid.value) &&
+          MatchesNativeDatatypeCodecIdentity(*literal_descriptor,
+              uuid.manifest.descriptor_rows.front().descriptor_uuid.value) &&
+          identifier_descriptor->statement_receipt_uuid == literal_descriptor->statement_receipt_uuid &&
+          identifier_descriptor->datatype_catalog_snapshot_uuid == literal_descriptor->datatype_catalog_snapshot_uuid &&
+          literal_descriptor->nullability == BoundNullability::kNonNull;
+    }();
     std::uint64_t parsed = 0;
     const bool literal_leaf =
         literal != nullptr &&
@@ -37899,11 +37934,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         predicate->second->structural_variable_occurrence_id != 0 ||
         (!literal_leaf && !parameter_leaf && !variable_leaf) ||
         (literal_leaf &&
-         literal->literal_kind != NativeLiteralAstKind::kNumeric) ||
+         literal->literal_kind != NativeLiteralAstKind::kNumeric && !exact_uuid_comparison) ||
         (parameter_leaf && literal->literal_kind.has_value()) ||
         (variable_leaf && literal->literal_kind.has_value()) ||
         !literal->child_expression_ids.empty() ||
-        (literal_leaf &&
+        (literal_leaf && !exact_uuid_comparison &&
          (encoded.empty() || (encoded.size() > 1 && encoded.front() == '0') ||
           error != std::errc{} || end != encoded.data() + encoded.size())) ||
         (literal_leaf &&
@@ -37923,7 +37958,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         identifier_descriptor == native.descriptors.end() ||
         literal_descriptor == native.descriptors.end() ||
         predicate_descriptor == native.descriptors.end() ||
-        !exact_lossless_signed_comparison ||
+        (!exact_lossless_signed_comparison && !exact_uuid_comparison) ||
+        (exact_uuid_comparison != (catalog_filter_relation->semantic_variant_id ==
+                                  "filter.catalog-column-uuid-comparison.v1")) ||
         predicate_descriptor->nullability != BoundNullability::kNullable ||
         identifier_descriptor->collation_uuid.has_value() ||
         literal_descriptor->collation_uuid.has_value() ||
@@ -37944,7 +37981,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               ":predicate_descriptor=" +
               (predicate_descriptor != native.descriptors.end() ? "1" : "0") +
               ":type_match=" +
-              (exact_lossless_signed_comparison ? "1" : "0") +
+              (exact_lossless_signed_comparison || exact_uuid_comparison ? "1" : "0") +
               ":identifier_type=" +
               (identifier_descriptor == native.descriptors.end()
                    ? std::string("<absent>")

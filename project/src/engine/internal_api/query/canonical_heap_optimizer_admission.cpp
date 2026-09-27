@@ -2226,8 +2226,10 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         limit_node != nullptr)) ||
       (filter_node != nullptr &&
        (!direct_or_cte_input(filter_node, scan_node->node_id) ||
-        filter_node->semantic_variant_id !=
-            "filter.catalog-column-numeric-comparison.v1" ||
+        (filter_node->semantic_variant_id !=
+             "filter.catalog-column-numeric-comparison.v1" &&
+         filter_node->semantic_variant_id !=
+             "filter.catalog-column-uuid-comparison.v1") ||
         filter_node->bound_expression_ids.size() != 1 ||
         filter_node->output_descriptor_ids !=
             scan_node->output_descriptor_ids ||

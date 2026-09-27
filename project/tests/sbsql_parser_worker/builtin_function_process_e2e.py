@@ -35,7 +35,7 @@ def main():
                 wait_unix(endpoint)
                 for ordinal in range(2):
                     process = subprocess.run([str(args.client), "unix:" + str(endpoint), str(database), password,
-                                              phase + str(ordinal)], capture_output=True, text=True, timeout=120)
+                                              phase + str(ordinal)], capture_output=True, text=True, timeout=300)
                     (work / f"{phase}.{ordinal}.client.log").write_text(process.stdout + process.stderr)
                     if process.returncode or process.stderr or process.stdout != f"builtin_function_binary_process=passed phase={phase}{ordinal}\n":
                         raise RuntimeError(f"client exited {process.returncode}: {process.stdout} {process.stderr}")

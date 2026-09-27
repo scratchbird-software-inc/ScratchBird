@@ -21,6 +21,7 @@
 #include "binder/engine_function_identity.hpp"
 #include "wire/contextual_operand_freeze.hpp"
 #include "lowering/relational_identity_operand.hpp"
+#include "common/native_uuid_literal.hpp"
 #include "wire/native_query_artifact.hpp"
 #include "engine/internal_api/query/contextual_text_descriptor_match.hpp"
 #include "engine/internal_api/dml/datatype_operator_registry_projection.hpp"
@@ -5583,6 +5584,34 @@ void TestTransactionalNameReply() {
 }
 } // namespace
 
+void TestNativeUuidLiteralBoundary() {
+  using scratchbird::parser::sbsql::NativeUuidLiteralBytes;
+  constexpr std::string_view digits = "0123456789abcdef";
+  constexpr std::array<std::size_t, 16> offsets{0,2,4,6,9,11,14,16,19,21,24,26,28,30,32,34};
+  for (std::size_t position = 0; position < 16; ++position) {
+    for (unsigned octet = 0; octet < 256; ++octet) {
+      std::string spelling = "00000000-0000-0000-0000-000000000000";
+      spelling[offsets[position]] = digits[octet >> 4];
+      spelling[offsets[position] + 1] = digits[octet & 15];
+      std::array<std::uint8_t, 16> expected{};
+      expected[position] = static_cast<std::uint8_t>(octet);
+      Require(NativeUuidLiteralBytes(spelling) == expected, "UUID SQL literal lost data bits");
+    }
+  }
+  std::array<std::uint8_t, 16> maximum;
+  maximum.fill(255);
+  Require(NativeUuidLiteralBytes("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF") == maximum,
+        "UUID data incorrectly requires system version or variant bits");
+  for (const auto spelling : {"", "00000000000000000000000000000000",
+      "00000000-0000-0000-0000-00000000000", "00000000-0000-0000-0000-0000000000000"})
+    Require(!NativeUuidLiteralBytes(spelling), "malformed UUID SQL width accepted");
+  for (std::size_t position = 0; position < 36; ++position) {
+    std::string spelling = "00000000-0000-0000-0000-000000000000";
+    spelling[position] = 'g';
+    Require(!NativeUuidLiteralBytes(spelling), "malformed UUID SQL character accepted");
+  }
+}
+
 int main() {
   try {
     TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
@@ -5628,6 +5657,7 @@ int main() {
     TestBinaryProjectionFields();
     TestLanguageBundleIdentity();
     TestNativeUuidRowField();
+    TestNativeUuidLiteralBoundary();
     TestNativeIdentitySelector();
     TestNativeShardPlacement();
     TestNativeSecurityIdentityOption();

@@ -8457,6 +8457,35 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = BoundNullability::kNullable;
       context.descriptors.push_back(std::move(descriptor));
     }
+    if (filter_composition && filter_relation->predicate_expression_ids.size() == 1) {
+      const auto expression_for = [&](std::uint32_t id) -> const NativeExpressionAstNode* {
+        const auto found = std::ranges::find_if(ast.expressions,
+            [&](const auto& candidate) { return candidate.expression_id == id; });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      const auto predicate = expression_for(filter_relation->predicate_expression_ids.front());
+      const auto* literal = predicate && predicate->child_expression_ids.size() == 2
+          ? expression_for(predicate->child_expression_ids[1]) : nullptr;
+      if (literal && literal->expression_kind == NativeExpressionAstKind::kLiteral &&
+          literal->literal_kind == NativeLiteralAstKind::kUuid) {
+        const auto profile = std::ranges::find_if(statement_context.descriptor_profiles,
+            [](const auto& candidate) { return candidate.profile_kind == 12 && candidate.slot == 0; });
+        if (profile == statement_context.descriptor_profiles.end() || profile->nullable ||
+            literal->structural_literal_occurrence_id == 0)
+          return fail("catalog_filter_uuid_descriptor_profile_unavailable");
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id = static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        descriptor.descriptor_uuid = profile->descriptor_uuid;
+        descriptor.type_uuid = profile->type_uuid;
+        descriptor.canonical_type_name = "uuid";
+        descriptor.nullability = BoundNullability::kNonNull;
+        context.expressions.push_back({
+            static_cast<std::uint32_t>(source_column_indexes.size() + 1),
+            descriptor.descriptor_id, std::nullopt, std::nullopt,
+            literal->structural_literal_occurrence_id, 0, 0});
+        context.descriptors.push_back(std::move(descriptor));
+      }
+    }
     for (const auto& downstream : ast.relations) {
       if (downstream.relation_id == source_relation->relation_id) continue;
       if (aggregate_composition &&

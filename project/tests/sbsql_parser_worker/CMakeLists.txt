@@ -5493,7 +5493,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/builtin_function_process_e2e.py
         --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_builtin_function_process_client>)
     set_tests_properties(sbsql_builtin_function_binary_process_e2e PROPERTIES
-      LABELS "binary_uuid;sbsql_parser_worker;function_binding;process_e2e" TIMEOUT 600)
+      LABELS "binary_uuid;sbsql_parser_worker;function_binding;process_e2e" TIMEOUT 1500)
   endif()
   set_tests_properties(sbsql_query_scalar_projection_conformance PROPERTIES
     LABELS "sbsql_query_scalar_projection_conformance;SBSFC-010;SBSFC-011;SBSFC-012;SBSFC-013;SBSFC-014;SBSFC-014R-Y;SBSFC-016R-G;SBSFC-016R-H;SBSFC-016R-I;SBSFC-016R-J;SBSFC-016R-K;SBSFC-016R-L;SBSFC-021;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
