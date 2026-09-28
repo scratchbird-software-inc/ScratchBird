@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "wire/copy_row_identity.hpp"
 
 #include "embedded/embedded_engine_client.hpp"
 #include "datatype_wire_metadata.hpp"
@@ -3019,18 +3020,6 @@ std::optional<std::vector<CopyImportRow>> ParseBinaryCopyRows(
   return rows;
 }
 
-platform::Uuid GenerateCopyImportRowUuid() {
-  static std::atomic<std::uint64_t> sequence{0};
-  const auto now_millis = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-  const auto generated = uuid::GenerateEngineIdentityV7(
-      platform::UuidKind::row,
-      now_millis + sequence.fetch_add(1, std::memory_order_relaxed));
-  return generated.ok() ? generated.value.value : platform::Uuid{};
-}
-
 std::string EscapeOperationOperandField(std::string_view value) {
   std::string out;
   out.reserve(value.size());
@@ -3108,7 +3097,7 @@ WireOperationDraft BuildCopyExecuteEnvelope(const CopyImportState& copy,
   }
   for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
     const auto& row = copy.rows[row_index];
-    draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
+    draft.rows.push_back({IssueCopyRowGroupIdentity(), row.fields, row.canonical_types, true});
   }
   return draft;
 }
@@ -3216,7 +3205,7 @@ WireOperationDraft BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& c
     } else {
       for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
         const auto& row = copy.rows[row_index];
-        draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
+        draft.rows.push_back({IssueCopyRowGroupIdentity(), row.fields, row.canonical_types, true});
       }
     }
   }
@@ -3291,7 +3280,7 @@ WireOperationDraft BuildInsertRowsExecuteEnvelope(const CopyImportState& copy,
     } else {
       for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
         const auto& row = copy.rows[row_index];
-        draft.rows.push_back({GenerateCopyImportRowUuid(), row.fields, row.canonical_types});
+        draft.rows.push_back({IssueCopyRowGroupIdentity(), row.fields, row.canonical_types, true});
       }
     }
   }

@@ -1,11 +1,13 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "parser_server_client.hpp"
+#include "../../src/parsers/sbsql_worker/wire/copy_row_identity.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -65,6 +67,37 @@ extern "C" int __wrap_RAND_bytes(unsigned char* bytes, int count) {
 int main() {
   try {
     constexpr unsigned count = 256, threads = 8;
+    {
+      const auto milliseconds = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+      };
+      const auto before = milliseconds();
+      std::vector<Id> groups;
+      for (unsigned i = 0; i != 4096; ++i)
+        groups.push_back(scratchbird::parser::sbsql::IssueCopyRowGroupIdentity().bytes);
+      const auto after = milliseconds();
+      for (std::size_t i = 0; i != groups.size(); ++i) {
+        std::uint64_t timestamp = 0;
+        for (unsigned byte = 0; byte != 6; ++byte) timestamp = timestamp * 256 + groups[i][byte];
+        Check(Valid(groups[i]) && timestamp >= static_cast<std::uint64_t>(before) &&
+                  timestamp <= static_cast<std::uint64_t>(after),
+              "COPY group issuance fabricated time or emitted an invalid UUID");
+        if (i) Check(groups[i - 1] < groups[i], "COPY grouping IDs did not advance uniquely");
+      }
+      for (unsigned mode : {1u, 2u}) {
+        entropy_fault = mode; entropy_calls = 0;
+        bool refused = false, recovered = false;
+        std::thread probe([&] {
+          refused = scratchbird::parser::sbsql::IssueCopyRowGroupIdentity().is_nil();
+          entropy_fault = 0;
+          recovered = !scratchbird::parser::sbsql::IssueCopyRowGroupIdentity().is_nil();
+        });
+        probe.join(); entropy_fault = 0;
+        Check(entropy_calls > 0 && refused && recovered,
+              "COPY group issuance lost entropy-failure refusal or recovery");
+      }
+    }
     {
       ipc::SbpsClient client("/not-opened/parser-hello-retention.sock");
       const auto original = client.V2HelloPayloadForTest();

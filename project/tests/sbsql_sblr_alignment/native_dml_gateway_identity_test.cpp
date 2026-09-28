@@ -103,8 +103,78 @@ server::LocalSblrGatewayDecision Admit(const sblr::SblrOperationEnvelope& root,
   request.route_fence_present = flags & 4;
   return server::AdmitLocalNoClusterSblrGateway(request);
 }
+
+sblr::SblrOperationEnvelope GroupedRoot(bool bulk) {
+  auto root = Root(bulk, false, false);
+  root.operands.resize(1); // Preserve the exact binary target, not compact rows.
+  Text(root, "target_object_kind", "table");
+  Text(root, "physical_mga_cow", "false");
+  Text(root, "insert_trace.rows", "false");
+  Text(root, "sblr.rowset_default_markers_absent", "true");
+  if (bulk) {
+    Text(root, "native_bulk_ingest", "true");
+    Text(root, "native_bulk_ingest_enabled", "false");
+  }
+  for (unsigned group = 0; group != 2; ++group) {
+    for (const bool null : {false, true}) {
+      sblr::SblrOperand field;
+      field.ordinal = root.operands.size() + 1;
+      field.type = null ? "row_new_null_field_binary16.uuid" : "row_new_field_binary16.uuid";
+      field.name = null ? "optional" : "value";
+      field.value_kind = sblr::SblrValueKind::literal_typed;
+      field.value_body.assign(root.registry_snapshot_uuid.bytes.begin(), root.registry_snapshot_uuid.bytes.end());
+      field.value_body.insert(field.value_body.end(), {static_cast<std::uint8_t>(null ? 16 : 32),0,0,0,0,0,0,0});
+      const auto id = scratchbird::tests::FixtureUuid(2199, group + 1);
+      field.value_body.insert(field.value_body.end(), id.bytes.begin(), id.bytes.end());
+      // Deliberately not a valid system UUID: this is unrestricted user data.
+      if (!null) field.value_body.insert(field.value_body.end(), {0,255,10,13,59,92,0,0,0,0,0,0,0,0,0,0});
+      root.operands.push_back(std::move(field));
+    }
+  }
+  return root;
+}
 }
 int main() {
+  for (bool bulk : {false, true}) {
+    const auto root = GroupedRoot(bulk);
+    Check(Admit(root).ok, "native new-row grouping did not pass DML gateway");
+    for (unsigned flags = 1; flags != 8; ++flags)
+      Check(!Admit(root, flags).ok, "cluster-owned native groups fell through locally");
+    for (unsigned mutation = 0; mutation != 13; ++mutation) {
+      auto bad = root;
+      auto& field = bad.operands[bad.operands.size() - 2];
+      switch (mutation) {
+        case 0: field.value_body[30] = 0x40; break;
+        case 1: field.value_body[32] = 0xc0; break;
+        case 2: field.value_body.pop_back(); break;
+        case 3: field.type = "row_field_binary16.uuid"; break;
+        case 4: field.type = "row_new_field_binary16.unregistered"; break;
+        case 5: field.ordinal = 1; break;
+        case 6: field.value_flags = 1; break;
+        case 7: field.value = "text-uuid"; break;
+        case 8: {
+          auto duplicate = field;
+          duplicate.ordinal = bad.operands.size() + 1;
+          bad.operands.push_back(std::move(duplicate));
+          break;
+        }
+        case 9: Text(bad, "insert_values_compact_payload", "mixed"); break;
+        case 10: Text(bad, "unexpected", "control"); break;
+        case 11: bad.operands[2].value_body.back() = 'x'; break;
+        case 12: bad.operands.back().value_body.push_back(0); bad.operands.back().value_body[16] = 17; break;
+      }
+      Check(!Admit(bad).ok, "malformed native row group passed DML gateway");
+    }
+    if (bulk) {
+      auto enabled = GroupedRoot(true);
+      enabled.operands[6].value_body.resize(24);
+      enabled.operands[6].value_body[16] = 4;
+      enabled.operands[6].value_body.insert(enabled.operands[6].value_body.end(), {'t','r','u','e'});
+      Check(Admit(enabled).ok, "native bulk enablement state changed gateway shape admission");
+      Text(enabled, "copy.preallocation_factor_percent", "101");
+      Check(!Admit(enabled).ok, "invalid native bulk preallocation passed gateway");
+    }
+  }
   auto create = scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
       "ddl.create_table", "SBLR_DDL_CREATE_TABLE", "native.column.gateway");
   Text(create, "target_object_kind", "table");

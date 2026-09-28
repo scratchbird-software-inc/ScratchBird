@@ -4860,6 +4860,13 @@ std::vector<CompactInsertValueCell> DecodeCompactInsertCells(
 CompactInsertScalarValidation ValidateCompactInsertScalarMarkers(
     const SblrOperationEnvelope& envelope) {
   CompactInsertScalarValidation validation;
+  if (!ValidateNativeRowFieldGroups(envelope)) {
+    validation.ok = false;
+    validation.diagnostic_code = "SBLR.OPERATION.OPERAND_INVALID";
+    validation.diagnostic_message_key = "engine.sblr.native_row_field_invalid";
+    validation.diagnostic_detail = "native row identity mode or binary16 field is invalid";
+    return validation;
+  }
   const bool supported_operation =
       envelope.operation_id == "dml.insert_rows" ||
       envelope.operation_id == "dml.execute_native_bulk_ingest" ||
@@ -5244,14 +5251,14 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   api_request.option_envelopes.reserve(api_request.option_envelopes.size() +
                                        request.envelope.operands.size());
 
-  std::map<api::EngineUuid, std::size_t> row_index_by_uuid;
+  std::map<std::pair<api::EngineUuid, bool>, std::size_t> row_index_by_uuid;
   std::map<std::string, std::size_t> computed_row_index;
   api_request.rows.reserve(api_request.rows.size() +
                            request.envelope.operands.size() / 4);
   for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
     const auto& row_uuid = api_request.rows[index].requested_row_uuid;
     if (!row_uuid.is_nil()) {
-      row_index_by_uuid.emplace(row_uuid, index);
+      row_index_by_uuid.emplace(std::make_pair(row_uuid, false), index);
     }
   }
 
@@ -5265,14 +5272,15 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
          (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand))))) continue;
     auto operand_value = OperandExecutionValue(operand);
-    const bool binary_row = operand.type.starts_with("row_field_binary16.") ||
-                            operand.type.starts_with("row_null_field_binary16.");
+    const bool binary_row = IsNativeRowFieldType(operand.type);
     const bool row_field = operand.type == "row_field" ||
                            operand.type.starts_with("row_field:") ||
-                           operand.type.starts_with("row_field_binary16.");
+                           operand.type.starts_with("row_field_binary16.") ||
+                           operand.type.starts_with("row_new_field_binary16.");
     const bool row_null_field = operand.type == "row_null_field" ||
                                 operand.type.starts_with("row_null_field:") ||
-                                operand.type.starts_with("row_null_field_binary16.");
+                                operand.type.starts_with("row_null_field_binary16.") ||
+                                operand.type.starts_with("row_new_null_field_binary16.");
     if (!operand.name.empty() && !row_field && !row_null_field) {
       api_request.option_envelopes.push_back(
           operand.name + ":" + std::string(operand_value));
@@ -5287,11 +5295,12 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
             row_uuid.is_nil()) continue;
         field_name = operand.name;
         operand_value.remove_prefix(16);
-        auto [entry, inserted] = row_index_by_uuid.emplace(row_uuid, api_request.rows.size());
+        auto [entry, inserted] = row_index_by_uuid.emplace(
+            std::make_pair(row_uuid, IsNewNativeRowFieldType(operand.type)), api_request.rows.size());
         index = entry->second;
         if (inserted) {
           api::EngineRowValue appended;
-          appended.requested_row_uuid = row_uuid;
+          appended.requested_row_uuid = RequestedNativeRowIdentity(*DecodeNativeRowField(operand));
           api_request.rows.push_back(std::move(appended));
         }
       } else {

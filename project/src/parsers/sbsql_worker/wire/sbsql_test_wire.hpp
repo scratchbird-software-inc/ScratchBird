@@ -50,6 +50,9 @@ struct WireOperationRow {
   std::vector<std::pair<std::string, std::optional<std::string>>> fields;
   // UUID cells contain exactly16 raw bytes; no SQL literal representation.
   std::vector<std::string> canonical_types;
+  // True: row_uuid groups this draft's fields only; the engine allocates the
+  // durable row UUID. False: an explicit existing requested row identity.
+  bool allocate_row_identity = false;
 };
 
 struct WireOperationDraft {

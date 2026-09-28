@@ -20069,7 +20069,9 @@ BuildCanonicalRouteTextSubmission(
       if (name.empty()) return std::nullopt;
       engine::sblr::SblrOperand operand;
       operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
-      operand.type = value ? "row_field_binary16." : "row_null_field_binary16.";
+      operand.type = row.allocate_row_identity
+          ? (value ? "row_new_field_binary16." : "row_new_null_field_binary16.")
+          : (value ? "row_field_binary16." : "row_null_field_binary16.");
       operand.type += uuid_value ? "uuid" : "text";
       operand.name = name;
       operand.value_kind = engine::sblr::SblrValueKind::literal_typed;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "wire/sbsql_test_wire.hpp"
 #include "../support/client_public_result_display.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -142,7 +143,40 @@ int main(int argc, char** argv) {
     if (!run("INSERT INTO native_uuid_predicate VALUES (NULL)", {}) ||
         !run("COMMIT TRANSACTION", {})) return 6;
   }
+  if (std::string_view(argv[4]) == "initial0") {
+    if (!run("BEGIN TRANSACTION", {}) ||
+        !run("CREATE TABLE native_uuid_grouped_insert (value UUID, companion UUID)", {})) return 7;
+    const auto target = session.ResolvePublicNameForWire("native_uuid_grouped_insert", false, "table");
+    if (!target.resolved) return 7;
+    parser::WireOperationDraft draft;
+    draft.target_uuid = target.object_uuid;
+    draft.text = "operation_id=dml.insert_rows\nopcode=SBLR_DML_INSERT_ROWS\n"
+                 "operand=text\ttarget_object_kind\ttable\n"
+                 "operand=text\tphysical_mga_cow\tfalse\n"
+                 "operand=text\tinsert_trace.rows\tfalse\n"
+                 "operand=text\tsblr.rowset_default_markers_absent\ttrue\n";
+    // Deliberately reuse this parser-local group in distinct submissions. If
+    // the engine persists it as a requested row ID, the durable seven-row
+    // oracle (also checked by independent clients after restart) must fail.
+    constexpr auto group = scratchbird::tests::FixtureUuidLiteral(
+        "019d0000-0000-7000-8000-000000002199");
+    for (const auto& value : uuid_cases) {
+      const std::string bytes(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+      draft.rows = {{group, {{"value", bytes}, {"companion", bytes}}, {"uuid", "uuid"}, true}};
+      const auto inserted = session.RunCanonicalRouteTextEnvelopeForWire(draft);
+      if (!inserted.accepted) {
+        std::cerr << "native row-group insertion: " << parser::MessageVectorToJson(inserted.messages) << '\n';
+        return 7;
+      }
+    }
+    if (!run("COMMIT TRANSACTION", {})) return 7;
+  }
   if (!run("BEGIN TRANSACTION", {})) return 6;
+  std::vector<std::string> grouped_expected;
+  for (const auto& value : uuid_cases)
+    grouped_expected.emplace_back(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  if (!query_uuid_rows("SELECT value FROM native_uuid_grouped_insert", grouped_expected) ||
+      !query_uuid_rows("SELECT companion FROM native_uuid_grouped_insert", grouped_expected)) return 7;
   for (const auto& bound : uuid_cases) {
     for (const std::string_view op : {"=", "<>", "!=", "<", "<=", ">", ">="}) {
       std::vector<std::string> expected;

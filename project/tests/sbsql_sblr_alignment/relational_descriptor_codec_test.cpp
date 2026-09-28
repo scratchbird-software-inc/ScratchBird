@@ -16,6 +16,7 @@
 #include "engine/sblr/native_row_field.hpp"
 #include "server/native_identity_selector.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
+#include "engine/sblr/sblr_opcode_registry.hpp"
 #include "binder/descriptor_authority.hpp"
 #include "binder/relational_property_identity.hpp"
 #include "binder/engine_function_identity.hpp"
@@ -4754,6 +4755,55 @@ void TestNativeUuidRowField() {
   Require(!wire::DecodeNativeRowField(wrong), "null row UUID value retained payload");
   wrong.value_body.resize(40); wrong.value_body[16] = 16;
   Require(wire::DecodeNativeRowField(wrong).has_value(), "null UUID row field rejected");
+  for (const auto& operation : {"dml.insert_rows", "dml.execute_import_rows", "dml.execute_native_bulk_ingest"}) {
+    auto fresh = operand;
+    fresh.type = "row_new_field_binary16.uuid";
+    auto fields = envelope;
+    fields.operation_id = operation;
+    const auto* entry = wire::LookupSblrOperation(operation);
+    Require(entry != nullptr, "new-row fixture operation missing from registry");
+    fields.opcode = entry->opcode;
+    fields.opcode_code = entry->code;
+    fields.result_shape = entry->result_contract;
+    fields.requires_transaction_context = entry->requires_transaction_context;
+    fields.operands = {fresh};
+    const auto grouped = wire::DecodeNativeRowField(fresh);
+    Require(grouped && grouped->allocate_row_identity && grouped->row_uuid == row &&
+                wire::RequestedNativeRowIdentity(*grouped).is_nil() &&
+                grouped->payload == decoded->payload && wire::ValidateNativeRowFieldGroups(fields),
+            "new-row grouping leaked its UUID into requested durable identity");
+    Require(wire::RequestedNativeRowIdentity(*decoded) == row,
+            "explicit requested row identity changed");
+    const auto framed = wire::DecodeSblrEnvelope(wire::EncodeSblrEnvelope(fields));
+    Require(framed.ok && wire::DecodeNativeRowField(framed.envelope.operands.front())->allocate_row_identity,
+            "canonical SBOP framing lost fresh-row identity mode");
+    fields.operands.push_back(fresh);
+    Require(wire::ValidateNativeRowFieldGroups(fields), "same fresh-row field group was split");
+    fields.operands.push_back(operand);
+    Require(!wire::ValidateNativeRowFieldGroups(fields), "mixed durable/grouping UUID modes admitted");
+    fields.operands = {fresh};
+    fields.operation_id = "dml.update_rows";
+    Require(!wire::ValidateNativeRowFieldGroups(fields), "fresh-row group used as an UPDATE identity");
+    fields.operation_id = operation;
+    for (std::size_t position = 0; position != 16; ++position) {
+      for (unsigned octet = 0; octet != 256; ++octet) {
+        fields.operands[0] = fresh;
+        fields.operands[0].value_body[24 + position] = static_cast<std::uint8_t>(octet);
+        const bool valid = (position != 6 || octet >> 4 == 7) &&
+                           (position != 8 || octet >> 6 == 2);
+        Require(wire::ValidateNativeRowFieldGroups(fields) == valid,
+                "fresh-row UUID version/variant admission mismatch");
+      }
+    }
+    auto null = wrong;
+    null.type = "row_new_null_field_binary16.uuid";
+    const auto null_field = wire::DecodeNativeRowField(null);
+    Require(null_field && null_field->is_null && null_field->allocate_row_identity &&
+                wire::RequestedNativeRowIdentity(*null_field).is_nil(),
+            "fresh-row NULL lost allocation mode");
+    null.value_body.push_back(0); null.value_body[16] = 17;
+    Require(!wire::DecodeNativeRowField(null), "fresh-row NULL retained a payload");
+  }
 }
 
 void TestNativeSecurityIdentityOption() {

@@ -8,6 +8,9 @@
 #include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "engine/sblr/sblr_projection_uuid_literals.hpp"
 #include "engine/sblr/sblr_projection_binary_literals.hpp"
+#include "engine/sblr/native_row_field.hpp"
+#include <set>
+#include <map>
 #include <charconv>
 #include <limits>
 #include <optional>
@@ -216,7 +219,8 @@ using CanonicalTextOperandMap =
 
 std::optional<CanonicalTextOperandMap> DecodeCanonicalTypedTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
-    bool require_binary_target = false, bool require_column_bindings = false) {
+    bool require_binary_target = false, bool require_column_bindings = false,
+    bool allow_new_row_fields = false) {
   if (operation.operands.empty()) return std::nullopt;
   if (require_column_bindings) {
     std::vector<scratchbird::engine::sblr::SblrColumnIdentityBinding> bindings;
@@ -236,6 +240,11 @@ std::optional<CanonicalTextOperandMap> DecodeCanonicalTypedTextOperands(
   values.reserve(operation.operands.size());
   for (std::size_t index = 0; index < operation.operands.size(); ++index) {
     const auto& operand = operation.operands[index];
+    if (allow_new_row_fields && scratchbird::engine::sblr::IsNewNativeRowFieldType(operand.type)) {
+      if (operand.ordinal != index + 1 || operand.value_flags != 0 ||
+          !scratchbird::engine::sblr::DecodeNativeRowField(operand)) return std::nullopt;
+      continue;
+    }
     if (require_column_bindings && scratchbird::engine::sblr::IsColumnIdentityRole(operand.name))
       continue;  // Complete native column cohort validated above.
     if (require_binary_target && operand.name == "target_object_uuid")
@@ -526,8 +535,55 @@ bool CanonicalCreateTableTextOperands(
   return operation.operands.size() == expected_operand_count + 4 * column_count;
 }
 
+bool CanonicalNewRowFieldOperands(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& operation, bool bulk) {
+  namespace sblr = scratchbird::engine::sblr;
+  if (!sblr::ValidateNativeRowFieldGroups(operation)) return false;
+  const auto operands = DecodeCanonicalTypedTextOperands(operation, true, false, true);
+  if (!operands) return false;
+  const auto exact = [&](std::string_view name, std::string_view value) {
+    const auto actual = CanonicalTextOperandValue(*operands, name);
+    return actual && *actual == value;
+  };
+  if (!exact("target_object_kind", "table") || !exact("physical_mga_cow", "false") ||
+      !exact("insert_trace.rows", "false") || !exact("sblr.rowset_default_markers_absent", "true"))
+    return false;
+  std::size_t option_count = 4;
+  if (bulk) {
+    if (!exact("native_bulk_ingest", "true") ||
+        (!exact("native_bulk_ingest_enabled", "true") &&
+         !exact("native_bulk_ingest_enabled", "false"))) return false;
+    option_count += 2;
+    for (const auto name : {"copy.source_size_bytes", "copy.preallocation_bytes",
+                            "copy.preallocation_factor_percent"}) {
+      const auto value = CanonicalTextOperandValue(*operands, name);
+      if (!value) continue;
+      std::uint64_t parsed = 0;
+      if (!CanonicalPositiveDecimal(*value, &parsed) ||
+          (name == std::string_view("copy.preallocation_factor_percent") && parsed > 100)) return false;
+      ++option_count;
+    }
+  }
+  if (operands->size() != option_count) return false;
+  std::map<scratchbird::core::platform::Uuid, std::set<std::string_view>> groups;
+  for (const auto& operand : operation.operands) {
+    if (!sblr::IsNewNativeRowFieldType(operand.type)) continue;
+    const auto type = std::string_view(operand.type).substr(operand.type.find('.') + 1);
+    if (type != "uuid" && type != "text") return false;
+    const auto field = sblr::DecodeNativeRowField(operand);
+    if (!field) return false;
+    auto& columns = groups[field->row_uuid];
+    if (!columns.insert(operand.name).second || columns.size() > 16384 || groups.size() > 1048576)
+      return false;
+  }
+  return !groups.empty();
+}
+
 bool CanonicalInsertRowsTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
+  if (std::any_of(operation.operands.begin(), operation.operands.end(), [](const auto& operand) {
+        return scratchbird::engine::sblr::IsNewNativeRowFieldType(operand.type);
+      })) return CanonicalNewRowFieldOperands(operation, false);
   const auto operands = DecodeCanonicalTypedTextOperands(operation, true);
   if (!operands) return false;
   const auto target_kind =
@@ -631,6 +687,9 @@ bool CanonicalUpdateRowsDescriptorOperand(
 
 bool CanonicalNativeBulkIngestTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
+  if (std::any_of(operation.operands.begin(), operation.operands.end(), [](const auto& operand) {
+        return scratchbird::engine::sblr::IsNewNativeRowFieldType(operand.type);
+      })) return CanonicalNewRowFieldOperands(operation, true);
   const auto operands = DecodeCanonicalTypedTextOperands(operation, true);
   if (!operands) return false;
   const auto target_kind =
