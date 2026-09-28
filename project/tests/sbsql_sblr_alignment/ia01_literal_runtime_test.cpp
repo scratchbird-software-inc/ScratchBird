@@ -40,6 +40,9 @@ sblr::SblrLiteralExactDecimalCodecResultV1 RequireDecimal(
   return encoded;
 }
 
+std::array<std::uint8_t,16> Identity(std::uint8_t suffix) {
+  return {1,0xa0,0x7c,0x0a,0x0d,0x5c,0x70,0,0x80,0,0xff,0,0,0,0,suffix};
+}
 int main(){
   for (const auto value : {std::int64_t{0}, std::int64_t{1},
                            std::int64_t{-1},
@@ -141,7 +144,7 @@ int main(){
   require_malformed_decimal(malformed_decimal);
 
   sblr::SblrLiteralExecutorEvidenceV1 executor_evidence;
-  executor_evidence.descriptor_uuid[0]=1;
+  executor_evidence.descriptor_uuid=Identity(1);
   executor_evidence.descriptor_generation=1;
   executor_evidence.canonical_value_sha256[0]=1;
   Require(sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(executor_evidence).has_value(),
@@ -160,10 +163,10 @@ int main(){
   Require(!sblr::ComputeSblrLiteralExecutorEvidenceSha256V1(bad_result_version).has_value(),
           "malformed typed_value result descriptor version admitted");
   sblr::SblrLiteralStatementDescriptorProfileV1 profile;
-  profile.profile_uuid[0]=1;profile.statement_receipt_uuid[0]=2;
-  profile.catalog_snapshot_uuid[0]=3;profile.catalog_generation=4;
-  profile.descriptor_uuid[0]=5;profile.descriptor_generation=6;
-  profile.type_uuid[0]=7;profile.codec_id="datatype.int64.le.v1";
+  profile.profile_uuid=Identity(1);profile.statement_receipt_uuid=Identity(2);
+  profile.catalog_snapshot_uuid=Identity(3);profile.catalog_generation=4;
+  profile.descriptor_uuid=Identity(5);profile.descriptor_generation=6;
+  profile.type_uuid=Identity(7);profile.codec_id="datatype.int64.le.v1";
   profile.codec_version=1;profile.codec_generation=8;profile.nullable=false;
   profile.profile_binding_sha256=
       sblr::ComputeSblrLiteralDescriptorProfileBindingV1(profile,9,10);
@@ -197,10 +200,10 @@ int main(){
                   decoded_stale.profile.profile_binding_sha256,
           "SBLP stale generation did not invalidate binding");
   sblr::SblrLiteralStatementDescriptorProfileV2 profile_v2;
-  profile_v2.profile_uuid[0]=1; profile_v2.statement_receipt_uuid[0]=2;
-  profile_v2.catalog_snapshot_uuid[0]=3; profile_v2.catalog_generation=4;
-  profile_v2.descriptor_uuid[0]=5; profile_v2.descriptor_generation=6;
-  profile_v2.type_uuid[0]=7; profile_v2.persisted_descriptor_uuid[0]=8;
+  profile_v2.profile_uuid=Identity(1); profile_v2.statement_receipt_uuid=Identity(2);
+  profile_v2.catalog_snapshot_uuid=Identity(3); profile_v2.catalog_generation=4;
+  profile_v2.descriptor_uuid=Identity(5); profile_v2.descriptor_generation=6;
+  profile_v2.type_uuid=Identity(7); profile_v2.persisted_descriptor_uuid=Identity(8);
   profile_v2.persisted_descriptor_generation=9;
   profile_v2.codec_id="datatype.int64.le.v1"; profile_v2.codec_version=1;
   profile_v2.codec_generation=10;
@@ -225,9 +228,9 @@ int main(){
   Require(sblr::EncodeSblrLiteralDescriptorProfileV2(non_distinct_v2).empty(),
           "SBLP v2 accepted a persisted handle aliased to type authority");
   sblr::SblrLiteralPrebindRequestV1 prebind;
-  prebind.preliminary_receipt_uuid[0]=1;prebind.catalog_snapshot_uuid[0]=2;
+  prebind.preliminary_receipt_uuid=Identity(1);prebind.catalog_snapshot_uuid=Identity(2);
   prebind.catalog_generation=1;prebind.security_epoch=0;prebind.resource_epoch=0;
-  prebind.mga_snapshot_uuid[0]=4;
+  prebind.mga_snapshot_uuid=Identity(4);
   sblr::SblrLiteralDemandV1 demand;demand.occurrence_id=1;
   demand.lexical_class=1;demand.context_class=1;
   prebind.demands.push_back(demand);
@@ -254,7 +257,7 @@ int main(){
   auto bound_hash=finalize_bound_hash;auto sbxn_hash=scratchbird::core::hash::ComputeSha256Digest(finalize_sbxn).digest;
   sblf.insert(sblf.end(),bound_hash.begin(),bound_hash.end());sblf.insert(sblf.end(),sbxn_hash.begin(),sbxn_hash.end());U64(&sblf,1);U64(&sblf,0);U64(&sblf,0);sblf.insert(sblf.end(),prebind.mga_snapshot_uuid.begin(),prebind.mga_snapshot_uuid.end());U32(&sblf,static_cast<std::uint32_t>(finalize_sbba.size()));U32(&sblf,static_cast<std::uint32_t>(finalize_sbxn.size()));sblf.insert(sblf.end(),finalize_sbba.begin(),finalize_sbba.end());sblf.insert(sblf.end(),finalize_sbxn.begin(),finalize_sbxn.end());
   sblr::SblrLiteralFinalizeRequestV1 finalize;Require(sblr::DecodeSblrLiteralFinalizeRequestV1(sblf.data(),sblf.size(),&finalize),"SBLF exact decode failed");
-  sblr::SblrLiteralAdmissionV1 admission;admission.preliminary_receipt_uuid=prebind.preliminary_receipt_uuid;admission.final_receipt_uuid[0]=10;admission.admission_token_uuid[0]=11;admission.demand_sha256=prebind.demand_sha256;admission.ordered_profile_sha256=prebind_result.ordered_profile_sha256;admission.bound_ast_sha256=bound_hash;admission.sbxn_sha256=sbxn_hash;admission.catalog_generation=1;admission.mga_snapshot_uuid=prebind.mga_snapshot_uuid;
+  sblr::SblrLiteralAdmissionV1 admission;admission.preliminary_receipt_uuid=prebind.preliminary_receipt_uuid;admission.final_receipt_uuid=Identity(10);admission.admission_token_uuid=Identity(11);admission.demand_sha256=prebind.demand_sha256;admission.ordered_profile_sha256=prebind_result.ordered_profile_sha256;admission.bound_ast_sha256=bound_hash;admission.sbxn_sha256=sbxn_hash;admission.catalog_generation=1;admission.mga_snapshot_uuid=prebind.mga_snapshot_uuid;
   Require(sblr::EncodeSblrLiteralAdmissionV1(&admission).size()==264,"SBLA exact size differs");
   sblr::SblrLiteralBoundAstV1 bound_ast;bound_ast.preliminary_receipt_uuid=prebind.preliminary_receipt_uuid;bound_ast.demand_sha256=prebind.demand_sha256;
   sblr::SblrLiteralBoundAstNodeV1 bound_node;bound_node.parent_operand_ordinal=1;bound_node.node_id=7;bound_node.descriptor_uuid=profile.descriptor_uuid;bound_node.descriptor_generation=profile.descriptor_generation;bound_node.type_uuid=profile.type_uuid;bound_node.profile_uuid=profile.profile_uuid;bound_node.occurrence_id=1;bound_ast.nodes.push_back(bound_node);
@@ -262,7 +265,7 @@ int main(){
   sblr::SblrExpressionNodeTableV1 table;
   sblr::SblrExpressionLiteralNodeV1 node;
   node.node_id=7; node.parent_operand_ordinal=1; node.descriptor_generation=1;
-  node.descriptor_uuid[0]=1; node.literal_body={1,0,0,0,0,0,0,0};
+  node.descriptor_uuid=Identity(1); node.literal_body={1,0,0,0,0,0,0,0};
   table.nodes.push_back(node);
   const auto encoded=sblr::EncodeSblrExpressionNodeTableV1(table);
   Require(encoded.size()==165,"SBXN exact record size differs");

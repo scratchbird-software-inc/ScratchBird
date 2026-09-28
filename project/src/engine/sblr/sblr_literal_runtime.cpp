@@ -14,6 +14,11 @@
 #include <string_view>
 
 namespace scratchbird::engine::sblr {
+namespace {
+bool SystemUuidValid(const std::array<std::uint8_t,16>& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
+}  // namespace
 static_assert(kSblrLiteralExactDecimalBytes ==
               scratchbird::libraries::sbl_numeric::kExactDecimalBinaryBytes);
 
@@ -23,7 +28,7 @@ ComputeSblrLiteralExecutorEvidenceSha256V1(
   if (evidence.executor_id != "engine.op.literal" ||
       evidence.opcode_code != 3 || evidence.opcode_version != "1.0" ||
       evidence.operand_descriptor_id != "typed_literal" ||
-      !std::any_of(evidence.descriptor_uuid.begin(),evidence.descriptor_uuid.end(),[](auto byte){return byte!=0;}) || evidence.descriptor_generation == 0 ||
+      !SystemUuidValid(evidence.descriptor_uuid) || evidence.descriptor_generation == 0 ||
       evidence.result_descriptor_id != "typed_value" ||
       evidence.result_descriptor_version != 1) return std::nullopt;
   static constexpr std::string_view domain =
@@ -72,9 +77,6 @@ void Put64(std::vector<std::uint8_t>* out, std::uint64_t v) {
 void PutText(std::vector<std::uint8_t>* out, std::string_view text) {
   Put16(out, static_cast<std::uint16_t>(text.size()));
   out->insert(out->end(), text.begin(), text.end());
-}
-bool Nonzero(const std::array<std::uint8_t,16>& u) {
-  return std::any_of(u.begin(), u.end(), [](auto v){ return v != 0; });
 }
 SblrExpressionNodeTableCodecResultV1 Fail(std::string detail) {
   SblrExpressionNodeTableCodecResultV1 r; r.diagnostic_id="SBLR.OPERAND_INVALID"; r.detail=std::move(detail); return r;
@@ -264,12 +266,12 @@ std::array<std::uint8_t,32> ComputeSblrLiteralDemandSequenceSha256V1(
 
 std::vector<std::uint8_t> EncodeSblrLiteralPrebindRequestV1(
     const SblrLiteralPrebindRequestV1& request){
-  if(!Nonzero(request.preliminary_receipt_uuid)||!Nonzero(request.catalog_snapshot_uuid)||
+  if(!SystemUuidValid(request.preliminary_receipt_uuid)||!SystemUuidValid(request.catalog_snapshot_uuid)||
      request.catalog_generation==0||
-     !Nonzero(request.mga_snapshot_uuid)||request.demands.size()>kMaximumNodes||
+     !SystemUuidValid(request.mga_snapshot_uuid)||request.demands.size()>kMaximumNodes||
      request.demands.size()>(std::numeric_limits<std::size_t>::max()-128)/48)return{};
   const auto hash=ComputeSblrLiteralDemandSequenceSha256V1(request.demands);
-  if(hash!=request.demand_sha256)return{};
+  if(!Nonzero32(hash)||hash!=request.demand_sha256)return{};
   std::vector<std::uint8_t> out;out.reserve(128+request.demands.size()*48);
   out.insert(out.end(),{'S','B','L','N'});Put16(&out,1);Put16(&out,128);
   Put32(&out,static_cast<std::uint32_t>(128+request.demands.size()*48));Put32(&out,0);
@@ -292,7 +294,7 @@ SblrLiteralPrebindRequestCodecResultV1 DecodeSblrLiteralPrebindRequestV1(
   auto& q=r.request;std::copy_n(bytes+16,16,q.preliminary_receipt_uuid.begin());std::copy_n(bytes+32,16,q.catalog_snapshot_uuid.begin());q.catalog_generation=U64(bytes+48);q.security_epoch=U64(bytes+56);q.resource_epoch=U64(bytes+64);std::copy_n(bytes+72,16,q.mga_snapshot_uuid.begin());std::copy_n(bytes+96,32,q.demand_sha256.begin());
   q.demands.reserve(count);std::size_t off=128;std::uint64_t prior=0;
   for(std::uint32_t i=0;i<count;++i,off+=48){SblrLiteralDemandV1 d;d.occurrence_id=U64(bytes+off);d.lexical_class=U16(bytes+off+8);d.context_class=U16(bytes+off+10);if(d.occurrence_id==0||d.occurrence_id<=prior||bytes[off+12]>1||bytes[off+13]||bytes[off+14]||bytes[off+15])return fail("SBLN demand is noncanonical");d.nullable=bytes[off+12]!=0;std::copy_n(bytes+off+16,32,d.lexical_sha256.begin());q.demands.push_back(d);prior=d.occurrence_id;}
-  if(!Nonzero(q.preliminary_receipt_uuid)||!Nonzero(q.catalog_snapshot_uuid)||q.catalog_generation==0||!Nonzero(q.mga_snapshot_uuid)||ComputeSblrLiteralDemandSequenceSha256V1(q.demands)!=q.demand_sha256)return fail("SBLN binding is invalid");
+  if(!SystemUuidValid(q.preliminary_receipt_uuid)||!SystemUuidValid(q.catalog_snapshot_uuid)||q.catalog_generation==0||!SystemUuidValid(q.mga_snapshot_uuid)||ComputeSblrLiteralDemandSequenceSha256V1(q.demands)!=q.demand_sha256)return fail("SBLN binding is invalid");
   r.canonical_bytes=EncodeSblrLiteralPrebindRequestV1(q);if(r.canonical_bytes.size()!=size||!std::equal(r.canonical_bytes.begin(),r.canonical_bytes.end(),bytes))return fail("SBLN decode/re-encode differs");r.ok=true;return r;
 }
 
@@ -321,9 +323,9 @@ std::array<std::uint8_t,32> ComputeSblrLiteralOrderedProfilesSha256V1(
 
 std::vector<std::uint8_t> EncodeSblrLiteralPrebindResultV1(
     const SblrLiteralPrebindResultV1& value){
-  if(!Nonzero(value.preliminary_receipt_uuid)||!Nonzero(value.catalog_snapshot_uuid)||
-     value.catalog_generation==0||!Nonzero(value.mga_snapshot_uuid)||
-     value.mappings.size()>kMaximumNodes||
+  if(!SystemUuidValid(value.preliminary_receipt_uuid)||!SystemUuidValid(value.catalog_snapshot_uuid)||
+     value.catalog_generation==0||!SystemUuidValid(value.mga_snapshot_uuid)||
+     value.mappings.size()>kMaximumNodes||!Nonzero32(value.ordered_profile_sha256)||
      ComputeSblrLiteralOrderedProfilesSha256V1(value.mappings)!=value.ordered_profile_sha256)return{};
   std::size_t suffix=0;
   for(const auto& mapping:value.mappings){
@@ -353,11 +355,11 @@ bool DecodeSblrLiteralFinalizeRequestV1(const std::uint8_t* b,std::size_t n,
   std::copy_n(b+32,32,v.demand_sha256.begin());std::copy_n(b+64,32,v.ordered_profile_sha256.begin());std::copy_n(b+96,32,v.bound_ast_sha256.begin());std::copy_n(b+128,32,v.sbxn_sha256.begin());
   v.catalog_generation=U64(b+160);v.security_epoch=U64(b+168);v.resource_epoch=U64(b+176);std::copy_n(b+184,16,v.mga_snapshot_uuid.begin());
   const auto sbba_bytes=U32(b+200),sbxn_bytes=U32(b+204);if(sbba_bytes>kMaximumBoundAstBytes||sbxn_bytes>kMaximumExpressionNodeTableBytes||sbba_bytes>n-208||sbxn_bytes>n-208-sbba_bytes||208+std::size_t(sbba_bytes)+std::size_t(sbxn_bytes)!=n)return false;
-  if(!Nonzero(v.preliminary_receipt_uuid)||v.catalog_generation==0||!Nonzero(v.mga_snapshot_uuid))return false;v.canonical_sbba.assign(b+208,b+208+sbba_bytes);v.canonical_sbxn.assign(b+208+sbba_bytes,b+n);SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(v.canonical_sbba.data(),v.canonical_sbba.size(),&parsed)||ComputeSblrLiteralBoundAstSha256V1(v.canonical_sbba)!=v.bound_ast_sha256)return false;if(v.canonical_sbxn.empty()){if(!parsed.nodes.empty()||std::any_of(v.sbxn_sha256.begin(),v.sbxn_sha256.end(),[](auto x){return x!=0;}))return false;}else{const auto table=DecodeSblrExpressionNodeTableV1(v.canonical_sbxn.data(),v.canonical_sbxn.size());const auto digest=core::hash::ComputeSha256Digest(v.canonical_sbxn);if(!table.ok||!digest.ok()||digest.digest!=v.sbxn_sha256)return false;}*out=std::move(v);return true;
+  if(!SystemUuidValid(v.preliminary_receipt_uuid)||v.catalog_generation==0||!SystemUuidValid(v.mga_snapshot_uuid))return false;v.canonical_sbba.assign(b+208,b+208+sbba_bytes);v.canonical_sbxn.assign(b+208+sbba_bytes,b+n);SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(v.canonical_sbba.data(),v.canonical_sbba.size(),&parsed)||ComputeSblrLiteralBoundAstSha256V1(v.canonical_sbba)!=v.bound_ast_sha256)return false;if(v.canonical_sbxn.empty()){if(!parsed.nodes.empty()||std::any_of(v.sbxn_sha256.begin(),v.sbxn_sha256.end(),[](auto x){return x!=0;}))return false;}else{const auto table=DecodeSblrExpressionNodeTableV1(v.canonical_sbxn.data(),v.canonical_sbxn.size());const auto digest=core::hash::ComputeSha256Digest(v.canonical_sbxn);if(!table.ok||!digest.ok()||digest.digest!=v.sbxn_sha256)return false;}*out=std::move(v);return true;
 }
 
 std::vector<std::uint8_t> EncodeSblrLiteralAdmissionV1(SblrLiteralAdmissionV1* a){
-  if(a==nullptr||!Nonzero(a->preliminary_receipt_uuid)||!Nonzero(a->final_receipt_uuid)||!Nonzero(a->admission_token_uuid)||a->catalog_generation==0||!Nonzero(a->mga_snapshot_uuid))return{};
+  if(a==nullptr||!SystemUuidValid(a->preliminary_receipt_uuid)||!SystemUuidValid(a->final_receipt_uuid)||!SystemUuidValid(a->admission_token_uuid)||a->catalog_generation==0||!SystemUuidValid(a->mga_snapshot_uuid))return{};
   std::vector<std::uint8_t> out;out.reserve(264);out.insert(out.end(),{'S','B','L','A'});Put16(&out,1);Put16(&out,264);Put32(&out,264);Put32(&out,0);
   out.insert(out.end(),a->preliminary_receipt_uuid.begin(),a->preliminary_receipt_uuid.end());out.insert(out.end(),a->final_receipt_uuid.begin(),a->final_receipt_uuid.end());out.insert(out.end(),a->admission_token_uuid.begin(),a->admission_token_uuid.end());
   out.insert(out.end(),a->demand_sha256.begin(),a->demand_sha256.end());out.insert(out.end(),a->ordered_profile_sha256.begin(),a->ordered_profile_sha256.end());out.insert(out.end(),a->bound_ast_sha256.begin(),a->bound_ast_sha256.end());out.insert(out.end(),a->sbxn_sha256.begin(),a->sbxn_sha256.end());
@@ -366,24 +368,24 @@ std::vector<std::uint8_t> EncodeSblrLiteralAdmissionV1(SblrLiteralAdmissionV1* a
 }
 
 std::vector<std::uint8_t> EncodeSblrLiteralBoundAstV1(const SblrLiteralBoundAstV1& v){
-  if(!Nonzero(v.preliminary_receipt_uuid)||v.nodes.size()>kMaximumNodes||v.nodes.size()>(std::numeric_limits<std::size_t>::max()-72)/120)return{};
+  if(!SystemUuidValid(v.preliminary_receipt_uuid)||v.nodes.size()>kMaximumNodes||v.nodes.size()>(std::numeric_limits<std::size_t>::max()-72)/120)return{};
   std::vector<std::uint8_t> out;out.reserve(72+v.nodes.size()*120);out.insert(out.end(),{'S','B','B','A'});Put16(&out,1);Put16(&out,72);Put32(&out,static_cast<std::uint32_t>(72+v.nodes.size()*120));Put32(&out,0);Put32(&out,static_cast<std::uint32_t>(v.nodes.size()));Put32(&out,120);out.insert(out.end(),v.preliminary_receipt_uuid.begin(),v.preliminary_receipt_uuid.end());out.insert(out.end(),v.demand_sha256.begin(),v.demand_sha256.end());
   std::uint32_t prior_ordinal=0;std::uint64_t prior_node=0;
-  for(const auto& n:v.nodes){if(n.parent_operand_ordinal==0||n.node_id==0||!Nonzero(n.descriptor_uuid)||n.descriptor_generation==0||!Nonzero(n.type_uuid)||!Nonzero(n.profile_uuid)||n.occurrence_id==0||(n.parent_operand_ordinal<prior_ordinal)||(n.parent_operand_ordinal==prior_ordinal&&n.node_id<=prior_node))return{};Put32(&out,120);Put32(&out,n.parent_operand_ordinal);Put64(&out,n.node_id);out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());Put64(&out,n.descriptor_generation);out.insert(out.end(),n.type_uuid.begin(),n.type_uuid.end());out.insert(out.end(),n.profile_uuid.begin(),n.profile_uuid.end());Put64(&out,n.occurrence_id);out.insert(out.end(),n.lexical_sha256.begin(),n.lexical_sha256.end());out.push_back(n.nullable?1:0);out.insert(out.end(),7,0);prior_ordinal=n.parent_operand_ordinal;prior_node=n.node_id;}
+  for(const auto& n:v.nodes){if(n.parent_operand_ordinal==0||n.node_id==0||!SystemUuidValid(n.descriptor_uuid)||n.descriptor_generation==0||!SystemUuidValid(n.type_uuid)||!SystemUuidValid(n.profile_uuid)||n.occurrence_id==0||(n.parent_operand_ordinal<prior_ordinal)||(n.parent_operand_ordinal==prior_ordinal&&n.node_id<=prior_node))return{};Put32(&out,120);Put32(&out,n.parent_operand_ordinal);Put64(&out,n.node_id);out.insert(out.end(),n.descriptor_uuid.begin(),n.descriptor_uuid.end());Put64(&out,n.descriptor_generation);out.insert(out.end(),n.type_uuid.begin(),n.type_uuid.end());out.insert(out.end(),n.profile_uuid.begin(),n.profile_uuid.end());Put64(&out,n.occurrence_id);out.insert(out.end(),n.lexical_sha256.begin(),n.lexical_sha256.end());out.push_back(n.nullable?1:0);out.insert(out.end(),7,0);prior_ordinal=n.parent_operand_ordinal;prior_node=n.node_id;}
   return out;
 }
 bool DecodeSblrLiteralBoundAstV1(const std::uint8_t* b,std::size_t n,SblrLiteralBoundAstV1* out){
-  if(b==nullptr||out==nullptr||n<72||n>kMaximumBoundAstBytes||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBBA"))||U16(b+4)!=1||U16(b+6)!=72||U32(b+8)!=n||U32(b+12)!=0||U32(b+20)!=120)return false;const auto count=U32(b+16);if(count>kMaximumNodes||count>(n-72)/120||72+std::size_t(count)*120!=n)return false;SblrLiteralBoundAstV1 v;std::copy_n(b+24,16,v.preliminary_receipt_uuid.begin());std::copy_n(b+40,32,v.demand_sha256.begin());if(!Nonzero(v.preliminary_receipt_uuid))return false;v.nodes.reserve(count);std::size_t off=72;
+  if(b==nullptr||out==nullptr||n<72||n>kMaximumBoundAstBytes||!std::equal(b,b+4,reinterpret_cast<const std::uint8_t*>("SBBA"))||U16(b+4)!=1||U16(b+6)!=72||U32(b+8)!=n||U32(b+12)!=0||U32(b+20)!=120)return false;const auto count=U32(b+16);if(count>kMaximumNodes||count>(n-72)/120||72+std::size_t(count)*120!=n)return false;SblrLiteralBoundAstV1 v;std::copy_n(b+24,16,v.preliminary_receipt_uuid.begin());std::copy_n(b+40,32,v.demand_sha256.begin());if(!SystemUuidValid(v.preliminary_receipt_uuid))return false;v.nodes.reserve(count);std::size_t off=72;
   for(std::uint32_t i=0;i<count;++i,off+=120){if(U32(b+off)!=120||b[off+112]>1||std::any_of(b+off+113,b+off+120,[](auto x){return x!=0;}))return false;SblrLiteralBoundAstNodeV1 x;x.parent_operand_ordinal=U32(b+off+4);x.node_id=U64(b+off+8);std::copy_n(b+off+16,16,x.descriptor_uuid.begin());x.descriptor_generation=U64(b+off+32);std::copy_n(b+off+40,16,x.type_uuid.begin());std::copy_n(b+off+56,16,x.profile_uuid.begin());x.occurrence_id=U64(b+off+72);std::copy_n(b+off+80,32,x.lexical_sha256.begin());x.nullable=b[off+112]!=0;v.nodes.push_back(x);}const auto canonical=EncodeSblrLiteralBoundAstV1(v);if(canonical.size()!=n||!std::equal(canonical.begin(),canonical.end(),b))return false;*out=std::move(v);return true;
 }
 std::array<std::uint8_t,32> ComputeSblrLiteralBoundAstSha256V1(const std::vector<std::uint8_t>& bytes){static constexpr std::string_view domain="ScratchBird.SblrLiteralBoundAst.V1";SblrLiteralBoundAstV1 parsed;if(!DecodeSblrLiteralBoundAstV1(bytes.data(),bytes.size(),&parsed))return{};std::vector<std::uint8_t> input(domain.begin(),domain.end());input.insert(input.end(),bytes.begin(),bytes.end());const auto digest=core::hash::ComputeSha256Digest(input);return digest.ok()?digest.digest:std::array<std::uint8_t,32>{};}
 
 std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV1(
     const SblrLiteralStatementDescriptorProfileV1& profile) {
-  if (!Nonzero(profile.profile_uuid) || !Nonzero(profile.statement_receipt_uuid) ||
-      !Nonzero(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
-      !Nonzero(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
-      !Nonzero(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
+  if (!SystemUuidValid(profile.profile_uuid) || !SystemUuidValid(profile.statement_receipt_uuid) ||
+      !SystemUuidValid(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
+      !SystemUuidValid(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
+      !SystemUuidValid(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
       profile.codec_id.empty() || profile.codec_id.size() > 65535 ||
       profile.codec_id.find('\0') != std::string::npos ||
       profile.codec_version == 0 || profile.codec_generation == 0) return {};
@@ -463,11 +465,11 @@ std::array<std::uint8_t, 32> ComputeSblrLiteralDescriptorProfileBindingV2(
 
 std::vector<std::uint8_t> EncodeSblrLiteralDescriptorProfileV2(
     const SblrLiteralStatementDescriptorProfileV2& profile) {
-  if (!Nonzero(profile.profile_uuid) || !Nonzero(profile.statement_receipt_uuid) ||
-      !Nonzero(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
-      !Nonzero(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
-      !Nonzero(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
-      !Nonzero(profile.persisted_descriptor_uuid) ||
+  if (!SystemUuidValid(profile.profile_uuid) || !SystemUuidValid(profile.statement_receipt_uuid) ||
+      !SystemUuidValid(profile.catalog_snapshot_uuid) || profile.catalog_generation == 0 ||
+      !SystemUuidValid(profile.descriptor_uuid) || profile.descriptor_generation == 0 ||
+      !SystemUuidValid(profile.type_uuid) || profile.descriptor_uuid == profile.type_uuid ||
+      !SystemUuidValid(profile.persisted_descriptor_uuid) ||
       profile.persisted_descriptor_generation == 0 ||
       profile.persisted_descriptor_uuid == profile.descriptor_uuid ||
       profile.persisted_descriptor_uuid == profile.type_uuid ||
@@ -640,7 +642,7 @@ DecodeSblrExpressionNodeTableWithLimitV1(
         U16(bytes + offset + 24) != 3 || U16(bytes + offset + 26) != 1 ||
         U16(bytes + offset + 28) != 0) return Fail("SBXN record fields are invalid");
     std::array<std::uint8_t,16> uuid{}; std::copy_n(bytes + offset + 38, 16, uuid.begin());
-    if (!Nonzero(uuid)) return Fail("SBXN descriptor UUID is zero");
+    if (!SystemUuidValid(uuid)) return Fail("SBXN descriptor UUID is not a system UUIDv7");
     std::size_t cursor = offset + 62;
     if (!TakeText(bytes,end,&cursor,"SBLR_LITERAL") ||
         !TakeText(bytes,end,&cursor,"typed_literal") ||
@@ -704,7 +706,7 @@ std::vector<std::uint8_t> EncodeSblrExpressionNodeTableV1(const SblrExpressionNo
   if (table.nodes.empty() || table.nodes.size()>kMaximumNodes) return {};
   std::size_t total=kHeaderBytes; std::uint64_t previous=0;
   for (const auto& n:table.nodes) {
-    if(n.node_id==0||n.node_id<=previous||n.descriptor_generation==0||!Nonzero(n.descriptor_uuid)||
+    if(n.node_id==0||n.node_id<=previous||n.descriptor_generation==0||!SystemUuidValid(n.descriptor_uuid)||
        n.parent_node_id!=0||n.parent_operand_ordinal==0||n.literal_body.size()>kMaximumLiteralBytes||
        n.literal_body.size()>std::numeric_limits<std::size_t>::max()-kRecordFixedBytes) return {};
     const auto record=kRecordFixedBytes+n.literal_body.size(); if(record>std::numeric_limits<std::uint32_t>::max()||record>std::numeric_limits<std::size_t>::max()-total)return{};
@@ -733,7 +735,7 @@ bool DecodeSblrExpressionNodeReferenceV1(
   std::copy_n(bytes + 16, 32, value.node_table_sha256.begin());
   std::copy_n(bytes + 48, 16, value.descriptor_uuid.begin());
   value.descriptor_generation = U64(bytes + 64);
-  if (!Nonzero(value.descriptor_uuid) || value.descriptor_generation == 0 ||
+  if (!SystemUuidValid(value.descriptor_uuid) || value.descriptor_generation == 0 ||
       std::all_of(value.node_table_sha256.begin(),
                   value.node_table_sha256.end(),
                   [](std::uint8_t byte) { return byte == 0; })) {
