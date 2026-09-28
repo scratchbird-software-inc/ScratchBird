@@ -157,6 +157,7 @@ if(SB_BUILD_SERVER)
     database_ownership.cpp
     diagnostics.cpp
     engine_host.cpp
+    host_platform_admission.cpp
     ipar_protocol_support.cpp
     ipar_security_policy_support.cpp
     ipc_server.cpp

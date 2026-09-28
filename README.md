@@ -51,6 +51,21 @@ Public binary names are:
 
 Public Linux source-review build:
 
+The server runtime requires Linux **6.6 or newer**, with Unix peer credentials,
+socket-bound peer process handles (`SO_PEERPIDFD`), and process-handle polling
+permitted by the service sandbox. Startup checks the actual capabilities before
+creating lifecycle artifacts or opening a database; a new enough version string
+alone is insufficient. Containers use the host kernel. Prefer a maintained
+distribution kernel (6.12 or 6.18 LTS for new deployments).
+
+This is a Linux server runtime requirement, not a kernel requirement for every
+build host, client, or embedded application. The server host-admission path
+currently refuses unqualified non-Linux profiles; portable compilation does not
+establish equivalent process-security support. Other native server adapters need
+their own qualification. `--validate-config` checks configuration only and does
+not certify runtime capability. These checks do not constitute performance or
+whole-product qualification.
+
 ```bash
 cd project
 cmake --preset public-release-linux

@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_CONFIG_LIFECYCLE_STARTUP
 
 #include "startup.hpp"
+#include "host_platform_admission.hpp"
 
 #include "memory.hpp"
 
@@ -92,6 +93,25 @@ ServerStartupResult RunServerStartup(const ServerCliOptions& cli) {
     result.exit_code = 2;
     result.diagnostics = std::move(config.diagnostics);
     return result;
+  }
+
+  if (config.config.mode != ServerMode::kValidationOnly) {
+    const auto host = ProbeServerHostPlatform();
+    if (!host.supported) {
+      result.exit_code = 2;
+      result.diagnostics.push_back({
+          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+          "PROFILE.BUILTIN_PROFILE_UNAVAILABLE",
+          ServerDiagnosticSeverity::kError,
+          "The server host lacks a required platform capability.",
+          {{"platform", host.platform},
+           {"kernel_release", host.kernel_release},
+           {"minimum_linux_kernel", "6.6"},
+           {"failed_capability", host.failed_capability},
+           {"native_error", std::to_string(host.native_error)},
+           {"operator_action", "Use a qualified maintained kernel and permit required process/IPC APIs."}}});
+      return result;
+    }
   }
 
   auto memory_policy = ResolveServerMemoryAllocationPolicy(config.config);

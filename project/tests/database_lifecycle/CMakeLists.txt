@@ -5336,6 +5336,18 @@ if(TARGET sb_server_core)
   add_executable(database_lifecycle_process_association_conformance
     process_association_conformance.cpp
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(database_lifecycle_host_platform_admission_conformance
+      host_platform_admission_conformance.cpp
+    )
+    target_compile_features(database_lifecycle_host_platform_admission_conformance PRIVATE cxx_std_23)
+    target_link_libraries(database_lifecycle_host_platform_admission_conformance PRIVATE sb_server_core)
+    add_test(NAME database_lifecycle_host_platform_admission_conformance
+      COMMAND database_lifecycle_host_platform_admission_conformance)
+    set_tests_properties(database_lifecycle_host_platform_admission_conformance PROPERTIES
+      LABELS "database_lifecycle;binary_uuid;server_lifecycle_gate;host_platform_admission"
+      TIMEOUT 60)
+  endif()
   target_compile_features(database_lifecycle_process_association_conformance PRIVATE cxx_std_23)
   target_link_libraries(database_lifecycle_process_association_conformance
     PRIVATE
