@@ -76,6 +76,15 @@ constexpr std::array<OperationRow, 8> kRepresentativeOperations{{
      "engine.op.cluster_write_admission", true},
 }};
 
+sblr::SblrOperand Operand(std::string name, scratchbird::core::platform::Uuid identity) {
+  sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  return operand;
+}
+
 sblr::SblrOperand Operand(std::string name, std::string value) {
   sblr::SblrOperand operand;
   operand.type = "text";
@@ -92,25 +101,20 @@ const sblr::SblrOperand* FindOperand(const sblr::SblrOperationEnvelope& envelope
   return nullptr;
 }
 
-std::string CanonicalOperandText(const sblr::SblrOperationEnvelope& envelope,
-                                 std::string_view name) {
+scratchbird::core::platform::Uuid CanonicalOperandUuid(
+    const sblr::SblrOperationEnvelope& envelope, std::string_view name) {
   const auto* operand = FindOperand(envelope, name);
-  Require(operand != nullptr &&
-              operand->value_kind == sblr::SblrValueKind::literal_typed &&
-              operand->value_body.size() >= 24,
-          "CDP-025 canonical typed operand is missing");
-  const auto size = scratchbird::engine::SblrReadU64(
-      operand->value_body.data() + 16);
-  Require(size == operand->value_body.size() - 24,
-          "CDP-025 canonical typed operand length drifted");
-  return std::string(
-      reinterpret_cast<const char*>(operand->value_body.data() + 24),
-      static_cast<std::size_t>(size));
+  Require(operand != nullptr && operand->value_kind == sblr::SblrValueKind::uuid_ref &&
+              operand->value.empty() && operand->value_body.size() == 16,
+          "CDP-025 canonical binary UUID operand is missing");
+  scratchbird::core::platform::Uuid identity;
+  std::copy_n(operand->value_body.begin(), 16, identity.bytes.begin());
+  return identity;
 }
 
 sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
                                       std::string stable_key,
-                                      std::string resolved_uuid,
+                                      scratchbird::core::platform::Uuid resolved_uuid,
                                       std::string render_hint,
                                       std::string scope) {
   sblr::SblrSourceSymbolArtifact symbol;
@@ -180,7 +184,7 @@ void RequireEnvelopeDiagnostic(const sblr::SblrOperationEnvelope& envelope,
   Fail(message);
 }
 
-void RequireConversionDiagnostic(const sblr::SblrToSbsqlResult& result,
+void RequireConversionDiagnostic(const scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlResult& result,
                                  std::string_view expected_code,
                                  std::string_view message) {
   Require(!result.ok, message);
@@ -281,10 +285,10 @@ sblr::SblrOperationEnvelope BuildDmlInsertEnvelope(const UuidFactory& uuids) {
   const auto* entry = sblr::LookupSblrOperation("engine.op.insert");
   Require(entry != nullptr, "CDP-025 engine.op.insert registry entry missing");
   auto envelope = CanonicalEnvelope(*entry, uuids, 300);
-  const std::string table_uuid = uuids.Text(310);
-  const std::string descriptor_uuid = uuids.Text(311);
-  const std::string column_uuid = uuids.Text(312);
-  const std::string parameter_uuid = uuids.Text(313);
+  const auto table_uuid = uuids.Native(310);
+  const auto descriptor_uuid = uuids.Native(311);
+  const auto column_uuid = uuids.Native(312);
+  const auto parameter_uuid = uuids.Native(313);
   envelope.operands.push_back(
       Operand("sbsql_render_family", "source_preserving_dml_single_row_v1"));
   envelope.operands.push_back(
@@ -304,15 +308,15 @@ void AttachDmlSourceArtifacts(sblr::SblrOperationEnvelope* envelope,
   AttachSourcePolicy(envelope, uuids, 320);
   envelope->source_artifact_map.symbols.push_back(
       Symbol("object_display_name", "object.cdp025_table",
-             CanonicalOperandText(*envelope, "target_object_uuid"),
+             CanonicalOperandUuid(*envelope, "target_object_uuid"),
              "cdp025_table", "dml.target"));
   envelope->source_artifact_map.symbols.push_back(
       Symbol("column_alias", "col.note",
-             CanonicalOperandText(*envelope, "value_column_uuid"), "note",
+             CanonicalOperandUuid(*envelope, "value_column_uuid"), "note",
              "dml.value"));
   envelope->source_artifact_map.symbols.push_back(
       Symbol("parameter", "param.note",
-             CanonicalOperandText(*envelope, "value_parameter_uuid"), ":p_note",
+             CanonicalOperandUuid(*envelope, "value_parameter_uuid"), ":p_note",
              "dml.parameter"));
 }
 
@@ -404,8 +408,8 @@ void CheckSblrToSbsqlConversion() {
   Require(!envelope.source_artifact_map.contains_sql_text,
           "CDP-025 conversion source metadata carries SQL text");
 
-  const sblr::SblrToSbsqlOptions options{.source_preserving = true};
-  const auto rendered = sblr::RenderSblrEnvelopeToSbsql(envelope, options);
+  const scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions options{.source_preserving = true};
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(envelope, options);
   if (!rendered.ok) {
     for (const auto& diagnostic : rendered.diagnostics) {
       std::cerr << "conversion diagnostic=" << diagnostic.code << ':'
@@ -421,7 +425,7 @@ void CheckSblrToSbsqlConversion() {
   auto missing_source = envelope;
   missing_source.source_artifact_map = {};
   RequireConversionDiagnostic(
-      sblr::RenderSblrEnvelopeToSbsql(missing_source, options),
+      scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(missing_source, options),
       "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED",
       "CDP-025 missing source metadata was not refused");
 
@@ -435,7 +439,7 @@ void CheckSblrToSbsqlConversion() {
       RenderHint("engine.op.cluster_write_admission",
                  "cluster_write_admission"));
   RequireConversionDiagnostic(
-      sblr::RenderSblrEnvelopeToSbsql(cluster_envelope, options),
+      scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(cluster_envelope, options),
       "SB_SBLR_TO_SBSQL_NON_CORE_OPERATION_REFUSED",
       "CDP-025 cluster/non-core conversion was not refused");
 }

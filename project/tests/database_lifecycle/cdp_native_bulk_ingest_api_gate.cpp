@@ -2865,9 +2865,9 @@ void TestSblrRegistryEntry() {
               decoded.envelope.opcode == "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST",
           "CDP-040 native ingest round trip changed operation identity");
 
-  sblr::SblrToSbsqlOptions options;
+  scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions options;
   options.source_preserving = true;
-  const auto rendered = sblr::RenderSblrEnvelopeToSbsql(decoded.envelope, options);
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(decoded.envelope, options);
   Require(!rendered.ok && !rendered.diagnostics.empty(),
           "CDP-040 native ingest SBLR-to-SBsql conversion should refuse without SQL text");
   Require(rendered.diagnostics.front().code ==

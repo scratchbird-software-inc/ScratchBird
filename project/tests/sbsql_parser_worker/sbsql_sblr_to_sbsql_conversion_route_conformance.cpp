@@ -26,24 +26,20 @@ namespace {
 
 using scratchbird::engine::sblr::EncodeSblrEnvelope;
 using scratchbird::engine::sblr::MakeSblrEnvelope;
-using scratchbird::engine::sblr::RenderSblrEnvelopeToSbsql;
+using scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql;
 using scratchbird::engine::sblr::SblrOperationEnvelope;
 using scratchbird::engine::sblr::SblrOperand;
 using scratchbird::engine::sblr::SblrSourceSymbolArtifact;
-using scratchbird::engine::sblr::SblrToSbsqlOptions;
+using scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions;
 using scratchbird::udr::sbsql_parser_support::sbu_sbsql_decompile_sblr;
 using scratchbird::udr::sbsql_parser_support::sbu_sbsql_validate_syntax;
 
 constexpr std::string_view kSourcePreservingPolicy =
     "allow_debug_artifacts=true;decompile_policy=source_preserving";
-constexpr std::string_view kRelationUuid =
-    "019dffbb-f000-7000-8000-000000000101";
-constexpr std::string_view kQueryParameterUuid =
-    "019dffbb-f000-7000-8000-000000000201";
-constexpr std::string_view kQueryAliasUuid =
-    "019dffbb-f000-7000-8000-000000000202";
-constexpr std::string_view kCatalogObjectUuid =
-    "019dffbb-f000-7000-8000-000000000301";
+constexpr auto kRelationUuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000101");
+constexpr auto kQueryParameterUuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000201");
+constexpr auto kQueryAliasUuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000202");
+constexpr auto kCatalogObjectUuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000301");
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << "require_failed: " << message << '\n';
@@ -53,6 +49,15 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
+}
+
+SblrOperand Operand(std::string name, scratchbird::core::platform::Uuid identity) {
+  SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = scratchbird::engine::sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  return operand;
 }
 
 SblrOperand Operand(std::string name, std::string value) {
@@ -101,13 +106,13 @@ SblrOperationEnvelope CanonicalOperation(SblrOperationEnvelope envelope) {
 
 SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
                                 std::string stable_key,
-                                std::string resolved_uuid,
+                                scratchbird::core::platform::Uuid resolved_uuid,
                                 std::string render_hint,
                                 std::string scope) {
   SblrSourceSymbolArtifact symbol;
   symbol.symbol_kind = std::move(symbol_kind);
   symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid = std::move(resolved_uuid);
+  symbol.resolved_uuid = resolved_uuid;
   symbol.render_hint = std::move(render_hint);
   symbol.scope = std::move(scope);
   symbol.source_hash = "sha256:phase1c-source-symbol";
@@ -133,30 +138,30 @@ SblrOperationEnvelope BuildConvertibleEnvelope() {
   envelope.operands.push_back(Operand("sbsql_render_family",
                                       "source_preserving_dml_single_row_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      "019dffbb-f000-7000-8000-000000000102"));
+                                      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000102")));
   envelope.operands.push_back(Operand("target_object_uuid",
-                                      std::string(kRelationUuid)));
+                                      kRelationUuid));
   envelope.operands.push_back(
       Operand("value_column_symbol_key", "alias.column.customer_id"));
   envelope.operands.push_back(
-      Operand("value_column_uuid", std::string(kQueryAliasUuid)));
+      Operand("value_column_uuid", kQueryAliasUuid));
   envelope.operands.push_back(
       Operand("value_parameter_symbol_key", "param.p_customer_id"));
   envelope.operands.push_back(
-      Operand("value_parameter_uuid", std::string(kQueryParameterUuid)));
+      Operand("value_parameter_uuid", kQueryParameterUuid));
 
   AttachSourcePolicy(&envelope, "CBQ-021-source-preserving-route",
                      "sha256:cbq021-source-map");
   envelope.source_artifact_map.symbols.push_back(
       Symbol("parameter", "param.p_customer_id",
-             std::string(kQueryParameterUuid), ":p_customer_id",
+             kQueryParameterUuid, ":p_customer_id",
              "dml.parameter"));
   envelope.source_artifact_map.symbols.push_back(
       Symbol("column_alias", "alias.column.customer_id",
-             std::string(kQueryAliasUuid), "customer_id", "dml.value"));
+             kQueryAliasUuid, "customer_id", "dml.value"));
   envelope.source_artifact_map.symbols.push_back(
       Symbol("object_display_name", "object.customer",
-             std::string(kRelationUuid), "customer", "dml.target"));
+             kRelationUuid, "customer", "dml.target"));
   return CanonicalOperation(std::move(envelope));
 }
 
@@ -168,22 +173,22 @@ SblrOperationEnvelope BuildQueryProjectionEnvelope() {
   envelope.operands.push_back(Operand("sbsql_render_family",
                                       "source_preserving_query_projection_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      "019dffbb-f000-7000-8000-000000000203"));
+                                      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000203")));
   envelope.operands.push_back(Operand("projection_descriptor_uuid",
-                                      "019dffbb-f000-7000-8000-000000000204"));
+                                      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000204")));
   envelope.operands.push_back(Operand("parameter_slot_uuid",
-                                      std::string(kQueryParameterUuid)));
+                                      kQueryParameterUuid));
   envelope.operands.push_back(Operand("projection_alias_uuid",
-                                      std::string(kQueryAliasUuid)));
+                                      kQueryAliasUuid));
   envelope.operands.push_back(Operand("projection_expr_kind",
                                       "parameter_reference"));
   AttachSourcePolicy(&envelope, "CBQ-021-query-projection-source-map",
                      "sha256:cbq021-query-projection");
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.p_limit", std::string(kQueryParameterUuid),
+      Symbol("parameter", "param.p_limit", kQueryParameterUuid,
              ":p_limit", "query.parameter"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "alias.column.limit_value", std::string(kQueryAliasUuid),
+      Symbol("column_alias", "alias.column.limit_value", kQueryAliasUuid,
              "limit_value", "query.projection"));
   return CanonicalOperation(std::move(envelope));
 }
@@ -196,15 +201,15 @@ SblrOperationEnvelope BuildCatalogDescriptorEnvelope() {
   envelope.operands.push_back(Operand("sbsql_render_family",
                                       "source_preserving_catalog_descriptor_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      "019dffbb-f000-7000-8000-000000000302"));
+                                      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000302")));
   envelope.operands.push_back(Operand("target_object_uuid",
-                                      std::string(kCatalogObjectUuid)));
+                                      kCatalogObjectUuid));
   envelope.operands.push_back(Operand("target_object_kind", "TABLE"));
   AttachSourcePolicy(&envelope, "CBQ-021-catalog-descriptor-source-map",
                      "sha256:cbq021-catalog-descriptor");
   envelope.source_artifact_map.symbols.push_back(
       Symbol("object_display_name", "object.replay_target",
-             std::string(kCatalogObjectUuid), "replay_target", "catalog.target"));
+             kCatalogObjectUuid, "replay_target", "catalog.target"));
   return CanonicalOperation(std::move(envelope));
 }
 
@@ -221,27 +226,18 @@ void EraseOperand(SblrOperationEnvelope* envelope, std::string_view name) {
   }
 }
 
-void SetOperandText(SblrOperationEnvelope* envelope,
+void SetOperandUuid(SblrOperationEnvelope* envelope,
                     std::string_view name,
-                    std::string_view value) {
+                    scratchbird::core::platform::Uuid identity) {
   for (auto& operand : envelope->operands) {
     if (operand.name != name) continue;
-    Require(operand.value_kind ==
-                    scratchbird::engine::sblr::SblrValueKind::literal_typed &&
-                operand.value_body.size() >= 24,
-            "renderer fixture typed operand is malformed");
-    operand.value.clear();
-    operand.value_body.resize(16);
-    const auto value_size = static_cast<std::uint64_t>(value.size());
-    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
-      operand.value_body.push_back(
-          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
-    }
-    operand.value_body.insert(operand.value_body.end(), value.begin(),
-                              value.end());
+    Require(operand.value_kind == scratchbird::engine::sblr::SblrValueKind::uuid_ref &&
+                operand.value.empty() && operand.value_body.size() == 16,
+            "renderer fixture UUID operand is malformed");
+    operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
     return;
   }
-  Require(false, "renderer fixture operand to mutate is missing");
+  Require(false, "renderer fixture UUID operand to mutate is missing");
 }
 
 std::vector<std::string> RenderedStatements(std::string_view rendered) {
@@ -361,7 +357,7 @@ void CheckCoreOperationFamilyRoutes() {
                                     "SHOW CREATE TABLE replay_target;",
                                     1,
                                     "catalog descriptor");
-  Require(!Contains(catalog_rendered, std::string(kCatalogObjectUuid)),
+  Require(!Contains(catalog_rendered, "019dffbb-f000-7000-8000-000000000301"),
           "catalog descriptor rendered UUID authority as SBsql text");
 
 }
@@ -399,8 +395,7 @@ void CheckDeterministicRefusals() {
                    "missing UUID authority operand");
 
   auto mismatched_authority = BuildConvertibleEnvelope();
-  SetOperandText(&mismatched_authority, "target_object_uuid",
-                 "019dffbb-f000-7000-8000-000000000199");
+  SetOperandUuid(&mismatched_authority, "target_object_uuid", scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000199"));
   ExpectApiRefusal(mismatched_authority,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "mismatched UUID authority operand");
@@ -412,8 +407,7 @@ void CheckDeterministicRefusals() {
                    "query missing projection descriptor authority");
 
   auto query_mismatched_parameter = BuildQueryProjectionEnvelope();
-  SetOperandText(&query_mismatched_parameter, "parameter_slot_uuid",
-                 "019dffbb-f000-7000-8000-000000000299");
+  SetOperandUuid(&query_mismatched_parameter, "parameter_slot_uuid", scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000299"));
   ExpectApiRefusal(query_mismatched_parameter,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "query mismatched parameter UUID authority");
@@ -425,8 +419,7 @@ void CheckDeterministicRefusals() {
                    "catalog missing target object UUID authority");
 
   auto catalog_mismatched_object = BuildCatalogDescriptorEnvelope();
-  SetOperandText(&catalog_mismatched_object, "target_object_uuid",
-                 "019dffbb-f000-7000-8000-000000000399");
+  SetOperandUuid(&catalog_mismatched_object, "target_object_uuid", scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000399"));
   ExpectApiRefusal(catalog_mismatched_object,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "catalog mismatched target UUID authority");

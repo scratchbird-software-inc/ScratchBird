@@ -16,7 +16,7 @@
 #include <string_view>
 #include <vector>
 
-namespace scratchbird::engine::sblr {
+namespace scratchbird::parsers::sbsql::source_rendering {
 
 struct SblrToSbsqlDiagnostic {
   std::string code;
@@ -34,7 +34,7 @@ struct SblrToSbsqlResult {
   std::vector<SblrToSbsqlDiagnostic> diagnostics;
 };
 
-SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelope,
+SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const engine::sblr::SblrOperationEnvelope& envelope,
                                             const SblrToSbsqlOptions& options);
 
 // Decodes and validates the canonical outer SBLR container, its immutable
@@ -81,4 +81,4 @@ inline SblrToSbsqlResult RenderSblrExternalSourceArtifactToSbsql(
       artifact_bytes.size(), options);
 }
 
-}  // namespace scratchbird::engine::sblr
+}  // namespace scratchbird::parsers::sbsql::source_rendering

@@ -3310,6 +3310,11 @@ if(TARGET sb_engine_sblr)
     LABELS "sbsql_sblr_source_map_descriptor_carrier;source_artifact_sbop_authority_refusal;component_regression;authority_diagnostic_registry_blocked;sbsql_parser_worker"
   )
 
+  if(NOT TARGET sbl_sbsql_source_rendering)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/rendering
+                     ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
+  endif()
+
   add_executable(
     cdp_sblr_registry_round_trip_gate
     cdp_sblr_registry_round_trip_gate.cpp
@@ -3324,6 +3329,7 @@ if(TARGET sb_engine_sblr)
     cdp_sblr_registry_round_trip_gate
     PRIVATE
       sb_engine_sblr
+      sbl_sbsql_source_rendering
       sb_core_uuid
   )
   add_test(
@@ -3331,7 +3337,7 @@ if(TARGET sb_engine_sblr)
     COMMAND cdp_sblr_registry_round_trip_gate
   )
   set_tests_properties(cdp_sblr_registry_round_trip_gate PROPERTIES
-    LABELS "cdp_sblr_registry_round_trip_gate;CDP-025;CDP_P2_SBLR_REGISTRY_ROUND_TRIP_READY;sblr_opcode_registry_conformance;sblr_to_sbsql_conversion;sbsql_parser_worker;mga_transaction_regression"
+    LABELS "binary_uuid;cdp_sblr_registry_round_trip_gate;CDP-025;CDP_P2_SBLR_REGISTRY_ROUND_TRIP_READY;sblr_opcode_registry_conformance;sblr_to_sbsql_conversion;sbsql_parser_worker;mga_transaction_regression"
   )
 
   if(TARGET sbu_sbsql_parser_support)
@@ -3351,7 +3357,7 @@ if(TARGET sb_engine_sblr)
       COMMAND sbsql_sblr_to_sbsql_conversion_route_conformance
     )
     set_tests_properties(sbsql_sblr_to_sbsql_conversion_route_conformance PROPERTIES
-      LABELS "sbsql_sblr_to_sbsql_conversion_route_conformance;sblr_to_sbsql_conversion;sbsql_parser_worker"
+      LABELS "binary_uuid;sbsql_sblr_to_sbsql_conversion_route_conformance;sblr_to_sbsql_conversion;sbsql_parser_worker"
     )
 
     add_executable(
@@ -3375,7 +3381,7 @@ if(TARGET sb_engine_sblr)
       COMMAND sbsql_sblr_source_roundtrip_closure_conformance
     )
     set_tests_properties(sbsql_sblr_source_roundtrip_closure_conformance PROPERTIES
-      LABELS "sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_carrier_boundary;sblr_source_artifact_reversal_integration;sbsql_sblr_alignment_integration;sblr_to_sbsql_conversion;CSC-TEST-005767;CSC-TEST-005768;sbsql_parser_worker"
+      LABELS "binary_uuid;sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_carrier_boundary;sblr_source_artifact_reversal_integration;sbsql_sblr_alignment_integration;sblr_to_sbsql_conversion;CSC-TEST-005767;CSC-TEST-005768;sbsql_parser_worker"
     )
 
     add_executable(
@@ -3392,13 +3398,14 @@ if(TARGET sb_engine_sblr)
       sbsql_sblr_source_artifact_container_conformance
       PRIVATE
       sb_engine_sblr
+      sbl_sbsql_source_rendering
     )
     add_test(
       NAME sbsql_sblr_source_artifact_container_conformance
       COMMAND sbsql_sblr_source_artifact_container_conformance
     )
     set_tests_properties(sbsql_sblr_source_artifact_container_conformance PROPERTIES
-      LABELS "sbsql_sblr_source_artifact_container_conformance;IA-01;SBLR_SOURCE_ARTIFACT_MAP;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;PS_738_739;SCHEMA_7751_7752;sbsql_sblr_alignment_contract;CSC-TEST-005761;CSC-TEST-005762;CSC-TEST-005763;CSC-TEST-005764;CSC-TEST-005765;CSC-TEST-005766;CSC-TEST-005769;CSC-TEST-005771;CSC-TEST-005772;CSC-TEST-005773;sbsql_parser_worker"
+      LABELS "binary_uuid;sbsql_sblr_source_artifact_container_conformance;IA-01;SBLR_SOURCE_ARTIFACT_MAP;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;PS_738_739;SCHEMA_7751_7752;sbsql_sblr_alignment_contract;CSC-TEST-005761;CSC-TEST-005762;CSC-TEST-005763;CSC-TEST-005764;CSC-TEST-005765;CSC-TEST-005766;CSC-TEST-005769;CSC-TEST-005771;CSC-TEST-005772;CSC-TEST-005773;sbsql_parser_worker"
     )
   endif()
 
@@ -7347,7 +7354,7 @@ if(TARGET sbu_sbsql_parser_support)
   target_link_libraries(sbu_sbsql_parser_support_probe PRIVATE sbu_sbsql_parser_support)
   add_test(NAME sbu_sbsql_parser_support_probe COMMAND sbu_sbsql_parser_support_probe)
   set_tests_properties(sbu_sbsql_parser_support_probe PROPERTIES
-    LABELS "sbu_sbsql_parser_support_conformance;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker"
+    LABELS "binary_uuid;sbu_sbsql_parser_support_conformance;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker"
   )
 endif()
 

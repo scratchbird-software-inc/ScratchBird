@@ -637,11 +637,11 @@ UdrResult sbu_sbsql_describe_statement(std::string_view sql_text, std::string_vi
 
 UdrResult sbu_sbsql_decompile_sblr(std::string_view sblr_packet, std::string_view render_policy) {
   if (AllowsSourcePreservingDecompile(render_policy)) {
-    scratchbird::engine::sblr::SblrToSbsqlOptions options;
+    scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions options;
     options.source_preserving = true;
-    scratchbird::engine::sblr::SblrToSbsqlResult rendered;
+    scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlResult rendered;
     if (StartsWith(sblr_packet, "SBLR")) {
-      rendered = scratchbird::engine::sblr::RenderSblrContainerToSbsql(
+      rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
           sblr_packet, options);
     } else {
       const auto decoded =
@@ -655,7 +655,7 @@ UdrResult sbu_sbsql_decompile_sblr(std::string_view sblr_packet, std::string_vie
                                  : decoded.diagnostics.front().message;
         return Refuse(code, message);
       }
-      rendered = scratchbird::engine::sblr::RenderSblrEnvelopeToSbsql(
+      rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(
           decoded.envelope, options);
     }
     if (!rendered.ok) {

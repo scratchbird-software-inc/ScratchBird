@@ -287,7 +287,7 @@ struct SblrOperand {
 struct SblrSourceSymbolArtifact {
   std::string symbol_kind;
   std::string stable_key;
-  std::string resolved_uuid;
+  core::platform::Uuid resolved_uuid;
   std::string render_hint;
   std::string scope;
   std::string source_hash;

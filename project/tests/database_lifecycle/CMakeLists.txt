@@ -671,6 +671,11 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "sblr_plan_import_rows_conformance;SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1;PID-007;database_lifecycle_storage;sblr_opcode_registry_conformance;mga_transaction_regression"
   )
 
+  if(NOT TARGET sbl_sbsql_source_rendering)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/rendering
+                     ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
+  endif()
+
   add_executable(cdp_native_bulk_ingest_api_gate
     cdp_native_bulk_ingest_api_gate.cpp
   )
@@ -681,6 +686,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sb_core_uuid
       sb_engine_internal_api
       sb_engine_sblr
+      sbl_sbsql_source_rendering
       sb_server_core
       sb_storage_database
   )
@@ -2024,6 +2030,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       LABELS "dpc_route_surface_completion_gate;DPC-060;index_validation_repair;executor_evidence_refusal;driver_capability;executor_batch_internal_only;mga_transaction_regression;database_lifecycle"
     )
 
+    if(NOT TARGET sbl_sbsql_source_rendering)
+      add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/rendering
+                       ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
+    endif()
     add_executable(dpc_sblr_api_abi_compatibility_gate
       dpc_sblr_api_abi_compatibility_gate.cpp
     )
@@ -2034,6 +2044,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
         sb_engine
         sb_engine_internal_api
         sb_engine_sblr
+        sbl_sbsql_source_rendering
         sb_server_core
     )
 
@@ -2042,7 +2053,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       COMMAND dpc_sblr_api_abi_compatibility_gate "${SB_PRIVATE_REPO_ROOT}"
     )
     set_tests_properties(dpc_sblr_api_abi_compatibility_gate PROPERTIES
-      LABELS "dpc_sblr_api_abi_compatibility_gate;DPC-074;DPC_SBLR_API_ABI_COMPATIBILITY_GATE;DPC_P6_SBLR_API_ABI_READY;DPC_AUDIT_SBLR_API_ABI;DPC_TEST_SBLR_API_ABI;sblr_api_abi;sblr_route;server_admission;public_abi;driver_capability;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression;database_lifecycle"
+      LABELS "binary_uuid;dpc_sblr_api_abi_compatibility_gate;DPC-074;DPC_SBLR_API_ABI_COMPATIBILITY_GATE;DPC_P6_SBLR_API_ABI_READY;DPC_AUDIT_SBLR_API_ABI;DPC_TEST_SBLR_API_ABI;sblr_api_abi;sblr_route;server_admission;public_abi;driver_capability;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression;database_lifecycle"
     )
   endif()
 

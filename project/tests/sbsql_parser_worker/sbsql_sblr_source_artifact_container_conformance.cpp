@@ -275,9 +275,9 @@ void CheckSingleExecutableMemberOpcodeStreamRendering() {
           "single-member transaction package did not encode");
   const auto bytes = public_sblr::EncodeSblrContainer(container);
   Require(!bytes.empty(), "single-member transaction container did not encode");
-  const auto rendered = sblr::RenderSblrContainerToSbsql(
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
       bytes.data(), bytes.size(),
-      sblr::SblrToSbsqlOptions{.source_preserving = true});
+      scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
   Require(rendered.ok && rendered.diagnostics.empty() &&
               rendered.sbsql_text == "BEGIN TRANSACTION;",
           "single-executable-member package did not source-render");
@@ -287,9 +287,9 @@ void CheckSingleExecutableMemberOpcodeStreamRendering() {
           "multi-member transaction package did not encode");
   const auto multi_bytes = public_sblr::EncodeSblrContainer(container);
   Require(!multi_bytes.empty(), "multi-member container did not encode");
-  const auto refused = sblr::RenderSblrContainerToSbsql(
+  const auto refused = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
       multi_bytes.data(), multi_bytes.size(),
-      sblr::SblrToSbsqlOptions{.source_preserving = true});
+      scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
   Require(!refused.ok && !refused.diagnostics.empty() &&
               refused.diagnostics.front().code ==
                   "SBLR.SOURCE_ARTIFACT.INVALID" &&
@@ -583,9 +583,9 @@ void CheckCarrierBoundaryRefusals() {
       public_sblr::EncodeSblrContainer(duplicate_channel);
   Require(!duplicate_bytes.empty(),
           "duplicate-channel container fixture did not encode");
-  const auto duplicate_result = sblr::RenderSblrContainerToSbsql(
+  const auto duplicate_result = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
       duplicate_bytes.data(), duplicate_bytes.size(),
-      sblr::SblrToSbsqlOptions{.source_preserving = true});
+      scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
   Require(!duplicate_result.ok && !duplicate_result.diagnostics.empty() &&
               duplicate_result.diagnostics.front().code ==
                   "SBLR.SOURCE_ARTIFACT.INVALID" &&
@@ -599,9 +599,9 @@ void CheckCarrierBoundaryRefusals() {
       public_sblr::EncodeSblrContainer(invalid_operation);
   Require(!invalid_bytes.empty(),
           "invalid-operation container fixture did not encode");
-  const auto invalid_result = sblr::RenderSblrContainerToSbsql(
+  const auto invalid_result = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
       invalid_bytes.data(), invalid_bytes.size(),
-      sblr::SblrToSbsqlOptions{.source_preserving = true});
+      scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
   Require(!invalid_result.ok && !invalid_result.diagnostics.empty() &&
               invalid_result.diagnostics.front().code !=
                   "SBLR.SOURCE_ARTIFACT.INVALID",

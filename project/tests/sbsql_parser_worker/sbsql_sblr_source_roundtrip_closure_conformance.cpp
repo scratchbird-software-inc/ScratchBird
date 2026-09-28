@@ -37,22 +37,14 @@ namespace udr = scratchbird::udr::sbsql_parser_support;
 
 constexpr std::string_view kSourcePreservingPolicy =
     "allow_debug_artifacts=true;decompile_policy=source_preserving";
-constexpr std::string_view kDescriptorUuid =
-    "019f1000-0000-7000-8000-000000000001";
-constexpr std::string_view kTableUuid =
-    "019f1000-0000-7000-8000-000000000101";
-constexpr std::string_view kValueColumnUuid =
-    "019f1000-0000-7000-8000-000000000201";
-constexpr std::string_view kPredicateColumnUuid =
-    "019f1000-0000-7000-8000-000000000202";
-constexpr std::string_view kValueParameterUuid =
-    "019f1000-0000-7000-8000-000000000301";
-constexpr std::string_view kPredicateParameterUuid =
-    "019f1000-0000-7000-8000-000000000302";
-constexpr std::string_view kSessionContextUuid =
-    "019f1000-0000-7000-8000-000000000401";
-constexpr std::string_view kTransactionContextUuid =
-    "019f1000-0000-7000-8000-000000000402";
+constexpr auto kDescriptorUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000001");
+constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000101");
+constexpr auto kValueColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000201");
+constexpr auto kPredicateColumnUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000202");
+constexpr auto kValueParameterUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000301");
+constexpr auto kPredicateParameterUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000302");
+constexpr auto kSessionContextUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000401");
+constexpr auto kTransactionContextUuid = scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-000000000402");
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -63,6 +55,15 @@ void Require(bool condition, std::string_view message) {
 
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
+}
+
+sblr::SblrOperand Operand(std::string name, scratchbird::core::platform::Uuid identity) {
+  sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = scratchbird::engine::sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  return operand;
 }
 
 sblr::SblrOperand Operand(std::string name, std::string value) {
@@ -113,23 +114,15 @@ void RenumberOperands(sblr::SblrOperationEnvelope* envelope) {
   }
 }
 
-void SetOperandText(sblr::SblrOperationEnvelope* envelope,
+void SetOperandUuid(sblr::SblrOperationEnvelope* envelope,
                     std::string_view name,
-                    std::string_view value) {
+                    scratchbird::core::platform::Uuid identity) {
   for (auto& operand : envelope->operands) {
     if (operand.name != name) continue;
-    Require(operand.value_kind == sblr::SblrValueKind::literal_typed &&
-                operand.value_body.size() >= 24,
-            "source round-trip typed operand is malformed");
-    operand.value.clear();
-    operand.value_body.resize(16);
-    const auto value_size = static_cast<std::uint64_t>(value.size());
-    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
-      operand.value_body.push_back(
-          static_cast<std::uint8_t>((value_size >> shift) & 0xffu));
-    }
-    operand.value_body.insert(operand.value_body.end(), value.begin(),
-                              value.end());
+    Require(operand.value_kind == sblr::SblrValueKind::uuid_ref &&
+                operand.value.empty() && operand.value_body.size() == 16,
+            "source round-trip native UUID operand is malformed");
+    operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
     return;
   }
   Require(false, "source round-trip operand to mutate is missing");
@@ -137,13 +130,13 @@ void SetOperandText(sblr::SblrOperationEnvelope* envelope,
 
 sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
                                       std::string stable_key,
-                                      std::string resolved_uuid,
+                                      scratchbird::core::platform::Uuid resolved_uuid,
                                       std::string render_hint,
                                       std::string scope) {
   sblr::SblrSourceSymbolArtifact symbol;
   symbol.symbol_kind = std::move(symbol_kind);
   symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid = std::move(resolved_uuid);
+  symbol.resolved_uuid = resolved_uuid;
   symbol.render_hint = std::move(render_hint);
   symbol.scope = std::move(scope);
   symbol.source_hash = "sha256:phase1f-source-symbol";
@@ -175,20 +168,20 @@ void AttachSourcePolicy(sblr::SblrOperationEnvelope* envelope,
 void AttachTableAndColumnSymbols(sblr::SblrOperationEnvelope* envelope) {
   envelope->source_artifact_map.symbols.push_back(
       Symbol("object_display_name", "object.roundtrip_customer",
-             std::string(kTableUuid), "roundtrip_customer", "catalog.object"));
+             kTableUuid, "roundtrip_customer", "catalog.object"));
   envelope->source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "column.amount", std::string(kValueColumnUuid),
+      Symbol("column_alias", "column.amount", kValueColumnUuid,
              "amount", "descriptor.column"));
   envelope->source_artifact_map.symbols.push_back(
       Symbol("column_alias", "column.customer_id",
-             std::string(kPredicateColumnUuid), "customer_id",
+             kPredicateColumnUuid, "customer_id",
              "descriptor.column"));
   envelope->source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.amount", std::string(kValueParameterUuid),
+      Symbol("parameter", "param.amount", kValueParameterUuid,
              ":p_amount", "parameter.value"));
   envelope->source_artifact_map.symbols.push_back(
       Symbol("parameter", "param.customer_id",
-             std::string(kPredicateParameterUuid), ":p_customer_id",
+             kPredicateParameterUuid, ":p_customer_id",
              "parameter.predicate"));
 }
 
@@ -201,25 +194,25 @@ sblr::SblrOperationEnvelope BuildDmlEnvelope(std::string operation_id,
   envelope.operands.push_back(Operand("sbsql_render_family",
                                       "source_preserving_dml_single_row_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      std::string(kDescriptorUuid)));
+                                      kDescriptorUuid));
   envelope.operands.push_back(Operand("target_object_uuid",
-                                      std::string(kTableUuid)));
+                                      kTableUuid));
   envelope.operands.push_back(Operand("value_column_symbol_key",
                                       "column.amount"));
   envelope.operands.push_back(Operand("value_column_uuid",
-                                      std::string(kValueColumnUuid)));
+                                      kValueColumnUuid));
   envelope.operands.push_back(Operand("value_parameter_symbol_key",
                                       "param.amount"));
   envelope.operands.push_back(Operand("value_parameter_uuid",
-                                      std::string(kValueParameterUuid)));
+                                      kValueParameterUuid));
   envelope.operands.push_back(Operand("predicate_column_symbol_key",
                                       "column.customer_id"));
   envelope.operands.push_back(Operand("predicate_column_uuid",
-                                      std::string(kPredicateColumnUuid)));
+                                      kPredicateColumnUuid));
   envelope.operands.push_back(Operand("predicate_parameter_symbol_key",
                                       "param.customer_id"));
   envelope.operands.push_back(Operand("predicate_parameter_uuid",
-                                      std::string(kPredicateParameterUuid)));
+                                      kPredicateParameterUuid));
   AttachSourcePolicy(&envelope, "CBQ-038-dml-source-map");
   AttachTableAndColumnSymbols(&envelope);
   return CanonicalOperation(std::move(envelope));
@@ -295,7 +288,7 @@ sblr::SblrOperationEnvelope BuildTransactionEnvelope(std::string operation_id,
     envelope.operands.push_back(Operand(
         "sbsql_render_family", "source_preserving_transaction_control_v1"));
     envelope.operands.push_back(Operand("session_context_uuid",
-                                        std::string(kSessionContextUuid)));
+                                        kSessionContextUuid));
     if (envelope.operation_id == "transaction.set_characteristics") {
       envelope.operands.push_back(
           Operand("transaction_read_mode", "read_only"));
@@ -408,7 +401,7 @@ sblr::SblrSourceArtifactMapV1 BuildTypedSourceArtifact(
     }
     if (symbol.symbol_kind ==
         sblr::SblrSourceArtifactSymbolKindV1::object_display_name) {
-      symbol.related_object_uuid = ParseUuid(source.resolved_uuid);
+      symbol.related_object_uuid = source.resolved_uuid.bytes;
     }
     symbol.raw_name_utf8 = source.render_hint;
     symbol.normalized_lookup_key = source.render_hint;
@@ -517,14 +510,14 @@ void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
                                  std::string_view label) {
   const auto canonical_container =
       BinaryRoundTripCanonicalContainer(envelope);
-  const sblr::SblrToSbsqlOptions options{.source_preserving = true};
-  const auto rendered = sblr::RenderSblrContainerToSbsql(
+  const scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions options{.source_preserving = true};
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
       canonical_container.data(), canonical_container.size(), options);
   Require(rendered.ok, std::string(label) + " did not render SBsql");
   Require(Contains(rendered.sbsql_text, expected_fragment),
           std::string(label) + " did not preserve expected render text");
-  Require(!Contains(rendered.sbsql_text, std::string(kDescriptorUuid)) &&
-              !Contains(rendered.sbsql_text, std::string(kTableUuid)) &&
+  Require(!Contains(rendered.sbsql_text, "019f1000-0000-7000-8000-000000000001") &&
+              !Contains(rendered.sbsql_text, "019f1000-0000-7000-8000-000000000101") &&
               !Contains(rendered.sbsql_text, "source_artifact") &&
               !Contains(rendered.sbsql_text, "operation_id="),
           std::string(label) + " leaked authority metadata as SBsql text");
@@ -560,8 +553,8 @@ void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
 void ExpectApiRefusal(const sblr::SblrOperationEnvelope& envelope,
                       std::string_view code,
                       std::string_view label) {
-  const sblr::SblrToSbsqlOptions options{.source_preserving = true};
-  const auto rendered = sblr::RenderSblrEnvelopeToSbsql(envelope, options);
+  const scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions options{.source_preserving = true};
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(envelope, options);
   Require(!rendered.ok, std::string(label) + " unexpectedly rendered");
   Require(!rendered.diagnostics.empty(),
           std::string(label) + " did not return diagnostics");
@@ -621,8 +614,8 @@ void CheckAuthorityAndPolicyRefusals() {
 
   auto mismatched_authority =
       BuildDmlEnvelope("engine.op.update", "SBLR_UPDATE");
-  SetOperandText(&mismatched_authority, "value_column_uuid",
-                 "019f1000-0000-7000-8000-00000000ffff");
+  SetOperandUuid(&mismatched_authority, "value_column_uuid",
+      scratchbird::tests::FixtureUuidLiteral("019f1000-0000-7000-8000-00000000ffff"));
   ExpectApiRefusal(mismatched_authority,
                    "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
                    "mismatched value column authority");

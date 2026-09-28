@@ -6,6 +6,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(NOT TARGET sbl_sbsql_source_rendering)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/rendering
+                   ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
+endif()
+
 add_library(sbu_sbsql_parser_support STATIC
   sbu_sbsql_parser_support.cpp
 )
@@ -22,7 +27,7 @@ target_include_directories(sbu_sbsql_parser_support PUBLIC
 target_link_libraries(sbu_sbsql_parser_support PUBLIC
   sb_udr_runtime
   sbl_sbsql_parser_pipeline
-  sb_engine_sblr
+  sbl_sbsql_source_rendering
 )
 
 if(SB_INSTALL_NON_ENGINE_COMPONENTS)

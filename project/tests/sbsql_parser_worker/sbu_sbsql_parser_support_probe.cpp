@@ -26,8 +26,7 @@ namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kSourcePreservingPolicy =
     "allow_debug_artifacts=true;decompile_policy=source_preserving";
-constexpr std::string_view kRelationUuid =
-    "019dffbb-f000-7000-8000-000000000201";
+constexpr auto kRelationUuid = scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000201");
 constexpr std::string_view kTrustedBridgeContext =
     "engine_context=trusted;bridge_authority=engine;"
     "user_uuid=019e13c0-0000-7000-8000-00000000b001;"
@@ -106,6 +105,15 @@ const runtime::UdrEntrypointDescriptor* FindEntrypoint(
   return nullptr;
 }
 
+sblr::SblrOperand Operand(std::string name, scratchbird::core::platform::Uuid identity) {
+  sblr::SblrOperand operand;
+  operand.type = "uuid";
+  operand.name = std::move(name);
+  operand.value_kind = scratchbird::engine::sblr::SblrValueKind::uuid_ref;
+  operand.value_body.assign(identity.bytes.begin(), identity.bytes.end());
+  return operand;
+}
+
 sblr::SblrOperand Operand(std::string name, std::string value) {
   sblr::SblrOperand operand;
   operand.type = "text";
@@ -116,13 +124,13 @@ sblr::SblrOperand Operand(std::string name, std::string value) {
 
 sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
                                       std::string stable_key,
-                                      std::string resolved_uuid,
+                                      scratchbird::core::platform::Uuid resolved_uuid,
                                       std::string render_hint,
                                       std::string scope) {
   sblr::SblrSourceSymbolArtifact symbol;
   symbol.symbol_kind = std::move(symbol_kind);
   symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid = std::move(resolved_uuid);
+  symbol.resolved_uuid = resolved_uuid;
   symbol.render_hint = std::move(render_hint);
   symbol.scope = std::move(scope);
   symbol.source_hash = "sha256:parser-udr-source-symbol";
@@ -137,9 +145,9 @@ sblr::SblrOperationEnvelope BuildSourcePreservingEnvelope() {
   envelope.operands.push_back(Operand("sbsql_render_family",
                                       "source_preserving_procedural_bundle_v1"));
   envelope.operands.push_back(Operand("authority_descriptor_uuid",
-                                      "019dffbb-f000-7000-8000-000000000202"));
+                                      scratchbird::tests::FixtureUuidLiteral("019dffbb-f000-7000-8000-000000000202")));
   envelope.operands.push_back(Operand("relation_object_uuid",
-                                      std::string(kRelationUuid)));
+                                      kRelationUuid));
   envelope.operands.push_back(Operand("variable_type", "INT"));
 
   envelope.source_artifact_map.policy_status = "non_authoritative_render_metadata";
@@ -149,21 +157,21 @@ sblr::SblrOperationEnvelope BuildSourcePreservingEnvelope() {
   envelope.source_artifact_map.contains_sql_text = false;
   envelope.source_artifact_map.raw_sql_text_authoritative = false;
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("variable", "var.v_udr_ready", "", "v_udr_ready", "procedure.local"));
+      Symbol("variable", "var.v_udr_ready", {}, "v_udr_ready", "procedure.local"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("parameter", "param.p_udr_id", "", ":p_udr_id", "routine.input"));
+      Symbol("parameter", "param.p_udr_id", {}, ":p_udr_id", "routine.input"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("cursor", "cursor.udr_scan", "", "udr_scan", "procedure.cursor"));
+      Symbol("cursor", "cursor.udr_scan", {}, "udr_scan", "procedure.cursor"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("label", "label.udr_ready_loop", "", "udr_ready_loop", "procedure.label"));
+      Symbol("label", "label.udr_ready_loop", {}, "udr_ready_loop", "procedure.label"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("exception_handler", "handler.udr_not_found", "", "udr_not_found", "procedure.handler"));
+      Symbol("exception_handler", "handler.udr_not_found", {}, "udr_not_found", "procedure.handler"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("relation_alias", "alias.udr_ready.u", "", "u", "query.range"));
+      Symbol("relation_alias", "alias.udr_ready.u", {}, "u", "query.range"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("column_alias", "alias.column.udr_id", "", "udr_id", "query.projection"));
+      Symbol("column_alias", "alias.column.udr_id", {}, "udr_id", "query.projection"));
   envelope.source_artifact_map.symbols.push_back(
-      Symbol("object_display_name", "object.udr_ready", std::string(kRelationUuid), "udr_ready", "query.from"));
+      Symbol("object_display_name", "object.udr_ready", kRelationUuid, "udr_ready", "query.from"));
   return envelope;
 }
 

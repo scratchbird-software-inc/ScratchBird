@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_to_sbsql.hpp"
+#include "core/uuid/uuid.hpp"
 
 #include "sblr_opcode_registry.hpp"
 #include "sblr_opcode_stream.hpp"
@@ -26,7 +27,8 @@
 #include <string_view>
 #include <utility>
 
-namespace scratchbird::engine::sblr {
+namespace scratchbird::parsers::sbsql::source_rendering {
+using namespace scratchbird::engine::sblr;
 namespace {
 
 SblrToSbsqlDiagnostic Diagnostic(std::string code, std::string message) {
@@ -63,6 +65,27 @@ std::string_view OperandValue(const SblrOperationEnvelope& envelope,
   return std::string_view(
       reinterpret_cast<const char*>(operand->value_body.data() + 24),
       static_cast<std::size_t>(size));
+}
+
+// Authority operands are canonical binary identities, never typed text or a
+// display spelling. The source artifact cannot repair an absent or wrong carrier.
+std::optional<core::platform::Uuid> OperandUuid(
+    const SblrOperationEnvelope& envelope, std::string_view name) {
+  const SblrOperand* found = nullptr;
+  for (const auto& operand : envelope.operands) {
+    if (operand.name != name) continue;
+    if (found != nullptr) return std::nullopt;
+    found = &operand;
+  }
+  if (found == nullptr || found->value_kind != SblrValueKind::uuid_ref ||
+      found->value_flags != 0 || !found->value.empty() ||
+      found->value_body.size() != 16) {
+    return std::nullopt;
+  }
+  core::platform::Uuid identity;
+  std::copy_n(found->value_body.begin(), identity.bytes.size(), identity.bytes.begin());
+  return core::uuid::IsEngineIdentityUuid(identity)
+             ? std::optional{identity} : std::nullopt;
 }
 
 const SblrSourceSymbolArtifact* FindSymbol(const SblrOperationEnvelope& envelope,
@@ -120,36 +143,6 @@ bool IsIdentifier(std::string_view value) {
     if (!std::isalnum(c) && c != '_') return false;
   }
   return true;
-}
-
-int HexNibble(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-  return -1;
-}
-
-bool ParseUuid(std::string_view text, SblrSourceArtifactUuidV1* uuid) {
-  if (uuid == nullptr || text.size() != 36 || text[8] != '-' ||
-      text[13] != '-' || text[18] != '-' || text[23] != '-') {
-    return false;
-  }
-  std::size_t output = 0;
-  bool nonzero = false;
-  for (std::size_t index = 0; index < text.size();) {
-    if (text[index] == '-') {
-      ++index;
-      continue;
-    }
-    if (index + 1 >= text.size() || output == uuid->size()) return false;
-    const auto high = HexNibble(text[index]);
-    const auto low = HexNibble(text[index + 1]);
-    if (high < 0 || low < 0) return false;
-    (*uuid)[output] = static_cast<std::uint8_t>((high << 4) | low);
-    nonzero = nonzero || (*uuid)[output] != 0;
-    ++output;
-    index += 2;
-  }
-  return output == uuid->size() && nonzero;
 }
 
 template <typename T>
@@ -357,11 +350,11 @@ bool IsObjectAuthorityOperand(std::string_view name) {
                    name) != kAuthorityOperands.end();
 }
 
-std::string ProjectSymbolAuthorityUuid(
+core::platform::Uuid ProjectSymbolAuthorityUuid(
     const SblrOperationEnvelope& envelope,
     const SblrSourceArtifactSymbolV1& symbol) {
   if (NonZero(symbol.related_object_uuid)) {
-    return FormatUuid(symbol.related_object_uuid);
+    return core::platform::Uuid{symbol.related_object_uuid};
   }
   if (symbol.symbol_kind == SblrSourceArtifactSymbolKindV1::label) {
     const auto authority = DecodeExactSavepointRenderAuthority(envelope);
@@ -370,7 +363,7 @@ std::string ProjectSymbolAuthorityUuid(
             static_cast<std::uint64_t>(envelope.operands.front().ordinal) +
                 1U &&
         symbol.scope_node_id == 1) {
-      return FormatUuid(authority->savepoint_uuid);
+      return core::platform::Uuid{authority->savepoint_uuid};
     }
   }
 
@@ -395,10 +388,8 @@ std::string ProjectSymbolAuthorityUuid(
         symbol.symbol_key) {
       continue;
     }
-    SblrSourceArtifactUuidV1 authority_uuid{};
-    if (ParseUuid(OperandValue(envelope, mapping.authority_operand),
-                  &authority_uuid)) {
-      return FormatUuid(authority_uuid);
+    if (const auto authority_uuid = OperandUuid(envelope, mapping.authority_operand)) {
+      return *authority_uuid;
     }
     continue;
   }
@@ -420,15 +411,10 @@ std::string ProjectSymbolAuthorityUuid(
     default:
       return {};
   }
-  SblrSourceArtifactUuidV1 authority_uuid{};
-  if (!ParseUuid(OperandValue(envelope, direct_authority_operand),
-                 &authority_uuid)) {
-    return {};
-  }
-  return FormatUuid(authority_uuid);
+  return OperandUuid(envelope, direct_authority_operand).value_or(core::platform::Uuid{});
 }
 
-SblrSourceArtifactMap ToLegacySourceArtifact(
+SblrSourceArtifactMap ToRenderSourceArtifact(
     const SblrOperationEnvelope& envelope,
     const SblrSourceArtifactMapV1& artifact) {
   SblrSourceArtifactMap legacy;
@@ -603,7 +589,7 @@ bool RequireOperand(const SblrOperationEnvelope& envelope,
                     std::string_view name,
                     std::string_view message,
                     SblrToSbsqlResult* result) {
-  if (!OperandValue(envelope, name).empty()) return true;
+  if (OperandUuid(envelope, name).has_value()) return true;
   result->ok = false;
   result->diagnostics.push_back(Diagnostic(
       "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED", std::string(message)));
@@ -626,8 +612,8 @@ bool RequireSymbolAuthorityMatch(const SblrOperationEnvelope& envelope,
                                  std::string_view operand_name,
                                  std::string_view message_prefix,
                                  SblrToSbsqlResult* result) {
-  const auto authority_uuid = OperandValue(envelope, operand_name);
-  if (authority_uuid.empty()) {
+  const auto authority_uuid = OperandUuid(envelope, operand_name);
+  if (!authority_uuid.has_value()) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
@@ -635,7 +621,7 @@ bool RequireSymbolAuthorityMatch(const SblrOperationEnvelope& envelope,
     return false;
   }
   const auto* symbol = FindSymbol(envelope, symbol_kind);
-  if (symbol == nullptr || symbol->resolved_uuid.empty()) {
+  if (symbol == nullptr || !core::uuid::IsEngineIdentityUuid(symbol->resolved_uuid)) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OBJECT_REQUIRED",
@@ -643,7 +629,7 @@ bool RequireSymbolAuthorityMatch(const SblrOperationEnvelope& envelope,
             " cannot use render hints without UUID authority"));
     return false;
   }
-  if (symbol->resolved_uuid != authority_uuid) {
+  if (symbol->resolved_uuid != *authority_uuid) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
@@ -669,8 +655,8 @@ bool RequireSymbolAuthorityMatchByStableKey(
         std::string(message_prefix) + " requires a source symbol stable key"));
     return false;
   }
-  const auto authority_uuid = OperandValue(envelope, authority_operand_name);
-  if (authority_uuid.empty()) {
+  const auto authority_uuid = OperandUuid(envelope, authority_operand_name);
+  if (!authority_uuid.has_value()) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
@@ -678,7 +664,7 @@ bool RequireSymbolAuthorityMatchByStableKey(
     return false;
   }
   const auto* symbol = FindSymbolByStableKey(envelope, symbol_kind, stable_key);
-  if (symbol == nullptr || symbol->resolved_uuid.empty()) {
+  if (symbol == nullptr || !core::uuid::IsEngineIdentityUuid(symbol->resolved_uuid)) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OBJECT_REQUIRED",
@@ -686,7 +672,7 @@ bool RequireSymbolAuthorityMatchByStableKey(
             " cannot use render hints without UUID authority"));
     return false;
   }
-  if (symbol->resolved_uuid != authority_uuid) {
+  if (symbol->resolved_uuid != *authority_uuid) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
@@ -718,15 +704,15 @@ bool ValidateProceduralAuthorityOperands(const SblrOperationEnvelope& envelope,
                            result)) {
     return false;
   }
-  if (OperandValue(envelope, "authority_descriptor_uuid").empty()) {
+  if (!OperandUuid(envelope, "authority_descriptor_uuid").has_value()) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
         "SBLR-to-SBsql conversion requires descriptor authority operands"));
     return false;
   }
-  const auto relation_uuid = OperandValue(envelope, "relation_object_uuid");
-  if (relation_uuid.empty()) {
+  const auto relation_uuid = OperandUuid(envelope, "relation_object_uuid");
+  if (!relation_uuid.has_value()) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OPERAND_REQUIRED",
@@ -734,14 +720,14 @@ bool ValidateProceduralAuthorityOperands(const SblrOperationEnvelope& envelope,
     return false;
   }
   const auto* object_symbol = FindSymbol(envelope, "object_display_name");
-  if (object_symbol == nullptr || object_symbol->resolved_uuid.empty()) {
+  if (object_symbol == nullptr || !core::uuid::IsEngineIdentityUuid(object_symbol->resolved_uuid)) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_OBJECT_REQUIRED",
         "SBLR-to-SBsql conversion cannot use object display names without UUID authority"));
     return false;
   }
-  if (object_symbol->resolved_uuid != relation_uuid) {
+  if (object_symbol->resolved_uuid != *relation_uuid) {
     result->ok = false;
     result->diagnostics.push_back(Diagnostic(
         "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
@@ -1033,7 +1019,7 @@ SblrToSbsqlResult RenderDdlCreateSchema(
     const auto* symbol = RequiredSymbolByStableKey(
         envelope, "object_display_name", stable_key, &result);
     if (symbol == nullptr) return result;
-    if (symbol->resolved_uuid != FormatUuid(expected_authority[index])) {
+    if (symbol->resolved_uuid.bytes != expected_authority[index]) {
       return Refuse(
           "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
           "CREATE SCHEMA source artifact UUID does not match the typed schema descriptor path authority");
@@ -1355,7 +1341,7 @@ SblrToSbsqlResult RenderTransactionSavepoint(const SblrOperationEnvelope& envelo
           "SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
           "SBLR-to-SBsql savepoint rendering requires the exact typed engine authority carrier");
     }
-    if (savepoint->resolved_uuid != FormatUuid(authority->savepoint_uuid)) {
+    if (savepoint->resolved_uuid.bytes != authority->savepoint_uuid) {
       return Refuse(
           "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
           "transaction savepoint source artifact UUID does not match the typed savepoint authority");
@@ -1608,9 +1594,8 @@ SblrToSbsqlResult RenderBoundSourceArtifact(
     validation_context.admitted_node_ids.push_back(
         static_cast<std::uint64_t>(operand.ordinal) + 1U);
     if (!IsObjectAuthorityOperand(operand.name)) continue;
-    SblrSourceArtifactUuidV1 object_uuid{};
-    if (ParseUuid(OperandValue(operation, operand.name), &object_uuid)) {
-      admit_object_uuid(object_uuid);
+    if (const auto object_uuid = OperandUuid(operation, operand.name)) {
+      admit_object_uuid(object_uuid->bytes);
     }
   }
   std::sort(validation_context.admitted_node_ids.begin(),
@@ -1628,7 +1613,7 @@ SblrToSbsqlResult RenderBoundSourceArtifact(
                   "source_artifact." + artifact_detail);
   }
   operation.source_artifact_map =
-      ToLegacySourceArtifact(operation, decoded_artifact.artifact);
+      ToRenderSourceArtifact(operation, decoded_artifact.artifact);
   return RenderSblrEnvelopeToSbsql(operation, options);
 }
 
@@ -1762,4 +1747,4 @@ SblrToSbsqlResult RenderSblrExternalSourceArtifactToSbsql(
       options);
 }
 
-}  // namespace scratchbird::engine::sblr
+}  // namespace scratchbird::parsers::sbsql::source_rendering

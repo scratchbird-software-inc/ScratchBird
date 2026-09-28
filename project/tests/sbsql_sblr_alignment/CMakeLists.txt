@@ -4393,6 +4393,11 @@ set_tests_properties(sbsql_sblr_alignment_ia07_kv_structured_stream_read_process
 endfunction()
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
 
+if(NOT TARGET sbl_sbsql_source_rendering)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/rendering
+                   ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
+endif()
+
 add_executable(sbsql_sblr_alignment_ia01_source_map_process_client
   ia01_source_map_process_client.cpp)
 # The Python process harness launches this producer separately. Keep its on-disk
@@ -4401,7 +4406,7 @@ add_dependencies(sbsql_sblr_alignment_ia01_source_map_process_client public_driv
 target_compile_features(sbsql_sblr_alignment_ia01_source_map_process_client
   PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_ia01_source_map_process_client
-  PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr)
+  PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr sbl_sbsql_source_rendering)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_disconnect_owner_process_client

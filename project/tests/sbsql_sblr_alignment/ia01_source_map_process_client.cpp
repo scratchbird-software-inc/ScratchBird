@@ -29,7 +29,7 @@
 #include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
 #include "engine/sblr/sblr_security_create_privilege_template_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
-#include "engine/sblr/sblr_to_sbsql.hpp"
+#include "sblr_to_sbsql.hpp"
 #include "ast/ast.hpp"
 #include "cst/cst.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
@@ -1037,18 +1037,18 @@ int main(int argc, char** argv) {
         return 4;
       }
       const auto rendered = external
-          ? sblr::RenderSblrExternalSourceArtifactToSbsql(
+          ? scratchbird::parsers::sbsql::source_rendering::RenderSblrExternalSourceArtifactToSbsql(
                 observation.canonical_container_bytes.data(),
                 observation.canonical_container_bytes.size(),
                 observation.canonical_execution_envelope_bytes.data(),
                 observation.canonical_execution_envelope_bytes.size(),
                 observation.external_source_artifact_bytes.data(),
                 observation.external_source_artifact_bytes.size(),
-                sblr::SblrToSbsqlOptions{.source_preserving = true})
-          : sblr::RenderSblrContainerToSbsql(
+                scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true})
+          : scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
                 observation.canonical_container_bytes.data(),
                 observation.canonical_container_bytes.size(),
-                sblr::SblrToSbsqlOptions{.source_preserving = true});
+                scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
       if (!rendered.ok || !rendered.diagnostics.empty() ||
           rendered.sbsql_text != artifact_case.rendered_sql) {
         std::cerr << "source_artifact_source_preserving_render_failed:"
@@ -1260,18 +1260,18 @@ int main(int argc, char** argv) {
     }
     const auto rendered_schema =
         external
-            ? sblr::RenderSblrExternalSourceArtifactToSbsql(
+            ? scratchbird::parsers::sbsql::source_rendering::RenderSblrExternalSourceArtifactToSbsql(
                   schema_observation.canonical_container_bytes.data(),
                   schema_observation.canonical_container_bytes.size(),
                   schema_observation.canonical_execution_envelope_bytes.data(),
                   schema_observation.canonical_execution_envelope_bytes.size(),
                   schema_observation.external_source_artifact_bytes.data(),
                   schema_observation.external_source_artifact_bytes.size(),
-                  sblr::SblrToSbsqlOptions{.source_preserving = true})
-            : sblr::RenderSblrContainerToSbsql(
+                  scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true})
+            : scratchbird::parsers::sbsql::source_rendering::RenderSblrContainerToSbsql(
                   schema_observation.canonical_container_bytes.data(),
                   schema_observation.canonical_container_bytes.size(),
-                  sblr::SblrToSbsqlOptions{.source_preserving = true});
+                  scratchbird::parsers::sbsql::source_rendering::SblrToSbsqlOptions{.source_preserving = true});
     const auto schema_reparsed_cst =
         scratchbird::parser::sbsql::BuildCst(rendered_schema.sbsql_text);
     const auto schema_reparsed_ast =

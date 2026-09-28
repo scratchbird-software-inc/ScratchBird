@@ -203,7 +203,7 @@ engine_sblr::SblrSourceSymbolArtifact Symbol(std::string symbol_kind,
   engine_sblr::SblrSourceSymbolArtifact symbol;
   symbol.symbol_kind = std::move(symbol_kind);
   symbol.stable_key = std::move(stable_key);
-  symbol.resolved_uuid.assign(reinterpret_cast<const char*>(resolved_uuid.bytes.data()), resolved_uuid.bytes.size());
+  symbol.resolved_uuid = resolved_uuid;
   symbol.render_hint = std::move(render_hint);
   symbol.scope = std::move(scope);
   symbol.source_hash = "sha256:dpc074-source-symbol";
@@ -411,7 +411,7 @@ void AssertBinaryRoundTripAndCodecDiagnostics(const UuidFactory& uuids) {
 
 void AssertSblrToSbsqlConversion(const UuidFactory& uuids) {
   const auto envelope = BuildDmlInsertEnvelope(uuids);
-  const auto rendered = engine_sblr::RenderSblrEnvelopeToSbsql(
+  const auto rendered = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(
       envelope, {.source_preserving = true});
   Require(rendered.ok,
           "DPC-074 user-facing SBLR-to-SBsql conversion refused valid route");
@@ -419,14 +419,116 @@ void AssertSblrToSbsqlConversion(const UuidFactory& uuids) {
               "INSERT INTO dpc074_table (note) VALUES (:p_note);",
           "DPC-074 SBLR-to-SBsql render output drifted");
 
+  // Independently exercise every octet, including NUL and non-UTF8 bytes.
+  // These slots are system authority, not user UUID literals: only RFC v7 is
+  // admitted, and the artifact must match the exact already bound identity.
+  const auto require_refused = [&](const auto& candidate) {
+    const auto result = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(
+        candidate, {.source_preserving = true});
+    Require(!result.ok && result.sbsql_text.empty() && !result.diagnostics.empty(),
+            "DPC-074 invalid UUID authority published source text");
+  };
+  std::size_t octet_cases = 0;
+  const std::array<std::pair<std::string_view, int>, 4> authorities{{
+      {"authority_descriptor_uuid", -1}, {"target_object_uuid", 0},
+      {"value_column_uuid", 1}, {"value_parameter_uuid", 2}}};
+  for (const auto& [name, symbol_index] : authorities) {
+    const auto source = std::find_if(envelope.operands.begin(), envelope.operands.end(),
+        [&](const auto& operand) { return operand.name == name; });
+    Require(source != envelope.operands.end() && source->value.empty() &&
+                source->value_kind == engine_sblr::SblrValueKind::uuid_ref &&
+                source->value_body.size() == 16,
+            "DPC-074 authority fixture is not native UUID-ref");
+    const auto ordinal = static_cast<std::size_t>(source - envelope.operands.begin());
+    for (std::size_t position = 0; position < 16; ++position) {
+      for (unsigned byte = 0; byte < 256; ++byte) {
+        auto candidate = envelope;
+        auto& body = candidate.operands[ordinal].value_body;
+        body[position] = static_cast<std::uint8_t>(byte);
+        platform::Uuid identity;
+        std::copy_n(body.begin(), 16, identity.bytes.begin());
+        if (symbol_index >= 0) {
+          candidate.source_artifact_map.symbols[symbol_index].resolved_uuid = identity;
+        }
+        const bool system_v7 = (identity.bytes[6] & 0xf0U) == 0x70U &&
+                               (identity.bytes[8] & 0xc0U) == 0x80U;
+        const auto result = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(
+            candidate, {.source_preserving = true});
+        if (system_v7) {
+          Require(result.ok && result.sbsql_text == rendered.sbsql_text,
+                  "DPC-074 exact binary UUID authority changed source rendering");
+          if (symbol_index >= 0 && body != source->value_body) {
+            candidate.source_artifact_map.symbols[symbol_index].resolved_uuid =
+                envelope.source_artifact_map.symbols[symbol_index].resolved_uuid;
+            require_refused(candidate);
+          }
+        } else {
+          Require(!result.ok && result.sbsql_text.empty(),
+                  "DPC-074 non-v7 system identity entered reverse rendering");
+        }
+        ++octet_cases;
+      }
+    }
+    for (std::size_t width = 0; width <= 64; ++width) {
+      if (width == 16) continue;
+      auto candidate = envelope;
+      candidate.operands[ordinal].value_body.resize(width, 0);
+      require_refused(candidate);
+    }
+    auto nil = envelope;
+    nil.operands[ordinal].value_body.assign(16, 0);
+    if (symbol_index >= 0) nil.source_artifact_map.symbols[symbol_index].resolved_uuid = {};
+    require_refused(nil);
+    auto dual = envelope;
+    dual.operands[ordinal].value.assign(
+        reinterpret_cast<const char*>(source->value_body.data()), 16);
+    require_refused(dual);
+    auto flagged = envelope;
+    flagged.operands[ordinal].value_flags = 1;
+    require_refused(flagged);
+    if (symbol_index >= 0) {
+      auto missing_symbol_identity = envelope;
+      missing_symbol_identity.source_artifact_map.symbols[symbol_index].resolved_uuid = {};
+      require_refused(missing_symbol_identity);
+    }
+    auto duplicate = envelope;
+    duplicate.operands.push_back(*source);
+    duplicate.operands.back().ordinal = static_cast<std::uint32_t>(duplicate.operands.size());
+    require_refused(duplicate);
+
+    // A matching UUID encoded inside a text literal is still not authority.
+    const auto text_type = uuids.Identity(platform::UuidKind::object, 119);
+    for (const bool display_text : {false, true}) {
+      auto candidate = envelope;
+      auto& operand = candidate.operands[ordinal];
+      operand.type = "text";
+      operand.value_kind = engine_sblr::SblrValueKind::literal_typed;
+      platform::Uuid identity;
+      std::copy_n(source->value_body.begin(), 16, identity.bytes.begin());
+      const std::string payload = display_text
+          ? scratchbird::core::uuid::UuidToString(identity)
+          : std::string(reinterpret_cast<const char*>(identity.bytes.data()), 16);
+      operand.value_body.assign(text_type.bytes.begin(), text_type.bytes.end());
+      for (unsigned shift = 0; shift < 64; shift += 8) {
+        operand.value_body.push_back(static_cast<std::uint8_t>(
+            static_cast<std::uint64_t>(payload.size()) >> shift));
+      }
+      operand.value_body.insert(operand.value_body.end(), payload.begin(), payload.end());
+      require_refused(candidate);
+    }
+  }
+  Require(octet_cases == 16384, "DPC-074 UUID octet coverage changed");
+
   auto redacted = envelope;
   redacted.source_artifact_map.policy_status = "redacted_render_metadata";
-  const auto refused = engine_sblr::RenderSblrEnvelopeToSbsql(
+  const auto refused = scratchbird::parsers::sbsql::source_rendering::RenderSblrEnvelopeToSbsql(
       redacted, {.source_preserving = true});
   Require(!refused.ok && !refused.diagnostics.empty() &&
               refused.diagnostics.front().code ==
                   "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REDACTED",
           "DPC-074 redacted SBLR-to-SBsql diagnostic drifted");
+  std::cout << "dpc074_native_uuid_source_rendering=pass octet_cases="
+            << octet_cases << '\n';
 }
 
 void AssertAdmissionAndEmbeddedDispatch(const UuidFactory& uuids) {
