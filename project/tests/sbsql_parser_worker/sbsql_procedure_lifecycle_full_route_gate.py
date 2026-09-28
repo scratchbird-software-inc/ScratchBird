@@ -18,6 +18,8 @@ import struct
 import sys
 from pathlib import Path
 
+from native_api_journal_oracle import read_api_journal
+
 from sbsql_copy_persistence_full_route_gate import (
     StartedRoute,
     authenticate_tls,
@@ -94,22 +96,8 @@ class ProcedureLifecycleError(RuntimeError):
 
 
 def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
-    """Project exact catalog/name authority out of the multiplexed journal."""
-    authority_prefixes = (b"SBAPI1\t", b"SBNAME1\t")
-    telemetry_prefix = b"SBAGENTHOOK1\t"
-    rows = raw_journal.splitlines(keepends=True)
-    unexpected = [
-        row
-        for row in rows
-        if not row.startswith(authority_prefixes)
-        and not row.startswith(telemetry_prefix)
-    ]
-    if unexpected:
-        raise ProcedureLifecycleError(
-            "procedural lifecycle encountered an unknown durable API "
-            f"journal record: {unexpected[0]!r}"
-        )
-    return tuple(row for row in rows if row.startswith(authority_prefixes))
+    """Compare every complete native API record, including binary identities."""
+    return tuple(row.framed_bytes for row in read_api_journal(raw_journal))
 
 
 def create_sql(name: str) -> str:
@@ -285,11 +273,11 @@ def run_committed_call(port: int) -> None:
 def run_restricted_refusals(port: int, database: Path) -> None:
     durable_paths = (
         Path(f"{database}.sb.catalog_object_events"),
-        Path(f"{database}.sb.api_events"),
+        Path(f"{database}.sb.api_events.v2"),
         Path(f"{database}.sb.executable_object_events"),
     )
     before = {path: path.read_bytes() for path in durable_paths}
-    api_event_path = Path(f"{database}.sb.api_events")
+    api_event_path = Path(f"{database}.sb.api_events.v2")
     api_authority_before = durable_api_authority_rows(before[api_event_path])
     sock = connect_tls(port)
     try:
@@ -343,11 +331,11 @@ def run_restricted_refusals(port: int, database: Path) -> None:
 def run_malformed_parameter_refusals(port: int, database: Path) -> None:
     durable_paths = (
         Path(f"{database}.sb.catalog_object_events"),
-        Path(f"{database}.sb.api_events"),
+        Path(f"{database}.sb.api_events.v2"),
         Path(f"{database}.sb.executable_object_events"),
     )
     before = {path: path.read_bytes() for path in durable_paths}
-    api_event_path = Path(f"{database}.sb.api_events")
+    api_event_path = Path(f"{database}.sb.api_events.v2")
     api_authority_before = durable_api_authority_rows(before[api_event_path])
     sock, attachment, sequence, txn_id = authenticate_tls(port)
     try:
@@ -460,7 +448,7 @@ def run_absent_observer(port: int) -> None:
 def require_durable_procedure_state(database: Path) -> None:
     required = (
         Path(f"{database}.sb.catalog_object_events"),
-        Path(f"{database}.sb.api_events"),
+        Path(f"{database}.sb.api_events.v2"),
         Path(f"{database}.sb.executable_object_events"),
     )
     missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
@@ -469,6 +457,10 @@ def require_durable_procedure_state(database: Path) -> None:
             "CREATE PROCEDURE did not publish all durable lifecycle journals: "
             + ", ".join(missing)
         )
+    if not read_api_journal(Path(f"{database}.sb.api_events.v2").read_bytes()):
+        raise ProcedureLifecycleError("CREATE PROCEDURE published no native API records")
+    if Path(f"{database}.sb.api_events").exists():
+        raise ProcedureLifecycleError("CREATE PROCEDURE published a retired text API journal")
 
 
 def sbps_pairs(route: StartedRoute) -> list[tuple[int, int]]:

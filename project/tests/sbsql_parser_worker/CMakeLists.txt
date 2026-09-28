@@ -6565,6 +6565,15 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "sbsql_copy_persistence_full_route_gate;sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-002449;CSC-TEST-005736;copy_persistence;opcode775_exact_route;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
     )
     add_test(
+      NAME sbsql_native_api_journal_oracle
+      COMMAND "${SBSQL_PYTHON3}" -B
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/test_native_api_journal_oracle.py"
+    )
+    set_tests_properties(sbsql_native_api_journal_oracle PROPERTIES
+      LABELS "sbsql_parser_worker;binary_uuid;independent_oracle;not_e2e"
+      TIMEOUT 30
+    )
+    add_test(
       NAME sbsql_procedure_lifecycle_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_procedure_lifecycle_full_route_gate.py"
