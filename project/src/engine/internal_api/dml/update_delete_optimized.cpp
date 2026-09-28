@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "dml/update_column_identity.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/test_optimization_profile.hpp"
@@ -2987,20 +2988,6 @@ enum class DmlUpdateDescriptorLifecycleV1 : std::uint8_t {
   kFailed = 5,
 };
 
-struct DmlUpdateBoundColumnV1 {
-  EngineUuid column_uuid;
-  std::uint64_t column_generation = 0;
-  std::uint32_t ordinal = 0;
-  std::string canonical_name_key;
-  EngineUuid datatype_descriptor_uuid;
-  std::uint64_t datatype_descriptor_generation = 0;
-  EngineUuid type_uuid;
-  std::uint64_t type_generation = 0;
-  std::string codec_id;
-  std::uint16_t codec_version = 0;
-  std::uint64_t codec_generation = 0;
-};
-
 struct DmlUpdateResourceOwnerV1 {
   EngineRequestContext context;
   std::shared_ptr<EngineDmlUpdateResourceReceiptV1> receipt;
@@ -3321,18 +3308,12 @@ bool DmlUpdateResolveColumnIdentity(
       !number("codec_generation", lookup.row.codec_generation) ||
       !number("null_encoding", lookup.row.null_encoding_code))
     return refuse_stale();
-  identity->column_uuid = column.column_uuid;
-  identity->column_generation = column.column_generation;
-  identity->ordinal = column.ordinal;
-  identity->canonical_name_key = column.canonical_name_key;
-  identity->datatype_descriptor_uuid = lookup.row.descriptor_uuid;
-  identity->datatype_descriptor_generation =
-      lookup.row.descriptor_generation;
-  identity->type_uuid = lookup.row.type_uuid;
-  identity->type_generation = lookup.row.type_generation;
-  identity->codec_id = lookup.row.codec_id;
-  identity->codec_version = lookup.row.codec_version;
-  identity->codec_generation = lookup.row.codec_generation;
+  // Keep all current catalog metadata/codec checks above. The recovered helper
+  // only stages the validated binding; it cannot select or authorize a column.
+  if (!BindDmlUpdateColumnIdentityV1(
+          column.column_uuid, column.column_generation, column.ordinal,
+          column.canonical_name_key, binding, lookup.row, identity))
+    return refuse_stale();
   return true;
 }
 
