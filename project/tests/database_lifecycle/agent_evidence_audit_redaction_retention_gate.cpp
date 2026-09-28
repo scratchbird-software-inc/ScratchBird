@@ -44,6 +44,7 @@ struct TestDatabase {
   std::string database_uuid;
   std::string transaction_uuid;
   platform::u64 local_transaction_id = 0;
+  platform::u64 resource_epoch = 0;
 };
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -84,18 +85,26 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
 
 void CleanupDatabase(const std::filesystem::path& path) {
   scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
+  // Only remove this fixture's now-empty UUID-specific directory.
+  if (path.parent_path().filename().string().starts_with("scratchbird_retention_")) {
+    std::error_code ignored;
+    std::filesystem::remove(path.parent_path(), ignored);
+  }
 }
 
 TestDatabase CreateActiveDatabase(const char* basename,
                                   platform::u64 timestamp_base) {
-  const auto path = std::filesystem::temp_directory_path() / basename;
-  CleanupDatabase(path);
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::database, timestamp_base + 1);
   const auto filespace_uuid = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::filespace, timestamp_base + 2);
   Require(database_uuid.ok(), "database UUID generation failed");
   Require(filespace_uuid.ok(), "filespace UUID generation failed");
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("scratchbird_retention_" + uuid::UuidToString(database_uuid.value.value));
+  Require(std::filesystem::create_directory(directory),
+          "retention fixture directory already exists");
+  const auto path = directory / basename;
 
   db::DatabaseCreateConfig create;
   create.path = path.string();
@@ -103,11 +112,14 @@ TestDatabase CreateActiveDatabase(const char* basename,
   create.filespace_uuid = filespace_uuid.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = timestamp_base + 3;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
-  Require(db::CreateDatabaseFile(create).ok(),
-          "retention durable catalog database creation failed");
+  // The durable catalog has canonical TEXT columns, so it needs real resource
+  // authority. Minimal bootstrap intentionally has no resource catalog epoch.
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.require_resource_seed_pack = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(),
+          "retention durable catalog database creation failed: " +
+              created.diagnostic.diagnostic_code + ":" + created.diagnostic.message_key);
 
   auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
   Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
@@ -127,6 +139,8 @@ TestDatabase CreateActiveDatabase(const char* basename,
 
   TestDatabase database;
   database.path = path;
+  database.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  Require(database.resource_epoch != 0, "created database has no resource catalog epoch");
   database.database_uuid = IdentityBytes(database_uuid.value.value);
   database.transaction_uuid = IdentityBytes(transaction_uuid.value.value);
   database.local_transaction_id = begun.entry.identity.local_id.value;
@@ -230,6 +244,7 @@ api::EngineRequestContext DurableContext(const TestDatabase& database,
   auto context = Context();
   context.request_id = "pfar016a-evidence-retention-durable-agent-catalog";
   context.database_path = database.path.string();
+  context.resource_epoch = database.resource_epoch;
   context.database_uuid = NativeIdentity(database.database_uuid);
   context.transaction_uuid = NativeIdentity(database.transaction_uuid);
   context.local_transaction_id = database.local_transaction_id;
@@ -648,6 +663,8 @@ void TestProductionRetentionRejectsTamperMismatch() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "agent_evidence_audit_redaction_retention_gate");
   // Exercise the binary-only boundary before unrelated rendering checks.
   api::EngineEvaluateAgentEvidenceRetentionRequest textual_uuid;
   textual_uuid.context = Context();

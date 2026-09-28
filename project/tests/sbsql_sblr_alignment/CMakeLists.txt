@@ -2718,6 +2718,10 @@ if(NOT SB_ENABLE_CLUSTER_PROVIDER)
     target_link_libraries(${_cluster_stub_target}
       PRIVATE sbsql_alignment_cluster_boundary_test_support)
     if(_cluster_compat_name STREQUAL "agent_evidence_audit_redaction_retention_gate")
+      target_compile_definitions(${_cluster_compat_target} PRIVATE
+        SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+      target_compile_definitions(${_cluster_stub_target} PRIVATE
+        SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
       if(NOT TARGET sb_server_legacy_diagnostic_rendering)
         add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
                          ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)

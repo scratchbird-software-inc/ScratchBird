@@ -2562,6 +2562,8 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_link_libraries(agent_evidence_audit_redaction_retention_gate PRIVATE
     sb_legacy_diagnostic_projection_bridge)
   target_compile_features(agent_evidence_audit_redaction_retention_gate PRIVATE cxx_std_23)
+  target_compile_definitions(agent_evidence_audit_redaction_retention_gate PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(agent_evidence_audit_redaction_retention_gate
     PRIVATE
       sb_core_uuid
