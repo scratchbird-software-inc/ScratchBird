@@ -53,9 +53,9 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <random>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -1945,30 +1945,12 @@ std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size) {
 }
 
 std::array<std::uint8_t, 16> MakeUuidV7Bytes() {
-  static std::random_device rd;
-  static std::mt19937_64 rng(rd());
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-  const auto timestamp = static_cast<std::uint64_t>(now);
-  const auto r1 = rng();
-  const auto r2 = rng();
-  std::array<std::uint8_t, 16> uuid{};
-  uuid[0] = static_cast<std::uint8_t>((timestamp >> 40u) & 0xffu);
-  uuid[1] = static_cast<std::uint8_t>((timestamp >> 32u) & 0xffu);
-  uuid[2] = static_cast<std::uint8_t>((timestamp >> 24u) & 0xffu);
-  uuid[3] = static_cast<std::uint8_t>((timestamp >> 16u) & 0xffu);
-  uuid[4] = static_cast<std::uint8_t>((timestamp >> 8u) & 0xffu);
-  uuid[5] = static_cast<std::uint8_t>(timestamp & 0xffu);
-  for (int i = 6; i < 14; ++i) {
-    uuid[static_cast<std::size_t>(i)] =
-        static_cast<std::uint8_t>((r1 >> ((i - 6) * 8)) & 0xffu);
-  }
-  uuid[14] = static_cast<std::uint8_t>(r2 & 0xffu);
-  uuid[15] = static_cast<std::uint8_t>((r2 >> 8u) & 0xffu);
-  uuid[6] = static_cast<std::uint8_t>((uuid[6] & 0x0fu) | 0x70u);
-  uuid[8] = static_cast<std::uint8_t>((uuid[8] & 0x3fu) | 0x80u);
-  return uuid;
+  // Core retains thread-local allocation/clock state and resets it after
+  // fork. The former shared PRNG raced across clients and cloned its suffix
+  // stream into children. Never publish nil or a fallback on source failure.
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) throw std::runtime_error("Parser client UUIDv7 generation failed.");
+  return issued->bytes;
 }
 
 std::string IdentityBytes(const std::array<std::uint8_t, 16>& uuid) {

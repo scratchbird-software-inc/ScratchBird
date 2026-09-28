@@ -1606,6 +1606,15 @@ set_tests_properties(sbsql_sblr_alignment_catalog_resource_record PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;component_regression;catalog_payload;binary_uuid" TIMEOUT 60)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_parser_uuid_emission parser_uuid_emission_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_parser_uuid_emission PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_parser_uuid_emission PRIVATE
+    sbl_parser_server_ipc_client sb_sblr_parameter_wire_codec sb_server_core Threads::Threads)
+  target_link_options(sbsql_sblr_alignment_parser_uuid_emission PRIVATE "-Wl,--wrap=RAND_bytes")
+  add_test(NAME sbsql_sblr_alignment_parser_uuid_emission
+    COMMAND sbsql_sblr_alignment_parser_uuid_emission)
+  set_tests_properties(sbsql_sblr_alignment_parser_uuid_emission PROPERTIES
+    TIMEOUT 120 LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;concurrency;fork;entropy_failure")
   add_executable(sbsql_sblr_alignment_server_uuid_emission server_uuid_emission_test.cpp)
   target_compile_features(sbsql_sblr_alignment_server_uuid_emission PRIVATE cxx_std_20)
   target_link_libraries(sbsql_sblr_alignment_server_uuid_emission PRIVATE sb_server_core)
