@@ -243,7 +243,8 @@ bool SymbolShape(const SblrSourceArtifactSymbolV1& symbol,
   const bool object_display_name =
       symbol.symbol_kind ==
       SblrSourceArtifactSymbolKindV1::object_display_name;
-  if (NonZero(symbol.related_object_uuid) != object_display_name) {
+  if (NonZero(symbol.related_object_uuid) != object_display_name ||
+      (object_display_name && !IsUuidV7(symbol.related_object_uuid))) {
     return Fail(detail, "object_ref");
   }
   const bool name_must_be_absent =
@@ -318,7 +319,7 @@ bool HintShape(const SblrSourceArtifactRenderHintV1& hint,
                std::string* detail) {
   if (hint.render_hint_id != expected_id ||
       (hint.node_id == 0 && hint.symbol_id == 0) ||
-      !NonZero(hint.dialect_family_uuid) ||
+      !IsUuidV7(hint.dialect_family_uuid) ||
       !EnumInRange(hint.keyword_case, 0, 3) ||
       !EnumInRange(hint.identifier_render_policy, 0, 4) ||
       !EnumInRange(hint.delimiter_hint, 0, 4) ||
@@ -334,10 +335,14 @@ bool HintShape(const SblrSourceArtifactRenderHintV1& hint,
 bool ArtifactShape(const SblrSourceArtifactMapV1& artifact,
                    std::string* detail) {
   if (!IsUuidV7(artifact.artifact_uuid) ||
-      !NonZero(artifact.dialect_family_uuid) ||
-      !NonZero(artifact.parser_package_uuid) ||
+      !IsUuidV7(artifact.dialect_family_uuid) ||
+      !IsUuidV7(artifact.parser_package_uuid) ||
       (!NonZero(artifact.sblr_envelope_uuid) &&
        !NonZero(artifact.container_request_uuid)) ||
+      (NonZero(artifact.sblr_envelope_uuid) &&
+       !IsUuidV7(artifact.sblr_envelope_uuid)) ||
+      (NonZero(artifact.container_request_uuid) &&
+       !IsUuidV7(artifact.container_request_uuid)) ||
       !EnumInRange(artifact.redaction_class, 0, 4) ||
       !EnumInRange(artifact.decompile_policy, 1, 4)) {
     return Fail(detail, "header");
@@ -356,7 +361,7 @@ bool ArtifactShape(const SblrSourceArtifactMapV1& artifact,
     return Fail(detail, "redaction");
   }
   if (artifact.source_text_ref.present) {
-    if (!NonZero(artifact.source_text_ref.uuid) ||
+    if (!IsUuidV7(artifact.source_text_ref.uuid) ||
         artifact.source_text_ref.declared_size == 0 ||
         artifact.source_text_ref.crc32c == 0 ||
         !NonZero(artifact.source_text_ref.sha256)) {

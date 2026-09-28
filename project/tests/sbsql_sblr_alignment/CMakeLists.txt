@@ -3075,6 +3075,19 @@ set_tests_properties(sbsql_sblr_alignment_ia01_executor_availability_state_fuzz 
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fuzz;IA-01;SBLR_LITERAL;executor_availability_registry;state_machine;mutation;fuzz"
   TIMEOUT 15)
 
+add_executable(sbsql_sblr_alignment_source_artifact_uuid_admission
+  source_artifact_uuid_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_source_artifact_uuid_admission PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_source_artifact_uuid_admission
+  PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_source_artifact_uuid_admission
+  PRIVATE sb_sblr_parameter_wire_codec)
+add_test(NAME sbsql_sblr_alignment_source_artifact_uuid_admission
+  COMMAND sbsql_sblr_alignment_source_artifact_uuid_admission)
+set_tests_properties(sbsql_sblr_alignment_source_artifact_uuid_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;source_artifact;component_codec;not_e2e"
+  TIMEOUT 30)
+
 add_executable(sbsql_sblr_alignment_literal_uuid_admission
   literal_uuid_admission_test.cpp)
 target_compile_features(sbsql_sblr_alignment_literal_uuid_admission PRIVATE cxx_std_20)
