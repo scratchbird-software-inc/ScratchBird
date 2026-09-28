@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_rewrite.hpp"
+#include "../../tests/support/binary_uuid_fixture.hpp"
 
 #include <iostream>
 #include <string>
@@ -33,7 +34,9 @@ int main() {
   Expect(!opt::SafeConstantFold(expr, barrier).applied, "volatile barrier blocks fold", &errors);
   opt::PredicateNormalizationInput predicate{"scalar_eq", "int64", "int64", false, false};
   Expect(opt::NormalizePredicate(predicate).canonical_form == "eq", "predicate normalizes", &errors);
-  opt::ProjectionPruneInput projection{{"a", "b"}, {"a"}, {"b"}};
+  const auto a = scratchbird::tests::FixtureUuid(2206, 1);
+  const auto b = scratchbird::tests::FixtureUuid(2206, 2);
+  opt::ProjectionPruneInput projection{{a, b}, {a}, {b}};
   Expect(opt::PruneProjection(projection).preserved_column_uuids.size() == 2, "masked column preserved", &errors);
   return Finish(errors);
 }

@@ -148,11 +148,29 @@ RewriteDecision NormalizePredicate(const PredicateNormalizationInput& input) {
 RewriteDecision PruneProjection(const ProjectionPruneInput& input) {
   RewriteDecision decision;
   decision.rewrite_kind = "projection_pruning";
-  std::set<std::string> emitted;
+  const auto refuse = [&](ProjectionPruneRefusal reason) {
+    decision.projection_refusal = reason;
+    decision.diagnostics.push_back("SB-OPT-0001");
+    return decision;
+  };
+  const auto valid = [](const auto& columns) {
+    return std::all_of(columns.begin(), columns.end(), [](const auto& uuid) {
+      return scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
+    });
+  };
+  if (!valid(input.produced_column_uuids) || !valid(input.required_column_uuids) ||
+      !valid(input.masked_column_uuids)) return refuse(ProjectionPruneRefusal::kInvalidIdentity);
+  using Uuid = scratchbird::core::platform::Uuid;
+  const std::set<Uuid> produced(input.produced_column_uuids.begin(), input.produced_column_uuids.end());
+  const std::set<Uuid> required(input.required_column_uuids.begin(), input.required_column_uuids.end());
+  const std::set<Uuid> masked(input.masked_column_uuids.begin(), input.masked_column_uuids.end());
+  for (const auto& column : required)
+    if (!produced.contains(column)) return refuse(ProjectionPruneRefusal::kUnboundRequiredColumn);
+  for (const auto& column : masked)
+    if (!produced.contains(column)) return refuse(ProjectionPruneRefusal::kUnboundMaskedColumn);
   for (const auto& column : input.produced_column_uuids) {
-    if (Contains(input.required_column_uuids, column) || Contains(input.masked_column_uuids, column)) {
-      if (emitted.insert(column).second) decision.preserved_column_uuids.push_back(column);
-    }
+    if (required.contains(column) || masked.contains(column))
+      decision.preserved_column_uuids.push_back(column);
   }
   decision.applied = decision.preserved_column_uuids.size() != input.produced_column_uuids.size();
   if (!input.masked_column_uuids.empty()) decision.diagnostics.push_back("SB_OPT_REWRITE_MASKED_COLUMNS_PRESERVED");
@@ -320,7 +338,7 @@ RewriteDecision SelectCommonSubexpressionReuse(const CommonSubexpressionReuseInp
   decision.canonical_form = "cse_reuse:" + selected_key + ":terms=" + std::to_string(selected_terms.size()) +
                             ":proof=" + input.equivalence_proof_digest +
                             ":base_row_recheck=mga_security";
-  decision.preserved_column_uuids = selected_terms;
+  decision.preserved_expression_term_ids = selected_terms;
   decision.diagnostics.push_back("SB_OPT_REWRITE_CSE_SELECTED");
   decision.diagnostics.push_back("SB_OPT_REWRITE_METADATA_ONLY_MGA_RECHECK_PRESERVED");
   return decision;

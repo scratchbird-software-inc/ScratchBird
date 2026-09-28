@@ -9,6 +9,7 @@
 #pragma once
 
 #include "optimizer_barrier.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <string>
@@ -39,9 +40,13 @@ struct PredicateNormalizationInput {
 };
 
 struct ProjectionPruneInput {
-  std::vector<std::string> produced_column_uuids;
-  std::vector<std::string> required_column_uuids;
-  std::vector<std::string> masked_column_uuids;
+  std::vector<scratchbird::core::platform::Uuid> produced_column_uuids;
+  std::vector<scratchbird::core::platform::Uuid> required_column_uuids;
+  std::vector<scratchbird::core::platform::Uuid> masked_column_uuids;
+};
+
+enum class ProjectionPruneRefusal {
+  kNone, kInvalidIdentity, kUnboundRequiredColumn, kUnboundMaskedColumn,
 };
 
 struct MaterializedSummaryRewriteInput {
@@ -80,13 +85,18 @@ struct RewriteDecision {
   bool applied = false;
   std::string rewrite_kind;
   std::string canonical_form;
-  std::vector<std::string> preserved_column_uuids;
+  std::vector<scratchbird::core::platform::Uuid> preserved_column_uuids;
+  // Local expression term references are not catalog column identities.
+  std::vector<std::string> preserved_expression_term_ids;
+  ProjectionPruneRefusal projection_refusal = ProjectionPruneRefusal::kNone;
   std::vector<std::string> diagnostics;
 };
 
 RewriteDecision NormalizeExpression(const OptimizerExpressionTerm& expression);
 RewriteDecision SafeConstantFold(const OptimizerExpressionTerm& expression, const OptimizerBarrierInput& barriers);
 RewriteDecision NormalizePredicate(const PredicateNormalizationInput& input);
+// Native UUID membership only. Preserve source order and repeated output
+// occurrences. Malformed or unbound dependencies produce no partial rewrite.
 RewriteDecision PruneProjection(const ProjectionPruneInput& input);
 RewriteDecision DecidePredicatePushdown(const PredicateNormalizationInput& predicate, const OptimizerBarrierInput& barriers);
 RewriteDecision DecideCteMaterialization(bool reused, bool volatile_or_side_effecting, std::uint64_t estimated_rows);

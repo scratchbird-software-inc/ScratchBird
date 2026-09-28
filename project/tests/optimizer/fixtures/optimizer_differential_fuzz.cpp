@@ -471,7 +471,7 @@ OptimizerRouteEvidence CseRewriteRoute(const CommonSubexpressionReuseInput& inpu
                        "common_subexpression_semantic_result",
                        {"canonical_form=" + decision.canonical_form,
                         "preserved_terms=" +
-                            JoinInOrder(decision.preserved_column_uuids, ",")});
+                            JoinInOrder(decision.preserved_expression_term_ids, ",")});
 }
 
 OptimizerRouteEvidence CseBaselineRoute(const CommonSubexpressionReuseInput& input) {

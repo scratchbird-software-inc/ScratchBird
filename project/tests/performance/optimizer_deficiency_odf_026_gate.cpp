@@ -110,10 +110,12 @@ bool AcceptedCseRewriteIsDeterministicAndProofBacked() {
                  "CSE rewrite omitted equivalence proof") &&
          Require(decision.canonical_form.find("base_row_recheck=mga_security") != std::string::npos,
                  "CSE rewrite omitted base-row recheck evidence") &&
-         Require(Has(decision.preserved_column_uuids, "expr.gross.1"),
+         Require(Has(decision.preserved_expression_term_ids, "expr.gross.1"),
                  "CSE rewrite omitted first reused expression id") &&
-         Require(Has(decision.preserved_column_uuids, "expr.gross.2"),
+         Require(Has(decision.preserved_expression_term_ids, "expr.gross.2"),
                  "CSE rewrite omitted second reused expression id") &&
+         Require(decision.preserved_column_uuids.empty(),
+                 "CSE local term references impersonated catalog column UUIDs") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_METADATA_ONLY_MGA_RECHECK_PRESERVED"),
                  "CSE rewrite did not preserve metadata-only MGA evidence");
 }
