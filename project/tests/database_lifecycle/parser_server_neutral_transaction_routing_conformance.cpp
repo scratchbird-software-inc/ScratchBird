@@ -1604,6 +1604,12 @@ void VerifyNeutralPersistedRelationProjection() {
     if (cached.object_uuid == fixture.resource_table_uuid &&
         (cached.object_class == "table" ||
          cached.object_class == "relation")) {
+      Require(cached.cache_key.HasValidIdentity() &&
+                  cached.cache_key.database_uuid == fixture.database_uuid &&
+                  cached.cache_key.effective_user_uuid.bytes == cached.effective_user_uuid &&
+                  cached.cache_key.dialect_profile_uuid == client_config.dialect_profile_uuid &&
+                  !cached.cache_key.stable,
+              "public name cache did not retain native admitted identity fields");
       ordinary_name_only_entry_present = true;
       break;
     }
@@ -1627,6 +1633,59 @@ void VerifyNeutralPersistedRelationProjection() {
     }
     return count;
   };
+  const auto cache_hits_before_repeat = cache_hit_count();
+  const auto repeated = DecodeServerFrame(
+      server::ResolveNamePublicFrameForEmbedded(
+          ResolveNameFrame(route.session_uuid, sbps::kSchemaResolveNameRequestV1,
+                           v1_cache_prewarm_payload),
+          route.engine_state, &route.registry),
+      "native cache repeat response did not decode");
+  Require((repeated.header.flags & sbps::kFlagError) == 0 &&
+              repeated.header.payload_schema_id == sbps::kSchemaResolveNameResultV1 &&
+              cache_hit_count() == cache_hits_before_repeat + 1,
+          "repeated public name lookup did not use its exact native cache key");
+  const auto exact_v1_identity = [&](const sbps::Frame& response) {
+    // Independent V1 wire oracle: u16 length, eight outcome bytes, binary16.
+    constexpr std::string_view outcome = "resolved";
+    return response.payload.size() >= 26 && response.payload[0] == 8 &&
+        response.payload[1] == 0 &&
+        std::equal(outcome.begin(), outcome.end(), response.payload.begin() + 2) &&
+        std::equal(fixture.resource_table_uuid.bytes.begin(),
+                   fixture.resource_table_uuid.bytes.end(), response.payload.begin() + 10);
+  };
+  Require(exact_v1_identity(repeated),
+          "cache hit changed the engine-issued binary object identity");
+  std::size_t invalidated_native_records = 0;
+  const auto cross_record_identity = [&](auto& records) {
+    for (auto& [key, cached] : records) {
+      if (key.presented_name != "neutral_resource_projection") continue;
+      // The native map key remains valid; the retained record no longer agrees.
+      cached.cache_key.dialect_profile_uuid.bytes[15] ^= 1;
+      ++invalidated_native_records;
+    }
+  };
+  cross_record_identity(route.registry.public_name_resolution_cache_by_key);
+  cross_record_identity(route.registry.stable_public_name_resolution_cache_by_key);
+  Require(invalidated_native_records != 0, "native cache mismatch fixture was empty");
+  const auto refreshed = DecodeServerFrame(
+      server::ResolveNamePublicFrameForEmbedded(
+          ResolveNameFrame(route.session_uuid, sbps::kSchemaResolveNameRequestV1,
+                           v1_cache_prewarm_payload),
+          route.engine_state, &route.registry),
+      "native cache mismatch refresh did not decode");
+  Require((refreshed.header.flags & sbps::kFlagError) == 0 && exact_v1_identity(refreshed),
+          "crossed native cache record blocked authoritative resolution or leaked a wrong UUID");
+  const auto exact_retained_keys = [&](const auto& records) {
+    for (const auto& [key, cached] : records) {
+      if (key.presented_name == "neutral_resource_projection") {
+        Require(key == cached.cache_key && cached.cache_key.HasValidIdentity() &&
+                    cached.object_uuid == fixture.resource_table_uuid,
+                "authoritative refresh retained a crossed native cache identity");
+      }
+    }
+  };
+  exact_retained_keys(route.registry.public_name_resolution_cache_by_key);
+  exact_retained_keys(route.registry.stable_public_name_resolution_cache_by_key);
   const auto cache_hits_before_v3_projection = cache_hit_count();
 
   const auto descriptor_path = std::filesystem::path(

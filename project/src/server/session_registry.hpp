@@ -15,6 +15,7 @@
 #include "sbps.hpp"
 
 #include "agent_background_jobs.hpp"
+#include "public_name_resolution_cache.hpp"
 
 #include "scratchbird/engine/engine.h"
 #include "prepared_metadata_binding.hpp"
@@ -415,7 +416,7 @@ struct ServerAuthorityCacheValidation {
 };
 
 struct ServerPublicNameResolutionCacheRecord {
-  std::string cache_key;
+  ServerPublicNameResolutionCacheKey cache_key;
   std::array<std::uint8_t, 16> effective_user_uuid{};
   scratchbird::core::platform::Uuid database_uuid;
   scratchbird::core::platform::Uuid object_uuid;
@@ -695,12 +696,12 @@ struct ServerSessionRegistry {
       prepared_execution_contexts_by_uuid;
   std::map<std::pair<scratchbird::core::platform::Uuid, std::uint64_t>, ServerSessionObjectHandleRecord> object_handles_by_key;
   std::map<std::string, ServerAuthorityCacheRecord> authority_cache_by_key;
-  std::map<std::string, ServerPublicNameResolutionCacheRecord>
+  std::map<ServerPublicNameResolutionCacheKey, ServerPublicNameResolutionCacheRecord>
       public_name_resolution_cache_by_key;
-  std::deque<std::string> public_name_resolution_cache_lru;
-  std::map<std::string, ServerPublicNameResolutionCacheRecord>
+  std::deque<ServerPublicNameResolutionCacheKey> public_name_resolution_cache_lru;
+  std::map<ServerPublicNameResolutionCacheKey, ServerPublicNameResolutionCacheRecord>
       stable_public_name_resolution_cache_by_key;
-  std::deque<std::string> stable_public_name_resolution_cache_lru;
+  std::deque<ServerPublicNameResolutionCacheKey> stable_public_name_resolution_cache_lru;
   std::map<scratchbird::core::platform::Uuid, ServerCursorRecord> cursors_by_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerPublicAbiSessionContext>
       public_abi_sessions_by_session_uuid;

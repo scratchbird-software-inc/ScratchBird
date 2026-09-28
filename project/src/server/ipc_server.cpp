@@ -12,7 +12,7 @@
 
 #include "ipc_server.hpp"
 #include "../core/uuid/uuid.hpp"
-#include "engine/internal_api/mga_relation_store/mga_metadata_record_codec.hpp"
+#include "public_name_resolution_trace.hpp"
 #include <set>
 #include <stdexcept>
 #include "../wire/parser_server_ipc/binary_identity_io.hpp"
@@ -1441,14 +1441,6 @@ std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
   return request;
 }
 
-std::string PsNameTraceField(std::string_view value) {
-  std::string out(value);
-  for (char& ch : out) {
-    if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
-  }
-  return out;
-}
-
 std::uint64_t PsNameTraceElapsedMicros(std::chrono::steady_clock::time_point begin) {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1462,8 +1454,8 @@ void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
                                 std::string_view detail,
                                 const engine_api::EngineUuid& object_uuid,
                                 std::string_view object_class,
-                                std::string_view cache_key,
-                                std::string_view stable_cache_key,
+                                const std::optional<ServerPublicNameResolutionCacheKey>& cache_key,
+                                const std::optional<ServerPublicNameResolutionCacheKey>& stable_cache_key,
                                 bool normal_cache_checked,
                                 bool normal_cache_hit,
                                 bool stable_cache_checked,
@@ -1472,106 +1464,56 @@ void WritePsNameResolutionTrace(const PsNameResolveRequest& request,
                                 const ServerSessionRegistry* registry) {
   const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
   if (trace_path == nullptr || *trace_path == '\0') return;
-  std::ofstream out(trace_path, std::ios::app | std::ios::binary);
-  if (!out) return;
-  const auto bytes = engine_api::EncodeMgaMetadataFields({
-      "ps.name.resolution.trace.v2",
-      std::string(outcome),
-      std::string(detail),
-      request.presented_name,
-      request.object_class,
-      std::string(object_class),
-      engine_api::MetadataUuidBytes(object_uuid),
-      std::string(cache_key),
-      std::string(stable_cache_key),
-      request.quoted ? "1" : "0",
-      request.bypass_cache ? "1" : "0",
-      engine_api::MetadataUuidBytes(request.dialect_profile),
-      request.language,
-      request.search_path,
-      normal_cache_checked ? "1" : "0",
-      normal_cache_hit ? "1" : "0",
-      stable_cache_checked ? "1" : "0",
-      stable_cache_hit ? "1" : "0",
-      std::to_string(elapsed_us),
-      session ? engine_api::MetadataUuidBytes(session->database_uuid) : std::string{},
-      session ? std::string(reinterpret_cast<const char*>(session->effective_user_uuid.data()), session->effective_user_uuid.size()) : std::string{}});
-  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  (void)registry;
+  namespace trace = name_resolution_trace;
+  std::vector<trace::packet::Field> fields{
+      trace::Text("format", "ps.name.resolution.trace.v3"),
+      trace::Text("outcome", outcome), trace::Text("detail", detail),
+      trace::Text("presented_name", request.presented_name),
+      trace::Text("requested_object_class", request.object_class),
+      trace::Text("object_class", object_class),
+      trace::Identity("object_uuid", object_uuid),
+      trace::Number("quoted", request.quoted),
+      trace::Number("bypass_cache", request.bypass_cache),
+      trace::Identity("dialect_profile_uuid", request.dialect_profile),
+      trace::Text("language", request.language), trace::Text("search_path", request.search_path),
+      trace::Number("normal_cache_checked", normal_cache_checked),
+      trace::Number("normal_cache_hit", normal_cache_hit),
+      trace::Number("stable_cache_checked", stable_cache_checked),
+      trace::Number("stable_cache_hit", stable_cache_hit),
+      trace::Number("elapsed_us", elapsed_us)};
+  if (cache_key) fields.push_back({"cache_key", trace::packet::Kind::row,
+                                   PublicNameResolutionCacheKeyTrace(*cache_key)});
+  if (stable_cache_key) fields.push_back({"stable_cache_key", trace::packet::Kind::row,
+                                          PublicNameResolutionCacheKeyTrace(*stable_cache_key)});
+  if (session) {
+    fields.push_back(trace::Identity("database_uuid", session->database_uuid));
+    fields.push_back(trace::Identity("effective_user_uuid",
+        scratchbird::core::platform::Uuid{session->effective_user_uuid}));
+  }
+  (void)trace::Append(fields);
 }
 
-std::string PsNameResolutionCacheKey(const ServerSessionRecord& session,
-                                     const PsNameResolveRequest& request,
-                                     std::string_view identifier_profile) {
-  return engine_api::EncodeMgaMetadataFields({
-      "ps.name.cache.v2",
-      engine_api::MetadataUuidBytes(session.database_uuid),
-      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
-      request.presented_name,
-      request.quoted ? "1" : "0",
-      request.object_class,
-      engine_api::MetadataUuidBytes(request.dialect_profile),
-      std::string(identifier_profile),
-      request.language,
-      request.search_path,
-      std::to_string(session.catalog_generation),
-      std::to_string(session.security_epoch),
-      std::to_string(session.descriptor_epoch),
-      std::to_string(session.grant_epoch),
-      std::to_string(session.policy_generation),
-      std::to_string(session.name_resolution_epoch),
-      session.role_set_hash,
-      session.group_set_hash,
-      session.search_path_hash,
-      session.language_profile,
-      session.language_tag,
-      session.input_syntax_profile,
-      session.input_language_fallback_tag,
-      session.common_resource_hash,
-      std::to_string(session.language_resource_epoch),
-      std::to_string(session.localized_name_epoch),
-      std::to_string(session.message_resource_epoch),
-      session.resource_compatibility_identity,
-      session.resource_version_identity});
+ServerPublicNameResolutionCacheKey PsNameResolutionCacheKey(
+    const ServerSessionRecord& session, const PsNameResolveRequest& request,
+    std::string_view identifier_profile) {
+  return MakeServerPublicNameResolutionCacheKey(session, request.presented_name,
+      request.quoted, request.dialect_profile, identifier_profile, request.language,
+      request.search_path, request.object_class, false);
 }
 
-std::string PsNameStableResolutionCacheKey(const ServerSessionRecord& session,
-                                           const PsNameResolveRequest& request,
-                                           std::string_view identifier_profile) {
-  const bool qualified = request.presented_name.find('.') != std::string_view::npos;
-  const std::string_view stable_search_path_hash =
-      qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
-  return engine_api::EncodeMgaMetadataFields({
-      "ps.name.stable.cache.v2",
-      engine_api::MetadataUuidBytes(session.database_uuid),
-      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
-      request.presented_name,
-      request.quoted ? "1" : "0",
-      request.object_class,
-      engine_api::MetadataUuidBytes(request.dialect_profile),
-      std::string(identifier_profile),
-      request.language,
-      qualified ? std::string("<qualified>") : request.search_path,
-      std::to_string(session.security_epoch),
-      std::to_string(session.grant_epoch),
-      std::to_string(session.policy_generation),
-      session.role_set_hash,
-      session.group_set_hash,
-      std::string(stable_search_path_hash),
-      session.language_profile,
-      session.language_tag,
-      session.input_syntax_profile,
-      session.input_language_fallback_tag,
-      session.common_resource_hash,
-      std::to_string(session.language_resource_epoch),
-      std::to_string(session.localized_name_epoch),
-      std::to_string(session.message_resource_epoch),
-      session.resource_compatibility_identity,
-      session.resource_version_identity});
+ServerPublicNameResolutionCacheKey PsNameStableResolutionCacheKey(
+    const ServerSessionRecord& session, const PsNameResolveRequest& request,
+    std::string_view identifier_profile) {
+  return MakeServerPublicNameResolutionCacheKey(session, request.presented_name,
+      request.quoted, request.dialect_profile, identifier_profile, request.language,
+      request.search_path, request.object_class, true);
 }
 
 bool PsNameCachedRecordValid(const ServerPublicNameResolutionCacheRecord& record,
                              const ServerSessionRecord& session) {
-  return !record.object_uuid.is_nil() &&
+  return scratchbird::core::uuid::IsEngineIdentityUuid(record.object_uuid) &&
+         record.cache_key.HasValidIdentity() && !record.cache_key.stable &&
          record.database_uuid == session.database_uuid &&
          record.effective_user_uuid == session.effective_user_uuid &&
          record.catalog_generation == session.catalog_generation &&
@@ -1598,7 +1540,8 @@ bool PsNameCachedRecordValid(const ServerPublicNameResolutionCacheRecord& record
 bool PsNameStableCachedRecordValid(
     const ServerPublicNameResolutionCacheRecord& record,
     const ServerSessionRecord& session) {
-  return !record.object_uuid.is_nil() &&
+  return scratchbird::core::uuid::IsEngineIdentityUuid(record.object_uuid) &&
+         record.cache_key.HasValidIdentity() && record.cache_key.stable &&
          record.database_uuid == session.database_uuid &&
          record.effective_user_uuid == session.effective_user_uuid &&
          record.security_epoch == session.security_epoch &&
@@ -1609,7 +1552,7 @@ bool PsNameStableCachedRecordValid(
          record.message_resource_epoch == session.message_resource_epoch &&
          record.role_set_hash == session.role_set_hash &&
          record.group_set_hash == session.group_set_hash &&
-         (record.search_path_hash == "<qualified>" ||
+         (record.cache_key.qualified ||
           record.search_path_hash == session.search_path_hash) &&
          record.language_profile == session.language_profile &&
          record.language_tag == session.language_tag &&
@@ -1623,13 +1566,14 @@ bool PsNameStableCachedRecordValid(
 std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameCache(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
-    const std::string& cache_key) {
-  if (registry == nullptr || cache_key.empty()) return std::nullopt;
+    const ServerPublicNameResolutionCacheKey& cache_key) {
+  if (registry == nullptr || !cache_key.HasValidIdentity()) return std::nullopt;
   auto found = registry->public_name_resolution_cache_by_key.find(cache_key);
   if (found == registry->public_name_resolution_cache_by_key.end()) {
     return std::nullopt;
   }
-  if (!PsNameCachedRecordValid(found->second, session)) {
+  if (found->second.cache_key != cache_key ||
+      !PsNameCachedRecordValid(found->second, session)) {
     registry->public_name_resolution_cache_by_key.erase(found);
     registry->public_name_resolution_cache_lru.erase(
         std::remove(registry->public_name_resolution_cache_lru.begin(),
@@ -1651,13 +1595,14 @@ std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameCache(
 std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameStableCache(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
-    const std::string& cache_key) {
-  if (registry == nullptr || cache_key.empty()) return std::nullopt;
+    const ServerPublicNameResolutionCacheKey& cache_key) {
+  if (registry == nullptr || !cache_key.HasValidIdentity()) return std::nullopt;
   auto found = registry->stable_public_name_resolution_cache_by_key.find(cache_key);
   if (found == registry->stable_public_name_resolution_cache_by_key.end()) {
     return std::nullopt;
   }
-  if (!PsNameStableCachedRecordValid(found->second, session)) {
+  if (found->second.cache_key != cache_key ||
+      !PsNameStableCachedRecordValid(found->second, session)) {
     registry->stable_public_name_resolution_cache_by_key.erase(found);
     registry->stable_public_name_resolution_cache_lru.erase(
         std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
@@ -1678,13 +1623,16 @@ std::optional<ServerPublicNameResolutionCacheRecord> LookupPsNameStableCache(
 
 void StorePsNameCache(ServerSessionRegistry* registry,
                       const ServerSessionRecord& session,
-                      const std::string& cache_key,
+                      const ServerPublicNameResolutionCacheKey& cache_key,
                       const engine_api::EngineUuid& object_uuid,
                       std::string_view canonical_name,
                       std::string_view object_class,
                       std::uint64_t catalog_epoch,
                       std::uint64_t security_epoch) {
-  if (registry == nullptr || cache_key.empty() || object_uuid.is_nil()) return;
+  if (registry == nullptr || !cache_key.HasValidIdentity() || cache_key.stable ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(object_uuid) ||
+      cache_key.database_uuid != session.database_uuid ||
+      cache_key.effective_user_uuid.bytes != session.effective_user_uuid) return;
   (void)catalog_epoch;
   (void)security_epoch;
   constexpr std::size_t kMaxServerPublicNameResolutionCacheEntries = 8192;
@@ -1733,12 +1681,14 @@ void StorePsNameCache(ServerSessionRegistry* registry,
 
 void StorePsNameStableCache(ServerSessionRegistry* registry,
                             const ServerSessionRecord& session,
-                            const std::string& cache_key,
+                            const ServerPublicNameResolutionCacheKey& cache_key,
                             const engine_api::EngineUuid& object_uuid,
                             std::string_view canonical_name,
-                            std::string_view object_class,
-                            std::string_view search_path_hash) {
-  if (registry == nullptr || cache_key.empty() || object_uuid.is_nil()) return;
+                            std::string_view object_class) {
+  if (registry == nullptr || !cache_key.HasValidIdentity() || !cache_key.stable ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(object_uuid) ||
+      cache_key.database_uuid != session.database_uuid ||
+      cache_key.effective_user_uuid.bytes != session.effective_user_uuid) return;
   constexpr std::size_t kMaxServerStablePublicNameResolutionCacheEntries = 8192;
   ServerPublicNameResolutionCacheRecord record;
   record.cache_key = cache_key;
@@ -1758,8 +1708,7 @@ void StorePsNameStableCache(ServerSessionRegistry* registry,
   record.message_resource_epoch = session.message_resource_epoch;
   record.role_set_hash = session.role_set_hash;
   record.group_set_hash = session.group_set_hash;
-  record.search_path_hash = search_path_hash.empty() ? session.search_path_hash
-                                                     : std::string(search_path_hash);
+  record.search_path_hash = cache_key.search_path_hash;
   record.language_profile = session.language_profile;
   record.language_tag = session.language_tag;
   record.input_syntax_profile = session.input_syntax_profile;
@@ -1808,7 +1757,7 @@ void StorePsNameCacheVariants(ServerSessionRegistry* registry,
     requests.push_back(std::move(relation));
   }
   for (const auto& cache_request : requests) {
-    const std::string cache_key =
+    const auto cache_key =
         PsNameResolutionCacheKey(session, cache_request, identifier_profile);
     StorePsNameCache(registry,
                      session,
@@ -1819,17 +1768,13 @@ void StorePsNameCacheVariants(ServerSessionRegistry* registry,
                      catalog_epoch,
                      security_epoch);
     if (PsNameStableResolutionCacheable(context, object_class, object_uuid)) {
-      const bool qualified =
-          cache_request.presented_name.find('.') != std::string_view::npos;
       StorePsNameStableCache(
           registry,
           session,
           PsNameStableResolutionCacheKey(session, cache_request, identifier_profile),
           object_uuid,
           canonical_name,
-          object_class,
-          qualified ? std::string_view("<qualified>")
-                    : std::string_view(session.search_path_hash));
+          object_class);
     }
   }
 }
@@ -2904,8 +2849,8 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                "virtual_system_object",
                                {},
                                decoded->object_class.empty() ? "relation" : decoded->object_class,
-                               "",
-                               "",
+                               std::nullopt,
+                               std::nullopt,
                                false,
                                false,
                                false,
@@ -2956,9 +2901,9 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
   if (session && parts && !parts->empty()) {
     const std::string identifier_profile =
         PsNameCanonicalIdentifierProfile(session->input_syntax_profile);
-    const std::string cache_key =
+    const auto cache_key =
         PsNameResolutionCacheKey(*session, *decoded, identifier_profile);
-    const std::string stable_cache_key =
+    const auto stable_cache_key =
         PsNameStableResolutionCacheKey(*session, *decoded, identifier_profile);
     const bool resource_resolution_request =
         PsNameLower(decoded->object_class) == "charset" ||
@@ -3326,8 +3271,8 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                "missing_session_or_invalid_parts",
                                {},
                                decoded->object_class,
-                               "",
-                               "",
+                               std::nullopt,
+                               std::nullopt,
                                false,
                                false,
                                false,

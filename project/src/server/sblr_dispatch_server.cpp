@@ -18,6 +18,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_dispatch_command.hpp"
 #include "query_result_identity.hpp"
+#include "public_name_resolution_trace.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -2209,7 +2210,7 @@ void ClearStablePublicRelationNameCacheForMutation(ServerSessionRegistry* regist
   if (PreservesQualifiedStablePublicRelationNameCache(operation_id)) {
     for (auto it = registry->stable_public_name_resolution_cache_by_key.begin();
          it != registry->stable_public_name_resolution_cache_by_key.end();) {
-      if (it->second.search_path_hash == "<qualified>") {
+      if (it->second.cache_key.qualified) {
         ++it;
       } else {
         registry->stable_public_name_resolution_cache_lru.erase(
@@ -2278,39 +2279,14 @@ std::optional<std::string> ServerApiPayloadRowField(std::string_view payload,
 bool LooksLikeBinaryUuid(std::string_view bytes) { return !BinaryIdentity(bytes).is_nil(); }
 std::string NormalizeBinaryUuid(std::string_view bytes) { return LooksLikeBinaryUuid(bytes) ? std::string(bytes) : std::string{}; }
 
-std::string StablePublicRelationNameSeedKey(const ServerSessionRecord& session,
-                                            std::string_view presented_name,
-                                            std::string_view object_class) {
-  const bool qualified = presented_name.find('.') != std::string_view::npos;
-  const std::string_view stable_search_path_hash =
-      qualified ? std::string_view("<qualified>") : std::string_view(session.search_path_hash);
-  return engine_api::EncodeMgaMetadataFields({
-      "ps.name.stable.cache.v2",
-      engine_api::MetadataUuidBytes(session.database_uuid),
-      std::string(reinterpret_cast<const char*>(session.effective_user_uuid.data()), session.effective_user_uuid.size()),
-      std::string(presented_name),
-      "0",
-      std::string(object_class),
-      engine_api::MetadataUuidBytes(engine_api::EngineUuid{session.admitted_dialect_profile_uuid}),
+ServerPublicNameResolutionCacheKey StablePublicRelationNameSeedKey(
+    const ServerSessionRecord& session, std::string_view presented_name,
+    std::string_view object_class) {
+  return MakeServerPublicNameResolutionCacheKey(session, presented_name, false,
+      NativeUuid{session.admitted_dialect_profile_uuid},
       session.input_syntax_profile == "sbsql.syntax.standard" ? "sbsql_v3" : session.input_syntax_profile,
       session.default_language_tag.empty() ? "en" : session.default_language_tag,
-      qualified ? std::string("<qualified>") : std::string("sys,public"),
-      std::to_string(session.security_epoch),
-      std::to_string(session.grant_epoch),
-      std::to_string(session.policy_generation),
-      session.role_set_hash,
-      session.group_set_hash,
-      std::string(stable_search_path_hash),
-      session.language_profile,
-      session.language_tag,
-      session.input_syntax_profile,
-      session.input_language_fallback_tag,
-      session.common_resource_hash,
-      std::to_string(session.language_resource_epoch),
-      std::to_string(session.localized_name_epoch),
-      std::to_string(session.message_resource_epoch),
-      session.resource_compatibility_identity,
-      session.resource_version_identity});
+      "sys,public", object_class, true);
 }
 
 void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
@@ -2318,7 +2294,8 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
                                        std::string_view presented_name,
                                        const engine_api::EngineUuid& object_uuid,
                                        std::string_view object_class) {
-  if (registry == nullptr || presented_name.empty() || object_uuid.is_nil() ||
+  if (registry == nullptr || presented_name.empty() ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(object_uuid) ||
       object_class.empty()) {
     return;
   }
@@ -2326,6 +2303,7 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
   ServerPublicNameResolutionCacheRecord record;
   record.cache_key =
       StablePublicRelationNameSeedKey(session, presented_name, object_class);
+  if (!record.cache_key.HasValidIdentity()) return;
   record.effective_user_uuid = session.effective_user_uuid;
   record.database_uuid = session.database_uuid;
   record.object_uuid = object_uuid;
@@ -2342,9 +2320,7 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
   record.message_resource_epoch = session.message_resource_epoch;
   record.role_set_hash = session.role_set_hash;
   record.group_set_hash = session.group_set_hash;
-  record.search_path_hash =
-      presented_name.find('.') != std::string_view::npos ? "<qualified>"
-                                                         : session.search_path_hash;
+  record.search_path_hash = record.cache_key.search_path_hash;
   record.language_profile = session.language_profile;
   record.language_tag = session.language_tag;
   record.input_syntax_profile = session.input_syntax_profile;
@@ -2353,21 +2329,22 @@ void StoreStablePublicRelationNameSeed(ServerSessionRegistry* registry,
   record.resource_compatibility_identity = session.resource_compatibility_identity;
   record.resource_version_identity = session.resource_version_identity;
   record.generation = registry->next_public_name_resolution_cache_generation++;
-  const std::string cache_key = record.cache_key;
+  const auto cache_key = record.cache_key;
   registry->stable_public_name_resolution_cache_by_key[cache_key] = std::move(record);
   if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
       trace_path != nullptr && *trace_path != '\0') {
-    std::ofstream out(trace_path, std::ios::app | std::ios::binary);
-    if (out) {
-      const auto record = engine_api::EncodeMgaMetadataFields({
-          "server.public_name_resolution_seed.v2", std::string(presented_name),
-          std::string(object_class), engine_api::MetadataUuidBytes(object_uuid),
-          cache_key, std::to_string(registry->stable_public_name_resolution_cache_by_key.size()),
-          engine_api::MetadataUuidBytes(session.database_uuid),
-          engine_api::MetadataUuidBytes(engine_api::EngineUuid{session.effective_user_uuid}),
-          session.search_path_hash, session.language_tag, session.default_language_tag});
-      out.write(record.data(), static_cast<std::streamsize>(record.size()));
-    }
+    namespace trace = name_resolution_trace;
+    (void)trace::Append({
+        trace::Text("format", "server.public_name_resolution_seed.v3"),
+        trace::Text("presented_name", presented_name), trace::Text("object_class", object_class),
+        trace::Identity("object_uuid", object_uuid),
+        {"cache_key", trace::packet::Kind::row, PublicNameResolutionCacheKeyTrace(cache_key)},
+        trace::Number("cache_size", registry->stable_public_name_resolution_cache_by_key.size()),
+        trace::Identity("database_uuid", session.database_uuid),
+        trace::Identity("effective_user_uuid", NativeUuid{session.effective_user_uuid}),
+        trace::Text("search_path_hash", session.search_path_hash),
+        trace::Text("language_tag", session.language_tag),
+        trace::Text("default_language_tag", session.default_language_tag)});
   }
   registry->stable_public_name_resolution_cache_lru.erase(
       std::remove(registry->stable_public_name_resolution_cache_lru.begin(),
@@ -2399,15 +2376,13 @@ void SeedStablePublicRelationNameCacheAfterDdl(ServerSessionRegistry* registry,
                         std::string_view schema_parent_path) {
     if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_NAME_RESOLUTION_TRACE_FILE");
         trace_path != nullptr && *trace_path != '\0') {
-      std::ofstream out(trace_path, std::ios::app | std::ios::binary);
-      if (out) {
-        const auto record = engine_api::EncodeMgaMetadataFields({
-            "server.public_name_resolution_seed_skip.v2", std::string(operation_id),
-            std::string(reason), engine_api::MetadataUuidBytes(object_uuid),
-            std::string(object_name), std::string(schema_parent_path),
-            std::to_string(encoded.size()), std::to_string(row_packet.size())});
-        out.write(record.data(), static_cast<std::streamsize>(record.size()));
-      }
+      namespace trace = name_resolution_trace;
+      (void)trace::Append({
+          trace::Text("format", "server.public_name_resolution_seed_skip.v3"),
+          trace::Text("operation_id", operation_id), trace::Text("reason", reason),
+          trace::Identity("object_uuid", object_uuid), trace::Text("object_name", object_name),
+          trace::Text("schema_parent_path", schema_parent_path),
+          trace::Number("encoded_size", encoded.size()), trace::Number("row_packet_size", row_packet.size())});
     }
   };
   if (registry == nullptr) return;
