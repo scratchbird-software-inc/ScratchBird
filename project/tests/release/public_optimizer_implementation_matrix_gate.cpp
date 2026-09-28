@@ -549,15 +549,15 @@ void ApplyAccessProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
 
 opt::OptimizerStatisticsCatalog JoinStatistics() {
   opt::OptimizerStatisticsCatalog stats;
-  stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "left")),
+  Require(stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "left")),
                                1000.0, opt::StatisticSource::kCatalogExact,
-                               6060, 0, opt::CostConfidence::kHigh));
-  stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "right")),
+                               6060, 0, opt::CostConfidence::kHigh)), "left join statistic admission");
+  Require(stats.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(FixtureIdentity("join", "right")),
                                500.0, opt::StatisticSource::kCatalogExact,
-                               6060, 0, opt::CostConfidence::kHigh));
-  stats.Add(opt::MakeStatistic("memory_grant_available_bytes", "session", opt::OptimizerStatisticTarget::LocalDefault(),
-                               1048576.0, opt::StatisticSource::kCatalogExact,
-                               6060, 0, opt::CostConfidence::kHigh));
+                               6060, 0, opt::CostConfidence::kHigh)), "right join statistic admission");
+  Require(stats.Add(opt::MakeStatistic("memory_grant_available_bytes", "session", opt::OptimizerStatisticTarget::LocalDefault(),
+                               1048576.0, opt::StatisticSource::kPolicyDefault,
+                               6060, 0, opt::CostConfidence::kLow)), "join memory policy statistic admission");
   return stats;
 }
 
@@ -600,9 +600,33 @@ void ApplyJoinProof(MatrixRow* row) {
   });
 
   row->candidate_generated = selected_join != optimized.candidates.end();
+  bool exact_inputs_retained = row->candidate_generated;
+  if (row->candidate_generated) {
+    const auto expected_inputs = JoinStatistics();
+    const auto& actual_inputs = selected_join->plan_candidate.statistic_inputs;
+    exact_inputs_retained = actual_inputs.size() == expected_inputs.Statistics().size();
+    for (const auto& expected : expected_inputs.Statistics()) {
+      exact_inputs_retained &= std::count_if(actual_inputs.begin(), actual_inputs.end(),
+          [&](const auto& actual) {
+            return actual.statistic_name == expected.statistic_name && actual.target == expected.target &&
+                   actual.scope == expected.scope && actual.value == expected.value &&
+                   actual.exact_unsigned_value == expected.exact_unsigned_value &&
+                   actual.source == expected.source && actual.stats_epoch == expected.stats_epoch &&
+                   actual.freshness_microseconds == expected.freshness_microseconds &&
+                   actual.confidence == expected.confidence && actual.available == expected.available &&
+                   actual.cluster_only == expected.cluster_only && actual.value_domain == expected.value_domain;
+          }) == 1;
+    }
+    // The selectivity constant is an unmeasured fallback, never a fabricated
+    // epoch-one catalog observation. Session memory is explicitly local.
+    exact_inputs_retained &= selected_join->plan_candidate.uses_local_default_statistics &&
+                            selected_join->plan_candidate.uses_policy_default_statistics &&
+                            selected_join->cost.confidence == opt::CostConfidence::kUnknown;
+  }
   row->catalog_costed = row->candidate_generated &&
                         selected_join->cost.selectable &&
-                        selected_join->statistics_version == "join-local:epoch1";
+                        exact_inputs_retained &&
+                        selected_join->statistics_version == "statistics-epochs:6060";
   row->selectable = row->candidate_generated && selected_join->cost.selectable;
   row->physical_node_emitted = optimized.has_physical_plan &&
                                optimized.physical_root.access_kind ==

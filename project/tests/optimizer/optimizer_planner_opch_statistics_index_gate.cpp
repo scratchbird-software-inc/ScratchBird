@@ -128,37 +128,59 @@ bool StatisticsAnalyzeParityCoversSampleHllAndExtendedStats() {
 bool BenchmarkCleanRejectsUnsafeStatistics() {
   // SEARCH_KEY: OPCH_STATISTICS_FRESHNESS_BENCHMARK_CLEAN_GATE
   opt::OptimizerStatisticsCatalog catalog;
-  catalog.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 11)), 100.0,
+  if (!Require(catalog.Add(opt::MakeStatistic("row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 11)), 100.0,
                                  opt::StatisticSource::kCatalogExact, 9, 0,
-                                 opt::CostConfidence::kExact));
-  catalog.Add(opt::MakeStatistic("page_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)), 10.0,
+                                 opt::CostConfidence::kExact)), "exact row statistic admission")) return false;
+  if (!Require(catalog.Add(opt::MakeStatistic("page_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)), 10.0,
                                  opt::StatisticSource::kCatalogSample, 9,
-                                 120000000, opt::CostConfidence::kHigh));
-  catalog.Add(opt::MakeStatistic("visible_row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 10)),
+                                 120000000, opt::CostConfidence::kHigh)), "stale statistic admission")) return false;
+  if (!Require(catalog.Add(opt::MakeStatistic("visible_row_count", "relation", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 10)),
                                  90.0, opt::StatisticSource::kPolicyDefault, 9,
-                                 0, opt::CostConfidence::kLow));
-  catalog.Add(opt::MakeStatistic("index_depth", "index", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 7)), 3.0,
+                                 0, opt::CostConfidence::kLow)), "policy statistic admission")) return false;
+  if (!Require(catalog.Add(opt::MakeStatistic("index_depth", "index", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 7)), 3.0,
                                  opt::StatisticSource::kClusterMetric, 9, 0,
-                                 opt::CostConfidence::kHigh, true, true));
-  catalog.Add(opt::MakeStatistic("index_leaf_pages", "index", opt::OptimizerStatisticTarget::LocalDefault(),
+                                 opt::CostConfidence::kHigh, true, true)), "cluster statistic admission")) return false;
+  if (!Require(catalog.Add(opt::MakeStatistic("index_leaf_pages", "index", opt::OptimizerStatisticTarget::LocalDefault(),
                                  8.0, opt::StatisticSource::kPolicyDefault, 1,
-                                 0, opt::CostConfidence::kLow));
+                                 0, opt::CostConfidence::kLow)), "local default statistic admission")) return false;
 
   const auto safe = catalog.ValidateBenchmarkCleanInputs({"row_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 11)));
   const auto stale = catalog.ValidateBenchmarkCleanInputs({"page_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)));
   const auto policy = catalog.ValidateBenchmarkCleanInputs({"visible_row_count"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 10)));
   const auto cluster = catalog.ValidateBenchmarkCleanInputs({"index_depth"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 7)));
   const auto local = catalog.ValidateBenchmarkCleanInputs({"index_leaf_pages"}, opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 9)));
-  return Require(HasStatus(safe, "SB_OPTIMIZER_BENCHMARK_CLEAN.OK"),
+  const auto exact_status = [](const auto& statuses, opt::StatisticsContractReason reason,
+                               scratchbird::core::platform::Uuid object, const char* detail) {
+    return statuses.size() == 1 && statuses.front().reason == reason &&
+           statuses.front().object_uuid == object && statuses.front().detail == detail &&
+           statuses.front().ok == (reason == opt::StatisticsContractReason::kNone) &&
+           statuses.front().diagnostic_code ==
+               (reason == opt::StatisticsContractReason::kNone ? "" : "SB-STAT-0001");
+  };
+  const auto wrong_object = catalog.ValidateBenchmarkCleanInputs({"row_count"},
+      opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1543, 12)));
+  const auto invalid_target = catalog.ValidateBenchmarkCleanInputs({"row_count"},
+      opt::OptimizerStatisticTarget::Object({}));
+  return Require(exact_status(safe, opt::StatisticsContractReason::kNone,
+                              scratchbird::tests::FixtureUuid(1543, 11), ""),
                  "safe catalog stat rejected") &&
-         Require(HasStatus(stale, "SB_OPTIMIZER_BENCHMARK_CLEAN.STALE_STATS"),
+         Require(exact_status(stale, opt::StatisticsContractReason::kStale,
+                              scratchbird::tests::FixtureUuid(1543, 12), "page_count"),
                  "stale stat accepted") &&
-         Require(HasStatus(policy, "SB_OPTIMIZER_BENCHMARK_CLEAN.POLICY_DEFAULT_STATS"),
+         Require(exact_status(policy, opt::StatisticsContractReason::kPolicyDefault,
+                              scratchbird::tests::FixtureUuid(1543, 10), "visible_row_count"),
                  "policy default stat accepted") &&
-         Require(HasStatus(cluster, "SB_OPTIMIZER_BENCHMARK_CLEAN.CLUSTER_ONLY_STATS"),
+         Require(exact_status(cluster, opt::StatisticsContractReason::kClusterOnly,
+                              scratchbird::tests::FixtureUuid(1543, 7), "index_depth"),
                  "cluster-only stat accepted") &&
-         Require(HasStatus(local, "SB_OPTIMIZER_BENCHMARK_CLEAN.LOCAL_DEFAULT_STATS"),
-                 "local default fallback accepted");
+         Require(exact_status(local, opt::StatisticsContractReason::kLocalDefault,
+                              scratchbird::tests::FixtureUuid(1543, 9), "index_leaf_pages"),
+                 "local default fallback accepted") &&
+         Require(exact_status(wrong_object, opt::StatisticsContractReason::kMissing,
+                              scratchbird::tests::FixtureUuid(1543, 12), "row_count"),
+                 "other object's statistics borrowed") &&
+         Require(exact_status(invalid_target, opt::StatisticsContractReason::kTargetInvalid,
+                              {}, "row_count"), "nil target became wildcard");
 }
 
 opt::IndexStats Index(std::string family, scratchbird::core::platform::Uuid uuid) {

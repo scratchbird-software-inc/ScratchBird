@@ -2704,20 +2704,91 @@ OptimizerStatisticTarget RequiredStatisticTarget(const planner::LogicalPlanNode&
   return OptimizerStatisticTarget::Object(RelationKeyForNode(node));
 }
 
+// Retain the exact records chosen by costing, not a later reconstruction from
+// labels or an arbitrary object's statistics. A fallback has no catalog epoch.
+struct CostStatisticsTrace {
+  std::vector<OptimizerStatistic> inputs;
+  std::set<std::string> missing;
+  CostConfidence confidence = CostConfidence::kExact;
+  bool local_default = false;
+  bool policy_default = false;
+
+  void Record(const OptimizerStatistic& statistic) {
+    if (std::none_of(inputs.begin(), inputs.end(), [&](const auto& existing) {
+          return existing.statistic_name == statistic.statistic_name &&
+                 existing.target == statistic.target;
+        })) inputs.push_back(statistic);
+    confidence = std::max(confidence, statistic.confidence);
+    local_default |= statistic.target.kind == OptimizerStatisticTargetKind::kLocalDefault;
+    policy_default |= statistic.source == StatisticSource::kPolicyDefault;
+    if (statistic.source == StatisticSource::kPolicyDefault)
+      confidence = std::max(confidence, CostConfidence::kLow);
+  }
+
+  void Fallback(const char* name) {
+    missing.insert(name);
+    policy_default = true;
+    confidence = CostConfidence::kUnknown;
+  }
+
+  void Attach(PlanCandidate* candidate) const {
+    candidate->statistic_inputs = inputs;
+    candidate->uses_local_default_statistics |= local_default;
+    candidate->uses_policy_default_statistics |= policy_default;
+    candidate->cost.confidence = std::max(candidate->cost.confidence, confidence);
+    for (const auto& input : inputs) {
+      if (input.source != StatisticSource::kPolicyDefault) continue;
+      candidate->statistics_diagnostics.push_back("policy-default:" + input.statistic_name);
+      candidate->cost.uncertainty_cost = SaturatingAdd(
+          candidate->cost.uncertainty_cost, DefaultCostModelConstants().unknown_stats_uncertainty);
+    }
+    for (const auto& name : missing) {
+      candidate->statistics_diagnostics.push_back("statistics-missing:" + name);
+      candidate->cost.uncertainty_cost = SaturatingAdd(
+          candidate->cost.uncertainty_cost, DefaultCostModelConstants().unknown_stats_uncertainty);
+    }
+    FinalizeCostVector(&candidate->cost);
+  }
+};
+
+std::optional<std::uint64_t> TracedUnsigned(
+    const OptimizerStatisticsCatalog& statistics, const char* name,
+    const OptimizerStatisticTarget& target, CostStatisticsTrace* trace) {
+  const auto statistic = statistics.Find(name, target);
+  if (!statistic) return std::nullopt;
+  const auto value = CheckedOptimizerStatisticUnsigned(*statistic);
+  if (value && trace) trace->Record(*statistic);
+  return value;
+}
+
+std::uint64_t EstimatedUnsigned(
+    const OptimizerStatisticsCatalog& statistics, const char* name,
+    const OptimizerStatisticTarget& target, std::uint64_t fallback,
+    CostStatisticsTrace* trace) {
+  if (const auto value = TracedUnsigned(statistics, name, target, trace)) return *value;
+  if (trace) trace->Fallback(name);
+  return fallback;
+}
+
 std::optional<std::uint64_t> KnownRowsForTarget(
-    const OptimizerStatisticsCatalog& statistics, const OptimizerStatisticTarget& target) {
-  if (const auto rows = statistics.TryEstimateUnsigned("visible_row_count", target)) return rows;
-  return statistics.TryEstimateUnsigned("row_count", target);
+    const OptimizerStatisticsCatalog& statistics, const OptimizerStatisticTarget& target,
+    CostStatisticsTrace* trace = nullptr) {
+  if (const auto rows = TracedUnsigned(statistics, "visible_row_count", target, trace)) return rows;
+  return TracedUnsigned(statistics, "row_count", target, trace);
 }
 
 std::uint64_t EstimatedRowsForTarget(const OptimizerStatisticsCatalog& statistics,
                                     const OptimizerStatisticTarget& target,
-                                    std::uint64_t fallback) {
-  if (!target.Valid()) return fallback;
-  if (const auto rows = KnownRowsForTarget(statistics, target)) return *rows;
-  if (target.kind != OptimizerStatisticTargetKind::kLocalDefault)
-    if (const auto rows = KnownRowsForTarget(statistics, OptimizerStatisticTarget::LocalDefault()))
-      return *rows;
+                                    std::uint64_t fallback,
+                                    CostStatisticsTrace* trace = nullptr) {
+  if (target.Valid()) {
+    if (const auto rows = KnownRowsForTarget(statistics, target, trace)) return *rows;
+    if (target.kind != OptimizerStatisticTargetKind::kLocalDefault) {
+      if (const auto rows = KnownRowsForTarget(statistics, OptimizerStatisticTarget::LocalDefault(), trace))
+        return *rows;
+    }
+  }
+  if (trace) trace->Fallback("row_count");
   return fallback;
 }
 
@@ -2732,8 +2803,9 @@ std::string DescriptorDigestForNode(const planner::LogicalPlanNode& node) {
 
 std::uint64_t EstimateRowsForNode(const OptimizerStatisticsCatalog& statistics,
                                   const planner::LogicalPlanNode& node,
-                                  std::uint64_t fallback) {
-  return EstimatedRowsForTarget(statistics, RequiredStatisticTarget(node), fallback);
+                                  std::uint64_t fallback,
+                                  CostStatisticsTrace* trace = nullptr) {
+  return EstimatedRowsForTarget(statistics, RequiredStatisticTarget(node), fallback, trace);
 }
 
 void AddCost(CostVector* destination, const CostVector& source) {
@@ -2833,8 +2905,9 @@ JoinSemanticKind SemanticKindForJoinNode(const planner::LogicalPlanNode& node) {
 }
 
 std::uint64_t CardinalityForRelationUuid(const OptimizerStatisticsCatalog& statistics,
-                                         const planner::CanonicalPlannerUuid& relation_uuid) {
-  return EstimatedRowsForTarget(statistics, OptimizerStatisticTarget::Object(relation_uuid), 1000);
+                                         const planner::CanonicalPlannerUuid& relation_uuid,
+                                         CostStatisticsTrace* trace = nullptr) {
+  return EstimatedRowsForTarget(statistics, OptimizerStatisticTarget::Object(relation_uuid), 1000, trace);
 }
 
 std::vector<planner::CanonicalPlannerUuid> JoinRelationKeysForNode(const planner::LogicalPlanNode& node) {
@@ -2842,26 +2915,31 @@ std::vector<planner::CanonicalPlannerUuid> JoinRelationKeysForNode(const planner
 }
 
 double JoinSelectivityForNode(const planner::LogicalPlanNode& node,
-                              const OptimizerStatisticsCatalog& statistics) {
+                              const OptimizerStatisticsCatalog& statistics,
+                              CostStatisticsTrace* trace = nullptr) {
   if (SemanticKindForJoinNode(node) == JoinSemanticKind::kCross) return 1.0;
   // An operation label is not an object identity or a statistics snapshot.
   const auto fallback = statistics.Find("join_selectivity", OptimizerStatisticTarget::LocalDefault());
   if (fallback && ValidateStatistic(*fallback, 60000000).ok &&
       fallback->value_domain == OptimizerStatisticValueDomain::kNonNegative &&
-      std::isfinite(fallback->value) && fallback->value >= 0.0 && fallback->value <= 1.0)
+      std::isfinite(fallback->value) && fallback->value >= 0.0 && fallback->value <= 1.0) {
+    if (trace) trace->Record(*fallback);
     return fallback->value;
+  }
+  if (trace) trace->Fallback("join_selectivity");
   return HasDescriptor(node, "join.non_equi") ? 0.25 : 0.10;
 }
 
 JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
-                           const OptimizerStatisticsCatalog& statistics) {
+                           const OptimizerStatisticsCatalog& statistics,
+                           CostStatisticsTrace* trace = nullptr) {
   const auto relation_keys = JoinRelationKeysForNode(node);
   std::vector<JoinRelationNode> relations;
   relations.reserve(relation_keys.size());
   for (const auto& relation_key : relation_keys) {
     JoinRelationNode relation;
     relation.relation_uuid = relation_key;
-    relation.estimated_rows = CardinalityForRelationUuid(statistics, relation_key);
+    relation.estimated_rows = CardinalityForRelationUuid(statistics, relation_key, trace);
     relation.order_preserving_required = HasDescriptor(node, "join.inputs_ordered");
     relation.semantic_order_barrier = HasDescriptor(node, "join.barrier") ||
                                       HasDescriptor(node, "join.preserve_order");
@@ -2876,7 +2954,8 @@ JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
   const bool equality = !HasDescriptor(node, "join.non_equi");
   const auto semantic_kind = SemanticKindForJoinNode(node);
   const bool cross = semantic_kind == JoinSemanticKind::kCross;
-  const auto selectivity = JoinSelectivityForNode(node, statistics);
+  const auto selectivity = relation_keys.size() > 1
+      ? JoinSelectivityForNode(node, statistics, trace) : 1.0;
   for (std::size_t i = 1; i < relation_keys.size(); ++i) {
     JoinPredicateEdge edge;
     edge.left_relation_uuid = relation_keys[i - 1];
@@ -2911,7 +2990,8 @@ JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
 }
 
 JoinPlanningInput JoinInputForNode(const planner::LogicalPlanNode& node,
-                                  const OptimizerStatisticsCatalog& statistics) {
+                                  const OptimizerStatisticsCatalog& statistics,
+                                  CostStatisticsTrace* trace) {
   JoinPlanningInput join_input;
   const auto left_target = node.required_object_uuids.empty()
       ? OptimizerStatisticTarget::Object({})
@@ -2919,17 +2999,17 @@ JoinPlanningInput JoinInputForNode(const planner::LogicalPlanNode& node,
   const auto right_target = node.required_object_uuids.size() < 2
       ? OptimizerStatisticTarget::Object({})
       : OptimizerStatisticTarget::Object(node.required_object_uuids[1]);
-  const auto left_rows = KnownRowsForTarget(statistics, left_target);
-  const auto right_rows = KnownRowsForTarget(statistics, right_target);
-  join_input.left_cardinality = EstimatedRowsForTarget(statistics, left_target, 1000);
-  join_input.right_cardinality = EstimatedRowsForTarget(statistics, right_target, 1000);
+  const auto left_rows = KnownRowsForTarget(statistics, left_target, trace);
+  const auto right_rows = KnownRowsForTarget(statistics, right_target, trace);
+  join_input.left_cardinality = EstimatedRowsForTarget(statistics, left_target, 1000, trace);
+  join_input.right_cardinality = EstimatedRowsForTarget(statistics, right_target, 1000, trace);
   join_input.equi_join = !HasDescriptor(node, "join.non_equi");
   join_input.reorder_safe = !JoinNodeHasSemanticBarrier(node);
   join_input.ordered_inputs = node.access_kind == planner::PhysicalAccessKind::kJoinMerge ||
                               HasDescriptor(node, "join.inputs_ordered");
-  join_input.memory_budget_bytes = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                               OptimizerStatisticTarget::LocalDefault(),
-                                                               1048576);
+  join_input.memory_budget_bytes = EstimatedUnsigned(statistics, "memory_grant_available_bytes",
+                                                      OptimizerStatisticTarget::LocalDefault(),
+                                                      1048576, trace);
   if (!left_rows || !right_rows) {
     join_input.reorder_safe = false;
     join_input.hash_join_executor_available = false;
@@ -2941,12 +3021,12 @@ JoinPlanningInput JoinInputForNode(const planner::LogicalPlanNode& node,
 void AppendJoinCandidates(OptimizedPlan* optimized,
                           const planner::LogicalPlanNode& node,
                           const OptimizerStatisticsCatalog& statistics) {
-  const auto decision = PlanLocalJoin(JoinInputForNode(node, statistics));
-  const auto graph = JoinGraphForNode(node, statistics);
-  const auto memory_budget = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                         OptimizerStatisticTarget::LocalDefault(),
-                                                         1048576);
-  const auto order_plan = EnumerateDeterministicJoinOrder(graph, memory_budget);
+  CostStatisticsTrace method_trace;
+  const auto input = JoinInputForNode(node, statistics, &method_trace);
+  const auto decision = PlanLocalJoin(input);
+  auto order_trace = method_trace;
+  const auto graph = JoinGraphForNode(node, statistics, &order_trace);
+  const auto order_plan = EnumerateDeterministicJoinOrder(graph, input.memory_budget_bytes);
   for (auto plan_candidate : decision.candidates) {
     plan_candidate.statistics_diagnostics.insert(plan_candidate.statistics_diagnostics.end(),
                                                  order_plan.diagnostics.begin(),
@@ -2956,8 +3036,12 @@ void AppendJoinCandidates(OptimizedPlan* optimized,
       plan_candidate.statistics_diagnostics.push_back("SB_OPT_JOIN_DP_METHOD_SELECTED");
       plan_candidate.cost = order_plan.cost;
       plan_candidate.estimated_rows = order_plan.estimated_rows;
+      order_trace.Attach(&plan_candidate);
+    } else {
+      method_trace.Attach(&plan_candidate);
     }
-    AppendOptimizerCandidate(optimized, node, std::move(plan_candidate), "statistics-unbound");
+    const auto version = StatisticsVersionForCandidate(plan_candidate);
+    AppendOptimizerCandidate(optimized, node, std::move(plan_candidate), version);
   }
   optimized->diagnostics.insert(optimized->diagnostics.end(),
                                 decision.diagnostics.begin(),
@@ -2971,25 +3055,30 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                const planner::LogicalPlanNode& node,
                                const OptimizerStatisticsCatalog& statistics,
                                const OrderedLimitPlanningRequest* requested_limit = nullptr) {
-  const std::uint64_t input_rows = EstimateRowsForNode(statistics, node, 1000);
-  const std::uint64_t row_width = statistics.EstimateUnsigned("average_row_bytes",
-                                                             RequiredStatisticTarget(node),
-                                                             64);
-  const std::uint64_t memory_budget = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                                 OptimizerStatisticTarget::LocalDefault(),
-                                                                 1048576);
+  CostStatisticsTrace trace;
+  const auto target = RequiredStatisticTarget(node);
+  const std::uint64_t input_rows = EstimateRowsForNode(statistics, node, 1000, &trace);
+  const auto append = [&](PlanCandidate candidate) {
+    trace.Attach(&candidate);
+    const auto version = StatisticsVersionForCandidate(candidate);
+    AppendOptimizerCandidate(optimized, node, std::move(candidate), version);
+  };
   if (IsAggregateAccessKind(node.access_kind)) {
     AggregatePlanningInput input;
     input.input_rows = input_rows;
-    input.group_count = statistics.EstimateUnsigned("group_count",
-                                                    RequiredStatisticTarget(node),
-                                                    std::max<std::uint64_t>(1, input_rows / 10));
-    input.row_width_bytes = row_width;
-    input.memory_budget_bytes = memory_budget;
     input.grouping_present = node.access_kind == planner::PhysicalAccessKind::kAggregateHash ||
                              HasDescriptor(node, "aggregate.grouping");
     input.distinct_present = HasDescriptor(node, "aggregate.distinct");
     input.input_ordered_by_group = HasDescriptor(node, "aggregate.input_ordered_by_group");
+    if (input.grouping_present || input.distinct_present) {
+      input.group_count = EstimatedUnsigned(statistics, "group_count", target,
+                                             std::max<std::uint64_t>(1, input_rows / 10), &trace);
+      if (!input.input_ordered_by_group) {
+        input.row_width_bytes = EstimatedUnsigned(statistics, "average_row_bytes", target, 64, &trace);
+        input.memory_budget_bytes = EstimatedUnsigned(statistics, "memory_grant_available_bytes",
+            OptimizerStatisticTarget::LocalDefault(), 1048576, &trace);
+      }
+    }
     const auto decision = PlanAggregate(input);
     auto candidate = MakeDecisionCandidate("CAND-ODF-017-AGGREGATE",
                                            decision.access_kind,
@@ -2998,42 +3087,44 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                                ? std::max<std::uint64_t>(1, input.group_count)
                                                : 1);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
+    append(std::move(candidate));
     return;
   }
 
   if (IsWindowAccessKind(node.access_kind)) {
     WindowPlanningInput input;
     input.input_rows = input_rows;
-    input.partition_count = statistics.EstimateUnsigned("window_partition_count",
-                                                        RequiredStatisticTarget(node),
-                                                        std::max<std::uint64_t>(1, input_rows / 100));
     input.input_ordered = HasDescriptor(node, "window.input_ordered");
     input.frame_requires_materialization = node.access_kind == planner::PhysicalAccessKind::kSortThenWindow ||
                                            HasDescriptor(node, "window.frame_materialization");
+    if (input.frame_requires_materialization)
+      input.partition_count = EstimatedUnsigned(statistics, "window_partition_count", target,
+          std::max<std::uint64_t>(1, input_rows / 100), &trace);
     const auto decision = PlanWindow(input);
     auto candidate = MakeDecisionCandidate("CAND-ODF-017-WINDOW",
                                            decision.access_kind,
                                            decision.cost,
                                            input_rows);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
+    append(std::move(candidate));
     return;
   }
 
   if (IsSortLimitAccessKind(node.access_kind)) {
     SortPlanningInput input;
     input.input_rows = input_rows;
-    input.row_width_bytes = row_width;
-    input.memory_budget_bytes = memory_budget;
+    input.row_width_bytes = EstimatedUnsigned(statistics, "average_row_bytes", target, 64, &trace);
+    input.memory_budget_bytes = EstimatedUnsigned(statistics, "memory_grant_available_bytes",
+        OptimizerStatisticTarget::LocalDefault(), 1048576, &trace);
     input.input_already_ordered = node.access_kind == planner::PhysicalAccessKind::kTopN ||
                                   HasDescriptor(node, "sort.input_ordered");
     input.limit_present = node.access_kind == planner::PhysicalAccessKind::kTopN ||
                           HasDescriptor(node, "limit.present") ||
                           (requested_limit && requested_limit->present);
-    input.limit_count = requested_limit && requested_limit->present
-        ? requested_limit->limit_count
-        : statistics.EstimateUnsigned("limit_count", RequiredStatisticTarget(node), 10);
+    if (input.limit_present)
+      input.limit_count = requested_limit && requested_limit->present
+          ? requested_limit->limit_count
+          : EstimatedUnsigned(statistics, "limit_count", target, 10, &trace);
     const auto decision = PlanSortLimit(input);
     auto candidate = MakeDecisionCandidate(node.access_kind == planner::PhysicalAccessKind::kTopN
                                                ? "CAND-ODF-017-LIMIT"
@@ -3043,18 +3134,12 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                            input.limit_present ? std::min(input.input_rows, input.limit_count)
                                                                : input.input_rows);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
+    append(std::move(candidate));
     return;
   }
 
   auto cost = EstimateNodeCost(node);
-  AppendOptimizerCandidate(optimized,
-                           node,
-                           MakeDecisionCandidate("CAND-ODF-017-UPPER",
-                                                 node.access_kind,
-                                                 cost,
-                                                 input_rows),
-                           "statistics-unbound");
+  append(MakeDecisionCandidate("CAND-ODF-017-UPPER", node.access_kind, cost, input_rows));
 }
 
 struct LeafSelection {
@@ -3642,6 +3727,10 @@ StatisticsContractStatus ValidateBenchmarkCleanOptimizedPlan(const OptimizedPlan
   }
   for (const auto& candidate : plan.candidates) {
     if (!candidate.selected_in_physical_tree) continue;
+    if (candidate.plan_candidate.uses_local_default_statistics)
+      return {false, "SB_OPTIMIZER_BENCHMARK_CLEAN.LOCAL_DEFAULT_STATS", candidate.plan_candidate.candidate_id};
+    if (candidate.plan_candidate.uses_policy_default_statistics)
+      return {false, "SB_OPTIMIZER_BENCHMARK_CLEAN.POLICY_DEFAULT_STATS", candidate.plan_candidate.candidate_id};
     if (candidate.plan_candidate.statistic_inputs.empty())
       return {false, "SB-STAT-0001", "selected_statistics_unbound",
               StatisticsContractReason::kMissing};

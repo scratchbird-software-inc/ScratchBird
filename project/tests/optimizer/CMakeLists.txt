@@ -3423,6 +3423,13 @@ set_tests_properties(optimizer_planner_opch_runtime_payload_feedback_gate PROPER
   LABELS "optimizer_planner_opch_runtime_payload_feedback_gate;OPCH-040;OPCH-041;optimizer;explain;adaptive_feedback;benchmark_clean;mga_transaction_regression;binary_uuid"
 )
 
+add_executable(optimizer_native_cost_statistics_gate optimizer_native_cost_statistics_gate.cpp)
+target_compile_features(optimizer_native_cost_statistics_gate PRIVATE cxx_std_20)
+target_link_libraries(optimizer_native_cost_statistics_gate PRIVATE sb_engine_optimizer)
+add_test(NAME optimizer_native_cost_statistics_gate COMMAND optimizer_native_cost_statistics_gate)
+set_tests_properties(optimizer_native_cost_statistics_gate PROPERTIES
+  LABELS "optimizer;statistics;binary_uuid;mga_transaction_regression")
+
 add_executable(
   optimizer_planner_opch_statistics_index_gate
   optimizer_planner_opch_statistics_index_gate.cpp
@@ -3438,7 +3445,7 @@ add_test(
   COMMAND optimizer_planner_opch_statistics_index_gate
 )
 set_tests_properties(optimizer_planner_opch_statistics_index_gate PROPERTIES
-  LABELS "optimizer_planner_opch_statistics_index_gate;OPCH-050;OPCH-051;OPCH-052;optimizer;statistics;index;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_planner_opch_statistics_index_gate;OPCH-050;OPCH-051;OPCH-052;optimizer;statistics;index;benchmark_clean;mga_transaction_regression;binary_uuid"
 )
 
 add_executable(

@@ -1609,7 +1609,7 @@ add_test(
           ${CMAKE_CURRENT_BINARY_DIR}/public_optimizer_implementation_matrix_gate_artifacts/public_optimizer_implementation_matrix.csv
 )
 set_tests_properties(public_optimizer_implementation_matrix_gate PROPERTIES
-  LABELS "public_release_correctness;public_optimizer_implementation_matrix_gate;PCR-GATE-060;PCR-060;optimizer;model_family;native_optimization;exact_fallback;implementation_matrix;plan_cache;explain;benchmark_clean;runtime_evidence"
+  LABELS "public_release_correctness;public_optimizer_implementation_matrix_gate;PCR-GATE-060;PCR-060;optimizer;model_family;native_optimization;exact_fallback;implementation_matrix;plan_cache;explain;benchmark_clean;runtime_evidence;binary_uuid"
 )
 
 add_executable(public_optimizer_catalog_backed_planning_gate
