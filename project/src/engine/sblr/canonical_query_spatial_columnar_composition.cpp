@@ -1351,12 +1351,17 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
 bool Rcp079ExactColumnarJoinColumnBindingV1(
     const api::EngineRequestContext& context,
     const api::RelationalTypeDescriptor& relational,
-    const api::MgaRelationColumnStorageDescriptor& persisted) {
+    const api::MgaRelationColumnStorageDescriptor& persisted,
+    std::string* refusal_detail) {
+  const auto refuse = [&](const char* reason) {
+    if (refusal_detail) *refusal_detail = reason;
+    return false;
+  };
   const auto fields =
       Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
   if (!fields.has_value() ||
       !Rcp079ExactPersistedColumnDescriptorV1(context, persisted)) {
-    return false;
+    return refuse("persisted_column_shape");
   }
   const auto field = [&](const std::string_view name)
       -> std::optional<std::string_view> {
@@ -1377,12 +1382,12 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
        relational.descriptor_uuid != datatype_authority->descriptor_uuid) ||
       relational.type_uuid != *type_uuid ||
       relational.descriptor_uuid == relational.type_uuid) {
-    return false;
+    return refuse("descriptor_or_type_identity");
   }
   const auto canonical_nullability = field("nullability");
   const auto storage_nullability = field("nullable");
   if (canonical_nullability.has_value() == storage_nullability.has_value()) {
-    return false;
+    return refuse("nullability_fields");
   }
   std::optional<bool> nullable;
   if (canonical_nullability == std::optional<std::string_view>{"nullable"}) {
@@ -1399,13 +1404,13 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
              storage_nullability == std::optional<std::string_view>{"0"}) {
     nullable = false;
   } else {
-    return false;
+    return refuse("nullability_encoding");
   }
   if (*nullable != persisted.nullable ||
       relational.nullability !=
           (persisted.nullable ? api::RelationalNullability::kNullable
                               : api::RelationalNullability::kNonNull)) {
-    return false;
+    return refuse("nullability_binding");
   }
   const auto encoded_collation = fields->identity("collation_uuid");
   const auto persisted_collation =
@@ -1420,7 +1425,7 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
           (persisted_collation.has_value()
                ? std::optional<api::EngineUuid>{*persisted_collation}
                : std::optional<api::EngineUuid>{})) {
-    return false;
+    return refuse("collation_binding");
   }
   const auto encoded_charset = fields->identity("charset_uuid");
   if ((!persisted.charset_uuid.is_nil() &&
@@ -1428,20 +1433,20 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
            std::optional<api::EngineUuid>{persisted.charset_uuid}) ||
       (encoded_charset.has_value() &&
        !core::uuid::IsEngineIdentityUuid(*encoded_charset))) {
-    return false;
+    return refuse("charset_binding");
   }
   const auto parse_u32 = [&](const std::string_view name,
                              std::optional<std::uint32_t>* value) {
     value->reset();
     const auto encoded = field(name);
     if (!encoded.has_value() || encoded->empty()) return !encoded.has_value();
-    if (encoded->size() > 1 && encoded->front() == '0') return false;
+    if (encoded->size() > 1 && encoded->front() == '0') return refuse("numeric_shape_encoding");
     std::uint32_t parsed = 0;
     const auto converted = std::from_chars(
         encoded->data(), encoded->data() + encoded->size(), parsed);
     if (converted.ec != std::errc{} ||
         converted.ptr != encoded->data() + encoded->size()) {
-      return false;
+      return refuse("numeric_shape_encoding");
     }
     *value = parsed;
     return true;
@@ -1452,21 +1457,22 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
   if (!parse_u32("width", &width) ||
       !parse_u32("precision", &precision) ||
       !parse_u32("scale", &scale)) {
-    return false;
+    return refuse("numeric_shape_binding");
   }
   if (persisted.character_length != 0) {
     if (width.has_value() && *width != persisted.character_length) {
-      return false;
+      return refuse("character_width_binding");
     }
     width = persisted.character_length;
   }
   const auto timezone = field("timezone_profile_id");
-  return relational.timezone_profile_id ==
+  const bool exact_shape = relational.timezone_profile_id ==
              (timezone.has_value()
                   ? std::optional<std::string>{*timezone}
                   : std::optional<std::string>{}) &&
          relational.width == width && relational.precision == precision &&
          relational.scale == scale;
+  return exact_shape || refuse("timezone_or_scalar_shape_binding");
 }
 
 bool Rcp079ExactColumnarIdentifierBindingsV1(

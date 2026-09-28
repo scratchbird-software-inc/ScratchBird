@@ -101,6 +101,12 @@ constexpr std::string_view kFullRouteCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=7b622f17d15a5e6f2d5122c606937dfc"
     "76f5982782adb52b03f7b1ca024f72c9";
+// User data, deliberately not system UUIDv7 identities. The zero value is
+// non-null data; a fourth row below independently carries SQL NULL.
+constexpr std::array<api::EngineUuid, 3> kUserUuidData = {
+    scratchbird::tests::FixtureUuidLiteral("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"),
+    scratchbird::tests::FixtureUuidLiteral("00112233-4455-4677-8899-aabbccddeeff"),
+    api::EngineUuid{}};
 constexpr std::uint64_t kDefaultMgaRelationDecodedBytesPerPass =
     64ull * 1024ull * 1024ull;
 
@@ -1625,6 +1631,21 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   columnar_table.table_columns.push_back(make_column(
       2, "payload", "text", fixture_text_descriptor(),
       false));
+  api::EngineCreateTableRequest uuid_data_table;
+  uuid_data_table.context = context;
+  uuid_data_table.target_schema = schema.target_object;
+  uuid_data_table.requested_table_uuid =
+      NewIdentity(platform::UuidKind::object, fixture->salt + 103);
+  uuid_data_table.table_names.push_back(PrimaryName("qow_packet7_uuid_data"));
+  uuid_data_table.table_columns.push_back(make_column(
+      0, "user_uuid", "uuid",
+      scratchbird::tests::NativeCatalogColumnFixture(
+          {{{"canonical", "uuid"}, {"nullable", "true"}},
+           {{"type_uuid", uuid_type_uuid}}}), true));
+  bind_columns(uuid_data_table);
+  RequireEngineOk(api::EngineCreateTable(uuid_data_table),
+                  "user UUID data fixture table create failed");
+
   bind_columns(columnar_table);
   RequireEngineOk(api::EngineCreateTable(columnar_table),
                   "object-backed columnar fixture table create failed");
@@ -1665,6 +1686,32 @@ void CreateObjectBackedRelation(Fixture* fixture) {
             "object-backed insert receipt release failed");
     return result;
   };
+
+  api::EngineInsertRowsRequest uuid_data_insert;
+  uuid_data_insert.context = context;
+  uuid_data_insert.target_table.uuid = uuid_data_table.requested_table_uuid;
+  uuid_data_insert.target_table.object_kind = "table";
+  for (std::size_t ordinal = 0; ordinal <= kUserUuidData.size(); ++ordinal) {
+    api::EngineTypedValue value;
+    value.descriptor = uuid_data_table.table_columns.front().descriptor;
+    if (ordinal == kUserUuidData.size()) {
+      value.setState(api::EngineValueState::sql_null);
+    } else {
+      Require(!uuid::IsEngineIdentityUuid(kUserUuidData[ordinal]),
+              "user UUID fixture accidentally became a system identity");
+      value.setState(api::EngineValueState::value);
+      value.binary_value.assign(kUserUuidData[ordinal].bytes.begin(),
+                                kUserUuidData[ordinal].bytes.end());
+    }
+    api::EngineRowValue row;
+    row.fields.push_back({"user_uuid", std::move(value)});
+    uuid_data_insert.input_rows.push_back(std::move(row));
+  }
+  uuid_data_insert.estimated_row_count = uuid_data_insert.input_rows.size();
+  const auto uuid_data_inserted = insert_rows(uuid_data_insert);
+  RequireEngineOk(uuid_data_inserted, "user UUID fixture insert failed");
+  Require(uuid_data_inserted.inserted_count == 4,
+          "user UUID fixture did not persist all values and SQL NULL");
 
   api::EngineInsertRowsRequest insert;
   insert.context = context;
@@ -2028,6 +2075,69 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
             "full parser-server route authentication/attach failed");
 
     const auto verify_mixed_spatial_columnar = [&] {
+      const auto verify_user_uuid_rows = [&](const auto& outcome,
+                                             std::size_t multiplicity,
+                                             bool composition) {
+        if (!outcome.accepted) PrintMessages(outcome.messages);
+        Require(outcome.accepted && outcome.server_operation_id == "query.execute" &&
+                    outcome.server_cursor_uuid.is_nil() &&
+                    outcome.server_row_count == 4 * multiplicity,
+                "persisted user UUID query did not execute and publish all rows");
+        namespace result = scratchbird::wire::public_result;
+        std::vector<result::Field> fields;
+        Require(result::Decode(outcome.server_result_payload, &fields),
+                "user UUID result packet was not canonical binary framing");
+        std::array<std::size_t, 3> counts{};
+        std::size_t null_count = 0;
+        for (const auto& field : fields) {
+          if (field.kind != result::Kind::row) continue;
+          Require(field.name.starts_with("row["), "UUID result row name invalid");
+          const auto value = result::Find(field.value, "user_uuid");
+          const auto metadata = result::Value(outcome.server_result_payload,
+                                              "row_meta" + field.name.substr(3));
+          Require(value.has_value() && metadata.has_value(),
+                  "UUID result omitted or repeated its data or state");
+          if (metadata->find("user_uuid:uuid:null") != std::string::npos) {
+            Require(value->kind == result::Kind::text && value->value.empty(),
+                    "SQL NULL acquired a UUID payload");
+            ++null_count;
+            continue;
+          }
+          Require(metadata->find("user_uuid:uuid:not_null") != std::string::npos &&
+                      value->kind == result::Kind::uuid && value->value.size() == 16,
+                  "non-null user UUID lost its native binary16/state");
+          const auto expected = std::ranges::find_if(kUserUuidData, [&](const auto& uuid) {
+            return std::equal(uuid.bytes.begin(), uuid.bytes.end(), value->value.begin(),
+                [](std::uint8_t left, char right) {
+                  return left == static_cast<std::uint8_t>(right);
+                });
+          });
+          Require(expected != kUserUuidData.end(), "user UUID payload bits changed");
+          ++counts[static_cast<std::size_t>(expected - kUserUuidData.begin())];
+        }
+        Require(null_count == multiplicity &&
+                    std::ranges::all_of(counts, [&](auto count) { return count == multiplicity; }),
+                "earlier-version/nil UUID data or SQL NULL was lost or duplicated");
+        if (composition) {
+          for (const auto& [name, expected] :
+               std::array<std::pair<std::string_view, std::string_view>, 3>{{
+                   {"canonical.model_composition_leg_count", "3"},
+                   {"canonical.model_composition_real_mga_read_count", "3"},
+                   {"canonical.model_composition_root_publication_count", "1"}}}) {
+            const auto evidence = result::Evidence(outcome.server_result_payload, name);
+            Require(evidence && evidence->kind == result::Kind::text &&
+                        evidence->value == expected,
+                    "user UUID query bypassed real three-leg model composition");
+          }
+        }
+      };
+      verify_user_uuid_rows(parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_uuid_data;", true), 1, false);
+      verify_user_uuid_rows(parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_uuid_data CROSS JOIN "
+          "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s CROSS JOIN "
+          "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c;", true),
+          4, true);
       Require(
           bridge::ContextualTextPublicAbiCarrierProofMaskForTest() == 0xFU,
           "contextual TEXT public-ABI carrier/context proof changed");

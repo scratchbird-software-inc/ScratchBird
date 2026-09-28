@@ -11,7 +11,20 @@
 #include "canonical_query_execute.hpp"
 #include "canonical_query_model_family_composition_support.hpp"
 
+namespace scratchbird::engine::internal_api {
+struct MgaRelationColumnStorageDescriptor;
+}
+
 namespace scratchbird::engine::sblr {
+
+// Exact persisted column and current datatype-authority binding. A bound
+// occurrence may refer to its owning datatype descriptor without conflating
+// that identity with the distinct persisted column descriptor UUID.
+bool Rcp079ExactColumnarJoinColumnBindingV1(
+    const internal_api::EngineRequestContext& context,
+    const internal_api::RelationalTypeDescriptor& relational,
+    const internal_api::MgaRelationColumnStorageDescriptor& persisted,
+    std::string* refusal_detail = nullptr);
 
 // Executes admitted production spatial/columnar sources and the exact
 // two-columnar-source join route. These routes consume and revalidate an

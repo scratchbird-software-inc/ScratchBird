@@ -54,8 +54,8 @@
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 #include "crud_support/crud_store.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 #include "catalog/column_metadata_codec.hpp"
-#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <array>
@@ -108,13 +108,13 @@ std::optional<api::EngineUuid> Rcp079DescriptorIdentity(
   if (found == fields.identities.end() || !core::uuid::IsEngineIdentityUuid(found->second)) return std::nullopt;
   return found->second;
 }
-std::optional<api::EngineUuid> Rcp080NativeUuidCell(const std::string* bytes) {
+std::optional<api::EngineUuid> Rcp080SystemUuidCell(const std::string* bytes) {
   if (!bytes || bytes->size() != 16) return std::nullopt;
   api::EngineUuid uuid;
   std::copy_n(reinterpret_cast<const std::uint8_t*>(bytes->data()),16,uuid.bytes.begin());
   return core::uuid::IsEngineIdentityUuid(uuid) ? std::optional(uuid) : std::nullopt;
 }
-std::optional<api::EngineUuid> Rcp080NativeUuidCell(const api::EngineTypedValue& value) {
+std::optional<api::EngineUuid> Rcp080SystemUuidCell(const api::EngineTypedValue& value) {
   if (!value.encoded_value.empty() || value.binary_value.size() != 16 || value.is_null) return std::nullopt;
   api::EngineUuid uuid;
   std::copy_n(value.binary_value.begin(),16,uuid.bytes.begin());
@@ -875,14 +875,14 @@ exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(
                         &timestamp_ns)) {
                   return false;
                 }
-                const auto metric = Rcp080NativeUuidCell(row.values[binding.metric_column_ordinal]);
+                const auto metric = Rcp080SystemUuidCell(row.values[binding.metric_column_ordinal]);
                 if (!metric) return false;
                 keys->push_back(
                     {*metric,
                      row.values[binding.tags_column_ordinal].encoded_value,
                      timestamp_ns});
                 if (right_input && binding.raw_time_series) {
-                  const auto row_uuid = Rcp080NativeUuidCell(row.values[binding.row_uuid_column_ordinal]);
+                  const auto row_uuid = Rcp080SystemUuidCell(row.values[binding.row_uuid_column_ordinal]);
                   if (!row_uuid) return false;
                   request.right_tie_break_row_uuids.push_back(*row_uuid);
                 }
@@ -2408,17 +2408,26 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       return expression.expression_id == expression_id;
     });
   };
-  std::array<api::EngineUuid, 5> exact_derived_type_uuids;
+  // Public model outputs use statement-owned V10 descriptors; persisted
+  // relational outputs use their exact native catalog/datatype binding.
+  // Validate both domains before accepting any source or touching its rows.
+  const auto descriptor_preflight = Rcp079PreflightMultilegResultDescriptorsV1(
+      input, sources, exec::CanonicalAcceptedJoinKind::kCross, false);
+  if (!descriptor_preflight.accepted) {
+    return refuse(descriptor_preflight.diagnostic_id, descriptor_preflight.detail);
+  }
+  std::array<api::EngineUuid, 6> exact_derived_type_uuids;
   if (std::ranges::any_of(families, [](const std::string_view family) {
         return family == "key_value" || family == "time_series" ||
-               family == "vector" || family == "search";
+               family == "vector" || family == "search" || family == "spatial";
       })) {
     exact_derived_type_uuids = {
         ExactCanonicalCoreDatatypeTypeUuidV1("uuid"),
         ExactCanonicalCoreDatatypeTypeUuidV1("character"),
         ExactCanonicalCoreDatatypeTypeUuidV1("timestamp"),
         ExactCanonicalCoreDatatypeTypeUuidV1("real64"),
-        ExactCanonicalCoreDatatypeTypeUuidV1("uint64")};
+        ExactCanonicalCoreDatatypeTypeUuidV1("uint64"),
+        ExactCanonicalCoreDatatypeTypeUuidV1("geometry")};
     if (std::ranges::any_of(exact_derived_type_uuids,
                             [](const auto& uuid) { return uuid.is_nil(); })) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
@@ -2434,6 +2443,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     }
     if (canonical_type_name == "real64") return exact_derived_type_uuids[3];
     if (canonical_type_name == "uint64") return exact_derived_type_uuids[4];
+    if (canonical_type_name == "geometry") return exact_derived_type_uuids[5];
     return {};
   };
   std::set<api::EngineUuid> object_uuids;
@@ -2490,7 +2500,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     const bool derived_projection =
         prepared.family_id == "key_value" ||
         prepared.family_id == "time_series" ||
-        prepared.family_id == "vector" || prepared.family_id == "search";
+        prepared.family_id == "vector" || prepared.family_id == "search" ||
+        prepared.family_id == "spatial";
     const std::vector<std::string_view> derived_names =
         prepared.family_id == "key_value"
             ? std::vector<std::string_view>{"row_uuid", "key", "value"}
@@ -2504,6 +2515,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
             ? std::vector<std::string_view>{
                   "document_uuid", "analyzer_uuid", "analyzer_generation",
                   "score", "rank"}
+        : prepared.family_id == "spatial"
+            ? std::vector<std::string_view>{"row_uuid", "spatial_value", "crs_uuid"}
             : std::vector<std::string_view>{};
     const std::vector<std::string_view> derived_types =
         prepared.family_id == "key_value"
@@ -2517,12 +2530,18 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         : prepared.family_id == "search"
             ? std::vector<std::string_view>{"uuid", "uuid", "uint64",
                                             "real64", "uint64"}
+        : prepared.family_id == "spatial"
+            ? std::vector<std::string_view>{"uuid", "geometry", "uuid"}
             : std::vector<std::string_view>{};
     if ((derived_projection && outputs.size() != derived_names.size()) ||
         (!derived_projection &&
          outputs.size() != prepared.persisted.columns.size())) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "bounded composition source storage/public width is invalid");
+    }
+    if (prepared.family_id == "spatial" && prepared.persisted.columns.size() != 3) {
+      return refuse("SB_MODEL_SPATIAL_CRS_BINDING_REQUIRED_V1",
+                    "spatial source requires its complete persisted column inventory");
     }
     std::optional<api::EngineUuid> search_analyzer_uuid;
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
@@ -2539,7 +2558,9 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       }
       if (derived_projection) {
         const auto expected_bound_name =
-            prepared.family_id == "search" &&
+            prepared.family_id == "spatial"
+                ? std::optional<api::EngineUuid>{prepared.persisted.columns[ordinal].column_uuid}
+            : prepared.family_id == "search" &&
                     (ordinal == 1 || ordinal == 2)
                 ? expression->bound_name_uuid
             : prepared.family_id == "key_value"
@@ -2582,13 +2603,26 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                         "bounded derived source type UUID was substituted");
         }
         api::EngineDescriptor engine_descriptor;
+        if (prepared.family_id == "spatial") {
+          const auto& column = prepared.persisted.columns[ordinal];
+          auto persisted_binding = *descriptor;
+          // The V10 allocation above owns public identity. Validate storage
+          // metadata separately against the actual persisted column owner.
+          persisted_binding.descriptor_uuid = column.value_descriptor.descriptor_uuid;
+          if (column.ordinal != ordinal || column.canonical_name_key != derived_names[ordinal] ||
+              !Rcp079ExactColumnarJoinColumnBindingV1(input.context, persisted_binding, column)) {
+            return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          "spatial public/persisted descriptor binding changed");
+          }
+          engine_descriptor = column.value_descriptor;
+        }
         engine_descriptor.descriptor_uuid =
             descriptor->descriptor_uuid;
         engine_descriptor.descriptor_kind = "scalar";
         engine_descriptor.canonical_type_name =
             std::string(derived_types[ordinal]);
-        engine_descriptor.encoded_descriptor =
-            "nullability=non_null";
+        if (prepared.family_id != "spatial")
+          engine_descriptor.encoded_descriptor = "nullability=non_null";
         engine_descriptor.type_uuid = descriptor->type_uuid;
         prepared.columns.push_back(
             {std::string(derived_names[ordinal]), std::move(engine_descriptor),
@@ -2597,24 +2631,35 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         const auto& column = prepared.persisted.columns[ordinal];
         const auto type_uuid = Rcp079DescriptorIdentity(
             column.value_descriptor, "type_uuid");
-        if (expression->bound_name_uuid !=
-                std::optional<api::EngineUuid>(column.column_uuid) ||
-            outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
-            descriptor->descriptor_uuid !=
-                column.value_descriptor.descriptor_uuid ||
-            column.ordinal != ordinal ||
-            column.value_descriptor.descriptor_kind !=
-                "canonical_type_descriptor" ||
-            column.value_descriptor.canonical_type_name.empty() ||
-            column.value_descriptor.encoded_descriptor.empty() ||
-            !type_uuid.has_value() || *type_uuid != descriptor->type_uuid ||
-            descriptor->nullability !=
-                (column.nullable ? api::RelationalNullability::kNullable
-                                 : api::RelationalNullability::kNonNull)) {
-          return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
-                        "bounded persisted source descriptor was substituted");
+        std::string native_binding_detail;
+        const bool native_binding_exact = Rcp079ExactColumnarJoinColumnBindingV1(
+            input.context, *descriptor, column, &native_binding_detail);
+        const std::array<std::pair<bool, const char*>, 9> source_binding_checks = {{
+            {expression->bound_name_uuid == std::optional<api::EngineUuid>(column.column_uuid),
+             "column identity"},
+            {outputs[ordinal]->output_name_utf8 == column.canonical_name_key,
+             "output name"},
+            {native_binding_exact, "native column/datatype binding"},
+            {column.ordinal == ordinal, "column ordinal"},
+            {column.value_descriptor.descriptor_kind == "canonical_type_descriptor",
+             "descriptor kind"},
+            {!column.value_descriptor.canonical_type_name.empty(), "canonical type"},
+            {!column.value_descriptor.encoded_descriptor.empty(), "descriptor payload"},
+            {type_uuid.has_value() && *type_uuid == descriptor->type_uuid, "type identity"},
+            {descriptor->nullability ==
+                 (column.nullable ? api::RelationalNullability::kNullable
+                                  : api::RelationalNullability::kNonNull), "nullability"}}};
+        for (const auto& [matches, field] : source_binding_checks) {
+          if (!matches) {
+            return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                          std::string("bounded persisted source descriptor was substituted: ") + field +
+                              "; source=" + std::to_string(source_ordinal) +
+                              "; column=" + std::to_string(ordinal) +
+                              "; binding=" + native_binding_detail);
+          }
         }
         auto engine_descriptor = column.value_descriptor;
+        engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
         engine_descriptor.descriptor_kind = "scalar";
         prepared.columns.push_back(
             {column.canonical_name_key, std::move(engine_descriptor),
@@ -3223,22 +3268,22 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   for (const auto& node : physical_dag.nodes) signature_nodes.push_back(&node);
   std::ranges::sort(signature_nodes, {},
                     &exec::PhysicalNodeRecord::relational_node_id);
-  std::string signature_material = "SBMULTIPLAN2";
+  std::string signature_material;
   for (const auto* node : signature_nodes) {
-    api::AppendBinaryU32(&signature_material, node->relational_node_id);
-    signature_material.append(reinterpret_cast<const char*>(node->selected_alternative_uuid.bytes.data()),16);
+    exec::AppendPhysicalSelectedAlternativeBinding(signature_material,
+        node->relational_node_id, node->selected_alternative_uuid);
   }
-  const auto signature = core::hash::ComputeSha256Digest(
-      reinterpret_cast<const core::platform::byte*>(signature_material.data()),signature_material.size());
-  if (!signature.ok()) return refuse("QOW-DIAG-OPTIMIZER-SIGNATURE-V1", "selected plan signature could not be computed");
-  physical_dag.selected_plan_signature = core::hash::HexLower(signature.digest);
+  physical_dag.selected_plan_signature = std::move(signature_material);
   const auto physical_validation = exec::ValidateTypedPhysicalNodeDag(
       physical_dag, {physical_dag.nodes.size(), 32, 2});
   if (!physical_validation.accepted) {
     return refuse(physical_validation.issues.empty()
                       ? "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION"
                       : physical_validation.issues.front().diagnostic_id,
-                  "bounded composition selected physical DAG is invalid");
+                  physical_validation.issues.empty()
+                      ? "bounded composition selected physical DAG is invalid"
+                      : "bounded composition selected physical DAG is invalid: " +
+                            physical_validation.issues.front().field_id);
   }
 
   exec::ModelFamilyCompositionExecutionRequestV1 execution_request;
@@ -3484,39 +3529,40 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
             exec::DescriptorTuple tuple;
             for (const auto& column : prepared_copy.columns) {
               const auto* value = value_for(row, column.stable_name);
-              if (value == nullptr && !column.nullable) {
+              // Decode the retained row state before projecting its payload.
+              // UUID-typed columns are user data; only the independently
+              // retained row/provider identities below require system UUIDv7.
+              const bool is_null = value == nullptr || *value == "<NULL>";
+              if (is_null && !column.nullable) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "composition provider row lacks a non-null column");
               }
-              if (column.descriptor.canonical_type_name == "uuid" && value) {
-                const auto native = Rcp080NativeUuidCell(value);
-                if (!native) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID scalar is not binary16");
-                api::EngineTypedValue typed;
-                typed.descriptor = column.descriptor;
-                typed.setState(api::EngineValueState::value);
-                typed.binary_value.assign(native->bytes.begin(), native->bytes.end());
-                tuple.values.push_back(std::move(typed));
-              } else {
-                tuple.values.push_back(exec::MakeExecutorValue(
-                    column.descriptor, value == nullptr ? std::string{} : *value,
-                    value == nullptr));
+              api::EngineTypedValue typed;
+              typed.descriptor = column.descriptor;
+              if (!api::RestoreStoredScalarPayloadV1(
+                      is_null ? std::string_view{} : std::string_view(*value),
+                      is_null ? api::EngineValueState::sql_null
+                              : api::EngineValueState::value, &typed)) {
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "stored scalar has no valid native payload");
               }
+              tuple.values.push_back(std::move(typed));
             }
             output.batch.rows.push_back(std::move(tuple));
             exec::ModelProviderRowIdentityV1 identity;
             if (source_input.family_id == "document") {
               const auto* document_uuid = value_for(row, "document_uuid");
-              const auto native_document_uuid = Rcp080NativeUuidCell(document_uuid);
+              const auto native_document_uuid = Rcp080SystemUuidCell(document_uuid);
               if (document_uuid && !native_document_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               identity.document_uuid =
                   native_document_uuid.value_or(row.row_uuid);
               identity.row_uuid = row.row_uuid;
             } else if (source_input.family_id == "graph") {
               const auto* vertex_uuid = value_for(row, "vertex_uuid");
-              const auto native_vertex_uuid = Rcp080NativeUuidCell(vertex_uuid);
+              const auto native_vertex_uuid = Rcp080SystemUuidCell(vertex_uuid);
               if (vertex_uuid && !native_vertex_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* path_uuid = value_for(row, "path_uuid");
-              const auto native_path_uuid = Rcp080NativeUuidCell(path_uuid);
+              const auto native_path_uuid = Rcp080SystemUuidCell(path_uuid);
               if (path_uuid && !native_path_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               identity.row_uuid = row.row_uuid;
               identity.vertex_uuid =
@@ -3531,7 +3577,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               identity.row_uuid = row.row_uuid;
               identity.series_uuid = source_input.object_uuid;
               const auto* metric_uuid = value_for(row, "metric_uuid");
-              const auto native_metric_uuid = Rcp080NativeUuidCell(metric_uuid);
+              const auto native_metric_uuid = Rcp080SystemUuidCell(metric_uuid);
               if (metric_uuid && !native_metric_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* timestamp = value_for(row, "point_timestamp");
               const auto* tags = value_for(row, "tags");
@@ -3556,10 +3602,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                   score == nullptr ? std::string{} : *score;
             } else if (source_input.family_id == "search") {
               const auto* document_uuid = value_for(row, "document_uuid");
-              const auto native_document_uuid = Rcp080NativeUuidCell(document_uuid);
+              const auto native_document_uuid = Rcp080SystemUuidCell(document_uuid);
               if (document_uuid && !native_document_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* analyzer_uuid = value_for(row, "analyzer_uuid");
-              const auto native_analyzer_uuid = Rcp080NativeUuidCell(analyzer_uuid);
+              const auto native_analyzer_uuid = Rcp080SystemUuidCell(analyzer_uuid);
               if (analyzer_uuid && !native_analyzer_uuid) return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "stored UUID cell is not binary16");
               const auto* analyzer_generation =
                   value_for(row, "analyzer_generation");
