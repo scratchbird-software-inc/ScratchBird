@@ -7,8 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../tests/support/binary_uuid_fixture.hpp"
-#include "api_unsupported.hpp"
-#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
+#include "engine/internal_api/api_unsupported.hpp"
+#include "server_engine_bridge/legacy_diagnostic_projection.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -81,7 +81,7 @@ EngineApiResult MakeFailureResult() {
 
 EngineParserPackageRenderOptions Options() {
   EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = "00000000-0000-7000-8000-000000001701";
+  options.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("00000000-0000-7000-8000-000000001701");
   options.parser_package_version = "native-v3-stage14";
   options.client_dialect = "sbsql_v3";
   options.language_tag = "en";
@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
   { std::ofstream bootstrap(args.path, std::ios::binary | std::ios::app); }
 
   std::vector<std::string> errors;
-  const auto success = RenderEngineApiResultForParserPackage(MakeSuccessResult(), Options());
+  const auto success = scratchbird::server_engine_bridge::RenderLegacyEngineResult(MakeSuccessResult(), Options());
   const bool success_valid = ValidateLegacyRenderedProjectionStructure(success, &errors);
   const bool success_ok = success.ok &&
                           success_valid &&
@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
 
   errors.clear();
   const auto failure_source = MakeFailureResult();
-  const auto failure = RenderEngineApiResultForParserPackage(failure_source, Options());
+  const auto failure = scratchbird::server_engine_bridge::RenderLegacyEngineResult(failure_source, Options());
   const bool failure_valid = ValidateLegacyRenderedProjectionStructure(failure, &errors);
   const bool failure_ok = !failure.ok &&
                           failure_valid &&
@@ -160,9 +160,9 @@ int main(int argc, char** argv) {
                           HasExactSourceEvidence(failure, failure_source);
 
   auto invalid_options = Options();
-  invalid_options.parser_package_uuid.clear();
+  invalid_options.parser_package_uuid = {};
   errors.clear();
-  const auto invalid = RenderEngineApiResultForParserPackage(MakeSuccessResult(), invalid_options);
+  const auto invalid = scratchbird::server_engine_bridge::RenderLegacyEngineResult(MakeSuccessResult(), invalid_options);
   const bool invalid_validation_failed = !ValidateLegacyRenderedProjectionStructure(invalid, &errors);
   const bool invalid_ok = !invalid.ok &&
                           !invalid.render_context_valid &&

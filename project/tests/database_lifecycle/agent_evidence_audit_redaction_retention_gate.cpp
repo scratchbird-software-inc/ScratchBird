@@ -9,7 +9,7 @@
 
 #include "../support/database_fixture_cleanup.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
-#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
+#include "server_engine_bridge/legacy_diagnostic_projection.hpp"
 #include "management/support_bundle_api.hpp"
 #include "observability/agent_evidence_retention_api.hpp"
 #include "agent_commercial_evidence.hpp"
@@ -386,15 +386,15 @@ void TestUserRedactionAndRetentionDecision() {
   RequireUuidFieldAuthority(result);
 
   rendering::EngineParserPackageRenderOptions render;
-  render.parser_package_uuid = Id(platform::UuidKind::object, 20);
+  render.parser_package_uuid = NativeIdentity(Id(platform::UuidKind::object, 20));
   render.parser_package_version = "sbsql.v3";
   render.client_dialect = "sbsql";
-  render.correlation_uuid = Id(platform::UuidKind::object, 21);
-  render.request_uuid = Id(platform::UuidKind::object, 22);
-  render.session_uuid = IdentityBytes(request.context.session_uuid);
-  render.database_uuid = IdentityBytes(request.context.database_uuid);
-  render.transaction_uuid = IdentityBytes(request.context.transaction_uuid);
-  const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, std::move(render));
+  render.correlation_uuid = NativeIdentity(Id(platform::UuidKind::object, 21));
+  render.request_uuid = NativeIdentity(Id(platform::UuidKind::object, 22));
+  render.session_uuid = request.context.session_uuid;
+  render.database_uuid = request.context.database_uuid;
+  render.transaction_uuid = request.context.transaction_uuid;
+  const auto envelope = scratchbird::server_engine_bridge::RenderLegacyEngineResult(result, std::move(render));
   std::vector<std::string> errors;
   const bool rendered_valid = rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors);
   for (const auto& error : errors) std::cerr << error << '\n';

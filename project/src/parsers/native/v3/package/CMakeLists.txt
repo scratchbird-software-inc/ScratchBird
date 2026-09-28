@@ -20,7 +20,7 @@ target_compile_features(sb_native_v3_parser_package PUBLIC cxx_std_23)
 target_link_libraries(sb_native_v3_parser_package
   PUBLIC
     sb_engine_internal_api
-    sb_server_legacy_diagnostic_rendering
+    sb_legacy_diagnostic_projection_bridge
     sb_engine_sblr
     sb_native_v3_minimal_parser
     sb_parser_bound_ast_model

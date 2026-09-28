@@ -12,5 +12,5 @@ if(NOT TARGET sb_server_legacy_diagnostic_rendering)
 endif()
 
 add_executable(sb_sbsql_v3_diagnostic_rendering_probe main.cpp)
-target_link_libraries(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE sb_server_legacy_diagnostic_rendering)
+target_link_libraries(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE sb_legacy_diagnostic_projection_bridge)
 target_compile_features(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE cxx_std_20)

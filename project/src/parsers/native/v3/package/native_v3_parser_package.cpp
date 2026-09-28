@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "native_v3_parser_package.hpp"
+#include "server_engine_bridge/legacy_diagnostic_projection.hpp"
+#include "uuid.hpp"
 
 #include "api_diagnostics.hpp"
 #include "bound_ast_model.hpp"
@@ -122,7 +124,7 @@ sblr::SblrOperationEnvelope MakeEngineSblrEnvelope(const NativeV3ParserPackageRe
 
 rendering::EngineParserPackageRenderOptions RenderOptions(const NativeV3ParserPackageRequest& request) {
   rendering::EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = request.parser_package_uuid;
+  options.parser_package_uuid = scratchbird::core::uuid::ParseUuid(request.parser_package_uuid).value;
   options.parser_package_version = request.parser_package_version;
   options.client_dialect = request.client_dialect;
   options.language_tag = request.language_tag;
@@ -131,7 +133,8 @@ rendering::EngineParserPackageRenderOptions RenderOptions(const NativeV3ParserPa
   return options;
 }
 
-std::string RenderDiagnosticEnvelope(std::string operation_id, std::string code, std::string detail) {
+std::string RenderDiagnosticEnvelope(const NativeV3ParserPackageRequest& request,
+                                     std::string operation_id, std::string code, std::string detail) {
   api::EngineApiResult failure;
   failure.ok = false;
   failure.operation_id = std::move(operation_id);
@@ -139,11 +142,8 @@ std::string RenderDiagnosticEnvelope(std::string operation_id, std::string code,
                                                              "parser.sbsql.package",
                                                              std::move(detail),
                                                              true));
-  rendering::EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = "00000000-0000-7000-8000-000000000000";
-  options.parser_package_version = "diagnostic-only";
-  options.client_dialect = "sbsql_v3";
-  const auto envelope = rendering::RenderEngineApiResultForParserPackage(failure, std::move(options));
+  auto options = RenderOptions(request);
+  const auto envelope = scratchbird::server_engine_bridge::RenderLegacyEngineResult(failure, std::move(options));
   return envelope.diagnostics.empty() ? "" : envelope.diagnostics.front().code;
 }
 
@@ -154,6 +154,11 @@ NativeV3ParserPackageResult ExecuteNativeV3ParserPackageRequest(const NativeV3Pa
 
   if (request.parser_package_uuid.empty()) {
     Fail(&result, "parser_package_context", "parser_package_uuid_required");
+    return result;
+  }
+  const auto package_identity = scratchbird::core::uuid::ParseUuid(request.parser_package_uuid);
+  if (!package_identity.ok() || !scratchbird::core::uuid::IsEngineIdentityUuid(package_identity.value)) {
+    Fail(&result, "parser_package_context", "parser_package_uuid_invalid");
     return result;
   }
   if (request.parser_package_version.empty()) {
@@ -234,13 +239,13 @@ NativeV3ParserPackageResult ExecuteNativeV3ParserPackageRequest(const NativeV3Pa
   result.dispatched_to_engine_api = dispatch_result.dispatched_to_api;
   result.dispatch_json = sblr::SerializeSblrDispatchResultToJson(dispatch_result);
   if (!dispatch_result.dispatched_to_api) {
-    Fail(&result, "dispatch", RenderDiagnosticEnvelope(engine_envelope.operation_id,
+    Fail(&result, "dispatch", RenderDiagnosticEnvelope(request, engine_envelope.operation_id,
                                                         "SBSQL_DISPATCH_FAILED",
                                                         "engine dispatch refused SBLR"));
     return result;
   }
 
-  result.rendered_result = rendering::RenderEngineApiResultForParserPackage(dispatch_result.api_result,
+  result.rendered_result = scratchbird::server_engine_bridge::RenderLegacyEngineResult(dispatch_result.api_result,
                                                                       RenderOptions(request));
   result.rendered_for_parser_package = true;
   std::vector<std::string> render_errors;

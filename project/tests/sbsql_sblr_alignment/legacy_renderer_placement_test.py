@@ -30,6 +30,12 @@ def main() -> int:
         if run.returncode:
             failures.append(kind + " symbol inspection failed")
         symbols[kind] = run.stdout
+    # The renderer must not import engine-private values or call engine API code.
+    # The separate adapter owns private-result projection, not rendering.
+    imports = subprocess.run([args.nm, "-C", "--undefined-only", str(args.renderer_archive)],
+                             capture_output=True, text=True, check=False)
+    if imports.returncode or "scratchbird::engine::internal_api::" in imports.stdout:
+        failures.append("renderer retains private engine symbol dependencies")
     for name in ("RenderEngineApiResultForParserPackage", "ValidateLegacyRenderedProjectionStructure"):
         if name + "(" in symbols["engine"]:
             failures.append("engine archive defines parser rendering: " + name)

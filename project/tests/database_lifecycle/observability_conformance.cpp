@@ -12,7 +12,7 @@
 #include "../agents/agent_binary_identity_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 #include "diagnostics.hpp"
-#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
+#include "server_engine_bridge/legacy_diagnostic_projection.hpp"
 #include "api_diagnostics.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/metrics_api.hpp"
@@ -390,13 +390,13 @@ void TestParserRendering() {
       "listener acknowledgement timeout for hidden internal route",
       false));
   rendering::EngineParserPackageRenderOptions options;
-  options.parser_package_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000021"));
+  options.parser_package_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000021");
   options.parser_package_version = "sbsql-observability";
   options.client_dialect = "sbsql_v3";
-  options.correlation_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019"));
-  options.request_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018"));
-  options.session_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016"));
-  const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, options);
+  options.correlation_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000019");
+  options.request_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000018");
+  options.session_uuid = scratchbird::tests::FixtureUuidLiteral("019e150f-0000-7000-8000-000000000016");
+  const auto envelope = scratchbird::server_engine_bridge::RenderLegacyEngineResult(result, options);
   std::vector<std::string> errors;
   Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
           "parser rendered lifecycle diagnostic envelope failed validation");

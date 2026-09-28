@@ -1,6 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
-#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
+#include "server_engine_bridge/legacy_diagnostic_projection.hpp"
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
 
@@ -88,10 +88,10 @@ int main() {
   source.evidence.push_back({"binary_reference",row.requested_row_uuid});
   rendering::EngineParserPackageRenderOptions options;
   const api::EngineUuid package_uuid{{0x01,0x9e,0x15,0x0f,0,0,0x70,0,0x80,0,0,0,0,0,0,0x21}};
-  options.parser_package_uuid.assign(reinterpret_cast<const char*>(package_uuid.bytes.data()), package_uuid.bytes.size());
+  options.parser_package_uuid = package_uuid;
   options.parser_package_version = "attestation-regression";
   options.client_dialect = "sbsql";
-  const auto projected = rendering::RenderEngineApiResultForParserPackage(source, options);
+  const auto projected = scratchbird::server_engine_bridge::RenderLegacyEngineResult(source, options);
   std::vector<std::string> errors;
   Check(Structure(projected, &errors), "well-formed projection structure rejected");
   Check(errors.empty(), "valid shape produced structure errors");
@@ -99,9 +99,7 @@ int main() {
   Check(projected.operation_id == source.operation_id, "operation identity changed");
   Check(projected.rows.size() == 1, "source row lost");
   if (projected.rows.size() == 1) {
-    Check(projected.rows[0].row_uuid.size() == 16 &&
-          projected.rows[0].row_uuid == std::string(
-              reinterpret_cast<const char*>(row.requested_row_uuid.bytes.data()),16),
+    Check(projected.rows[0].row_uuid == row.requested_row_uuid,
           "binary row identity changed");
     Check(projected.rows[0].fields.size() == 2, "source field lost");
     if (projected.rows[0].fields.size() == 2) {
@@ -119,7 +117,7 @@ int main() {
         "binary source evidence changed or became text");
   for (unsigned invalid = 0; invalid < 5; ++invalid) {
     auto copy = projected;
-    if (invalid == 0) copy.parser_package_uuid.clear();
+    if (invalid == 0) copy.parser_package_uuid = {};
     if (invalid == 1) copy.parser_package_version.clear();
     if (invalid == 2) copy.operation_id.clear();
     if (invalid == 3) copy.parser_finality_authority = true;
@@ -128,12 +126,66 @@ int main() {
     Check(!Structure(copy, &errors), "malformed projection structure accepted");
     Check(!errors.empty(), "structure rejection omitted reason");
   }
+  // The private adapter must retain every descriptor identity and value state,
+  // not just the printable type name or legacy is_null flag.
+  auto bound_source = source;
+  auto& descriptor = bound_source.result_shape.rows[0].fields[1].second.descriptor;
+  descriptor.descriptor_uuid = row.requested_row_uuid;
+  descriptor.type_uuid = package_uuid;
+  descriptor.collation_uuid = package_uuid; descriptor.collation_uuid.bytes[15] = 0x31;
+  descriptor.datatype_descriptor_uuid = package_uuid; descriptor.datatype_descriptor_uuid.bytes[15] = 0x32;
+  descriptor.datatype_descriptor_generation = 37;
+  descriptor.charset_uuid = package_uuid; descriptor.charset_uuid.bytes[15] = 0x33;
+  descriptor.encoded_descriptor = std::string("opaque\0descriptor", 17);
+  bound_source.result_shape.columns.push_back(descriptor);
+  const auto bound = scratchbird::server_engine_bridge::RenderLegacyEngineResult(bound_source, options);
+  Check(bound.ok && bound.columns.size() == 1, "bound source descriptor lost");
+  auto exact_descriptor = [&](const rendering::EngineRenderedDescriptor& projected) {
+    return projected.descriptor_uuid == descriptor.descriptor_uuid &&
+        projected.descriptor_kind == descriptor.descriptor_kind &&
+        projected.canonical_type_name == descriptor.canonical_type_name &&
+        projected.encoded_descriptor == descriptor.encoded_descriptor &&
+        projected.type_uuid == descriptor.type_uuid && projected.collation_uuid == descriptor.collation_uuid &&
+        projected.datatype_descriptor_uuid == descriptor.datatype_descriptor_uuid &&
+        projected.datatype_descriptor_generation == descriptor.datatype_descriptor_generation &&
+        projected.charset_uuid == descriptor.charset_uuid;
+  };
+  Check(exact_descriptor(bound.columns.front()) &&
+        exact_descriptor(bound.rows.front().fields[1].descriptor),
+        "private adapter changed binary descriptor bindings");
+  for (unsigned state = 0; state < 8; ++state) {
+    auto input = bound_source;
+    auto& value = input.result_shape.rows[0].fields[1].second;
+    value.state = static_cast<api::EngineValueState>(state);
+    value.is_null = state == 1;
+    if (state >= 1 && state <= 4) value.binary_value.clear();
+    const auto output = scratchbird::server_engine_bridge::RenderLegacyEngineResult(input, options);
+    const auto& actual = output.rows.front().fields[1];
+    Check(output.ok && static_cast<unsigned>(actual.state) == state &&
+          actual.is_null == value.is_null && actual.binary_value == value.binary_value &&
+          actual.encoded_value == value.encoded_value,
+          "private adapter lost value state or changed payload");
+  }
+  for (unsigned invalid = 0; invalid < 4; ++invalid) {
+    auto input = source;
+    auto context = options;
+    if (invalid == 0) context.parser_package_uuid = {};
+    if (invalid == 1) context.parser_package_uuid.bytes[6] = 0x40;
+    if (invalid == 2) context.session_uuid = api::EngineUuid{{0,0,0,0,0,0,0x40,0,0x80}};
+    if (invalid == 3) {
+      auto& value = input.result_shape.rows[0].fields[1].second;
+      value.binary_value.clear(); value.encoded_value.assign(16, '\0');
+    }
+    const auto output = scratchbird::server_engine_bridge::RenderLegacyEngineResult(input, context);
+    Check(!output.ok && !output.render_context_valid && !Structure(output, nullptr),
+          "private adapter admitted text UUID or invalid system context");
+  }
   for(const auto& registered:canonical::CanonicalDiagnosticCodeCatalog()) {
     api::EngineApiResult input;
     input.ok=!registered.is_failure;input.operation_id="component.diagnostic.projection";
     input.diagnostics.push_back(api::MakeEngineApiDiagnostic(std::string(registered.code),
         "component.source.key","FATAL WARNING timeout retry stale busy hidden internal route",registered.is_failure));
-    const auto output=rendering::RenderEngineApiResultForParserPackage(input,options);
+    const auto output=scratchbird::server_engine_bridge::RenderLegacyEngineResult(input,options);
     Check(output.ok==input.ok&&output.render_context_valid,"registered source outcome changed");
     Check(output.diagnostics.size()==1,"registered source diagnostic lost");
     if(output.diagnostics.size()!=1)continue;
@@ -161,7 +213,7 @@ int main() {
     if(invalid==8){d.code.clear();d.canonical_metadata->code.clear();}
     if(invalid==9)d.canonical_metadata->severity=static_cast<canonical::CanonicalSeverity>(0);
     api::EngineApiResult input;input.ok=true;input.operation_id="invalid.source";input.diagnostics.push_back(d);
-    const auto output=rendering::RenderEngineApiResultForParserPackage(input,options);
+    const auto output=scratchbird::server_engine_bridge::RenderLegacyEngineResult(input,options);
     errors.clear();Check(!output.ok&&!output.render_context_valid&&!Structure(output,&errors),
         "missing or malformed diagnostic authority admitted");
   }
@@ -172,7 +224,7 @@ int main() {
     rendering::EngineRenderedResultEnvelope output;output.operation_id="sentinel";
     fail_after=site;
     try {
-      output=rendering::RenderEngineApiResultForParserPackage(input,options);fail_after=-1;
+      output=scratchbird::server_engine_bridge::RenderLegacyEngineResult(input,options);fail_after=-1;
       Check(output.ok&&output.diagnostics.size()==1,"allocation sweep completed with partial result");
       complete=true;break;
     }catch(const std::bad_alloc&){

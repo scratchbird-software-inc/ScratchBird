@@ -797,10 +797,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_legacy_rendering_probe
     ../../tools/sb_sbsql_v3_diagnostic_rendering_probe/main.cpp)
   target_link_libraries(sbsql_sblr_alignment_legacy_rendering_probe PRIVATE
-    sb_server_legacy_diagnostic_rendering)
+    sb_legacy_diagnostic_projection_bridge)
   add_executable(sbsql_sblr_alignment_legacy_rendering_attestation
     legacy_rendering_attestation_test.cpp
     ../../src/server/diagnostic_rendering/diagnostic_rendering.cpp
+    ../../src/server_engine_bridge/legacy_diagnostic_projection.cpp
     ../../src/engine/internal_api/api_unsupported.cpp)
   target_compile_features(sbsql_sblr_alignment_legacy_rendering_attestation PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_legacy_rendering_attestation PRIVATE
@@ -811,6 +812,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_legacy_rendering_attestation)
   set_tests_properties(sbsql_sblr_alignment_legacy_rendering_attestation PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;not_runtime_acceptance")
+  add_executable(sbsql_sblr_alignment_legacy_rendering_native_identity
+    legacy_rendering_native_identity_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_legacy_rendering_native_identity PRIVATE
+    sb_server_legacy_diagnostic_rendering)
+  add_test(NAME sbsql_sblr_alignment_legacy_rendering_native_identity
+    COMMAND sbsql_sblr_alignment_legacy_rendering_native_identity)
+  set_tests_properties(sbsql_sblr_alignment_legacy_rendering_native_identity
+    sbsql_sblr_alignment_legacy_rendering_attestation PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;binary_uuid;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
   add_test(NAME sbsql_sblr_alignment_legacy_renderer_placement
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/legacy_renderer_placement_test.py
       --source-root ${CMAKE_SOURCE_DIR}
@@ -2711,8 +2722,8 @@ if(NOT SB_ENABLE_CLUSTER_PROVIDER)
         add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
                          ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
       endif()
-      target_link_libraries(${_cluster_compat_target} PRIVATE sb_server_legacy_diagnostic_rendering)
-      target_link_libraries(${_cluster_stub_target} PRIVATE sb_server_legacy_diagnostic_rendering)
+      target_link_libraries(${_cluster_compat_target} PRIVATE sb_legacy_diagnostic_projection_bridge)
+      target_link_libraries(${_cluster_stub_target} PRIVATE sb_legacy_diagnostic_projection_bridge)
     endif()
     add_test(NAME ${_cluster_stub_target} COMMAND ${_cluster_stub_target})
     set_tests_properties(${_cluster_stub_target} PROPERTIES TIMEOUT 60

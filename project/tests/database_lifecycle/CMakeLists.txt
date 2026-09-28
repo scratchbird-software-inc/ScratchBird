@@ -2538,7 +2538,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     agent_metrics_audit_support_bundle_gate.cpp
   )
   target_link_libraries(agent_metrics_audit_support_bundle_gate PRIVATE
-    sb_server_legacy_diagnostic_rendering)
+    sb_legacy_diagnostic_projection_bridge)
   target_compile_features(agent_metrics_audit_support_bundle_gate PRIVATE cxx_std_23)
   target_link_libraries(agent_metrics_audit_support_bundle_gate
     PRIVATE
@@ -2560,7 +2560,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     agent_evidence_audit_redaction_retention_gate.cpp
   )
   target_link_libraries(agent_evidence_audit_redaction_retention_gate PRIVATE
-    sb_server_legacy_diagnostic_rendering)
+    sb_legacy_diagnostic_projection_bridge)
   target_compile_features(agent_evidence_audit_redaction_retention_gate PRIVATE cxx_std_23)
   target_link_libraries(agent_evidence_audit_redaction_retention_gate
     PRIVATE
@@ -5884,7 +5884,7 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
     observability_conformance.cpp
   )
   target_link_libraries(database_lifecycle_observability_conformance PRIVATE
-    sb_server_legacy_diagnostic_rendering)
+    sb_legacy_diagnostic_projection_bridge)
   target_compile_features(database_lifecycle_observability_conformance PRIVATE cxx_std_23)
   target_link_libraries(database_lifecycle_observability_conformance
     PRIVATE
