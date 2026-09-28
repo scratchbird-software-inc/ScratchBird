@@ -13,6 +13,7 @@
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "engine/public_abi_typed_result.hpp"
 #include "engine/public_abi_diagnostic_severity.hpp"
+#include "engine/public_abi_uuid_payload.hpp"
 #include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_identity_binding.hpp"
@@ -3817,17 +3818,12 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
     }
     auto kind = public_result::Kind::text;
     const auto& type = value.descriptor.canonical_type_name;
-    if (!value.is_null && (type == "uuid" || type == "uuid16")) {
-      if (value.binary_value.empty()) {
-        // Legacy retained columnar values carry raw UUID16 in std::string.
-        if (bytes.size() != 16)
-          throw std::invalid_argument("public_result_uuid_carrier_invalid");
-      } else {
-        if (!bytes.empty() || value.binary_value.size() != 16)
-          throw std::invalid_argument("public_result_uuid_carrier_invalid");
-        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 16);
-      }
-      kind = public_result::Kind::uuid;
+    if (scratchbird::engine::PublicUuidScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicUuidScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_uuid_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::uuid;
     }
     else if (type == "bytea" || type == "binary" || type == "varbinary") {
       if ((!bytes.empty() && !value.binary_value.empty()) ||

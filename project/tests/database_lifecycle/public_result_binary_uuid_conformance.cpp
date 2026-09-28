@@ -2,13 +2,105 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "wire/public_result_packet.hpp"
+#include "engine/public_abi_uuid_payload.hpp"
 #include "../support/client_public_result_display.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 namespace packet = scratchbird::wire::public_result;
 #define CHECK(condition) do { if (!(condition)) { std::cerr << "check failed at " << __LINE__ << '\n'; std::exit(EXIT_FAILURE); } } while (false)
+
+void CheckNativeUuidPublication() {
+  namespace engine = scratchbird::engine;
+  namespace api = engine::internal_api;
+  using State = api::EngineValueState;
+  std::size_t cases = 0;
+  const auto refused = [](const api::EngineTypedValue& value) {
+    std::string_view unchanged = "unchanged destination";
+    CHECK(!engine::PublicUuidScalarPayloadV1(value, &unchanged));
+    CHECK(unchanged == "unchanged destination");
+  };
+  for (const char* type : {"uuid", "UUID", "uUiD", "uuid16", "UUID16", "uuidv7", "UUIDV7"}) {
+    CHECK(engine::PublicUuidScalarTypeV1(type));
+    api::EngineTypedValue value;
+    value.descriptor.canonical_type_name = type;
+    value.binary_value.resize(16);
+    // Independent data vectors, including invalid system versions/variants.
+    // Every possible octet at every position must survive unchanged.
+    for (unsigned position = 0; position != 16; ++position) {
+      for (unsigned octet = 0; octet != 256; ++octet) {
+        std::string expected(16, '\0');
+        for (unsigned i = 0; i != 16; ++i) {
+          const auto byte = static_cast<std::uint8_t>(i == position ? octet : i * 17);
+          value.binary_value[i] = byte;
+          expected[i] = static_cast<char>(byte);
+        }
+        std::string_view payload;
+        CHECK(engine::PublicUuidScalarPayloadV1(value, &payload));
+        CHECK(payload.size() == 16 && payload == expected);
+        CHECK(payload.data() == reinterpret_cast<const char*>(value.binary_value.data()));
+        std::string encoded;
+        CHECK(packet::Encode(std::vector<packet::FieldView>{{"value", packet::Kind::uuid, payload}}, &encoded));
+        const auto published = packet::Find(encoded, "value");
+        CHECK(published && published->kind == packet::Kind::uuid && published->value == expected);
+        value.encoded_value = expected;
+        refused(value);  // Even an equal second payload is ambiguous.
+        value.binary_value.clear();
+        refused(value);  // The obsolete raw-16 text arm is not a fallback.
+        value.encoded_value.clear();
+        value.binary_value.resize(16);
+        ++cases;
+      }
+    }
+    for (unsigned length = 0; length != 129; ++length) {
+      if (length == 16) continue;
+      value.binary_value.assign(length, 0);
+      refused(value);
+    }
+    value.binary_value.clear();
+    value.encoded_value = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+    refused(value);  // No display-string parsing at publication.
+    value.encoded_value.clear();
+    value.binary_value.assign(16, 0);
+    std::string_view payload;
+    CHECK(engine::PublicUuidScalarPayloadV1(value, &payload));
+    CHECK(payload == std::string(16, '\0') && !value.is_null);
+    value.is_null = true;
+    refused(value);  // A legacy flag cannot override explicit value state.
+    value.setState(State::sql_null);
+    refused(value);  // NULL with sixteen zero bytes is still malformed.
+    value.binary_value.clear();
+    CHECK(engine::PublicUuidScalarPayloadV1(value, &payload) && payload.empty());
+    value.is_null = false;
+    refused(value);
+    value.is_null = true;
+    value.encoded_value = "<NULL>";
+    refused(value);
+    value.encoded_value.clear();
+    for (unsigned state = 0; state != 256; ++state) {
+      if (state == static_cast<unsigned>(State::value) ||
+          state == static_cast<unsigned>(State::sql_null)) continue;
+      value.setState(static_cast<State>(state));
+      refused(value);
+      value.binary_value.assign(16, 0);
+      refused(value);
+      value.binary_value.clear();
+    }
+    CHECK(!engine::PublicUuidScalarPayloadV1(value, nullptr));
+  }
+  for (const char* type : {"", "text", "binary", "uuid ", "uuid15", "uuid128", "uuidv4"}) {
+    CHECK(!engine::PublicUuidScalarTypeV1(type));
+    api::EngineTypedValue value;
+    value.descriptor.canonical_type_name = type;
+    value.binary_value.assign(16, 0);
+    refused(value);
+  }
+  CHECK(cases == 7 * 16 * 256);
+  std::cout << "native UUID publication octet cases=" << cases << '\n';
+}
+
 int main() {
+  CheckNativeUuidPublication();
   const std::string uuid("\x01\x9f\x00\x0a\x3b\x7c\x70\x00\x80\x00\x3d\x3a\xff\x00\x00\x01", 16);
   const std::string uuid_text = "019f000a-3b7c-7000-8000-3d3aff000001";
   std::vector<packet::Field> fields = {
