@@ -30,7 +30,9 @@ OptimizerHintPolicyAdmission Refuse(const OptimizerHintPolicyRequest& request,
   admission.accepted = false;
   admission.applied = false;
   admission.diagnostic_code = std::move(code);
-  admission.policy_digest = request.policy_uuid.empty() ? "" : request.policy_uuid;
+  // A refused request has no admitted policy digest. A UUID is an identity,
+  // never a substitute digest or a textual diagnostic field.
+  (void)request;
   AddEvidence(&admission, std::move(evidence));
   AddEvidence(&admission, "hint_policy.accepted=false");
   AddEvidence(&admission, "hint_policy.applied=false");
@@ -61,6 +63,13 @@ bool FirstClassHintToken(const std::string& token) {
 }
 
 std::uint64_t StableHashAppend(std::uint64_t hash, std::string_view value) {
+  // Length framing prevents boundaries between adjacent policy strings from
+  // producing the same material. Embedded NUL bytes are preserved.
+  const auto length = static_cast<std::uint64_t>(value.size());
+  for (unsigned byte = 0; byte != 8; ++byte) {
+    hash ^= static_cast<std::uint8_t>(length >> (8 * byte));
+    hash *= 1099511628211ull;
+  }
   for (const unsigned char ch : value) {
     hash ^= ch;
     hash *= 1099511628211ull;
@@ -69,9 +78,20 @@ std::uint64_t StableHashAppend(std::uint64_t hash, std::string_view value) {
 }
 
 std::uint64_t StableHashAppend(std::uint64_t hash, std::uint64_t value) {
-  std::ostringstream out;
-  out << value;
-  return StableHashAppend(hash, out.str());
+  for (unsigned byte = 0; byte != 8; ++byte) {
+    hash ^= static_cast<std::uint8_t>(value >> (8 * byte));
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+std::uint64_t StableHashAppend(std::uint64_t hash,
+                              const scratchbird::core::platform::Uuid& value) {
+  for (const auto byte : value.bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ull;
+  }
+  return hash;
 }
 
 std::string BuildPolicyDigest(const OptimizerHintPolicyRequest& request) {
@@ -106,8 +126,8 @@ std::string BuildPolicyDigest(const OptimizerHintPolicyRequest& request) {
 }
 
 bool MissingIdentity(const OptimizerHintPolicyRequest& request) {
-  return request.policy_uuid.empty() ||
-         request.request_uuid.empty() ||
+  return !scratchbird::core::uuid::IsEngineIdentityUuid(request.policy_uuid) ||
+         !scratchbird::core::uuid::IsEngineIdentityUuid(request.request_uuid) ||
          request.operation_id.empty() ||
          request.sblr_digest.empty() ||
          request.descriptor_set_digest.empty() ||

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "optimizer_barrier.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <string>
@@ -22,8 +23,8 @@ namespace scratchbird::engine::optimizer {
 // execution, reference behavior, name authority, benchmark evidence, transaction
 // finality, visibility, security, or recovery authority.
 struct OptimizerHintPolicyRequest {
-  std::string policy_uuid;
-  std::string request_uuid;
+  scratchbird::core::platform::Uuid policy_uuid;
+  scratchbird::core::platform::Uuid request_uuid;
   std::string operation_id;
   std::string sblr_digest;
   std::string descriptor_set_digest;

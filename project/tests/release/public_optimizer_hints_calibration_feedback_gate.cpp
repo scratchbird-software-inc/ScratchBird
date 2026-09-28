@@ -15,12 +15,15 @@
 #include "optimizer_hint_policy.hpp"
 #include "optimizer_request.hpp"
 #include "optimizer_statistics_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <set>
+#include <type_traits>
 #include <vector>
 
 namespace opt = scratchbird::engine::optimizer;
@@ -63,8 +66,8 @@ std::string Id(std::string_view suffix) {
 
 opt::OptimizerHintPolicyRequest HintPolicyRequest() {
   opt::OptimizerHintPolicyRequest request;
-  request.policy_uuid = Id("hint_policy.join");
-  request.request_uuid = Id("request.lookup");
+  request.policy_uuid = scratchbird::tests::FixtureUuid(0x062, 1);
+  request.request_uuid = scratchbird::tests::FixtureUuid(0x062, 2);
   request.operation_id = Id("operation.lookup");
   request.sblr_digest = "sha256:sblr-pcr062-lookup";
   request.descriptor_set_digest = "sha256:descriptor-pcr062-customer";
@@ -313,6 +316,54 @@ void HintPolicyIsFirstClassAndNonSqlAuthoritative() {
   const auto changed_admission = opt::EvaluateOptimizerHintPolicyAdmission(changed);
   Require(changed_admission.policy_digest != admission.policy_digest,
           "epoch changes should affect hint policy digest");
+
+  using Request = opt::OptimizerHintPolicyRequest;
+  using Uuid = scratchbird::core::platform::Uuid;
+  static_assert(std::is_same_v<decltype(Request::policy_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Request::request_uuid), Uuid>);
+  std::set<std::string> native_digests;
+  for (const auto field : {&Request::policy_uuid, &Request::request_uuid}) {
+    auto nil = request;
+    nil.*field = {};
+    const auto absent = opt::EvaluateOptimizerHintPolicyAdmission(nil);
+    Require(!absent.accepted && !absent.applied && absent.policy_digest.empty(),
+            "nil policy identity admitted or returned an identity as digest");
+    for (unsigned position = 0; position != 16; ++position) {
+      for (unsigned byte = 0; byte != 256; ++byte) {
+        auto mutated = request;
+        if ((mutated.*field).bytes[position] == byte) continue;
+        (mutated.*field).bytes[position] = static_cast<std::uint8_t>(byte);
+        const auto identity = mutated.*field;
+        const bool expected = (identity.bytes[6] & 0xf0) == 0x70 &&
+                              (identity.bytes[8] & 0xc0) == 0x80;
+        const auto actual = opt::EvaluateOptimizerHintPolicyAdmission(mutated);
+        Require(actual.accepted == expected && actual.applied == expected,
+                "hint admission disagrees with independent binary UUIDv7 oracle");
+        if (expected) {
+          Require(actual.policy_digest != admission.policy_digest &&
+                      native_digests.insert(actual.policy_digest).second,
+                  "distinct native UUID bytes aliased in policy digest");
+        } else {
+          Require(actual.diagnostic_code == "SB_OPT_HINT_POLICY.MISSING_IDENTITY" &&
+                      actual.policy_digest.empty(),
+                  "malformed identity returned a policy digest or wrong refusal");
+        }
+        Require(mutated.*field == identity, "admission normalized the supplied identity");
+      }
+    }
+  }
+  auto first = request, second = request;
+  first.operation_id = "ab"; first.sblr_digest = "c";
+  second.operation_id = "a"; second.sblr_digest = "bc";
+  Require(opt::EvaluateOptimizerHintPolicyAdmission(first).policy_digest !=
+              opt::EvaluateOptimizerHintPolicyAdmission(second).policy_digest,
+          "adjacent text boundaries aliased in policy digest");
+  first = request; second = request;
+  first.policy_epoch = 1; first.catalog_epoch = 23;
+  second.policy_epoch = 12; second.catalog_epoch = 3;
+  Require(opt::EvaluateOptimizerHintPolicyAdmission(first).policy_digest !=
+              opt::EvaluateOptimizerHintPolicyAdmission(second).policy_digest,
+          "decimal epoch concatenation aliased in policy digest");
 
   auto raw_sql = request;
   raw_sql.raw_sql_text_present = true;
