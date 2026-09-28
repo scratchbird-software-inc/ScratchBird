@@ -1211,7 +1211,7 @@ add_test(
   COMMAND ceic_059_optimizer_memory_feedback_governed_ledger_gate
 )
 set_tests_properties(ceic_059_optimizer_memory_feedback_governed_ledger_gate PROPERTIES
-  LABELS "ceic_059_optimizer_memory_feedback_governed_ledger_gate;CEIC-059;CEIC-GATE-033;optimizer;memory_feedback;governed_reservation;support_bundle;real_operation_metrics;redaction;freshness;authority_boundary"
+  LABELS "binary_uuid;ceic_059_optimizer_memory_feedback_governed_ledger_gate;CEIC-059;CEIC-GATE-033;optimizer;memory_feedback;governed_reservation;support_bundle;real_operation_metrics;redaction;freshness;authority_boundary"
 )
 
 add_executable(

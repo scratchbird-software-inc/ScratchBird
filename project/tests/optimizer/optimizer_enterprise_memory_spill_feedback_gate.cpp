@@ -7,16 +7,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_memory_spill_feedback_enterprise.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 
 namespace opt = scratchbird::engine::optimizer;
 
 namespace {
 
+unsigned checks = 0;
+
 bool Require(bool condition, const std::string& message) {
+  ++checks;
   if (!condition) {
     std::cerr << "OEIC memory spill feedback gate failure: " << message << '\n';
     return false;
@@ -69,7 +74,7 @@ opt::OptimizerMemoryFeedbackEvidence MemoryEvidence() {
   return evidence;
 }
 
-opt::EnterpriseMemorySpillFeedbackApplyRequest ApplyRequest(std::string uuid) {
+opt::EnterpriseMemorySpillFeedbackApplyRequest ApplyRequest(scratchbird::core::platform::Uuid uuid) {
   opt::EnterpriseMemorySpillFeedbackApplyRequest request;
   request.evidence = MemoryEvidence();
   request.feedback_uuid = std::move(uuid);
@@ -96,8 +101,8 @@ opt::EnterpriseMemorySpillFeedbackApplyRequest ApplyRequest(std::string uuid) {
 bool MemorySpillFeedbackRecordsAndAdjustsCost() {
   opt::EnterpriseMemorySpillFeedbackStore store;
   const auto result = opt::ApplyEnterpriseMemorySpillFeedback(
-      ApplyRequest("memory.feedback.1"), &store);
-  const auto found = store.Find("memory.feedback.1");
+      ApplyRequest(scratchbird::tests::FixtureUuid(2211, 1)), &store);
+  const auto found = store.Find(scratchbird::tests::FixtureUuid(2211, 1));
   const auto snapshot = store.Snapshot();
   return Require(result.accepted && result.benchmark_clean,
                  "memory spill feedback refused: " + result.diagnostic_code) &&
@@ -117,11 +122,11 @@ bool MemorySpillFeedbackRecordsAndAdjustsCost() {
 bool MemorySpillFeedbackExpiresAndInvalidates() {
   opt::EnterpriseMemorySpillFeedbackStore store;
   if (!opt::ApplyEnterpriseMemorySpillFeedback(
-           ApplyRequest("memory.feedback.2"), &store).accepted) {
+           ApplyRequest(scratchbird::tests::FixtureUuid(2211, 2)), &store).accepted) {
     return Require(false, "setup feedback failed");
   }
   const auto expired = store.Expire(7000000);
-  const auto after_expire = store.Find("memory.feedback.2");
+  const auto after_expire = store.Find(scratchbird::tests::FixtureUuid(2211, 2));
   if (!Require(expired == 1, "memory feedback did not expire") ||
       !Require(after_expire.has_value() && !after_expire->valid &&
                    after_expire->invalidation_reason == "memory_feedback_age_expired",
@@ -130,7 +135,7 @@ bool MemorySpillFeedbackExpiresAndInvalidates() {
   }
 
   if (!opt::ApplyEnterpriseMemorySpillFeedback(
-           ApplyRequest("memory.feedback.3"), &store).accepted) {
+           ApplyRequest(scratchbird::tests::FixtureUuid(2211, 3)), &store).accepted) {
     return Require(false, "second setup feedback failed");
   }
   opt::EnterpriseMemorySpillFeedbackInvalidation event;
@@ -138,7 +143,7 @@ bool MemorySpillFeedbackExpiresAndInvalidates() {
   event.security_epoch = 41;
   event.reason = "security_epoch_changed";
   const auto invalidated = store.Invalidate(event);
-  const auto after_invalidate = store.Find("memory.feedback.3");
+  const auto after_invalidate = store.Find(scratchbird::tests::FixtureUuid(2211, 3));
   return Require(invalidated == 1, "memory feedback invalidation did not match") &&
          Require(after_invalidate.has_value() && !after_invalidate->valid &&
                      after_invalidate->invalidation_reason == "security_epoch_changed",
@@ -147,12 +152,12 @@ bool MemorySpillFeedbackExpiresAndInvalidates() {
 
 bool MemorySpillFeedbackRejectsUngovernedAndStaleEvidence() {
   opt::EnterpriseMemorySpillFeedbackStore store;
-  auto ungoverned = ApplyRequest("memory.feedback.unsafe");
+  auto ungoverned = ApplyRequest(scratchbird::tests::FixtureUuid(2211, 4));
   ungoverned.evidence.governed_reservation = false;
   const auto ungoverned_result =
       opt::ApplyEnterpriseMemorySpillFeedback(ungoverned, &store);
 
-  auto stale = ApplyRequest("memory.feedback.stale");
+  auto stale = ApplyRequest(scratchbird::tests::FixtureUuid(2211, 5));
   stale.evidence.received_timestamp_ticks =
       stale.evidence.observed_timestamp_ticks + stale.evidence.max_age_ticks + 1;
   const auto stale_result = opt::ApplyEnterpriseMemorySpillFeedback(stale, &store);
@@ -169,13 +174,141 @@ bool MemorySpillFeedbackRejectsUngovernedAndStaleEvidence() {
                  "rejected memory feedback was recorded");
 }
 
+bool NativeFeedbackKeyAdmissionAndIsolation() {
+  using scratchbird::tests::FixtureUuid;
+  const auto key = FixtureUuid(2211, 90);
+  opt::EnterpriseMemorySpillFeedbackStore seed;
+  const auto admitted = opt::ApplyEnterpriseMemorySpillFeedback(ApplyRequest(key), &seed);
+  const auto retained = seed.Find(key);
+  if (!Require(admitted.accepted && admitted.feedback_uuid == key && retained &&
+               retained->feedback_uuid == key, "native record key was not published exactly")) return false;
+
+  // Exercise both planner admission and the public direct-store entry point.
+  // The validity oracle is independent of the production UUID helper.
+  for (const bool direct : {false, true}) {
+    for (unsigned position = 0; position < 16; ++position) {
+      for (unsigned octet = 0; octet < 256; ++octet) {
+        auto changed = key;
+        changed.bytes[position] = static_cast<unsigned char>(octet);
+        const bool valid = (changed.bytes[6] & 0xf0) == 0x70 &&
+                           (changed.bytes[8] & 0xc0) == 0x80;
+        opt::EnterpriseMemorySpillFeedbackStore store;
+        if (!Require(store.Record(*retained).accepted, "valid seed record rejected")) return false;
+        auto record = *retained;
+        record.feedback_uuid = changed;
+        const auto result = direct ? store.Record(record) :
+            opt::ApplyEnterpriseMemorySpillFeedback(ApplyRequest(changed), &store);
+        if (!Require(result.accepted == valid && result.fail_closed == !valid,
+                     "feedback key admission dropped a byte or accepted a non-v7 identity")) return false;
+        const auto found = store.Find(changed);
+        const auto original = store.Find(key);
+        const auto snapshot = store.Snapshot();
+        if (!Require(original && original->feedback_uuid == key && original->valid &&
+                     original->query_uuid == retained->query_uuid &&
+                     original->scope_uuid == retained->scope_uuid &&
+                     original->adjusted_cost.total_cost == retained->adjusted_cost.total_cost,
+                     "admission altered the pre-existing feedback owner")) return false;
+        if (valid) {
+          if (!Require(found && found->feedback_uuid == changed &&
+                       result.feedback_uuid == changed && result.benchmark_clean &&
+                       snapshot.total_records == (changed == key ? 1u : 2u) &&
+                       snapshot.valid_records == snapshot.total_records,
+                       "distinct binary keys aliased or valid key was not retained")) return false;
+          if (!Require(store.Expire(retained->created_microseconds +
+                                   retained->expires_after_microseconds - 1) == 0 &&
+                       store.Expire(retained->created_microseconds +
+                                   retained->expires_after_microseconds) == snapshot.total_records &&
+                       store.Find(changed) && !store.Find(changed)->valid,
+                       "native keys lost exact expiry boundary semantics")) return false;
+        } else {
+          if (!Require(!found && result.feedback_uuid.is_nil() && !result.benchmark_clean &&
+                       result.diagnostic_code == "SB-OPT-0001" && snapshot.total_records == 1,
+                       "invalid key published identity or mutated storage")) return false;
+        }
+      }
+    }
+  }
+
+  auto missing = *retained;
+  missing.feedback_uuid = {};
+  const auto direct_nil = seed.Record(missing);
+  const auto apply_nil = opt::ApplyEnterpriseMemorySpillFeedback(ApplyRequest({}), &seed);
+  if (!Require(!direct_nil.accepted && !apply_nil.accepted &&
+               direct_nil.feedback_uuid.is_nil() && apply_nil.feedback_uuid.is_nil() &&
+               !seed.Find({}) && seed.Snapshot().total_records == 1,
+               "nil feedback identity was stored or resolved to an existing record")) return false;
+
+  // A record identity cannot be reassigned to a different query, scope or node.
+  for (unsigned binding = 0; binding < 4; ++binding) {
+    auto changed = *retained;
+    switch (binding) {
+      case 0: changed.query_uuid += ".different"; break;
+      case 1: changed.scope_uuid += ".different"; break;
+      case 2: changed.route_label += ".different"; break;
+      case 3: changed.plan_node_id += ".different"; break;
+    }
+    const auto refused = seed.Record(changed);
+    const auto original = seed.Find(key);
+    if (!Require(!refused.accepted && refused.fail_closed && refused.feedback_uuid.is_nil() &&
+                 refused.diagnostic_code == "SB-OPT-0001" && original &&
+                 original->query_uuid == retained->query_uuid &&
+                 original->scope_uuid == retained->scope_uuid &&
+                 original->route_label == retained->route_label &&
+                 original->plan_node_id == retained->plan_node_id &&
+                 seed.Snapshot().total_records == 1,
+                 "duplicate native key was rebound to another feedback owner")) return false;
+    auto request = ApplyRequest(key);
+    request.evidence.query_uuid = changed.query_uuid;
+    request.evidence.scope_uuid = changed.scope_uuid;
+    request.route_label = changed.route_label;
+    request.plan_node_id = changed.plan_node_id;
+    const auto applied = opt::ApplyEnterpriseMemorySpillFeedback(request, &seed);
+    if (!Require(!applied.accepted && applied.fail_closed && applied.feedback_uuid.is_nil() &&
+                 seed.Find(key)->query_uuid == retained->query_uuid &&
+                 seed.Find(key)->scope_uuid == retained->scope_uuid &&
+                 seed.Find(key)->route_label == retained->route_label &&
+                 seed.Find(key)->plan_node_id == retained->plan_node_id,
+                 "apply path bypassed retained key ownership")) return false;
+  }
+  auto same_owner = *retained;
+  same_owner.adjusted_cost.total_cost += 1;
+  const auto updated = seed.Record(same_owner);
+  if (!Require(updated.accepted && updated.feedback_uuid == key &&
+               seed.Find(key)->adjusted_cost.total_cost == same_owner.adjusted_cost.total_cost &&
+               seed.Snapshot().total_records == 1,
+               "same-owner update lost exact key or created a duplicate")) return false;
+  for (const bool missing_creation : {false, true}) {
+    auto unageable = *retained;
+    if (missing_creation) unageable.created_microseconds = 0;
+    else unageable.expires_after_microseconds = 0;
+    if (!Require(!seed.Record(unageable).accepted && seed.Snapshot().total_records == 1 &&
+                 seed.Find(key)->adjusted_cost.total_cost == same_owner.adjusted_cost.total_cost,
+                 "direct record bypassed required aging metadata")) return false;
+  }
+  for (const unsigned lifetime : {5u, 10u}) {
+    opt::EnterpriseMemorySpillFeedbackStore boundary;
+    auto edge = *retained;
+    edge.created_microseconds = std::numeric_limits<std::uint64_t>::max() - 5;
+    edge.expires_after_microseconds = lifetime;
+    if (!Require(boundary.Record(edge).accepted && boundary.Expire(0) == 0 &&
+                 boundary.Expire(std::numeric_limits<std::uint64_t>::max() - 1) == 0 &&
+                 boundary.Expire(std::numeric_limits<std::uint64_t>::max()) ==
+                     (lifetime == 5 ? 1u : 0u) &&
+                 boundary.Find(key)->feedback_uuid == key,
+                 "expiry wrapped an unsigned timestamp or lost native key")) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
+  if (!NativeFeedbackKeyAdmissionAndIsolation()) return EXIT_FAILURE;
   if (!MemorySpillFeedbackRecordsAndAdjustsCost()) return EXIT_FAILURE;
   if (!MemorySpillFeedbackExpiresAndInvalidates()) return EXIT_FAILURE;
   if (!MemorySpillFeedbackRejectsUngovernedAndStaleEvidence()) {
     return EXIT_FAILURE;
   }
+  std::cout << "memory feedback native key checks=" << checks << '\n';
   return EXIT_SUCCESS;
 }

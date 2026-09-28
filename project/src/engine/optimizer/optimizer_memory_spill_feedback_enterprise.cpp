@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_memory_spill_feedback_enterprise.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -27,8 +28,7 @@ EnterpriseMemorySpillFeedbackApplyResult Refuse(std::string code,
 }
 
 bool MissingScope(const EnterpriseMemorySpillFeedbackApplyRequest& request) {
-  return request.feedback_uuid.empty() ||
-         request.reservation_id.empty() ||
+  return request.reservation_id.empty() ||
          request.memory_snapshot_digest.empty() ||
          request.route_label.empty() ||
          request.plan_node_id.empty() ||
@@ -83,12 +83,16 @@ void AddResultEvidence(EnterpriseMemorySpillFeedbackApplyResult* result,
 
 EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Record(
     EnterpriseMemorySpillFeedbackRecord record) {
-  if (record.feedback_uuid.empty() || record.reservation_id.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(record.feedback_uuid)) {
+    return Refuse("SB-OPT-0001", "memory_feedback_invalid_record_uuid");
+  }
+  if (record.reservation_id.empty() ||
       record.memory_snapshot_digest.empty() || record.route_label.empty() ||
       record.plan_node_id.empty() || record.query_uuid.empty() ||
       record.scope_uuid.empty() || record.policy_generation == 0 ||
       record.feedback_generation == 0 || record.catalog_epoch == 0 ||
-      record.security_epoch == 0 || MissingRecordEvidence(record)) {
+      record.security_epoch == 0 || record.created_microseconds == 0 ||
+      record.expires_after_microseconds == 0 || MissingRecordEvidence(record)) {
     return Refuse("SB_OPT_ENTERPRISE_MEMORY_SPILL_FEEDBACK_SCOPE_REQUIRED",
                   "scope_reservation_metric_digest_route_plan_redaction_provenance_and_epochs_required");
   }
@@ -122,6 +126,7 @@ EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Rec
         record.support_snapshot_digest);
   }
   EnterpriseMemorySpillFeedbackApplyResult result;
+  result.feedback_uuid = record.feedback_uuid;
   result.accepted = true;
   result.benchmark_clean = record.bridge_result.ceic_059_contract_accepted &&
                            record.bridge_result.authority_boundaries_clean;
@@ -139,6 +144,10 @@ EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Rec
     if (it == records_.end()) {
       records_.push_back(std::move(record));
     } else {
+      if (it->query_uuid != record.query_uuid || it->scope_uuid != record.scope_uuid ||
+          it->route_label != record.route_label || it->plan_node_id != record.plan_node_id) {
+        return Refuse("SB-OPT-0001", "memory_feedback_record_uuid_binding_conflict");
+      }
       *it = std::move(record);
     }
   }
@@ -196,7 +205,8 @@ EnterpriseMemorySpillFeedbackSnapshot EnterpriseMemorySpillFeedbackStore::Snapsh
 }
 
 std::optional<EnterpriseMemorySpillFeedbackRecord> EnterpriseMemorySpillFeedbackStore::Find(
-    const std::string& feedback_uuid) const {
+    const scratchbird::core::platform::Uuid& feedback_uuid) const {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(feedback_uuid)) return std::nullopt;
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = std::find_if(records_.begin(), records_.end(), [&](const auto& record) {
     return record.feedback_uuid == feedback_uuid;
@@ -211,6 +221,9 @@ EnterpriseMemorySpillFeedbackApplyResult ApplyEnterpriseMemorySpillFeedback(
   if (store == nullptr) {
     return Refuse("SB_OPT_ENTERPRISE_MEMORY_SPILL_FEEDBACK_STORE_REQUIRED",
                   "store_required");
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.feedback_uuid)) {
+    return Refuse("SB-OPT-0001", "memory_feedback_invalid_record_uuid");
   }
   if (MissingScope(request)) {
     return Refuse("SB_OPT_ENTERPRISE_MEMORY_SPILL_FEEDBACK_SCOPE_REQUIRED",

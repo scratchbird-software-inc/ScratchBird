@@ -1545,7 +1545,7 @@ add_test(
   COMMAND optimizer_enterprise_memory_spill_feedback_gate
 )
 set_tests_properties(optimizer_enterprise_memory_spill_feedback_gate PROPERTIES
-  LABELS "optimizer_enterprise_memory_spill_feedback_gate;OEIC-031;optimizer;enterprise;feedback;memory;spill;mga_transaction_regression"
+  LABELS "binary_uuid;optimizer_enterprise_memory_spill_feedback_gate;OEIC-031;optimizer;enterprise;feedback;memory;spill;mga_transaction_regression"
 )
 
 add_executable(

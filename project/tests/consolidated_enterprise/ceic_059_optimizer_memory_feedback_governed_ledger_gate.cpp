@@ -9,6 +9,7 @@
 // CEIC-059 focused validation for governed optimizer memory feedback.
 #include "optimizer_memory_feedback_bridge.hpp"
 #include "optimizer_memory_spill_feedback_enterprise.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -94,7 +95,7 @@ opt::OptimizerMemoryFeedbackEvidence BaseEvidence(std::string source_kind) {
 }
 
 opt::EnterpriseMemorySpillFeedbackApplyRequest SpillRequest(
-    std::string uuid,
+    scratchbird::core::platform::Uuid uuid,
     opt::OptimizerMemoryFeedbackEvidence evidence = BaseEvidence(
         "resource_governance_reservation_ledger")) {
   opt::EnterpriseMemorySpillFeedbackApplyRequest request;
@@ -277,12 +278,12 @@ void AuthorityDriftRefusals() {
 void SpillStoreInvalidatesAndExpires() {
   opt::EnterpriseMemorySpillFeedbackStore store;
   const auto accepted =
-      opt::ApplyEnterpriseMemorySpillFeedback(SpillRequest("ceic059-spill-1"),
+      opt::ApplyEnterpriseMemorySpillFeedback(SpillRequest(scratchbird::tests::FixtureUuid(2211, 11)),
                                               &store);
   Require(accepted.accepted, "CEIC-059 spill feedback was rejected");
   Require(accepted.benchmark_clean,
           "CEIC-059 spill feedback did not mark benchmark clean after clean bridge");
-  auto found = store.Find("ceic059-spill-1");
+  auto found = store.Find(scratchbird::tests::FixtureUuid(2211, 11));
   Require(found.has_value() && found->valid,
           "CEIC-059 spill feedback record was not persisted");
   Require(HasEvidence(found->evidence, "enterprise_memory_spill_feedback.redaction_digest="),
@@ -293,12 +294,12 @@ void SpillStoreInvalidatesAndExpires() {
           "CEIC-059 spill record missing reservation generation evidence");
 
   const auto expired = store.Expire(3000000);
-  found = store.Find("ceic059-spill-1");
+  found = store.Find(scratchbird::tests::FixtureUuid(2211, 11));
   Require(expired == 1 && found.has_value() && !found->valid,
           "CEIC-059 spill feedback did not expire");
 
   const auto accepted_again =
-      opt::ApplyEnterpriseMemorySpillFeedback(SpillRequest("ceic059-spill-2"),
+      opt::ApplyEnterpriseMemorySpillFeedback(SpillRequest(scratchbird::tests::FixtureUuid(2211, 12)),
                                               &store);
   Require(accepted_again.accepted, "CEIC-059 second spill feedback setup failed");
   opt::EnterpriseMemorySpillFeedbackInvalidation event;
@@ -306,18 +307,18 @@ void SpillStoreInvalidatesAndExpires() {
   event.security_epoch = 9900;
   event.reason = "security_epoch_changed";
   const auto invalidated = store.Invalidate(event);
-  found = store.Find("ceic059-spill-2");
+  found = store.Find(scratchbird::tests::FixtureUuid(2211, 12));
   Require(invalidated == 1 && found.has_value() && !found->valid &&
               found->invalidation_reason == "security_epoch_changed",
           "CEIC-059 spill feedback did not invalidate on epoch change");
 
-  auto rejected_request = SpillRequest("ceic059-spill-rejected");
+  auto rejected_request = SpillRequest(scratchbird::tests::FixtureUuid(2211, 13));
   rejected_request.evidence.benchmark_authority = true;
   const auto rejected =
       opt::ApplyEnterpriseMemorySpillFeedback(rejected_request, &store);
   Require(!rejected.accepted && !rejected.benchmark_clean && rejected.fail_closed,
           "CEIC-059 unsafe spill feedback was not fail-closed");
-  Require(store.Find("ceic059-spill-rejected") == std::nullopt,
+  Require(store.Find(scratchbird::tests::FixtureUuid(2211, 13)) == std::nullopt,
           "CEIC-059 rejected spill feedback was persisted");
 }
 

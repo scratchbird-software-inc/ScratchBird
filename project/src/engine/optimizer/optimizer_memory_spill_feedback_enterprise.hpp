@@ -24,7 +24,7 @@ namespace scratchbird::engine::optimizer {
 // tune grants and spill costs, but it cannot own transaction finality,
 // visibility, parser behavior, reference behavior, security, or recovery outcome.
 struct EnterpriseMemorySpillFeedbackApplyRequest {
-  std::string feedback_uuid;
+  scratchbird::core::platform::Uuid feedback_uuid;
   std::string reservation_id;
   std::string memory_snapshot_digest;
   std::string route_label;
@@ -40,7 +40,7 @@ struct EnterpriseMemorySpillFeedbackApplyRequest {
 };
 
 struct EnterpriseMemorySpillFeedbackRecord {
-  std::string feedback_uuid;
+  scratchbird::core::platform::Uuid feedback_uuid;
   std::string reservation_id;
   std::string memory_snapshot_digest;
   std::string source_kind;
@@ -88,6 +88,8 @@ struct EnterpriseMemorySpillFeedbackSnapshot {
 };
 
 struct EnterpriseMemorySpillFeedbackApplyResult {
+  // Present only after successful admission into the feedback store.
+  scratchbird::core::platform::Uuid feedback_uuid;
   bool accepted = false;
   bool benchmark_clean = false;
   bool fail_closed = false;
@@ -106,7 +108,7 @@ class EnterpriseMemorySpillFeedbackStore {
   std::uint64_t Expire(std::uint64_t now_microseconds);
   EnterpriseMemorySpillFeedbackSnapshot Snapshot() const;
   std::optional<EnterpriseMemorySpillFeedbackRecord> Find(
-      const std::string& feedback_uuid) const;
+      const scratchbird::core::platform::Uuid& feedback_uuid) const;
 
  private:
   mutable std::mutex mutex_;
