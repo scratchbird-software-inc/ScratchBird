@@ -1642,7 +1642,19 @@ void CreateObjectBackedRelation(Fixture* fixture) {
       scratchbird::tests::NativeCatalogColumnFixture(
           {{{"canonical", "uuid"}, {"nullable", "true"}},
            {{"type_uuid", uuid_type_uuid}}}), true));
+  uuid_data_table.table_columns.push_back(make_column(
+      1, "other_uuid", "uuid",
+      scratchbird::tests::NativeCatalogColumnFixture(
+          {{{"canonical", "uuid"}, {"nullable", "true"}},
+           {{"type_uuid", uuid_type_uuid}}}), true));
   bind_columns(uuid_data_table);
+  Require(uuid_data_table.table_columns[0].requested_column_uuid !=
+              uuid_data_table.table_columns[1].requested_column_uuid &&
+              uuid_data_table.table_columns[0].descriptor.descriptor_uuid !=
+                  uuid_data_table.table_columns[1].descriptor.descriptor_uuid &&
+              uuid_data_table.table_columns[0].descriptor.datatype_descriptor_uuid ==
+                  uuid_data_table.table_columns[1].descriptor.datatype_descriptor_uuid,
+          "UUID fixture conflated column owners with shared datatype authority");
   RequireEngineOk(api::EngineCreateTable(uuid_data_table),
                   "user UUID data fixture table create failed");
 
@@ -1692,19 +1704,22 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   uuid_data_insert.target_table.uuid = uuid_data_table.requested_table_uuid;
   uuid_data_insert.target_table.object_kind = "table";
   for (std::size_t ordinal = 0; ordinal <= kUserUuidData.size(); ++ordinal) {
-    api::EngineTypedValue value;
-    value.descriptor = uuid_data_table.table_columns.front().descriptor;
-    if (ordinal == kUserUuidData.size()) {
-      value.setState(api::EngineValueState::sql_null);
-    } else {
-      Require(!uuid::IsEngineIdentityUuid(kUserUuidData[ordinal]),
-              "user UUID fixture accidentally became a system identity");
-      value.setState(api::EngineValueState::value);
-      value.binary_value.assign(kUserUuidData[ordinal].bytes.begin(),
-                                kUserUuidData[ordinal].bytes.end());
-    }
     api::EngineRowValue row;
-    row.fields.push_back({"user_uuid", std::move(value)});
+    for (std::size_t column = 0; column != 2; ++column) {
+      api::EngineTypedValue value;
+      value.descriptor = uuid_data_table.table_columns[column].descriptor;
+      const auto sample = (ordinal + column) % (kUserUuidData.size() + 1);
+      if (sample == kUserUuidData.size()) {
+        value.setState(api::EngineValueState::sql_null);
+      } else {
+        Require(!uuid::IsEngineIdentityUuid(kUserUuidData[sample]),
+                "user UUID fixture accidentally became a system identity");
+        value.setState(api::EngineValueState::value);
+        value.binary_value.assign(kUserUuidData[sample].bytes.begin(),
+                                  kUserUuidData[sample].bytes.end());
+      }
+      row.fields.push_back({column == 0 ? "user_uuid" : "other_uuid", std::move(value)});
+    }
     uuid_data_insert.input_rows.push_back(std::move(row));
   }
   uuid_data_insert.estimated_row_count = uuid_data_insert.input_rows.size();
@@ -2077,8 +2092,12 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
     const auto verify_mixed_spatial_columnar = [&] {
       const auto verify_user_uuid_rows = [&](const auto& outcome,
                                              std::size_t multiplicity,
-                                             bool composition) {
-        if (!outcome.accepted) PrintMessages(outcome.messages);
+                                             bool composition,
+                                             std::string_view route) {
+        if (!outcome.accepted) {
+          std::cerr << "user UUID route refused=" << route << '\n';
+          PrintMessages(outcome.messages);
+        }
         Require(outcome.accepted && outcome.server_operation_id == "query.execute" &&
                     outcome.server_cursor_uuid.is_nil() &&
                     outcome.server_row_count == 4 * multiplicity,
@@ -2097,23 +2116,44 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                                               "row_meta" + field.name.substr(3));
           Require(value.has_value() && metadata.has_value(),
                   "UUID result omitted or repeated its data or state");
+          std::size_t source_ordinal = kUserUuidData.size();
           if (metadata->find("user_uuid:uuid:null") != std::string::npos) {
             Require(value->kind == result::Kind::text && value->value.empty(),
                     "SQL NULL acquired a UUID payload");
             ++null_count;
-            continue;
+          } else {
+            Require(metadata->find("user_uuid:uuid:not_null") != std::string::npos &&
+                        value->kind == result::Kind::uuid && value->value.size() == 16,
+                    "non-null user UUID lost its native binary16/state");
+            const auto expected = std::ranges::find_if(kUserUuidData, [&](const auto& uuid) {
+              return std::equal(uuid.bytes.begin(), uuid.bytes.end(), value->value.begin(),
+                  [](std::uint8_t left, char right) {
+                    return left == static_cast<std::uint8_t>(right);
+                  });
+            });
+            Require(expected != kUserUuidData.end(), "user UUID payload bits changed");
+            source_ordinal = static_cast<std::size_t>(expected - kUserUuidData.begin());
+            ++counts[source_ordinal];
           }
-          Require(metadata->find("user_uuid:uuid:not_null") != std::string::npos &&
-                      value->kind == result::Kind::uuid && value->value.size() == 16,
-                  "non-null user UUID lost its native binary16/state");
-          const auto expected = std::ranges::find_if(kUserUuidData, [&](const auto& uuid) {
-            return std::equal(uuid.bytes.begin(), uuid.bytes.end(), value->value.begin(),
-                [](std::uint8_t left, char right) {
-                  return left == static_cast<std::uint8_t>(right);
-                });
-          });
-          Require(expected != kUserUuidData.end(), "user UUID payload bits changed");
-          ++counts[static_cast<std::size_t>(expected - kUserUuidData.begin())];
+          // The second column shares datatype authority but has a different
+          // owner, value and NULL state. Never merge occurrences by type UUID.
+          const auto other = result::Find(field.value, "other_uuid");
+          Require(other.has_value(), "second UUID column was omitted or duplicated");
+          const auto other_ordinal = (source_ordinal + 1) % (kUserUuidData.size() + 1);
+          if (other_ordinal == kUserUuidData.size()) {
+            Require(metadata->find("other_uuid:uuid:null") != std::string::npos &&
+                        other->kind == result::Kind::text && other->value.empty(),
+                    "second UUID column lost its independent SQL NULL state");
+          } else {
+            Require(metadata->find("other_uuid:uuid:not_null") != std::string::npos &&
+                        other->kind == result::Kind::uuid && other->value.size() == 16 &&
+                        std::equal(kUserUuidData[other_ordinal].bytes.begin(),
+                                   kUserUuidData[other_ordinal].bytes.end(),
+                                   other->value.begin(), [](std::uint8_t left, char right) {
+                                     return left == static_cast<std::uint8_t>(right);
+                                   }),
+                    "shared datatype UUID merged, swapped or changed distinct column data");
+          }
         }
         Require(null_count == multiplicity &&
                     std::ranges::all_of(counts, [&](auto count) { return count == multiplicity; }),
@@ -2130,14 +2170,23 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                     "user UUID query bypassed real three-leg model composition");
           }
         }
+        std::cerr << "user UUID route verified=" << route << '\n';
       };
       verify_user_uuid_rows(parser.RunPipeline(
-          "SELECT * FROM qow_packet7.qow_packet7_uuid_data;", true), 1, false);
+          "SELECT * FROM qow_packet7.qow_packet7_uuid_data;", true), 1, false, "heap");
+      verify_user_uuid_rows(parser.RunPipeline(
+          "SELECT * FROM COLUMNAR_SOURCE(qow_packet7.qow_packet7_uuid_data) AS u;", true),
+          1, false, "standalone_columnar");
       verify_user_uuid_rows(parser.RunPipeline(
           "SELECT * FROM qow_packet7.qow_packet7_uuid_data CROSS JOIN "
           "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s CROSS JOIN "
           "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c;", true),
-          4, true);
+          4, true, "relational_spatial_columnar");
+      verify_user_uuid_rows(parser.RunPipeline(
+          "SELECT * FROM COLUMNAR_SOURCE(qow_packet7.qow_packet7_uuid_data) AS u CROSS JOIN "
+          "SPATIAL_SOURCE(qow_packet7.qow_packet7_spatial_relation) AS s CROSS JOIN "
+          "COLUMNAR_SOURCE(qow_packet7.qow_packet7_columnar_relation) AS c;", true),
+          4, true, "columnar_spatial_columnar");
       Require(
           bridge::ContextualTextPublicAbiCarrierProofMaskForTest() == 0xFU,
           "contextual TEXT public-ABI carrier/context proof changed");

@@ -420,6 +420,7 @@ add_library(sb_engine_sblr
   canonical_query_document_composition.cpp
   canonical_query_spatial_columnar_composition.cpp
   canonical_query_multileg_composition.cpp
+  canonical_query_multileg_descriptor_rebinding.cpp
   canonical_query_table_function_composition.cpp
   canonical_query_current_heap_join_composition.cpp
   canonical_query_current_heap_composition.cpp

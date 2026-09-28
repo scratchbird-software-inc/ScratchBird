@@ -283,9 +283,13 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_SPATIAL_COLUMNAR_COMPOSITION_AUTHORITY",
         1,
     ),
+    "canonical_query_multileg_descriptor_rebinding.cpp": (
+        319, 14801,
+        "SB_ENGINE_CANONICAL_QUERY_MULTILEG_DESCRIPTOR_REBINDING_AUTHORITY", 1,
+    ),
     "canonical_query_multileg_composition.cpp": (
-        5_115,
-        254_142,
+        4847,
+        243203,
         "SB_ENGINE_CANONICAL_QUERY_MULTILEG_COMPOSITION_AUTHORITY",
         1,
     ),
@@ -780,6 +784,7 @@ def main() -> int:
         "canonical_query_document_composition.cpp",
         "canonical_query_spatial_columnar_composition.cpp",
         "canonical_query_multileg_composition.cpp",
+        "canonical_query_multileg_descriptor_rebinding.cpp",
         "canonical_query_current_heap_join_composition.cpp",
         "canonical_query_current_heap_composition.cpp",
     ):

@@ -2372,11 +2372,14 @@ AstDocument BuildAst(const CstDocument& cst) {
         graph_source_count == 0 && key_value_source_count == 0 &&
         time_series_source_count == 0 && vector_source_count == 0 &&
         search_source_count == 0;
+    // The bounded graph validates each source occurrence and its operation
+    // ownership above. Distinct columnar occurrences are not ambiguous merely
+    // because they use the same model family; retain all exact inventory checks.
     if (document_source_count > 1 || graph_source_count > 1 ||
         key_value_source_count > 1 ||
         time_series_source_count > 1 || vector_source_count > 1 ||
         search_source_count > 1 || spatial_source_count > 1 ||
-        columnar_source_count > 1 ||
+        (columnar_source_count > 1 && !bounded_multimodel_join) ||
         (model_source_count > 1 && !exact_spatial_columnar_pair &&
          !bounded_multimodel_join) ||
         ast.native_relational.model_object_resolution_requests.size() !=
