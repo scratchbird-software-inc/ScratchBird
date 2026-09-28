@@ -3729,8 +3729,11 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
     dml_page_allocation_runtime_gate.cpp
   )
   target_compile_features(dml_page_allocation_runtime_gate PRIVATE cxx_std_20)
+  target_compile_definitions(dml_page_allocation_runtime_gate PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${PROJECT_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(dml_page_allocation_runtime_gate
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api

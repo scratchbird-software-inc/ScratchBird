@@ -1,5 +1,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -11,15 +13,19 @@
 #include "dml/insert_api.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "database_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <array>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,8 +38,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -58,14 +63,21 @@ api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
 }
 
 struct Fixture {
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture& operator=(const Fixture&) = delete;
+
   std::filesystem::path dir;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
   api::EngineUuid table_uuid;
   api::EngineUuid index_uuid;
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
   api::EngineRequestContext context;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -75,7 +87,7 @@ struct Fixture {
 
 api::EngineTypedValue TextValue(std::string value) {
   api::EngineTypedValue typed;
-  typed.descriptor.canonical_type_name = "character";
+  typed.descriptor.canonical_type_name = "text";
   typed.encoded_value = std::move(value);
   return typed;
 }
@@ -93,7 +105,7 @@ api::CrudTableRecord Table(const Fixture& fixture) {
   table.table_uuid = fixture.table_uuid;
   table.default_name = "pfar012_table";
   table.columns.push_back({"id", "canonical=int64"});
-  table.columns.push_back({"name", "canonical=character"});
+  table.columns.push_back({"name", "canonical=text"});
   return table;
 }
 
@@ -108,28 +120,17 @@ api::CrudIndexRecord Index(const Fixture& fixture) {
   return index;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      const api::EngineUuid& database_uuid,
+api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner_context;
   context.request_id = std::move(request_id);
-  context.database_path = database_path.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = NewIdentity(platform::UuidKind::principal, 100);
-  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1201);
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
-api::EngineRequestContext BeginContext(const std::filesystem::path& database_path,
-                                       const api::EngineUuid& database_uuid,
+api::EngineRequestContext BeginContext(const Fixture& fixture,
                                        std::string request_id) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseContext(database_path, database_uuid, std::move(request_id));
+  request.context = BaseContext(fixture, std::move(request_id));
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) {
@@ -147,38 +148,80 @@ api::EngineRequestContext BeginContext(const std::filesystem::path& database_pat
   return context;
 }
 
-Fixture MakeFixture(std::string name, platform::u64 salt) {
-  Fixture fixture;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_pfar012_" + name + "_" + std::to_string(MillisSeed() + salt));
-  std::filesystem::create_directories(fixture.dir);
+void InitializeFixture(Fixture& fixture, std::string name, platform::u64 salt) {
+  const auto database_identity = NewUuid(platform::UuidKind::database, salt + 1);
+  const auto directory = std::filesystem::temp_directory_path() /
+                ("scratchbird_pfar012_" + name + "_" +
+                 uuid::UuidToString(database_identity.value));
+  Require(std::filesystem::create_directory(directory),
+          "PFAR-012 isolated fixture directory already exists");
+  fixture.dir = directory;
   fixture.database_path = fixture.dir / "pfar012.sbdb";
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
-  create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
+  create.database_uuid = database_identity;
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = MillisSeed() + salt + 3;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << '\n';
   }
   Require(created.ok(), "PFAR-012 database create failed");
 
-  fixture.database_uuid = create.database_uuid.value;
+  fixture.database_uuid = created.state.database_uuid.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.owner_context.default_root_uuid = created.state.filespace_uuid.value;
+  fixture.owner_context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  Require(fixture.owner_context.resource_epoch != 0,
+          "PFAR-012 actual resource catalog epoch missing");
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, salt + 20);
-  fixture.context = BeginContext(fixture.database_path,
-                                 fixture.database_uuid,
+  fixture.context = BeginContext(fixture,
                                  "pfar-012-" + name + "-metadata");
 
-  const auto table = api::AppendMgaTableMetadata(fixture.context, Table(fixture));
+  const auto table = scratchbird::tests::PublishMgaTableFixture(
+      fixture.context, Table(fixture), {"int64", "text"}, {Index(fixture)});
   Require(!table.error, "PFAR-012 table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(fixture.context, Index(fixture));
   Require(!index.error, "PFAR-012 index metadata append failed");
-  return fixture;
+  fixture.owner_context.current_schema_uuid = fixture.context.current_schema_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.context);
+  const auto read = api::LoadMgaRelationStorageDescriptor(fixture.context, fixture.table_uuid);
+  Require(read.ok && read.descriptor.columns.size() == 2,
+          "PFAR-012 published relation descriptor unavailable");
+  const auto& descriptor = read.descriptor;
+  Require(descriptor.primary_filespace_uuid == created.state.filespace_uuid.value &&
+              descriptor.relation_uuid == fixture.table_uuid &&
+              descriptor.schema_uuid == fixture.context.current_schema_uuid &&
+              descriptor.relation_generation != 0,
+          "PFAR-012 published relation owner cohort mismatch");
+  const auto manifest = scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "PFAR-012 datatype catalog unavailable");
+  const std::array types{scratchbird::core::datatypes::CanonicalTypeId::int64,
+                         scratchbird::core::datatypes::CanonicalTypeId::character};
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    const auto expected = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
+        manifest.manifest, types[i]);
+    Require(expected.ok() && expected.manifest.descriptor_rows.size() == 1,
+            "PFAR-012 expected datatype descriptor missing");
+    const auto& column = descriptor.columns[i];
+    const auto& value = column.value_descriptor;
+    const auto& datatype = expected.manifest.descriptor_rows.front();
+    const auto codec = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        fixture.context.datatype_catalog_snapshot_uuid, fixture.context.datatype_catalog_generation,
+        fixture.context.datatype_registry_generation, datatype.descriptor_uuid.value,
+        datatype.descriptor_epoch);
+    Require(codec.ok && uuid::IsEngineIdentityUuid(column.column_uuid) &&
+                uuid::IsEngineIdentityUuid(value.descriptor_uuid) &&
+                column.column_uuid != value.descriptor_uuid && column.column_generation != 0 &&
+                value.datatype_descriptor_uuid == datatype.descriptor_uuid.value &&
+                value.datatype_descriptor_generation == datatype.descriptor_epoch &&
+                value.type_uuid == codec.row.type_uuid,
+            "PFAR-012 published native column/datatype binding mismatch");
+  }
 }
 
 api::EngineRowValue Row(std::string id, std::string name) {
@@ -257,29 +300,70 @@ api::MgaRelationStoreState LoadedState(const api::EngineRequestContext& context)
   return loaded.state;
 }
 
-api::EngineInsertRowsRequest InsertRequest(Fixture& fixture,
+void RequireIndexHistory(const Fixture& fixture, const api::MgaRelationStoreState& state,
+                         std::size_t memberships, std::size_t retirements) {
+  std::size_t actual_memberships = 0;
+  std::size_t actual_retirements = 0;
+  for (const auto& entry : state.index_entries) {
+    Require(entry.index_uuid == fixture.index_uuid && entry.table_uuid == fixture.table_uuid &&
+                entry.creator_tx == fixture.context.local_transaction_id &&
+                uuid::IsEngineIdentityUuid(entry.row_uuid) &&
+                uuid::IsEngineIdentityUuid(entry.version_uuid),
+            "PFAR-012 index history has a foreign owner or malformed native identity");
+    if (entry.entry_kind == "insert" || entry.entry_kind == "exact") ++actual_memberships;
+    else if (entry.entry_kind == "retire") ++actual_retirements;
+    else Fail("PFAR-012 unexpected index mutation kind");
+  }
+  // An indexed-key UPDATE retains both membership versions AND an explicit
+  // old-key retirement. The old fixture counted only the two memberships.
+  Require(actual_memberships == memberships && actual_retirements == retirements &&
+              state.index_entries.size() == memberships + retirements,
+          "PFAR-012 exact membership/retirement history count mismatch");
+}
+
+void RequireIndexLookup(const Fixture& fixture, const std::string& key, std::size_t count) {
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, fixture.context);
+  const auto state = api::BuildCrudCompatibilityStateFromMga(LoadedState(statement.context));
+  const auto index = std::find_if(state.indexes.begin(), state.indexes.end(),
+      [&](const auto& candidate) { return candidate.index_uuid == fixture.index_uuid; });
+  Require(index != state.indexes.end(), "PFAR-012 published index missing");
+  api::EnginePredicateEnvelope predicate;
+  predicate.predicate_kind = "column_equals";
+  predicate.canonical_predicate_envelope = "name";
+  predicate.bound_values.push_back(TextValue(key));
+  api::MgaTransactionalIndexProvider provider(statement.context, nullptr);
+  const auto validated = provider.ValidateAgainstRelation(state, *index);
+  const auto lookup = provider.ResolveVisibleEntry(state, *index, predicate, 0);
+  Require(validated.ok && lookup.ok && lookup.rows.size() == count,
+          "PFAR-012 actual index lookup lost a row or retained a retired key");
+  for (const auto& row : lookup.rows)
+    Require(api::CrudFieldValue(row.values, "name") == key,
+            "PFAR-012 index returned the wrong row value");
+}
+
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> InsertRequest(Fixture& fixture,
                                            std::string request_id,
                                            std::vector<std::string> options) {
-  api::EngineInsertRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
-  request.target_schema.uuid = NewIdentity(platform::UuidKind::schema, 300);
+  request.target_schema.uuid = fixture.context.current_schema_uuid;
   request.estimated_row_count = 1;
   request.input_rows.push_back(Row("1", "alpha"));
   request.option_envelopes = std::move(options);
   return request;
 }
 
-api::EngineInsertRowsRequest MultiInsertRequest(Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> MultiInsertRequest(Fixture& fixture,
                                                 std::string request_id,
                                                 std::vector<std::string> options,
                                                 int row_count) {
-  api::EngineInsertRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
-  request.target_schema.uuid = NewIdentity(platform::UuidKind::schema, 350);
+  request.target_schema.uuid = fixture.context.current_schema_uuid;
   request.estimated_row_count = static_cast<api::EngineApiU64>(row_count);
   request.option_envelopes = std::move(options);
   request.input_rows.reserve(static_cast<std::size_t>(row_count));
@@ -290,11 +374,11 @@ api::EngineInsertRowsRequest MultiInsertRequest(Fixture& fixture,
   return request;
 }
 
-api::EngineUpdateRowsRequest UpdateRequest(Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> UpdateRequest(Fixture& fixture,
                                            std::string request_id,
                                            std::vector<std::string> options) {
-  api::EngineUpdateRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
   request.update_predicate.predicate_kind = "column_equals";
@@ -305,11 +389,11 @@ api::EngineUpdateRowsRequest UpdateRequest(Fixture& fixture,
   return request;
 }
 
-api::EngineUpdateRowsRequest UpdateAllRequest(Fixture& fixture,
+scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> UpdateAllRequest(Fixture& fixture,
                                               std::string request_id,
                                               std::vector<std::string> options) {
-  api::EngineUpdateRowsRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
   request.assignments.push_back({"name", TextValue("batch_updated")});
@@ -317,16 +401,18 @@ api::EngineUpdateRowsRequest UpdateAllRequest(Fixture& fixture,
   return request;
 }
 
-api::EngineDeleteRowsRequest DeleteAllRequest(Fixture& fixture, std::string request_id) {
-  api::EngineDeleteRowsRequest request;
-  request.context = fixture.context;
+scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> DeleteAllRequest(
+    Fixture& fixture, std::string request_id) {
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest> request(
+      *fixture.session, fixture.context);
   request.context.request_id = std::move(request_id);
   request.target_table.uuid = fixture.table_uuid;
   return request;
 }
 
 void TestInsertAndUpdateRuntimeAllocationSuccess() {
-  auto fixture = MakeFixture("success", 1000);
+  Fixture fixture;
+  InitializeFixture(fixture, "success", 1000);
   auto insert = InsertRequest(fixture,
                               "pfar-012-insert-success",
                               RuntimeOptions(4, 4));
@@ -397,11 +483,14 @@ void TestInsertAndUpdateRuntimeAllocationSuccess() {
           "PFAR-012 update index preallocated inventory was not consumed");
   state = LoadedState(fixture.context);
   Require(state.row_versions.size() == 2, "PFAR-012 updated row version missing");
-  Require(state.index_entries.size() == 2, "PFAR-012 updated index entry missing");
+  RequireIndexHistory(fixture, state, 2, 1);
+  RequireIndexLookup(fixture, "alpha", 0);
+  RequireIndexLookup(fixture, "bravo", 1);
 }
 
 void TestInsertAllocationRefusalLeavesNoMutation() {
-  auto fixture = MakeFixture("insert_refusal", 2000);
+  Fixture fixture;
+  InitializeFixture(fixture, "insert_refusal", 2000);
   auto insert = InsertRequest(fixture,
                               "pfar-012-insert-refusal",
                               RuntimeOptions(1, 0));
@@ -424,7 +513,8 @@ void TestInsertAllocationRefusalLeavesNoMutation() {
 }
 
 void TestUpdateAllocationRefusalLeavesNoMutation() {
-  auto fixture = MakeFixture("update_refusal", 3000);
+  Fixture fixture;
+  InitializeFixture(fixture, "update_refusal", 3000);
   auto seed = InsertRequest(fixture, "pfar-012-update-seed", {});
   const auto seeded = api::EngineInsertRows(seed);
   Require(seeded.ok, "PFAR-012 seed insert failed");
@@ -456,7 +546,8 @@ void TestUpdateAllocationRefusalLeavesNoMutation() {
 }
 
 void TestBatchDmlUsesStatementSizedRuntimeReservations() {
-  auto fixture = MakeFixture("batch_reservations", 4000);
+  Fixture fixture;
+  InitializeFixture(fixture, "batch_reservations", 4000);
   auto insert = MultiInsertRequest(fixture,
                                    "pfar-012-batch-insert",
                                    RuntimeOptions(8, 8),
@@ -486,21 +577,30 @@ void TestBatchDmlUsesStatementSizedRuntimeReservations() {
 
   state = LoadedState(fixture.context);
   Require(state.row_versions.size() == 8, "PFAR-012 batch update row version count mismatch");
-  Require(state.index_entries.size() == 8, "PFAR-012 batch update index entry count mismatch");
+  RequireIndexHistory(fixture, state, 8, 4);
+  for (int row = 1; row <= 4; ++row)
+    RequireIndexLookup(fixture, "batch_" + std::to_string(row), 0);
+  RequireIndexLookup(fixture, "batch_updated", 4);
 
   const auto deleted = api::EngineDeleteRows(DeleteAllRequest(fixture, "pfar-012-batch-delete"));
   Require(deleted.ok, "PFAR-012 batch delete failed");
   Require(deleted.deleted_count == 4, "PFAR-012 batch delete count mismatch");
   state = LoadedState(fixture.context);
   Require(state.row_versions.size() == 12, "PFAR-012 batch delete tombstone count mismatch");
+  RequireIndexLookup(fixture, "batch_updated", 0);
 }
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "dml_page_allocation_runtime_gate");
   TestInsertAndUpdateRuntimeAllocationSuccess();
   TestInsertAllocationRefusalLeavesNoMutation();
   TestUpdateAllocationRefusalLeavesNoMutation();
   TestBatchDmlUsesStatementSizedRuntimeReservations();
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
