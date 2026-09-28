@@ -1136,7 +1136,7 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
   add_test(NAME qow_live_server_statement_context_regression
     COMMAND qow_live_server_statement_context_regression)
   set_tests_properties(qow_live_server_statement_context_regression PROPERTIES
-    LABELS "qow_closure;QOW-214;QOW-CT-007;canonical_mga_statement_context;sbsql_parser_worker;mga_transaction_regression"
+    LABELS "qow_closure;QOW-214;QOW-CT-007;canonical_mga_statement_context;sbsql_parser_worker;mga_transaction_regression;binary_uuid"
   )
   add_test(NAME qow_join_tail_literal_filter_parameter_limit_v1
     COMMAND qow_live_server_statement_context_regression

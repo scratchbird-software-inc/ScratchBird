@@ -25,6 +25,7 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "crud_support/crud_store.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../internal_api/catalog/datatype_bootstrap_identity.hpp"
@@ -3299,8 +3300,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   if (*encoded == "<NULL>") {
                     value.setState(api::EngineValueState::sql_null);
                   } else {
-                    value.setState(api::EngineValueState::value);
-                    value.encoded_value = *encoded;
+                    if (!api::RestoreStoredScalarPayloadV1(
+                            *encoded, api::EngineValueState::value, &value)) {
+                      return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                                  "columnar stored scalar has no valid native payload");
+                    }
                   }
                   tuple.values.push_back(std::move(value));
                 }
@@ -3460,16 +3464,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                   if (!CanonicalQueryEngineDescriptorExactlyEqual(
                           actual.descriptor,
                           source_copy.columns[ordinal].descriptor) ||
-                      (expected_null
-                           ? (actual.state !=
-                                  api::EngineValueState::sql_null ||
-                              !actual.is_null ||
-                              !actual.encoded_value.empty() ||
-                              !actual.binary_value.empty())
-                           : (actual.state != api::EngineValueState::value ||
-                              actual.is_null ||
-                              actual.encoded_value != *expected_encoded ||
-                              !actual.binary_value.empty()))) {
+                      !api::StoredScalarPayloadMatchesV1(
+                          actual,
+                          expected_null ? std::string_view{} : std::string_view(*expected_encoded),
+                          expected_null ? api::EngineValueState::sql_null
+                                        : api::EngineValueState::value)) {
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar source reconstructed value changed");
                   }
@@ -5885,8 +5884,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               if (*encoded == "<NULL>") {
                 value.setState(api::EngineValueState::sql_null);
               } else {
-                value.encoded_value = *encoded;
-                value.setState(api::EngineValueState::value);
+                if (!api::RestoreStoredScalarPayloadV1(
+                        *encoded, api::EngineValueState::value, &value)) {
+                  return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                              "columnar stored scalar has no valid native payload");
+                }
               }
               tuple.values.push_back(std::move(value));
             }
@@ -6325,16 +6327,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 if (!CanonicalQueryEngineDescriptorExactlyEqual(
                         actual.descriptor,
                         public_columns[ordinal].descriptor) ||
-                    (expected_null
-                         ? (actual.state !=
-                                api::EngineValueState::sql_null ||
-                            !actual.is_null ||
-                            !actual.encoded_value.empty() ||
-                            !actual.binary_value.empty())
-                         : (actual.state != api::EngineValueState::value ||
-                            actual.is_null ||
-                            actual.encoded_value != *expected_encoded ||
-                            !actual.binary_value.empty()))) {
+                    !api::StoredScalarPayloadMatchesV1(
+                        actual,
+                        expected_null ? std::string_view{} : std::string_view(*expected_encoded),
+                        expected_null ? api::EngineValueState::sql_null
+                                      : api::EngineValueState::value)) {
                   return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                               "columnar source reconstructed value changed");
                 }

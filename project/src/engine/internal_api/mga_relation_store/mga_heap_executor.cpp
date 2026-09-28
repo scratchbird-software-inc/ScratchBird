@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
+#include "mga_relation_store/stored_scalar_payload.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -1052,19 +1053,11 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
               "heap value materialization exceeds the callback memory allowance",
               true);
         }
-        const auto& type = value.descriptor.canonical_type_name;
-        if (type == "uuid" || type == "uuidv7" || type == "binary" ||
-            type == "bytes" || type == "blob") {
-          if ((type == "uuid" || type == "uuidv7") &&
-              encoded_value->size() != 16) {
-            return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
-                           "stored UUID is not a native binary16 value", true);
-          }
-          value.binary_value.assign(encoded_value->begin(), encoded_value->end());
-        } else {
-          value.encoded_value = *encoded_value;
+        if (!api::RestoreStoredScalarPayloadV1(
+                *encoded_value, api::EngineValueState::value, &value)) {
+          return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                         "stored scalar has no valid native payload", true);
         }
-        value.state = api::EngineValueState::value;
       }
       tuple.values.push_back(std::move(value));
     }
