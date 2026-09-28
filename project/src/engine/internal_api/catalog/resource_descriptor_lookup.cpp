@@ -255,10 +255,12 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
         family == "charset" ? scratchbird::core::resources::ResourceSeedFamily::charset
                             : scratchbird::core::resources::ResourceSeedFamily::collation, name);
     if (!alias.ok() && alias.diagnostic.diagnostic_code == "SB_RESOURCE_ALIAS_AMBIGUOUS") {
-      result.diagnostic = MakeEngineApiDiagnostic(alias.diagnostic.diagnostic_code,
+      result.diagnostic = MakeEngineApiDiagnosticFromNative(alias.diagnostic,
+                                                  alias.diagnostic.diagnostic_code,
                                                   alias.diagnostic.message_key, {});
       for (const auto& field : alias.diagnostic.arguments)
-        result.diagnostic.fields.push_back({field.key, field.value});
+        if (const auto* text = field.text())
+          result.diagnostic.fields.push_back({field.key, *text});
     } else {
       result.diagnostic = MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
           "message_vector.item_not_found_or_does_not_exist", family + "_not_found_or_not_visible");

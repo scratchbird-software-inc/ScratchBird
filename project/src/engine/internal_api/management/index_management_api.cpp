@@ -291,12 +291,13 @@ EngineApiDiagnostic ConvertDiagnostic(const platform::DiagnosticRecord& diagnost
                                       std::string_view fallback_code) {
   std::string detail;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (argument.key == "detail") {
-      detail = argument.value;
+      detail = (*argument.text());
       break;
     }
   }
-  return MakeEngineApiDiagnostic(
+  return MakeEngineApiDiagnosticFromNative(diagnostic,
       diagnostic.diagnostic_code.empty() ? std::string(fallback_code)
                                          : diagnostic.diagnostic_code,
       diagnostic.message_key.empty() ? "index.management.route"

@@ -1072,12 +1072,14 @@ bool ValidateServerMemoryPolicy(const ServerBootstrapConfig& config,
       fields.push_back({"provenance", config.memory_policy_provenance});
       fields.push_back({"policy_generation", std::to_string(config.memory_policy_generation)});
       for (const auto& argument : diagnostic.arguments) {
-        fields.push_back({argument.key, argument.value});
+        if (const auto* text = argument.text()) fields.push_back({argument.key, *text});
       }
-      diagnostics->push_back(ConfigDiagnostic(diagnostic.diagnostic_code,
+      auto translated = ConfigDiagnostic(diagnostic.diagnostic_code,
                                               diagnostic.message_key,
                                               "The configured production memory policy is invalid.",
-                                              std::move(fields)));
+                                              std::move(fields));
+      translated.native_platform_source = diagnostic;
+      diagnostics->push_back(std::move(translated));
     }
     return false;
   }

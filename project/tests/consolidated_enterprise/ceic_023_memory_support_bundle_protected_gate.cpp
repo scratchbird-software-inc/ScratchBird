@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // CEIC-023 focused validation for bounded low-memory memory support bundles
 // and protected-memory security review evidence.
 #include "memory.hpp"
@@ -57,7 +59,7 @@ bool RowKeyHas(const memory::MemorySupportBundleResult& bundle,
 bool AnyRowValueHas(const memory::MemorySupportBundleResult& bundle,
                     std::string_view token) {
   for (const auto& row : bundle.rows) {
-    if (row.value.find(token) != std::string::npos) {
+    if (scratchbird::tests::DiagnosticValueBytes(row.value).find(token) != std::string::npos) {
       return true;
     }
   }

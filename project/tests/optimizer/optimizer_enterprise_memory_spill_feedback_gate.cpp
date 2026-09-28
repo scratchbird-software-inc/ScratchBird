@@ -32,8 +32,8 @@ bool Require(bool condition, const std::string& message) {
 opt::OptimizerMemoryFeedbackEvidence MemoryEvidence() {
   // SEARCH_KEY: OEIC_MEMORY_SPILL_FEEDBACK_ENTERPRISE
   opt::OptimizerMemoryFeedbackEvidence evidence;
-  evidence.query_uuid = "query.memory.feedback";
-  evidence.scope_uuid = "scope.memory.feedback";
+  evidence.query_uuid = scratchbird::tests::FixtureUuid(2212, 1);
+  evidence.scope_uuid = scratchbird::tests::FixtureUuid(2212, 2);
   evidence.route_kind = "sql_select";
   evidence.route_label = "embedded:select:aggregate";
   evidence.operator_family = "hash_aggregate";
@@ -139,7 +139,7 @@ bool MemorySpillFeedbackExpiresAndInvalidates() {
     return Require(false, "second setup feedback failed");
   }
   opt::EnterpriseMemorySpillFeedbackInvalidation event;
-  event.scope_uuid = "scope.memory.feedback";
+  event.scope_uuid = scratchbird::tests::FixtureUuid(2212, 2);
   event.security_epoch = 41;
   event.reason = "security_epoch_changed";
   const auto invalidated = store.Invalidate(event);
@@ -172,6 +172,110 @@ bool MemorySpillFeedbackRejectsUngovernedAndStaleEvidence() {
                  "stale memory feedback was accepted") &&
          Require(store.Snapshot().total_records == 0,
                  "rejected memory feedback was recorded");
+}
+
+bool NativeScopeAndInvalidation() {
+  using scratchbird::tests::FixtureUuid;
+  const auto key = FixtureUuid(2212, 90);
+  auto request = ApplyRequest(key);
+  opt::EnterpriseMemorySpillFeedbackStore seed;
+  if (!Require(opt::ApplyEnterpriseMemorySpillFeedback(request, &seed).accepted,
+               "native scope fixture admission failed")) return false;
+  const auto original = *seed.Find(key);
+  for (const bool query : {false, true}) {
+    for (unsigned position = 0; position < 16; ++position) {
+      for (unsigned octet = 0; octet < 256; ++octet) {
+        auto changed = request;
+        auto& id = query ? changed.evidence.query_uuid : changed.evidence.scope_uuid;
+        id.bytes[position] = static_cast<unsigned char>(octet);
+        const bool valid = (id.bytes[6] & 0xf0) == 0x70 && (id.bytes[8] & 0xc0) == 0x80;
+        const auto bridge = opt::BuildOptimizerMemoryFeedbackForPlanner(changed.evidence);
+        if (!Require(bridge.ok() == valid && bridge.fail_closed == !valid &&
+                     bridge.diagnostic.arguments.size() >= 2 &&
+                     bridge.diagnostic.arguments[0].uuid() &&
+                     *bridge.diagnostic.arguments[0].uuid() == changed.evidence.query_uuid &&
+                     bridge.diagnostic.arguments[1].uuid() &&
+                     *bridge.diagnostic.arguments[1].uuid() == changed.evidence.scope_uuid,
+                     "bridge dropped UUID bytes or confused diagnostic data with authority")) return false;
+        if (!Require(valid ? bridge.query_uuid == changed.evidence.query_uuid &&
+                              bridge.scope_uuid == changed.evidence.scope_uuid :
+                              bridge.query_uuid.is_nil() && bridge.scope_uuid.is_nil(),
+                     "refused bridge retained admitted native scope")) return false;
+        opt::EnterpriseMemorySpillFeedbackStore applied_store;
+        const auto applied = opt::ApplyEnterpriseMemorySpillFeedback(changed, &applied_store);
+        if (!Require(applied.accepted == valid && applied.fail_closed == !valid &&
+                     applied_store.Snapshot().total_records == (valid ? 1u : 0u),
+                     "apply path bypassed native query or scope admission")) return false;
+        if (valid && !Require(applied_store.Find(key)->query_uuid == changed.evidence.query_uuid &&
+                              applied_store.Find(key)->scope_uuid == changed.evidence.scope_uuid,
+                              "applied feedback changed a native scope byte")) return false;
+
+        opt::EnterpriseMemorySpillFeedbackStore direct;
+        auto record = original;
+        record.query_uuid = changed.evidence.query_uuid;
+        record.scope_uuid = changed.evidence.scope_uuid;
+        const auto detached = direct.Record(record);
+        const bool same = record.query_uuid == original.query_uuid &&
+                          record.scope_uuid == original.scope_uuid;
+        if (!Require(detached.accepted == same &&
+                     direct.Snapshot().total_records == (same ? 1u : 0u),
+                     "direct store accepted identity different from the admitted bridge")) return false;
+        record.bridge_result = bridge;
+        const auto matched = direct.Record(record);
+        if (!Require(matched.accepted == valid &&
+                     direct.Snapshot().total_records == (valid ? 1u : 0u),
+                     "direct store failed exact native bridge binding")) return false;
+        if (!query) {
+          opt::EnterpriseMemorySpillFeedbackStore invalidation_store;
+          if (!Require(invalidation_store.Record(original).accepted, "invalidation fixture refused")) return false;
+          opt::EnterpriseMemorySpillFeedbackInvalidation event;
+          event.scope_uuid = id;
+          event.security_epoch = original.security_epoch + 1;
+          const bool exact = valid && id == original.scope_uuid;
+          if (!Require(invalidation_store.Invalidate(event) == (exact ? 1u : 0u) &&
+                       invalidation_store.Find(key)->valid == !exact,
+                       "invalidation ignored a selector byte or treated invalid input as wildcard")) return false;
+        }
+      }
+    }
+  }
+  for (const bool query : {false, true}) {
+    auto nil_request = request;
+    (query ? nil_request.evidence.query_uuid : nil_request.evidence.scope_uuid) = {};
+    const auto nil = opt::ApplyEnterpriseMemorySpillFeedback(nil_request, &seed);
+    if (!Require(!nil.accepted && nil.feedback_uuid.is_nil() && seed.Find(key)->valid &&
+                 seed.Snapshot().total_records == 1, "nil query/scope overwrote admitted record")) return false;
+  }
+  auto second = request;
+  second.feedback_uuid = FixtureUuid(2212, 91);
+  second.evidence.scope_uuid = FixtureUuid(2212, 92);
+  if (!Require(opt::ApplyEnterpriseMemorySpillFeedback(second, &seed).accepted,
+               "distinct native scope could not retain its own record")) return false;
+  opt::EnterpriseMemorySpillFeedbackInvalidation event;
+  event.scope_uuid = scratchbird::core::platform::Uuid{};
+  event.security_epoch = original.security_epoch + 1;
+  if (!Require(seed.Invalidate(event) == 0 && seed.Snapshot().valid_records == 2,
+               "explicit nil selector became all-scope invalidation")) return false;
+  event.scope_uuid.reset();
+  if (!Require(seed.Invalidate(event) == 2 && seed.Snapshot().valid_records == 0,
+               "explicitly absent selector did not invalidate all matching generations")) return false;
+  for (unsigned slot = 0; slot < 6; ++slot) {
+    auto mismatch = request;
+    switch (slot) {
+      case 0: ++mismatch.policy_generation; break;
+      case 1: ++mismatch.feedback_generation; break;
+      case 2: ++mismatch.catalog_epoch; break;
+      case 3: ++mismatch.security_epoch; break;
+      case 4: mismatch.route_label += ".different"; break;
+      case 5: mismatch.plan_node_id += ".different"; break;
+    }
+    opt::EnterpriseMemorySpillFeedbackStore store;
+    const auto refused = opt::ApplyEnterpriseMemorySpillFeedback(mismatch, &store);
+    if (!Require(!refused.accepted && refused.fail_closed && refused.feedback_uuid.is_nil() &&
+                 refused.diagnostic_code == "SB-OPT-0001" && store.Snapshot().total_records == 0,
+                 "request metadata was detached from admitted memory evidence")) return false;
+  }
+  return true;
 }
 
 bool NativeFeedbackKeyAdmissionAndIsolation() {
@@ -242,8 +346,8 @@ bool NativeFeedbackKeyAdmissionAndIsolation() {
   for (unsigned binding = 0; binding < 4; ++binding) {
     auto changed = *retained;
     switch (binding) {
-      case 0: changed.query_uuid += ".different"; break;
-      case 1: changed.scope_uuid += ".different"; break;
+      case 0: changed.query_uuid = FixtureUuid(2212, 11); break;
+      case 1: changed.scope_uuid = FixtureUuid(2212, 12); break;
       case 2: changed.route_label += ".different"; break;
       case 3: changed.plan_node_id += ".different"; break;
     }
@@ -303,6 +407,7 @@ bool NativeFeedbackKeyAdmissionAndIsolation() {
 }  // namespace
 
 int main() {
+  if (!NativeScopeAndInvalidation()) return EXIT_FAILURE;
   if (!NativeFeedbackKeyAdmissionAndIsolation()) return EXIT_FAILURE;
   if (!MemorySpillFeedbackRecordsAndAdjustsCost()) return EXIT_FAILURE;
   if (!MemorySpillFeedbackExpiresAndInvalidates()) return EXIT_FAILURE;

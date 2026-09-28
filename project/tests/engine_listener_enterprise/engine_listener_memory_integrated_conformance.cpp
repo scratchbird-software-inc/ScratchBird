@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "hierarchical_memory_budget_ledger.hpp"
 #include "memory.hpp"
 #include "memory_pressure_response.hpp"
@@ -598,7 +600,7 @@ void ProveLowMemorySupportBundle() {
   Require(bundle.redacted_row_count != 0,
           "ELER-050 support bundle did not redact canary rows");
   for (const auto& row : bundle.rows) {
-    Require(!ContainsSensitiveCanary(row.value),
+    Require(!ContainsSensitiveCanary(scratchbird::tests::DiagnosticValueBytes(row.value)),
             "ELER-050 support bundle leaked a synthetic secret value");
   }
 

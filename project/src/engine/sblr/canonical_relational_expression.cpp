@@ -399,8 +399,10 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
     *refusal_detail = canonical.diagnostic.diagnostic_code.empty()
                           ? "literal payload is invalid for its descriptor"
                           : canonical.diagnostic.diagnostic_code;
-    for (const auto& argument : canonical.diagnostic.arguments)
-      if (argument.key == "detail") *refusal_detail += ":" + argument.value;
+    for (const auto& argument : canonical.diagnostic.arguments) {
+      if (argument.key == "detail" && argument.text())
+        *refusal_detail += ":" + *argument.text();
+    }
     return false;
   }
   *canonical_payload = canonical.value.encoded_value;

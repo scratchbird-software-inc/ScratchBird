@@ -45,8 +45,8 @@ bool HasEvidence(const std::vector<std::string>& evidence,
 
 opt::OptimizerMemoryFeedbackEvidence BaseEvidence(std::string source_kind) {
   opt::OptimizerMemoryFeedbackEvidence evidence;
-  evidence.query_uuid = "query-ceic059-governed-ledger";
-  evidence.scope_uuid = "scope-ceic059-governed-ledger";
+  evidence.query_uuid = scratchbird::tests::FixtureUuid(2212, 3);
+  evidence.scope_uuid = scratchbird::tests::FixtureUuid(2212, 4);
   evidence.route_kind = "sql_select";
   evidence.route_label = "embedded/ceic059/hash-aggregate";
   evidence.operator_family = "hash_aggregate";
@@ -303,7 +303,7 @@ void SpillStoreInvalidatesAndExpires() {
                                               &store);
   Require(accepted_again.accepted, "CEIC-059 second spill feedback setup failed");
   opt::EnterpriseMemorySpillFeedbackInvalidation event;
-  event.scope_uuid = "scope-ceic059-governed-ledger";
+  event.scope_uuid = scratchbird::tests::FixtureUuid(2212, 4);
   event.security_epoch = 9900;
   event.reason = "security_epoch_changed";
   const auto invalidated = store.Invalidate(event);

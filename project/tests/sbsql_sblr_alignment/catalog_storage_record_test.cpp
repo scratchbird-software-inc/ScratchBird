@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_page.hpp"
 #include "database_lifecycle.hpp"
@@ -256,7 +258,7 @@ void Durable(const fs::path& root, p::u64 millis) {
     Check(!refused.ok() && refused.diagnostic.diagnostic_code ==
           "SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH", "duplicate descriptor not refused by manifest gate");
     Check(std::any_of(refused.diagnostic.arguments.begin(), refused.diagnostic.arguments.end(),
-        [](const auto& argument) { return argument.value == "primary_storage_descriptor_count"; }),
+        [](const auto& argument) { return scratchbird::tests::DiagnosticTextEquals(argument.value, "primary_storage_descriptor_count"); }),
         "duplicate refused for unrelated fixture mutation instead of duplicate binding");
     Check(ReadAll(cfg.path) == before, "duplicate refusal changed node");
   }

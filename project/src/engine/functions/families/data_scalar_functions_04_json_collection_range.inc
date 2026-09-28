@@ -1081,9 +1081,9 @@
         bool overflow = false;
         std::string detail = "cast source is not a valid finite decimal value";
         for (const auto& argument : numeric_result.diagnostic.arguments) {
-          if (argument.key != "detail") continue;
-          detail = argument.value;
-          overflow = argument.value.find("out_of_range") != std::string::npos;
+          if (argument.key != "detail" || !argument.text()) continue;
+          detail = *argument.text();
+          overflow = detail.find("out_of_range") != std::string::npos;
           break;
         }
         if (overflow) {

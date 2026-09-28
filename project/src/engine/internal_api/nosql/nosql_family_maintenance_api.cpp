@@ -75,13 +75,14 @@ void AddDiagnostic(EnginePlanNoSqlFamilyMaintenanceResult* result) {
   if (result->agent_result.diagnostic.diagnostic_code.empty()) {
     return;
   }
-  EngineApiDiagnostic diagnostic;
-  diagnostic.code = result->agent_result.diagnostic.diagnostic_code;
-  diagnostic.message_key = result->agent_result.diagnostic.message_key;
-  diagnostic.error = result->agent_result.fail_closed;
+  auto diagnostic = MakeEngineApiDiagnosticFromNative(
+      result->agent_result.diagnostic,
+      result->agent_result.diagnostic.diagnostic_code,
+      result->agent_result.diagnostic.message_key, {}, result->agent_result.fail_closed);
   for (const auto& argument : result->agent_result.diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (argument.key == "detail") {
-      diagnostic.detail = argument.value;
+      diagnostic.detail = (*argument.text());
       break;
     }
   }

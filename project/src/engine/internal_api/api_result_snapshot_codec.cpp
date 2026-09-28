@@ -128,6 +128,35 @@ template<class A,class T>void Shape(A& a,T& v){
     if(association==2){if(!a.Charge(sizeof(EngineQueryResultMetadataV1)+shared_overhead))return;a(*m);}a(v.query_values->rows);
   }
 }
+// Diagnostic UUID arguments report values (including rejected input), not
+// admitted object identities. Their tagged raw16 payload must bypass the
+// system-identity policy used by EngineUuid evidence and descriptor slots.
+template<class A, class T> void DiagnosticArgument(A& a, T& argument) {
+  a(argument.key);
+  if constexpr (A::reading) {
+    std::uint8_t tag = 0;
+    a(tag);
+    if (!a.ok) return;
+    if (tag == 0) {
+      std::string text;
+      a(text);
+      argument.value = std::move(text);
+    } else if (tag == 1) {
+      core::platform::Uuid value;
+      if (a.Raw(value.bytes.data(), value.bytes.size())) argument.value = value;
+    } else {
+      a.ok = false;
+    }
+  } else {
+    if (argument.value.valueless_by_exception()) { a.ok = false; return; }
+    a(static_cast<std::uint8_t>(argument.value.index()));
+    if (const auto* text = argument.text()) a(*text);
+    else {
+      const auto& value = *argument.uuid();
+      a.Raw(value.bytes.data(), value.bytes.size());
+    }
+  }
+}
 template<class A,class T>void Record(A& a,T& v){
   using U=std::remove_cv_t<T>;
 #define REC(type,...) if constexpr(std::is_same_v<U,type>){a(__VA_ARGS__);}
@@ -138,7 +167,7 @@ template<class A,class T>void Record(A& a,T& v){
   else REC(EngineUnsupportedFeature,v.feature,v.reason)
   else REC(EngineObjectReference,v.uuid,v.object_kind)
   else REC(EngineApiDiagnosticField,v.key,v.value)
-  else REC(core::platform::DiagnosticArgument,v.key,v.value)
+  else if constexpr(std::is_same_v<U,core::platform::DiagnosticArgument>) DiagnosticArgument(a,v);
   else REC(core::platform::Status,v.code,v.severity,v.subsystem)
   else REC(core::platform::DiagnosticRecord,v.status,v.diagnostic_code,v.message_key,v.arguments,v.trace_id,v.source_component,v.remediation_hint)
   else REC(core::diagnostics::CanonicalDiagnosticMetadata,v.code,v.severity,v.is_failure,v.sqlstate,v.numeric_binding,v.retry_class,v.required_outcome,v.diagnostic_class)
@@ -162,11 +191,11 @@ template<class A,class T>void Record(A& a,T& v){
 }
 bool EncodeEngineApiResultSnapshot(const EngineApiResult& result,std::vector<std::uint8_t>* output){
   if(!output)return false;
-  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',2,0,0,0};writer(header,result);
+  Writer writer;const std::array<std::uint8_t,8> header{'S','A','P','I',3,0,0,0};writer(header,result);
   if(!writer.ok)return false;output->swap(writer.bytes);return true;
 }
 bool DecodeEngineApiResultSnapshot(std::span<const std::uint8_t> bytes,EngineApiResult* output){
-  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',2,0,0,0};
+  constexpr std::array<std::uint8_t,8> header{'S','A','P','I',3,0,0,0};
   if(!output||bytes.size()<header.size()||bytes.size()>limit||!std::equal(header.begin(),header.end(),bytes.begin()))return false;
   Reader reader{true,bytes,header.size()};EngineApiResult result;reader(result);
   if(!reader.ok||reader.offset!=bytes.size())return false;

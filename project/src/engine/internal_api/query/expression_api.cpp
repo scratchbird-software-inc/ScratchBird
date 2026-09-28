@@ -942,8 +942,9 @@ bool QowApplyCanonicalNumericScalarV1(
   if (numeric_facts) *numeric_facts = numeric_result.numeric_facts;
   if (!numeric_result.ok()) {
     for (const auto& argument : numeric_result.diagnostic.arguments) {
-      if (argument.key == "detail" && !argument.value.empty()) {
-        *refusal_detail = argument.value;
+      if (!argument.text()) continue; // Only explicit text contributes to this summary.
+      if (argument.key == "detail" && !(*argument.text()).empty()) {
+        *refusal_detail = (*argument.text());
         break;
       }
     }
@@ -2033,8 +2034,9 @@ EngineApiDiagnostic DatatypeDiagnosticToApi(const std::string& operation_id,
                                             const dt::DiagnosticRecord& diagnostic) {
   std::string detail;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (argument.key == "detail") {
-      detail = argument.value;
+      detail = (*argument.text());
       break;
     }
   }

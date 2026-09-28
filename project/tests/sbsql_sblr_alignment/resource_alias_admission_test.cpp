@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 #include "resource_seed_pack.hpp"
 #include "resource_artifact_content_codec.hpp"
 #include "unicode_normalization.hpp"
@@ -265,9 +267,9 @@ void Ambiguous(const r::ResourceSeedCatalogImage& image, r::ResourceSeedFamily f
         "ambiguity message key did not match the admitted shape");
   Check(result.diagnostic.arguments.size() == 2 &&
         result.diagnostic.arguments[0].key == "resource_family" &&
-        result.diagnostic.arguments[0].value == r::ResourceSeedFamilyName(family) &&
+        scratchbird::tests::DiagnosticTextEquals(result.diagnostic.arguments[0].value, r::ResourceSeedFamilyName(family)) &&
         result.diagnostic.arguments[1].key == "alias" &&
-        result.diagnostic.arguments[1].value == label,
+        scratchbird::tests::DiagnosticTextEquals(result.diagnostic.arguments[1].value, label),
         "ambiguity diagnostic fields leaked or omitted request-only parameters");
 }
 }

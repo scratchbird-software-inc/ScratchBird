@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "deferred_secondary_index_runtime_policy.hpp"
 #include "index_apply_planner.hpp"
 #include "../support/binary_uuid_fixture.hpp"
@@ -105,7 +107,7 @@ void RequireNoRuntimeDocTokens(
   };
   for (const auto& argument : decision.diagnostic.arguments) {
     values.push_back(argument.key);
-    values.push_back(argument.value);
+    values.emplace_back(scratchbird::tests::DiagnosticValueBytes(argument.value));
   }
   for (const auto& field : decision.evidence) {
     values.push_back(field.name);

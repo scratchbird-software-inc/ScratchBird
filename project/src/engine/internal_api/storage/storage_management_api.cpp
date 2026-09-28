@@ -493,8 +493,9 @@ EngineApiDiagnostic DiagnosticFromPreallocation(
     const filespace::FilespacePreallocationResult& storage) {
   std::string detail = storage.diagnostic.message_key;
   for (const auto& argument : storage.diagnostic.arguments) {
-    if (argument.key == "detail" && !argument.value.empty()) {
-      detail += ":" + argument.value;
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
+    if (argument.key == "detail" && !(*argument.text()).empty()) {
+      detail += ":" + (*argument.text());
     }
   }
   return MakeEngineApiDiagnostic(

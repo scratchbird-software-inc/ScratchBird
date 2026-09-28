@@ -1,3 +1,4 @@
+#include "../support/diagnostic_value_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -711,7 +712,7 @@ Fixture MakeFixture(const std::string_view mode) {
          index < created.diagnostic.arguments.size(); ++index) {
       if (index != 0) std::cerr << ',';
       std::cerr << created.diagnostic.arguments[index].key << '='
-                << created.diagnostic.arguments[index].value;
+                << scratchbird::tests::DiagnosticArgumentDisplay(created.diagnostic.arguments[index]);
     }
     std::cerr << " remediation=" << created.diagnostic.remediation_hint
               << '\n';

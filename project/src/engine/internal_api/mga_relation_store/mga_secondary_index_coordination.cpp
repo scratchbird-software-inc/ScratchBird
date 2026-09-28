@@ -130,10 +130,11 @@ EngineApiDiagnostic DiagnosticFromSecondaryIndexDeltaLedger(
     const std::string& fallback_key) {
   std::string detail = diagnostic.remediation_hint;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) { detail += ";"; }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
-  return MakeEngineApiDiagnostic(diagnostic.diagnostic_code.empty() ? fallback_code
+  return MakeEngineApiDiagnosticFromNative(diagnostic,diagnostic.diagnostic_code.empty() ? fallback_code
                                                                     : diagnostic.diagnostic_code,
                                  diagnostic.message_key.empty() ? fallback_key
                                                                 : diagnostic.message_key,
@@ -307,10 +308,11 @@ EngineApiDiagnostic OverlayLookupDiagnostic(
     const std::string& fallback_key) {
   std::string detail = diagnostic.remediation_hint;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) { detail += ";"; }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
-  return MakeEngineApiDiagnostic(diagnostic.diagnostic_code.empty() ? fallback_code
+  return MakeEngineApiDiagnosticFromNative(diagnostic,diagnostic.diagnostic_code.empty() ? fallback_code
                                                                     : diagnostic.diagnostic_code,
                                  diagnostic.message_key.empty() ? fallback_key
                                                                 : diagnostic.message_key,
@@ -449,10 +451,11 @@ std::string Dpc033DiagnosticDetail(
   }
   std::string detail;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) {
       detail += ";";
     }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
   return detail;
 }
@@ -1764,7 +1767,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
                                    "mga_secondary_index_garbage_cleanup." + field.key,
                                    field.value);
   }
-  result.diagnostic = Dpc033CleanupDiagnostic(
+  result.diagnostic = MakeEngineApiDiagnosticFromNative(agent.diagnostic,
       agent.diagnostic.diagnostic_code,
       agent.diagnostic.message_key,
       Dpc033DiagnosticDetail(agent.diagnostic),

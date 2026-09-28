@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "reference_emulated_index_mapping.hpp"
 
 #include <algorithm>
@@ -62,7 +64,7 @@ bool DetailContains(const scratchbird::core::platform::DiagnosticRecord& record,
                     const std::string& value) {
   for (const auto& argument : record.arguments) {
     if (argument.key == "detail" &&
-        argument.value.find(value) != std::string::npos) {
+        argument.text() && argument.text()->find(value) != std::string::npos) {
       return true;
     }
   }
@@ -97,7 +99,7 @@ void AppendDiagnosticValues(
   values->push_back(diagnostic.remediation_hint);
   for (const auto& argument : diagnostic.arguments) {
     values->push_back(argument.key);
-    values->push_back(argument.value);
+    values->emplace_back(scratchbird::tests::DiagnosticValueBytes(argument.value));
   }
 }
 

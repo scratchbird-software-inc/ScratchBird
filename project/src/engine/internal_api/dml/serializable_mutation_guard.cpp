@@ -103,7 +103,8 @@ SerializableDmlAdmissionResult InactiveResult() {
 SerializableDmlAdmissionResult Refuse(std::string operation_id,
                                       std::string code,
                                       std::string message_key,
-                                      std::string detail) {
+                                      std::string detail,
+                                      const platform::DiagnosticRecord* source = nullptr) {
   SerializableDmlAdmissionResult result;
   result.ok = false;
   result.active = true;
@@ -111,6 +112,11 @@ SerializableDmlAdmissionResult Refuse(std::string operation_id,
                                               std::move(message_key),
                                               std::move(operation_id) + ":" + detail,
                                               true);
+  if (source) {
+    result.diagnostic.native_source = scratchbird::core::diagnostics::NativeDiagnosticSource{
+        *source, scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(
+                     source->diagnostic_code)};
+  }
   result.evidence.push_back({"serializable.admission", "refused"});
   result.evidence.push_back({"serializable.inventory_authority", "durable_transaction_inventory"});
   result.evidence.push_back({"serializable.failure", std::move(detail)});
@@ -120,10 +126,11 @@ SerializableDmlAdmissionResult Refuse(std::string operation_id,
 std::string DiagnosticDetail(const platform::DiagnosticRecord& diagnostic) {
   std::string detail = diagnostic.remediation_hint;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) {
       detail += ";";
     }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
   return detail;
 }
@@ -135,7 +142,7 @@ SerializableDmlAdmissionResult RefuseFromSerializable(
   result.ok = false;
   result.active = true;
   const std::string detail = DiagnosticDetail(conflict.diagnostic);
-  result.diagnostic = MakeEngineApiDiagnostic(
+  result.diagnostic = MakeEngineApiDiagnosticFromNative(conflict.diagnostic,
       conflict.diagnostic.diagnostic_code.empty()
           ? "SB-SNTXN-SERIALIZABLE-ADMISSION-REFUSED"
           : conflict.diagnostic.diagnostic_code,
@@ -397,7 +404,7 @@ SerializableDmlAdmissionResult LoadInventory(
                   loaded->diagnostic.message_key.empty()
                       ? "transaction.serializable.inventory_load_failed"
                       : loaded->diagnostic.message_key,
-                  DiagnosticDetail(loaded->diagnostic));
+                  DiagnosticDetail(loaded->diagnostic), &loaded->diagnostic);
   }
   return Admit("inventory_loaded", {});
 }
@@ -424,7 +431,7 @@ SerializableDmlAdmissionResult LookupCurrentTransaction(
                   lookup.diagnostic.message_key.empty()
                       ? "transaction.serializable.inventory_authority_required"
                       : lookup.diagnostic.message_key,
-                  DiagnosticDetail(lookup.diagnostic));
+                  DiagnosticDetail(lookup.diagnostic), &lookup.diagnostic);
   }
   *entry = lookup.entry;
   return Admit("transaction_loaded", {});
@@ -565,7 +572,7 @@ SerializableDmlAdmissionResult AppendLedgerRecords(
                   file_sync.diagnostic.message_key.empty()
                       ? "transaction.serializable.ledger_sync_failed"
                       : file_sync.diagnostic.message_key,
-                  DiagnosticDetail(file_sync.diagnostic));
+                  DiagnosticDetail(file_sync.diagnostic), &file_sync.diagnostic);
   }
   if (!existed_before_append) {
     const auto parent_sync = storage_disk::SyncParentDirectoryPath(path.string());
@@ -577,7 +584,7 @@ SerializableDmlAdmissionResult AppendLedgerRecords(
                     parent_sync.diagnostic.message_key.empty()
                         ? "transaction.serializable.ledger_parent_sync_failed"
                         : parent_sync.diagnostic.message_key,
-                    DiagnosticDetail(parent_sync.diagnostic));
+                    DiagnosticDetail(parent_sync.diagnostic), &parent_sync.diagnostic);
     }
   }
   std::vector<EngineEvidenceReference> evidence;

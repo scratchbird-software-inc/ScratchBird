@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "metric_contracts.hpp"
 #include "metric_registry.hpp"
 #include "page_cache.hpp"
@@ -187,7 +189,7 @@ void RequireNoForbiddenDiagnosticToken(const page::PageCacheResult& result,
   Require(!ContainsForbiddenRuntimeToken(result.diagnostic.source_component), label);
   for (const auto& argument : result.diagnostic.arguments) {
     Require(!ContainsForbiddenRuntimeToken(argument.key), label);
-    Require(!ContainsForbiddenRuntimeToken(argument.value), label);
+    Require(!ContainsForbiddenRuntimeToken(std::string(scratchbird::tests::DiagnosticValueBytes(argument.value))), label);
   }
 }
 

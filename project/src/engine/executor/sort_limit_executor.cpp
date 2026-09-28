@@ -733,8 +733,10 @@ bool CompareOrderValues(
         const auto compared = dt::CompareDatatypeValues(request);
         if (!compared.ok()) {
           *refusal_detail = compared.diagnostic.diagnostic_code;
-          for (const auto& argument : compared.diagnostic.arguments)
-            if (argument.key == "detail") *refusal_detail += ":" + argument.value;
+          for (const auto& argument : compared.diagnostic.arguments) {
+            if (argument.key == "detail" && argument.text())
+              *refusal_detail += ":" + *argument.text();
+          }
           return false;
         }
         *comparison = compared.comparison;

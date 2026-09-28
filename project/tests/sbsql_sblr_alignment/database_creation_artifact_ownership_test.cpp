@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
@@ -101,7 +103,7 @@ int main(){try{
     if(kind<2)Check(Get(artifact)==(kind?std::string{}:sentinel),"regular and empty file bytes preserved");
     if(kind==2)Check(Get(artifact/"child")==sentinel,"directory and descendants preserved");
     if(kind>=3){Check(fs::read_symlink(artifact)==target,"symlink itself preserved without following");if(kind==3)Check(Get(target)==sentinel,"symlink target unchanged");else Check(!fs::exists(target),"dangling target not created");}
-    for(const auto& argument:result.diagnostic.arguments)Check(argument.value.find(sentinel)==std::string::npos,"artifact contents not diagnostic material");
+    for(const auto& argument:result.diagnostic.arguments)Check(scratchbird::tests::DiagnosticValueBytes(argument.value).find(sentinel)==std::string::npos,"artifact contents not diagnostic material");
   }
   for(unsigned fault=1;fault<=8;++fault){const auto path=next();const auto config=Config(path);inspection_fault=fault;
     const auto result=db::CreateDatabaseFile(config);Unpublished(result);

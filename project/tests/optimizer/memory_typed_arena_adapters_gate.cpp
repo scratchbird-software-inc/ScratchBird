@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // MMCH_TYPED_ARENA_ADAPTERS
 #include "typed_arena.hpp"
 
@@ -63,7 +65,7 @@ bool DiagnosticArgEquals(const platform::DiagnosticRecord& diagnostic,
                          std::string_view key,
                          std::string_view value) {
   for (const auto& arg : diagnostic.arguments) {
-    if (arg.key == key && arg.value == value) {
+    if (arg.key == key && scratchbird::tests::DiagnosticTextEquals(arg.value, value)) {
       return true;
     }
   }

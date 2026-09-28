@@ -32,6 +32,7 @@ bool AdoptEngineDiagnosticSource(
   try {
     auto copy = *target;
     copy.engine_source_snapshot = source;
+    copy.native_platform_source.reset();
     copy.occurrence_uuid = source.occurrence_uuid;
     *target = std::move(copy);
     return true;

@@ -95,7 +95,7 @@ EngineApiDiagnostic CoreMemoryDiagnostic(
     const scratchbird::core::platform::DiagnosticRecord& diagnostic,
     const char* operation) {
   if (!diagnostic.diagnostic_code.empty()) {
-    return MakeEngineApiDiagnostic(diagnostic.diagnostic_code,
+    return MakeEngineApiDiagnosticFromNative(diagnostic, diagnostic.diagnostic_code,
                                    diagnostic.message_key,
                                    operation,
                                    true);

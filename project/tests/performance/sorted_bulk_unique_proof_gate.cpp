@@ -518,7 +518,8 @@ void BulkConstraintProofPathUsesSortedUniqueEvidence() {
             "binary persisted duplicate did not retain exact conflict diagnostic");
     Require(refused.diagnostic.arguments.size() == 1 &&
                 refused.diagnostic.arguments[0].key == "detail" &&
-                refused.diagnostic.arguments[0].value ==
+                refused.diagnostic.arguments[0].text() &&
+                *refused.diagnostic.arguments[0].text() ==
                     "bulk_unique_proof_persisted_conflict:key_bytes=" +
                         std::to_string(key.size()) + ":key_redacted=true",
             "bulk duplicate diagnostic leaked or reinterpreted key bytes");

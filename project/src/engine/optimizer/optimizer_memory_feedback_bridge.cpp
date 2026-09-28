@@ -9,6 +9,7 @@
 #include "optimizer_memory_feedback_bridge.hpp"
 
 #include "runtime_platform.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -181,9 +182,11 @@ OptimizerMemoryFeedbackBridgeResult BuildOptimizerMemoryFeedbackForPlanner(
     return Block(feedback, "SB_OPTIMIZER_MEMORY_FEEDBACK.BAD_SCHEMA",
                  "ceic_059_schema_version_required");
   }
-  if (!ValidIdentity(feedback.query_uuid) ||
-      !ValidIdentity(feedback.scope_uuid) ||
-      !ValidIdentity(feedback.route_kind) ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(feedback.query_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(feedback.scope_uuid)) {
+    return Block(feedback, "SB-OPT-0001", "memory_feedback_native_query_scope_required");
+  }
+  if (!ValidIdentity(feedback.route_kind) ||
       !ValidIdentity(feedback.operator_family) ||
       !ValidIdentity(feedback.plan_shape)) {
     return Block(feedback, "SB_OPTIMIZER_MEMORY_FEEDBACK.MISSING_SCOPE",
@@ -281,6 +284,8 @@ OptimizerMemoryFeedbackBridgeResult BuildOptimizerMemoryFeedbackForPlanner(
 
   OptimizerMemoryFeedbackBridgeResult result;
   result.status = OkStatus();
+  result.query_uuid = feedback.query_uuid;
+  result.scope_uuid = feedback.scope_uuid;
   result.accepted = true;
   result.fail_closed = false;
   result.ceic_059_contract_accepted = true;

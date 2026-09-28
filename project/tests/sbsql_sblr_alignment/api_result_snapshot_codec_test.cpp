@@ -82,7 +82,7 @@ api::EngineApiResult Fixture(){
 }
 int main(){
   api::EngineApiResult empty;auto minimal=Encode(empty);
-  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=2;oracle[223]=1;
+  std::vector<std::uint8_t> oracle(226,0);oracle[0]='S';oracle[1]='A';oracle[2]='P';oracle[3]='I';oracle[4]=3;oracle[223]=1;
   Check(minimal==oracle,"independent empty snapshot layout differs");
   auto source=Fixture();const auto bytes=Encode(source);api::EngineApiResult decoded;
   Check(api::DecodeEngineApiResultSnapshot(bytes,&decoded),"complete source result refused");
@@ -100,7 +100,7 @@ int main(){
   Check(!counters.benchmark_clean && counters.fallback_reasons==std::vector<std::string>({"original reason"}),"counter metadata lost");
   Check(std::get<api::EngineUuid>(decoded.evidence[0].evidence_id)==Id(9) && std::get<api::EngineUuid>(decoded.evidence[1].evidence_id).is_nil() && std::get<std::string>(decoded.evidence[2].evidence_id)==std::get<std::string>(source.evidence[2].evidence_id),"evidence tag or value changed");
   Check(decoded.diagnostics.at(0).occurrence_uuid==source.diagnostics.at(0).occurrence_uuid,"diagnostic occurrence replaced");
-  Check(decoded.diagnostics.at(0).canonical_metadata->retry_class==source.diagnostics.at(0).canonical_metadata->retry_class && decoded.diagnostics.at(0).native_source->record.arguments.at(0).value=="source value","source diagnostic metadata lost");
+  Check(decoded.diagnostics.at(0).canonical_metadata->retry_class==source.diagnostics.at(0).canonical_metadata->retry_class && decoded.diagnostics.at(0).native_source->record.arguments.at(0).value==cp::DiagnosticArgumentValue{"source value"},"source diagnostic metadata lost");
   Check(decoded.result_shape.query_values->metadata==decoded.result_shape.query_metadata,"shared schema identity lost");
   CheckMetadata(*decoded.result_shape.query_metadata, *source.result_shape.query_metadata);
   const auto& original_diagnostic = source.diagnostics[0];
@@ -121,7 +121,7 @@ int main(){
         native.status.subsystem == cp::Subsystem::memory &&
         native.diagnostic_code == "native.source" && native.message_key == "native.key" &&
         native.arguments.size() == 1 && native.arguments[0].key == "argument" &&
-        native.arguments[0].value == "source value" && native.trace_id == "trace" &&
+        native.arguments[0].value == cp::DiagnosticArgumentValue{"source value"} && native.trace_id == "trace" &&
         native.source_component == "source" && native.remediation_hint == "owner hint",
         "native diagnostic facts lost");
   Check(decoded.ok == source.ok && decoded.operation_id == source.operation_id &&
@@ -173,6 +173,61 @@ int main(){
     }
     bad = bytes; bad[offset + 8] = 0; refuse(bad);
   }
+  // Native diagnostic UUIDs may describe user data or an invalid attempted
+  // identity. Keep all bits, the value tag, source ordering and text distinct.
+  const std::string uuid_key = "native_uuid_value";
+  const auto diagnostic_value = [&](const cp::Uuid& id) {
+    auto value = empty;
+    auto diagnostic = source.diagnostics.front();
+    diagnostic.native_source->record.arguments = {
+        {uuid_key, id}, {"text_value", "019d0000-0000-7000-8000-000000000009"}};
+    value.diagnostics.push_back(std::move(diagnostic));
+    return value;
+  };
+  for (unsigned position = 0; position < 16; ++position) {
+    for (unsigned octet = 0; octet < 256; ++octet) {
+      auto id = Id(100);
+      id.bytes[position] = static_cast<std::uint8_t>(octet);
+      const auto value = diagnostic_value(id);
+      const auto encoded = Encode(value);
+      Check(api::DecodeEngineApiResultSnapshot(encoded, &decoded),
+            "diagnostic UUID data was rejected by system identity policy");
+      const auto& arguments = decoded.diagnostics.at(0).native_source->record.arguments;
+      Check(arguments.size() == 2 && arguments[0].key == uuid_key &&
+            arguments[0].uuid() && *arguments[0].uuid() == id &&
+            arguments[1].text() && *arguments[1].text() ==
+                "019d0000-0000-7000-8000-000000000009" && Encode(decoded) == encoded,
+            "diagnostic value kind, byte, text or source order changed");
+      // Independent layout oracle: u32 key length, exact key, u8 UUID tag,
+      // then exactly sixteen raw bytes without text UUID encoding or padding.
+      std::vector<std::uint8_t> marker{static_cast<std::uint8_t>(uuid_key.size()), 0, 0, 0};
+      marker.insert(marker.end(), uuid_key.begin(), uuid_key.end());
+      marker.push_back(1);
+      marker.insert(marker.end(), id.bytes.begin(), id.bytes.end());
+      Check(std::search(encoded.begin(), encoded.end(), marker.begin(), marker.end()) != encoded.end(),
+            "diagnostic UUID wire value is not tagged raw16");
+    }
+  }
+  const auto nil_diagnostic = Encode(diagnostic_value({}));
+  Check(api::DecodeEngineApiResultSnapshot(nil_diagnostic, &decoded) &&
+        decoded.diagnostics[0].native_source->record.arguments[0].uuid() &&
+        decoded.diagnostics[0].native_source->record.arguments[0].uuid()->is_nil(),
+        "nil diagnostic data lost its UUID type");
+  const auto marker = std::search(nil_diagnostic.begin(), nil_diagnostic.end(),
+                                  uuid_key.begin(), uuid_key.end());
+  Check(marker != nil_diagnostic.end(), "typed argument marker absent");
+  if (marker != nil_diagnostic.end()) {
+    const auto tag_offset = static_cast<std::size_t>(marker - nil_diagnostic.begin()) + uuid_key.size();
+    for (unsigned tag = 2; tag < 256; ++tag) {
+      bad = nil_diagnostic;
+      bad[tag_offset] = static_cast<std::uint8_t>(tag);
+      refuse(bad);
+    }
+  }
+  bad = minimal;
+  bad[4] = 2;
+  refuse(bad); // v2 arguments had no type tag; never guess their new meaning.
+
   // These bytes are user data, not identity authority: retain all UUID versions.
   for (unsigned version = 0; version < 16; ++version) {
     auto user_uuid = Id(90); user_uuid.bytes[6] = static_cast<std::uint8_t>(version << 4);

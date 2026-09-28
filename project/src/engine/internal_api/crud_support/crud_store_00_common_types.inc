@@ -233,10 +233,11 @@ EngineApiDiagnostic DiagnosticFromTransactionAuthority(const scratchbird::core::
                                                        const std::string& fallback_key) {
   std::string detail = diagnostic.remediation_hint;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) { detail += ";"; }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
-  return MakeEngineApiDiagnostic(diagnostic.diagnostic_code.empty() ? fallback_code : diagnostic.diagnostic_code,
+  return MakeEngineApiDiagnosticFromNative(diagnostic,diagnostic.diagnostic_code.empty() ? fallback_code : diagnostic.diagnostic_code,
                                  diagnostic.message_key.empty() ? fallback_key : diagnostic.message_key,
                                  detail,
                                  true);

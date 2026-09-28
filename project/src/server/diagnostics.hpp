@@ -56,6 +56,10 @@ struct ServerDiagnostic {
   // applies actual template/redaction authority. Legacy serializers ignore it.
   std::optional<scratchbird::server_engine_bridge::EngineDiagnosticSnapshot>
       engine_source_snapshot;
+  // Owned native platform cause for non-engine startup/configuration failures.
+  // This is private source data, not permission for a legacy text renderer to
+  // disclose UUID arguments or other protected values.
+  std::optional<core::platform::DiagnosticRecord> native_platform_source;
 };
 
 // Adopt only the matching source with a valid binary occurrence identity and

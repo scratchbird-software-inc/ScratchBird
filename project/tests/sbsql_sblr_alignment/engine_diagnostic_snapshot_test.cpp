@@ -87,15 +87,31 @@ int main() {
   target.message_key = "server.private.template.pending";
   target.safe_message = "safe caller text";
   target.fields = {{"visible", "safe"}};
+  target.native_platform_source.emplace();
+  target.native_platform_source->diagnostic_code = "private.platform.cause";
+  scratchbird::core::platform::Uuid private_uuid;
+  private_uuid.bytes[15] = 17;
+  target.native_platform_source->arguments.push_back({"private_uuid", private_uuid});
+  const auto platform_text = server::ToMessageVectorJsonLine(target);
+  Check(platform_text.find("private.platform.cause") == std::string::npos &&
+            platform_text.find("private_uuid") == std::string::npos,
+        "private platform source leaked through legacy renderer");
   const auto untouched = target;
   const auto same_target = [&](const server::ServerDiagnostic& value) {
     return value.code == untouched.code && value.message_key == untouched.message_key &&
         value.safe_message == untouched.safe_message && value.fields.size() == 1 &&
         value.fields[0].key == "visible" && value.fields[0].value == "safe" &&
-        value.occurrence_uuid == untouched.occurrence_uuid && !value.engine_source_snapshot;
+        value.occurrence_uuid == untouched.occurrence_uuid && !value.engine_source_snapshot &&
+        value.native_platform_source &&
+        value.native_platform_source->diagnostic_code == "private.platform.cause" &&
+        value.native_platform_source->arguments.size() == 1 &&
+        value.native_platform_source->arguments[0].key == "private_uuid" &&
+        value.native_platform_source->arguments[0].uuid() &&
+        value.native_platform_source->arguments[0].uuid()->bytes == private_uuid.bytes;
   };
   Check(server::AdoptEngineDiagnosticSource(first, &target) &&
         target.occurrence_uuid == first.occurrence_uuid && target.engine_source_snapshot &&
+        !target.native_platform_source &&
         Equal(*target.engine_source_snapshot, first) &&
         target.message_key == untouched.message_key && target.fields[0].value == "safe",
         "actual server source adoption lost metadata or changed presentation fields");

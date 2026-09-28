@@ -58,7 +58,7 @@ EngineApiDiagnostic Invalid(std::string_view detail) {
 EngineApiDiagnostic FromPageDiagnostic(
     const platform::DiagnosticRecord& diagnostic,
     std::string_view fallback_detail) {
-  return MakeEngineApiDiagnostic(
+  return MakeEngineApiDiagnosticFromNative(diagnostic,
       diagnostic.diagnostic_code.empty() ? "SB-DML-INDEX-WRITE-PHYSICAL-ERROR"
                                          : diagnostic.diagnostic_code,
       diagnostic.message_key.empty() ? "dml.index_write.physical_error"
@@ -231,13 +231,13 @@ EngineApiDiagnostic CoreDiagnosticToEngine(
     std::string_view fallback_code,
     std::string_view fallback_key,
     std::string_view fallback_detail) {
-  std::string detail = diagnostic.arguments.empty()
+  std::string detail = (diagnostic.arguments.empty() || !diagnostic.arguments.front().text())
                            ? std::string(fallback_detail)
-                           : diagnostic.arguments.front().value;
+                           : *diagnostic.arguments.front().text();
   if (detail.empty()) {
     detail = diagnostic.remediation_hint;
   }
-  return MakeEngineApiDiagnostic(
+  return MakeEngineApiDiagnosticFromNative(diagnostic,
       diagnostic.diagnostic_code.empty() ? std::string(fallback_code)
                                          : diagnostic.diagnostic_code,
       diagnostic.message_key.empty() ? std::string(fallback_key)

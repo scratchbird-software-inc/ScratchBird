@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "disk_device.hpp"
 #include "savepoint.hpp"
 
@@ -56,7 +58,7 @@ void PrintDiagnostic(const scratchbird::core::platform::DiagnosticRecord& diagno
   }
   std::cerr << diagnostic.diagnostic_code << ':' << diagnostic.message_key;
   for (const auto& argument : diagnostic.arguments) {
-    std::cerr << ' ' << argument.key << '=' << argument.value;
+    std::cerr << ' ' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
   }
   std::cerr << '\n';
 }

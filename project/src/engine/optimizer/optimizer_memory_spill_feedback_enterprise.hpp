@@ -53,8 +53,8 @@ struct EnterpriseMemorySpillFeedbackRecord {
   std::uint64_t reservation_generation = 0;
   std::string route_label;
   std::string plan_node_id;
-  std::string query_uuid;
-  std::string scope_uuid;
+  scratchbird::core::platform::Uuid query_uuid;
+  scratchbird::core::platform::Uuid scope_uuid;
   std::uint64_t policy_generation = 0;
   std::uint64_t feedback_generation = 0;
   std::uint64_t catalog_epoch = 0;
@@ -72,7 +72,8 @@ struct EnterpriseMemorySpillFeedbackRecord {
 };
 
 struct EnterpriseMemorySpillFeedbackInvalidation {
-  std::string scope_uuid;
+  // Only explicit absence selects all scopes. A supplied nil UUID is invalid.
+  std::optional<scratchbird::core::platform::Uuid> scope_uuid;
   std::uint64_t policy_generation = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;

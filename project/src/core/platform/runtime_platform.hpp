@@ -15,6 +15,7 @@
 #include <cstring>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::core::platform {
@@ -213,31 +214,6 @@ struct Status {
   }
 };
 
-struct DiagnosticArgument {
-  std::string key;
-  std::string value;
-};
-
-struct DiagnosticRecord {
-  Status status;
-  std::string diagnostic_code;
-  std::string message_key;
-  std::vector<DiagnosticArgument> arguments;
-  std::string trace_id;
-  std::string source_component;
-  std::string remediation_hint;
-};
-
-struct DiagnosticValidationResult {
-  Status status;
-  DiagnosticRecord diagnostic;
-  std::vector<DiagnosticArgument> failures;
-
-  bool ok() const {
-    return status.ok() && failures.empty();
-  }
-};
-
 enum class UuidKind : u8 {
   database,
   cluster,
@@ -284,6 +260,38 @@ struct Uuid {
   friend constexpr std::strong_ordering operator<=>(
       const Uuid& left, const Uuid& right) noexcept {
     return left.bytes <=> right.bytes;
+  }
+};
+
+// UUID diagnostic values are data, not an admission of system identity authority.
+// Preserve every 128-bit value, including nil and malformed attempted IDs.
+using DiagnosticArgumentValue = std::variant<std::string, Uuid>;
+
+struct DiagnosticArgument {
+  std::string key;
+  DiagnosticArgumentValue value;
+
+  const std::string* text() const noexcept { return std::get_if<std::string>(&value); }
+  const Uuid* uuid() const noexcept { return std::get_if<Uuid>(&value); }
+};
+
+struct DiagnosticRecord {
+  Status status;
+  std::string diagnostic_code;
+  std::string message_key;
+  std::vector<DiagnosticArgument> arguments;
+  std::string trace_id;
+  std::string source_component;
+  std::string remediation_hint;
+};
+
+struct DiagnosticValidationResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::vector<DiagnosticArgument> failures;
+
+  bool ok() const {
+    return status.ok() && failures.empty();
   }
 };
 

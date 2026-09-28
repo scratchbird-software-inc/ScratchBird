@@ -751,8 +751,8 @@ bool AdaptiveFeedbackProof() {
 
 bool MemoryFeedbackProof() {
   opt::OptimizerMemoryFeedbackEvidence evidence;
-  evidence.query_uuid = "query.pcr060.memory_feedback";
-  evidence.scope_uuid = "scope.pcr060.memory_feedback";
+  evidence.query_uuid = scratchbird::tests::FixtureUuid(2212, 9);
+  evidence.scope_uuid = scratchbird::tests::FixtureUuid(2212, 10);
   evidence.route_label = "pcr060.memory_spill_feedback";
   evidence.operator_family = "hash_join";
   evidence.plan_shape = "join_hash";

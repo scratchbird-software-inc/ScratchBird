@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // CEIC-022 model-based reservation ledger and high-churn memory invariant gate.
 #include "hierarchical_memory_budget_ledger.hpp"
 
@@ -102,7 +104,7 @@ std::string DiagnosticArgument(const mem::DiagnosticRecord& diagnostic,
                                std::string_view key) {
   for (const auto& argument : diagnostic.arguments) {
     if (argument.key == key) {
-      return argument.value;
+      if (const auto* text = argument.text()) return *text;
     }
   }
   return {};

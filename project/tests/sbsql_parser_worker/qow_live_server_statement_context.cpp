@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
 #include <type_traits>
@@ -247,7 +249,7 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key;
     for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << ':' << argument.key << '=' << argument.value;
+      std::cerr << ':' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
     }
     std::cerr << '\n';
   }

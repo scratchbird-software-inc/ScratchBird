@@ -4176,7 +4176,7 @@ if(TARGET sb_core_memory)
     COMMAND memory_support_bundle_evidence_gate
   )
   set_tests_properties(memory_support_bundle_evidence_gate PROPERTIES
-    LABELS "memory_support_bundle_evidence_gate;MMCH-080;MMCH_MEMORY_SUPPORT_BUNDLE_EVIDENCE;database_lifecycle;database_lifecycle_unit;support_bundle;memory_observability;mga_transaction_regression"
+    LABELS "binary_uuid;memory_support_bundle_evidence_gate;MMCH-080;MMCH_MEMORY_SUPPORT_BUNDLE_EVIDENCE;database_lifecycle;database_lifecycle_unit;support_bundle;memory_observability;mga_transaction_regression"
   )
 
   if(TARGET sb_engine_internal_api)

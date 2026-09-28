@@ -55,8 +55,9 @@ bool ContainsSensitiveDiagnosticMaterial(std::string_view value) {
 
 std::string DiagnosticDetail(const DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // Only explicit text contributes to this summary.
     if (argument.key == "detail") {
-      return argument.value;
+      return (*argument.text());
     }
   }
   if (!diagnostic.remediation_hint.empty()) {

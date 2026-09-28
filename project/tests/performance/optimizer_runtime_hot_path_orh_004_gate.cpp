@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "agent_workload_resource_quota.hpp"
 #include "compression_policy.hpp"
 #include "index_optimizer_integration.hpp"
@@ -102,7 +104,7 @@ void AppendDiagnosticValues(const platform::DiagnosticRecord& diagnostic,
   values->push_back(diagnostic.remediation_hint);
   for (const auto& argument : diagnostic.arguments) {
     values->push_back(argument.key);
-    values->push_back(argument.value);
+    values->emplace_back(scratchbird::tests::DiagnosticValueBytes(argument.value));
   }
 }
 
@@ -201,7 +203,7 @@ void RequireDiagnosticArgument(const platform::DiagnosticRecord& diagnostic,
   const auto found = std::any_of(
       diagnostic.arguments.begin(), diagnostic.arguments.end(),
       [&](const auto& argument) {
-        return argument.key == key && argument.value == value;
+        return argument.key == key && scratchbird::tests::DiagnosticTextEquals(argument.value, value);
       });
   Require(found,
           "diagnostic missing argument " + std::string(key) + "=" +

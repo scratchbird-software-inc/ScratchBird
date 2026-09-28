@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "../support/binary_uuid_fixture.hpp"
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
@@ -74,7 +76,7 @@ void RequireOk(const db::DatabaseLifecycleResult& result, std::string_view messa
   if (!result.ok()) {
     std::cerr << result.diagnostic.diagnostic_code << ':' << result.diagnostic.message_key;
     for (const auto& argument : result.diagnostic.arguments) {
-      std::cerr << ' ' << argument.key << '=' << argument.value;
+      std::cerr << ' ' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
     }
     std::cerr << '\n';
   }
@@ -224,7 +226,7 @@ resources::ResourceSeedCatalogImage LoadSeedPack() {
     std::cerr << loaded.diagnostic.diagnostic_code << ':'
               << loaded.diagnostic.message_key;
     for (const auto& argument : loaded.diagnostic.arguments) {
-      std::cerr << ':' << argument.key << '=' << argument.value;
+      std::cerr << ':' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
     }
     std::cerr << '\n';
   }

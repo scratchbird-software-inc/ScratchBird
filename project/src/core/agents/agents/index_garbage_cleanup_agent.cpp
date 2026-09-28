@@ -49,10 +49,11 @@ std::string DiagnosticDetail(const DiagnosticRecord& diagnostic) {
   }
   std::string detail;
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (!detail.empty()) {
       detail += ";";
     }
-    detail += argument.key + "=" + argument.value;
+    detail += argument.key + "=" + (*argument.text());
   }
   return detail;
 }

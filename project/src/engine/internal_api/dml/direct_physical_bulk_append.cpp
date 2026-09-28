@@ -532,8 +532,9 @@ EngineUuid TypedUuidIdentity(const TypedUuid& uuid) {
 
 std::string DiagnosticDetail(const DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (argument.key == "detail") {
-      return argument.value;
+      return (*argument.text());
     }
   }
   return {};
@@ -545,7 +546,7 @@ EngineApiDiagnostic CoreBulkDiagnosticToEngine(const DiagnosticRecord& diagnosti
   if (detail.empty()) {
     detail = fallback_detail;
   }
-  return MakeEngineApiDiagnostic(diagnostic.diagnostic_code.empty()
+  return MakeEngineApiDiagnosticFromNative(diagnostic,diagnostic.diagnostic_code.empty()
                                      ? "SB_ENGINE_API_INVALID_REQUEST"
                                      : diagnostic.diagnostic_code,
                                  diagnostic.message_key.empty()

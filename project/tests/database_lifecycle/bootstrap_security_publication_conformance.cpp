@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
@@ -365,7 +367,7 @@ void TestCredentialEnvelopeRefusedAndRedacted(Cleanup* cleanup) {
                   std::string::npos,
           "credential material leaked through public diagnostic fields");
   for (const auto& argument : refused.diagnostic.arguments) {
-    Require(argument.value.find("0123456789abcdef") == std::string::npos,
+    Require(scratchbird::tests::DiagnosticValueBytes(argument.value).find("0123456789abcdef") == std::string::npos,
             "credential material leaked through diagnostic arguments");
   }
   Require(!std::filesystem::exists(path),

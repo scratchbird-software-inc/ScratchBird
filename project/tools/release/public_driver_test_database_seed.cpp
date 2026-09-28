@@ -1,3 +1,4 @@
+#include "../../src/core/uuid/uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -583,7 +584,10 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key;
     for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << ':' << argument.key << '=' << argument.value;
+      std::cerr << ':' << argument.key << '=';
+      if (const auto* text = argument.text()) std::cerr << *text;
+      else if (const auto* uuid = argument.uuid())
+        std::cerr << scratchbird::core::uuid::UuidToString(*uuid);
     }
     std::cerr << '\n';
     Fail("driver test database create failed");

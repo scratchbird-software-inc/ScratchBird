@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "exact_index_leaf_cleanup.hpp"
 #include "index_maintenance.hpp"
 #include "page_finality_evidence.hpp"
@@ -220,7 +222,7 @@ void RequireNoRuntimeDocTokens(
       decision.mga_authority_source};
   for (const auto& argument : decision.diagnostic.arguments) {
     values.push_back(argument.key);
-    values.push_back(argument.value);
+    values.emplace_back(scratchbird::tests::DiagnosticValueBytes(argument.value));
   }
   for (const auto& field : decision.evidence) {
     values.push_back(field.name);

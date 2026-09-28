@@ -9,6 +9,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "database_lifecycle.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/insert_api.hpp"
@@ -129,7 +131,7 @@ std::string DiagnosticArgumentValue(const platform::DiagnosticRecord& diagnostic
                                     std::string_view key) {
   for (const auto& argument : diagnostic.arguments) {
     if (argument.key == key) {
-      return argument.value;
+      if (const auto* text = argument.text()) return *text;
     }
   }
   return {};

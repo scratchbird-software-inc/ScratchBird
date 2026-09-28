@@ -206,6 +206,12 @@ DiagnosticValidationResult ValidateDiagnosticRecord(const DiagnosticRecord& reco
     AddDiagnosticValidationFailure(&result, "placeholder_text", "forbidden");
   }
 
+  for (const auto& argument : record.arguments) {
+    if (argument.value.valueless_by_exception()) {
+      AddDiagnosticValidationFailure(&result, "argument_value", "valueless");
+    }
+  }
+
   if (!result.failures.empty()) {
     result.status = {StatusCode::diagnostic_invalid_record, Severity::error, Subsystem::diagnostics};
     result.diagnostic = MakeDiagnostic(StatusCode::diagnostic_invalid_record,

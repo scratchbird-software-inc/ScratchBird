@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "lock_wait_lifecycle.hpp"
 
 #include <cstdlib>
@@ -41,7 +43,7 @@ bool HasDiagnosticArgument(const scratchbird::core::platform::DiagnosticRecord& 
                            std::string_view key,
                            std::string_view value) {
   for (const auto& arg : diagnostic.arguments) {
-    if (arg.key == key && arg.value == value) { return true; }
+    if (arg.key == key && scratchbird::tests::DiagnosticTextEquals(arg.value, value)) { return true; }
   }
   return false;
 }

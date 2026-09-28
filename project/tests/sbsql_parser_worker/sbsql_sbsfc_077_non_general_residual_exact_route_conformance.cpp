@@ -9,6 +9,8 @@ using scratchbird::tests::NativeFixtureIdentity;
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -688,7 +690,7 @@ std::string CreateMinimalDatabase(const std::filesystem::path& path) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
     for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << "  " << argument.key << '=' << argument.value << '\n';
+      std::cerr << "  " << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument) << '\n';
     }
   }
   Require(created.ok(), "SBSFC-077 database create failed");

@@ -448,22 +448,26 @@ SecondaryIndexDeltaLedgerAppendResult AppendPersistentSecondaryIndexDelta(
   }
   const auto validation = ValidateRecord(record);
   if (!validation.status.ok()) {
-    return RefuseAppend(validation.status,
+    auto refused = RefuseAppend(validation.status,
                         ledger,
                         validation.diagnostic_code,
                         validation.message_key,
-                        validation.arguments.empty() ? "" : validation.arguments.front().value);
+                        {});
+    refused.diagnostic = validation;
+    return refused;
   }
 
   PersistentSecondaryIndexDeltaLedger candidate = *ledger;
   candidate.records.push_back(record);
   const auto encoded = EncodePersistentSecondaryIndexDeltaLedger(candidate, limits);
   if (!encoded.ok()) {
-    return RefuseAppend(encoded.status,
+    auto refused = RefuseAppend(encoded.status,
                         ledger,
                         encoded.diagnostic.diagnostic_code,
                         encoded.diagnostic.message_key,
-                        encoded.diagnostic.arguments.empty() ? "" : encoded.diagnostic.arguments.front().value);
+                        {});
+    refused.diagnostic = encoded.diagnostic;
+    return refused;
   }
 
   ledger->records.push_back(record);
@@ -507,10 +511,12 @@ SecondaryIndexDeltaLedgerEncodeResult EncodePersistentSecondaryIndexDeltaLedger(
   for (const auto& record : ledger.records) {
     const auto validation = ValidateRecord(record);
     if (!validation.status.ok()) {
-      return RefuseEncode(validation.status,
+      auto refused = RefuseEncode(validation.status,
                           validation.diagnostic_code,
                           validation.message_key,
-                          validation.arguments.empty() ? "" : validation.arguments.front().value);
+                          {});
+      refused.diagnostic = validation;
+      return refused;
     }
     EncodeRecord(&out, record);
     if (out.size() + sizeof(u64) > limits.max_encoded_bytes) {
@@ -622,10 +628,12 @@ SecondaryIndexDeltaLedgerDecodeResult DecodePersistentSecondaryIndexDeltaLedger(
     }
     const auto validation = ValidateRecord(record);
     if (!validation.status.ok()) {
-      return RefuseDecode(validation.status,
+      auto refused = RefuseDecode(validation.status,
                           validation.diagnostic_code,
                           validation.message_key,
-                          validation.arguments.empty() ? "" : validation.arguments.front().value);
+                          {});
+      refused.diagnostic = validation;
+      return refused;
     }
     ledger.records.push_back(std::move(record));
   }
@@ -696,9 +704,9 @@ SecondaryIndexDeltaLedgerRecoveryResult ClassifySecondaryIndexDeltaLedgerForReco
           SecondaryIndexDeltaLedgerRecoveryClass::corrupt_incompatible_fail_closed;
       result.action = SecondaryIndexDeltaLedgerRecoveryAction::fail_closed;
       result.fail_closed = true;
-      result.stable_reason = validation.arguments.empty()
+      result.stable_reason = (validation.arguments.empty() || !validation.arguments.front().text())
                                  ? "ledger record failed validation"
-                                 : validation.arguments.front().value;
+                                 : *validation.arguments.front().text();
       result.diagnostic = validation;
       return result;
     }
@@ -778,9 +786,9 @@ SecondaryIndexDeltaLedgerRecoveryResult ClassifySecondaryIndexDeltaLedgerImageFo
         SecondaryIndexDeltaLedgerRecoveryClass::corrupt_incompatible_fail_closed;
     result.action = SecondaryIndexDeltaLedgerRecoveryAction::fail_closed;
     result.fail_closed = true;
-    result.stable_reason = decoded.diagnostic.arguments.empty()
+    result.stable_reason = (decoded.diagnostic.arguments.empty() || !decoded.diagnostic.arguments.front().text())
                                ? "ledger image failed persisted-format validation"
-                               : decoded.diagnostic.arguments.front().value;
+                               : *decoded.diagnostic.arguments.front().text();
     result.diagnostic = decoded.diagnostic;
     return result;
   }

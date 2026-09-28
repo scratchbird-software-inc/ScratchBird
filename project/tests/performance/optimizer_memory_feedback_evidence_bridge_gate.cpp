@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -30,8 +31,8 @@ void Require(bool condition, std::string_view message) {
 
 opt::OptimizerMemoryFeedbackEvidence ValidFeedback() {
   opt::OptimizerMemoryFeedbackEvidence feedback;
-  feedback.query_uuid = "018f4f4c-1111-7111-8111-111111111111";
-  feedback.scope_uuid = "018f4f4c-2222-7222-8222-222222222222";
+  feedback.query_uuid = scratchbird::tests::FixtureUuid(2212, 5);
+  feedback.scope_uuid = scratchbird::tests::FixtureUuid(2212, 6);
   feedback.route_kind = "sql_select";
   feedback.route_label = "performance/hash_join";
   feedback.operator_family = "hash_join";

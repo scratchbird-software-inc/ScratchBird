@@ -197,6 +197,24 @@ bool InvalidConfigFailsClosed(std::string_view name,
                               std::string_view body,
                               std::string_view diagnostic_code) {
   const auto loaded = Load(name, body);
+  for (const auto& diagnostic : loaded.diagnostics) {
+    if (diagnostic.code != diagnostic_code || !diagnostic.code.starts_with("MEMORY."))
+      continue;
+    if (!Expect(diagnostic.native_platform_source.has_value(),
+                "Core memory-policy cause was discarded by the server") ||
+        !Expect(diagnostic.native_platform_source->diagnostic_code == diagnostic.code &&
+                    diagnostic.native_platform_source->message_key == diagnostic.message_key &&
+                    !diagnostic.native_platform_source->status.ok() &&
+                    !diagnostic.native_platform_source->arguments.empty(),
+                "server did not retain the complete failing memory-policy source")) return false;
+    for (const auto& argument : diagnostic.native_platform_source->arguments) {
+      if (!argument.text()) continue;
+      bool found = false;
+      for (const auto& field : diagnostic.fields)
+        found = found || (field.key == argument.key && field.value == *argument.text());
+      if (!Expect(found, "memory-policy text argument lost during server adaptation")) return false;
+    }
+  }
   return Expect(!loaded.ok(), "invalid memory policy config should fail closed") &&
          Expect(HasDiagnostic(loaded, diagnostic_code), "expected diagnostic was not emitted");
 }

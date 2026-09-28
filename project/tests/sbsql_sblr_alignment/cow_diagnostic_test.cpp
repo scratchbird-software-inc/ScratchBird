@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 #include "copy_on_write.hpp"
 #include "canonical_diagnostic_catalog.hpp"
 
@@ -79,7 +81,7 @@ void Assessment(const mga::CleanupEligibilityResult& result, std::string_view co
       d->retry_class == "reassess_after_authority_or_horizon_change" &&
       d->numeric_binding == "not_applicable", "non-authoritative assessment contract");
   for (const auto& arg : result.diagnostic.arguments)
-    Check(arg.value.find("PRIVATE-HORIZON-LABEL") == std::string::npos, "untrusted label is not diagnostic detail");
+    Check(scratchbird::tests::DiagnosticValueBytes(arg.value).find("PRIVATE-HORIZON-LABEL") == std::string::npos, "untrusted label is not diagnostic detail");
 }
 }
 int main() {

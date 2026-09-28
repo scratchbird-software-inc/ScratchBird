@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // CEIC-025 focused validation for multi-tenant memory fairness and scheduling.
 #include "memory_fairness_scheduler.hpp"
 
@@ -157,7 +159,7 @@ bool DiagnosticArgumentHas(const memory::DiagnosticRecord& diagnostic,
                            std::string_view value) {
   for (const auto& arg : diagnostic.arguments) {
     if (arg.key.find(key) != std::string::npos &&
-        arg.value.find(value) != std::string::npos) {
+        arg.text() && arg.text()->find(value) != std::string::npos) {
       return true;
     }
   }

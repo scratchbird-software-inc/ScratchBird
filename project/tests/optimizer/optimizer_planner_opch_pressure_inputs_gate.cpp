@@ -1,3 +1,4 @@
+#include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -88,8 +89,8 @@ bool MgaPressureCostsOnlyTrustedObservedMetrics() {
 
 opt::OptimizerMemoryFeedbackEvidence MemoryFeedback() {
   opt::OptimizerMemoryFeedbackEvidence feedback;
-  feedback.query_uuid = "query:opch061";
-  feedback.scope_uuid = "scope:opch061";
+  feedback.query_uuid = scratchbird::tests::FixtureUuid(2212, 7);
+  feedback.scope_uuid = scratchbird::tests::FixtureUuid(2212, 8);
   feedback.route_kind = "sql_select";
   feedback.operator_family = "hash_join";
   feedback.plan_shape = "join_hash";

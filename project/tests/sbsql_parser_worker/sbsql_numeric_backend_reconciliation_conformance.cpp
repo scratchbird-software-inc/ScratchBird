@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "../support/binary_uuid_fixture.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
@@ -82,7 +84,7 @@ bool HasEvidence(const api::EngineApiResult& result,
 
 std::string DiagnosticDetail(const platform::DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
-    if (argument.key == "detail") { return argument.value; }
+    if (argument.key == "detail") { if (const auto* text = argument.text()) return *text; }
   }
   return {};
 }

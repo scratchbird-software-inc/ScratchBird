@@ -735,7 +735,7 @@ ShadowIndexDeltaDrainRecoveryResult ClassifyShadowIndexDeltaDrainForRecovery(
   }
   const auto validation = ValidateAppliedDeltaEvidence(drain_ledger, request);
   if (!validation.status.ok()) {
-    return FinishRecovery(nullptr,
+    auto refused = FinishRecovery(nullptr,
                           request,
                           validation.status,
                           false,
@@ -744,11 +744,13 @@ ShadowIndexDeltaDrainRecoveryResult ClassifyShadowIndexDeltaDrainForRecovery(
                           ShadowIndexDeltaDrainRecoveryAction::refuse_visible_index_use,
                           0,
                           0,
-                          validation.arguments.empty()
+                          (validation.arguments.empty() || !validation.arguments.front().text())
                               ? "drain evidence is corrupt"
-                              : validation.arguments.front().value,
+                              : *validation.arguments.front().text(),
                           validation.diagnostic_code,
                           validation.message_key);
+    refused.diagnostic = validation;
+    return refused;
   }
   if (!drain_ledger.drain_complete ||
       !drain_ledger.durable_transaction_inventory_authoritative ||
@@ -985,12 +987,14 @@ ShadowIndexLifecycleResult PublishShadowIndexBuildWithDeltaDrainEvidence(
   const auto eligibility =
       EvaluateShadowIndexDeltaDrainPublishEligibility(*lifecycle_record, drain_ledger);
   if (!eligibility.ok()) {
-    return RefuseShadowIndexBuild(lifecycle_ledger,
+    auto refused = RefuseShadowIndexBuild(lifecycle_ledger,
                                   lifecycle_record,
                                   eligibility.diagnostic.diagnostic_code,
-                                  eligibility.diagnostic.arguments.empty()
+                                  (eligibility.diagnostic.arguments.empty() || !eligibility.diagnostic.arguments.front().text())
                                       ? "shadow delta publish eligibility refused"
-                                      : eligibility.diagnostic.arguments.front().value);
+                                      : *eligibility.diagnostic.arguments.front().text());
+    refused.diagnostic.arguments = eligibility.diagnostic.arguments;
+    return refused;
   }
   return PublishShadowIndexBuild(lifecycle_ledger, lifecycle_record);
 }

@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "listener_support_bundle.hpp"
 #include "management/support_bundle_api.hpp"
 #include "memory_support_bundle.hpp"
@@ -499,7 +501,7 @@ void MemorySupportBundleCanaryProof(const std::vector<std::string>& canaries) {
   Require(result.ok(), "ELER-088 memory support bundle refused valid canary proof");
   std::ostringstream flat;
   for (const auto& row : result.rows) {
-    flat << row.key << '=' << row.value << ':' << row.redaction_class << '\n';
+    flat << row.key << '=' << std::string(scratchbird::tests::DiagnosticValueBytes(row.value)) << ':' << row.redaction_class << '\n';
   }
   for (const auto& evidence : result.evidence) {
     flat << "evidence=" << evidence << '\n';

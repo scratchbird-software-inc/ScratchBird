@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
@@ -598,7 +600,7 @@ int main() {
               << static_cast<std::uint16_t>(created.create_finality)
               << " diagnostic=" << created.diagnostic.diagnostic_code << '\n';
     for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << argument.key << '=' << argument.value << '\n';
+      std::cerr << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument) << '\n';
     }
     const auto debug_rows = ReadCatalogRows(database_path, created.state.header.page_size);
     for (const auto& debug_record : DecodeTypedRecords(debug_rows)) {

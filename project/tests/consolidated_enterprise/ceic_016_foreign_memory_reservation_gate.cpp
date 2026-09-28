@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // CEIC-016 focused validation for foreign/native memory reservations.
 #include "foreign_memory_reservation.hpp"
 #include "memory_support_bundle.hpp"
@@ -48,7 +50,7 @@ bool HasRow(const memory::MemorySupportBundleResult& bundle,
             std::string_view key,
             std::string_view value) {
   for (const auto& row : bundle.rows) {
-    if (row.key == key && row.value == value) {
+    if (row.key == key && scratchbird::tests::DiagnosticTextEquals(row.value, value)) {
       return true;
     }
   }

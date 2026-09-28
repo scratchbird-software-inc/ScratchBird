@@ -105,7 +105,8 @@ struct MemorySupportBundleEmergencySummary {
 // MMCH_MEMORY_SUPPORT_BUNDLE_EVIDENCE
 struct MemorySupportBundleRow {
   std::string key;
-  std::string value;
+  // Preserve native diagnostic UUID values without rendering or truncation.
+  scratchbird::core::platform::DiagnosticArgumentValue value;
   std::string redaction_class = "public";
   bool redacted = false;
   std::string tamper_evidence_digest;

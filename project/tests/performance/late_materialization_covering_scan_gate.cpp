@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
 #include "covering_index_payload.hpp"
 #include "index_key_encoding.hpp"
 #include "late_materialization_covering_scan_runtime.hpp"
@@ -280,7 +281,8 @@ idx::CoveringIndexPayloadAdmission AdmitPayload(
     std::cerr << "covering payload admission diagnostic="
               << admission.diagnostic.diagnostic_code << " detail=";
     if (!admission.diagnostic.arguments.empty()) {
-      std::cerr << admission.diagnostic.arguments.front().value;
+      std::cerr << scratchbird::tests::DiagnosticArgumentDisplay(
+          admission.diagnostic.arguments.front());
     }
     std::cerr << '\n';
   }

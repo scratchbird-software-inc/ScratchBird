@@ -128,8 +128,10 @@ std::string TruncateForBundle(std::string_view value, u64 max_bytes) {
   return output;
 }
 
-u64 RowSizeEstimate(std::string_view key, std::string_view value) {
-  return static_cast<u64>(key.size() + value.size() + 64);
+u64 RowSizeEstimate(std::string_view key,
+                    const platform::DiagnosticArgumentValue& value) {
+  const auto* text = std::get_if<std::string>(&value);
+  return static_cast<u64>(key.size() + (text ? text->size() : 16) + 64);
 }
 
 MemorySupportBundleLimits NormalizeLimits(MemorySupportBundleLimits limits,
@@ -166,6 +168,11 @@ MemorySupportBundleLimits NormalizeLimits(MemorySupportBundleLimits limits,
 bool BoundedAppendRow(MemorySupportBundleResult* result,
                       MemorySupportBundleRow row,
                       const MemorySupportBundleLimits& limits) {
+  if (row.value.valueless_by_exception() ||
+      (std::holds_alternative<platform::Uuid>(row.value) && limits.max_value_bytes < 16)) {
+    ++result->dropped_row_count;
+    return false;
+  }
   const u64 row_bytes = RowSizeEstimate(row.key, row.value);
   if (result->rows.size() + result->metric_records.size() >= limits.max_rows ||
       result->output_bytes > limits.max_output_bytes ||
@@ -241,18 +248,19 @@ MemorySupportBundleRow MakeRow(std::string key,
                                const char* redaction_class = "public") {
   MemorySupportBundleRow row;
   row.key = TruncateForBundle(key, limits.max_key_bytes);
-  const bool protected_value = LooksProtected(row.key) || LooksProtected(value);
+  const bool protected_value = LooksProtected(key) || LooksProtected(value) ||
+                               std::string_view(redaction_class) == "protected_material";
   row.redacted = protected_value && (!allow_protected_material || exclude_protected_material);
   row.redaction_class = row.redacted ? "protected_material" : redaction_class;
   if (row.redacted && exclude_protected_material) {
-    row.value = kProtectedExcluded;
+    row.value = TruncateForBundle(kProtectedExcluded, limits.max_value_bytes);
   } else if (row.redacted) {
-    row.value = "<redacted>";
+    row.value = TruncateForBundle("<redacted>", limits.max_value_bytes);
   } else {
     row.value = TruncateForBundle(value, limits.max_value_bytes);
   }
   row.tamper_evidence_digest =
-      DigestRow(row.key, row.value, row.redaction_class, row.redacted);
+      DigestRow(row.key, std::get<std::string>(row.value), row.redaction_class, row.redacted);
   return row;
 }
 
@@ -275,6 +283,31 @@ bool AddRow(MemorySupportBundleResult* result,
     ++result->redacted_row_count;
   }
   return appended;
+}
+
+bool AddUuidRow(MemorySupportBundleResult* result,
+                std::string key,
+                const platform::Uuid& value,
+                bool allow_protected_material,
+                bool exclude_protected_material,
+                const MemorySupportBundleLimits& limits,
+                const char* redaction_class) {
+  // Decide disclosure before copying any protected value to the output.
+  if ((LooksProtected(key) || std::string_view(redaction_class) == "protected_material") &&
+      (!allow_protected_material || exclude_protected_material)) {
+    return AddRow(result, std::move(key), "", allow_protected_material,
+                  exclude_protected_material, limits, redaction_class);
+  }
+  MemorySupportBundleRow row;
+  row.key = TruncateForBundle(key, limits.max_key_bytes);
+  row.value = value;
+  row.redaction_class = redaction_class;
+  const std::string_view bytes(reinterpret_cast<const char*>(value.bytes.data()),
+                               value.bytes.size());
+  // Include the value kind: identical string bytes are not a UUID value.
+  row.tamper_evidence_digest = DigestRow(
+      row.key, bytes, "uuid16:" + row.redaction_class, false);
+  return BoundedAppendRow(result, std::move(row), limits);
 }
 
 Status InvalidRequestStatus() {
@@ -526,6 +559,21 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
                   redaction_class);
   };
 
+  auto add_value = [&](std::string key,
+                       const platform::DiagnosticArgumentValue& value,
+                       const char* redaction_class = "public") {
+    if (const auto* text = std::get_if<std::string>(&value))
+      return add(std::move(key), *text, redaction_class);
+    if (const auto* uuid = std::get_if<platform::Uuid>(&value))
+      return AddUuidRow(&result, std::move(key), *uuid,
+                        request.allow_protected_material,
+                        request.exclude_protected_material,
+                        request.limits, redaction_class);
+    result.status = InvalidRequestStatus();
+    ++result.dropped_row_count;
+    return false;
+  };
+
   if (request.include_self_accounting) {
     add("self.mode", MemorySupportBundleModeName(request.mode));
     add("self.row_limit", std::to_string(request.limits.max_rows));
@@ -655,7 +703,7 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
     const std::string prefix = "memory_fragmentation." +
                                std::to_string(
                                    result.memory_fragmentation_row_count);
-    add(prefix + "." + row.key, row.value, row.redaction_class.c_str());
+    add_value(prefix + "." + row.key, row.value, row.redaction_class.c_str());
     ++result.memory_fragmentation_row_count;
   }
 
@@ -673,7 +721,7 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
     const std::string prefix = "memory_working_set_locality." +
                                std::to_string(
                                    result.memory_working_set_locality_row_count);
-    add(prefix + "." + row.key, row.value, row.redaction_class.c_str());
+    add_value(prefix + "." + row.key, row.value, row.redaction_class.c_str());
     ++result.memory_working_set_locality_row_count;
   }
 
@@ -756,7 +804,7 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
           ++result.dropped_row_count;
           break;
         }
-        add(prefix + ".argument." + argument.key, argument.value);
+        add_value(prefix + ".argument." + argument.key, argument.value);
         ++argument_count;
       }
       ++result.failure_reason_count;

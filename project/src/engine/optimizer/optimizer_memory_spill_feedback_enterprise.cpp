@@ -62,8 +62,8 @@ bool Expired(const EnterpriseMemorySpillFeedbackRecord& record,
 
 bool InvalidationMatches(const EnterpriseMemorySpillFeedbackRecord& record,
                          const EnterpriseMemorySpillFeedbackInvalidation& event) {
-  const bool scope_matches = event.scope_uuid.empty() ||
-                             event.scope_uuid == record.scope_uuid;
+  const bool scope_matches = !event.scope_uuid ||
+                             *event.scope_uuid == record.scope_uuid;
   const bool policy_changed = event.policy_generation != 0 &&
                               event.policy_generation != record.policy_generation;
   const bool catalog_changed = event.catalog_epoch != 0 &&
@@ -83,13 +83,14 @@ void AddResultEvidence(EnterpriseMemorySpillFeedbackApplyResult* result,
 
 EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Record(
     EnterpriseMemorySpillFeedbackRecord record) {
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(record.feedback_uuid)) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(record.feedback_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(record.query_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(record.scope_uuid)) {
     return Refuse("SB-OPT-0001", "memory_feedback_invalid_record_uuid");
   }
   if (record.reservation_id.empty() ||
       record.memory_snapshot_digest.empty() || record.route_label.empty() ||
-      record.plan_node_id.empty() || record.query_uuid.empty() ||
-      record.scope_uuid.empty() || record.policy_generation == 0 ||
+      record.plan_node_id.empty() || record.policy_generation == 0 ||
       record.feedback_generation == 0 || record.catalog_epoch == 0 ||
       record.security_epoch == 0 || record.created_microseconds == 0 ||
       record.expires_after_microseconds == 0 || MissingRecordEvidence(record)) {
@@ -103,6 +104,10 @@ EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Rec
       !record.feedback_status.applied) {
     return Refuse("SB_OPT_ENTERPRISE_MEMORY_SPILL_FEEDBACK_NOT_APPLIED",
                   "ceic_059_bridge_and_runtime_feedback_must_apply_cleanly");
+  }
+  if (record.bridge_result.query_uuid != record.query_uuid ||
+      record.bridge_result.scope_uuid != record.scope_uuid) {
+    return Refuse("SB-OPT-0001", "memory_feedback_bridge_scope_mismatch");
   }
   record.valid = true;
   record.evidence.push_back("enterprise_memory_spill_feedback.recorded=true");
@@ -160,6 +165,8 @@ EnterpriseMemorySpillFeedbackApplyResult EnterpriseMemorySpillFeedbackStore::Rec
 
 std::uint64_t EnterpriseMemorySpillFeedbackStore::Invalidate(
     const EnterpriseMemorySpillFeedbackInvalidation& event) {
+  if (event.scope_uuid &&
+      !scratchbird::core::uuid::IsEngineIdentityUuid(*event.scope_uuid)) return 0;
   std::lock_guard<std::mutex> lock(mutex_);
   std::uint64_t invalidated = 0;
   for (auto& record : records_) {
@@ -240,6 +247,14 @@ EnterpriseMemorySpillFeedbackApplyResult ApplyEnterpriseMemorySpillFeedback(
     result.evidence = bridge.evidence;
     AddResultEvidence(&result, "enterprise_memory_spill_feedback.recorded=false");
     return result;
+  }
+  if (request.policy_generation != request.evidence.policy_generation ||
+      request.feedback_generation != request.evidence.feedback_generation ||
+      request.catalog_epoch != request.evidence.catalog_epoch ||
+      request.security_epoch != request.evidence.security_epoch ||
+      request.route_label != request.evidence.route_label ||
+      request.plan_node_id != request.evidence.plan_node_id) {
+    return Refuse("SB-OPT-0001", "memory_feedback_request_evidence_binding_mismatch");
   }
   if (request.memory_snapshot_digest != request.evidence.metric_snapshot_digest) {
     return Refuse("SB_OPT_ENTERPRISE_MEMORY_SPILL_FEEDBACK_SNAPSHOT_MISMATCH",

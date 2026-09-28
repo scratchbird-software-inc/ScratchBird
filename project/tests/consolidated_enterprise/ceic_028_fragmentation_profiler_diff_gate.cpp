@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 // CEIC-028 focused validation for fragmentation profiler snapshots and diffs.
 #include "hierarchical_memory_budget_ledger.hpp"
 #include "memory_fragmentation_profiler.hpp"
@@ -64,8 +66,9 @@ bool BundleRowsHave(const std::vector<memory::MemorySupportBundleRow>& rows,
                     std::string_view key,
                     std::string_view value) {
   for (const auto& row : rows) {
+    const auto* text = std::get_if<std::string>(&row.value);
     if (row.key.find(key) != std::string::npos &&
-        row.value.find(value) != std::string::npos) {
+        text && text->find(value) != std::string::npos) {
       return true;
     }
   }

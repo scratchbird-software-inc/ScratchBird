@@ -25,8 +25,8 @@ using scratchbird::core::platform::u64;
 struct OptimizerMemoryFeedbackEvidence {
   std::string schema_id = "sb.optimizer.memory_feedback_evidence.v1";
   u64 schema_version = 1;
-  std::string query_uuid;
-  std::string scope_uuid;
+  scratchbird::core::platform::Uuid query_uuid;
+  scratchbird::core::platform::Uuid scope_uuid;
   std::string route_kind = "sql_select";
   std::string route_label;
   std::string operator_family;
@@ -95,6 +95,9 @@ struct OptimizerMemoryFeedbackEvidence {
 };
 
 struct OptimizerMemoryFeedbackBridgeResult {
+  // Admitted native scope; rejected input remains data in the diagnostic only.
+  scratchbird::core::platform::Uuid query_uuid;
+  scratchbird::core::platform::Uuid scope_uuid;
   Status status;
   bool accepted = false;
   bool fail_closed = false;

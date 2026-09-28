@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 // Real database file create/reopen in separate processes. Not SQL/IPC evidence.
 #include "database_lifecycle.hpp"
 #include "resource_seed_pack.hpp"
@@ -37,7 +39,7 @@ void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(m
 void Good(const db::DatabaseLifecycleResult& result) {
   if (!result.ok()) {
     std::cerr << result.diagnostic.diagnostic_code << ':' << result.diagnostic.message_key;
-    for (const auto& arg : result.diagnostic.arguments) std::cerr << ' ' << arg.key << '=' << arg.value;
+    for (const auto& arg : result.diagnostic.arguments) std::cerr << ' ' << arg.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(arg);
     std::cerr << '\n';
     throw std::runtime_error("database lifecycle failure");
   }

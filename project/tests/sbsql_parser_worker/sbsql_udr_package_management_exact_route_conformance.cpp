@@ -7,6 +7,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/diagnostic_value_fixture.hpp"
+
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -535,7 +537,7 @@ void CreateRouteDatabase() {
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key;
     for (const auto& argument : created.diagnostic.arguments)
-      std::cerr << ' ' << argument.key << '=' << argument.value;
+      std::cerr << ' ' << argument.key << '=' << scratchbird::tests::DiagnosticArgumentDisplay(argument);
     std::cerr << '\n';
   }
   Require(created.ok(), "failed to create database for UDR route test");

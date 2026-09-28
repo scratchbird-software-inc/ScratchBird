@@ -189,8 +189,9 @@ inline scratchbird::core::platform::TypedUuid EngineNoSqlNativeUuid(
 inline std::string EngineNoSqlDiagnosticDetail(
     const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
+    if (!argument.text()) continue; // UUID values stay in the owned native cause.
     if (argument.key == "detail") {
-      return argument.value;
+      return (*argument.text());
     }
   }
   return diagnostic.diagnostic_code;

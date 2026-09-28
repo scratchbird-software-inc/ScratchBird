@@ -1,5 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+
+#include "../support/diagnostic_value_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
@@ -1774,8 +1776,8 @@ void OwnedMutationFailureFinality() {
               "failed rollback stranded a transaction without its exact recovery identity");
         Check(std::any_of(failed.diagnostic.arguments.begin(), failed.diagnostic.arguments.end(),
             [&](const auto& argument) { return fault == OwnedFault::exception_rollback_write
-                ? argument.key == "mutation_exception" && argument.value == "propagation_interrupted_by_rollback_failure"
-                : argument.key == "mutation_failure_code" && !argument.value.empty(); }),
+                ? argument.key == "mutation_exception" && scratchbird::tests::DiagnosticTextEquals(argument.value, "propagation_interrupted_by_rollback_failure")
+                : argument.key == "mutation_failure_code" && (argument.text() && !argument.text()->empty()); }),
             "rollback failure lost original mutation diagnostic");
       } else {
         Check(!failed.unresolved_owned_transaction.local_id.valid(),

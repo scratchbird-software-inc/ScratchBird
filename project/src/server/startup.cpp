@@ -71,13 +71,15 @@ ServerDiagnostic MemoryConfigInstallDiagnostic(
   std::vector<ServerDiagnosticField> fields;
   fields.push_back({"source_component", diagnostic.source_component});
   for (const auto& argument : diagnostic.arguments) {
-    fields.push_back({argument.key, argument.value});
+    if (const auto* text = argument.text()) fields.push_back({argument.key, *text});
   }
-  return {diagnostic.diagnostic_code,
+  ServerDiagnostic result{diagnostic.diagnostic_code,
           diagnostic.message_key,
           ServerDiagnosticSeverity::kError,
           "The server memory policy could not be installed.",
           std::move(fields)};
+  result.native_platform_source = diagnostic;
+  return result;
 }
 
 }  // namespace
