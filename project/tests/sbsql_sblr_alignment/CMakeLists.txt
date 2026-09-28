@@ -9287,7 +9287,7 @@ set_tests_properties(
 add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_execution
   ia07_bulk_import_stream_execution_test.cpp)
 target_compile_features(
-  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE cxx_std_20)
+  sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE cxx_std_23)
 target_include_directories(
   sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE
   ${CMAKE_SOURCE_DIR}/src
@@ -9295,7 +9295,7 @@ target_include_directories(
   ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
 target_link_libraries(
   sbsql_sblr_alignment_ia07_bulk_import_stream_execution PRIVATE
-  sb_engine_internal_api)
+  sb_engine_internal_api sb_server_core)
 add_test(NAME sbsql_sblr_alignment_ia07_bulk_import_stream_execution
   COMMAND sbsql_sblr_alignment_ia07_bulk_import_stream_execution)
 set_tests_properties(

@@ -34,9 +34,9 @@ EngineApiDiagnostic Diagnostic(std::string code, std::string key,
                                  std::move(detail));
 }
 
-bool NonZero(const Uuid& value) {
-  return std::any_of(value.begin(), value.end(),
-                     [](std::uint8_t byte) { return byte != 0; });
+bool SystemUuid(const Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(
+      scratchbird::core::platform::Uuid{value});
 }
 
 bool NonZero(const Sha& value) {
@@ -229,28 +229,28 @@ bool ExactCommand(std::string_view value) {
 bool AuthorityShape(const SblrBulkImportStreamAuthorityInputV1& value) {
   const bool cluster_shape =
       value.cluster_bound
-          ? value.cluster_epoch != 0 && NonZero(value.cluster_fence_uuid)
-          : value.cluster_epoch == 0 && !NonZero(value.cluster_fence_uuid);
+          ? value.cluster_epoch != 0 && SystemUuid(value.cluster_fence_uuid)
+          : value.cluster_epoch == 0 && value.cluster_fence_uuid == Uuid{};
   return ExactCommand(value.admitted_command_surface_id) &&
          value.admitted_command_surface_id.size() <= 0xffffu &&
-         NonZero(value.authenticated_receipt_uuid) &&
-         NonZero(value.binding_uuid) && value.binding_generation != 0 &&
+         SystemUuid(value.authenticated_receipt_uuid) &&
+         SystemUuid(value.binding_uuid) && value.binding_generation != 0 &&
          value.structural_occurrence != 0 && value.import_occurrence != 0 &&
          NonZero(value.syntax_demand_sha256) &&
          NonZero(value.binding_evidence_sha256) &&
-         NonZero(value.target_relation_uuid) &&
+         SystemUuid(value.target_relation_uuid) &&
          value.target_relation_generation != 0 &&
-         NonZero(value.owning_transaction_uuid) &&
+         SystemUuid(value.owning_transaction_uuid) &&
          value.owning_local_transaction_id != 0 &&
-         NonZero(value.statement_snapshot_uuid) &&
-         NonZero(value.catalog_epoch_uuid) && value.catalog_generation != 0 &&
-         NonZero(value.security_context_uuid) && value.security_epoch != 0 &&
-         NonZero(value.policy_snapshot_uuid) && value.policy_generation != 0 &&
+         SystemUuid(value.statement_snapshot_uuid) &&
+         SystemUuid(value.catalog_epoch_uuid) && value.catalog_generation != 0 &&
+         SystemUuid(value.security_context_uuid) && value.security_epoch != 0 &&
+         SystemUuid(value.policy_snapshot_uuid) && value.policy_generation != 0 &&
          NonZero(value.import_policy_bundle_sha256) &&
-         NonZero(value.route_snapshot_uuid) && value.route_generation != 0 &&
-         NonZero(value.row_shape_uuid) && value.row_shape_generation != 0 &&
+         SystemUuid(value.route_snapshot_uuid) && value.route_generation != 0 &&
+         SystemUuid(value.row_shape_uuid) && value.row_shape_generation != 0 &&
          NonZero(value.column_descriptor_set_sha256) &&
-         NonZero(value.resource_grant_uuid) &&
+         SystemUuid(value.resource_grant_uuid) &&
          value.resource_grant_generation != 0 && cluster_shape &&
          value.effective_maximum_stream_bytes != 0 &&
          value.effective_maximum_stream_bytes <=
@@ -421,9 +421,9 @@ CoordinateDurableSblrBulkImportStreamDescriptorV1(
         allocation->effective_maximum_target_columns =
             authority.effective_maximum_target_columns;
         Descriptor descriptor;
-        if (!NonZero(allocation->stream_uuid) ||
-            !NonZero(allocation->durable_spool_uuid) ||
-            !NonZero(allocation->recovery_operation_uuid) ||
+        if (!SystemUuid(allocation->stream_uuid) ||
+            !SystemUuid(allocation->durable_spool_uuid) ||
+            !SystemUuid(allocation->recovery_operation_uuid) ||
             allocation->stream_uuid == allocation->durable_spool_uuid ||
             allocation->stream_uuid == allocation->recovery_operation_uuid ||
             allocation->durable_spool_uuid ==

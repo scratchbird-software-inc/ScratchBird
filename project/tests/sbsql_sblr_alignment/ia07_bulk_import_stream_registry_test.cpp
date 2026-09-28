@@ -237,6 +237,112 @@ void FlipByte(const std::filesystem::path& path, std::uint64_t offset) {
 }  // namespace
 
 int main() {
+  // Refuse malformed system identities before creating durable artifacts.
+  const auto identity_root = UniqueRoot();
+  {
+    api::SblrBulkImportStreamRegistry registry(identity_root);
+    Require(registry.healthy(), "identity refusal registry initialization failed");
+    const auto file_count = [&] {
+      return std::distance(std::filesystem::directory_iterator(identity_root),
+                           std::filesystem::directory_iterator{});
+    };
+    const auto original_files = file_count();
+    using A = api::BulkImportStreamAllocation;
+    for (auto field : {&A::authenticated_receipt_uuid, &A::stream_uuid,
+                       &A::durable_spool_uuid, &A::target_relation_uuid,
+                       &A::owning_transaction_uuid, &A::statement_snapshot_uuid,
+                       &A::catalog_epoch_uuid, &A::security_context_uuid,
+                       &A::policy_snapshot_uuid, &A::route_snapshot_uuid,
+                       &A::recovery_operation_uuid, &A::row_shape_uuid,
+                       &A::resource_grant_uuid, &A::cluster_fence_uuid}) {
+      for (const unsigned position : {6u, 8u}) {
+        for (unsigned byte = 0; byte != 256; ++byte) {
+          if ((position == 6 && (byte & 0xf0) == 0x70) ||
+              (position == 8 && (byte & 0xc0) == 0x80)) continue;
+          auto invalid = Allocation(200);
+          if (field == &A::cluster_fence_uuid) {
+            invalid.cluster_bound = true;
+            invalid.cluster_epoch = 1;
+            invalid.cluster_fence_uuid = Uuid(201);
+          }
+          (invalid.*field)[position] = static_cast<std::uint8_t>(byte);
+          const auto refused = registry.Allocate(invalid);
+          Require(!refused.ok && !refused.durable,
+                  "malformed system UUID reached durable stream allocation");
+        }
+      }
+      auto nil = Allocation(200);
+      if (field == &A::cluster_fence_uuid) { nil.cluster_bound = true; nil.cluster_epoch = 1; }
+      nil.*field = {};
+      Require(!registry.Allocate(nil).ok, "nil required stream identity accepted");
+    }
+    for (unsigned version = 0; version != 16; ++version) {
+      if (version == 7) continue;
+      auto receipt = Uuid(240);
+      receipt[6] = static_cast<std::uint8_t>(version << 4);
+      bool called = false;
+      const auto refused = registry.AllocateOrReplay(receipt, 1, 1, Hash("authority"),
+          [&](A*) { called = true; return false; });
+      Require(!refused.ok && !called,
+              "invalid replay receipt invoked the allocation factory");
+      api::BulkImportStreamEntry output;
+      Require(!registry.Recover(receipt, &output).ok, "invalid lookup identity found a stream");
+    }
+    auto unbound_fence = Allocation(200);
+    unbound_fence.cluster_fence_uuid = Uuid(201);
+    Require(!registry.Allocate(unbound_fence).ok, "unbound cluster fence accepted");
+    Require(file_count() == original_files, "identity refusal created durable artifacts");
+  }
+  std::filesystem::remove_all(identity_root);
+  // Preserve the journal checksum while corrupting each stored UUID: recovery
+  // must validate semantic identity shape, not just reject an invalid digest.
+  const auto identity_recovery_root = UniqueRoot();
+  const auto recovery_allocation = Allocation(180);
+  {
+    api::SblrBulkImportStreamRegistry registry(identity_recovery_root);
+    Require(registry.Allocate(recovery_allocation).ok, "UUID recovery fixture allocation failed");
+  }
+  const auto identity_journal = identity_recovery_root /
+      ("stream_" + Hex(recovery_allocation.stream_uuid) + ".journal");
+  std::ifstream original_input(identity_journal, std::ios::binary);
+  const std::vector<std::uint8_t> original_journal{
+      std::istreambuf_iterator<char>(original_input), std::istreambuf_iterator<char>()};
+  original_input.close();
+  Require(original_journal.size() > 28 + 500 + 32, "UUID recovery journal fixture truncated");
+  const auto write_journal = [&](const auto& bytes) {
+    std::ofstream output(identity_journal, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    output.close();
+    Require(!output.fail(), "UUID recovery journal write failed");
+  };
+  for (const unsigned field : {0u, 148u, 172u, 196u, 220u, 236u,
+                               260u, 284u, 308u, 332u, 356u, 444u}) {
+    auto malformed = original_journal;
+    malformed[28 + field + 6] = 0x40;
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        malformed.data(), malformed.size() - 32);
+    Require(digest.ok(), "UUID journal independent checksum failed");
+    std::copy(digest.digest.begin(), digest.digest.end(), malformed.end() - 32);
+    write_journal(malformed);
+    api::SblrBulkImportStreamRegistry registry(identity_recovery_root);
+    api::BulkImportStreamEntry restored;
+    Require(registry.healthy() &&
+                !registry.Recover(recovery_allocation.stream_uuid, &restored).ok &&
+                restored.allocation.stream_uuid == sblr::BulkImportUuid{},
+            "checksummed malformed journal UUID reached recovered stream state");
+    std::ifstream observed(identity_journal, std::ios::binary);
+    Require(std::vector<std::uint8_t>(std::istreambuf_iterator<char>(observed), {}) == malformed,
+            "refused UUID recovery changed the durable journal");
+  }
+  write_journal(original_journal);
+  {
+    api::SblrBulkImportStreamRegistry registry(identity_recovery_root);
+    api::BulkImportStreamEntry restored;
+    Require(registry.Recover(recovery_allocation.stream_uuid, &restored).ok &&
+                restored.allocation.target_relation_uuid == recovery_allocation.target_relation_uuid,
+            "valid UUID journal recovery failed after corruption refusal");
+  }
+  std::filesystem::remove_all(identity_recovery_root);
   const auto root = UniqueRoot();
   const auto allocation_a = Allocation(10);
   auto allocation_b = Allocation(20);

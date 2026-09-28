@@ -1,6 +1,7 @@
 #include "sblr_bulk_import_stream_registry.hpp"
 
 #include "core/hash/hash_digest.hpp"
+#include "core/uuid/uuid.hpp"
 #include "wire/parser_server_ipc/sbps_bulk_import_stream_codec.hpp"
 
 #include <algorithm>
@@ -109,8 +110,9 @@ struct ByteReader {
   bool Done() const { return offset == size; }
 };
 
-bool NonZero(const Uuid& value) {
-  return std::any_of(value.begin(), value.end(), [](std::uint8_t byte) { return byte != 0; });
+bool SystemUuid(const Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(
+      scratchbird::core::platform::Uuid{value});
 }
 
 bool NonZero(const Sha& value) {
@@ -239,30 +241,30 @@ std::uint8_t NormalStateOrdinal(BulkImportStreamState state) {
 }
 
 bool AllocationValid(const BulkImportStreamAllocation& value) {
-  return NonZero(value.authenticated_receipt_uuid) &&
-         NonZero(value.stream_uuid) &&
+  return SystemUuid(value.authenticated_receipt_uuid) &&
+         SystemUuid(value.stream_uuid) &&
          value.stream_generation != 0 &&
          value.structural_occurrence != 0 &&
          value.import_occurrence != 0 &&
          NonZero(value.descriptor_evidence) && NonZero(value.authority_evidence_sha256) &&
          NonZero(value.syntax_demand_sha256) &&
-         NonZero(value.durable_spool_uuid) &&
+         SystemUuid(value.durable_spool_uuid) &&
          value.durable_spool_generation != 0 &&
-         NonZero(value.target_relation_uuid) && value.target_relation_generation != 0 &&
-         NonZero(value.owning_transaction_uuid) &&
+         SystemUuid(value.target_relation_uuid) && value.target_relation_generation != 0 &&
+         SystemUuid(value.owning_transaction_uuid) &&
          value.owning_local_transaction_id != 0 &&
-         NonZero(value.statement_snapshot_uuid) && NonZero(value.catalog_epoch_uuid) &&
-         value.catalog_generation != 0 && NonZero(value.security_context_uuid) &&
-         value.security_epoch != 0 && NonZero(value.policy_snapshot_uuid) &&
-         value.policy_generation != 0 && NonZero(value.route_snapshot_uuid) &&
-         value.route_generation != 0 && NonZero(value.recovery_operation_uuid) &&
-         value.recovery_generation != 0 && NonZero(value.row_shape_uuid) &&
+         SystemUuid(value.statement_snapshot_uuid) && SystemUuid(value.catalog_epoch_uuid) &&
+         value.catalog_generation != 0 && SystemUuid(value.security_context_uuid) &&
+         value.security_epoch != 0 && SystemUuid(value.policy_snapshot_uuid) &&
+         value.policy_generation != 0 && SystemUuid(value.route_snapshot_uuid) &&
+         value.route_generation != 0 && SystemUuid(value.recovery_operation_uuid) &&
+         value.recovery_generation != 0 && SystemUuid(value.row_shape_uuid) &&
          value.row_shape_generation != 0 && NonZero(value.column_descriptor_set_sha256) &&
-         NonZero(value.import_policy_bundle_sha256) && NonZero(value.resource_grant_uuid) &&
+         NonZero(value.import_policy_bundle_sha256) && SystemUuid(value.resource_grant_uuid) &&
          value.resource_grant_generation != 0 &&
          (value.cluster_bound
-              ? value.cluster_epoch != 0 && NonZero(value.cluster_fence_uuid)
-              : value.cluster_epoch == 0 && !NonZero(value.cluster_fence_uuid)) &&
+              ? value.cluster_epoch != 0 && SystemUuid(value.cluster_fence_uuid)
+              : value.cluster_epoch == 0 && value.cluster_fence_uuid == Uuid{}) &&
          value.executor_availability_generation != 0 &&
          value.effective_maximum_stream_bytes != 0 &&
          value.effective_maximum_stream_bytes <= kBulkImportStreamMaximumBytesV1 &&
@@ -933,7 +935,7 @@ SblrBulkImportStreamRegistry::LoadOutcome SblrBulkImportStreamRegistry::Load(
                   body.Fixed(&entry.publication.postcondition_evidence_sha256) &&
                   body.Done() &&
                   entry.publication.recovery_key_sha256 == entry.recovery_key_sha256 &&
-                  NonZero(entry.publication.durable_publication_uuid) &&
+                  SystemUuid(entry.publication.durable_publication_uuid) &&
                   entry.publication.durable_publication_generation != 0 &&
                   entry.publication.affected_rows + entry.publication.rejected_rows >=
                       entry.publication.affected_rows &&
@@ -1073,7 +1075,7 @@ BulkImportStreamRegistryResult SblrBulkImportStreamRegistry::EnsureLoaded(
   if (recovery_required_) {
     return Failure(BulkImportStreamState::aborted, "registry_recovery_required");
   }
-  if (!output || !NonZero(id)) return Failure(BulkImportStreamState::allocated, "stream_identity_required");
+  if (!output || !SystemUuid(id)) return Failure(BulkImportStreamState::allocated, "stream_identity_required");
   auto found = entries_.find(id);
   if (found != entries_.end()) {
     *output = &found->second;
@@ -1242,6 +1244,9 @@ BulkImportStreamRegistryResult SblrBulkImportStreamRegistry::AllocateOrReplay(
     const Sha& authority_evidence, const BulkImportAllocationFactory& factory) {
   std::unique_lock lock(mutex_);
   if (!healthy_) return Failure(BulkImportStreamState::allocated, startup_error_);
+  if (!SystemUuid(receipt) || structural_occurrence == 0 || occurrence == 0 ||
+      !NonZero(authority_evidence))
+    return Failure(BulkImportStreamState::allocated, "allocation_identity_invalid");
   for (const auto& [id, current] : entries_) {
     const auto& a = current.allocation;
     if (a.authenticated_receipt_uuid == receipt &&
@@ -1576,7 +1581,7 @@ BulkImportStreamRegistryResult SblrBulkImportStreamRegistry::Publish(
   if (!loaded.ok || !entry) return loaded;
   const bool identity_valid = publication.stream_generation == entry->allocation.stream_generation &&
                               publication.recovery_key_sha256 == entry->recovery_key_sha256 &&
-                              NonZero(publication.durable_publication_uuid) &&
+                              SystemUuid(publication.durable_publication_uuid) &&
                               publication.durable_publication_generation != 0 &&
                               publication.affected_rows + publication.rejected_rows >=
                                   publication.affected_rows &&

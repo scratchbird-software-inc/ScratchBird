@@ -16,12 +16,8 @@ using namespace scratchbird::engine::internal_api;
 using Uuid = scratchbird::engine::sblr::BulkImportUuid;
 using Sha = scratchbird::engine::sblr::BulkImportSha;
 
-Uuid Id(const char* text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  assert(parsed.ok());
-  Uuid out{};
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out.begin());
-  return out;
+consteval Uuid Id(const char (&text)[37]) {
+  return scratchbird::tests::FixtureUuidLiteral(text).bytes;
 }
 
 Sha Hash(const char* text) {
@@ -30,40 +26,45 @@ Sha Hash(const char* text) {
 }
 
 std::filesystem::path Root() {
-  std::array<char, 64> name{};
-  std::copy_n("/tmp/sb_bulk_import_coord_XXXXXX", 32, name.begin());
+  auto name = (std::filesystem::temp_directory_path() /
+               "sb_bulk_import_coord_XXXXXX").string();
   assert(::mkdtemp(name.data()) != nullptr);
-  return name.data();
+  return name;
 }
+
+struct RootCleanup {
+  std::filesystem::path path;
+  ~RootCleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+};
 
 SblrBulkImportStreamAuthorityInputV1 Authority() {
   SblrBulkImportStreamAuthorityInputV1 a;
-  a.authenticated_receipt_uuid = Id("10000000-0000-4000-8000-000000000001");
+  a.authenticated_receipt_uuid = Id("10000000-0000-7000-8000-000000000001");
   a.admitted_command_surface_id = "SBSQL-465931ED7427";
-  a.binding_uuid = Id("10000000-0000-4000-8000-000000000002");
+  a.binding_uuid = Id("10000000-0000-7000-8000-000000000002");
   a.binding_generation = 3;
   a.structural_occurrence = 1;
   a.import_occurrence = 1;
   a.syntax_demand_sha256 = Hash("syntax");
   a.binding_evidence_sha256 = Hash("binding");
-  a.target_relation_uuid = Id("10000000-0000-4000-8000-000000000003");
+  a.target_relation_uuid = Id("10000000-0000-7000-8000-000000000003");
   a.target_relation_generation = 4;
-  a.owning_transaction_uuid = Id("10000000-0000-4000-8000-000000000004");
+  a.owning_transaction_uuid = Id("10000000-0000-7000-8000-000000000004");
   a.owning_local_transaction_id = 5;
-  a.statement_snapshot_uuid = Id("10000000-0000-4000-8000-000000000005");
-  a.catalog_epoch_uuid = Id("10000000-0000-4000-8000-000000000006");
+  a.statement_snapshot_uuid = Id("10000000-0000-7000-8000-000000000005");
+  a.catalog_epoch_uuid = Id("10000000-0000-7000-8000-000000000006");
   a.catalog_generation = 7;
-  a.security_context_uuid = Id("10000000-0000-4000-8000-000000000007");
+  a.security_context_uuid = Id("10000000-0000-7000-8000-000000000007");
   a.security_epoch = 8;
-  a.policy_snapshot_uuid = Id("10000000-0000-4000-8000-000000000008");
+  a.policy_snapshot_uuid = Id("10000000-0000-7000-8000-000000000008");
   a.policy_generation = 9;
   a.import_policy_bundle_sha256 = Hash("policy");
-  a.route_snapshot_uuid = Id("10000000-0000-4000-8000-000000000009");
+  a.route_snapshot_uuid = Id("10000000-0000-7000-8000-000000000009");
   a.route_generation = 10;
-  a.row_shape_uuid = Id("10000000-0000-4000-8000-00000000000a");
+  a.row_shape_uuid = Id("10000000-0000-7000-8000-00000000000a");
   a.row_shape_generation = 11;
   a.column_descriptor_set_sha256 = Hash("columns");
-  a.resource_grant_uuid = Id("10000000-0000-4000-8000-00000000000b");
+  a.resource_grant_uuid = Id("10000000-0000-7000-8000-00000000000b");
   a.resource_grant_generation = 12;
   a.executor_availability_generation = 13;
   a.effective_maximum_stream_bytes = 1024;
@@ -76,16 +77,16 @@ SblrBulkImportStreamAuthorityInputV1 Authority() {
 
 EngineRequestContext Context(const SblrBulkImportStreamAuthorityInputV1& a) {
   EngineRequestContext c;
-  c.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000001");
-  c.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000004");
+  c.statement_receipt_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000001");
+  c.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000004");
   c.local_transaction_id = a.owning_local_transaction_id;
-  c.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000005");
-  c.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000006");
+  c.statement_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000005");
+  c.catalog_epoch_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000006");
   c.catalog_generation_id = a.catalog_generation;
   c.authorization_context.present = true;
-  c.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000007");
+  c.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000007");
   c.authorization_context.security_epoch = a.security_epoch;
-  c.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-00000000000b");
+  c.resource_admission_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-00000000000b");
   c.resource_epoch = a.resource_grant_generation;
   c.security_context_present = true;
   c.statement_metadata_snapshot_engine_owned = true;
@@ -96,6 +97,7 @@ EngineRequestContext Context(const SblrBulkImportStreamAuthorityInputV1& a) {
 
 int main() {
   const auto root = Root();
+  const RootCleanup cleanup{root};
   auto authority = Authority();
   auto context = Context(authority);
   SblrBulkImportStreamRegistry registry(root);
@@ -111,6 +113,35 @@ int main() {
          replay.descriptor.evidence == first.descriptor.evidence &&
          replay.allocation.stream_uuid == first.allocation.stream_uuid);
 
+  const auto files = std::distance(std::filesystem::directory_iterator(root),
+                                  std::filesystem::directory_iterator{});
+  using A = SblrBulkImportStreamAuthorityInputV1;
+  for (auto field : {&A::authenticated_receipt_uuid, &A::binding_uuid,
+                     &A::target_relation_uuid, &A::owning_transaction_uuid,
+                     &A::statement_snapshot_uuid, &A::catalog_epoch_uuid,
+                     &A::security_context_uuid, &A::policy_snapshot_uuid,
+                     &A::route_snapshot_uuid, &A::row_shape_uuid,
+                     &A::resource_grant_uuid}) {
+    for (unsigned version = 0; version != 16; ++version) {
+      if (version == 7) continue;
+      auto invalid = authority;
+      (invalid.*field)[6] = static_cast<std::uint8_t>(version << 4);
+      const auto refusal = CoordinateDurableSblrBulkImportStreamDescriptorV1(
+          context, registry, invalid);
+      assert(!refusal.ok && refusal.diagnostic.code == "SBLR.OPERAND_INVALID" &&
+             refusal.allocation.stream_uuid == Uuid{} &&
+             refusal.descriptor.evidence == Sha{});
+    }
+    for (unsigned variant : {0u, 0x40u, 0xc0u}) {
+      auto invalid = authority;
+      (invalid.*field)[8] = static_cast<std::uint8_t>(variant);
+      assert(!CoordinateDurableSblrBulkImportStreamDescriptorV1(
+                  context, registry, invalid).ok);
+    }
+  }
+  assert(std::distance(std::filesystem::directory_iterator(root),
+                       std::filesystem::directory_iterator{}) == files);
+
   auto conflicting = authority;
   conflicting.binding_evidence_sha256[0] ^= 1;
   const auto conflict = CoordinateDurableSblrBulkImportStreamDescriptorV1(
@@ -122,7 +153,7 @@ int main() {
   assert(!CoordinateDurableSblrBulkImportStreamDescriptorV1(
               hidden, registry, authority).ok);
   auto transaction_mismatch = context;
-  transaction_mismatch.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-4000-8000-000000000099");
+  transaction_mismatch.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("10000000-0000-7000-8000-000000000099");
   assert(!CoordinateDurableSblrBulkImportStreamDescriptorV1(
               transaction_mismatch, registry, authority).ok);
   auto cluster = context;
@@ -135,6 +166,7 @@ int main() {
               context, registry, evidence_missing).ok);
 
   const auto cancellation_root = Root();
+  const RootCleanup cancellation_cleanup{cancellation_root};
   SblrBulkImportStreamRegistry cancellation_registry(cancellation_root);
   auto cancelled = context;
   cancelled.query_cancellation_requested = [] { return true; };

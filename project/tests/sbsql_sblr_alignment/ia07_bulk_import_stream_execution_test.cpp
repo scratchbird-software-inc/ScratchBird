@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/published_mga_table_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "core/hash/hash_digest.hpp"
 #include "core/uuid/uuid.hpp"
@@ -287,6 +292,8 @@ struct Fixture {
   platform::TypedUuid session = NewUuid(platform::UuidKind::session);
   api::EngineRequestContext context;
   api::MgaRelationStorageDescriptor descriptor;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> engine_session;
+  std::unique_ptr<scratchbird::tests::FixtureEngineStatement> engine_statement;
 
   Fixture() = default;
   Fixture(const Fixture&) = delete;
@@ -295,6 +302,8 @@ struct Fixture {
   Fixture& operator=(Fixture&&) = default;
 
   ~Fixture() {
+    engine_statement.reset();
+    engine_session.reset();
     std::error_code ignored;
     if (!root.empty()) std::filesystem::remove_all(root, ignored);
   }
@@ -320,6 +329,8 @@ api::EngineRequestContext BaseContext(const Fixture& fixture,
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -367,9 +378,15 @@ Fixture MakeFixture() {
   create.filespace_uuid = fixture.filespace;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = kEpochMillis;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':'
+                               << created.diagnostic.message_key << '\n';
+  Require(created.ok(), "database creation failed");
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(create.path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "durable bootstrap identity unavailable");
+  fixture.principal = bootstrap.state.principal_uuid;
 
   auto metadata = Begin(fixture, "bulk-import-execution-metadata");
   api::CrudTableRecord table;
@@ -385,42 +402,24 @@ Fixture MakeFixture() {
       {{"datatype_descriptor_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d718")},
        {"type_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d719")},
        {"codec_uuid", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d71a")}}})});
-  Require(!api::AppendMgaTableMetadata(metadata, table).error,
-          "table metadata append failed");
-  Require(!api::EnsureMgaRelationStorageDescriptor(
-               metadata, table, {}, &fixture.descriptor)
-               .error,
-          "relation descriptor creation failed");
+  metadata.current_schema_uuid = {};
+  Require(!scratchbird::tests::PublishMgaTableFixture(
+               metadata, table, {"int32", "character"}).error,
+          "published native table cohort creation failed");
+  fixture.schema = {platform::UuidKind::schema, metadata.current_schema_uuid};
   Commit(metadata);
 
   fixture.context = Begin(fixture, "bulk-import-execution");
-  fixture.context.statement_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  fixture.context.statement_receipt_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  api::EnginePublishStatementSnapshotRequest publish_snapshot;
-  publish_snapshot.context = fixture.context;
-  const auto published_snapshot =
-      api::EnginePublishStatementSnapshot(publish_snapshot);
-  Require(published_snapshot.ok, "statement snapshot publication failed");
-  fixture.context.statement_snapshot_uuid =
-      published_snapshot.statement_snapshot_uuid;
-  fixture.context.snapshot_visible_through_local_transaction_id =
-      published_snapshot.snapshot_vector.visible_committed_high_watermark;
-  fixture.context.catalog_epoch_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  fixture.context.resource_admission_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  fixture.context.authorization_context.present = true;
-  fixture.context.authorization_context.authority_uuid =
-      Identity(NewUuid(platform::UuidKind::object));
-  fixture.context.authorization_context.security_context_generation = 1;
-  fixture.context.authorization_context.principal_uuid =
-      fixture.context.principal_uuid;
-  fixture.context.authorization_context.security_epoch = 1;
-  fixture.context.authorization_context.policy_epoch = 1;
-  fixture.context.authorization_context.catalog_generation_id = 1;
-  fixture.context.statement_metadata_snapshot_engine_owned = true;
+  const auto epochs = api::LoadCatalogObjectLifecycleEpochState(fixture.context);
+  Require(epochs.ok && epochs.state.metadata_epoch && epochs.state.name_resolution_epoch,
+          "published catalog epochs unavailable");
+  fixture.context.catalog_generation_id = epochs.state.metadata_epoch;
+  fixture.context.name_resolution_epoch = epochs.state.name_resolution_epoch;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(fixture.context);
+  fixture.engine_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(fixture.context);
+  fixture.engine_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(
+      *fixture.engine_session, fixture.context);
+  fixture.context = fixture.engine_statement->context;
   fixture.context.trace_tags.push_back("private_bulk_import_stream_compiler");
   const auto loaded = api::LoadMgaRelationStorageDescriptor(
       fixture.context, Identity(fixture.relation));
@@ -669,6 +668,8 @@ void SpawnExecutionWorker(
   AppendUuid(&identities, context.catalog_epoch_uuid);
   AppendUuid(&identities, context.resource_admission_uuid);
   AppendUuid(&identities, context.authorization_context.authority_uuid);
+  AppendUuid(&identities, context.statement_metadata_snapshot_uuid);
+  AppendUuid(&identities, context.optimizer_resource_snapshot_uuid);
   SpawnWorker(
       {"bulk_import_stream_crash_worker", "--crash-execute",
        fixture.stream_root.string(), context.database_path,
@@ -738,7 +739,7 @@ int RunCrashWorker(int argc, char** argv) {
       context.trust_mode = api::EngineTrustMode::server_isolated;
       context.database_path = argv[3];
       std::vector<std::uint8_t> identities;
-      if (!ReadWorkerBytes(argv[4], &identities) || identities.size() != 12 * 16) return 99;
+      if (!ReadWorkerBytes(argv[4], &identities) || identities.size() != 14 * 16) return 99;
       std::copy_n(identities.begin() + 0, 16, context.database_uuid.bytes.begin());
       std::copy_n(identities.begin() + 16, 16, context.default_root_uuid.bytes.begin());
       std::copy_n(identities.begin() + 32, 16, context.current_schema_uuid.bytes.begin());
@@ -751,6 +752,8 @@ int RunCrashWorker(int argc, char** argv) {
       std::copy_n(identities.begin() + 144, 16, context.catalog_epoch_uuid.bytes.begin());
       std::copy_n(identities.begin() + 160, 16, context.resource_admission_uuid.bytes.begin());
       std::copy_n(identities.begin() + 176, 16, context.authorization_context.authority_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 192, 16, context.statement_metadata_snapshot_uuid.bytes.begin());
+      std::copy_n(identities.begin() + 208, 16, context.optimizer_resource_snapshot_uuid.bytes.begin());
       context.request_id = argv[5];
       context.local_transaction_id = std::stoull(argv[6]);
       context.snapshot_visible_through_local_transaction_id = std::stoull(argv[7]);
@@ -765,12 +768,11 @@ int RunCrashWorker(int argc, char** argv) {
       context.language_context.language_tag = "en";
       context.language_context.default_language_tag = "en";
       context.security_context_present = true;
-      context.authorization_context.present = true;
-      context.authorization_context.security_context_generation = 1;
-      context.authorization_context.principal_uuid = context.principal_uuid;
-      context.authorization_context.policy_epoch = 1;
-      context.authorization_context.catalog_generation_id =
-          context.catalog_generation_id;
+      const auto transported_authority = context.authorization_context.authority_uuid;
+      scratchbird::tests::UseBootstrapDatatypeCohort(context);
+      scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
+      if (context.authorization_context.authority_uuid != transported_authority)
+        return 99;
       context.statement_metadata_snapshot_engine_owned = true;
       context.trace_tags.push_back("private_bulk_import_stream_compiler");
       const auto checkpoint =
@@ -823,6 +825,8 @@ std::map<std::string, std::string> Values(
 }  // namespace
 
 int main(int argc, char** argv) {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "bulk_import_stream_execution");
   if (argc > 1) return RunCrashWorker(argc, argv);
   auto fixture = MakeFixture();
   auto registry = std::make_unique<api::SblrBulkImportStreamRegistry>(
