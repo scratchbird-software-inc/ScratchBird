@@ -1225,7 +1225,7 @@ std::string DiagnosticCodeFromMessage(const std::string& message) {
 
 void AppendMessageVectorSet(proto::Bytes* out, const proto::Diagnostic& diagnostic) {
   proto::MessageVectorSet set;
-  set.request_uuid = proto::MakePseudoUuidV7();
+  set.request_uuid = proto::MakeUuidV7();
   set.diagnostics.push_back(diagnostic);
   proto::Bytes encoded;
   const auto result = proto::EncodeMessageVectorSetV1(set, &encoded, 0, 4096);
@@ -1536,8 +1536,9 @@ proto::Bytes AuthChallengePayload(const proto::UuidBytes& session_id, const std:
   out.push_back(4);
   out.push_back(0x01);
   out.push_back(0);
-  PutU16(&out, static_cast<std::uint16_t>(session_id.size()));
-  out.insert(out.end(), session_id.begin(), session_id.end());
+  const auto nonce = proto::MakeRandomNonce16();
+  PutU16(&out, static_cast<std::uint16_t>(nonce.size()));
+  out.insert(out.end(), nonce.begin(), nonce.end());
   return out;
 }
 
@@ -1585,11 +1586,6 @@ proto::Bytes CommandFailurePayload(const std::string& operation,
   auto out = StatusPayload(0x04, payload_entries);
   AppendMessageVectorSet(&out, Diag(diagnostic_code, diagnostic_code));
   return out;
-}
-
-proto::Bytes RandomNonce16() {
-  const auto uuid = proto::MakePseudoUuidV7();
-  return proto::Bytes(uuid.begin(), uuid.end());
 }
 
 std::uint64_t NextControlRequestId() {
@@ -1728,7 +1724,7 @@ struct McpSession {
   std::string security_token;
   std::string security_provider_family = std::string(kSecurityDatabaseTemporaryTokenProvider);
   ManagerMaterializedAuthorizationContext management_authorization;
-  proto::UuidBytes session_id = proto::MakePseudoUuidV7();
+  proto::UuidBytes session_id = proto::MakeUuidV7();
 };
 
 bool HasManagementControlPermission(const McpSession& session) {
@@ -2161,8 +2157,8 @@ bool ManagerRuntime::PrepareRuntime(std::vector<proto::Diagnostic>* diagnostics)
   }
   std::array<char, 256> hostname{};
   if (::gethostname(hostname.data(), hostname.size() - 1) != 0) hostname[0] = '\0';
-  const auto manager_uuid = proto::Hex(proto::MakePseudoUuidV7());
-  const auto process_uuid = proto::Hex(proto::MakePseudoUuidV7());
+  const auto manager_uuid = proto::Hex(proto::MakeUuidV7());
+  const auto process_uuid = proto::Hex(proto::MakeUuidV7());
   const auto now_ms = proto::CurrentEpochMilliseconds();
   std::ostringstream token_body;
   token_body << "format=SBMN_MANAGER_OWNER_V1\n";
@@ -2489,7 +2485,7 @@ bool ManagerRuntime::AuditEvent(const std::string& event,
     checksum_input << '|' << field.first << '=' << field.second;
   }
   const auto checksum = ChecksumText(checksum_input.str());
-  const auto record = RenderManagerAuditJsonLine(ManagerAuditRecord{proto::Hex(proto::MakePseudoUuidV7()),
+  const auto record = RenderManagerAuditJsonLine(ManagerAuditRecord{proto::Hex(proto::MakeUuidV7()),
                                                                     sequence,
                                                                     proto::CurrentEpochMilliseconds(),
                                                                     event,
@@ -2674,7 +2670,7 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
       session->auth_started = true;
       session->auth_method = auth_method;
       session->username = username;
-      session->session_id = proto::MakePseudoUuidV7();
+      session->session_id = proto::MakeUuidV7();
       if (!initial_data.empty() && TimingSafeEqual(initial_data, secret)) {
         ManagerMaterializedAuthorizationContext authorization;
         auto secret_rights = McpSecretGrantedRights(config_);
@@ -2948,8 +2944,8 @@ proto::SbdbFrame ManagerRuntime::HandleMcpFrame(McpSession* session, const proto
       token.issued_at_ms = now_ms;
       token.expires_at_ms = now_ms + config_.dbbt_ttl_ms;
       token.manager_session_id = session->session_id;
-      token.client_nonce = client_nonce.empty() ? RandomNonce16() : client_nonce;
-      token.server_nonce = RandomNonce16();
+      token.client_nonce = client_nonce.empty() ? proto::MakeRandomNonce16() : client_nonce;
+      token.server_nonce = proto::MakeRandomNonce16();
       token.flags = 0;
       const auto encoded_dbbt = proto::EncodeDbbt(token, keyring.active_key);
       proto::Lpreface preface;
@@ -3289,7 +3285,7 @@ proto::SbdbFrame ManagerRuntime::HandleSupportBundleCommand(const std::string& o
     AuditEvent("MANAGER_COMMAND_DECISION", false, "MANAGER.SUPPORT_BUNDLE_ARG_INVALID", {{"command", operation}, {"field", "redaction_profile"}});
     return proto::SbdbFrame{0x64, 0, CommandFailurePayload(operation, "MANAGER.SUPPORT_BUNDLE_ARG_INVALID", {{"field", "redaction_profile"}})};
   }
-  const auto bundle_uuid = proto::Hex(proto::MakePseudoUuidV7());
+  const auto bundle_uuid = proto::Hex(proto::MakeUuidV7());
   const auto bundle_dir = SupportBundleRoot(config_) / bundle_uuid;
   if (!AuditEvent("MANAGER_COMMAND_DECISION", true, "support_bundle_attempt_begin", {{"command", operation}, {"bundle_uuid", bundle_uuid}})) {
     return proto::SbdbFrame{0x11, 0, AuthResponsePayload(1, "MANAGER.AUDIT_WRITE_FAILED")};

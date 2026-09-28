@@ -25,7 +25,7 @@ proto::MessageVectorSet MakeMessageVectorSet(std::vector<proto::Diagnostic> diag
   (void)language;
   (void)dialect;
   proto::MessageVectorSet set;
-  set.request_uuid = proto::MakePseudoUuidV7();
+  set.request_uuid = proto::MakeUuidV7();
   set.diagnostics = std::move(diagnostics);
   return set;
 }

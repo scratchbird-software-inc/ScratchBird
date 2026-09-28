@@ -9,6 +9,7 @@
 // SEARCH_KEY: SBMI_MANAGER_PROTOCOL_LIBRARY
 
 #include "manager_protocol.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -291,7 +292,7 @@ DiagnosticResult EncodeMessageVectorSetV1(const MessageVectorSet& set,
     }
     Bytes record(kMessageVectorRecordHeaderBytes, 0);
     const auto record_start = records.size();
-    const auto mv_uuid = MakePseudoUuidV7();
+    const auto mv_uuid = MakeUuidV7();
     std::copy(mv_uuid.begin(), mv_uuid.end(), record.begin() + 16);
     std::copy(set.request_uuid.begin(), set.request_uuid.end(), record.begin() + 48);
     record[8] = 1;
@@ -340,7 +341,7 @@ DiagnosticResult EncodeMessageVectorSetV1(const MessageVectorSet& set,
   PutBytesAtU32(&out, 16, static_cast<std::uint32_t>(total_bytes));
   PutBytesAtU32(&out, 20, records.empty() ? 0 : Crc32c(records));
   PutBytesAtU64(&out, 24, registry_generation);
-  const auto message_set_uuid = MakePseudoUuidV7();
+  const auto message_set_uuid = MakeUuidV7();
   std::copy(message_set_uuid.begin(), message_set_uuid.end(), out.begin() + 32);
   PutBytesAtU32(&out, 48, max_render_bytes);
   out.insert(out.end(), records.begin(), records.end());
@@ -459,27 +460,17 @@ std::optional<MessageVectorSet> DecodeMessageVectorSetV1(const Bytes& encoded,
   return set;
 }
 
-UuidBytes MakePseudoUuidV7() {
-  const auto now_ms = static_cast<std::uint64_t>(CurrentEpochMilliseconds());
-  std::array<std::uint8_t, 10> random_bytes{};
-  if (RAND_bytes(random_bytes.data(), static_cast<int>(random_bytes.size())) != 1) {
-    throw std::runtime_error("OpenSSL RAND_bytes failed while creating UUIDv7");
-  }
+UuidBytes MakeUuidV7() {
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) throw std::runtime_error("Manager UUIDv7 generation failed.");
+  return issued->bytes;
+}
 
-  UuidBytes uuid{};
-  uuid[0] = static_cast<std::uint8_t>((now_ms >> 40u) & 0xffu);
-  uuid[1] = static_cast<std::uint8_t>((now_ms >> 32u) & 0xffu);
-  uuid[2] = static_cast<std::uint8_t>((now_ms >> 24u) & 0xffu);
-  uuid[3] = static_cast<std::uint8_t>((now_ms >> 16u) & 0xffu);
-  uuid[4] = static_cast<std::uint8_t>((now_ms >> 8u) & 0xffu);
-  uuid[5] = static_cast<std::uint8_t>(now_ms & 0xffu);
-  uuid[6] = static_cast<std::uint8_t>(0x70u | (random_bytes[0] & 0x0fu));
-  uuid[7] = random_bytes[1];
-  uuid[8] = static_cast<std::uint8_t>(0x80u | (random_bytes[2] & 0x3fu));
-  for (std::size_t i = 9; i < uuid.size(); ++i) {
-    uuid[i] = random_bytes[i - 6];
-  }
-  return uuid;
+Bytes MakeRandomNonce16() {
+  Bytes bytes(16);
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+    throw std::runtime_error("Manager nonce generation failed.");
+  return bytes;
 }
 
 std::string Hex(const std::uint8_t* data, std::size_t size) {

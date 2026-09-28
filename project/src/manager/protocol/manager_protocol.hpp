@@ -152,7 +152,10 @@ DiagnosticResult EncodeMessageVectorSetV1(const MessageVectorSet& set,
                                           std::uint32_t max_render_bytes = 65536);
 std::optional<MessageVectorSet> DecodeMessageVectorSetV1(const Bytes& encoded,
                                                          std::vector<Diagnostic>* diagnostics);
-UuidBytes MakePseudoUuidV7();
+// Process-runtime identity, not database/cluster issuance authority or a nonce.
+UuidBytes MakeUuidV7();
+// Independent 128-bit cryptographic nonce; never derived from a UUID counter.
+Bytes MakeRandomNonce16();
 std::string Hex(const std::uint8_t* data, std::size_t size);
 std::string Hex(const Bytes& data);
 std::string Hex(const UuidBytes& data);

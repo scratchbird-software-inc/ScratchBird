@@ -12,6 +12,7 @@
 #include "manager_runtime.hpp"
 #include "control_plane.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -785,6 +786,22 @@ void TestLiveManagerDirectNativeBypassPath() {
           "MCP_HELLO must report direct-native bypass when no listener control socket is configured");
     Check(EntryValue(hello_entries, "ready") == "true", "MCP_HELLO must report ready when native backend is reachable");
 
+    proto::Bytes prior_nonce;
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+      const auto challenge = SendFrame(fd, proto::SbdbFrame{0x66, 0, AuthStartPayload("")});
+      const bool valid = challenge && challenge->type == 0x12 &&
+                         challenge->payload.size() == 105 &&
+                         challenge->payload[80] == 1 && challenge->payload[81] == 1 &&
+                         challenge->payload[87] == 16 && challenge->payload[88] == 0;
+      Check(valid, "MCP challenge must contain a canonical 16-byte nonce");
+      if (valid) {
+        const proto::Bytes nonce(challenge->payload.begin() + 89, challenge->payload.end());
+        Check(!std::equal(nonce.begin(), nonce.end(), challenge->payload.begin()),
+              "MCP nonce must not reuse the binary session identity");
+        Check(nonce != prior_nonce, "MCP challenge must use fresh independent entropy");
+        prior_nonce = nonce;
+      }
+    }
     auto auth = SendFrame(fd, proto::SbdbFrame{0x66, 0, AuthStartPayload()});
     Check(auth && auth->type == 0x11 && !auth->payload.empty() && auth->payload[0] == 0, "direct-native auth must succeed");
 

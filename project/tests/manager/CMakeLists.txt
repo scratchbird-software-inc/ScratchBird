@@ -38,6 +38,18 @@ set_tests_properties(sbmn_manager_protocol_unit_tests PROPERTIES
   LABELS "ELER-106;ELER-GATE-106;database_lifecycle_manager;database_lifecycle;database_lifecycle_ipc;manager_protocol;listener_control_protocol_version;management_protocol_compatibility;sbmn_manager"
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Threads REQUIRED)
+  add_executable(sbmn_manager_uuid_emission uuid_emission_test.cpp)
+  target_link_libraries(sbmn_manager_uuid_emission PRIVATE
+    sbl_manager_protocol Threads::Threads)
+  target_link_options(sbmn_manager_uuid_emission PRIVATE "-Wl,--wrap=RAND_bytes")
+  add_test(NAME sbmn_manager_uuid_emission COMMAND sbmn_manager_uuid_emission)
+  set_tests_properties(sbmn_manager_uuid_emission PROPERTIES
+    TIMEOUT 120
+    LABELS "binary_uuid;manager_protocol;concurrency;fork;entropy_failure")
+endif()
+
 add_executable(sbmn_manager_protocol_fuzz_gate
   protocol_fuzz_gate.cpp
 )

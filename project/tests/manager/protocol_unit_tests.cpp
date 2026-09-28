@@ -152,7 +152,7 @@ void TestControlPlaneFrameRoundTrip() {
 
 void TestMessageVectorSetV1RoundTrip() {
   proto::MessageVectorSet set;
-  set.request_uuid = proto::MakePseudoUuidV7();
+  set.request_uuid = proto::MakeUuidV7();
   set.diagnostics.push_back(proto::MakeDiagnostic("MANAGER.CONFIG_FIELD_INVALID",
                                                   "Manager configuration field is invalid.",
                                                   {{"key", "manager.proxy.port"}},
