@@ -638,12 +638,45 @@ struct ServerVariableFrameRecord {
 };
 
 struct ServerAdmittedParserChannelIdentity {
+  std::array<std::uint8_t, 16> parser_instance_uuid{};
   std::array<std::uint8_t, 16> parser_package_uuid{};
+  std::array<std::uint8_t, 16> parser_family_uuid{};
   std::array<std::uint8_t, 16> dialect_profile_uuid{};
+  std::array<std::uint8_t, 16> listener_uuid{};
+  std::array<std::uint8_t, 16> launch_uuid{};
+  std::array<std::uint8_t, 32> resource_bundle_hash{};
+  std::uint64_t launch_generation = 0;
   std::uint32_t parser_package_version_major = 0;
   std::uint32_t parser_package_version_minor = 0;
   std::uint32_t parser_package_version_patch = 0;
+  bool operator==(const ServerAdmittedParserChannelIdentity&) const = default;
 };
+
+// Lossless retention of an already-admitted HELLO, not package or process
+// authorization. In particular, these claimed identities are not proof of
+// an installed package, a live child PID, or listener-pool membership.
+inline std::optional<ServerAdmittedParserChannelIdentity>
+RetainAdmittedParserChannelIdentity(const sbps::HelloRequest& hello) noexcept {
+  for (const auto* identity : {&hello.parser_instance_uuid, &hello.parser_package_uuid,
+                              &hello.parser_family_uuid, &hello.dialect_profile_uuid,
+                              &hello.listener_uuid, &hello.launch_uuid}) {
+    if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{*identity}))
+      return std::nullopt;
+  }
+  if (hello.launch_generation == 0) return std::nullopt;
+  ServerAdmittedParserChannelIdentity identity;
+  identity.parser_instance_uuid = hello.parser_instance_uuid;
+  identity.parser_package_uuid = hello.parser_package_uuid;
+  identity.parser_family_uuid = hello.parser_family_uuid;
+  identity.dialect_profile_uuid = hello.dialect_profile_uuid;
+  identity.listener_uuid = hello.listener_uuid;
+  identity.launch_uuid = hello.launch_uuid;
+  identity.resource_bundle_hash = hello.resource_bundle_hash;
+  identity.launch_generation = hello.launch_generation;
+  identity.parser_package_version_major = hello.parser_api_major;
+  identity.parser_package_version_minor = hello.parser_api_minor;
+  return identity;
+}
 
 struct ServerSessionRegistry {
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;

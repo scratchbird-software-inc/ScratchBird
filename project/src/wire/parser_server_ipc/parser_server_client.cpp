@@ -4364,22 +4364,23 @@ FrameHeader BaseHeader(std::uint16_t message_type,
 }
 
 std::vector<std::uint8_t> EncodeBuiltInHelloPayload(
+    const std::array<std::array<std::uint8_t, 16>, 6>& identities,
     bool require_transaction_routing_v2 = false,
     bool require_prepared_metadata_transfer_v1 = false,
     bool require_relation_descriptor_projection_v3 = false) {
   std::vector<std::uint8_t> out;
-  PutUuid(&out, MakeUuidV7Bytes());
-  PutUuid(&out, MakeUuidV7Bytes());
-  PutUuid(&out, MakeUuidV7Bytes());
-  PutUuid(&out, MakeUuidV7Bytes());
+  PutUuid(&out, identities[0]);
+  PutUuid(&out, identities[1]);
+  PutUuid(&out, identities[2]);
+  PutUuid(&out, identities[3]);
   PutU32(&out, 3);
   PutU32(&out, 0);
   PutString(&out, "SBPS");
   PutString(&out, "sif.test");
   PutString(&out, "sif.test.bundle");
   PutBytes32(&out, {});
-  PutUuid(&out, MakeUuidV7Bytes());
-  PutUuid(&out, MakeUuidV7Bytes());
+  PutUuid(&out, identities[4]);
+  PutUuid(&out, identities[5]);
   PutU64(&out, 1);
   std::array<std::uint8_t, 32> capabilities{};
   capabilities[0] = kCapabilityBaseline;
@@ -5391,16 +5392,21 @@ SbpsClient::SbpsClient(std::string endpoint)
       channel_state_(std::make_unique<SbpsClientChannelState>()) {
   channel_state_->dedicated_v2_socket_cache_key =
       endpoint_ + "|sbps-v2-client|" + IdentityBytes(MakeUuidV7Bytes());
+  // Capability alternatives describe this same client, not new parser,
+  // package, listener or launch identities. Rendering must not issue IDs.
+  // The built-in profile is not installed-package or child-launch authority.
+  std::array<std::array<std::uint8_t, 16>, 6> identities;
+  for (auto& identity : identities) identity = MakeUuidV7Bytes();
   channel_state_->stable_baseline_hello_payload =
-      EncodeBuiltInHelloPayload();
-  channel_state_->stable_v2_hello_payload = EncodeBuiltInHelloPayload(true);
+      EncodeBuiltInHelloPayload(identities);
+  channel_state_->stable_v2_hello_payload = EncodeBuiltInHelloPayload(identities, true);
   channel_state_->stable_prepared_metadata_transfer_v1_hello_payload =
-      EncodeBuiltInHelloPayload(true, true);
+      EncodeBuiltInHelloPayload(identities, true, true);
   channel_state_->stable_relation_descriptor_v3_hello_payload =
-      EncodeBuiltInHelloPayload(true, false, true);
+      EncodeBuiltInHelloPayload(identities, true, false, true);
   channel_state_
       ->stable_prepared_metadata_transfer_relation_descriptor_v3_hello_payload =
-      EncodeBuiltInHelloPayload(true, true, true);
+      EncodeBuiltInHelloPayload(identities, true, true, true);
 }
 
 SbpsClient::~SbpsClient() {

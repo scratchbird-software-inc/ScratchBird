@@ -483,6 +483,57 @@ int main() {
   };
   Uuid base{{0x01,0x99,0x65,0xab,0xcd,0xef,0x70,0x00,
              0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x01}};
+  {
+    using Hello = server::sbps::HelloRequest;
+    using Retained = server::ServerAdmittedParserChannelIdentity;
+    using Id = std::array<std::uint8_t, 16>;
+    const std::array<std::pair<Id Hello::*, Id Retained::*>, 6> fields{{
+        {&Hello::parser_instance_uuid, &Retained::parser_instance_uuid},
+        {&Hello::parser_package_uuid, &Retained::parser_package_uuid},
+        {&Hello::parser_family_uuid, &Retained::parser_family_uuid},
+        {&Hello::dialect_profile_uuid, &Retained::dialect_profile_uuid},
+        {&Hello::listener_uuid, &Retained::listener_uuid},
+        {&Hello::launch_uuid, &Retained::launch_uuid}}};
+    Hello hello;
+    for (std::size_t i = 0; i != fields.size(); ++i) {
+      hello.*fields[i].first = base.bytes;
+      (hello.*fields[i].first)[15] = static_cast<std::uint8_t>(i + 1);
+    }
+    hello.resource_bundle_hash.fill(0xa5);
+    hello.launch_generation = 0x0102030405060708ULL;
+    hello.parser_api_major = 3;
+    hello.parser_api_minor = 42;
+    allocation_fail_after = 0;
+    const auto retained = server::RetainAdmittedParserChannelIdentity(hello);
+    allocation_fail_after = -1;
+    check(retained.has_value());
+    check(retained->resource_bundle_hash == hello.resource_bundle_hash &&
+          retained->launch_generation == hello.launch_generation &&
+          retained->parser_package_version_major == 3 &&
+          retained->parser_package_version_minor == 42 &&
+          retained->parser_package_version_patch == 0);
+    for (const auto& [source_field, target_field] : fields) {
+      check((*retained).*target_field == hello.*source_field);
+      for (std::size_t position = 0; position != 16; ++position) {
+        for (unsigned octet = 0; octet != 256; ++octet) {
+          auto mutated = hello;
+          (mutated.*source_field)[position] = static_cast<std::uint8_t>(octet);
+          const auto& value = mutated.*source_field;
+          const bool valid = value[6] >> 4 == 7 && value[8] >> 6 == 2;
+          auto expected = *retained;
+          expected.*target_field = value;
+          const auto actual = server::RetainAdmittedParserChannelIdentity(mutated);
+          check(actual.has_value() == valid);
+          if (actual) check(*actual == expected);
+        }
+      }
+      auto nil = hello;
+      nil.*source_field = {};
+      check(!server::RetainAdmittedParserChannelIdentity(nil));
+    }
+    hello.launch_generation = 0;
+    check(!server::RetainAdmittedParserChannelIdentity(hello));
+  }
   std::array<std::uint8_t, 16> sentinel{};
   sentinel.fill(0xa5);
   for (std::size_t position = 0; position != 16; ++position) {

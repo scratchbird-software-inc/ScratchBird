@@ -65,6 +65,26 @@ extern "C" int __wrap_RAND_bytes(unsigned char* bytes, int count) {
 int main() {
   try {
     constexpr unsigned count = 256, threads = 8;
+    {
+      ipc::SbpsClient client("/not-opened/parser-hello-retention.sock");
+      const auto original = client.V2HelloPayloadForTest();
+      for (const auto& variant : {client.PreparedMetadataTransferV1HelloPayloadForTest(),
+                                  client.RelationDescriptorV3HelloPayloadForTest()}) {
+        Check(variant.size() == original.size() && original.size() >= 32 &&
+                  std::equal(original.begin(), original.end() - 32, variant.begin()),
+              "capability selection replaced the retained HELLO identity tuple");
+        Check(original.size() >= 32 && variant.size() >= 32 &&
+                  !std::equal(original.end() - 32, original.end(), variant.end() - 32),
+              "capability variants lost their distinct negotiation bits");
+      }
+      ipc::SbpsClient moved(std::move(client));
+      Check(moved.V2HelloPayloadForTest() == original && client.V2HelloPayloadForTest().empty(),
+            "moving a client changed or duplicated its HELLO ownership");
+      ipc::SbpsClient destination("/not-opened/replaced-client.sock");
+      destination = std::move(moved);
+      Check(destination.V2HelloPayloadForTest() == original && moved.V2HelloPayloadForTest().empty(),
+            "move assignment changed or duplicated HELLO ownership");
+    }
     // Initialize the real client generator before forking, so copied PRNG
     // state cannot be hidden by the parent's and child's initial seeding.
     const auto initial = Generate(1);

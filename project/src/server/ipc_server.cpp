@@ -4028,25 +4028,27 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                    static_cast<std::uint16_t>(sbps::MessageType::kAuthResult)));
       return false;
     }
+    const auto admitted_hello = sbps::DecodeHelloRequest(
+        negotiation_state->admitted_hello_payload);
+    const auto identity = admitted_hello
+        ? RetainAdmittedParserChannelIdentity(*admitted_hello)
+        : std::nullopt;
+    if (!identity) {
+      WriteAll(client_fd, ErrorFrame(
+          {sbps::IpcDiagnostic("PARSER_SERVER_IPC.HELLO_REQUIRED",
+              "parser_server_ipc.hello_required",
+              "Authentication requires the retained native parser HELLO binding.")},
+          frame.header.request_uuid, frame.header.sequence_number,
+          static_cast<std::uint16_t>(sbps::MessageType::kAuthResult)));
+      return false;
+    }
     session_registry->physical_channel_by_connection_uuid.insert_or_assign(
         connection_key, negotiation_state->server_channel_uuid);
     session_registry->negotiated_capabilities_by_connection_uuid
         .insert_or_assign(connection_key,
                           negotiation_state->accepted_capability_bitmap);
-    const auto admitted_hello = sbps::DecodeHelloRequest(
-        negotiation_state->admitted_hello_payload);
-    if (admitted_hello.has_value()) {
-      ServerAdmittedParserChannelIdentity identity;
-      identity.parser_package_uuid = admitted_hello->parser_package_uuid;
-      identity.dialect_profile_uuid = admitted_hello->dialect_profile_uuid;
-      identity.parser_package_version_major =
-          admitted_hello->parser_api_major;
-      identity.parser_package_version_minor =
-          admitted_hello->parser_api_minor;
-      identity.parser_package_version_patch = 0;
-      session_registry->admitted_parser_identity_by_connection_uuid
-          .insert_or_assign(connection_key, identity);
-    }
+    session_registry->admitted_parser_identity_by_connection_uuid
+        .insert_or_assign(connection_key, *identity);
     const auto result = HandleAuthHandoff(session_registry, engine_state, frame);
     if (result.accepted && negotiation_state != nullptr) {
       negotiation_state->connection_authenticated = true;
