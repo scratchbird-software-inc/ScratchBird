@@ -18,6 +18,9 @@
 #include <vector>
 
 #include "control_plane.hpp"
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "control_peer_identity.hpp"
+#endif
 #include "listener_config.hpp"
 #include "listener_metrics.hpp"
 
@@ -177,6 +180,8 @@ class ParserPool {
   ParserWorker* SpawnWorkerLocked(std::uint64_t now_ms);
   bool LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms);
   bool AdmitWorkerLocked(ParserWorker* worker);
+  bool ReadWorkerControlFrame(ParserWorker* worker, ListenerControlDecodeResult* decoded,
+                              int* received_fd, std::uint32_t timeout_ms);
   void StopWorkerLocked(ParserWorker* worker, bool force);
   void ReapWorkerLocked(ParserWorker* worker);
   void ReapExitedWorkersLocked();
@@ -196,6 +201,10 @@ class ParserPool {
   bool draining_{false};
   std::uint64_t next_worker_ordinal_{1};
   std::vector<ParserWorker> workers_;
+#if defined(__linux__) && !defined(__ANDROID__)
+  // Adapter-owned lifetime handles are intentionally absent from status DTOs.
+  std::map<std::uint64_t, ControlPeerIdentity> worker_control_peers_;
+#endif
   std::vector<std::string> completed_client_sessions_;
   std::deque<std::uint64_t> recent_failure_timestamps_ms_;
   std::deque<ParserPoolFaultEvent> fault_history_;

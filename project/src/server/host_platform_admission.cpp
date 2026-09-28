@@ -6,7 +6,8 @@
 #include <cstdint>
 #include <system_error>
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "control_peer_identity.hpp"
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
@@ -37,7 +38,7 @@ bool MeetsLinuxServerKernelMinimum(std::string_view release) {
 
 HostPlatformAdmission ProbeServerHostPlatform() {
   HostPlatformAdmission result;
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
   result.platform = "linux";
   utsname system{};
   if (::uname(&system) != 0) {
@@ -99,6 +100,34 @@ HostPlatformAdmission ProbeServerHostPlatform() {
   if (observed != 0 || live.revents != 0) {
     result.native_error = observed < 0 ? errno : 0;
     result.failed_capability = "peer_process_handle_liveness_poll";
+    return result;
+  }
+  // Exercise the same per-message credential/pidfd adapter used for inherited
+  // parser channels. This self-probe proves capabilities only, not child ownership.
+  scratchbird::listener::ControlPeerIdentity sender;
+  errno = 0;
+  if (!sender.Prepare(first.value) || !sender.ExpectSender(::getpid())) {
+    result.native_error = errno;
+    result.failed_capability = "message_sender_identity_setup";
+    return result;
+  }
+  scratchbird::listener::ListenerControlFrame probe;
+  probe.opcode = scratchbird::listener::ListenerControlOpcode::kHealthCheck;
+  probe.sequence = 1;
+  probe.payload = {0x53, 0x42};
+  errno = 0;
+  if (!scratchbird::listener::SendControlFrame(second.value, probe)) {
+    result.native_error = errno;
+    result.failed_capability = "message_sender_probe_send";
+    return result;
+  }
+  scratchbird::listener::ListenerControlDecodeResult received;
+  errno = 0;
+  if (!sender.ReadFrame(first.value, &received, 1000) ||
+      received.frame.opcode != probe.opcode || received.frame.sequence != probe.sequence ||
+      received.frame.payload != probe.payload) {
+    result.native_error = errno;
+    result.failed_capability = "message_sender_identity_receive";
     return result;
   }
   result.supported = true;

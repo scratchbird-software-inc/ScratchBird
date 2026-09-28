@@ -9,6 +9,17 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(Threads REQUIRED)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(engine_listener_control_peer_identity_conformance
+    control_peer_identity_conformance.cpp)
+  target_compile_features(engine_listener_control_peer_identity_conformance PRIVATE cxx_std_23)
+  target_link_libraries(engine_listener_control_peer_identity_conformance PRIVATE sbl_listener_control_plane)
+  add_test(NAME engine_listener_control_peer_identity_conformance
+    COMMAND engine_listener_control_peer_identity_conformance)
+  set_tests_properties(engine_listener_control_peer_identity_conformance PROPERTIES
+    TIMEOUT 60 LABELS "engine_listener_enterprise;binary_uuid;process_identity;linux_proof")
+endif()
+
 if(NOT TARGET sb_storage_disk)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/disk
                    ${CMAKE_CURRENT_BINARY_DIR}/src_storage_disk)

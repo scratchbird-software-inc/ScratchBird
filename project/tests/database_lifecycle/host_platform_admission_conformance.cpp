@@ -140,6 +140,8 @@ int main() {
   FaultCase(-1, EPERM, "socket_bound_peer_process_handle", root);
   FaultCase(-1, ENOPROTOOPT, "socket_bound_peer_process_handle", root);
   FaultCase(SYS_fcntl, EACCES, "peer_process_handle_close_on_exec", root);
+  FaultCase(SYS_setsockopt, EPERM, "message_sender_identity_setup", root);
+  FaultCase(SYS_recvmsg, EACCES, "message_sender_identity_receive", root);
 #ifdef SYS_poll
   FaultCase(SYS_poll, EACCES, "peer_process_handle_liveness_poll", root);
 #else

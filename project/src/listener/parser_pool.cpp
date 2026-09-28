@@ -767,7 +767,7 @@ ParserHandoffResult ParserPool::HandoffClient(std::intptr_t client_fd,
 
   ListenerControlDecodeResult decoded;
   int received_fd = -1;
-  if (!ReadControlFrame(worker->control_fd, &decoded, &received_fd, config_.handoff_ack_timeout_ms) ||
+  if (!ReadWorkerControlFrame(worker, &decoded, &received_fd, config_.handoff_ack_timeout_ms) ||
       decoded.frame.opcode != ListenerControlOpcode::kHandoffAck) {
     CloseFd(&received_fd);
     if (decoded.ok && decoded.frame.opcode == ListenerControlOpcode::kErrorMessage) {
@@ -832,6 +832,9 @@ std::vector<std::string> ParserPool::CollectCompletedClientSessions() {
     if (rc != worker.process_id) continue;
     worker.process_id = -1;
     CloseFd(&worker.control_fd);
+#if defined(__linux__) && !defined(__ANDROID__)
+    worker_control_peers_.erase(worker.numeric_worker_id);
+#endif
 #endif
     if (!worker.active_client_addr.empty()) {
       completed.push_back(worker.active_client_addr);
@@ -1231,7 +1234,11 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
   }
   return true;
 #else
-  int sockets[2] = {-1, -1};
+  struct SocketPair {
+    int values[2] = {-1, -1};
+    ~SocketPair() { for (const int value : values) if (value >= 0) ::close(value); }
+  } owned_sockets;
+  auto& sockets = owned_sockets.values;
   if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
     worker->state = ParserWorkerState::kQuarantined;
     worker->last_diagnostic = std::string("socketpair failed: ") + std::strerror(errno);
@@ -1248,6 +1255,27 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
     if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
     return false;
   }
+#if defined(__linux__) && !defined(__ANDROID__)
+  worker_control_peers_.erase(worker->numeric_worker_id);
+  try {
+    auto [peer, inserted] = worker_control_peers_.try_emplace(worker->numeric_worker_id);
+    if (!inserted || !peer->second.Prepare(sockets[0])) {
+      CloseFd(&sockets[0]);
+      CloseFd(&sockets[1]);
+      worker_control_peers_.erase(worker->numeric_worker_id);
+      worker->state = ParserWorkerState::kQuarantined;
+      worker->last_diagnostic = "LISTENER.CONTROL_CHANNEL_FAILED";
+      RecordFaultLocked(worker, "spawn_sender_identity_unavailable", worker->last_diagnostic);
+      if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
+      return false;
+    }
+  } catch (...) {
+    CloseFd(&sockets[0]);
+    CloseFd(&sockets[1]);
+    worker_control_peers_.erase(worker->numeric_worker_id);
+    throw;
+  }
+#endif
   const auto parser_environment = BuildParserEnvironment(
       config_, *worker, "SB_LISTENER_CONTROL_FD", std::to_string(sockets[1]),
       "posix-socketpair-v1", credential_handoff);
@@ -1264,23 +1292,52 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
              environment_block.pointers.data());
     _exit(127);
   }
-  ::close(sockets[1]);
+  const int fork_error = pid < 0 ? errno : 0;
+  CloseFd(&sockets[1]);
   if (pid <= 0) {
     CloseFd(&sockets[0]);
+#if defined(__linux__) && !defined(__ANDROID__)
+    worker_control_peers_.erase(worker->numeric_worker_id);
+#endif
     worker->state = ParserWorkerState::kQuarantined;
-    worker->last_diagnostic = std::string("fork failed: ") + std::strerror(errno);
+    worker->last_diagnostic = std::string("fork failed: ") + std::strerror(fork_error);
     RecordFaultLocked(worker, "spawn_fork_failed", worker->last_diagnostic);
     if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
     return false;
   }
   worker->process_id = static_cast<int>(pid);
-  worker->control_fd = sockets[0];
-  if (!AdmitWorkerLocked(worker)) {
+  worker->control_fd = std::exchange(sockets[0], -1);
+#if defined(__linux__) && !defined(__ANDROID__)
+  if (!worker_control_peers_.at(worker->numeric_worker_id).ExpectSender(pid)) {
     StopWorkerLocked(worker, true);
-    if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.hello_rejected_total");
     return false;
   }
+#endif
+  try {
+    if (!AdmitWorkerLocked(worker)) {
+      StopWorkerLocked(worker, true);
+      if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.hello_rejected_total");
+      return false;
+    }
+  } catch (...) {
+    StopWorkerLocked(worker, true);
+    throw;
+  }
   return true;
+#endif
+}
+
+bool ParserPool::ReadWorkerControlFrame(ParserWorker* worker,
+                                        ListenerControlDecodeResult* decoded,
+                                        int* received_fd,
+                                        std::uint32_t timeout_ms) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  if (received_fd != nullptr) *received_fd = -1;
+  const auto peer = worker_control_peers_.find(worker->numeric_worker_id);
+  return peer != worker_control_peers_.end() &&
+         peer->second.ReadFrame(worker->control_fd, decoded, timeout_ms);
+#else
+  return ReadControlFrame(worker->control_fd, decoded, received_fd, timeout_ms);
 #endif
 }
 
@@ -1288,11 +1345,11 @@ bool ParserPool::AdmitWorkerLocked(ParserWorker* worker) {
   if (worker == nullptr) return false;
   ListenerControlDecodeResult decoded;
   int received_fd = -1;
-  if (!ReadControlFrame(worker->control_fd, &decoded, &received_fd, config_.preauth_timeout_ms)) {
+  if (!ReadWorkerControlFrame(worker, &decoded, &received_fd, config_.preauth_timeout_ms)) {
     CloseFd(&received_fd);
     worker->state = ParserWorkerState::kQuarantined;
-    worker->last_diagnostic = "HELLO timeout";
-    RecordFaultLocked(worker, "hello_timeout", worker->last_diagnostic);
+    worker->last_diagnostic = "LISTENER.CONTROL_CHANNEL_FAILED";
+    RecordFaultLocked(worker, "hello_channel_unverified", worker->last_diagnostic);
     return false;
   }
   CloseFd(&received_fd);
@@ -1306,7 +1363,7 @@ bool ParserPool::AdmitWorkerLocked(ParserWorker* worker) {
   std::string reason;
   if (!hello) {
     reason = "LISTENER.HELLO_TRUNCATED";
-  } else if (hello->pid == 0) {
+  } else if (hello->pid == 0 || hello->pid != static_cast<std::uint32_t>(worker->process_id)) {
     reason = "LISTENER.HELLO_PID_INVALID";
   } else if (hello->parser_api_major == 0) {
     reason = "LISTENER.HELLO_API_MAJOR_REQUIRED";
@@ -1398,6 +1455,9 @@ void ParserPool::StopWorkerLocked(ParserWorker* worker, bool force) {
   }
   CloseFd(&worker->control_fd);
 #endif
+#if defined(__linux__) && !defined(__ANDROID__)
+  worker_control_peers_.erase(worker->numeric_worker_id);
+#endif
   worker->state = ParserWorkerState::kStopped;
   worker->hello_accepted = false;
   worker->awaiting_ack = false;
@@ -1435,6 +1495,9 @@ void ParserPool::ReapWorkerLocked(ParserWorker* worker) {
     if (rc == worker->process_id) {
       worker->process_id = -1;
       CloseFd(&worker->control_fd);
+#if defined(__linux__) && !defined(__ANDROID__)
+      worker_control_peers_.erase(worker->numeric_worker_id);
+#endif
       const bool normal_session_completion =
           worker->state == ParserWorkerState::kDraining && worker->active_connection_id != 0;
       if (normal_session_completion) {

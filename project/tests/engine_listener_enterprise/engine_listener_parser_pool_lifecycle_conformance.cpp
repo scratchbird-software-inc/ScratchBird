@@ -502,6 +502,20 @@ void RequireNoGreetingAfterFault(int port, const std::string& context) {
           context + " must not reach a parser greeting");
 }
 
+void RunForgedHelloPidProof(const std::filesystem::path& listener,
+                            const std::filesystem::path& parser) {
+  auto proc = StartListener(listener, parser, "bad_pid", "sb_eler062_forged_pid",
+                            {"--warm-pool-min=0", "--warm-pool-max=1",
+                             "--child-restart-base-ms=500", "--child-restart-max-ms=500"});
+  RequireNoGreetingAfterFault(proc.port, "forged nonzero HELLO PID");
+  const auto status = SendManagementCommand(proc.management_socket, "STATUS", 9);
+  Require(status.got_frame && status.ok, "STATUS after forged HELLO must succeed");
+  RequireContains(status.body, "LISTENER.HELLO_PID_INVALID",
+                  "forged nonzero HELLO PID must retain identity diagnostic");
+  Require(ExtractUnsignedField(status.body, "handoff_complete_total") == 0,
+          "forged HELLO must not receive a client handoff");
+}
+
 void RunBackoffQuarantineProof(const std::filesystem::path& listener,
                                const std::filesystem::path& parser) {
   auto proc = StartListener(listener,
@@ -564,6 +578,7 @@ int main(int argc, char** argv) {
     const std::filesystem::path parser = argv[2];
     RunConfigValidationProof();
     RunOnDemandAdmissionProof(listener, parser);
+    RunForgedHelloPidProof(listener, parser);
     RunBackoffQuarantineProof(listener, parser);
     std::cout << "engine_listener_parser_pool_lifecycle_conformance=passed\n";
     return EXIT_SUCCESS;

@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
   scratchbird::listener::ParserHelloPayload hello;
   hello.protocol = Env("SB_PROTOCOL_FAMILY", "sbsql");
   hello.pid = static_cast<std::uint32_t>(::getpid());
+  if (ModeIs(behavior, "bad_pid")) hello.pid = static_cast<std::uint32_t>(::getppid());
   hello.worker_id = ParseU64(std::getenv("SB_PARSER_WORKER_NUMERIC_ID"), 1);
   hello.dialect_protocol_version = 1;
   hello.parser_api_major = ParseU32(std::getenv("SB_PARSER_API_MAJOR"), 1);

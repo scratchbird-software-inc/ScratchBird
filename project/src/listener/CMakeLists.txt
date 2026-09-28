@@ -13,6 +13,9 @@ if(NOT TARGET sbl_listener_control_plane)
     listener_diagnostics.cpp
     control_plane.cpp
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(sbl_listener_control_plane PRIVATE control_peer_identity.cpp)
+  endif()
 
   target_include_directories(sbl_listener_control_plane PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_features(sbl_listener_control_plane PUBLIC cxx_std_23)
