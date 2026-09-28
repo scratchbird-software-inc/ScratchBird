@@ -12,6 +12,7 @@
 
 #include "control_plane.hpp"
 #include "manager_protocol.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -63,24 +65,19 @@ std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
 }
 
-std::string DefaultListenerUuid(const std::string& profile_key,
-                                std::uint64_t generation) {
-  std::ostringstream out;
-  out << "server-listener-" << profile_key << '-' << generation;
-  return out.str();
-}
-
 ServerListenerProfileRuntime* FindTarget(ServerListenerOrchestrator* orchestrator,
-                                         const std::string& target_uuid) {
-  if (orchestrator->profiles.empty()) return nullptr;
-  if (target_uuid.empty()) return &orchestrator->profiles.front();
+                                         const core::platform::Uuid& target_uuid) {
+  if (!core::uuid::IsEngineIdentityUuid(target_uuid)) return nullptr;
   const auto found = std::find_if(orchestrator->profiles.begin(),
                                   orchestrator->profiles.end(),
                                   [&](const ServerListenerProfileRuntime& profile) {
-                                    return profile.listener_uuid == target_uuid ||
-                                           profile.profile_name == target_uuid;
+                                    return profile.listener_uuid == target_uuid;
                                   });
   if (found == orchestrator->profiles.end()) return nullptr;
+  // A corrupt/duplicated registry is not permission to select its first row.
+  if (std::find_if(std::next(found), orchestrator->profiles.end(),
+                   [&](const auto& profile) { return profile.listener_uuid == target_uuid; }) !=
+      orchestrator->profiles.end()) return nullptr;
   return &*found;
 }
 
@@ -136,7 +133,7 @@ std::string ListenerManagementSocketPath(const ServerListenerProfileRuntime& pro
                                         profile.database_selector + "|" +
                                         profile.protocol_family);
   const auto stem = Sanitize(
-      "l" + StableHash(profile.listener_uuid).substr(0, 6) +
+      "l" + StableHash(core::uuid::UuidToString(profile.listener_uuid)).substr(0, 6) +
       "p" + StableHash(profile.profile_id).substr(0, 6) +
       "e" + endpoint_hash.substr(0, 6) +
       "g" + std::to_string(profile.lifecycle_generation));
@@ -160,12 +157,6 @@ std::string ListenerExecutablePath(const ServerBootstrapConfig& config) {
     return config.listener_executable_path.string();
   }
   return SiblingExecutable("SBgate");
-}
-
-std::string ProfileUuid(const ServerListenerProfileRuntime& profile,
-                        std::uint64_t generation) {
-  return "server-listener-profile-" + StableHash(profile.profile_id) + "-" +
-         std::to_string(generation);
 }
 
 #ifdef _WIN32
@@ -257,7 +248,7 @@ bool ConnectListenerManagementSocket(const std::string& socket_path,
     result->diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_SOCKET_STACK_UNAVAILABLE",
         "Winsock initialization failed for listener management client.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result->state_after = profile->state;
     return false;
   }
@@ -270,7 +261,7 @@ bool ConnectListenerManagementSocket(const std::string& socket_path,
     result->diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_CONNECT_FAILED",
         "The server could not create a listener management socket client.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result->state_after = profile->state;
     return false;
   }
@@ -283,7 +274,7 @@ bool ConnectListenerManagementSocket(const std::string& socket_path,
     result->diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_SOCKET_INVALID",
         "The listener management socket path is too long.",
-        {{"listener_uuid", profile->listener_uuid},
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
          {"management_socket", path}}));
     result->state_after = profile->state;
     return false;
@@ -294,7 +285,7 @@ bool ConnectListenerManagementSocket(const std::string& socket_path,
     result->diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_CONNECT_FAILED",
         "The server could not connect to the listener management socket.",
-        {{"listener_uuid", profile->listener_uuid},
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
          {"management_socket", path}}));
     result->state_after = profile->state;
     return false;
@@ -362,7 +353,7 @@ ServerListenerOperationResult ListenerProcessDiagnostic(std::string code,
   result.state_after = profile.state;
   result.diagnostics.push_back(ListenerDiagnostic(std::move(code),
                                                   std::move(message),
-                                                  {{"listener_uuid", profile.listener_uuid},
+                                                  {{"listener_uuid", core::uuid::UuidToString(profile.listener_uuid)},
                                                    {"management_socket", profile.management_socket_path}}));
   return result;
 }
@@ -406,7 +397,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
       result.diagnostics.push_back(ListenerDiagnostic(
           "LISTENER.MANAGEMENT_ENVELOPE_ENCODE_FAILED",
           "The server could not encode a listener management command envelope.",
-          {{"listener_uuid", profile->listener_uuid}, {"command", command}}));
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"command", command}}));
       result.state_after = profile->state;
       return result;
     }
@@ -417,7 +408,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
       result.diagnostics.push_back(ListenerDiagnostic(
           "LISTENER.DBBT.KEYRING_KEY_MISSING",
           "The server-managed listener DBBT key is unavailable or invalid.",
-          {{"listener_uuid", profile->listener_uuid}}));
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
       result.state_after = profile->state;
       return result;
     }
@@ -432,7 +423,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_SEND_FAILED",
         "The server could not send a listener management command.",
-        {{"listener_uuid", profile->listener_uuid}, {"command", command}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"command", command}}));
     result.state_after = profile->state;
     return result;
   }
@@ -444,7 +435,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_TIMEOUT",
         "The listener did not answer a management command before the configured timeout.",
-        {{"listener_uuid", profile->listener_uuid}, {"command", command}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"command", command}}));
     result.state_after = profile->state;
     return result;
   }
@@ -454,7 +445,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_RESPONSE_INVALID",
         "The listener returned an invalid management response frame.",
-        {{"listener_uuid", profile->listener_uuid}, {"command", command}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"command", command}}));
     result.state_after = profile->state;
     return result;
   }
@@ -462,7 +453,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_RESPONSE_INVALID",
         "The listener returned an empty management response frame.",
-        {{"listener_uuid", profile->listener_uuid}, {"command", command}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"command", command}}));
     result.state_after = profile->state;
     return result;
   }
@@ -472,7 +463,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.MANAGEMENT_COMMAND_REFUSED",
         "The listener refused a management command.",
-        {{"listener_uuid", profile->listener_uuid},
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
          {"command", command},
          {"listener_response", profile->last_management_response}}));
     result.state_after = profile->state;
@@ -492,6 +483,14 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   result.target_uuid = profile->listener_uuid;
   result.state_before = profile->state;
   result.generation = artifacts.generation;
+  if (!core::uuid::IsEngineIdentityUuid(profile->listener_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(profile->listener_profile_uuid)) {
+    result.diagnostics.push_back(ListenerDiagnostic(
+        "LISTENER.START_INPUT_INVALID",
+        "The listener requires its retained native runtime identities."));
+    result.state_after = profile->state;
+    return result;
+  }
   if (!profile->enabled) {
     result.ok = true;
     result.outcome = "disabled";
@@ -502,7 +501,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code.empty() ? "LISTENER.START_FAILED" : profile->diagnostic_code,
         "The listener profile is failed and cannot be launched.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }
@@ -519,7 +518,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code,
         "The server-managed listener requires protected DBBT key material.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }
@@ -532,7 +531,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code,
         "The server could not create the listener control directory.",
-        {{"listener_uuid", profile->listener_uuid}, {"control_dir", profile->control_dir}, {"os_error", ec.message()}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"control_dir", profile->control_dir}, {"os_error", ec.message()}}));
     result.state_after = profile->state;
     return result;
   }
@@ -543,15 +542,15 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code,
         "The server could not create the listener runtime directory.",
-        {{"listener_uuid", profile->listener_uuid}, {"runtime_dir", profile->runtime_dir}, {"os_error", ec.message()}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"runtime_dir", profile->runtime_dir}, {"os_error", ec.message()}}));
     result.state_after = profile->state;
     return result;
   }
 
   const auto port_arg = "--port=" + std::to_string(profile->port);
-  const auto listener_uuid_arg = "--listener-uuid=" + profile->listener_uuid;
+  const auto listener_uuid_arg = "--listener-uuid=" + core::uuid::UuidToString(profile->listener_uuid);
   const auto listener_profile_uuid_arg =
-      "--listener-profile-uuid=" + ProfileUuid(*profile, artifacts.generation);
+      "--listener-profile-uuid=" + core::uuid::UuidToString(profile->listener_profile_uuid);
   const auto lifecycle_arg = "--lifecycle-generation=" + std::to_string(artifacts.generation);
   const std::string controller_arg = "--controller-uuid=sb_server";
   const auto server_arg = "--server-endpoint=" + profile->engine_endpoint;
@@ -625,7 +624,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code,
         "The server could not create the listener process.",
-        {{"listener_uuid", profile->listener_uuid},
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
          {"windows_error", std::to_string(::GetLastError())}}));
     result.state_after = profile->state;
     return result;
@@ -643,7 +642,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
       result.diagnostics.push_back(ListenerDiagnostic(
           profile->diagnostic_code,
           "The listener process exited before publishing management readiness.",
-          {{"listener_uuid", profile->listener_uuid}, {"pid", std::to_string(profile->pid)}}));
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"pid", std::to_string(profile->pid)}}));
       result.state_after = profile->state;
       ::CloseHandle(process.hProcess);
       return result;
@@ -668,7 +667,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   result.diagnostics.push_back(ListenerDiagnostic(
       profile->diagnostic_code,
       "The listener did not become ready before the configured timeout.",
-      {{"listener_uuid", profile->listener_uuid},
+      {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
        {"ready_timeout_ms", std::to_string(profile->ready_timeout_ms)}}));
   result.state_after = profile->state;
   return result;
@@ -695,7 +694,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code,
         "The server could not fork the listener process.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }
@@ -710,7 +709,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
       result.diagnostics.push_back(ListenerDiagnostic(
           profile->diagnostic_code,
           "The listener process exited before publishing management readiness.",
-          {{"listener_uuid", profile->listener_uuid}, {"pid", std::to_string(pid)}}));
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}, {"pid", std::to_string(pid)}}));
       result.state_after = profile->state;
       return result;
     }
@@ -738,7 +737,7 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   result.diagnostics.push_back(ListenerDiagnostic(
       profile->diagnostic_code,
       "The listener did not become ready before the configured timeout.",
-      {{"listener_uuid", profile->listener_uuid},
+      {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
        {"ready_timeout_ms", std::to_string(profile->ready_timeout_ms)}}));
   result.state_after = profile->state;
   return result;
@@ -767,7 +766,7 @@ ServerListenerOperationResult StopListenerProcess(ServerListenerProfileRuntime* 
         result.diagnostics.push_back(ListenerDiagnostic(
             "LISTENER.GRACEFUL_STOP_REFUSED",
             "The listener refused graceful stop and force escalation was not requested.",
-            {{"listener_uuid", profile->listener_uuid},
+            {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
              {"listener_response", profile->last_management_response}}));
       }
       return result;
@@ -790,7 +789,7 @@ ServerListenerOperationResult StopListenerProcess(ServerListenerProfileRuntime* 
       result.diagnostics.push_back(ListenerDiagnostic(
           "LISTENER.GRACEFUL_STOP_EXIT_TIMEOUT",
           "The listener did not exit after graceful stop and force escalation was not requested.",
-          {{"listener_uuid", profile->listener_uuid},
+          {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)},
            {"pid", std::to_string(profile->pid)},
            {"listener_response", profile->last_management_response}}));
       return result;
@@ -843,8 +842,10 @@ ServerListenerOrchestrator BuildListenerOrchestrator(const ServerBootstrapConfig
 
   for (const auto& configured : config.listener_profiles) {
     ServerListenerProfileRuntime profile;
-    profile.listener_uuid =
-        DefaultListenerUuid(configured.config_key, orchestrator.generation);
+    const auto listener_uuid = core::uuid::IssueRuntimeIdentityV7();
+    const auto listener_profile_uuid = core::uuid::IssueRuntimeIdentityV7();
+    if (listener_uuid) profile.listener_uuid = *listener_uuid;
+    if (listener_profile_uuid) profile.listener_profile_uuid = *listener_profile_uuid;
     profile.profile_name = configured.config_key;
     profile.protocol_family = configured.protocol_family;
     profile.profile_id = configured.profile_id;
@@ -877,12 +878,16 @@ ServerListenerOrchestrator BuildListenerOrchestrator(const ServerBootstrapConfig
                             std::vector<ServerDiagnosticField> fields = {}) {
       profile.state = "failed";
       if (profile.diagnostic_code.empty()) profile.diagnostic_code = code;
-      fields.push_back({"listener_uuid", profile.listener_uuid});
+      fields.push_back({"listener_uuid", core::uuid::UuidToString(profile.listener_uuid)});
       fields.push_back({"profile_key", profile.profile_name});
       orchestrator.diagnostics.push_back(
           ListenerDiagnostic(std::move(code), std::move(message), std::move(fields)));
     };
 
+    if (!listener_uuid || !listener_profile_uuid) {
+      fail_profile("LISTENER.START_INPUT_INVALID",
+                   "The listener runtime identities could not be issued.");
+    }
     if (profile.profile_name.empty() || profile.protocol_family.empty() ||
         profile.profile_id.empty() || profile.parser_package_ref.empty() ||
         profile.parser_package_uuid.empty() || profile.dialect_profile_uuid.empty() ||
@@ -953,7 +958,7 @@ std::string ListenerOrchestratorStatusJson(const ServerListenerOrchestrator& orc
   for (std::size_t i = 0; i < orchestrator.profiles.size(); ++i) {
     if (i != 0) out << ',';
     const auto& profile = orchestrator.profiles[i];
-    out << "{\"listener_uuid\":\"" << JsonEscape(profile.listener_uuid)
+    out << "{\"listener_uuid\":\"" << JsonEscape(core::uuid::UuidToString(profile.listener_uuid))
         << "\",\"profile_name\":\"" << JsonEscape(profile.profile_name)
         << "\",\"protocol_family\":\"" << JsonEscape(profile.protocol_family)
         << "\",\"profile_id\":\"" << JsonEscape(profile.profile_id)
@@ -1029,16 +1034,22 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
                                                      const ServerBootstrapConfig& config,
                                                      const ServerLifecycleArtifacts& artifacts,
                                                      const std::string& operation_key,
-                                                     const std::string& target_uuid,
+                                                     const core::platform::Uuid& target_uuid,
                                                      const std::string& mode) {
   ServerListenerOperationResult result;
-  result.generation = ++orchestrator->generation;
+  if (orchestrator == nullptr) {
+    result.diagnostics.push_back(ListenerDiagnostic(
+        "LISTENER.ORCHESTRATOR_MISSING",
+        "The server listener orchestrator is not available."));
+    return result;
+  }
+  result.generation = orchestrator->generation;
   auto* profile = FindTarget(orchestrator, target_uuid);
   if (profile == nullptr) {
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.NOT_FOUND",
         "The requested listener profile does not exist or is not visible.",
-        {{"target_uuid", target_uuid}}));
+        {{"target_uuid", core::uuid::UuidToString(target_uuid)}}));
     return result;
   }
 
@@ -1048,7 +1059,7 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
     result.diagnostics.push_back(ListenerDiagnostic(
         "LISTENER.EXECUTION_PROXY_FORBIDDEN",
         "The listener control plane must not proxy execution traffic to the engine.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }
@@ -1056,23 +1067,27 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
     result.diagnostics.push_back(ListenerDiagnostic(
         profile->diagnostic_code.empty() ? "LISTENER.START_FAILED" : profile->diagnostic_code,
         "The listener profile is failed and cannot accept lifecycle control.",
-        {{"listener_uuid", profile->listener_uuid}}));
+        {{"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }
 
   if (operation_key == "start_listener") {
+    result.generation = ++orchestrator->generation;
     profile->enabled = true;
     return LaunchListener(profile, config, artifacts);
   } else if (operation_key == "stop_listener") {
+    result.generation = ++orchestrator->generation;
     return StopListenerProcess(profile, mode == "force" ? "force" : "graceful");
   } else if (operation_key == "restart_listener") {
+    result.generation = ++orchestrator->generation;
     profile->enabled = true;
     StopListenerProcess(profile, "force");
     profile->enabled = true;
     profile->state = "stopped";
     return LaunchListener(profile, config, artifacts);
   } else if (operation_key == "drain_listener") {
+    result.generation = ++orchestrator->generation;
     auto drain = SendManagementCommand(profile, "DRAIN", 1000);
     if (!drain.ok) {
       result.diagnostics = std::move(drain.diagnostics);
@@ -1084,7 +1099,7 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
     result.diagnostics.push_back(ListenerDiagnostic(
         "SERVER.MANAGEMENT.OPERATION_UNKNOWN",
         "The listener operation key is not supported by this server.",
-        {{"operation_key", operation_key}, {"listener_uuid", profile->listener_uuid}}));
+        {{"operation_key", operation_key}, {"listener_uuid", core::uuid::UuidToString(profile->listener_uuid)}}));
     result.state_after = profile->state;
     return result;
   }

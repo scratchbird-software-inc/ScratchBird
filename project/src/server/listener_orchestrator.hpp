@@ -30,7 +30,10 @@ enum class ServerListenerState {
 };
 
 struct ServerListenerProfileRuntime {
-  std::string listener_uuid;
+  // Runtime-owned identities; profile_name/profile_id are display/configuration
+  // labels, never identity aliases. Retained across status reads and restarts.
+  core::platform::Uuid listener_uuid;
+  core::platform::Uuid listener_profile_uuid;
   std::string profile_name;
   std::string protocol_family;
   std::string profile_id;
@@ -70,7 +73,7 @@ struct ServerListenerOperationResult {
   std::string outcome = "refused";
   std::string state_before;
   std::string state_after;
-  std::string target_uuid;
+  core::platform::Uuid target_uuid;
   std::uint64_t generation = 1;
   std::vector<ServerDiagnostic> diagnostics;
 };
@@ -94,7 +97,7 @@ ServerListenerOperationResult ApplyListenerOperation(ServerListenerOrchestrator*
                                                      const ServerBootstrapConfig& config,
                                                      const ServerLifecycleArtifacts& artifacts,
                                                      const std::string& operation_key,
-                                                     const std::string& target_uuid,
+                                                     const core::platform::Uuid& target_uuid,
                                                      const std::string& mode);
 ServerDiagnostic ListenerDiagnostic(std::string code,
                                     std::string safe_message,

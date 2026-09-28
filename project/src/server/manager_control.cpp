@@ -420,7 +420,7 @@ std::string ListenerRecordsJson(const ServerListenerOrchestrator& listeners) {
   for (std::size_t i = 0; i < listeners.profiles.size(); ++i) {
     if (i != 0) out << ',';
     const auto& profile = listeners.profiles[i];
-    out << "{\"listener_uuid\":\"" << JsonEscape(profile.listener_uuid)
+    out << "{\"listener_uuid\":\"" << JsonEscape(core::uuid::UuidToString(profile.listener_uuid))
         << "\",\"profile_name\":\"" << JsonEscape(profile.profile_name)
         << "\",\"protocol_family\":\"" << JsonEscape(profile.protocol_family)
         << "\",\"state\":\"" << JsonEscape(profile.state)
@@ -656,9 +656,9 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
       listener.kind = ProcessAssociationKind::kListener;
       listener.database_uuid = snapshot.database_uuid;
       listener.database_path = snapshot.database_path;
-      listener.listener_uuid = profile.listener_uuid;
-      listener.component_uuid = profile.listener_uuid;
-      listener.process_uuid = profile.listener_uuid;
+      listener.listener_uuid = IdentityBytes(profile.listener_uuid);
+      listener.component_uuid = listener.listener_uuid;
+      listener.process_uuid = listener.listener_uuid;
       listener.pid = profile.pid;
       listener.ipc_endpoint = profile.engine_endpoint;
       listener.lifecycle_generation = registry.generation;
@@ -675,8 +675,8 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
         parser.kind = ProcessAssociationKind::kParser;
         parser.database_uuid = snapshot.database_uuid;
         parser.database_path = snapshot.database_path;
-        parser.listener_uuid = profile.listener_uuid;
-        parser.parser_instance_uuid = profile.listener_uuid + ":parser_pool:" +
+        parser.listener_uuid = IdentityBytes(profile.listener_uuid);
+        parser.parser_instance_uuid = parser.listener_uuid + ":parser_pool:" +
                                       profile.parser_package_ref;
         parser.component_uuid = parser.parser_instance_uuid;
         parser.process_uuid = parser.parser_instance_uuid;
@@ -1559,7 +1559,7 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
                                                 *context.config,
                                                 *context.artifacts,
                                                 decoded->operation_key,
-                                                decoded->target_uuid,
+                                                BinaryIdentity(decoded->target_uuid),
                                                 decoded->mode);
     state_before = listener.state_before;
     state_after = listener.state_after;

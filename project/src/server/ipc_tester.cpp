@@ -14,6 +14,7 @@
 #include "parser_server_client.hpp"
 #include "session_registry.hpp"
 #include "sblr_dispatch_server.hpp"
+#include "uuid.hpp"
 
 #include <array>
 #include <filesystem>
@@ -47,6 +48,8 @@ struct Options {
   std::string principal = "alice";
   std::string principal_uuid;
   std::string credential_secret;
+  // CLI presentation input only; decode once before native management transport.
+  std::string target_uuid;
 };
 
 std::string JsonEscape(const std::string& value) {
@@ -55,6 +58,7 @@ std::string JsonEscape(const std::string& value) {
 
 void Usage() {
   std::cout << "Usage: sb_ipc_tester --endpoint PATH [--scenario hello|malformed_magic|unsupported_message|version_mismatch|payload_crc_mismatch|database_status|session_registry_status|parser_registry_status|notification_router_status|listener_orchestrator_status|server_management_rights|hello_disabled_package|hello_quarantined_package|hello_retired_package|hello_hash_failure|hello_dev_warning|hello_udr_missing|auth_success|auth_failure|auth_challenge|attach_without_auth|auth_then_attach|auth_attach_detach|detach_unknown|sblr_prepare_execute_show_version|sblr_raw_sql_rejected|sblr_fetch_close_show_version|sblr_cluster_refused|sblr_crud_insert|sblr_crud_select|sblr_crud_update|sblr_crud_delete|sblr_catalog_create_table|sblr_catalog_get_descriptor|sblr_index_create|sblr_datatype_cast|sblr_datatype_extract|sblr_datatype_set|sblr_optimizer_explain|sblr_optimizer_plan|sblr_llvm_compile|event_subscribe_unsubscribe|event_notify_delivery|management_show_server_status|management_show_listeners|management_show_metrics|management_export_support_bundle|management_start_listener|management_restart_listener|management_listener_proxy_refused|management_unauthorized_start_listener|management_show_server_lifecycle|management_reload_server_config|management_reload_invalid|management_drain_server|management_set_maintenance|management_clear_maintenance|management_begin_backup_fence|management_end_backup_fence|management_begin_restore_fence|management_end_restore_fence|management_cancel_unknown|management_stop_server|management_restart_server] [--principal PRINCIPAL] [--principal-uuid UUID] [--credential-secret TEXT] [--expect accept|error] [--expect-code CODE] [--expect-payload-contains TEXT]\n"
+               "       stateful management: [--target-uuid UUIDv7] (required for listener restart)\n"
                "       sb_ipc_tester --fixture PATH\n";
 }
 
@@ -112,6 +116,7 @@ Options Parse(int argc, char** argv) {
     else if (arg == "--principal") options.principal = value("--principal");
     else if (arg == "--principal-uuid") options.principal_uuid = value("--principal-uuid");
     else if (arg == "--credential-secret") options.credential_secret = value("--credential-secret");
+    else if (arg == "--target-uuid") options.target_uuid = value("--target-uuid");
     else if (arg == "--fixture") options.fixture = value("--fixture");
     else if (arg == "--help") {
       Usage();
@@ -542,6 +547,19 @@ int main(int argc, char** argv) {
       options.scenario == "management_export_support_bundle" ||
       options.scenario == "management_stop_server";
   if (stateful_management_scenario) {
+    scratchbird::core::platform::Uuid target;
+    if (!options.target_uuid.empty()) {
+      const auto parsed = scratchbird::core::uuid::ParseUuid(options.target_uuid);
+      if (!parsed.ok() || !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.value)) {
+        std::cerr << "management target requires a UUIDv7\n";
+        return 2;
+      }
+      target = parsed.value;
+    }
+    if (options.scenario == "management_restart_listener" && target.is_nil()) {
+      std::cerr << "management_restart_listener requires --target-uuid from listener status\n";
+      return 2;
+    }
     if (options.principal_uuid.empty()) {
       std::cerr << "management_restart_listener requires an exact durable principal UUID\n";
       return 2;
@@ -584,7 +602,7 @@ int main(int argc, char** argv) {
                         : "stop_server";
     auto management = client.Manage(session,
                                     operation_key,
-                                    {},
+                                    target,
                                     "graceful",
                                     "ipc_tester");
     scratchbird::parser::ipc::MessageVectorSet disconnect_messages;

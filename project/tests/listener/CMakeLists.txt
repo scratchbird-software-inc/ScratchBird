@@ -329,12 +329,13 @@ if(TARGET sb_server)
     server_generic_listener_profile_probe.cpp)
   target_compile_features(sb_server_generic_listener_profile_probe PRIVATE cxx_std_23)
   target_link_libraries(sb_server_generic_listener_profile_probe PRIVATE sb_server_core)
+  target_include_directories(sb_server_generic_listener_profile_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire")
   add_test(
     NAME sb_server_generic_listener_profile_probe
     COMMAND sb_server_generic_listener_profile_probe
   )
   set_property(TEST sb_server_generic_listener_profile_probe APPEND PROPERTY LABELS
-    server_listener_orchestration parser_neutrality listener_explicit_configuration
+    server_listener_orchestration parser_neutrality listener_explicit_configuration binary_uuid
   )
 
   add_test(

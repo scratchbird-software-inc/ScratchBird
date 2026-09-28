@@ -8,6 +8,8 @@
 
 #include "config.hpp"
 #include "listener_orchestrator.hpp"
+#include "uuid.hpp"
+#include "management_request_codec.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -15,12 +17,18 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <set>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
 namespace {
 
 namespace server = scratchbird::server;
+using NativeUuid = scratchbird::core::platform::Uuid;
+static_assert(std::is_same_v<decltype(server::ServerListenerProfileRuntime::listener_uuid), NativeUuid>);
+static_assert(std::is_same_v<decltype(server::ServerListenerProfileRuntime::listener_profile_uuid), NativeUuid>);
+static_assert(std::is_same_v<decltype(server::ServerListenerOperationResult::target_uuid), NativeUuid>);
 
 void Require(bool condition, std::string_view message) {
   if (condition) return;
@@ -100,6 +108,85 @@ int main() {
           "per-profile SBPS endpoints were replaced by a global endpoint");
   Require(alpha.state == "stopped" && beta.state == "stopped",
           "valid enabled profiles were not launch-ready");
+
+  std::set<NativeUuid> identities;
+  for (unsigned iteration = 0; iteration != 32; ++iteration) {
+    // The same captions and lifecycle generation must never issue the same
+    // runtime ownership identity for separate controller instances.
+    const auto fresh = server::BuildListenerOrchestrator(configured, artifacts);
+    for (const auto& profile : fresh.profiles) {
+      for (const auto& id : {profile.listener_uuid, profile.listener_profile_uuid}) {
+        Require(scratchbird::core::uuid::IsEngineIdentityUuid(id), "non-v7 listener identity");
+        Require(identities.insert(id).second, "listener identities reused across owners/roles");
+      }
+    }
+    const auto status = server::ListenerOrchestratorStatusJson(fresh);
+    Require(status == server::ListenerOrchestratorStatusJson(fresh), "status minted new identities");
+    Require(status.find(scratchbird::core::uuid::UuidToString(fresh.profiles[0].listener_uuid)) !=
+                std::string::npos, "status lost rendered listener UUID");
+  }
+  auto targeted = orchestrator;
+  const auto refuse_target = [&](NativeUuid id) {
+    const auto before = server::ListenerOrchestratorStatusJson(targeted);
+    const auto generation = targeted.generation;
+    const auto result = server::ApplyListenerOperation(
+        &targeted, configured, artifacts, "stop_listener", id, "force");
+    Require(!result.ok && !result.diagnostics.empty() &&
+                result.diagnostics.front().code == "LISTENER.NOT_FOUND",
+            "invalid/ambiguous target selected a listener");
+    Require(targeted.generation == generation &&
+                server::ListenerOrchestratorStatusJson(targeted) == before,
+            "refused target changed listener state");
+  };
+  refuse_target({});
+  refuse_target(*identities.begin());
+  auto invalid_version = alpha.listener_uuid;
+  invalid_version.bytes[6] = (invalid_version.bytes[6] & 0x0f) | 0x40;
+  refuse_target(invalid_version);
+  targeted.profiles.push_back(targeted.profiles[1]);
+  refuse_target(beta.listener_uuid);
+  targeted.profiles.pop_back();
+  const auto stopped = server::ApplyListenerOperation(
+      &targeted, configured, artifacts, "stop_listener", beta.listener_uuid, "force");
+  Require(stopped.ok && stopped.target_uuid == beta.listener_uuid &&
+              targeted.profiles[0].enabled && !targeted.profiles[1].enabled &&
+              targeted.profiles[1].listener_profile_uuid == beta.listener_profile_uuid,
+          "binary target did not select precisely the second listener");
+  NativeUuid decoded;
+  Require(scratchbird::wire::DecodeManagementTarget(
+              scratchbird::wire::ManagementTargetBytes(beta.listener_uuid), &decoded) &&
+              decoded == beta.listener_uuid,
+          "management transport changed native listener identity");
+  Require(!scratchbird::wire::DecodeManagementTarget(beta.profile_name, &decoded) &&
+              !scratchbird::wire::DecodeManagementTarget(
+                  scratchbird::core::uuid::UuidToString(beta.listener_uuid), &decoded),
+          "management target accepted caption/text UUID instead of binary16");
+
+  // NUL, punctuation and high octets are identity data, not string terminators,
+  // field delimiters or display encodings. Exercise every permitted byte value
+  // at every position through the real binary target decoder and selector.
+  // Use one record: adjacent issued identities can differ in just one octet;
+  // duplicate ownership is tested independently above.
+  targeted.profiles.erase(targeted.profiles.begin());
+  for (std::size_t position = 0; position != 16; ++position) {
+    for (unsigned octet = 0; octet != 256; ++octet) {
+      auto id = beta.listener_uuid;
+      id.bytes[position] = static_cast<std::uint8_t>(octet);
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(id)) continue;
+      targeted.profiles[0].listener_uuid = id;
+      Require(scratchbird::wire::DecodeManagementTarget(
+                  scratchbird::wire::ManagementTargetBytes(id), &decoded),
+              "binary listener target rejected a permitted octet");
+      const auto generation = targeted.generation;
+      const auto selected = server::ApplyListenerOperation(
+          &targeted, configured, artifacts, "listener_proxy_execute", decoded, "");
+      Require(!selected.ok && selected.target_uuid == id &&
+                  selected.diagnostics.size() == 1 &&
+                  selected.diagnostics.front().code == "LISTENER.EXECUTION_PROXY_FORBIDDEN" &&
+                  targeted.generation == generation,
+              "binary selector lost exact target or enabled forbidden execution proxy");
+    }
+  }
 
   server::ServerBootstrapConfig invalid;
   invalid.listener_executable_path = "/opt/scratchbird/bin/SBgate";

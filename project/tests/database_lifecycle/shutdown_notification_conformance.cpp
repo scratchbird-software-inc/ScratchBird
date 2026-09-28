@@ -150,7 +150,9 @@ ServerListenerProfileRuntime Listener(const Fixture& fixture,
                                       std::string_view listener_uuid,
                                       std::string_view state) {
   ServerListenerProfileRuntime profile;
-  profile.listener_uuid = std::string(listener_uuid);
+  const auto identity = scratchbird::core::uuid::ParseUuid(std::string(listener_uuid));
+  Require(identity.ok(), "invalid listener fixture identity");
+  profile.listener_uuid = identity.value;
   profile.profile_name = "fixture";
   profile.state = std::string(state);
   profile.enabled = state != "stopped";
@@ -170,7 +172,8 @@ ServerListenerOrchestrator Listeners(const Fixture& fixture, bool failed_listene
   listeners.profiles.push_back(
       Listener(fixture, "019e1100-0000-7000-8000-000000000101", failed_listener ? "failed" : "running"));
   ServerListenerProfileRuntime unrelated;
-  unrelated.listener_uuid = "019e1100-0000-7000-8000-000000000202";
+  unrelated.listener_uuid = scratchbird::core::uuid::ParseUuid(
+      "019e1100-0000-7000-8000-000000000202").value;
   unrelated.state = "running";
   unrelated.enabled = true;
   unrelated.pid = -1;

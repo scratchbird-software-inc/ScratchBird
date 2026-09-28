@@ -326,6 +326,19 @@ pid_t ReadOwnerPid(const std::filesystem::path& owner_file) {
   return -1;
 }
 
+std::string ReadOwnerUuid(const std::filesystem::path& owner_file) {
+  std::ifstream in(owner_file);
+  std::string line;
+  while (std::getline(in, line)) {
+    constexpr std::string_view prefix = "listener_uuid=";
+    if (!line.starts_with(prefix)) continue;
+    const auto text = line.substr(prefix.size());
+    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
+    if (parsed.ok() && scratchbird::core::uuid::IsEngineIdentityUuid(parsed.value)) return text;
+  }
+  return {};
+}
+
 bool ConnectAndEcho(int port, const std::string& text, std::string* error) {
   int fd = -1;
   for (int i = 0; i < 80; ++i) {
@@ -358,7 +371,8 @@ bool RunIpcTesterScenario(const std::filesystem::path& ipc_tester,
                           const std::string& payload_contains,
                           bool quiet,
                           const std::string& principal = "alice",
-                          std::string_view principal_uuid = {}) {
+                          std::string_view principal_uuid = {},
+                          const std::string& target_uuid = {}) {
   const pid_t tester_pid = ::fork();
   if (tester_pid == 0) {
     int devnull = -1;
@@ -383,6 +397,8 @@ bool RunIpcTesterScenario(const std::filesystem::path& ipc_tester,
             principal.c_str(),
             "--principal-uuid",
             std::string(principal_uuid).c_str(),
+            "--target-uuid",
+            target_uuid.c_str(),
             nullptr);
     _exit(127);
   }
@@ -502,6 +518,12 @@ int main(int argc, char** argv) {
     std::cerr << "could not determine managed listener pid\n";
     return EXIT_FAILURE;
   }
+  const auto listener_uuid = ReadOwnerUuid(owner_file);
+  if (listener_uuid.empty()) {
+    cleanup();
+    std::cerr << "managed listener did not publish a UUIDv7 owner identity\n";
+    return EXIT_FAILURE;
+  }
   (void)::kill(listener_pid, SIGKILL);
   for (int i = 0; i < 100; ++i) {
     if (::kill(listener_pid, 0) != 0 && errno == ESRCH) break;
@@ -514,7 +536,8 @@ int main(int argc, char** argv) {
                             "\"state\":\"running\"",
                             false,
                             "sysdba",
-                            kSysdbaPrincipalUuid)) {
+                            kSysdbaPrincipalUuid,
+                            listener_uuid)) {
     cleanup();
     std::cerr << "server IPC management_restart_listener failed\n";
     return EXIT_FAILURE;
@@ -523,6 +546,12 @@ int main(int argc, char** argv) {
   if (!ConnectAndEcho(port, "after-listener-restart", &error)) {
     cleanup();
     std::cerr << error << '\n';
+    return EXIT_FAILURE;
+  }
+
+  if (ReadOwnerUuid(FindOwnerFile(listener_control_dir)) != listener_uuid) {
+    cleanup();
+    std::cerr << "listener restart replaced its retained component identity\n";
     return EXIT_FAILURE;
   }
 
