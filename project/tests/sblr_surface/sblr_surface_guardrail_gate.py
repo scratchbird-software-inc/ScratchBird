@@ -827,6 +827,28 @@ def validate_server_admission_family_reconciliation(
     )
 
 
+def validate_operation_membership(
+    operation_rows: list[dict[str, str]], errors: list[str]
+) -> None:
+    # The two dedicated trigger roots were admitted after the 2617-row snapshot.
+    # Exact membership checks prevent unrelated rows from satisfying the count.
+    require(len(operation_rows) == 2619,
+            f"SBSQL operation matrix expected 2619 rows, found {len(operation_rows)}",
+            errors)
+    identities = [row.get("surface_id", "") for row in operation_rows]
+    require(all(identities) and len(set(identities)) == len(identities),
+            "SBSQL operation matrix identities must be nonempty and unique", errors)
+    for identity, name in (("SBSQL-AA3896D3895F", "alter_trigger_statement"),
+                           ("SBSQL-E64AF6FD5CD3", "drop_trigger_statement")):
+        matches = [row for row in operation_rows if row.get("surface_id") == identity]
+        expected = {"canonical_name": name, "surface_kind": "grammar_production",
+                    "status": "native_now", "cluster_scope": "noncluster_or_profile_scoped",
+                    "sblr_operation_family": "sblr.catalog.mutation.v3"}
+        require(len(matches) == 1 and all(matches[0].get(key) == value
+                                         for key, value in expected.items()),
+                f"SBSQL trigger root exact membership drift: {identity}", errors)
+
+
 def validate_family_reconciliation(
     repo_root: Path,
     fixture_root: Path,
@@ -880,11 +902,7 @@ def validate_family_reconciliation(
         row.get("sblr_operation_family", "") for row in operation_rows
     )
     matrix_family_counts.pop("", None)
-    require(
-        len(operation_rows) == 2617,
-        f"SBSQL operation matrix expected 2617 rows, found {len(operation_rows)}",
-        errors,
-    )
+    validate_operation_membership(operation_rows, errors)
     undeclared_matrix_families = {
         family
         for family in matrix_family_counts

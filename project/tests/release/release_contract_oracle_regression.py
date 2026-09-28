@@ -28,6 +28,28 @@ def load(filename):
 
 
 class ReleaseContractOracles(unittest.TestCase):
+    def test_sblr_surface_membership_retains_exact_trigger_roots(self):
+        gate = load("../../tests/sblr_surface/sblr_surface_guardrail_gate.py")
+        errors = []
+        rows = gate.load_repo_csv(ROOT, gate.STRICT_ROW_COVERAGE_LEDGER, errors)
+        gate.validate_operation_membership(rows, errors)
+        self.assertEqual(errors, [])
+        for changed in (rows[:-1], [*rows, rows[-1]], [rows[0], *rows[0:-1]]):
+            errors = []
+            gate.validate_operation_membership(changed, errors)
+            self.assertTrue(errors, "row count or unique membership drift was accepted")
+        for identity in ("SBSQL-AA3896D3895F", "SBSQL-E64AF6FD5CD3"):
+            for field in ("surface_id", "canonical_name", "surface_kind", "status",
+                          "cluster_scope", "sblr_operation_family"):
+                changed = [dict(row) for row in rows]
+                row = next(row for row in changed if row["surface_id"] == identity)
+                row[field] = "unrelated"
+                errors = []
+                gate.validate_operation_membership(changed, errors)
+                with self.subTest(identity=identity, field=field):
+                    self.assertTrue(any("trigger root exact membership drift" in error
+                                        for error in errors))
+
     def test_cdp_defaults_validate_node_local_catalog_evolution(self):
         worker_tests = PROJECT / "tests/sbsql_parser_worker"
         with patch.object(sys, "path", [str(worker_tests), *sys.path]):
