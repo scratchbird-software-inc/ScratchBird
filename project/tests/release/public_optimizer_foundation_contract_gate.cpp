@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../../src/core/uuid/uuid.hpp"
 #include "cost_model.hpp"
 #include "join_planner_full.hpp"
 #include "model_family_profile_factory.hpp"
@@ -23,9 +24,11 @@
 #include <iostream>
 #include <limits>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace exec = scratchbird::engine::executor;
@@ -525,6 +528,11 @@ bool ValidateOptimizerOwnedPlanning() {
   bool passed = Require(input.admission.admitted && input.admission.planning_allowed,
                         "admission fixture was refused");
   const auto first = opt::PlanCanonicalRelationalDag(input);
+  passed &= Require(first.factory.identity_owner != nullptr,
+                    "planning did not retain its native profile identity owner");
+  // This is a same-scope order-invariance test. A separate owner correctly
+  // issues fresh UUIDs, so it cannot stand in for replay of these identities.
+  input.profile_identity_owner = first.factory.identity_owner;
   std::reverse(input.executor_availability.node_bindings.begin(),
                input.executor_availability.node_bindings.end());
   std::reverse(
@@ -569,6 +577,27 @@ bool ValidateOptimizerOwnedPlanning() {
           first.search.selected_plan_signature ==
               second.search.selected_plan_signature,
       "implementation catalog order changed optimizer selection");
+  passed &= Require(second.factory.identity_owner == first.factory.identity_owner &&
+                        second.publication.physical_dag.profile_identity_owner ==
+                            first.factory.identity_owner,
+                    "reordered planning replaced its retained identity owner");
+  auto independent_input = input;
+  independent_input.profile_identity_owner.reset();
+  independent_input.publication_identity.selected_plan_uuid = Uuid(302);
+  const auto independent = opt::PlanCanonicalRelationalDag(independent_input);
+  passed &= Require(independent.accepted && independent.factory.identity_owner &&
+                        independent.factory.identity_owner != first.factory.identity_owner,
+                    "independent planning reused another scope's identity owner");
+  if (independent.factory.identity_owner && first.factory.identity_owner) {
+    passed &= Require(independent.factory.identity_owner->ScopeUuid() !=
+                          first.factory.identity_owner->ScopeUuid(),
+                      "independent planning reused a scope UUID");
+    for (const auto& candidate : first.factory.candidates) {
+      passed &= Require(independent.factory.identity_owner->FindAlternative(
+                            candidate.alternative_uuid) == nullptr,
+                        "independent planning reused a native alternative UUID");
+    }
+  }
 
   const auto scan_candidate = std::ranges::find_if(
       first.factory.candidates, [](const auto& candidate) {
@@ -759,7 +788,9 @@ bool ValidateContinuationAndWhatIfPlanningContexts() {
 
   auto normal_input = PlanningInput();
   const auto normal_before = opt::PlanCanonicalRelationalDag(normal_input);
+  normal_input.profile_identity_owner = normal_before.factory.identity_owner;
   auto what_if_input = normal_input;
+  what_if_input.profile_identity_owner.reset();
   opt::CanonicalPlannerWhatIfContext what_if;
   what_if.authority = PlanningContextAuthority(
       830, "advisory_only_no_normal_plan_influence");
@@ -777,6 +808,11 @@ bool ValidateContinuationAndWhatIfPlanningContexts() {
   what_if_input.what_if_context = what_if;
   const auto advisory = opt::PlanCanonicalRelationalDag(what_if_input);
   const auto normal_after = opt::PlanCanonicalRelationalDag(normal_input);
+  passed &= Require(normal_before.factory.identity_owner &&
+                        normal_after.factory.identity_owner == normal_before.factory.identity_owner &&
+                        advisory.factory.identity_owner &&
+                        advisory.factory.identity_owner != normal_before.factory.identity_owner,
+                    "what-if and normal planning did not retain isolated native owners");
   passed &= Require(
       normal_before.accepted && advisory.accepted && advisory.optimizer_owned &&
           advisory.complete_logical_dag_covered && advisory.search.accepted &&
@@ -1543,19 +1579,74 @@ bool ValidatePrepareMetricCollectionOrchestration() {
   opt::CanonicalPreparedPlanStore replay_store;
   const auto replay = opt::PrepareCanonicalPhysicalPlanWithMetricCollection(
       replay_request, &replay_store);
+  // Recollection is a new occurrence, not replay of an issued identity.
+  // Compare the complete stable payload and its dependency digest separately
+  // from fresh receipt UUIDs and observation timestamps.
+  const auto metric_content = [](const auto& r) {
+    return std::tie(r.abi_version, r.stable_leg_ordinal, r.dependency_wave,
+        r.leg_uuid, r.family_id, r.dependency_leg_uuids, r.required_metric_ids,
+        r.metric_snapshot_uuid, r.metric_snapshot_generation, r.metrics,
+        r.dependency_definition_digest, r.collected, r.cancelled, r.timed_out,
+        r.cleanup_complete, r.advisory_only, r.parser_execution_authority_claimed,
+        r.transaction_visibility_authority_claimed,
+        r.transaction_finality_authority_claimed, r.recovery_authority_claimed);
+  };
+  const auto plan_content = [](const auto& r) {
+    return std::tie(r.abi_version, r.stable_leg_ordinal, r.leg_uuid, r.family_id,
+        r.dependency_leg_uuids, r.selected_leg_plan_uuid, r.selected_alternative_uuid,
+        r.family_local_cost_vector_uuid, r.retained_alternative_uuids,
+        r.estimated_output_rows, r.planned, r.family_local_selection,
+        r.cross_family_cost_comparison_performed, r.parser_execution_authority_claimed,
+        r.transaction_visibility_authority_claimed,
+        r.transaction_finality_authority_claimed, r.recovery_authority_claimed);
+  };
   passed &= Require(
       replay.accepted &&
           replay.metric_receipts.size() == first.metric_receipts.size() &&
           replay.leg_plan_receipts.size() == first.leg_plan_receipts.size() &&
           std::ranges::equal(
               replay.metric_receipts, first.metric_receipts,
-              {}, &opt::CanonicalPreparedMetricCollectionReceipt::collection_receipt_uuid,
-              &opt::CanonicalPreparedMetricCollectionReceipt::collection_receipt_uuid) &&
+              {}, metric_content, metric_content) &&
           std::ranges::equal(
               replay.leg_plan_receipts, first.leg_plan_receipts,
-              {}, &opt::CanonicalPreparedLegPlanReceipt::planning_receipt_uuid,
-              &opt::CanonicalPreparedLegPlanReceipt::planning_receipt_uuid),
-      "identical PREPARE inputs produced nondeterministic metric receipts");
+              {}, plan_content, plan_content),
+      "identical PREPARE inputs produced nondeterministic metric or plan content");
+  std::set<api::EngineUuid> occurrence_ids;
+  for (const auto* result : {&first, &replay}) {
+    const auto& retained = result->prepare_result.prepared_plan;
+    passed &= Require(retained &&
+        retained->prepare_metric_collection_receipts.size() == result->metric_receipts.size() &&
+        retained->prepare_leg_plan_receipts.size() == result->leg_plan_receipts.size(),
+        "PREPARE did not retain its exact metric and planning receipt set");
+    if (!retained ||
+        retained->prepare_metric_collection_receipts.size() != result->metric_receipts.size() ||
+        retained->prepare_leg_plan_receipts.size() != result->leg_plan_receipts.size()) continue;
+    for (std::size_t i = 0; i < std::min(result->metric_receipts.size(),
+                                       result->leg_plan_receipts.size()); ++i) {
+      const auto& metric = result->metric_receipts[i];
+      const auto& leg = result->leg_plan_receipts[i];
+      passed &= Require(scratchbird::core::uuid::IsEngineIdentityUuid(metric.collection_receipt_uuid) &&
+          scratchbird::core::uuid::IsEngineIdentityUuid(leg.planning_receipt_uuid) &&
+          occurrence_ids.insert(metric.collection_receipt_uuid).second &&
+          occurrence_ids.insert(leg.planning_receipt_uuid).second &&
+          leg.metric_collection_receipt_uuid == metric.collection_receipt_uuid &&
+          metric.started_at_monotonic_ns <= metric.completed_at_monotonic_ns &&
+          retained->prepare_metric_collection_receipts[i].collection_receipt_uuid ==
+              metric.collection_receipt_uuid &&
+          retained->prepare_metric_collection_receipts[i].started_at_monotonic_ns ==
+              metric.started_at_monotonic_ns &&
+          retained->prepare_metric_collection_receipts[i].completed_at_monotonic_ns ==
+              metric.completed_at_monotonic_ns &&
+          retained->prepare_leg_plan_receipts[i].planning_receipt_uuid == leg.planning_receipt_uuid &&
+          retained->prepare_leg_plan_receipts[i].metric_collection_receipt_uuid ==
+              metric.collection_receipt_uuid &&
+          metric_content(retained->prepare_metric_collection_receipts[i]) == metric_content(metric) &&
+          plan_content(retained->prepare_leg_plan_receipts[i]) == plan_content(leg),
+          "PREPARE reused or lost native receipt identity, content or causal linkage");
+    }
+  }
+  passed &= Require(occurrence_ids.size() == 12,
+                    "six metric and six planning occurrences were not independently identified");
 
   std::atomic<bool> cancel{false};
   std::atomic<std::uint64_t> cancelled_cleanup{0};

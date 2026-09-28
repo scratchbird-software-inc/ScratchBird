@@ -1393,7 +1393,7 @@ add_test(
   COMMAND public_optimizer_foundation_contract_gate
 )
 set_tests_properties(public_optimizer_foundation_contract_gate PROPERTIES
-  LABELS "public_release_correctness;optimizer;profile_factory;model_family;native_optimization;exact_fallback;physical_properties;cost_vector;cross_join;relational_dag;prepare_metrics;MGA"
+  LABELS "public_release_correctness;optimizer;profile_factory;model_family;native_optimization;exact_fallback;physical_properties;cost_vector;cross_join;relational_dag;prepare_metrics;MGA;binary_uuid"
 )
 
 # Keep the production optimizer manifest/fallback classification proof in the
