@@ -9,6 +9,7 @@
 #pragma once
 
 #include "statistics_catalog.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -97,8 +98,8 @@ struct OptimizerFeedbackStatus {
 // become transaction finality, visibility, security, recovery, parser, or reference
 // authority.
 struct OptimizerRuntimeFeedbackRecord {
-  std::string feedback_uuid;
-  std::string scope_uuid;
+  core::platform::Uuid feedback_uuid;
+  core::platform::Uuid scope_uuid;
   std::string route_label;
   std::uint64_t feedback_generation = 0;
   std::uint64_t policy_generation = 0;
@@ -112,7 +113,8 @@ struct OptimizerRuntimeFeedbackRecord {
 };
 
 struct OptimizerRuntimeFeedbackInvalidation {
-  std::string scope_uuid;
+  // Absent means all scopes; a supplied nil/malformed UUID never means absent.
+  std::optional<core::platform::Uuid> scope_uuid;
   std::uint64_t policy_generation = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -131,7 +133,7 @@ class OptimizerRuntimeFeedbackStore {
   OptimizerFeedbackStatus Record(OptimizerRuntimeFeedbackRecord record);
   std::uint64_t Invalidate(const OptimizerRuntimeFeedbackInvalidation& event);
   OptimizerRuntimeFeedbackSnapshot Snapshot() const;
-  std::optional<OptimizerRuntimeFeedbackRecord> Find(const std::string& feedback_uuid) const;
+  std::optional<OptimizerRuntimeFeedbackRecord> Find(const core::platform::Uuid& feedback_uuid) const;
 
  private:
   mutable std::mutex mutex_;
@@ -184,14 +186,14 @@ enum class OptimizerGovernedFeedbackDisposition : std::uint8_t {
 
 struct OptimizerGovernedFeedbackIdentity {
   std::uint16_t abi_version{1};
-  std::string observation_uuid;
-  std::string selected_plan_uuid;
+  core::platform::Uuid observation_uuid;
+  core::platform::Uuid selected_plan_uuid;
   std::string selected_plan_signature;
   std::uint64_t physical_node_id{0};
   std::uint32_t logical_node_id{0};
   std::uint64_t causal_counter_id{0};
   std::string implementation_id;
-  std::string selected_alternative_uuid;
+  core::platform::Uuid selected_alternative_uuid;
   std::string output_descriptor_digest;
   std::string result_identity_digest;
   std::string dependency_signature;
@@ -299,12 +301,30 @@ struct OptimizerGovernedFeedbackPolicy {
   bool operator==(const OptimizerGovernedFeedbackPolicy&) const = default;
 };
 
+// Native identity tuple, not a textual UUID key, digest, or wire encoding.
+// Observation UUID is deliberately excluded: compatible observations belong
+// to the same exact plan/node/alternative/dependency identity.
+struct OptimizerGovernedFeedbackKey {
+  core::platform::Uuid selected_plan_uuid;
+  std::string selected_plan_signature;
+  std::uint64_t physical_node_id{0};
+  std::uint32_t logical_node_id{0};
+  std::uint64_t causal_counter_id{0};
+  std::string implementation_id;
+  core::platform::Uuid selected_alternative_uuid;
+  std::string output_descriptor_digest;
+  std::string result_identity_digest;
+  std::string dependency_signature;
+
+  auto operator<=>(const OptimizerGovernedFeedbackKey&) const = default;
+};
+
 struct OptimizerGovernedFeedbackPublicationResult {
   bool accepted{false};
   OptimizerGovernedFeedbackDisposition disposition{
       OptimizerGovernedFeedbackDisposition::kQuarantined};
   std::string diagnostic_code;
-  std::string identity_key;
+  std::optional<OptimizerGovernedFeedbackKey> identity_key;
   std::uint64_t feedback_generation{0};
   std::uint32_t compatible_sample_count{0};
   std::uint32_t cardinality_multiplier_basis_points{10000};
@@ -314,8 +334,8 @@ struct OptimizerGovernedFeedbackPublicationResult {
 };
 
 struct OptimizerGovernedFeedbackAlternativeProof {
-  std::string candidate_alternative_uuid;
-  std::string exact_fallback_alternative_uuid;
+  core::platform::Uuid candidate_alternative_uuid;
+  core::platform::Uuid exact_fallback_alternative_uuid;
   bool identical_logical_semantics{false};
   bool identical_output_descriptors{false};
   bool identical_required_properties{false};
@@ -359,13 +379,13 @@ struct OptimizerGovernedFeedbackConsumptionResult {
 };
 
 struct OptimizerGovernedFeedbackInvalidation {
-  std::string selected_plan_uuid;
+  core::platform::Uuid selected_plan_uuid;
   OptimizerGovernedFeedbackGenerations current_generations;
   std::string reason;
 };
 
 struct OptimizerGovernedFeedbackSample {
-  std::string observation_uuid;
+  core::platform::Uuid observation_uuid;
   std::uint64_t observation_sequence{0};
   std::uint64_t actual_output_rows{0};
   std::uint64_t peak_memory_bytes{0};
@@ -392,7 +412,7 @@ struct OptimizerGovernedFeedbackRecord {
 };
 
 struct OptimizerGovernedFeedbackQuarantineRecord {
-  std::string identity_key;
+  std::optional<OptimizerGovernedFeedbackKey> identity_key;
   std::uint64_t observation_sequence{0};
   std::string reason;
   OptimizerGovernedFeedbackDisposition disposition{

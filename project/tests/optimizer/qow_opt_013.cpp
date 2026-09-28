@@ -9,6 +9,9 @@
 // QOW-TEST-OPT-013-V1
 
 #include "optimizer_feedback.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+
+#include <type_traits>
 
 #include <algorithm>
 #include <atomic>
@@ -38,11 +41,10 @@ int failures = 0;
     }                                                                         \
   } while (false)
 
-std::string Uuid(const std::uint64_t value) {
-  std::ostringstream out;
-  out << "10000000-0000-0000-0000-" << std::hex << std::setfill('0')
-      << std::setw(12) << value;
-  return out.str();
+scratchbird::core::platform::Uuid Uuid(const std::uint64_t value) {
+  return scratchbird::tests::FixtureUuid(
+      0x013 ^ static_cast<std::uint32_t>(value >> 32),
+      static_cast<std::uint32_t>(value));
 }
 
 opt::OptimizerGovernedFeedbackMetric Observed(const std::uint64_t value) {
@@ -349,7 +351,7 @@ void TestPolicyBoundsAndBoundedMalformedInput() {
     oversized.identity.dependency_signature = std::string(10000, 'x');
     const auto result = store.Publish(oversized, base);
     CHECK(!result.accepted);
-    CHECK(result.identity_key == "invalid_identity");
+    CHECK(!result.identity_key.has_value());
     CHECK(store.Snapshot().quarantine_record_count == 1);
   }
   {
@@ -466,7 +468,7 @@ void TestExactIdentityGenerationAndAlternativeMatching() {
   {
     opt::OptimizerGovernedFeedbackStore malformed_store;
     auto malformed = Observation(1);
-    malformed.identity.selected_alternative_uuid = "not-a-canonical-uuid";
+    malformed.identity.selected_alternative_uuid.bytes[6] = 0x40;
     CHECK(malformed_store.Publish(malformed, policy).diagnostic_code ==
           "QOW-DIAG-OPT-013-IDENTITY-V1");
   }
@@ -511,11 +513,11 @@ void TestExactIdentityGenerationAndAlternativeMatching() {
   }
   {
     auto request = Consumption(source);
-    request.alternative.candidate_alternative_uuid = "NOT-A-UUID";
+    request.alternative.candidate_alternative_uuid.bytes[8] = 0xc0;
     CHECK(store.Consume(request).diagnostic_code ==
           "QOW-DIAG-OPT-013-ALTERNATIVE-INCOMPATIBLE-V1");
     request = Consumption(source);
-    request.alternative.exact_fallback_alternative_uuid = "not-a-uuid";
+    request.alternative.exact_fallback_alternative_uuid.bytes[6] = 0x40;
     CHECK(store.Consume(request).diagnostic_code ==
           "QOW-DIAG-OPT-013-ALTERNATIVE-INCOMPATIBLE-V1");
   }
@@ -763,6 +765,128 @@ void TestConcurrentIsolationAndDeterministicReplay() {
   }
 }
 
+void TestNativeUuidAdmissionAndExactKeys() {
+  using NativeUuid = scratchbird::core::platform::Uuid;
+  using Identity = opt::OptimizerGovernedFeedbackIdentity;
+  using Proof = opt::OptimizerGovernedFeedbackAlternativeProof;
+  static_assert(std::is_same_v<decltype(Identity::observation_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Identity::selected_plan_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Identity::selected_alternative_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Proof::candidate_alternative_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Proof::exact_fallback_alternative_uuid), NativeUuid>);
+  static_assert(std::is_same_v<
+      decltype(opt::OptimizerGovernedFeedbackInvalidation::selected_plan_uuid), NativeUuid>);
+  static_assert(std::is_same_v<
+      decltype(opt::OptimizerGovernedFeedbackSample::observation_uuid), NativeUuid>);
+  static_assert(std::is_same_v<
+      decltype(opt::OptimizerGovernedFeedbackKey::selected_plan_uuid), NativeUuid>);
+  static_assert(std::is_same_v<
+      decltype(opt::OptimizerGovernedFeedbackKey::selected_alternative_uuid), NativeUuid>);
+  static_assert(!std::is_constructible_v<NativeUuid, const char*>);
+  const auto system_shape = [](const NativeUuid& id) {
+    return (id.bytes[6] & 0xf0) == 0x70 && (id.bytes[8] & 0xc0) == 0x80;
+  };
+  const auto policy = Policy();
+  const auto base = Observation(1);
+  opt::OptimizerGovernedFeedbackStore consumption_store;
+  const auto admitted = Admit(&consumption_store, policy);
+  for (const auto field : {&Identity::observation_uuid,
+                           &Identity::selected_plan_uuid,
+                           &Identity::selected_alternative_uuid}) {
+    auto nil = base;
+    nil.identity.*field = {};
+    opt::OptimizerGovernedFeedbackStore nil_store;
+    CHECK(!nil_store.Publish(nil, policy).accepted);
+    CHECK(nil_store.Snapshot().retained_identity_count == 0);
+    for (unsigned position = 0; position != 16; ++position) {
+      for (unsigned octet = 0; octet != 256; ++octet) {
+        auto changed = base;
+        if ((changed.identity.*field).bytes[position] == octet) continue;
+        (changed.identity.*field).bytes[position] = static_cast<std::uint8_t>(octet);
+        changed.observation_sequence = 2;
+        if (field != &Identity::observation_uuid) {
+          changed.identity.observation_uuid = Uuid(100002);
+        }
+        const auto supplied = changed.identity.*field;
+        const bool valid = system_shape(supplied);
+        opt::OptimizerGovernedFeedbackStore store;
+        CHECK(store.Publish(base, policy).accepted);
+        const auto result = store.Publish(changed, policy);
+        CHECK(result.accepted == valid);
+        const auto snapshot = store.Snapshot();
+        CHECK(snapshot.retained_identity_count ==
+              (valid && field != &Identity::observation_uuid ? 2 : 1));
+        CHECK(changed.identity.*field == supplied);
+        if (valid) {
+          CHECK(result.compatible_sample_count ==
+                (field == &Identity::observation_uuid ? 2 : 1));
+          CHECK(result.identity_key.has_value());
+          if (result.identity_key) {
+            CHECK(result.identity_key->selected_plan_uuid ==
+                  changed.identity.selected_plan_uuid);
+            CHECK(result.identity_key->selected_alternative_uuid ==
+                  changed.identity.selected_alternative_uuid);
+          }
+          const auto found = std::find_if(snapshot.records.begin(), snapshot.records.end(),
+              [&](const auto& record) {
+                return record.identity.selected_plan_uuid == changed.identity.selected_plan_uuid &&
+                       record.identity.selected_alternative_uuid ==
+                           changed.identity.selected_alternative_uuid &&
+                       record.identity.observation_uuid == changed.identity.observation_uuid;
+              });
+          CHECK(found != snapshot.records.end());
+          if (found != snapshot.records.end()) {
+            CHECK(found->retained_samples.back().observation_uuid ==
+                  changed.identity.observation_uuid);
+          }
+        } else {
+          CHECK(result.diagnostic_code == "QOW-DIAG-OPT-013-IDENTITY-V1");
+          CHECK(snapshot.records.front().valid);
+          CHECK(snapshot.records.front().compatible_sample_count == 1);
+          CHECK(snapshot.quarantine_record_count == 1);
+        }
+        auto request = Consumption(admitted);
+        request.source_identity = changed.identity;
+        CHECK(consumption_store.Consume(request).consumed ==
+              (valid && field == &Identity::observation_uuid));
+      }
+    }
+  }
+  for (const auto field : {&Proof::candidate_alternative_uuid,
+                           &Proof::exact_fallback_alternative_uuid}) {
+    auto nil = Consumption(admitted);
+    nil.alternative.*field = {};
+    CHECK(!consumption_store.Consume(nil).consumed);
+    for (unsigned position = 0; position != 16; ++position) {
+      for (unsigned octet = 0; octet != 256; ++octet) {
+        auto request = Consumption(admitted);
+        (request.alternative.*field).bytes[position] = static_cast<std::uint8_t>(octet);
+        const auto id = request.alternative.*field;
+        const bool expected = system_shape(id) &&
+            (field == &Proof::candidate_alternative_uuid ||
+             id == admitted.identity.selected_alternative_uuid);
+        CHECK(consumption_store.Consume(request).consumed == expected);
+        CHECK(request.alternative.*field == id);
+      }
+    }
+  }
+  auto generations = admitted.generations;
+  ++generations.catalog;
+  CHECK(consumption_store.Invalidate({{}, generations, "nil"}) == 0);
+  for (unsigned position = 0; position != 16; ++position) {
+    for (unsigned octet = 0; octet != 256; ++octet) {
+      auto id = admitted.identity.selected_plan_uuid;
+      if (id.bytes[position] == octet) continue;
+      id.bytes[position] = static_cast<std::uint8_t>(octet);
+      CHECK(consumption_store.Invalidate({id, generations, "wrong_or_malformed"}) == 0);
+    }
+  }
+  CHECK(consumption_store.Snapshot().admitted_identity_count == 1);
+  CHECK(consumption_store.Invalidate(
+      {admitted.identity.selected_plan_uuid, generations, "exact"}) == 1);
+  CHECK(!consumption_store.Consume(Consumption(admitted)).consumed);
+}
+
 void TestExistingApiCompatibility() {
   opt::OptimizerRuntimeFeedback feedback;
   feedback.operator_family = "scan";
@@ -788,6 +912,7 @@ int main() {
   TestSequenceAndRetentionBounds();
   TestConcurrentIsolationAndDeterministicReplay();
   TestExistingApiCompatibility();
+  TestNativeUuidAdmissionAndExactKeys();
   if (failures != 0) {
     std::cerr << failures << " qow_opt_013 checks failed\n";
     return 1;

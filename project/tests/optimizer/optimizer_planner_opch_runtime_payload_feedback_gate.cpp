@@ -9,6 +9,9 @@
 #include "logical_plan.hpp"
 #include "optimizer_explain.hpp"
 #include "optimizer_feedback.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+
+#include <type_traits>
 #include "optimizer_request.hpp"
 
 #include <algorithm>
@@ -170,8 +173,8 @@ bool RuntimeFeedbackPersistenceIsScopedAndInvalidatable() {
   // SEARCH_KEY: OPCH_ADAPTIVE_FEEDBACK_ACTUALS_PERSISTENCE
   opt::OptimizerRuntimeFeedbackStore store;
   opt::OptimizerRuntimeFeedbackRecord record;
-  record.feedback_uuid = "feedback:opch041";
-  record.scope_uuid = "scope:relation:opch041";
+  record.feedback_uuid = scratchbird::tests::FixtureUuid(0x041, 1);
+  record.scope_uuid = scratchbird::tests::FixtureUuid(0x041, 2);
   record.route_label = "embedded/sql/hash_join";
   record.feedback_generation = 22;
   record.policy_generation = 7;
@@ -204,11 +207,97 @@ bool RuntimeFeedbackPersistenceIsScopedAndInvalidatable() {
          Require(snapshot.invalidated_records == 1, "invalidated snapshot count missing");
 }
 
+bool NativeFeedbackIdentityPreservesEveryByte() {
+  using NativeUuid = scratchbird::core::platform::Uuid;
+  using Record = opt::OptimizerRuntimeFeedbackRecord;
+  using Invalidation = opt::OptimizerRuntimeFeedbackInvalidation;
+  static_assert(std::is_same_v<decltype(Record::feedback_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Record::scope_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Invalidation::scope_uuid),
+                               std::optional<NativeUuid>>);
+  Record base;
+  base.feedback_uuid = scratchbird::tests::FixtureUuid(0x041, 10);
+  base.scope_uuid = scratchbird::tests::FixtureUuid(0x041, 11);
+  base.route_label = "native_feedback";
+  base.feedback_generation = base.policy_generation = 1;
+  base.catalog_epoch = base.security_epoch = 1;
+  base.feedback = RuntimeFeedback();
+  for (const auto field : {&Record::feedback_uuid, &Record::scope_uuid}) {
+    opt::OptimizerRuntimeFeedbackStore nil_store;
+    auto nil = base;
+    nil.*field = {};
+    if (!Require(!nil_store.Record(nil).ok && nil_store.Snapshot().total_records == 0,
+                 "nil identity reached feedback store")) return false;
+    for (unsigned position = 0; position != 16; ++position) {
+      for (unsigned octet = 0; octet != 256; ++octet) {
+        auto changed = base;
+        if ((changed.*field).bytes[position] == octet) continue;
+        (changed.*field).bytes[position] = static_cast<std::uint8_t>(octet);
+        const auto id = changed.*field;
+        const bool valid = (id.bytes[6] & 0xf0) == 0x70 && (id.bytes[8] & 0xc0) == 0x80;
+        opt::OptimizerRuntimeFeedbackStore store;
+        if (!Require(store.Record(base).ok, "baseline feedback admission failed")) return false;
+        const auto result = store.Record(changed);
+        if (!Require(result.ok == valid && result.applied == valid,
+                     "binary UUID admission disagrees with independent oracle")) return false;
+        const auto snapshot = store.Snapshot();
+        if (!Require(snapshot.total_records ==
+                         (valid && field == &Record::feedback_uuid ? 2 : 1),
+                     "distinct feedback UUIDs aliased or refusal mutated store")) return false;
+        const auto found = store.Find(valid ? changed.feedback_uuid : base.feedback_uuid);
+        if (!Require(found.has_value(), "exact native feedback lookup failed")) return false;
+        if (valid) {
+          if (!Require(found->feedback_uuid == changed.feedback_uuid &&
+                       found->scope_uuid == changed.scope_uuid,
+                       "feedback store normalized or truncated UUID bytes")) return false;
+        } else {
+          if (!Require(result.diagnostic_code ==
+                           "SB_OPTIMIZER_FEEDBACK_PERSISTENCE.MISSING_SCOPE" &&
+                       found->feedback_uuid == base.feedback_uuid &&
+                       found->scope_uuid == base.scope_uuid && found->valid,
+                       "malformed record changed existing feedback")) return false;
+        }
+      }
+    }
+  }
+  opt::OptimizerRuntimeFeedbackStore store;
+  if (!Require(store.Record(base).ok, "invalidation baseline refused")) return false;
+  Invalidation event;
+  event.catalog_epoch = 2;
+  event.scope_uuid = NativeUuid{};
+  if (!Require(store.Invalidate(event) == 0, "nil scope became wildcard")) return false;
+  for (unsigned position = 0; position != 16; ++position) {
+    for (unsigned octet = 0; octet != 256; ++octet) {
+      auto id = base.scope_uuid;
+      if (id.bytes[position] == octet) continue;
+      id.bytes[position] = static_cast<std::uint8_t>(octet);
+      event.scope_uuid = id;
+      if (!Require(store.Invalidate(event) == 0,
+                   "distinct or malformed scope invalidated another identity")) return false;
+      auto lookup = base.feedback_uuid;
+      lookup.bytes[position] = static_cast<std::uint8_t>(octet);
+      if (lookup != base.feedback_uuid &&
+          !Require(!store.Find(lookup), "distinct binary lookup aliased")) return false;
+    }
+  }
+  if (!Require(store.Snapshot().valid_records == 1, "refusal changed valid records")) return false;
+  event.scope_uuid = base.scope_uuid;
+  if (!Require(store.Invalidate(event) == 1, "exact scope invalidation failed")) return false;
+  if (!Require(store.Record(base).ok, "feedback replacement failed")) return false;
+  auto second = base;
+  second.feedback_uuid = scratchbird::tests::FixtureUuid(0x041, 12);
+  second.scope_uuid = scratchbird::tests::FixtureUuid(0x041, 13);
+  if (!Require(store.Record(second).ok, "second scope admission failed")) return false;
+  event.scope_uuid.reset();
+  return Require(store.Invalidate(event) == 2 && store.Snapshot().valid_records == 0,
+                 "explicit all-scope invalidation lost its existing behavior");
+}
+
 bool UnsafeFeedbackAuthorityIsRejected() {
   opt::OptimizerRuntimeFeedbackStore store;
   opt::OptimizerRuntimeFeedbackRecord record;
-  record.feedback_uuid = "feedback:unsafe";
-  record.scope_uuid = "scope:unsafe";
+  record.feedback_uuid = scratchbird::tests::FixtureUuid(0x041, 3);
+  record.scope_uuid = scratchbird::tests::FixtureUuid(0x041, 4);
   record.route_label = "driver/sql/hash_join";
   record.feedback_generation = 1;
   record.policy_generation = 1;
@@ -229,5 +318,6 @@ int main() {
   if (!RuntimePlanPayloadCoversCommercialExplainFields()) return EXIT_FAILURE;
   if (!RuntimeFeedbackPersistenceIsScopedAndInvalidatable()) return EXIT_FAILURE;
   if (!UnsafeFeedbackAuthorityIsRejected()) return EXIT_FAILURE;
+  if (!NativeFeedbackIdentityPreservesEveryByte()) return EXIT_FAILURE;
   return EXIT_SUCCESS;
 }

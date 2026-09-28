@@ -231,7 +231,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   )
   add_test(NAME qow_opt_013_v1 COMMAND qow_opt_013_test_v1)
   set_tests_properties(qow_opt_013_v1 PROPERTIES
-    LABELS "qow_closure;QOW-310;QOW-LEAF-OPT-013;development_candidate"
+    LABELS "qow_closure;QOW-310;QOW-LEAF-OPT-013;development_candidate;binary_uuid"
   )
   # QOW-CMAKE-OPT-014-V1
   add_executable(qow_opt_014_test_v1 qow_opt_014.cpp)
@@ -812,6 +812,17 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()
+
+# Keep governed feedback coverage in ordinary full-suite builds as well as
+# the focused closure configuration above; both compile the production source.
+find_package(Threads REQUIRED)
+add_executable(qow_opt_013_test_v1 qow_opt_013.cpp)
+target_compile_features(qow_opt_013_test_v1 PRIVATE cxx_std_20)
+target_link_libraries(qow_opt_013_test_v1 PRIVATE
+  sb_engine_optimizer_contract_only Threads::Threads)
+add_test(NAME qow_opt_013_v1 COMMAND qow_opt_013_test_v1)
+set_tests_properties(qow_opt_013_v1 PROPERTIES
+  LABELS "qow_closure;QOW-310;QOW-LEAF-OPT-013;development_candidate;binary_uuid")
 
 # QOW-CMAKE-RCP-080-OPT-007-COORDINATOR-FULL-V1
 add_executable(qow_opt_007_leg_test_v1 qow_opt_007_leg.cpp)
@@ -3409,7 +3420,7 @@ add_test(
   COMMAND optimizer_planner_opch_runtime_payload_feedback_gate
 )
 set_tests_properties(optimizer_planner_opch_runtime_payload_feedback_gate PROPERTIES
-  LABELS "optimizer_planner_opch_runtime_payload_feedback_gate;OPCH-040;OPCH-041;optimizer;explain;adaptive_feedback;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_planner_opch_runtime_payload_feedback_gate;OPCH-040;OPCH-041;optimizer;explain;adaptive_feedback;benchmark_clean;mga_transaction_regression;binary_uuid"
 )
 
 add_executable(

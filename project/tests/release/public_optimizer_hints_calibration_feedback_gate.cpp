@@ -428,8 +428,8 @@ void CalibrationProfilesPersistAndInvalidateAsEvidenceOnly() {
 
   opt::OptimizerRuntimeFeedbackStore store;
   opt::OptimizerRuntimeFeedbackRecord record;
-  record.feedback_uuid = Id("feedback.record");
-  record.scope_uuid = Id("scope.lookup");
+  record.feedback_uuid = scratchbird::tests::FixtureUuid(0x062, 3);
+  record.scope_uuid = scratchbird::tests::FixtureUuid(0x062, 4);
   record.route_label = "pcr062.feedback";
   record.feedback_generation = 6213;
   record.policy_generation = 6209;
@@ -444,7 +444,7 @@ void CalibrationProfilesPersistAndInvalidateAsEvidenceOnly() {
           "feedback persistence should be explicitly invalidatable");
 
   opt::OptimizerRuntimeFeedbackInvalidation invalidation;
-  invalidation.scope_uuid = Id("scope.lookup");
+  invalidation.scope_uuid = scratchbird::tests::FixtureUuid(0x062, 4);
   invalidation.catalog_epoch = 6206;
   invalidation.security_epoch = 6207;
   invalidation.policy_generation = 6209;
@@ -456,7 +456,7 @@ void CalibrationProfilesPersistAndInvalidateAsEvidenceOnly() {
               snapshot.valid_records == 0 &&
               snapshot.invalidated_records == 1,
           "feedback store snapshot should expose invalidated evidence only");
-  const auto found = store.Find(Id("feedback.record"));
+  const auto found = store.Find(scratchbird::tests::FixtureUuid(0x062, 3));
   Require(found.has_value() && !found->valid,
           "invalidated feedback record should remain audit evidence");
 }

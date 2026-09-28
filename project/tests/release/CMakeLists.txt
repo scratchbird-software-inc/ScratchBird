@@ -1639,7 +1639,7 @@ add_test(
   COMMAND public_optimizer_hints_calibration_feedback_gate
 )
 set_tests_properties(public_optimizer_hints_calibration_feedback_gate PROPERTIES
-  LABELS "public_release_correctness;public_optimizer_hints_calibration_feedback_gate;PCR-GATE-062;PCR-062;optimizer;hints;calibration;statistics_lifecycle;feedback;explain_lineage"
+  LABELS "public_release_correctness;public_optimizer_hints_calibration_feedback_gate;PCR-GATE-062;PCR-062;optimizer;hints;calibration;statistics_lifecycle;feedback;explain_lineage;binary_uuid"
 )
 
 add_executable(public_optimizer_expression_plan_cache_validation_gate

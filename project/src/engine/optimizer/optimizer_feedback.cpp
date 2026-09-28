@@ -260,7 +260,8 @@ OptimizerCalibratedCostProfile BuildOptimizerCalibratedCostProfile(const Optimiz
 OptimizerFeedbackStatus OptimizerRuntimeFeedbackStore::Record(
     OptimizerRuntimeFeedbackRecord record) {
   OptimizerFeedbackStatus status;
-  if (record.feedback_uuid.empty() || record.scope_uuid.empty() ||
+  if (!core::uuid::IsEngineIdentityUuid(record.feedback_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(record.scope_uuid) ||
       record.route_label.empty() || record.feedback_generation == 0 ||
       record.policy_generation == 0 || record.catalog_epoch == 0 ||
       record.security_epoch == 0) {
@@ -278,8 +279,8 @@ OptimizerFeedbackStatus OptimizerRuntimeFeedbackStore::Record(
   record.status = status;
   record.valid = true;
   record.evidence.push_back("runtime_feedback_persistence.recorded=true");
-  record.evidence.push_back("runtime_feedback_persistence.scope_uuid=" +
-                            record.scope_uuid);
+  // The native scope remains in the typed record, not a text evidence key.
+  record.evidence.push_back("runtime_feedback_persistence.scope_identity=binary16");
   record.evidence.push_back("runtime_feedback_persistence.route_label=" +
                             record.route_label);
   record.evidence.push_back("runtime_feedback_persistence.actual_rows=" +
@@ -318,11 +319,14 @@ OptimizerFeedbackStatus OptimizerRuntimeFeedbackStore::Record(
 
 std::uint64_t OptimizerRuntimeFeedbackStore::Invalidate(
     const OptimizerRuntimeFeedbackInvalidation& event) {
+  if (event.scope_uuid && !core::uuid::IsEngineIdentityUuid(*event.scope_uuid)) {
+    return 0;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   std::uint64_t invalidated = 0;
   for (auto& record : records_) {
-    const bool scope_matches = event.scope_uuid.empty() ||
-                               event.scope_uuid == record.scope_uuid;
+    const bool scope_matches = !event.scope_uuid.has_value() ||
+                               *event.scope_uuid == record.scope_uuid;
     const bool policy_newer = event.policy_generation != 0 &&
                               event.policy_generation != record.policy_generation;
     const bool catalog_newer = event.catalog_epoch != 0 &&
@@ -360,7 +364,8 @@ OptimizerRuntimeFeedbackSnapshot OptimizerRuntimeFeedbackStore::Snapshot() const
 }
 
 std::optional<OptimizerRuntimeFeedbackRecord> OptimizerRuntimeFeedbackStore::Find(
-    const std::string& feedback_uuid) const {
+    const core::platform::Uuid& feedback_uuid) const {
+  if (!core::uuid::IsEngineIdentityUuid(feedback_uuid)) return std::nullopt;
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = std::find_if(records_.begin(), records_.end(), [&](const auto& record) {
     return record.feedback_uuid == feedback_uuid;
@@ -388,19 +393,6 @@ void AppendGovernedEvidence(OptimizerGovernedFeedbackConsumptionResult* result,
   if (result != nullptr) result->evidence.push_back(std::move(evidence));
 }
 
-bool IsCanonicalUuid(const std::string& value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
-}
-
 bool IsIdentityToken(const std::string& value) {
   if (value.empty() || value.size() > kMaximumIdentityTokenBytes) return false;
   return std::none_of(value.begin(), value.end(), [](const unsigned char ch) {
@@ -408,53 +400,55 @@ bool IsIdentityToken(const std::string& value) {
   });
 }
 
-void AppendIdentityToken(std::ostringstream* out, const std::string& value) {
-  *out << value.size() << ':' << value << '|';
-}
-
-std::string GovernedIdentityKey(
+std::optional<OptimizerGovernedFeedbackKey> GovernedIdentityKey(
     const OptimizerGovernedFeedbackIdentity& identity) {
-  if (identity.selected_plan_uuid.size() != 36 ||
+  if (!core::uuid::IsEngineIdentityUuid(identity.selected_plan_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(identity.selected_alternative_uuid) ||
       !IsIdentityToken(identity.selected_plan_signature) ||
       !IsIdentityToken(identity.implementation_id) ||
-      !IsIdentityToken(identity.selected_alternative_uuid) ||
       !IsIdentityToken(identity.output_descriptor_digest) ||
       !IsIdentityToken(identity.result_identity_digest) ||
       !IsIdentityToken(identity.dependency_signature)) {
-    return "invalid_identity";
+    return std::nullopt;
   }
-  std::ostringstream out;
-  AppendIdentityToken(&out, identity.selected_plan_uuid);
-  AppendIdentityToken(&out, identity.selected_plan_signature);
-  out << identity.physical_node_id << '|' << identity.logical_node_id << '|'
-      << identity.causal_counter_id << '|';
-  AppendIdentityToken(&out, identity.implementation_id);
-  AppendIdentityToken(&out, identity.selected_alternative_uuid);
-  AppendIdentityToken(&out, identity.output_descriptor_digest);
-  AppendIdentityToken(&out, identity.result_identity_digest);
-  AppendIdentityToken(&out, identity.dependency_signature);
-  return out.str();
+  return OptimizerGovernedFeedbackKey{
+      identity.selected_plan_uuid, identity.selected_plan_signature,
+      identity.physical_node_id, identity.logical_node_id,
+      identity.causal_counter_id, identity.implementation_id,
+      identity.selected_alternative_uuid, identity.output_descriptor_digest,
+      identity.result_identity_digest, identity.dependency_signature};
 }
 
 bool GovernedIdentityValid(
     const OptimizerGovernedFeedbackIdentity& identity) {
   return identity.abi_version == 1 &&
-         IsCanonicalUuid(identity.observation_uuid) &&
-         IsCanonicalUuid(identity.selected_plan_uuid) &&
+         core::uuid::IsEngineIdentityUuid(identity.observation_uuid) &&
+         core::uuid::IsEngineIdentityUuid(identity.selected_plan_uuid) &&
          identity.physical_node_id != 0 && identity.logical_node_id != 0 &&
          identity.causal_counter_id != 0 &&
          IsIdentityToken(identity.selected_plan_signature) &&
          IsIdentityToken(identity.implementation_id) &&
-         IsCanonicalUuid(identity.selected_alternative_uuid) &&
+         core::uuid::IsEngineIdentityUuid(identity.selected_alternative_uuid) &&
          IsIdentityToken(identity.output_descriptor_digest) &&
          IsIdentityToken(identity.result_identity_digest) &&
          IsIdentityToken(identity.dependency_signature);
 }
 
+auto GovernedIdentityTuple(const OptimizerGovernedFeedbackIdentity& identity) {
+  // Compare the native tuple by reference; do not allocate a formatted key
+  // or copy all dependency strings for each retained-record comparison.
+  return std::tie(identity.selected_plan_uuid, identity.selected_plan_signature,
+                  identity.physical_node_id, identity.logical_node_id,
+                  identity.causal_counter_id, identity.implementation_id,
+                  identity.selected_alternative_uuid,
+                  identity.output_descriptor_digest, identity.result_identity_digest,
+                  identity.dependency_signature);
+}
+
 bool GovernedIdentityCompatible(
     const OptimizerGovernedFeedbackIdentity& left,
     const OptimizerGovernedFeedbackIdentity& right) {
-  return GovernedIdentityKey(left) == GovernedIdentityKey(right);
+  return GovernedIdentityTuple(left) == GovernedIdentityTuple(right);
 }
 
 bool GenerationsValid(const OptimizerGovernedFeedbackGenerations& value) {
@@ -694,9 +688,8 @@ void BoundQuarantine(
     std::vector<OptimizerGovernedFeedbackQuarantineRecord>* quarantine,
     const std::uint32_t maximum) {
   std::ranges::sort(*quarantine, {}, [](const auto& record) {
-    return std::tuple(record.observation_sequence, record.identity_key,
-                      record.reason,
-                      static_cast<std::uint8_t>(record.disposition));
+    return std::tie(record.observation_sequence, record.identity_key,
+                    record.reason, record.disposition);
   });
   if (quarantine->size() > maximum) {
     quarantine->erase(quarantine->begin(),
@@ -759,7 +752,7 @@ void BoundRecords(std::vector<OptimizerGovernedFeedbackRecord>* records,
   if (records->size() <= maximum) return;
   std::ranges::sort(*records, {}, [](const auto& record) {
     return std::tuple(record.last_observation_sequence,
-                      GovernedIdentityKey(record.identity));
+                      GovernedIdentityTuple(record.identity));
   });
   records->erase(records->begin(),
                  records->begin() +
@@ -1058,8 +1051,8 @@ OptimizerGovernedFeedbackStore::Consume(
     return refuse("QOW-DIAG-OPT-013-CONSUME-FORBIDDEN-SIDE-EFFECT-V1");
   }
   const auto& proof = request.alternative;
-  if (!IsCanonicalUuid(proof.candidate_alternative_uuid) ||
-      !IsCanonicalUuid(proof.exact_fallback_alternative_uuid) ||
+  if (!core::uuid::IsEngineIdentityUuid(proof.candidate_alternative_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(proof.exact_fallback_alternative_uuid) ||
       !proof.identical_logical_semantics ||
       !proof.identical_output_descriptors ||
       !proof.identical_required_properties ||
@@ -1112,15 +1105,14 @@ std::uint64_t OptimizerGovernedFeedbackStore::Invalidate(
     const OptimizerGovernedFeedbackInvalidation& event) {
   std::lock_guard<std::mutex> lock(governed_mutex_);
   if (!GenerationsValid(event.current_generations) ||
-      !IsCanonicalUuid(event.selected_plan_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(event.selected_plan_uuid) ||
       (!event.reason.empty() && !IsIdentityToken(event.reason))) {
     return 0;
   }
   std::uint64_t count = 0;
   for (auto& record : governed_records_) {
     if (!record.valid ||
-        (!event.selected_plan_uuid.empty() &&
-         event.selected_plan_uuid != record.identity.selected_plan_uuid) ||
+        event.selected_plan_uuid != record.identity.selected_plan_uuid ||
         !AnyGenerationDiffers(record.generations,
                               event.current_generations)) {
       continue;
@@ -1142,12 +1134,11 @@ OptimizerGovernedFeedbackSnapshot OptimizerGovernedFeedbackStore::Snapshot()
   snapshot.records = governed_records_;
   snapshot.quarantine = governed_quarantine_;
   std::ranges::sort(snapshot.records, {}, [](const auto& record) {
-    return GovernedIdentityKey(record.identity);
+    return GovernedIdentityTuple(record.identity);
   });
   std::ranges::sort(snapshot.quarantine, {}, [](const auto& record) {
-    return std::tuple(record.observation_sequence, record.identity_key,
-                      record.reason,
-                      static_cast<std::uint8_t>(record.disposition));
+    return std::tie(record.observation_sequence, record.identity_key,
+                    record.reason, record.disposition);
   });
   snapshot.retained_identity_count = snapshot.records.size();
   snapshot.quarantine_record_count = snapshot.quarantine.size();
