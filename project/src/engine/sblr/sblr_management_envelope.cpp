@@ -67,6 +67,21 @@ const RecordSpec* FindSpec(std::string_view operation) {
   return nullptr;
 }
 
+// MGA-CMO-NATIVE-SBOP-DESCRIPTOR-003: immutable codec identities, never
+// runtime object identities or evidence that an executor is available.
+constexpr std::array<std::array<std::uint8_t, 16>, 6> kCarrierDescriptors{{
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x76, 0x9f, 0xab, 0x0b, 0x73, 0xec, 0x5b, 0x6c, 0x3a, 0x1b},
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x7b, 0xf8, 0x82, 0x91, 0x2c, 0x3f, 0x2e, 0xad, 0xa8, 0x02},
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x7e, 0x72, 0xb3, 0xae, 0x3a, 0x3f, 0x73, 0x27, 0xb8, 0x3e},
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x76, 0xc2, 0xaf, 0xf8, 0x60, 0xaf, 0xd7, 0xcc, 0x39, 0xc8},
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x77, 0xb4, 0x94, 0x41, 0x9f, 0x40, 0xee, 0x7e, 0x01, 0x9b},
+    {0x01, 0xa0, 0xe9, 0x36, 0x32, 0x53, 0x7b, 0xe8, 0xa1, 0xc4, 0xe1, 0xe2, 0x6a, 0x23, 0x69, 0x62},
+}};
+
+const std::array<std::uint8_t, 16>& CarrierDescriptor(const RecordSpec& spec) {
+  return kCarrierDescriptors[static_cast<unsigned>(spec.kind) - 1];
+}
+
 void Append16(Bytes* out, std::uint16_t value) { out->push_back(value); out->push_back(value >> 8); }
 void Append32(Bytes* out, std::uint32_t value) { for (unsigned s = 0; s != 32; s += 8) out->push_back(value >> s); }
 std::uint16_t Load16(const std::uint8_t* p) { return static_cast<std::uint16_t>(p[0]) | static_cast<std::uint16_t>(p[1]) << 8; }
@@ -215,10 +230,9 @@ SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeOperand(const Sblr
   if (spec == nullptr || envelope.opcode != spec->opcode || envelope.opcode_code != spec->code || envelope.operands.size() != 1) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_identity_or_operand_count");
   const auto& operand = envelope.operands.front();
   if (operand.type != spec->type || operand.name != spec->slot || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_operand_carrier");
-  if (operand.value_body[0] != static_cast<std::uint8_t>(spec->kind) ||
-      !std::all_of(operand.value_body.begin() + 1, operand.value_body.begin() + 16,
-                   [](std::uint8_t byte) { return byte == 0; }))
-    return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_carrier_discriminator");
+  const auto& descriptor = CarrierDescriptor(*spec);
+  if (!std::equal(descriptor.begin(), descriptor.end(), operand.value_body.begin()))
+    return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_carrier_descriptor");
   std::uint64_t count = 0; for (unsigned i = 0; i != 8; ++i) count |= static_cast<std::uint64_t>(operand.value_body[16 + i]) << (i * 8);
   if (count != operand.value_body.size() - 24) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_carrier_size");
   auto decoded = DecodeSblrManagementEnvelopeRecord(operand.value_body.data() + 24, static_cast<std::size_t>(count));
@@ -228,7 +242,9 @@ SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeOperand(const Sblr
 
 SblrOperand MakeSblrManagementEnvelopeOperand(const SblrManagementEnvelopeCodecResult& encoded) {
   SblrOperand operand; if (!encoded.ok) return operand; const auto* spec = FindSpec(encoded.record.kind); if (!spec) return operand;
-  operand.type = std::string(spec->type); operand.name = std::string(spec->slot); operand.ordinal = 1; operand.value_kind = SblrValueKind::literal_typed; operand.value_body.assign(24, 0); operand.value_body[0] = static_cast<std::uint8_t>(spec->kind);
+  operand.type = std::string(spec->type); operand.name = std::string(spec->slot); operand.ordinal = 1; operand.value_kind = SblrValueKind::literal_typed; operand.value_body.assign(24, 0);
+  const auto& descriptor = CarrierDescriptor(*spec);
+  std::copy(descriptor.begin(), descriptor.end(), operand.value_body.begin());
   const auto n = encoded.canonical_bytes.size(); for (unsigned i = 0; i != 8; ++i) operand.value_body[16 + i] = static_cast<std::uint8_t>(n >> (i * 8)); operand.value_body.insert(operand.value_body.end(), encoded.canonical_bytes.begin(), encoded.canonical_bytes.end()); return operand;
 }
 

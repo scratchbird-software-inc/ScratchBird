@@ -98,6 +98,18 @@ int main() {
     Require(encoded.ok, "CSC-TEST-003328 encode");
     const auto decoded = sb::DecodeSblrManagementEnvelopeRecord(encoded.canonical_bytes.data(), encoded.canonical_bytes.size());
     Require(decoded.ok && decoded.record.kind == kind, "CSC-TEST-003328 roundtrip");
+    const auto envelope = Envelope(Record(kind, kUuidA));
+    Require(sb::ValidateSblrEnvelope(envelope).ok,
+            "native management carrier failed generic SBOP validation");
+    const auto sbop_bytes = sb::EncodeSblrEnvelope(envelope);
+    Require(!sbop_bytes.empty(), "native management carrier failed SBOP encoding");
+    const auto sbop = sb::DecodeSblrEnvelope(sbop_bytes);
+    Require(sbop.ok && sb::EncodeSblrEnvelope(sbop.envelope) == sbop_bytes,
+            "native management carrier failed canonical SBOP roundtrip");
+    const auto nested = sb::DecodeSblrManagementEnvelopeOperand(sbop.envelope);
+    Require(nested.ok && nested.record.kind == kind &&
+                nested.canonical_bytes == encoded.canonical_bytes,
+            "generic SBOP lost the exact nested management frame");
     auto corrupted = encoded.canonical_bytes; corrupted[0] ^= 1;
     Require(!sb::DecodeSblrManagementEnvelopeRecord(corrupted.data(), corrupted.size()).ok, "CSC-TEST-003328 magic refusal");
     corrupted = encoded.canonical_bytes; corrupted.back() ^= 1;

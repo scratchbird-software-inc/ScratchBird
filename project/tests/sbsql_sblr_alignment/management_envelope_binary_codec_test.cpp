@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr_management_envelope.hpp"
 #include "hash_digest.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <algorithm>
@@ -41,6 +42,15 @@ scratchbird::core::platform::Uuid Id(std::uint8_t seed) {
   scratchbird::core::platform::Uuid id; id.bytes.fill(seed); id.bytes[6]=0x70; id.bytes[8]=0x80; return id;
 }
 const auto kUuidA=Id(1),kUuidB=Id(2),kUuidC=Id(3);
+
+// Independent specification literals; never read the encoder's lookup table.
+constexpr std::array kExpectedCarrierIds{
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-769f-ab0b-73ec5b6c3a1b"),
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-7bf8-8291-2c3f2eada802"),
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-7e72-b3ae-3a3f7327b83e"),
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-76c2-aff8-60afd7cc39c8"),
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-77b4-9441-9f40ee7e019b"),
+    scratchbird::tests::FixtureUuidLiteral("01a0e936-3253-7be8-a1c4-e1e26a236962")};
 
 [[noreturn]] void Fail(const std::string& what) { std::cerr << what << '\n'; std::exit(1); }
 void Require(bool condition, const std::string& what) { ++checks; if (!condition) Fail(what); }
@@ -142,6 +152,28 @@ int main(){
     auto old=oracle;Put(old,4,1,2);Seal(old);Failed(sb::DecodeSblrManagementEnvelopeRecord(old.data(),old.size()));
     for(std::size_t n=0;n<oracle.size();++n)Failed(sb::DecodeSblrManagementEnvelopeRecord(oracle.data(),n));
     auto e=Carrier(r);Require(sb::DecodeSblrManagementEnvelopeOperand(e).ok,"exact SBOP binary carrier");
+    const auto& expected = kExpectedCarrierIds[static_cast<unsigned>(kind) - 1].bytes;
+    Require(std::equal(expected.begin(), expected.end(), e.operands[0].value_body.begin()),
+            "independent native carrier descriptor bytes");
+    for (unsigned byte = 0; byte < 16; ++byte) {
+      for (unsigned value = 0; value < 256; ++value) {
+        if (value == expected[byte]) continue;
+        auto mutation = e;
+        mutation.operands[0].value_body[byte] = static_cast<std::uint8_t>(value);
+        Failed(sb::DecodeSblrManagementEnvelopeOperand(mutation));
+      }
+    }
+    for (const auto& other : kExpectedCarrierIds) {
+      if (other.bytes == expected) continue;
+      auto substituted = e;
+      std::copy(other.bytes.begin(), other.bytes.end(), substituted.operands[0].value_body.begin());
+      Failed(sb::DecodeSblrManagementEnvelopeOperand(substituted));
+    }
+    auto legacy = e;
+    std::fill_n(legacy.operands[0].value_body.begin(), 16, 0);
+    Failed(sb::DecodeSblrManagementEnvelopeOperand(legacy));
+    legacy.operands[0].value_body[0] = static_cast<std::uint8_t>(kind);
+    Failed(sb::DecodeSblrManagementEnvelopeOperand(legacy));
     for(unsigned byte=0;byte<16;++byte){auto bad=e;bad.operands[0].value_body[byte]^=0x40;Failed(sb::DecodeSblrManagementEnvelopeOperand(bad));}
     auto bad=e;bad.operands[0].value_body[16]^=1;Failed(sb::DecodeSblrManagementEnvelopeOperand(bad));
     fail_hash=true;Failed(sb::EncodeSblrManagementEnvelopeRecord(r));Failed(sb::DecodeSblrManagementEnvelopeRecord(oracle.data(),oracle.size()));fail_hash=false;

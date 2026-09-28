@@ -5,6 +5,7 @@
 
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +21,10 @@ namespace {
 using Bytes = std::vector<std::uint8_t>;
 constexpr std::size_t kHeaderBytes = 96;
 constexpr std::size_t kDigestBytes = 32;
+// LOCAL-METRICS-NATIVE-SBOP-DESCRIPTOR-002; codec identity, not runtime authority.
+constexpr std::array<std::uint8_t, 16> kRequestDescriptor{
+    0x01, 0xa0, 0xe9, 0x3a, 0xc1, 0xc8, 0x7e, 0x42,
+    0x97, 0x9f, 0xd4, 0xa0, 0xa1, 0x4d, 0xc1, 0xd2};
 
 void Put16(Bytes* out, std::size_t at, std::uint16_t value) {
   (*out)[at] = static_cast<std::uint8_t>(value);
@@ -36,17 +41,6 @@ std::uint32_t Get32(const std::uint8_t* p) { return static_cast<std::uint32_t>(p
 std::uint64_t Get64(const std::uint8_t* p) { std::uint64_t value = 0; for (unsigned shift = 0; shift != 64; shift += 8) value |= static_cast<std::uint64_t>(p[shift / 8]) << shift; return value; }
 
 bool IsZero(const std::uint8_t* p, std::size_t size) { return std::all_of(p, p + size, [](std::uint8_t byte) { return byte == 0; }); }
-bool IsNonzero(const std::array<std::uint8_t, 16>& uuid) { return !IsZero(uuid.data(), uuid.size()); }
-std::string Hex16(const std::array<std::uint8_t, 16>& value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string output;
-  output.reserve(32);
-  for (const auto byte : value) {
-    output.push_back(kHex[byte >> 4]);
-    output.push_back(kHex[byte & 0x0f]);
-  }
-  return output;
-}
 bool HasForbiddenText(const std::string& value) {
   return value.empty() || std::any_of(value.begin(), value.end(), [](unsigned char c) { return c == 0 || c < 0x20 || c >= 0x80; });
 }
@@ -71,7 +65,7 @@ SblrLocalMetricsReadDispatchResult DispatchFailure(std::string id, std::string d
   SblrLocalMetricsReadDispatchResult result; result.diagnostic_id = std::move(id); result.detail = std::move(detail); return result;
 }
 SblrLocalMetricsReadCodecResult ValidateRequest(const SblrLocalMetricsReadRequest& request) {
-  if (!IsQueryClass(static_cast<std::uint8_t>(request.query_class)) || request.page_size == 0 || request.page_size > 1024 || !IsNonzero(request.request_uuid)) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "query_class_page_size_or_uuid");
+  if (!IsQueryClass(static_cast<std::uint8_t>(request.query_class)) || request.page_size == 0 || request.page_size > 1024 || !core::uuid::IsEngineIdentityUuid(core::platform::Uuid{request.request_uuid})) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "query_class_page_size_or_uuid");
   if (!IsLocalSelector(request.selector)) return Failure("OBSERVABILITY_METRICS.POLICY_REFUSED", "selector_not_local_or_canonical");
   const bool temporal = request.query_class == SblrLocalMetricsQueryClass::history || request.query_class == SblrLocalMetricsQueryClass::rollup;
   if (temporal ? (request.start_time_ns == 0 || request.end_time_ns < request.start_time_ns) : (request.start_time_ns != 0 || request.end_time_ns != 0)) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "time_range_for_query_class");
@@ -110,13 +104,15 @@ SblrLocalMetricsReadCodecResult DecodeSblrLocalMetricsReadRequest(const std::uin
 
 SblrLocalMetricsReadCodecResult DecodeSblrLocalMetricsReadOperand(const SblrOperationEnvelope& envelope) {
   if (!IsSblrLocalMetricsReadOperation(envelope.operation_id) || envelope.opcode != "SBLR_READ_METRICS" || envelope.opcode_code != 0x0c01 || envelope.operands.size() != 1) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_identity_or_operand_count");
-  const auto& operand = envelope.operands.front(); if (operand.type != "metrics.read_request.v1" || operand.name != "request" || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24 || IsZero(operand.value_body.data(), 16)) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_operand_carrier");
+  const auto& operand = envelope.operands.front(); if (operand.type != "metrics.read_request.v1" || operand.name != "request" || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24 || !std::equal(kRequestDescriptor.begin(), kRequestDescriptor.end(), operand.value_body.begin())) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_operand_carrier");
   std::uint64_t bytes = 0; for (unsigned i = 0; i != 8; ++i) bytes |= static_cast<std::uint64_t>(operand.value_body[16 + i]) << (i * 8); if (bytes != operand.value_body.size() - 24) return Failure("OBSERVABILITY_METRICS.REQUEST_INVALID", "sbop_carrier_size");
   return DecodeSblrLocalMetricsReadRequest(operand.value_body.data() + 24, static_cast<std::size_t>(bytes));
 }
 
 SblrOperand MakeSblrLocalMetricsReadOperand(const SblrLocalMetricsReadCodecResult& encoded) {
-  SblrOperand operand; if (!encoded.ok) return operand; operand.type = "metrics.read_request.v1"; operand.name = "request"; operand.ordinal = 1; operand.value_kind = SblrValueKind::literal_typed; operand.value_body.assign(24, 0); operand.value_body[0] = 1; const auto size = encoded.canonical_bytes.size(); for (unsigned i = 0; i != 8; ++i) operand.value_body[16 + i] = static_cast<std::uint8_t>(size >> (i * 8)); operand.value_body.insert(operand.value_body.end(), encoded.canonical_bytes.begin(), encoded.canonical_bytes.end()); return operand;
+  SblrOperand operand; if (!encoded.ok) return operand; operand.type = "metrics.read_request.v1"; operand.name = "request"; operand.ordinal = 1; operand.value_kind = SblrValueKind::literal_typed; operand.value_body.assign(24, 0);
+  std::copy(kRequestDescriptor.begin(), kRequestDescriptor.end(), operand.value_body.begin());
+  const auto size = encoded.canonical_bytes.size(); for (unsigned i = 0; i != 8; ++i) operand.value_body[16 + i] = static_cast<std::uint8_t>(size >> (i * 8)); operand.value_body.insert(operand.value_body.end(), encoded.canonical_bytes.begin(), encoded.canonical_bytes.end()); return operand;
 }
 
 SblrLocalMetricsReadDispatchResult DispatchSblrLocalMetricsRead(const SblrOperationEnvelope& envelope, const scratchbird::engine::internal_api::EngineRequestContext& context) {
@@ -125,7 +121,7 @@ SblrLocalMetricsReadDispatchResult DispatchSblrLocalMetricsRead(const SblrOperat
   if (!context.security_context_present) return DispatchFailure("SB_DIAG_SBLR_SECURITY_CONTEXT_REQUIRED", "engine.op.read_metrics");
   if (context.query_cancellation_requested && context.query_cancellation_requested()) return DispatchFailure("PROCESS.CANCELLED", "cancelled_before_local_metrics_projection");
   SblrLocalMetricsReadDispatchResult result; result.accepted = true; result.request = decoded.request;
-  result.evidence = {{"executor_id", "engine.op.read_metrics"}, {"opcode_code", "3073"}, {"opcode_version", "1.0"}, {"request_uuid", Hex16(decoded.request.request_uuid)}, {"registry_epoch", std::to_string(decoded.request.registry_epoch)}, {"request_sha256", decoded.sha256_hex}, {"next_cursor_present", "false"}};
+  result.evidence = {{"executor_id", "engine.op.read_metrics"}, {"opcode_code", "3073"}, {"opcode_version", "1.0"}, {"request_uuid", core::platform::Uuid{decoded.request.request_uuid}}, {"registry_epoch", std::to_string(decoded.request.registry_epoch)}, {"request_sha256", decoded.sha256_hex}, {"next_cursor_present", "false"}};
   return result;
 }
 
