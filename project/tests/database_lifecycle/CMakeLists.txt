@@ -890,8 +890,11 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(database_lifecycle_sblr_compact_insert_scalar_conformance
     PRIVATE cxx_std_23
   )
+  target_compile_definitions(database_lifecycle_sblr_compact_insert_scalar_conformance PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(database_lifecycle_sblr_compact_insert_scalar_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api
@@ -934,8 +937,11 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   target_compile_features(database_lifecycle_global_count_aggregate_projection_conformance
     PRIVATE cxx_std_23
   )
+  target_compile_definitions(database_lifecycle_global_count_aggregate_projection_conformance PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
   target_link_libraries(database_lifecycle_global_count_aggregate_projection_conformance
     PRIVATE
+      sb_engine
       sb_core_platform
       sb_core_uuid
       sb_engine_internal_api

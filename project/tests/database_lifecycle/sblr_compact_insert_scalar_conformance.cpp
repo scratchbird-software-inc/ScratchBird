@@ -7,20 +7,24 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "../support/engine_statement_fixture.hpp"
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -35,8 +39,7 @@ namespace uuid = scratchbird::core::uuid;
 constexpr std::string_view kScalarMarker = "scalar.octet_from_int64.v1";
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -76,10 +79,15 @@ struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
+  platform::u64 resource_epoch = 0;
   api::EngineUuid table_uuid;
+  api::EngineRequestContext owner_context;
   api::EngineRequestContext context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
 
   ~Fixture() {
+    session.reset();
     std::error_code ignored;
     if (!root.empty()) std::filesystem::remove_all(root, ignored);
   }
@@ -87,22 +95,19 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NewIdentity(platform::UuidKind::principal, 1000);
-  context.session_uuid =
-      NewIdentity(platform::UuidKind::object, 1001);
+  context.default_root_uuid = fixture.filespace_uuid;
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
-  context.resource_epoch = 1;
+  context.resource_epoch = fixture.resource_epoch;
   context.name_resolution_epoch = 1;
   return context;
 }
@@ -122,22 +127,20 @@ api::EngineRequestContext Begin(Fixture& fixture) {
   return context;
 }
 
-Fixture MakeFixture() {
-  Fixture fixture;
-  fixture.root = std::filesystem::temp_directory_path() /
-                 ("scratchbird_sblr_compact_scalar_" +
-                  std::to_string(NowMillis()));
-  std::filesystem::create_directories(fixture.root);
-  fixture.database_path = fixture.root / "compact_scalar.sbdb";
-
+void InitializeFixture(Fixture& fixture) {
   db::DatabaseCreateConfig create;
-  create.path = fixture.database_path.string();
   create.database_uuid = NewUuid(platform::UuidKind::database, 10);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 11);
+  const auto root = std::filesystem::temp_directory_path() /
+      ("scratchbird_sblr_compact_scalar_" + uuid::UuidToString(create.database_uuid.value));
+  Require(std::filesystem::create_directory(root), "compact scalar directory already exists");
+  fixture.root = root;
+  fixture.database_path = fixture.root / "compact_scalar.sbdb";
+  create.path = fixture.database_path.string();
   create.creation_unix_epoch_millis = NowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.require_resource_seed_pack = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -145,7 +148,12 @@ Fixture MakeFixture() {
   }
   Require(created.ok(), "compact scalar database create failed");
 
-  fixture.database_uuid = create.database_uuid.value;
+  fixture.database_uuid = created.state.database_uuid.value;
+  fixture.filespace_uuid = created.state.filespace_uuid.value;
+  fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  Require(fixture.resource_epoch != 0, "compact scalar resource catalog epoch missing");
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.owner_context.resource_epoch = fixture.resource_epoch;
   fixture.table_uuid = NewIdentity(platform::UuidKind::object, 20);
   fixture.context = Begin(fixture);
 
@@ -153,10 +161,12 @@ Fixture MakeFixture() {
   table.creator_tx = fixture.context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "compact_scalar_values";
-  table.columns.push_back({"octet_value", "canonical=text"});
-  const auto appended = api::AppendMgaTableMetadata(fixture.context, table);
+  table.columns.push_back({"octet_value", "canonical=binary"});
+  const auto appended = scratchbird::tests::PublishMgaTableFixture(
+      fixture.context, table, {"binary"});
   Require(!appended.error, "compact scalar table metadata append failed");
-  return fixture;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
+      fixture.owner_context);
 }
 
 std::string Hex(std::string_view bytes) {
@@ -245,19 +255,37 @@ sblr::SblrDispatchResult DispatchCompactInsert(
   append_text("insert_values_compact_payload", CompactPayload(cells));
 
   sblr::SblrDispatchRequest request;
-  request.context = fixture.context;
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, fixture.context);
+  request.context = statement.context;
   request.context.request_id = "compact-scalar-dispatch";
   request.envelope = std::move(envelope);
   return sblr::DispatchSblrOperation(std::move(request));
 }
 
 api::EngineSelectRowsResult SelectAll(const Fixture& fixture) {
+  scratchbird::tests::FixtureEngineStatement statement(*fixture.session, fixture.context);
   api::EngineSelectRowsRequest request;
-  request.context = fixture.context;
+  request.context = statement.context;
   request.context.request_id = "compact-scalar-select";
   request.source_object.uuid = fixture.table_uuid;
   request.source_object.object_kind = "table";
   return api::EngineSelectRows(request);
+}
+
+void RequirePublishedBinaryColumn(const Fixture& fixture) {
+  const auto loaded = api::LoadMgaRelationStorageDescriptor(fixture.context, fixture.table_uuid);
+  Require(loaded.ok && loaded.descriptor.columns.size() == 1,
+          "compact scalar published column descriptor unavailable");
+  const auto& descriptor = loaded.descriptor.columns.front().value_descriptor;
+  const auto binding = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      fixture.context.datatype_catalog_snapshot_uuid,
+      fixture.context.datatype_catalog_generation,
+      fixture.context.datatype_registry_generation,
+      descriptor.datatype_descriptor_uuid, descriptor.datatype_descriptor_generation);
+  Require(descriptor.canonical_type_name == "binary" && binding.ok &&
+              descriptor.type_uuid == binding.row.type_uuid &&
+              binding.row.canonical_name == "binary",
+          "compact scalar lost its actual published binary datatype binding");
 }
 
 bool HasDiagnostic(const sblr::SblrDispatchResult& result,
@@ -290,8 +318,12 @@ void RequireFailedWithoutRows(const Fixture& fixture,
 
 }  // namespace
 
-int main() {
-  auto fixture = MakeFixture();
+int main() try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "sblr_compact_insert_scalar_conformance");
+  Fixture fixture;
+  InitializeFixture(fixture);
+  RequirePublishedBinaryColumn(fixture);
 
   const std::vector<CompactCell> bound_values{
       {std::string(kScalarMarker), "0", false},
@@ -339,6 +371,8 @@ int main() {
     Require(row.fields.size() == 1,
             "compact scalar persisted row width drifted");
     const auto& value = row.fields.front().second;
+    // This legacy raw CRUD projection does not publish typed result metadata.
+    // Check the actual stored binding separately, not an invented result type.
     Require(value.descriptor.canonical_type_name != kScalarMarker,
             "bound scalar marker leaked into the stored descriptor");
     if (value.isSqlNull()) {
@@ -357,7 +391,7 @@ int main() {
           "engine scalar evaluation lost NUL, byte 1, byte 255, or SQL NULL");
 
   const auto legacy = DispatchCompactInsert(
-      fixture, "sbsql.insert_values.cells.v1", {{"text", "A", false}});
+      fixture, "sbsql.insert_values.cells.v1", {{"binary", "A", false}});
   Require(legacy.envelope_validated && legacy.accepted &&
               legacy.dispatched_to_api && legacy.api_result.ok,
           "legacy compact insert payload alias regressed");
@@ -378,10 +412,43 @@ int main() {
       fixture, {{std::string(kScalarMarker), "256", false}},
       "SB_SBLR_SCALAR_OCTET_FROM_INT64_OUT_OF_RANGE", 5);
 
+  std::vector<CompactCell> all_octets;
+  for (unsigned value = 0; value < 256; ++value)
+    all_octets.push_back({std::string(kScalarMarker), std::to_string(value), false});
+  const auto complete = DispatchCompactInsert(
+      fixture, "sblr.dml.insert.cells.hex.v1", all_octets);
+  Require(complete.envelope_validated && complete.accepted &&
+              complete.dispatched_to_api && complete.api_result.ok,
+          "complete octet domain did not execute");
+  selected = SelectAll(fixture);
+  RequireOk(selected, "complete octet domain select failed");
+  Require(selected.visible_count == 261 && selected.result_shape.rows.size() == 261,
+          "complete octet domain row count drifted");
+  std::array<unsigned, 256> frequencies{};
+  unsigned nulls = 0;
+  for (const auto& row : selected.result_shape.rows) {
+    Require(row.fields.size() == 1, "complete octet row width drifted");
+    const auto& value = row.fields.front().second;
+    Require(value.descriptor.canonical_type_name != kScalarMarker,
+            "complete octet domain leaked the scalar marker");
+    if (value.isSqlNull()) { ++nulls; continue; }
+    Require(value.encoded_value.size() == 1, "complete octet value width drifted");
+    ++frequencies[static_cast<unsigned char>(value.encoded_value.front())];
+  }
+  Require(nulls == 1, "complete octet domain conflated NUL and SQL NULL");
+  RequirePublishedBinaryColumn(fixture);
+  for (unsigned value = 0; value < 256; ++value) {
+    const unsigned expected = value == 0 || value == 1 || value == 65 || value == 255 ? 2 : 1;
+    Require(frequencies[value] == expected, "complete octet domain changed an exact byte");
+  }
+
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = fixture.context;
   rollback.context.request_id = "compact-scalar-rollback";
   const auto rolled_back = api::EngineRollbackTransaction(rollback);
   RequireOk(rolled_back, "compact scalar transaction rollback failed");
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

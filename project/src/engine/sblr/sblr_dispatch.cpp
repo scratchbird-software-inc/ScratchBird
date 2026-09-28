@@ -4800,7 +4800,7 @@ CompactInsertScalarEvaluationStatus EvaluateCompactInsertScalarMarker(
     return CompactInsertScalarEvaluationStatus::not_marker;
   }
   if (cell->is_null) {
-    cell->type = "text";
+    cell->type = "binary";
     cell->value.clear();
     return CompactInsertScalarEvaluationStatus::evaluated;
   }
@@ -4813,7 +4813,7 @@ CompactInsertScalarEvaluationStatus EvaluateCompactInsertScalarMarker(
     return CompactInsertScalarEvaluationStatus::out_of_range;
   }
 
-  cell->type = "text";
+  cell->type = "binary";
   cell->value.assign(
       1, static_cast<char>(static_cast<unsigned char>(integer)));
   return CompactInsertScalarEvaluationStatus::evaluated;

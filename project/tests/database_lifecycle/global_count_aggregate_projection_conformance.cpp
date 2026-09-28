@@ -7,8 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -29,9 +31,12 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -44,8 +49,7 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -86,6 +90,10 @@ struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
+  platform::Uuid filespace_uuid;
+  platform::u64 resource_epoch = 0;
+  api::EngineRequestContext owner_context;
+  mutable std::map<platform::Uuid, std::shared_ptr<scratchbird::tests::FixtureEngineSession>> sessions;
   platform::Uuid principal_uuid;
   platform::Uuid values_table_uuid;
   platform::Uuid nulls_table_uuid;
@@ -94,31 +102,30 @@ struct Fixture {
   std::uint64_t salt = 0;
 
   ~Fixture() {
+    sessions.clear();
     std::error_code ignored;
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
 };
 
-Fixture CreateFixture() {
-  Fixture fixture;
+void InitializeFixture(Fixture& fixture) {
   fixture.salt = NowMillis();
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("scratchbird_global_count_aggregate_" +
-                       std::to_string(fixture.salt));
-  std::filesystem::create_directories(fixture.directory);
-  fixture.database_path = fixture.directory / "global_count.sbdb";
-
   db::DatabaseCreateConfig create;
-  create.path = fixture.database_path.string();
   create.database_uuid =
       NewTypedUuid(platform::UuidKind::database, fixture.salt + 1);
   create.filespace_uuid =
       NewTypedUuid(platform::UuidKind::filespace, fixture.salt + 2);
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("scratchbird_global_count_aggregate_" + uuid::UuidToString(create.database_uuid.value));
+  Require(std::filesystem::create_directory(directory), "global aggregate directory already exists");
+  fixture.directory = directory;
+  fixture.database_path = fixture.directory / "global_count.sbdb";
+  create.path = fixture.database_path.string();
   create.creation_unix_epoch_millis = fixture.salt + 3;
   create.page_size = 8192;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
+  create.require_resource_seed_pack = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -126,9 +133,13 @@ Fixture CreateFixture() {
   }
   Require(created.ok(), "global aggregate database creation failed");
 
-  fixture.database_uuid = create.database_uuid.value;
-  fixture.principal_uuid =
-      NewUuid(platform::UuidKind::principal, fixture.salt + 4);
+  fixture.database_uuid = created.state.database_uuid.value;
+  fixture.filespace_uuid = created.state.filespace_uuid.value;
+  fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  Require(fixture.resource_epoch != 0, "global aggregate resource catalog epoch missing");
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.owner_context.resource_epoch = fixture.resource_epoch;
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
   fixture.values_table_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 5);
   fixture.nulls_table_uuid =
@@ -137,25 +148,26 @@ Fixture CreateFixture() {
       NewUuid(platform::UuidKind::object, fixture.salt + 7);
   fixture.schema_uuid =
       NewUuid(platform::UuidKind::schema, fixture.salt + 8);
-  return fixture;
 }
 
 api::EngineRequestContext Begin(const Fixture& fixture,
                                 std::uint64_t ordinal,
                                 std::string isolation = "read_committed") {
   api::EngineBeginTransactionRequest begin;
+  begin.context = fixture.owner_context;
   begin.context.trust_mode = api::EngineTrustMode::server_isolated;
   begin.context.request_id =
       "global-aggregate-begin-" + std::to_string(ordinal);
   begin.context.database_path = fixture.database_path.string();
   begin.context.database_uuid = fixture.database_uuid;
+  begin.context.default_root_uuid = fixture.filespace_uuid;
   begin.context.principal_uuid = fixture.principal_uuid;
   begin.context.session_uuid =
       NewUuid(platform::UuidKind::object, fixture.salt + 100 + ordinal);
   begin.context.security_context_present = true;
   begin.context.catalog_generation_id = 1;
   begin.context.security_epoch = 1;
-  begin.context.resource_epoch = 1;
+  begin.context.resource_epoch = fixture.resource_epoch;
   begin.context.name_resolution_epoch = 1;
   begin.isolation_level = std::move(isolation);
   const auto begun = api::EngineBeginTransaction(begin);
@@ -168,6 +180,9 @@ api::EngineRequestContext Begin(const Fixture& fixture,
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
   context.current_schema_uuid = fixture.schema_uuid;
+  Require(fixture.sessions.emplace(context.session_uuid,
+      std::make_shared<scratchbird::tests::FixtureEngineSession>(context)).second,
+      "global aggregate session identity was reused");
   return context;
 }
 
@@ -209,7 +224,7 @@ api::CrudTableRecord Int32Table(const api::EngineRequestContext& context,
   return table;
 }
 
-api::CrudTableRecord FirebirdIntegerTable(
+api::CrudTableRecord NonNullableInt32Table(
     const api::EngineRequestContext& context,
     platform::Uuid table_uuid,
     std::string name) {
@@ -217,7 +232,7 @@ api::CrudTableRecord FirebirdIntegerTable(
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = std::move(table_uuid);
   table.default_name = std::move(name);
-  table.columns.push_back({"value", "type=integer;nullable=false"});
+  table.columns.push_back({"value", "canonical=int32;nullable=false"});
   return table;
 }
 
@@ -252,11 +267,11 @@ api::EngineTypedValue Int32Value(std::int32_t value) {
   return typed;
 }
 
-api::EngineTypedValue FirebirdIntegerValue(std::int32_t value) {
+api::EngineTypedValue NonNullableInt32Value(std::int32_t value) {
   api::EngineTypedValue typed;
   typed.descriptor.descriptor_kind = "canonical_type_descriptor";
-  typed.descriptor.canonical_type_name = "integer";
-  typed.descriptor.encoded_descriptor = "type=integer;nullable=false";
+  typed.descriptor.canonical_type_name = "int32";
+  typed.descriptor.encoded_descriptor = "canonical=int32;nullable=false";
   typed.encoded_value = std::to_string(value);
   return typed;
 }
@@ -286,11 +301,14 @@ api::EngineRowValue Row(std::uint64_t ordinal,
   return row;
 }
 
-void Insert(const api::EngineRequestContext& context,
+void Insert(const Fixture& fixture, const api::EngineRequestContext& context,
             const platform::Uuid& table_uuid,
             std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest insert;
-  insert.context = context;
+  const auto session = fixture.sessions.find(context.session_uuid);
+  Require(session != fixture.sessions.end(), "global aggregate insert session is absent");
+  scratchbird::tests::FixtureEngineStatement statement(*session->second, context);
+  insert.context = statement.context;
   insert.context.request_id = "global-aggregate-insert";
   insert.target_table.uuid = table_uuid;
   insert.target_table.object_kind = "table";
@@ -1224,18 +1242,10 @@ void TestNeutralSblrTransport(
 
 void TestPersistedGlobalAggregateView(Fixture& fixture) {
   auto metadata = Begin(fixture, 20);
-  api::EngineCreateSchemaRequest schema;
-  schema.context = metadata;
-  schema.target_object.uuid = fixture.schema_uuid;
-  schema.target_object.object_kind = "schema";
-  schema.localized_names.push_back(Name("aggregate_view_schema"));
-  RequireOk(api::EngineCreateSchema(schema),
-            "global aggregate view schema create failed");
-
-  const auto table = FirebirdIntegerTable(
+  const auto table = NonNullableInt32Table(
       metadata, fixture.expression_table_uuid,
       "aggregate_view_values");
-  Require(!api::AppendMgaTableMetadata(metadata, table).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(metadata, table, {"int32"}).error,
           "global aggregate view table metadata append failed");
   api::MgaRelationStorageDescriptor source_descriptor;
   Require(!api::EnsureMgaRelationStorageDescriptor(
@@ -1244,20 +1254,30 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
           "global aggregate view source descriptor persistence failed");
   Require(source_descriptor.columns.size() == 1 &&
               source_descriptor.columns.front()
-                      .value_descriptor.canonical_type_name == "integer" &&
+                      .value_descriptor.canonical_type_name == "int32" &&
               source_descriptor.columns.front()
                       .value_descriptor.encoded_descriptor ==
-                  "type=integer;nullable=false",
-          "global aggregate view source lost the persisted Firebird INTEGER descriptor");
+                  "canonical=int32;nullable=false" &&
+              !source_descriptor.columns.front().nullable,
+          "global aggregate view source lost the bound nonnullable int32 descriptor");
+  const auto& bound_type = source_descriptor.columns.front().value_descriptor;
+  const auto type_identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      metadata.datatype_catalog_snapshot_uuid, metadata.datatype_catalog_generation,
+      metadata.datatype_registry_generation, bound_type.datatype_descriptor_uuid,
+      bound_type.datatype_descriptor_generation);
+  Require(type_identity.ok && type_identity.row.type_uuid == bound_type.type_uuid &&
+              type_identity.row.canonical_binary_type_code == static_cast<platform::u32>(
+                  scratchbird::core::datatypes::CanonicalTypeId::int32),
+          "global aggregate source has no actual signed32 datatype binding");
   Commit(metadata);
 
   auto writer = Begin(fixture, 21);
-  Insert(writer,
+  Insert(fixture, writer,
          fixture.expression_table_uuid,
-         {Row(101, FirebirdIntegerValue(2100000000)),
-          Row(102, FirebirdIntegerValue(2100000000)),
-          Row(103, FirebirdIntegerValue(2100000000)),
-          Row(104, FirebirdIntegerValue(2100000000))});
+         {Row(101, NonNullableInt32Value(2100000000)),
+          Row(102, NonNullableInt32Value(2100000000)),
+          Row(103, NonNullableInt32Value(2100000000)),
+          Row(104, NonNullableInt32Value(2100000000))});
   Commit(writer);
 
   auto create = Begin(fixture, 22);
@@ -1603,19 +1623,28 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
 
 }  // namespace
 
-int main() {
-  auto fixture = CreateFixture();
+int main() try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "global_count_aggregate_projection_conformance");
+  Fixture fixture;
+  InitializeFixture(fixture);
 
   auto metadata = Begin(fixture, 1);
+  api::EngineCreateSchemaRequest schema;
+  schema.context = metadata;
+  schema.target_object.uuid = fixture.schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back(Name("aggregate_view_schema"));
+  RequireOk(api::EngineCreateSchema(schema), "global aggregate schema create failed");
   const auto values_table = Table(metadata,
                                   fixture.values_table_uuid,
                                   "global_aggregate_values");
   const auto nulls_table = Table(metadata,
                                  fixture.nulls_table_uuid,
                                  "global_aggregate_nulls");
-  Require(!api::AppendMgaTableMetadata(metadata, values_table).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(metadata, values_table, {"int64"}).error,
           "global aggregate values metadata append failed");
-  Require(!api::AppendMgaTableMetadata(metadata, nulls_table).error,
+  Require(!scratchbird::tests::PublishMgaTableFixture(metadata, nulls_table, {"int64"}).error,
           "global aggregate nulls metadata append failed");
   api::MgaRelationStorageDescriptor values_descriptor;
   api::MgaRelationStorageDescriptor nulls_descriptor;
@@ -1657,7 +1686,7 @@ int main() {
   Rollback(empty_reader);
 
   auto writer = Begin(fixture, 3);
-  Insert(writer,
+  Insert(fixture, writer,
          fixture.values_table_uuid,
          {Row(1, Int64Value(0)),
           Row(2, Int64Value(0)),
@@ -1668,7 +1697,7 @@ int main() {
           Row(7, Int64Value(1)),
           Row(8, Int64Value(1)),
           Row(9, Int64Value(1))});
-  Insert(writer,
+  Insert(fixture, writer,
          fixture.nulls_table_uuid,
          {Row(10, NullInt64Value()),
           Row(11, NullInt64Value()),
@@ -1735,7 +1764,7 @@ int main() {
       snapshot_reader, fixture.values_table_uuid, 9);
 
   auto rollback_writer = Begin(fixture, 5);
-  Insert(rollback_writer,
+  Insert(fixture, rollback_writer,
          fixture.values_table_uuid,
          {Row(13, Int64Value(30))});
   const auto rollback_column =
@@ -1791,7 +1820,7 @@ int main() {
               "rolled-back row became AVG-visible");
 
   auto commit_writer = Begin(fixture, 6);
-  Insert(commit_writer,
+  Insert(fixture, commit_writer,
          fixture.values_table_uuid,
          {Row(14, Int64Value(30))});
   Commit(commit_writer);
@@ -1837,4 +1866,7 @@ int main() {
   Rollback(fresh_reader);
   TestPersistedGlobalAggregateView(fixture);
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
