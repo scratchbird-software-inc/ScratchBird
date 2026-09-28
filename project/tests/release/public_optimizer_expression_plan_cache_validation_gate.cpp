@@ -269,13 +269,60 @@ void CanonicalSblrExpressionMatchingIsProductionRoutable() {
   const auto expression = LowerCustomerNameExpression();
   const auto canonical = opt::CanonicalizeSblrExpressionTree(expression);
   Require(canonical.ok, "canonical SBLR expression should be accepted");
-  Require(StartsWith(canonical.digest, "sblrexpr64:"),
+  Require(StartsWith(canonical.digest, "sblrexpr256:") && canonical.digest.size() == 76 &&
+          std::all_of(canonical.digest.begin() + 12, canonical.digest.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+          }),
           "canonical SBLR expression should produce SBLR digest");
   Require(Contains(canonical.evidence, "parser_sql_expression_authority=false"),
           "canonical SBLR expression must reject parser SQL authority");
   Require(Contains(canonical.evidence,
-                   "transaction_finality_authority=engine_transaction_inventory"),
-          "canonical SBLR expression must preserve MGA finality authority");
+                   "mga_visibility_recheck_required=true"),
+          "canonical SBLR metadata must retain the real engine MGA recheck requirement");
+
+  for (const bool function_identity : {false, true}) {
+    for (unsigned position = 0; position < 16; ++position) {
+      for (unsigned octet = 0; octet < 256; ++octet) {
+        auto changed = expression;
+        auto& identity = function_identity ? changed.function_uuid : changed.children.front().object_uuid;
+        const auto original = identity;
+        identity.bytes[position] = static_cast<scratchbird::core::platform::byte>(octet);
+        const bool valid = (identity.bytes[6] & 0xf0) == 0x70 && (identity.bytes[8] & 0xc0) == 0x80;
+        const auto normalized = opt::CanonicalizeSblrExpressionTree(changed);
+        Require(normalized.ok == valid, "expression admitted malformed native identity or rejected valid bytes");
+        if (!valid) {
+          Require(normalized.digest.empty() && normalized.canonical_text.empty(),
+                  "malformed expression retained canonical identity material");
+        } else {
+          const std::string bytes(reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size());
+          Require(normalized.canonical_text.find(bytes) != std::string::npos &&
+                  ((normalized.digest == canonical.digest) == (identity == original)),
+                  "expression canonicalization dropped or text-normalized a UUID byte");
+        }
+      }
+    }
+  }
+  auto missing_column = expression;
+  missing_column.children.front().object_uuid = {};
+  const auto missing_column_result = opt::CanonicalizeSblrExpressionTree(missing_column);
+  Require(!missing_column_result.ok && missing_column_result.digest.empty() &&
+          missing_column_result.canonical_text.empty() &&
+          Contains(missing_column_result.diagnostics, "SB-OPT-0001") &&
+          Contains(missing_column_result.evidence, "sblr_expression_required_object_uuid_missing"),
+          "column_ref without its required bound UUID was accepted");
+  auto missing_function = expression;
+  missing_function.function_uuid = {};
+  const auto missing_function_result = opt::CanonicalizeSblrExpressionTree(missing_function);
+  Require(!missing_function_result.ok && missing_function_result.digest.empty() &&
+          missing_function_result.canonical_text.empty() &&
+          Contains(missing_function_result.diagnostics, "SB-OPT-0001") &&
+          Contains(missing_function_result.evidence, "sblr_expression_required_function_uuid_missing"),
+          "function label without its required bound UUID was accepted");
+  opt::CanonicalSblrExpressionNode literal;
+  literal.operator_id = "literal";
+  literal.literal_digest = "sha256:literal-with-no-catalog-object";
+  Require(opt::CanonicalizeSblrExpressionTree(literal).ok,
+          "literal with intentionally absent reference UUID slots was rejected");
 
   const auto add_left = opt::CanonicalizeSblrExpressionTree(
       AddExpression("sha256:literal-a", "sha256:literal-b"));
@@ -299,6 +346,22 @@ void CanonicalSblrExpressionMatchingIsProductionRoutable() {
   Require(Contains(match.acceptance_reasons,
                    "metadata_match_only_mga_visibility_recheck_required"),
           "expression match must require MGA recheck");
+  auto wrong_function = match_request;
+  wrong_function.query_expression.function_uuid = Id("function.add");
+  Require(!opt::MatchSblrExpressionToIndex(wrong_function).matches,
+          "expression index matched a different native function with the same operator label");
+  auto wrong_column = match_request;
+  wrong_column.query_expression.children.front().object_uuid = scratchbird::tests::FixtureUuid(2210, 2);
+  Require(!opt::MatchSblrExpressionToIndex(wrong_column).matches,
+          "expression index matched a different native column with the same operator label");
+  auto missing_mga_recheck = match_request;
+  missing_mga_recheck.base_row_mga_recheck_planned = false;
+  Require(!opt::MatchSblrExpressionToIndex(missing_mga_recheck).matches,
+          "expression metadata bypassed required engine MGA recheck");
+  auto missing_security_recheck = match_request;
+  missing_security_recheck.base_row_security_recheck_planned = false;
+  Require(!opt::MatchSblrExpressionToIndex(missing_security_recheck).matches,
+          "expression metadata bypassed required engine security recheck");
 
   opt::AccessPathPlanningRequest access;
   access.relation_uuid = Id("relation.customer");
@@ -316,8 +379,10 @@ void CanonicalSblrExpressionMatchingIsProductionRoutable() {
   const auto candidates = opt::GenerateFullAccessPathCandidates(access);
   const auto selected = std::find_if(candidates.begin(), candidates.end(),
                                     [](const auto& candidate) {
-                                      return candidate.candidate_id.find("CAND-OPT-INDEX:") == 0 &&
-                                             candidate.cost.selectable;
+                                      return candidate.candidate_id == "CAND-OPT-INDEX" &&
+                                             candidate.index_uuid == Id("index.customer_name_lower") &&
+                                             candidate.access_kind == plan::PhysicalAccessKind::kScalarBtreeLookup &&
+                                             candidate.cost.selectable && candidate.missing_facts.empty();
                                     });
   Require(selected != candidates.end(),
           "access-path planner should route expression index from SBLR metadata");

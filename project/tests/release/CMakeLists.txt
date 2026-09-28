@@ -1654,7 +1654,7 @@ add_test(
   COMMAND public_optimizer_expression_plan_cache_validation_gate
 )
 set_tests_properties(public_optimizer_expression_plan_cache_validation_gate PROPERTIES
-  LABELS "public_release_correctness;public_optimizer_expression_plan_cache_validation_gate;PCR-GATE-063;PCR-063;ELER-104;ELER-GATE-104;ELER-106;ELER-GATE-106;optimizer;expression_normalization;plan_cache;compatibility_epoch;validation_hardening;sblr_uuid_mga;optimizer_property"
+  LABELS "public_release_correctness;public_optimizer_expression_plan_cache_validation_gate;PCR-GATE-063;PCR-063;ELER-104;ELER-GATE-104;ELER-106;ELER-GATE-106;optimizer;expression_normalization;plan_cache;compatibility_epoch;validation_hardening;sblr_uuid_mga;optimizer_property;binary_uuid"
 )
 
 add_test(

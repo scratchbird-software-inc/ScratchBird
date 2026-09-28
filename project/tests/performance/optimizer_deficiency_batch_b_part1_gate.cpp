@@ -16,6 +16,7 @@
 #include "statistics_catalog.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -114,9 +115,10 @@ opt::OptimizerStatisticsCatalog ExactLocalCatalog(const scratchbird::core::platf
                                                   bool include_memory_grant = true) {
   opt::OptimizerStatisticsCatalog catalog;
   const auto add = [&](const std::string& name, double value) {
-    catalog.Add(opt::MakeStatistic(name, "relation", opt::OptimizerStatisticTarget::Object(relation_uuid), value,
+    if (!Require(catalog.Add(opt::MakeStatistic(name, "relation", opt::OptimizerStatisticTarget::Object(relation_uuid), value,
                                    opt::StatisticSource::kCatalogExact, 7, 0,
-                                   opt::CostConfidence::kHigh));
+                                   opt::CostConfidence::kHigh)), "exact fixture statistic admission failed: " + name))
+      std::exit(EXIT_FAILURE);
   };
   add("row_count", 10000.0);
   add("visible_row_count", 9600.0);
@@ -279,14 +281,15 @@ bool BenchmarkCleanPolicyDefaultStatsAreDiagnosed() {
 
   logical.nodes.front().required_object_uuids.push_back(scratchbird::tests::FixtureUuid(1406, 15));
   auto memory_default_catalog = ExactLocalCatalog(scratchbird::tests::FixtureUuid(1406, 15), false);
-  memory_default_catalog.Add(opt::MakeStatistic("memory_grant_available_bytes",
+  if (!Require(memory_default_catalog.Add(opt::MakeStatistic("memory_grant_available_bytes",
                                                 "session",
                                                 opt::OptimizerStatisticTarget::LocalDefault(),
                                                 1048576.0,
                                                 opt::StatisticSource::kPolicyDefault,
                                                 7,
                                                 0,
-                                                opt::CostConfidence::kLow));
+                                                opt::CostConfidence::kLow)),
+               "policy-default memory fixture statistic was not admitted")) return false;
   const auto memory_default_plan = opt::OptimizeLogicalPlanWithStatistics(logical, memory_default_catalog);
   const auto memory_default_status = opt::ValidateBenchmarkCleanOptimizedPlan(memory_default_plan);
   if (!Require(!memory_default_status.ok,
@@ -334,6 +337,11 @@ bool ExpandedStatsCatalogFeedsCostingAndStaleDiagnostics() {
   mcv.value_encoded = "42";
   mcv.frequency = 0.05;
   store.UpsertMcv(mcv);
+  auto second_mcv = mcv;
+  second_mcv.identity.statistic_uuid = scratchbird::tests::FixtureUuid(2210, 1);
+  second_mcv.value_encoded = "84";
+  second_mcv.frequency = 0.10;
+  store.UpsertMcv(second_mcv);
 
   store.UpsertIndex(IndexStats(relation_uuid, scratchbird::tests::FixtureUuid(1406, 10), "btree", true, true));
   auto snapshot = store.Snapshot(scratchbird::tests::FixtureUuid(1406, 20));
@@ -346,10 +354,24 @@ bool ExpandedStatsCatalogFeedsCostingAndStaleDiagnostics() {
 
   const auto legacy = store.ToLegacyCatalog();
   if (!Require(legacy.has_value(), "statistics projection failed")) return false;
+  const auto first_frequency = legacy->Find("mcv_frequency",
+      opt::OptimizerStatisticTarget::Object(mcv.identity.statistic_uuid));
+  const auto second_frequency = legacy->Find("mcv_frequency",
+      opt::OptimizerStatisticTarget::Object(second_mcv.identity.statistic_uuid));
+  if (!Require(snapshot.mcv.size() == 2 && first_frequency && second_frequency,
+               "distinct values on one column lost their native statistic identities") ||
+      !Require(first_frequency->target.object_uuid == mcv.identity.statistic_uuid &&
+               second_frequency->target.object_uuid == second_mcv.identity.statistic_uuid &&
+               first_frequency->value == 0.05 && second_frequency->value == 0.10 &&
+               first_frequency->stats_epoch == mcv.identity.stats_epoch &&
+               second_frequency->stats_epoch == second_mcv.identity.stats_epoch,
+               "MCV projection relabeled identity or lost value/epoch") ||
+      !Require(!legacy->Find("mcv_frequency", opt::OptimizerStatisticTarget::Object(mcv.column_uuid)),
+               "MCV projection collapsed distinct observations into a column-identity alias")) return false;
   if (!Require(legacy->Find("column_ndv", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "NDV not projected to costing catalog") ||
       !Require(legacy->Find("column_null_fraction", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "null fraction not projected to costing catalog") ||
       !Require(legacy->Find("histogram_bucket_count", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "histogram not projected to costing catalog") ||
-      !Require(legacy->Find("mcv_frequency", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 3))).has_value(), "MCV not projected to costing catalog") ||
+      !Require(first_frequency.has_value(), "MCV not projected to costing catalog") ||
       !Require(legacy->Find("index_depth", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index depth not projected to costing catalog") ||
       !Require(legacy->Find("index_leaf_pages", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index leaf pages not projected to costing catalog") ||
       !Require(legacy->Find("index_fragmentation_ratio", opt::OptimizerStatisticTarget::Object(scratchbird::tests::FixtureUuid(1406, 10))).has_value(), "index fragmentation not projected to costing catalog") ||

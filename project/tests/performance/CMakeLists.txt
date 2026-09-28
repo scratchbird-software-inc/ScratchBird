@@ -165,7 +165,7 @@ add_test(
   COMMAND optimizer_deficiency_batch_b_part1_gate
 )
 set_tests_properties(optimizer_deficiency_batch_b_part1_gate PROPERTIES
-  LABELS "optimizer_deficiency_batch_b_part1_gate;ODF-010;ODF-011;ODF-012;ODF-013;ODF-014;optimizer_deficiency;performance;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_batch_b_part1_gate;ODF-010;ODF-011;ODF-012;ODF-013;ODF-014;optimizer_deficiency;performance;benchmark_clean;mga_transaction_regression;binary_uuid"
 )
 
 add_executable(

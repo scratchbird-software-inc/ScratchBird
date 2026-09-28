@@ -595,6 +595,14 @@ std::string CanonicalizeSblrExpressionNode(
   if (node.operator_id.empty()) {
     AddSblrDiagnostic(result, "sblr_expression_operator_required");
   }
+  if (node.operator_id == "column_ref" && node.object_uuid.is_nil()) {
+    AddSblrDiagnostic(result, "SB-OPT-0001");
+    result->evidence.push_back("sblr_expression_required_object_uuid_missing");
+  }
+  if (node.operator_id.starts_with("fn:") && node.function_uuid.is_nil()) {
+    AddSblrDiagnostic(result, "SB-OPT-0001");
+    result->evidence.push_back("sblr_expression_required_function_uuid_missing");
+  }
   if (!SafeSblrIdentityToken(node.operator_id) ||
       !SafeSblrIdentityToken(node.descriptor_digest) ||
       (!node.object_uuid.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(node.object_uuid)) ||
