@@ -331,10 +331,10 @@ ParserPackageRegistry LoadParserPackageRegistry(const ServerBootstrapConfig& con
     std::ifstream identity_file(path, std::ios::binary);
     identity_file.read(reinterpret_cast<char*>(entry.parser_support_udr_uuid.bytes.data()), 16);
     if (!identity_file || identity_file.peek() != std::char_traits<char>::eof() ||
-        entry.parser_support_udr_uuid.is_nil()) {
+        !core::uuid::IsEngineIdentityUuid(entry.parser_support_udr_uuid)) {
       registry.diagnostics.push_back(ParserPackageDiagnostic(
           "SERVER.PARSER.SUPPORT_UDR_BINARY_IDENTITY_INVALID",
-          "Parser-support UDR binding must contain exactly one non-nil binary16 UUID."));
+          "Parser-support UDR binding must contain exactly one native binary16 UUIDv7 system identity."));
       return registry;
     }
   }

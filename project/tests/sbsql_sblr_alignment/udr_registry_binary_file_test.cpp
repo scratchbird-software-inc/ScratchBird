@@ -6,7 +6,14 @@
 #include <iostream>
 #include <unistd.h>
 namespace server = scratchbird::server;
-void Check(bool value) { if (!value) std::abort(); }
+unsigned checks = 0;
+void Check(bool value) {
+  ++checks;
+  if (!value) {
+    std::cerr << "UDR binary registry check=" << checks << " failed\n";
+    std::exit(EXIT_FAILURE);
+  }
+}
 int main() {
   auto dir = std::filesystem::temp_directory_path() /
       ("sb_udr_binary_registry_" + std::to_string(::getpid()));
@@ -28,6 +35,23 @@ int main() {
   const auto loaded = server::LoadParserPackageRegistry(config);
   Check(loaded.diagnostics.empty() && loaded.entries.size() == 1);
   Check(loaded.entries.front().parser_support_udr_uuid == uuid);
+  for (std::size_t position = 0; position != 16; ++position) {
+    for (unsigned octet = 0; octet != 256; ++octet) {
+      auto candidate = uuid;
+      candidate.bytes[position] = static_cast<std::uint8_t>(octet);
+      const bool valid = candidate.bytes[6] >> 4 == 7 && candidate.bytes[8] >> 6 == 2;
+      write({reinterpret_cast<const char*>(candidate.bytes.data()), 16});
+      const auto result = server::LoadParserPackageRegistry(config);
+      if (valid) {
+        Check(result.diagnostics.empty() && result.entries.size() == 1);
+        Check(result.entries.front().parser_support_udr_uuid == candidate);
+      } else {
+        Check(result.entries.empty() && result.diagnostics.size() == 1);
+        Check(result.snapshot_uuid.is_nil());
+        Check(result.diagnostics.front().code == "SERVER.PARSER.SUPPORT_UDR_BINARY_IDENTITY_INVALID");
+      }
+    }
+  }
   for (const auto& malformed : {bytes.substr(0, 15), bytes + "x", std::string(16, '\0')}) {
     write(malformed);
     const auto refused = server::LoadParserPackageRegistry(config);
@@ -42,5 +66,5 @@ int main() {
   Check(legacy.entries.empty() && legacy.diagnostics.size() == 1);
   Check(legacy.diagnostics.front().code == "SERVER.PARSER.SUPPORT_UDR_BINARY_IDENTITY_REQUIRED");
   std::filesystem::remove_all(dir);
-  std::cout << "UDR binary registry file PASS\n";
+  std::cout << "UDR binary registry file PASS checks=" << checks << '\n';
 }
