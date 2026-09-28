@@ -44738,6 +44738,9 @@ struct ParsedRelationalDescriptor {
   std::uint64_t datatype_registry_generation{0};
 };
 
+// Private parser verifier kind: no corresponding engine expression enum or
+// ordinary-expression wire value exists. Final publication requires SBVN.
+constexpr std::uint8_t kBoundVariableExpressionKind = 8;
 struct ParsedRelationalExpression {
   std::uint32_t id{0};
   std::uint8_t kind{0};
@@ -44748,6 +44751,7 @@ struct ParsedRelationalExpression {
   std::optional<std::uint8_t> literal_kind;
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
+  std::uint64_t variable_occurrence_id{0};
 };
 
 struct ParsedRelationalOutput {
@@ -45199,6 +45203,7 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     }
     const bool binary_record_slot = operand.type == "relational_descriptor_v3" ||
         operand.type == "relational_expression_v2" ||
+        operand.type == "bound_variable_expression_v1" ||
         operand.type == "relational_window_definition_v2" ||
         operand.type == "relational_window_invocation_v2" ||
         operand.type == "relational_property_v3" ||
@@ -45456,6 +45461,22 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       descriptor.datatype_catalog_generation = wire.datatype_catalog_generation;
       descriptor.datatype_registry_generation = wire.datatype_registry_generation;
       graph->descriptors.push_back(std::move(descriptor));
+      continue;
+    }
+    if (operand.type == "bound_variable_expression_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count))
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded", "record_count");
+      BoundExpressionAstRecord binding;
+      if (!DecodeBoundVariableExpressionOperand(operand, &binding))
+        return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                     "local variable binding is malformed", "expression_record");
+      ParsedRelationalExpression expression;
+      expression.id = binding.expression_id;
+      expression.kind = kBoundVariableExpressionKind;
+      expression.descriptor_id = binding.result_descriptor_id;
+      expression.variable_occurrence_id = binding.structural_variable_occurrence_id;
+      graph->expressions.push_back(std::move(expression));
       continue;
     }
     if (operand.type == "relational_expression_v2") {
@@ -46535,8 +46556,12 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
 
   std::unordered_map<std::uint32_t, const ParsedRelationalExpression*>
       expressions;
+  std::unordered_set<std::uint64_t> variable_occurrences;
   for (const auto& expression : graph.expressions) {
-    if (expression.kind < 1 || expression.kind > 7 ||
+    const bool variable = expression.kind == kBoundVariableExpressionKind;
+    if (expression.kind < 1 || expression.kind > kBoundVariableExpressionKind ||
+        variable != (expression.variable_occurrence_id != 0) ||
+        (variable && !variable_occurrences.insert(expression.variable_occurrence_id).second) ||
         !descriptors.contains(expression.descriptor_id) ||
         !expressions.emplace(expression.id, &expression).second) {
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -46651,7 +46676,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
          expression.literal_or_parameter_ref.has_value()) ||
         (expression.literal_or_parameter_ref.has_value() &&
          expression.literal_or_parameter_ref->empty()) ||
-        ((literal || parameter || identifier) &&
+        ((literal || parameter || variable || identifier) &&
          !expression.child_ids.empty()) ||
         (unary && expression.child_ids.size() != 1) ||
         (binary && expression.child_ids.size() != 2) ||

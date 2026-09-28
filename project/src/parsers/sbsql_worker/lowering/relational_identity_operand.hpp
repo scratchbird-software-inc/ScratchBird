@@ -398,8 +398,62 @@ inline bool DecodeRelationalNodeBindingOperand(
   return true;
 }
 
+// Parser-local handoff to variable prebinding, NOT an engine expression kind
+// or executable SBLR operand. Canonical publication must replace it with the
+// admitted SBVN reference. Never map AST kVariable to kParameter or cast it
+// into the ordinary engine-expression enum (which has no variable member).
+inline std::optional<SblrOperand> MakeBoundVariableExpressionOperand(
+    const BoundExpressionAstRecord& expression) {
+  if (expression.expression_kind != NativeExpressionAstKind::kVariable ||
+      expression.expression_id == 0 || expression.result_descriptor_id == 0 ||
+      expression.structural_variable_occurrence_id == 0 ||
+      expression.structural_literal_occurrence_id != 0 ||
+      expression.structural_parameter_occurrence_id != 0 ||
+      expression.literal_kind || expression.bound_function_uuid ||
+      expression.bound_name_uuid || expression.canonical_operator_name ||
+      expression.literal_or_parameter_ref || !expression.child_expression_ids.empty())
+    return std::nullopt;
+  SblrOperand operand;
+  operand.type = "bound_variable_expression_v1";
+  operand.name = "slot_" + std::to_string(expression.expression_id);
+  auto& body = operand.canonical_value_body;
+  body = {1, 0, 0, 0};  // local version and reserved, both u16 LE
+  const auto append = [&](std::uint64_t value, unsigned width) {
+    for (unsigned i = 0; i < width; ++i)
+      body.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+  };
+  append(expression.expression_id, 4);
+  append(expression.result_descriptor_id, 4);
+  append(expression.structural_variable_occurrence_id, 8);
+  return operand;
+}
+
+inline bool DecodeBoundVariableExpressionOperand(
+    const SblrOperand& operand, BoundExpressionAstRecord* output) {
+  const auto& body = operand.canonical_value_body;
+  if (!output || operand.type != "bound_variable_expression_v1" ||
+      !operand.value.empty() || operand.canonical_value_kind != 0 ||
+      body.size() != 20 || body[0] != 1 || body[1] || body[2] || body[3]) return false;
+  const auto read = [&](unsigned offset, unsigned width) {
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < width; ++i) value |= std::uint64_t(body[offset + i]) << (8 * i);
+    return value;
+  };
+  BoundExpressionAstRecord decoded;
+  decoded.expression_kind = NativeExpressionAstKind::kVariable;
+  decoded.expression_id = static_cast<std::uint32_t>(read(4, 4));
+  decoded.result_descriptor_id = static_cast<std::uint32_t>(read(8, 4));
+  decoded.structural_variable_occurrence_id = read(12, 8);
+  const auto expected = MakeBoundVariableExpressionOperand(decoded);
+  if (!expected || expected->name != operand.name) return false;
+  *output = std::move(decoded);
+  return true;
+}
+
 inline std::optional<SblrOperand> MakeRelationalExpressionOperand(
     const BoundExpressionAstRecord& expression) {
+  if (expression.expression_kind == NativeExpressionAstKind::kVariable)
+    return MakeBoundVariableExpressionOperand(expression);
   engine::internal_api::RelationalExpressionRecord wire;
   wire.expression_id = expression.expression_id;
   wire.expression_kind = static_cast<engine::internal_api::RelationalExpressionKind>(

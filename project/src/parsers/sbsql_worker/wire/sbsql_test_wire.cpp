@@ -11755,9 +11755,22 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
         static_cast<std::uint32_t>(canonical_operands.size() + 1);
     canonical_operand.type = operand.type;
     const bool binary_expression = operand.type == "relational_expression_v2";
+    const bool bound_variable = operand.type == "bound_variable_expression_v1";
     scratchbird::engine::internal_api::RelationalExpressionRecord expression_record;
     if (binary_expression && !DecodeRelationalExpressionOperand(operand, &expression_record)) return std::nullopt;
-    const auto expression_key = binary_expression ? std::to_string(expression_record.expression_id) : operand.name;
+    BoundExpressionAstRecord variable_binding;
+    if (bound_variable) {
+      if (!DecodeBoundVariableExpressionOperand(operand, &variable_binding)) return std::nullopt;
+      const auto exact = std::ranges::count_if(bound.native_relational.expressions,
+          [&](const auto& expression) {
+            const auto expected = MakeBoundVariableExpressionOperand(expression);
+            return expected && expected->name == operand.name &&
+                expected->canonical_value_body == operand.canonical_value_body;
+          });
+      if (exact != 1) return std::nullopt;
+    }
+    const auto expression_key = binary_expression ? std::to_string(expression_record.expression_id)
+        : bound_variable ? std::to_string(variable_binding.expression_id) : operand.name;
     const bool numeric_name = !operand.name.empty() &&
         std::ranges::all_of(operand.name, [](unsigned char ch) {
           return ch >= '0' && ch <= '9';
@@ -11780,13 +11793,16 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
         parameter_nodes.has_value() &&
         parameter_reference != parameter_nodes->references.end();
     const auto variable_reference =
-        binary_expression && variable_nodes.has_value()
+        bound_variable && variable_nodes.has_value()
             ? variable_nodes->references.find(expression_key)
             : (variable_nodes.has_value() ? variable_nodes->references.end()
                                           : decltype(variable_nodes->references.end()){});
     const bool is_variable_reference =
         variable_nodes.has_value() &&
         variable_reference != variable_nodes->references.end();
+    // No parser-local variable marker may fall through to ordinary SBLR
+    // encoding. The exact SBVN binding is mandatory, including for refusal.
+    if (bound_variable != is_variable_reference) return std::nullopt;
     std::string encoded_name;
     if (numeric_name && !is_literal_reference && !is_parameter_reference &&
         !is_variable_reference) {

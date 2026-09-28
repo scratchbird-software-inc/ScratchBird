@@ -362,6 +362,75 @@ void TestExpressionLayout() {
           wire::DecodeRelationalExpressionV1(encoded.data(), encoded.size(), &decoded) &&
           !decoded.literal_or_parameter_ref, "absent reference became present");
 }
+void TestBoundVariableHandoff() {
+  namespace parser = scratchbird::parser::sbsql;
+  parser::BoundExpressionAstRecord bound;
+  bound.expression_kind = parser::NativeExpressionAstKind::kVariable;
+  bound.expression_id = 0x01020304;
+  bound.result_descriptor_id = 0x01020305;
+  bound.structural_variable_occurrence_id = 0x0807060504030201;
+  const Bytes expected{1,0,0,0, 4,3,2,1, 5,3,2,1, 1,2,3,4,5,6,7,8};
+  const auto operand = parser::MakeRelationalExpressionOperand(bound);
+  Require(operand && operand->type == "bound_variable_expression_v1" &&
+          operand->name == "slot_16909060" && operand->value.empty() &&
+          operand->canonical_value_kind == 0 && operand->canonical_value_body == expected,
+          "variable lowering lost exact parser-local binding or invented a wire kind");
+  parser::BoundExpressionAstRecord decoded;
+  Require(parser::DecodeBoundVariableExpressionOperand(*operand, &decoded) &&
+          decoded.expression_kind == parser::NativeExpressionAstKind::kVariable &&
+          decoded.expression_id == bound.expression_id &&
+          decoded.result_descriptor_id == bound.result_descriptor_id &&
+          decoded.structural_variable_occurrence_id == bound.structural_variable_occurrence_id &&
+          !decoded.bound_name_uuid && !decoded.bound_function_uuid &&
+          !decoded.literal_kind && !decoded.literal_or_parameter_ref,
+          "variable handoff fabricated identity or lost occurrence binding");
+  const auto reject = [&](const parser::SblrOperand& bad) {
+    auto sentinel = bound;
+    Require(!parser::DecodeBoundVariableExpressionOperand(bad, &sentinel) &&
+            parser::MakeBoundVariableExpressionOperand(sentinel)->canonical_value_body == expected,
+            "invalid variable handoff accepted or partially published");
+  };
+  for (std::size_t length = 0; length < expected.size(); ++length) {
+    auto bad = *operand; bad.canonical_value_body.resize(length); reject(bad);
+  }
+  auto bad = *operand; bad.canonical_value_body.push_back(0); reject(bad);
+  for (unsigned offset : {0u,1u,2u,3u}) {
+    bad = *operand; bad.canonical_value_body[offset] ^= 0x80; reject(bad);
+  }
+  for (auto [offset, width] : {std::pair{4,4}, std::pair{8,4}, std::pair{12,8}}) {
+    bad = *operand; std::fill_n(bad.canonical_value_body.begin() + offset, width, 0); reject(bad);
+  }
+  bad = *operand; bad.name = "slot_1"; reject(bad);
+  bad = *operand; bad.name = "slot_016909060"; reject(bad);
+  bad = *operand; bad.value = "@v"; reject(bad);
+  bad = *operand; bad.canonical_value_kind = 214; reject(bad);
+  bad = *operand; bad.type = "relational_expression_v2"; reject(bad);
+  for (unsigned mutation = 0; mutation < 13; ++mutation) {
+    auto invalid = bound;
+    switch (mutation) {
+      case 0: invalid.expression_kind = parser::NativeExpressionAstKind::kParameter; break;
+      case 1: invalid.expression_id = 0; break;
+      case 2: invalid.result_descriptor_id = 0; break;
+      case 3: invalid.structural_variable_occurrence_id = 0; break;
+      case 4: invalid.structural_literal_occurrence_id = 1; break;
+      case 5: invalid.structural_parameter_occurrence_id = 1; break;
+      case 6: invalid.literal_kind = parser::NativeLiteralAstKind::kNumeric; break;
+      case 7: invalid.bound_function_uuid = Id(1); break;
+      case 8: invalid.bound_name_uuid = Id(2); break;
+      case 9: invalid.canonical_operator_name = "="; break;
+      case 10: invalid.literal_or_parameter_ref = "@v"; break;
+      case 11: invalid.child_expression_ids = {1}; break;
+      case 12: invalid.literal_or_parameter_ref = ""; break;
+    }
+    Require(!parser::MakeBoundVariableExpressionOperand(invalid),
+            "contradictory variable AST was admitted");
+  }
+  Expression expression;
+  Require(!wire::DecodeRelationalExpressionV1(expected.data(), expected.size(), &expression) &&
+          !parser::DecodeRelationalExpressionOperand(*operand, &expression),
+          "parser-local variable became an ordinary engine expression");
+}
+
 void TestExpressionPlacementAndFaults() {
   auto expression = ExpressionFixture(); expression.expression_id = 1;
   const auto encoded = ExpressionOracle(expression);
@@ -5631,7 +5700,7 @@ int main() {
     TestBinaryTransactionRouting();
     TestNativeArtifactPublication();
     TestContextualDescriptorAgreement();
-    TestExpressionLayout(); TestExpressionPlacementAndFaults(); TestExpressionReservationFreeze();
+    TestExpressionLayout(); TestBoundVariableHandoff(); TestExpressionPlacementAndFaults(); TestExpressionReservationFreeze();
     TestNodeBinding();
     TestWindowInvocation();
     TestWindowDefinition();
