@@ -14,6 +14,10 @@ std::array<std::uint8_t, N> Bytes(std::uint8_t seed) {
   for (std::size_t i = 0; i < N; ++i) {
     out[i] = static_cast<std::uint8_t>(seed + i);
   }
+  if constexpr (N == 16) {
+    out[6] = (out[6] & 0x0f) | 0x70;
+    out[8] = (out[8] & 0x3f) | 0x80;
+  }
   return out;
 }
 

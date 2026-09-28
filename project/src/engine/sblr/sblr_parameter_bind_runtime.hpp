@@ -91,10 +91,14 @@ inline bool NonZero(const std::array<std::uint8_t, N>& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
-template <std::size_t N>
-inline bool PairValid(const std::array<std::uint8_t, N>& uuid,
+inline bool SystemUuidValid(const SblrParameterBindUuidV1& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
+
+inline bool PairValid(const SblrParameterBindUuidV1& uuid,
                       std::uint64_t generation) {
-  return NonZero(uuid) == (generation != 0);
+  return NonZero(uuid) ? generation != 0 && SystemUuidValid(uuid)
+                       : generation == 0;
 }
 
 template <std::size_t N>
@@ -141,24 +145,24 @@ inline SblrParameterBindSha256V1 Hash(const std::uint8_t* in,
 }
 
 inline bool RequestValid(const SblrParameterBindRequestV1& value) {
-  return NonZero(value.statement_receipt_uuid) && value.occurrence != 0 &&
+  return SystemUuidValid(value.statement_receipt_uuid) && value.occurrence != 0 &&
          value.catalog_generation != 0 && value.security_epoch != 0 &&
          value.resource_epoch != 0;
 }
 
 inline bool DescriptorShapeValid(
     const SblrParameterBindDescriptorV1& value) {
-  return NonZero(value.execution_uuid) &&
-         NonZero(value.statement_receipt_uuid) &&
-         NonZero(value.prepared_statement_uuid) &&
-         value.prepared_generation != 0 && NonZero(value.parameter_set_uuid) &&
+  return SystemUuidValid(value.execution_uuid) &&
+         SystemUuidValid(value.statement_receipt_uuid) &&
+         SystemUuidValid(value.prepared_statement_uuid) &&
+         value.prepared_generation != 0 && SystemUuidValid(value.parameter_set_uuid) &&
          value.parameter_set_generation != 0 &&
          NonZero(value.ordered_slot_table_sha256) &&
          PairValid(value.batch_uuid, value.batch_generation) &&
          PairValid(value.dynamic_package_uuid, value.dynamic_generation) &&
-         NonZero(value.catalog_snapshot_uuid) &&
+         SystemUuidValid(value.catalog_snapshot_uuid) &&
          value.catalog_generation != 0 && value.security_epoch != 0 &&
-         value.resource_epoch != 0 && NonZero(value.mga_snapshot_uuid) &&
+         value.resource_epoch != 0 && SystemUuidValid(value.mga_snapshot_uuid) &&
          value.executor_availability_generation != 0 &&
          !value.canonical_value_vector.empty() &&
          value.canonical_value_vector.size() <= kMaximumValueVectorBytes &&
@@ -167,15 +171,15 @@ inline bool DescriptorShapeValid(
 }
 
 inline bool ResultValid(const SblrParameterBindResultV1& value) {
-  return NonZero(value.execution_uuid) &&
-         NonZero(value.prepared_statement_uuid) &&
-         value.prepared_generation != 0 && NonZero(value.parameter_set_uuid) &&
+  return SystemUuidValid(value.execution_uuid) &&
+         SystemUuidValid(value.prepared_statement_uuid) &&
+         value.prepared_generation != 0 && SystemUuidValid(value.parameter_set_uuid) &&
          value.parameter_set_generation != 0 &&
          NonZero(value.ordered_slot_table_sha256) &&
          PairValid(value.batch_uuid, value.batch_generation) &&
          value.status >= 1 && value.status <= 2 &&
          value.publication_barrier == 1 &&
-         NonZero(value.bind_evidence_uuid);
+         SystemUuidValid(value.bind_evidence_uuid);
 }
 
 inline bool ValueVectorMatches(const SblrParameterBindDescriptorV1& value,
