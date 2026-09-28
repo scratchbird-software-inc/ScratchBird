@@ -5298,49 +5298,6 @@ SessionOperationResult HandleFinalizeVariableBinding(
   receipt_record->variable_binding_finalized = true;
   result.accepted = true;
   return result;
-#if 0
-  const auto table=scratchbird::engine::sblr::DecodeSblrVariableNodeTableV1(
-      decoded.canonical_sbvn.data(),decoded.canonical_sbvn.size());
-  if(!table.ok||table.table.nodes.size()!=frame->mappings.size())
-    return refuse("SBLR.OPERAND_INVALID","SBVN_mapping_count_mismatch");
-  for(const auto& node:table.table.nodes){if(node.parent_operand_ordinal==0||
-      node.parent_operand_ordinal>frame->mappings.size())return refuse("SBLR.OPERAND_INVALID","SBVN_ordinal_invalid");
-    const auto& mapping=frame->mappings[node.parent_operand_ordinal-1];
-    if(node.scope_uuid!=frame->scope_uuid.bytes||node.scope_generation!=frame->scope_generation||
-       node.frame_uuid!=frame->frame_uuid.bytes||node.frame_generation!=frame->frame_generation||
-       node.variable_descriptor_uuid!=IdentityArray(mapping.variable_descriptor_uuid)||
-       node.variable_descriptor_generation!=mapping.variable_descriptor_generation||
-       node.datatype_descriptor_uuid!=IdentityArray(mapping.datatype_descriptor_uuid)||
-       node.datatype_descriptor_generation!=mapping.datatype_descriptor_generation||
-       node.value_generation!=mapping.value_generation)return refuse("SBLR.VARIABLE.STALE","SBVN_registry_mismatch");}
-  auto context=EngineContextForSession(registry->sessions_by_uuid.at(
-      scratchbird::core::platform::Uuid{request.header.session_uuid}),engine_state,request);
-  scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity identity;
-  identity.executor_id=scratchbird::engine::internal_api::kSblrVariableExecutorId;
-  identity.opcode_code=scratchbird::engine::internal_api::kSblrVariableOpcodeCode;
-  identity.opcode_version=scratchbird::engine::internal_api::kSblrVariableOpcodeVersion;
-  identity.operand_descriptor_id=scratchbird::engine::internal_api::kSblrVariableOperandDescriptorId;
-  identity.result_descriptor_id=scratchbird::engine::internal_api::kSblrVariableResultDescriptorId;
-  identity.result_descriptor_version=scratchbird::engine::internal_api::kSblrVariableResultDescriptorVersion;
-  const auto availability=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(context,identity);
-  if(!availability.ok||!availability.snapshot.installed)return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","variable_executor_missing");
-  const auto issue_uuid=[](std::uint64_t salt){const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());const auto id=scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::object,now+salt);return id.ok()?std::string(reinterpret_cast<const char*>(id.value.value.bytes.data()), 16):std::string{};};
-  scratchbird::engine::sblr::SblrVariableAdmissionV1 admission;
-  const auto final_uuid=issue_uuid(1),token_uuid=issue_uuid(2);
-  admission.final_receipt_uuid=IdentityArray(final_uuid);admission.admission_token_uuid=IdentityArray(token_uuid);
-  admission.scope_uuid=decoded.scope_uuid;admission.scope_generation=decoded.scope_generation;
-  admission.frame_uuid=decoded.frame_uuid;admission.frame_generation=decoded.frame_generation;
-  admission.registry_snapshot_uuid=frame->registry_snapshot_uuid.bytes;
-  admission.registry_generation=frame->registry_generation;
-  admission.executor_availability_generation=availability.snapshot.generation;
-  admission.expires_at_monotonic_ns=1;
-  result.payload=scratchbird::engine::sblr::EncodeSblrVariableAdmissionV1(&admission);
-  if(result.payload.empty())return refuse("SBLR.EXECUTION_FAILED","SBVA_encoding_failed");
-  receipt_record->variable_final_receipt_uuid=final_uuid;
-  receipt_record->variable_admission_token_uuid=token_uuid;
-  receipt_record->variable_binding_sha256=admission.binding_sha256;
-  receipt_record->variable_binding_finalized=true;result.accepted=true;return result;
-#endif
 }
 
 SessionOperationResult HandleFinalizePreparedSblrParameter(

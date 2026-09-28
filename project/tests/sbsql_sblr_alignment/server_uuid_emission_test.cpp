@@ -152,6 +152,10 @@ int main() {
   ::close(descriptors[0]);int status=0;
   const bool waited=::waitpid(child,&status,0)==child;
   Check(received && waited && WIFEXITED(status) && WEXITSTATUS(status)==0,"child generation/read failed");
+  Check(std::is_sorted(parent_ids.begin(),parent_ids.end()),
+        "server runtime issuer did not preserve parent allocation order");
+  Check(std::is_sorted(child_ids.begin(),child_ids.end()),
+        "server runtime issuer did not preserve child allocation order");
   std::set<Id> parent_set(parent_ids.begin(),parent_ids.end());
   unsigned duplicates=0,cloned_suffixes=0;
   for(unsigned i=0;i<count;++i) {
@@ -171,8 +175,12 @@ int main() {
   });
   for(auto& worker:workers) worker.join();
   std::set<Id> all;
-  for(const auto& batch:batches) for(const auto& id:batch) {
-    Check(Valid(id),"concurrent server emission not binary UUIDv7");all.insert(id);
+  for(const auto& batch:batches) {
+    Check(std::is_sorted(batch.begin(),batch.end()),
+          "server runtime issuer did not preserve thread-local allocation order");
+    for(const auto& id:batch) {
+      Check(Valid(id),"concurrent server emission not binary UUIDv7");all.insert(id);
+    }
   }
   const auto concurrent_duplicates=threads*count-all.size();
   Check(concurrent_duplicates==0,"concurrent server reused binary UUID identities");

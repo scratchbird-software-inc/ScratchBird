@@ -12,7 +12,6 @@
 #include "core/uuid/uuid.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -183,22 +182,16 @@ std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size) {
 }
 
 std::array<std::uint8_t, 16> MakeUuidV7Bytes() {
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-  if (now < 0 || static_cast<std::uint64_t>(now) > 0x0000ffffffffffffULL) {
-    throw std::runtime_error("Server UUIDv7 clock is outside the canonical time range.");
-  }
-  // Core owns the generator state: thread-local, and reseeded in a forked
-  // process. A separate shared PRNG raced across channels and cloned its
-  // stream into children, producing duplicate real message/session identities.
-  const auto generated = core::uuid::GenerateEngineIdentityV7(
-      core::platform::UuidKind::object, static_cast<std::uint64_t>(now));
-  if (!generated.ok()) {
+  // Message/channel objects use Core's retained process-runtime allocation
+  // instance, including same-millisecond ordering, clock-regression refusal,
+  // bounded exhaustion and fresh fork state. Stateless random v7 generation
+  // does not implement that policy, even when each UUID is individually valid.
+  const auto issued = core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) {
     // Generation failures remain failures; never publish an all-zero identity.
     throw std::runtime_error("Server UUIDv7 generation failed.");
   }
-  return generated.value.value.bytes;
+  return issued->bytes;
 }
 
 bool IsZeroUuid(const std::array<std::uint8_t, 16>& uuid) {
