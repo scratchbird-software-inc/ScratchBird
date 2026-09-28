@@ -9,6 +9,7 @@
 #pragma once
 
 #include "nosql/nosql_physical_provider_contract.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <string>
@@ -28,7 +29,17 @@ enum class NoSqlApproxFilterKind {
   kRangeFilter,
 };
 
+enum class NoSqlApproxFilterIdentityRefusal {
+  kNone,
+  kInvalidRequestObject,
+  kInvalidBenchmarkObject,
+  kBenchmarkObjectMismatch,
+};
+
 struct NoSqlApproxFilterBenchmarkInput {
+  // The catalog object whose benchmark was measured. Candidate labels are
+  // local explain references and cannot supply or override this identity.
+  scratchbird::core::platform::Uuid object_uuid{};
   scratchbird::engine::internal_api::EngineNoSqlProviderFamily family =
       scratchbird::engine::internal_api::EngineNoSqlProviderFamily::kUnknown;
   NoSqlApproxFilterKind kind = NoSqlApproxFilterKind::kUnknown;
@@ -64,7 +75,7 @@ struct NoSqlApproxFilterBenchmarkInput {
 };
 
 struct NoSqlApproxFilterDecisionRequest {
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid{};
   std::vector<NoSqlApproxFilterBenchmarkInput> candidates;
 
   std::uint64_t min_net_benefit_units = 1;
@@ -85,6 +96,8 @@ struct NoSqlApproxFilterDecisionRequest {
 };
 
 struct NoSqlApproxFilterCandidateDecision {
+  scratchbird::core::platform::Uuid object_uuid{};
+  NoSqlApproxFilterIdentityRefusal identity_refusal = NoSqlApproxFilterIdentityRefusal::kNone;
   scratchbird::engine::internal_api::EngineNoSqlProviderFamily family =
       scratchbird::engine::internal_api::EngineNoSqlProviderFamily::kUnknown;
   NoSqlApproxFilterKind kind = NoSqlApproxFilterKind::kUnknown;
@@ -103,6 +116,7 @@ struct NoSqlApproxFilterCandidateDecision {
 };
 
 struct NoSqlApproxSelectedFilter {
+  scratchbird::core::platform::Uuid object_uuid{};
   scratchbird::engine::internal_api::EngineNoSqlProviderFamily family =
       scratchbird::engine::internal_api::EngineNoSqlProviderFamily::kUnknown;
   NoSqlApproxFilterKind kind = NoSqlApproxFilterKind::kUnknown;
@@ -115,6 +129,8 @@ struct NoSqlApproxSelectedFilter {
 };
 
 struct NoSqlApproxFilterDecisionResult {
+  scratchbird::core::platform::Uuid object_uuid{};
+  NoSqlApproxFilterIdentityRefusal identity_refusal = NoSqlApproxFilterIdentityRefusal::kNone;
   bool ok = false;
   bool fail_closed = true;
   std::string diagnostic_code;

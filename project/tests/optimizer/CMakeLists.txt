@@ -2727,8 +2727,15 @@ add_test(
   COMMAND optimizer_deficiency_odf_080_gate
 )
 set_tests_properties(optimizer_deficiency_odf_080_gate PROPERTIES
-  LABELS "optimizer_deficiency_odf_080_gate;ODF-080;optimizer_deficiency;optimizer;nosql;index;mga;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_odf_080_gate;ODF-080;optimizer_deficiency;optimizer;nosql;index;mga;benchmark_clean;mga_transaction_regression;binary_uuid"
 )
+
+add_executable(optimizer_native_approx_filter_identity_gate optimizer_native_approx_filter_identity_gate.cpp)
+target_compile_features(optimizer_native_approx_filter_identity_gate PRIVATE cxx_std_20)
+target_link_libraries(optimizer_native_approx_filter_identity_gate PRIVATE sb_engine_optimizer_contract_only)
+add_test(NAME optimizer_native_approx_filter_identity_gate COMMAND optimizer_native_approx_filter_identity_gate)
+set_tests_properties(optimizer_native_approx_filter_identity_gate PROPERTIES
+  LABELS "optimizer;nosql;binary_uuid;object_binding;cost_overflow")
 
 add_executable(
   optimizer_deficiency_odf_090_gate

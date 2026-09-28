@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -167,6 +168,9 @@ NoSqlApproxFilterCandidateDecision EvaluateCandidate(
   decision.row_security_recheck_required = request.row_security_recheck_required;
   decision.returns_final_rows = false;
   decision.diagnostic_code = "SB_NOSQL_APPROX_FILTER.NOT_SELECTED";
+  if (scratchbird::core::uuid::IsEngineIdentityUuid(input.object_uuid)) {
+    decision.object_uuid = input.object_uuid;
+  }
 
   AddEvidence(&decision,
               std::string("family=") +
@@ -176,8 +180,11 @@ NoSqlApproxFilterCandidateDecision EvaluateCandidate(
   AddEvidence(&decision, "candidate_only=true");
   AddEvidence(&decision, "approx_filter_metadata_only=true");
 
-  const auto filtered_cost =
-      input.filter_cost_units + input.exact_fallback_cost_units;
+  const bool filtered_cost_overflow = input.filter_cost_units >
+      std::numeric_limits<std::uint64_t>::max() - input.exact_fallback_cost_units;
+  const auto filtered_cost = filtered_cost_overflow
+      ? std::numeric_limits<std::uint64_t>::max()
+      : input.filter_cost_units + input.exact_fallback_cost_units;
   decision.net_benefit_units = SafeSub(input.baseline_cost_units,
                                        filtered_cost);
   AddEvidence(&decision,
@@ -201,6 +208,14 @@ NoSqlApproxFilterCandidateDecision EvaluateCandidate(
     return decision;
   };
 
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(input.object_uuid)) {
+    decision.identity_refusal = NoSqlApproxFilterIdentityRefusal::kInvalidBenchmarkObject;
+    return refuse("SB-OPT-0001", "benchmark_object_uuid_invalid");
+  }
+  if (input.object_uuid != request.object_uuid) {
+    decision.identity_refusal = NoSqlApproxFilterIdentityRefusal::kBenchmarkObjectMismatch;
+    return refuse("SB-OPT-0001", "benchmark_object_uuid_mismatch");
+  }
   if (!IsCoveredFamily(input.family)) {
     return refuse("SB_NOSQL_APPROX_FILTER.UNSUPPORTED_FAMILY",
                   "unsupported_family");
@@ -280,10 +295,14 @@ NoSqlApproxFilterCandidateDecision EvaluateCandidate(
   AddEvidence(&decision, "returns_final_rows=false");
   AddEvidence(&decision, "mga_finality_authority=engine_transaction_inventory");
 
-  if (decision.net_benefit_units < request.min_net_benefit_units) {
+  if (filtered_cost_overflow || decision.net_benefit_units == 0 ||
+      decision.net_benefit_units < request.min_net_benefit_units) {
     decision.diagnostic_code =
         "SB_NOSQL_APPROX_FILTER.INSUFFICIENT_BENEFIT";
     AddEvidence(&decision, "benefit_threshold_met=false");
+    if (filtered_cost_overflow) {
+      AddEvidence(&decision, "filtered_cost_saturated=true");
+    }
     return decision;
   }
 
@@ -319,6 +338,16 @@ NoSqlApproxFilterDecisionResult FailClosedWithEvidence(
   result.ok = false;
   result.fail_closed = true;
   result.diagnostic_code = std::move(code);
+  // Retain rejection evidence, but never publish a partially executable
+  // selection when the required family matrix could not be planned.
+  result.selected_filters.clear();
+  for (auto& candidate : result.candidate_decisions) {
+    if (candidate.selected) {
+      candidate.selected = false;
+      candidate.diagnostic_code = "SB_NOSQL_APPROX_FILTER.NOT_SELECTED";
+      AddEvidence(&candidate, "selection_retracted_request_refused=true");
+    }
+  }
   AddEvidence(&result, std::move(evidence));
   return result;
 }
@@ -357,20 +386,26 @@ std::vector<NoSqlApproxFilterKind> NoSqlApproxFilterCandidateKinds() {
 
 NoSqlApproxFilterDecisionResult EvaluateNoSqlApproxFilterDecision(
     const NoSqlApproxFilterDecisionRequest& request) {
-  if (request.object_uuid.empty()) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.OBJECT_REQUIRED",
-                  "object_required");
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.object_uuid)) {
+    auto result = Refuse("SB-OPT-0001", "request_object_uuid_invalid");
+    result.identity_refusal = NoSqlApproxFilterIdentityRefusal::kInvalidRequestObject;
+    return result;
   }
+  const auto refuse = [&request](std::string code, std::string evidence) {
+    auto result = Refuse(std::move(code), std::move(evidence));
+    result.object_uuid = request.object_uuid;
+    return result;
+  };
   if (!request.security_context_present) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.SECURITY_CONTEXT_REQUIRED",
+    return refuse("SB_NOSQL_APPROX_FILTER.SECURITY_CONTEXT_REQUIRED",
                   "security_context_required");
   }
   if (request.cluster_scope_requested && !request.cluster_authority_present) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.CLUSTER_AUTHORITY_REQUIRED",
+    return refuse("SB_NOSQL_APPROX_FILTER.CLUSTER_AUTHORITY_REQUIRED",
                   "cluster_authority_required");
   }
   if (!request.security_snapshot_bound || !request.grants_proven) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.SECURITY_PROOF_REQUIRED",
+    return refuse("SB_NOSQL_APPROX_FILTER.SECURITY_PROOF_REQUIRED",
                   "security_snapshot_or_grants_proof_required");
   }
   if (request.parser_or_reference_authority ||
@@ -378,22 +413,23 @@ NoSqlApproxFilterDecisionResult EvaluateNoSqlApproxFilterDecision(
       request.provider_claims_visibility_authority ||
       request.client_claims_visibility_or_finality_authority ||
       request.write_ahead_log_claims_finality_authority) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.UNSAFE_AUTHORITY",
+    return refuse("SB_NOSQL_APPROX_FILTER.UNSAFE_AUTHORITY",
                   "unsafe_authority_claim_refused");
   }
   if (!request.engine_mga_authoritative ||
       !request.exact_fallback_available ||
       !request.row_mga_recheck_required ||
       !request.row_security_recheck_required) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.RECHECK_AUTHORITY_REQUIRED",
+    return refuse("SB_NOSQL_APPROX_FILTER.RECHECK_AUTHORITY_REQUIRED",
                   "engine_mga_exact_fallback_and_security_recheck_required");
   }
   if (request.candidates.empty()) {
-    return Refuse("SB_NOSQL_APPROX_FILTER.CANDIDATES_REQUIRED",
+    return refuse("SB_NOSQL_APPROX_FILTER.CANDIDATES_REQUIRED",
                   "candidates_required");
   }
 
   NoSqlApproxFilterDecisionResult result;
+  result.object_uuid = request.object_uuid;
   result.ok = true;
   result.fail_closed = false;
   result.diagnostic_code = "SB_NOSQL_APPROX_FILTER.SELECTED";
@@ -411,6 +447,7 @@ NoSqlApproxFilterDecisionResult EvaluateNoSqlApproxFilterDecision(
     if (decision.selected) {
       selected_by_family[candidate.family] = true;
       NoSqlApproxSelectedFilter selected;
+      selected.object_uuid = decision.object_uuid;
       selected.family = decision.family;
       selected.kind = decision.kind;
       selected.candidate_id = decision.candidate_id;

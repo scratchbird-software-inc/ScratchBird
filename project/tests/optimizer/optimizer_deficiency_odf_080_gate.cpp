@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql_approx_filter_decision.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -79,6 +80,7 @@ opt::NoSqlApproxFilterBenchmarkInput Candidate(
     api::EngineNoSqlProviderFamily family,
     opt::NoSqlApproxFilterKind kind) {
   opt::NoSqlApproxFilterBenchmarkInput candidate;
+  candidate.object_uuid = scratchbird::tests::FixtureUuid(2207, 80);
   candidate.family = family;
   candidate.kind = kind;
   candidate.candidate_id = CandidateId(family, kind);
@@ -131,7 +133,7 @@ std::vector<opt::NoSqlApproxFilterBenchmarkInput> AllCandidates() {
 
 opt::NoSqlApproxFilterDecisionRequest BaseRequest() {
   opt::NoSqlApproxFilterDecisionRequest request;
-  request.object_uuid = "019df080-0000-7000-8000-000000000080";
+  request.object_uuid = scratchbird::tests::FixtureUuid(2207, 80);
   request.candidates = AllCandidates();
   request.min_net_benefit_units = 100;
   request.security_context_present = true;
@@ -216,6 +218,8 @@ void AllSixFamiliesBenchmarkAndSelectSafeFilters() {
   std::set<std::string> selected_families;
   std::set<std::string> selected_kinds;
   for (const auto& selected : result.selected_filters) {
+    Require(selected.object_uuid == scratchbird::tests::FixtureUuid(2207, 80),
+            "ODF-080 selected filter lost exact object identity");
     selected_families.insert(api::EngineNoSqlProviderFamilyName(selected.family));
     selected_kinds.insert(opt::NoSqlApproxFilterKindName(selected.kind));
     Require(selected.exact_fallback_required,
