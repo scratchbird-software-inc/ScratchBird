@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/transactional_index_provider.hpp"
+#include "crud_support/crud_index_evidence.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
 
@@ -534,8 +535,10 @@ MgaOrderedBtreeTransactionalIndexProvider::ResolveVisibleEntry(
   result.visible_entry_count = lookup.rows.size();
   result.rows = std::move(lookup.rows);
   AddProviderEvidence(context_, &index, "ResolveVisibleEntry", &result.evidence);
-  result.evidence.push_back({"transactional_index_resolution_evidence",
-                             std::move(lookup.index_evidence_id)});
+  if (lookup.index_used) {
+    AppendCrudIndexEvidence(&result.evidence, lookup.index_evidence_id,
+                            "transactional_index_resolution_evidence");
+  }
   result.evidence.insert(result.evidence.end(), lookup.evidence.begin(), lookup.evidence.end());
   return result;
 }

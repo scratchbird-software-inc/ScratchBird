@@ -684,6 +684,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   endif()
 
 
+  add_executable(crud_index_evidence_conformance crud_index_evidence_conformance.cpp)
+  target_compile_features(crud_index_evidence_conformance PRIVATE cxx_std_23)
+  target_link_libraries(crud_index_evidence_conformance
+    PRIVATE sb_engine_internal_api sb_wire_typed_update_carrier_codec)
+  add_test(NAME crud_index_evidence_conformance COMMAND crud_index_evidence_conformance)
+  set_tests_properties(crud_index_evidence_conformance PROPERTIES
+    LABELS "binary_uuid;database_lifecycle_storage;mga_transaction_regression;typed_update;negative_controls")
+
   add_executable(datatype_storage_identity_conformance
     datatype_storage_identity_conformance.cpp)
   target_compile_features(datatype_storage_identity_conformance PRIVATE cxx_std_23)

@@ -14,6 +14,7 @@
 #include "core/platform/savepoint_crash_injection.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_evidence.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "dml/constraint_enforcement.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
@@ -1710,7 +1711,7 @@ UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
         }
         stream.rows_ready = true;
         stream.evidence.push_back({"update_row_candidate_stream", "indexed_predicate"});
-        stream.evidence.push_back({"index_lookup", indexed.index_evidence_id});
+        AppendCrudIndexEvidence(&stream.evidence, indexed.index_evidence_id);
         stream.evidence.push_back({"physical_index_tree_available", "false"});
         stream.evidence.push_back({"irc060_required_for_physical_scan", "true"});
         const auto locator_plan =
@@ -2064,7 +2065,7 @@ DeleteTargetCandidateStream BuildDeleteTargetCandidateStream(
         }
         stream.rows_ready = true;
         stream.evidence.push_back({"delete_row_candidate_stream", "indexed_predicate"});
-        stream.evidence.push_back({"index_lookup", indexed.index_evidence_id});
+        AppendCrudIndexEvidence(&stream.evidence, indexed.index_evidence_id);
         stream.evidence.push_back({"physical_index_tree_available", "false"});
         stream.evidence.push_back({"irc060_required_for_physical_scan", "true"});
         const auto locator_plan =

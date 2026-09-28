@@ -8,6 +8,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -51,7 +54,7 @@ using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -106,33 +109,18 @@ const platform::Uuid& PartialIndexUuid() {
   return value;
 }
 
-std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sbsql_index_family_runtime_closure_" +
-          std::to_string(CurrentUnixMillis()) + ".sbdb");
-}
-
-void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.crud_events",
-                            ".sb.domain_events",
-                            ".sb.name_events",
-                            ".sb.transaction_inventory",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
+api::EngineRequestContext g_owner_context;
+std::unique_ptr<scratchbird::tests::FixtureEngineSession> g_session;
+struct FixtureRoot {
+  std::filesystem::path root;
+  FixtureRoot() {
+    const auto candidate = std::filesystem::temp_directory_path() /
+        ("sbidx_" + uuid::UuidToString(api::GenerateCrudEngineUuid("object")));
+    if (!std::filesystem::create_directory(candidate)) throw std::runtime_error("fixture root collision");
+    root = candidate;
   }
-}
-
+  ~FixtureRoot() { g_session.reset(); std::error_code ignored; std::filesystem::remove_all(root, ignored); }
+};
 platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
@@ -140,37 +128,25 @@ platform::Uuid CreateMinimalDatabase(const std::filesystem::path& path) {
   create.filespace_uuid = GeneratedUuid(UuidKind::filespace, 2);
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779811300002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "index family runtime database create failed");
+  g_owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
                                         const platform::Uuid& database_uuid) {
-  api::EngineRequestContext context;
+  auto context = g_owner_context;
+  Require(context.database_path == path.string() && context.database_uuid == database_uuid,
+          "bootstrap fixture database authority mismatch");
   context.request_id = "sbsql-index-family-runtime-closure";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = GeneratedIdentity(UuidKind::object, 11);
-  context.principal_uuid = GeneratedIdentity(UuidKind::principal, 12);
   context.current_schema_uuid = SchemaUuid();
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  context.trace_tags.push_back("CBQ-005");
   return context;
 }
 
@@ -292,8 +268,28 @@ void CreateTable(const api::EngineRequestContext& context) {
   request.table_columns.push_back(Column("id", "int64", 0));
   request.table_columns.push_back(Column("name", "text", 1));
   request.table_columns.push_back(Column("status", "text", 2));
+  for (auto& column : request.table_columns)
+    scratchbird::tests::BindFixtureColumnDatatype(context,
+        column.descriptor.canonical_type_name == "int64"
+          ? scratchbird::core::datatypes::CanonicalTypeId::int64
+          : scratchbird::core::datatypes::CanonicalTypeId::character, column);
   auto result = api::EngineCreateTable(request);
   RequireOk(result, "create table failed for index family runtime closure");
+  const auto storage = api::LoadMgaRelationStorageDescriptor(context, TableUuid());
+  Require(storage.ok && storage.descriptor.columns.size() == request.table_columns.size(),
+          "published index fixture column cohort missing");
+  for (std::size_t i = 0; i < request.table_columns.size(); ++i) {
+    const auto& expected = request.table_columns[i];
+    const auto& actual = storage.descriptor.columns[i];
+    Require(actual.column_uuid == expected.requested_column_uuid &&
+                actual.value_descriptor.descriptor_uuid == expected.descriptor.descriptor_uuid &&
+                actual.value_descriptor.datatype_descriptor_uuid == expected.descriptor.datatype_descriptor_uuid &&
+                actual.value_descriptor.datatype_descriptor_generation == expected.descriptor.datatype_descriptor_generation &&
+                actual.value_descriptor.type_uuid == expected.descriptor.type_uuid &&
+                uuid::IsEngineIdentityUuid(actual.column_uuid) &&
+                uuid::IsEngineIdentityUuid(actual.value_descriptor.descriptor_uuid),
+            "published index fixture native column identities changed");
+  }
 }
 
 void InsertRows(const api::EngineRequestContext& context,
@@ -794,25 +790,25 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
                                                                         TypedValue("int64", "3")}));
   RequireOk(selected, "btree range select failed");
   Require(selected.visible_count == 2 && HasEvidenceKind(selected, "index_lookup") &&
-              EvidenceContains(selected, "index_lookup", "index_family=btree"),
+              EvidenceContains(selected, "index_lookup.index_family", "btree"),
           "btree range select did not use index evidence");
 
   selected = SelectRows(context, Predicate("column_in_list", "status", {TypedValue("text", "active")}));
   RequireOk(selected, "bitmap in-list select failed");
   Require(selected.visible_count == 2 && HasEvidenceKind(selected, "index_lookup") &&
-              EvidenceContains(selected, "index_lookup", "index_family=bitmap"),
+              EvidenceContains(selected, "index_lookup.index_family", "bitmap"),
           "bitmap select did not use index evidence");
 
   selected = SelectRows(context, Predicate("expression_equals", "lower:name", {TypedValue("text", "bravo")}));
   RequireOk(selected, "expression index select failed");
   Require(selected.visible_count == 1 && HasEvidenceKind(selected, "index_lookup") &&
-              EvidenceContains(selected, "index_lookup", "index_family=expression"),
+              EvidenceContains(selected, "index_lookup.index_family", "expression"),
           "expression index select did not use index evidence");
 
   selected = SelectRows(context, Predicate("partial_index_probe", "status=active"));
   RequireOk(selected, "partial index probe failed");
   Require(selected.visible_count == 2 && HasEvidenceKind(selected, "index_lookup") &&
-              EvidenceContains(selected, "index_lookup", "index_family=partial"),
+              EvidenceContains(selected, "index_lookup.index_family", "partial"),
           "partial index probe did not use index evidence");
 
   selected = SelectRows(context, Predicate("column_equals", "id", {TypedValue("int64", "1")}));
@@ -830,15 +826,19 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("native-index-family-runtime");
   RequireCoreIndexManagementAndStatistics();
 
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
+  FixtureRoot fixture;
+  const auto path = fixture.root / "index.sbdb";
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginTransaction(EngineContext(path, database_uuid));
   CreateSchema(context);
   CreateTable(context);
-  RequireRuntimeIndexEntriesAndScans(context);
+  g_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(g_owner_context);
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, context);
+  RequireRuntimeIndexEntriesAndScans(statement.context);
+  std::cout << "native_index_family_runtime_closure=passed\n";
   return EXIT_SUCCESS;
-}
+} catch (const std::exception& e) { std::cerr << e.what() << "\\n"; return EXIT_FAILURE; }

@@ -10,6 +10,7 @@
 #include "dml/dml_target_access_plan.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_evidence.hpp"
 #include "crud_support/native_value_payload.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -1278,7 +1279,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     result.result_shape = CrudRowsToResultShape(rows);
   }
   mark_select_phase("result_shape");
-  if (!index_uuid_used.empty()) { result.evidence.push_back({"index_lookup", index_uuid_used}); }
+  if (!index_uuid_used.empty()) { AppendCrudIndexEvidence(&result.evidence, index_uuid_used); }
   if (!row_scan_predicate.empty()) { result.evidence.push_back({"row_scan_predicate", row_scan_predicate}); }
   result.evidence.insert(result.evidence.end(),
                          index_lookup_evidence.begin(),

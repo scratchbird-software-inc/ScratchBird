@@ -4375,6 +4375,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   target_link_libraries(
     sbsql_index_family_runtime_closure_conformance
     PRIVATE
+      sb_engine
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr

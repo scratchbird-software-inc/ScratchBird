@@ -249,15 +249,20 @@ bool HasEvidence(const api::EngineApiResult& result, std::string_view kind,
 }
 
 bool HasIndexEvidence(const api::EngineApiResult& result, const api::EngineUuid& id) {
+  bool identity = false, family = false, profile = false;
   for (const auto& evidence : result.evidence) {
-    const auto* bytes = std::get_if<std::string>(&evidence.evidence_id);
-    api::BinaryCatalogMetadata decoded;
-    if (evidence.evidence_kind == "index_lookup" && bytes &&
-        api::DecodeBinaryCatalogMetadata(*bytes, "crud.index_evidence.v2", &decoded) &&
-        decoded.identities.contains("index_uuid") && decoded.identities.at("index_uuid") == id &&
-        decoded.text.at("index_family") == "btree" && decoded.text.at("index_profile") == "btree") return true;
+    if (evidence.evidence_kind == "index_lookup") {
+      const auto* value = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+      if (!value || *value != id || identity) return false;
+      identity = true;
+    }
+    const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+    if (evidence.evidence_kind == "index_lookup.index_family")
+      family = text && *text == "btree";
+    if (evidence.evidence_kind == "index_lookup.index_profile")
+      profile = text && *text == "btree";
   }
-  return false;
+  return identity && family && profile;
 }
 
 bool EvidenceContains(const api::EngineApiResult& result,

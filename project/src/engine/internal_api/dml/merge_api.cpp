@@ -9,6 +9,7 @@
 #include "dml/merge_api.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "crud_support/crud_index_evidence.hpp"
 #include "catalog/binary_view_options.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -491,8 +492,8 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
           0);
       evidence->insert(evidence->end(), indexed.evidence.begin(), indexed.evidence.end());
       evidence->push_back({"merge_row_candidate_stream", "indexed_predicate"});
-      evidence->push_back({"index_lookup", indexed.index_evidence_id});
       if (indexed.index_used) {
+        AppendCrudIndexEvidence(evidence, indexed.index_evidence_id);
         evidence->push_back({"physical_index_tree_available", "false"});
         evidence->push_back({"irc060_required_for_physical_scan", "true"});
         const auto locator_plan =
