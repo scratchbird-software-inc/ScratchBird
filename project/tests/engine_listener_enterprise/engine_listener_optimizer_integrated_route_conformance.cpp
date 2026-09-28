@@ -232,7 +232,7 @@ opt::AccessPathPlanningRequest AccessRequest(const FixtureIds& ids) {
 opt::BoundOptimizerRequest BoundRequest(const FixtureIds& ids) {
   opt::BoundOptimizerRequest request;
   request.context.request_uuid =
-      UuidBytes(platform::UuidKind::object, 1771400012000ull, 0x53);
+      GeneratedUuid(platform::UuidKind::object, 1771400012000ull, 0x53).value;
   request.context.operation_id = ids.operation_id;
   request.context.sblr_digest = ids.sblr_digest;
   request.context.descriptor_set_digest = ids.descriptor_digest;

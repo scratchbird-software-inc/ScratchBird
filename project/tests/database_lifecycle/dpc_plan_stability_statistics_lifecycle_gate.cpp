@@ -774,7 +774,7 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
           "DPC-010 EXPLAIN claimed parser finality authority");
 
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "dpc010-optimizer-request";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 3);
   request.context.operation_id = "query.scan";
   request.context.sblr_digest =
       "dpc010-bound-sblr-v1";
@@ -841,7 +841,7 @@ void TestExplainAndOptimizerEvidence(CrudFixture& fixture) {
           "DPC-010 optimizer explain exposed parser finality authority");
 
   auto parser_claim_request = request;
-  parser_claim_request.context.request_uuid = "dpc010-parser-claim-request";
+  parser_claim_request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 4);
   parser_claim_request.context.parser_owned_claims_present = true;
   const auto refused = opt::OptimizeBoundRequest(parser_claim_request);
   Require(!refused.ok, "DPC-010 parser-owned optimizer claim was accepted");

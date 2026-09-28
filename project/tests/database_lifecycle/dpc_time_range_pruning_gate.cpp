@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "observability/performance_optimization_surface.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "optimizer_explain.hpp"
 #include "time_range_summary_pruning.hpp"
 #include "uuid.hpp"
@@ -432,7 +433,7 @@ void ValidateExactFallbacks() {
 
 opt::BoundOptimizerRequest ExplainRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "request-dpc042-redacted";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 2);
   request.context.operation_id = "dml.select_rows";
   request.context.sblr_digest = "sblr:dpc042-bound-time-read";
   request.context.descriptor_set_digest = "descriptor:dpc042";

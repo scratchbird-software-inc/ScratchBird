@@ -55,7 +55,7 @@ plan::LogicalPlan LogicalPlanWithPolicy() {
 
 opt::BoundOptimizerRequest Request() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "opch040.request";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 13);
   request.context.operation_id = "public_sql.select.join";
   request.context.sblr_digest = "sblr:opch040";
   request.context.descriptor_set_digest = "desc:opch040";

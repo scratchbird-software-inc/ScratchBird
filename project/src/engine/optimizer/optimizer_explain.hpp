@@ -20,7 +20,8 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_EXPLAIN_EVIDENCE_MODEL
 struct OptimizerExplainDocument {
   std::string schema_version = "optimizer_explain_v1";
-  std::string request_uuid;
+  scratchbird::core::platform::Uuid request_uuid{};
+  OptimizerRequestIdentityRefusal request_identity_refusal = OptimizerRequestIdentityRefusal::kNone;
   std::string operation_id;
   std::string plan_id;
   // SEARCH_KEY: OPCH_RUNTIME_PLAN_PAYLOAD_EXPLAIN_PARITY

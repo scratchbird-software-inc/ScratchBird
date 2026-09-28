@@ -239,7 +239,17 @@ OptimizerRequestValidation ValidateBoundOptimizerRequest(const BoundOptimizerReq
   auto facts = request.authority_facts;
   std::vector<std::string> diagnostics;
 
-  RequireString(request.context.request_uuid, "request_uuid", &facts, &diagnostics);
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.context.request_uuid)) {
+    const bool missing = request.context.request_uuid.is_nil();
+    validation.request_identity_refusal = missing ? OptimizerRequestIdentityRefusal::kMissing
+                                                 : OptimizerRequestIdentityRefusal::kMalformed;
+    facts.push_back(MakeAuthorityFact("request_uuid", missing ? OptimizerAuthorityStatus::kMissing
+                                                              : OptimizerAuthorityStatus::kRejected,
+                                      true, "request identity must be a native UUIDv7"));
+    diagnostics.push_back("SB-OPT-0001");
+  } else {
+    facts.push_back(MakeAuthorityFact("request_uuid", OptimizerAuthorityStatus::kPresent, true));
+  }
   RequireString(request.context.operation_id, "operation_id", &facts, &diagnostics);
   RequireString(request.context.sblr_digest, "sblr_digest", &facts, &diagnostics);
   RequireString(request.context.descriptor_set_digest, "descriptor_set_digest", &facts, &diagnostics);
@@ -306,7 +316,9 @@ BoundOptimizerResult MakeRefusedOptimizerResult(const BoundOptimizerRequest& req
 BoundOptimizerResult OptimizeBoundRequest(const BoundOptimizerRequest& request) {
   const auto validation = ValidateBoundOptimizerRequest(request);
   if (!validation.ok) {
-    return MakeRefusedOptimizerResult(request, "SB_OPT_REQUEST_REFUSED", validation.diagnostics);
+    return MakeRefusedOptimizerResult(request,
+        validation.request_identity_refusal == OptimizerRequestIdentityRefusal::kNone
+            ? "SB_OPT_REQUEST_REFUSED" : "SB-OPT-0001", validation.diagnostics);
   }
 
   auto optimized = request.catalog_access_path_request

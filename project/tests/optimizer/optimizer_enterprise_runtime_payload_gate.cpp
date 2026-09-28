@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_explain.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -54,7 +55,7 @@ plan::LogicalPlan Logical() {
 opt::BoundOptimizerRequest Request() {
   // SEARCH_KEY: OEIC_RUNTIME_PAYLOAD_EXPLAIN_ENTERPRISE
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "request:oeic050";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 12);
   request.context.operation_id = "dml.select_rows";
   request.context.sblr_digest = "sblr:oeic050";
   request.context.descriptor_set_digest = "descriptor:oeic050";

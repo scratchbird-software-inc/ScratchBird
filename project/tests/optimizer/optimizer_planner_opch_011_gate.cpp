@@ -47,7 +47,7 @@ plan::LogicalPlan SafeLogicalPlan() {
 
 opt::BoundOptimizerRequest SafeRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "opch011.request";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 10);
   request.context.operation_id = "public_sql.select.point_lookup";
   request.context.sblr_digest = "sblr:opch011-safe-policy";
   request.context.descriptor_set_digest = "desc:opch011";

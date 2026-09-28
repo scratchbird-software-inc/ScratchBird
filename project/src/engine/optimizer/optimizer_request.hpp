@@ -11,6 +11,7 @@
 #include "access_path.hpp"
 #include "access_path_full.hpp"
 #include "statistics_catalog.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -36,8 +37,14 @@ struct OptimizerAuthorityFact {
   std::string detail;
 };
 
+enum class OptimizerRequestIdentityRefusal {
+  kNone,
+  kMissing,
+  kMalformed,
+};
+
 struct OptimizerRequestContext {
-  std::string request_uuid;
+  scratchbird::core::platform::Uuid request_uuid{};
   std::string operation_id;
   std::string sblr_digest;
   std::string descriptor_set_digest;
@@ -71,6 +78,7 @@ struct BoundOptimizerRequest {
 
 struct OptimizerRequestValidation {
   bool ok = false;
+  OptimizerRequestIdentityRefusal request_identity_refusal = OptimizerRequestIdentityRefusal::kNone;
   std::vector<std::string> diagnostics;
   std::vector<OptimizerAuthorityFact> authority_facts;
 };

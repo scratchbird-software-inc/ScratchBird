@@ -63,7 +63,7 @@ plan::LogicalPlan SafeLogicalPlan() {
 
 opt::BoundOptimizerRequest SafeRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "opch030.request";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 11);
   request.context.operation_id = "opch030.select.customer";
   request.context.sblr_digest = "sblr:opch030:uuid-bound";
   request.context.descriptor_set_digest = "descriptor:customer:v030";

@@ -161,7 +161,7 @@ opt::AccessPathPlanningRequest CatalogAccessRequest(
 
 opt::BoundOptimizerRequest PublicSqlRequest(const plan::CanonicalPlannerUuid& relation_uuid) {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "orh010.request";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 6);
   request.context.operation_id = "public_sql.select.point_lookup";
   request.context.sblr_digest = "sblr:public-sql-point-lookup";
   request.context.descriptor_set_digest = "desc:customer_lookup";

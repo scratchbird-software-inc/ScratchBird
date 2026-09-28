@@ -183,6 +183,15 @@ void RenderMgaPageFinalityEvidence(
 OptimizerExplainDocument BuildOptimizerExplainDocument(const BoundOptimizerRequest& request,
                                                        const BoundOptimizerResult& result) {
   OptimizerExplainDocument document;
+  const auto validation = ValidateBoundOptimizerRequest(request);
+  document.authority_facts = validation.authority_facts;
+  document.request_identity_refusal = validation.request_identity_refusal;
+  if (document.request_identity_refusal != OptimizerRequestIdentityRefusal::kNone) {
+    // Invalid request identity cannot label a selected candidate, even when
+    // the caller supplies an otherwise successful result from another request.
+    document.diagnostics = validation.diagnostics;
+    return document;
+  }
   document.request_uuid = request.context.request_uuid;
   document.operation_id = request.context.operation_id;
   document.plan_id = result.plan_id;
@@ -195,7 +204,6 @@ OptimizerExplainDocument BuildOptimizerExplainDocument(const BoundOptimizerReque
   document.metric_snapshot_id = request.context.metric_snapshot_id;
   document.candidates = result.candidates;
   document.diagnostics = result.diagnostics;
-  document.authority_facts = ValidateBoundOptimizerRequest(request).authority_facts;
   AddUnique(&document.invalidation_dependencies,
             "catalog_epoch=" + std::to_string(request.context.catalog_epoch));
   AddUnique(&document.invalidation_dependencies,
@@ -276,7 +284,8 @@ OptimizerExplainDocument BuildOptimizerExplainDocument(const BoundOptimizerReque
       }
     }
   }
-  AddUnique(&document.route_evidence, "request_uuid=" + request.context.request_uuid);
+  // request_uuid is retained once in its native field, not duplicated as a
+  // formatted string in internal route evidence.
   AddUnique(&document.route_evidence, "operation_id=" + request.context.operation_id);
   AddUnique(&document.route_evidence,
             "executor_capability_set_id=" + request.context.executor_capability_set_id);
@@ -344,7 +353,15 @@ std::string RenderOptimizerExplainJson(const OptimizerExplainDocument& document)
   std::ostringstream out;
   out << "{\n";
   out << "  \"schema_version\": \"" << JsonEscape(document.schema_version) << "\",\n";
-  out << "  \"request_uuid\": \"" << JsonEscape(document.request_uuid) << "\",\n";
+  // Presentation boundary only. Planning, comparison and retained evidence
+  // never consume this formatted JSON identity.
+  out << "  \"request_uuid\": ";
+  if (scratchbird::core::uuid::IsEngineIdentityUuid(document.request_uuid)) {
+    out << '"' << scratchbird::core::uuid::UuidToString(document.request_uuid) << '"';
+  } else {
+    out << "null";
+  }
+  out << ",\n";
   out << "  \"operation_id\": \"" << JsonEscape(document.operation_id) << "\",\n";
   out << "  \"plan_id\": \"" << JsonEscape(document.plan_id) << "\",\n";
   out << "  \"plan_hash\": \"" << JsonEscape(document.plan_hash) << "\",\n";

@@ -212,7 +212,7 @@ node.required_object_uuids.push_back(LifecycleFixtureId(1));
 
 opt::BoundOptimizerRequest BoundRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Id("request.lookup");
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 7);
   request.context.operation_id = Id("operation.lookup");
   request.context.sblr_digest = "sha256:sblr-pcr062-lookup";
   request.context.descriptor_set_digest = "sha256:descriptor-pcr062-customer";

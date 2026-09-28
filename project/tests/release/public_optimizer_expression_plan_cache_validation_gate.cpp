@@ -185,7 +185,7 @@ plan::LogicalPlan LogicalPlan() {
 
 opt::BoundOptimizerRequest BoundRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Label("request.customer_lower_lookup");
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 9);
   request.context.operation_id = Label("operation.customer_lower_lookup");
   request.context.sblr_digest = "sha256:sblr-pcr063-customer-lower-lookup";
   request.context.descriptor_set_digest = "sha256:descriptor-pcr063-customer";

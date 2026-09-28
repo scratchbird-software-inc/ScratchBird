@@ -229,7 +229,7 @@ bool BoundRequestUsesCatalogBackedMainPathAndBuildsPhysicalPlan() {
   };
 
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = "request.bound";
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 5);
   request.context.operation_id = "dml.select_rows";
   request.context.sblr_digest = "sblr.bound";
   request.context.descriptor_set_digest = "desc:int64";

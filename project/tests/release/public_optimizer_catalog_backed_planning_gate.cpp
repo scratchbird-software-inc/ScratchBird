@@ -161,7 +161,7 @@ opt::AccessPathPlanningRequest AccessRequest() {
 
 opt::BoundOptimizerRequest BoundRequest() {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Label("request.customer_lookup");
+  request.context.request_uuid = scratchbird::tests::FixtureUuid(2209, 8);
   request.context.operation_id = Label("operation.customer_lookup");
   request.context.sblr_digest = "sha256:sblr-pcr061-customer-lookup";
   request.context.descriptor_set_digest = Label("descriptor.customer");

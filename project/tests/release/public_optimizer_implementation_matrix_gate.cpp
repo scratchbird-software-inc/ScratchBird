@@ -371,7 +371,7 @@ AccessScenario ScenarioFor(const opt::EnterpriseOptimizerSurfaceEntry& entry) {
 opt::BoundOptimizerRequest BoundRequestFor(std::string_view surface_id,
                                            const opt::AccessPathPlanningRequest& access_request) {
   opt::BoundOptimizerRequest request;
-  request.context.request_uuid = Id(surface_id, "request");
+  request.context.request_uuid = FixtureIdentity(surface_id, "request");
   request.context.operation_id = Id(surface_id, "operation");
   request.context.sblr_digest = "sha256:sblr-pcr060-" + std::string(surface_id);
   request.context.descriptor_set_digest = DescriptorDigest(surface_id);
