@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_adaptive_feedback_enterprise.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+
+#include <type_traits>
 
 #include <cstdlib>
 #include <iostream>
@@ -90,10 +93,10 @@ opt::AdaptiveCardinalityFeedbackRequest AdaptiveRequest() {
   return request;
 }
 
-opt::EnterpriseAdaptiveFeedbackApplyRequest ApplyRequest(std::string uuid) {
+opt::EnterpriseAdaptiveFeedbackApplyRequest ApplyRequest(scratchbird::core::platform::Uuid uuid) {
   opt::EnterpriseAdaptiveFeedbackApplyRequest request;
-  request.feedback_uuid = std::move(uuid);
-  request.scope_uuid = "scope:optimizer:enterprise";
+  request.feedback_uuid = uuid;
+  request.scope_uuid = scratchbird::tests::FixtureUuid(0x030, 10);
   request.bind_profile_digest = "bind-profile:customer-orders";
   request.predicate_digest = "predicate:customer-orders";
   request.metric_snapshot_digest = "metric-snapshot:adaptive:1";
@@ -110,8 +113,8 @@ opt::EnterpriseAdaptiveFeedbackApplyRequest ApplyRequest(std::string uuid) {
 bool EnterpriseAdaptiveFeedbackRecordsAndAgesScopedFeedback() {
   opt::EnterpriseAdaptiveFeedbackStore store;
   const auto result = opt::ApplyEnterpriseAdaptiveFeedback(
-      ApplyRequest("feedback.enterprise.1"), &store);
-  const auto found = store.Find("feedback.enterprise.1");
+      ApplyRequest(scratchbird::tests::FixtureUuid(0x030, 1)), &store);
+  const auto found = store.Find(scratchbird::tests::FixtureUuid(0x030, 1));
   const auto snapshot = store.Snapshot();
 
   if (!Require(result.ok && result.benchmark_clean,
@@ -128,7 +131,7 @@ bool EnterpriseAdaptiveFeedbackRecordsAndAgesScopedFeedback() {
   }
 
   const auto expired = store.Expire(7000000);
-  const auto after_expire = store.Find("feedback.enterprise.1");
+  const auto after_expire = store.Find(scratchbird::tests::FixtureUuid(0x030, 1));
   return Require(expired == 1, "feedback record did not age out") &&
          Require(after_expire.has_value() && !after_expire->valid &&
                      after_expire->invalidation_reason == "feedback_age_expired",
@@ -138,24 +141,115 @@ bool EnterpriseAdaptiveFeedbackRecordsAndAgesScopedFeedback() {
 bool EnterpriseAdaptiveFeedbackInvalidatesByScopeAndEpoch() {
   opt::EnterpriseAdaptiveFeedbackStore store;
   if (!opt::ApplyEnterpriseAdaptiveFeedback(
-           ApplyRequest("feedback.enterprise.2"), &store).ok) {
+           ApplyRequest(scratchbird::tests::FixtureUuid(0x030, 2)), &store).ok) {
     return Require(false, "adaptive feedback setup failed");
   }
   opt::EnterpriseAdaptiveFeedbackInvalidation event;
-  event.scope_uuid = "scope:optimizer:enterprise";
+  event.scope_uuid = scratchbird::tests::FixtureUuid(0x030, 10);
   event.policy_generation = 21;
   event.reason = "policy_epoch_changed";
   const auto invalidated = store.Invalidate(event);
-  const auto found = store.Find("feedback.enterprise.2");
+  const auto found = store.Find(scratchbird::tests::FixtureUuid(0x030, 2));
   return Require(invalidated == 1, "feedback invalidation did not match") &&
          Require(found.has_value() && !found->valid &&
                      found->invalidation_reason == "policy_epoch_changed",
                  "feedback invalidation evidence missing");
 }
 
+bool NativeAdaptiveIdentitiesAndInvalidationAreExact() {
+  using NativeUuid = scratchbird::core::platform::Uuid;
+  using Request = opt::EnterpriseAdaptiveFeedbackApplyRequest;
+  using Record = opt::EnterpriseAdaptiveFeedbackRecord;
+  using Invalidation = opt::EnterpriseAdaptiveFeedbackInvalidation;
+  static_assert(std::is_same_v<decltype(Request::feedback_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Request::scope_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Record::feedback_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Record::scope_uuid), NativeUuid>);
+  static_assert(std::is_same_v<decltype(Invalidation::scope_uuid),
+                               std::optional<NativeUuid>>);
+  const auto base = ApplyRequest(scratchbird::tests::FixtureUuid(0x030, 99));
+  opt::EnterpriseAdaptiveFeedbackStore reference;
+  if (!Require(opt::ApplyEnterpriseAdaptiveFeedback(base, &reference).ok,
+               "native reference admission failed")) return false;
+  const auto original = *reference.Find(base.feedback_uuid);
+  for (const auto field : {&Request::feedback_uuid, &Request::scope_uuid}) {
+    for (unsigned position = 0; position != 17; ++position) {
+      for (unsigned octet = 0; octet != (position == 16 ? 1 : 256); ++octet) {
+        auto changed = base;
+        if (position == 16) changed.*field = {};
+        else {
+          if ((changed.*field).bytes[position] == octet) continue;
+          (changed.*field).bytes[position] = static_cast<std::uint8_t>(octet);
+        }
+        const auto id = changed.*field;
+        const bool valid = (id.bytes[6] & 0xf0) == 0x70 && (id.bytes[8] & 0xc0) == 0x80;
+        opt::EnterpriseAdaptiveFeedbackStore apply_store, direct_store;
+        if (!Require(apply_store.Record(original).ok && direct_store.Record(original).ok,
+                     "baseline native records refused")) return false;
+        auto direct_record = original;
+        direct_record.feedback_uuid = changed.feedback_uuid;
+        direct_record.scope_uuid = changed.scope_uuid;
+        const auto applied = opt::ApplyEnterpriseAdaptiveFeedback(changed, &apply_store);
+        const auto recorded = direct_store.Record(direct_record);
+        if (!Require(applied.ok == valid && recorded.ok == valid,
+                     "request and direct-store admission disagree with UUIDv7 oracle"))
+          return false;
+        for (const auto* store : {&apply_store, &direct_store}) {
+          const auto snapshot = store->Snapshot();
+          if (!Require(snapshot.total_records ==
+                           (valid && field == &Request::feedback_uuid ? 2 : 1),
+                       "binary UUID alias or malformed identity mutated store")) return false;
+          const auto found = store->Find(valid ? changed.feedback_uuid : base.feedback_uuid);
+          if (!Require(found.has_value() && found->valid &&
+                           found->feedback_uuid == (valid ? changed.feedback_uuid : base.feedback_uuid) &&
+                           found->scope_uuid == (valid ? changed.scope_uuid : base.scope_uuid),
+                       "store lookup normalized or truncated identity bytes")) return false;
+        }
+        if (!valid &&
+            !Require(applied.diagnostic_code ==
+                         "SB_OPT_ENTERPRISE_ADAPTIVE_FEEDBACK_SCOPE_REQUIRED" &&
+                     recorded.diagnostic_code == applied.diagnostic_code,
+                     "malformed UUID bypassed admission")) return false;
+        if (!Require(changed.*field == id, "request UUID was normalized")) return false;
+      }
+    }
+  }
+  Invalidation event;
+  event.policy_generation = 21;
+  event.scope_uuid = NativeUuid{};
+  if (!Require(reference.Invalidate(event) == 0, "nil scope became wildcard")) return false;
+  for (unsigned position = 0; position != 16; ++position) {
+    for (unsigned octet = 0; octet != 256; ++octet) {
+      auto id = base.scope_uuid;
+      if (id.bytes[position] == octet) continue;
+      id.bytes[position] = static_cast<std::uint8_t>(octet);
+      event.scope_uuid = id;
+      if (!Require(reference.Invalidate(event) == 0,
+                   "different or malformed scope invalidated native record")) return false;
+      auto lookup = base.feedback_uuid;
+      lookup.bytes[position] = static_cast<std::uint8_t>(octet);
+      if (lookup != base.feedback_uuid &&
+          !Require(!reference.Find(lookup), "distinct native feedback lookup aliased"))
+        return false;
+    }
+  }
+  event.scope_uuid = base.scope_uuid;
+  if (!Require(reference.Invalidate(event) == 1, "exact native scope did not match"))
+    return false;
+  if (!Require(reference.Record(original).ok, "native replacement failed")) return false;
+  auto second = original;
+  second.feedback_uuid = scratchbird::tests::FixtureUuid(0x030, 100);
+  second.scope_uuid = scratchbird::tests::FixtureUuid(0x030, 101);
+  if (!Require(reference.Record(second).ok, "second native scope refused")) return false;
+  event.scope_uuid.reset();
+  return Require(reference.Invalidate(event) == 2 &&
+                     reference.Snapshot().valid_records == 0,
+                 "explicit absent scope did not invalidate all scopes");
+}
+
 bool EnterpriseAdaptiveFeedbackRefusesAuthorityDrift() {
   opt::EnterpriseAdaptiveFeedbackStore store;
-  auto request = ApplyRequest("feedback.enterprise.unsafe");
+  auto request = ApplyRequest(scratchbird::tests::FixtureUuid(0x030, 3));
   request.adaptive_request.authority.parser_client_or_reference_feedback_authority = true;
   const auto result = opt::ApplyEnterpriseAdaptiveFeedback(request, &store);
   return Require(!result.ok, "unsafe adaptive feedback was accepted") &&
@@ -169,5 +263,6 @@ int main() {
   if (!EnterpriseAdaptiveFeedbackRecordsAndAgesScopedFeedback()) return EXIT_FAILURE;
   if (!EnterpriseAdaptiveFeedbackInvalidatesByScopeAndEpoch()) return EXIT_FAILURE;
   if (!EnterpriseAdaptiveFeedbackRefusesAuthorityDrift()) return EXIT_FAILURE;
+  if (!NativeAdaptiveIdentitiesAndInvalidationAreExact()) return EXIT_FAILURE;
   return EXIT_SUCCESS;
 }

@@ -35,8 +35,8 @@ AdaptiveCardinalityFeedbackResult Refuse(std::string code, std::string evidence)
 }
 
 bool MissingScope(const EnterpriseAdaptiveFeedbackApplyRequest& request) {
-  return request.feedback_uuid.empty() ||
-         request.scope_uuid.empty() ||
+  return !core::uuid::IsEngineIdentityUuid(request.feedback_uuid) ||
+         !core::uuid::IsEngineIdentityUuid(request.scope_uuid) ||
          request.metric_snapshot_digest.empty() ||
          request.feedback_generation == 0 ||
          request.policy_generation == 0 ||
@@ -56,8 +56,8 @@ bool RecordExpired(const EnterpriseAdaptiveFeedbackRecord& record,
 
 bool InvalidationMatches(const EnterpriseAdaptiveFeedbackRecord& record,
                          const EnterpriseAdaptiveFeedbackInvalidation& event) {
-  const bool scope_matches = event.scope_uuid.empty() ||
-                             event.scope_uuid == record.scope_uuid;
+  const bool scope_matches = !event.scope_uuid.has_value() ||
+                             *event.scope_uuid == record.scope_uuid;
   const bool policy_changed = event.policy_generation != 0 &&
                               event.policy_generation != record.policy_generation;
   const bool catalog_changed = event.catalog_epoch != 0 &&
@@ -71,7 +71,7 @@ bool InvalidationMatches(const EnterpriseAdaptiveFeedbackRecord& record,
 
 AdaptiveCardinalityFeedbackResult EnterpriseAdaptiveFeedbackStore::Record(
     EnterpriseAdaptiveFeedbackRecord record) {
-  if (record.feedback_uuid.empty() || record.scope_uuid.empty() ||
+  if (!core::uuid::IsEngineIdentityUuid(record.feedback_uuid) || !core::uuid::IsEngineIdentityUuid(record.scope_uuid) ||
       record.route_label.empty() || record.metric_snapshot_digest.empty() ||
       record.feedback_generation == 0 || record.policy_generation == 0 ||
       record.catalog_epoch == 0 || record.security_epoch == 0) {
@@ -84,8 +84,7 @@ AdaptiveCardinalityFeedbackResult EnterpriseAdaptiveFeedbackStore::Record(
   }
   record.valid = true;
   record.evidence.push_back("enterprise_adaptive_feedback.recorded=true");
-  record.evidence.push_back("enterprise_adaptive_feedback.scope_uuid=" +
-                            record.scope_uuid);
+  record.evidence.push_back("enterprise_adaptive_feedback.scope_identity=binary16");
   record.evidence.push_back("enterprise_adaptive_feedback.metric_snapshot_digest=" +
                             record.metric_snapshot_digest);
   record.evidence.push_back("enterprise_adaptive_feedback.bind_profile_digest=" +
@@ -113,6 +112,9 @@ AdaptiveCardinalityFeedbackResult EnterpriseAdaptiveFeedbackStore::Record(
 
 std::uint64_t EnterpriseAdaptiveFeedbackStore::Invalidate(
     const EnterpriseAdaptiveFeedbackInvalidation& event) {
+  if (event.scope_uuid && !core::uuid::IsEngineIdentityUuid(*event.scope_uuid)) {
+    return 0;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   std::uint64_t invalidated = 0;
   for (auto& record : records_) {
@@ -156,7 +158,8 @@ EnterpriseAdaptiveFeedbackSnapshot EnterpriseAdaptiveFeedbackStore::Snapshot() c
 }
 
 std::optional<EnterpriseAdaptiveFeedbackRecord> EnterpriseAdaptiveFeedbackStore::Find(
-    const std::string& feedback_uuid) const {
+    const core::platform::Uuid& feedback_uuid) const {
+  if (!core::uuid::IsEngineIdentityUuid(feedback_uuid)) return std::nullopt;
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = std::find_if(records_.begin(), records_.end(), [&](const auto& record) {
     return record.feedback_uuid == feedback_uuid;

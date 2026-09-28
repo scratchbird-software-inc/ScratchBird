@@ -9,6 +9,7 @@
 #pragma once
 
 #include "adaptive_cardinality_feedback.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -23,8 +24,8 @@ namespace scratchbird::engine::optimizer {
 // invalidation, bind-profile evidence, and quarantine state. It is never row
 // truth, finality, visibility, parser, reference, benchmark, or recovery authority.
 struct EnterpriseAdaptiveFeedbackApplyRequest {
-  std::string feedback_uuid;
-  std::string scope_uuid;
+  core::platform::Uuid feedback_uuid;
+  core::platform::Uuid scope_uuid;
   std::string bind_profile_digest;
   std::string predicate_digest;
   std::string metric_snapshot_digest;
@@ -38,8 +39,8 @@ struct EnterpriseAdaptiveFeedbackApplyRequest {
 };
 
 struct EnterpriseAdaptiveFeedbackRecord {
-  std::string feedback_uuid;
-  std::string scope_uuid;
+  core::platform::Uuid feedback_uuid;
+  core::platform::Uuid scope_uuid;
   std::string bind_profile_digest;
   std::string predicate_digest;
   std::string metric_snapshot_digest;
@@ -62,7 +63,8 @@ struct EnterpriseAdaptiveFeedbackRecord {
 };
 
 struct EnterpriseAdaptiveFeedbackInvalidation {
-  std::string scope_uuid;
+  // Only explicit absence selects all scopes, never a malformed supplied UUID.
+  std::optional<core::platform::Uuid> scope_uuid;
   std::uint64_t policy_generation = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -85,7 +87,7 @@ class EnterpriseAdaptiveFeedbackStore {
   std::uint64_t Expire(std::uint64_t now_microseconds);
   EnterpriseAdaptiveFeedbackSnapshot Snapshot() const;
   std::optional<EnterpriseAdaptiveFeedbackRecord> Find(
-      const std::string& feedback_uuid) const;
+      const core::platform::Uuid& feedback_uuid) const;
 
  private:
   mutable std::mutex mutex_;

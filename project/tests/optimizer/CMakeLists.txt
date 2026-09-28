@@ -1527,7 +1527,7 @@ add_test(
   COMMAND optimizer_enterprise_adaptive_feedback_gate
 )
 set_tests_properties(optimizer_enterprise_adaptive_feedback_gate PROPERTIES
-  LABELS "optimizer_enterprise_adaptive_feedback_gate;OEIC-030;optimizer;enterprise;feedback;adaptive;mga_transaction_regression"
+  LABELS "optimizer_enterprise_adaptive_feedback_gate;OEIC-030;optimizer;enterprise;feedback;adaptive;mga_transaction_regression;binary_uuid"
 )
 
 add_executable(
