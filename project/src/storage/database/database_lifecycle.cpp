@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "native_drop_evidence.hpp"
+#include "../disk/filespace_bootstrap.hpp"
 
 #include "bootstrap_schema_roots.hpp"
 #include "catalog_record_codec.hpp"
@@ -5973,6 +5974,12 @@ DatabaseLifecycleResult ValidateCreateConfig(const DatabaseCreateConfig& config)
     return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-UUID-MUST-BE-V7",
                           "storage.database_lifecycle.filespace_uuid_must_be_v7",
                           config.path);
+  }
+  if (scratchbird::storage::disk::FindCanonicalFilespacePageProfileForSize(
+          config.page_size) == nullptr) {
+    return LifecycleError("SB-STORAGE-DATABASE-PAGE-SIZE-INVALID",
+                          "storage.database.page_size_invalid", config.path,
+                          std::to_string(config.page_size));
   }
   if (config.require_resource_seed_pack && config.resource_seed_pack_root.empty()) {
     return LifecycleError("SB_RESOURCE_SEED_MISSING",

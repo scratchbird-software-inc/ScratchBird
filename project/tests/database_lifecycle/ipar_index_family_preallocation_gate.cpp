@@ -232,7 +232,7 @@ Fixture MakeFixture(const FamilyCase& family, platform::u64 salt) {
   create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = IdentityClockMillis();
-  create.page_size = 4096;
+  create.page_size = 8192;
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);

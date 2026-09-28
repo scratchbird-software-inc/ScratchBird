@@ -482,14 +482,38 @@ void VerifyPageSize(platform::u32 page_size, platform::u64 salt) {
           "IPAR page-size COPY summary missing preallocation grants");
 }
 
+void VerifyUnsupportedPageSizes(platform::u64 salt) {
+  const auto root = std::filesystem::temp_directory_path() /
+      ("scratchbird_ipar_unsupported_page_size_" + std::to_string(salt));
+  Require(std::filesystem::create_directory(root),
+          "unsupported-size fixture directory already exists");
+  for (platform::u32 size : {0u, 4096u, 8191u, 8193u, 262144u, 0xffffffffu}) {
+    db::DatabaseCreateConfig create;
+    create.path = (root / (std::to_string(size) + ".sbdb")).string();
+    create.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
+    create.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
+    create.creation_unix_epoch_millis = IdentityClockMillis();
+    create.page_size = size;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    const auto refused = db::CreateDatabaseFile(create);
+    Require(!refused.ok() && refused.diagnostic.diagnostic_code ==
+                "SB-STORAGE-DATABASE-PAGE-SIZE-INVALID",
+            "unsupported filespace profile did not refuse at CREATE admission");
+    Require(std::filesystem::is_empty(root),
+            "unsupported filespace profile created durable artifacts");
+  }
+  Require(std::filesystem::remove(root), "unsupported-size fixture cleanup failed");
+}
+
 }  // namespace
 
 int main() {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
       "ipar-page-size-preallocation-native-fixture");
   const platform::u64 salt = TimeSeed();
+  VerifyUnsupportedPageSizes(salt);
   const std::vector<platform::u32> page_sizes = {
-      4096, 8192, 16384, 32768, 65536, 131072};
+      8192, 16384, 32768, 65536, 131072};
   for (std::size_t index = 0; index < page_sizes.size(); ++index) {
     VerifyPageSize(page_sizes[index], salt + static_cast<platform::u64>(index * 10000));
   }
