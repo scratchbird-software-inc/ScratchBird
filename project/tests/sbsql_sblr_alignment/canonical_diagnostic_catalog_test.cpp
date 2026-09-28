@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Includes narrow-query, typed metric-update and clock-source registrations. Check the exact
-  // admitted Core import, not a minimum row count.
-  Check(catalog.size==1418 && catalog.data!=nullptr,"complete Core code inventory missing");
+  // Includes native bulk policy and shutdown-identity registrations. Check the
+  // exact admitted Core import, not a minimum row count.
+  Check(catalog.size==1421 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -66,6 +66,19 @@ int main() {
   Sample("AUDIT_TRIGGER.QUEUE_RETRY",S::warning,false,
          "not_specified","continue_or_fail_by_policy","AUDIT_TRIGGER");
   Sample("DIAG.REDACTION_POLICY_INVALID",S::security,true,"false","deny_access","DIAG");
+  Sample("DML.NATIVE_BULK_INGEST.DISABLED",S::error,true,
+         "only_after_authorized_enablement_and_fresh_admission",
+         "reject_without_native_bulk_mutation","DML");
+  const auto* native_disabled=d::FindCanonicalDiagnosticCode("DML.NATIVE_BULK_INGEST.DISABLED");
+  Check(native_disabled && native_disabled->sqlstate=="0A000" &&
+        native_disabled->numeric_binding=="not_applicable",
+        "native bulk policy refusal SQLSTATE or numeric binding drifted");
+  Sample("SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-INVALID",S::error,true,
+         "only_after_context_authority_revalidation","reject_before_durable_mutation",
+         "DATABASE_LIFECYCLE");
+  Sample("SB-DB-LIFECYCLE-SHUTDOWN-IDENTITY-MISMATCH",S::error,true,
+         "only_after_context_authority_revalidation","reject_before_durable_mutation",
+         "DATABASE_LIFECYCLE");
   Sample("STORAGE.PAGE_CHECKSUM_FAILED",S::corruption,true,"false","repair_required","STORAGE");
   Sample("NUMERIC.BACKEND.UNAVAILABLE",S::error,true,"retry_after_reference_backend_restored","reject_without_numeric_value","NUMERIC");
   Sample("NUMERIC.ENCODING.NONCANONICAL",S::error,true,"retry_only_with_corrected_encoding","reject_without_numeric_value","NUMERIC");
@@ -180,7 +193,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x6d,0x59,0xa5,0x7b,0xad,0x95,0x15,0x94,0x2d,0xd2,0xbf,0x15,0x6c,0xab,0x3e,0x2b,0xf5,0x07,0x25,0xe5,0x44,0x67,0x89,0xc2,0xc9,0x48,0x2b,0xc8,0x04,0x4e,0xab,0xd4};
+    0x43,0x49,0x3d,0xd0,0x25,0x7c,0x27,0x3b,0x07,0x25,0x5e,0xdc,0x25,0x50,0x12,0x11,0x9b,0x3d,0xd3,0x84,0x91,0x36,0xfb,0xee,0x71,0x27,0x52,0x84,0xd9,0xfd,0x8e,0x74};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
