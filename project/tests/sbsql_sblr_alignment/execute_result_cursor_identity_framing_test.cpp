@@ -93,6 +93,39 @@ void ServerRefusalRoundTrips() {
             "actual server refusal lost its diagnostic at the parser boundary");
       Check(!response.payload.empty() && response.payload.back() == 0,
             "server omitted the explicit absent-cursor marker");
+      // Embedded execution passes result.messages as the decoder's diagnostic
+      // destination. Publishing the staged result must not erase that vector.
+      for (const bool prior_message : {false, true}) {
+        ipc::ServerExecutionResult aliased;
+        if (prior_message) aliased.messages.diagnostics.push_back(ipc::MakeDiagnostic(
+            "prior.warning", "WARNING", "retained prior message", "test"));
+        const auto prefix = aliased.messages.diagnostics.size();
+        Check(ipc::DecodeCanonicalExecuteResultPayload(
+                  response.payload, request.header.request_uuid, &aliased, &aliased.messages) &&
+                  !aliased.accepted && aliased.transaction_diagnostic_code == expected &&
+                  aliased.cursor_uuid.is_nil() && !aliased.cursor_stream_descriptor.present &&
+                  aliased.messages.diagnostics.size() == prefix + messages.diagnostics.size(),
+              "aliased execute result publication erased refusal diagnostics");
+        if (prior_message) Check(!aliased.messages.diagnostics.empty() &&
+                  aliased.messages.diagnostics.front().code == "prior.warning" &&
+                  aliased.messages.diagnostics.front().message == "retained prior message",
+              "aliased execute result erased a previously accumulated message");
+        if (aliased.messages.diagnostics.size() == prefix + 1 && messages.diagnostics.size() == 1) {
+          const auto& actual = aliased.messages.diagnostics.back();
+          const auto& expected_diagnostic = messages.diagnostics.front();
+          Check(actual.code == expected_diagnostic.code &&
+                    actual.severity == expected_diagnostic.severity &&
+                    actual.message == expected_diagnostic.message &&
+                    actual.component == expected_diagnostic.component &&
+                    actual.fields.size() == expected_diagnostic.fields.size(),
+                "aliased execute result changed refusal metadata");
+          for (std::size_t field = 0; field < actual.fields.size() &&
+                  field < expected_diagnostic.fields.size(); ++field)
+            Check(actual.fields[field].name == expected_diagnostic.fields[field].name &&
+                      actual.fields[field].value == expected_diagnostic.fields[field].value,
+                  "aliased execute result changed refusal field bytes");
+        }
+      }
       if (!response.payload.empty()) {
         auto missing = response.payload;
         missing.pop_back();
@@ -140,6 +173,16 @@ int main() {
       ipc::ServerExecutionResult result;
       Check(Decode(payload, &result) && result.row_packet == data,
             "binary user UUID data was rejected or changed");
+      ipc::ServerExecutionResult aliased;
+      aliased.messages.diagnostics.push_back(ipc::MakeDiagnostic(
+          "prior.warning", "WARNING", "retained prior message", "test"));
+      Check(ipc::DecodeCanonicalExecuteResultPayload(payload, Id(1).bytes,
+                &aliased, &aliased.messages) && aliased.accepted &&
+                aliased.row_packet == data && aliased.cursor_uuid == result.cursor_uuid &&
+                aliased.cursor_stream_descriptor.present == result.cursor_stream_descriptor.present &&
+                aliased.messages.diagnostics.size() == 1 &&
+                aliased.messages.diagnostics.front().code == "prior.warning",
+            "successful aliased result changed UUID data or erased prior diagnostics");
     }
   }
   for (const auto relative : {19u, 107u, 115u}) {
@@ -159,7 +202,21 @@ int main() {
     Check(!Decode(invalid), "nil cursor control identity accepted");
   }
   for (std::size_t size = 0; size < present.size(); ++size) {
-    Check(!Decode(Bytes(present.begin(), present.begin() + size)), "truncated cursor result accepted");
+    const Bytes truncated(present.begin(), present.begin() + size);
+    Check(!Decode(truncated), "truncated cursor result accepted");
+    ipc::ServerExecutionResult aliased;
+    aliased.operation_id = "unchanged-sentinel";
+    aliased.row_count = 99;
+    aliased.cursor_uuid = Id(99);
+    aliased.messages.diagnostics.push_back(ipc::MakeDiagnostic(
+        "prior.warning", "WARNING", "retained prior message", "test"));
+    Check(!ipc::DecodeCanonicalExecuteResultPayload(truncated, Id(1).bytes,
+              &aliased, &aliased.messages) &&
+              aliased.operation_id == "unchanged-sentinel" && aliased.row_count == 99 &&
+              aliased.cursor_uuid == Id(99) && !aliased.cursor_stream_descriptor.present &&
+              !aliased.messages.diagnostics.empty() &&
+              aliased.messages.diagnostics.front().code == "prior.warning",
+          "malformed aliased result published partial identity or erased prior diagnostics");
   }
   auto mismatch = present; mismatch[begin + 27 + 15] = 99;
   Check(!Decode(mismatch), "cursor trailer/header mismatch accepted");

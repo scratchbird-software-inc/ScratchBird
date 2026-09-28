@@ -1923,6 +1923,11 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
                   "A cursor stream descriptor was returned without a cursor.");
     return false;
   }
+  // Embedded callers accumulate diagnostics directly in result->messages.
+  // Retain that destination before atomically publishing the staged binary
+  // result, otherwise a valid refusal loses its entire diagnostic vector.
+  // Independent destinations keep their existing append-only behavior.
+  if (messages == &result->messages) decoded.messages = std::move(*messages);
   *result = std::move(decoded);
   return true;
 }
