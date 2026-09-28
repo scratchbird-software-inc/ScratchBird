@@ -4430,7 +4430,7 @@ target_link_libraries(sbsql_sblr_alignment_ia01_variable_runtime
 add_test(NAME sbsql_sblr_alignment_ia01_variable_runtime
   COMMAND sbsql_sblr_alignment_ia01_variable_runtime)
 set_tests_properties(sbsql_sblr_alignment_ia01_variable_runtime PROPERTIES
-  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_VARIABLE;malformed_operand;CSC-TEST-002334"
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_VARIABLE;binary_uuid;malformed_operand;CSC-TEST-002334"
   TIMEOUT 60)
 
 function(sbsql_sblr_alignment_register_ia01_variable_process_e2e)
