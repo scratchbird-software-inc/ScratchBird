@@ -19,6 +19,7 @@
 #include "hot_point_lookup_cache.hpp"
 #include "local_transaction_store.hpp"
 #include "nosql/document_api.hpp"
+#include "nosql/document_path_physical_provider.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 #include "observability/performance_metric_event.hpp"
 #include "optimizer_differential_fuzz.hpp"
@@ -26,6 +27,9 @@
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 #include "vector_maintenance_jobs.hpp"
@@ -39,7 +43,9 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -180,8 +186,7 @@ struct SemanticCapture {
 };
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << "ORH-120 gate failure: " << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error("ORH-120 gate failure: " + message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -717,39 +722,7 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, std::uint64_t salt) {
   return generated.value;
 }
 
-const platform::TypedUuid& TransactionUuid(std::uint64_t local_id) {
-  static std::map<std::uint64_t, platform::TypedUuid> identities;
-  const auto it = identities
-                      .try_emplace(
-                          local_id,
-                          NewUuid(platform::UuidKind::transaction, local_id))
-                      .first;
-  return it->second;
-}
-
-mga::TransactionInventoryEntry InventoryEntry(std::uint64_t local_id,
-                                              mga::TransactionState state) {
-  auto identity = mga::MakeTransactionIdentity(
-      mga::MakeLocalTransactionId(local_id),
-      TransactionUuid(local_id),
-      mga::TransactionScope::local_node);
-  Require(identity.ok(), "could not create ORH-120 transaction identity");
-
-  mga::TransactionInventoryEntry entry;
-  entry.identity = identity.identity;
-  entry.state = state;
-  entry.begin_unix_epoch_millis = 1779540000000ull + local_id;
-  if (state == mga::TransactionState::committed ||
-      state == mga::TransactionState::archived ||
-      state == mga::TransactionState::rolled_back ||
-      state == mga::TransactionState::failed_terminal) {
-    entry.final_unix_epoch_millis = entry.begin_unix_epoch_millis + 1;
-    entry.evidence_record_written = true;
-  }
-  return entry;
-}
-
-void CreateDatabaseFixture(const std::filesystem::path& path) {
+api::EngineRequestContext CreateDatabaseFixture(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   const auto database_id = uuid::MakeTypedUuid(platform::UuidKind::database, scratchbird::tests::FixtureUuid(1208, 3001));
@@ -757,33 +730,27 @@ void CreateDatabaseFixture(const std::filesystem::path& path) {
   create.database_uuid = database_id.value;
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace, 2);
   create.creation_unix_epoch_millis = 1779540000000ull;
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "could not create ORH-120 native test database");
-}
-
-void PersistTransactionInventory(const std::filesystem::path& database_path,
-                                 std::uint64_t writer_tx,
-                                 mga::TransactionState writer_state) {
-  auto inventory = mga::MakeEmptyLocalTransactionInventory();
-  inventory.entries.push_back(InventoryEntry(writer_tx, writer_state));
-  inventory.entries.push_back(InventoryEntry(950, mga::TransactionState::active));
-  inventory.next_local_transaction_id = 951;
-  const auto persisted =
-      db::PersistLocalTransactionInventoryToDatabase(database_path.string(),
-                                                     inventory);
-  Require(persisted.ok(), "could not persist ORH-120 transaction inventory");
+  return scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
 struct TempDatabase {
   std::filesystem::path dir;
   std::filesystem::path path;
+  api::EngineRequestContext owner;
 
   explicit TempDatabase(std::string_view name) : dir(UniqueTempDir(name)) {
     path = dir / "orh120.sbdb";
-    CreateDatabaseFixture(path);
+    try {
+      owner = CreateDatabaseFixture(path);
+    } catch (...) {
+      std::error_code ignored;
+      std::filesystem::remove_all(dir, ignored);
+      throw;
+    }
   }
 
   ~TempDatabase() {
@@ -792,19 +759,19 @@ struct TempDatabase {
   }
 };
 
-api::EngineRequestContext DocumentContext(const std::filesystem::path& path,
-                                          std::uint64_t tx) {
-  api::EngineRequestContext context;
-  context.database_path = path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuid(1208, 3001);
-  context.current_schema_uuid = scratchbird::tests::FixtureUuid(1208, 3002);
-  context.transaction_uuid =
-      TransactionUuid(tx).value;
-  context.local_transaction_id = tx;
-  context.security_context_present = true;
-  context.resource_epoch = 120;
-  context.security_epoch = 121;
-  context.catalog_generation_id = 122;
+api::EngineRequestContext BeginCrudTransaction(const api::EngineRequestContext& owner) {
+  api::EngineBeginTransactionRequest request;
+  request.context = owner;
+  request.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(request);
+  Require(begun.ok && begun.local_transaction_id != 0 &&
+          uuid::IsEngineIdentityUuid(begun.transaction_uuid),
+          "could not begin ORH-120 engine transaction");
+  auto context = owner;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   context.trace_tags = {"optimizer_runtime_hot_path_orh_120_gate",
                         "benchmark_clean",
                         "mga_transaction_regression"};
@@ -813,6 +780,7 @@ api::EngineRequestContext DocumentContext(const std::filesystem::path& path,
 
 api::EngineTypedValue Value(std::string value) {
   api::EngineTypedValue typed;
+  typed.descriptor.canonical_type_name = "string";
   typed.encoded_value = std::move(value);
   return typed;
 }
@@ -823,16 +791,28 @@ void AddFragment(api::EngineDocumentInsertRequest* request,
   request->assignments.push_back({std::move(path), Value(std::move(value))});
 }
 
-void SeedCrudTransaction(const api::EngineRequestContext& context) {
-  PersistTransactionInventory(context.database_path,
-                              context.local_transaction_id,
-                              mga::TransactionState::active);
+void CommitCrudTransaction(const api::EngineRequestContext& context) {
+  api::EngineCommitTransactionRequest request;
+  request.context = context;
+  Require(api::EngineCommitTransaction(request).ok, "could not commit ORH-120 engine transaction");
 }
 
-void CommitCrudTransaction(const api::EngineRequestContext& context) {
-  PersistTransactionInventory(context.database_path,
-                              context.local_transaction_id,
-                              mga::TransactionState::committed);
+void RequireDurableTransaction(const api::EngineRequestContext& context,
+                               mga::TransactionState expected_state) {
+  const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  Require(loaded.ok(), "could not reopen ORH-120 transaction inventory");
+  std::size_t matches = 0;
+  for (const auto& entry : loaded.inventory.entries) {
+    if (entry.identity.local_id.value != context.local_transaction_id) continue;
+    ++matches;
+    Require(entry.identity.transaction_uuid.value == context.transaction_uuid &&
+            entry.identity.transaction_uuid.kind == platform::UuidKind::transaction &&
+            entry.state == expected_state, "durable transaction identity or state changed");
+    if (expected_state == mga::TransactionState::committed) {
+      Require(entry.evidence_record_written, "commit did not publish finality evidence");
+    }
+  }
+  Require(matches == 1, "durable inventory did not contain exactly one actual transaction");
 }
 
 api::EngineNoSqlProviderGenerationMetadata CurrentGeneration(
@@ -872,7 +852,8 @@ api::EngineDocumentPhysicalProof DocumentProof(
   contract.index_generation.covers_predicate = true;
   contract.index_generation.required_generation = generation.generation_id;
   contract.index_generation.available_generation = generation.generation_id;
-  contract.index_generation.index_uuid = scratchbird::tests::FixtureUuid(1274, 1201);
+  contract.index_generation.index_uuid =
+      api::DocumentPathProviderIdentityForContext(context, generation.generation_id).index_uuid;
   contract.policy.proof_present = true;
   contract.policy.allowed = true;
   contract.provider_generation.required = true;
@@ -1227,28 +1208,73 @@ void ProveCompressionAndVectorEquivalence() {
 
 void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   TempDatabase db("nosql");
-  const auto writer = DocumentContext(db.path, 900);
-  SeedCrudTransaction(writer);
-  api::EngineDocumentInsertRequest insert;
-  insert.context = writer;
-  insert.target_object.uuid = scratchbird::tests::FixtureUuid(1586, 6);
-  AddFragment(&insert, "tenant.id", "T1");
-  AddFragment(&insert, "status", "active");
-  auto inserted = api::EngineDocumentInsert(insert);
-  Require(inserted.ok, "document insert failed");
-  const auto generation = CurrentGeneration(writer);
-  CommitCrudTransaction(writer);
+  api::EngineRequestContext writer;
+  api::EngineNoSqlProviderGenerationMetadata generation;
+  {
+    scratchbird::tests::FixtureEngineSession session(db.owner);
+    writer = BeginCrudTransaction(db.owner);
+    {
+      scratchbird::tests::FixtureEngineStatement statement(session, writer);
+      writer = statement.context;
+      RequireDurableTransaction(writer, mga::TransactionState::active);
+      api::EngineDocumentInsertRequest insert;
+      insert.context = writer;
+      insert.target_object.uuid = scratchbird::tests::FixtureUuid(1586, 6);
+      AddFragment(&insert, "tenant.id", "T1");
+      AddFragment(&insert, "status", "active");
+      const auto inserted = api::EngineDocumentInsert(insert);
+      std::string diagnostics;
+      for (const auto& diagnostic : inserted.diagnostics)
+        diagnostics += diagnostic.code + ":" + diagnostic.detail + ";";
+      Require(inserted.ok, "document insert failed: " + diagnostics);
+      Require(inserted.primary_object.uuid == insert.target_object.uuid,
+              "document insert changed the native document identity");
+      generation = CurrentGeneration(writer);
+      api::DocumentPathProviderOpenRequest persisted;
+      persisted.artifact_path = api::DocumentPathPhysicalProviderPath(writer);
+      persisted.expected_identity = api::DocumentPathProviderIdentityForContext(writer, generation.generation_id);
+      persisted.require_expected_identity = true;
+      const auto opened = api::OpenDocumentPathPhysicalProvider(persisted);
+      Require(opened.ok && opened.artifact.stats.row_count == 1 &&
+              opened.artifact.identity.index_uuid == persisted.expected_identity.index_uuid &&
+              opened.artifact.identity.relation_uuid == generation.collection_uuid,
+              "document insert did not persist the exact native provider identity and row");
+    }
+    CommitCrudTransaction(writer);
+    RequireDurableTransaction(writer, mga::TransactionState::committed);
+  }
 
+  // Close the writer engine/session and discard process-local document caches
+  // before independent reader admission. Results must come from durable data.
+  api::EngineDocumentProviderCleanup(writer, false);
+  auto reader_owner = db.owner;
+  reader_owner.session_uuid = scratchbird::tests::FixtureUuid(2208, 1);
+  scratchbird::tests::FixtureEngineSession reader_session(reader_owner);
+  auto reader = BeginCrudTransaction(reader_owner);
+  auto reader_statement = std::make_unique<scratchbird::tests::FixtureEngineStatement>(reader_session, reader);
+  reader = reader_statement->context;
+  Require(reader.transaction_uuid != writer.transaction_uuid &&
+          reader.local_transaction_id != writer.local_transaction_id &&
+          reader.session_uuid != writer.session_uuid,
+          "independent reader reused writer transaction or session identity");
+  RequireDurableTransaction(reader, mga::TransactionState::active);
+  RequireDurableTransaction(writer, mga::TransactionState::committed);
   api::EngineDocumentFindRequest find;
-  find.context = DocumentContext(db.path, 950);
+  find.context = reader;
   find.path = "tenant.id";
   find.equals_value = "T1";
   find.projected_paths = {"tenant.id", "status"};
   find.physical_proof = DocumentProof(writer, generation);
   auto found = api::EngineDocumentFind(find);
   Require(found.ok, "document path provider lookup failed");
+  Require(found.result_shape.rows.size() == 1 &&
+          found.dml_summary.visible_rows_scanned == 0 &&
+          found.dml_summary.index_probes == 1 && found.dml_summary.benchmark_clean,
+          "document lookup did not execute exactly one physical index probe");
   Require(RowField(found, 0, "path:tenant.id") == "T1",
           "document provider lookup returned wrong tenant");
+  Require(RowField(found, 0, "path:status") == "active",
+          "document provider lookup lost committed status");
   Require(EvidenceContains(found, "document_provider_index_consumed", "true"),
           "document provider did not consume provider index");
   Require(EvidenceContains(found,
@@ -1258,7 +1284,8 @@ void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   CompareSemanticEquivalent(
       "nosql_provider_generation_path_rows",
       AcceptedCapture("document:T1", {"T1|active"}, "document_uuid"),
-      AcceptedCapture("document:T1", {"T1|active"}, "document_uuid",
+      AcceptedCapture("document:T1", {RowField(found, 0, "path:tenant.id") + "|" +
+                                     RowField(found, 0, "path:status")}, "document_uuid",
                       {"provider_generation=" +
                        std::to_string(generation.generation_id),
                        "document_path_index_runtime_proven=true"}));
@@ -1268,6 +1295,11 @@ void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   auto strict_result = api::EngineDocumentFind(strict);
   Require(strict_result.ok,
           "strict NoSQL path-index runtime proof was refused");
+  Require(strict_result.result_shape.rows.size() == 1 &&
+          strict_result.dml_summary.index_probes == 1 &&
+          strict_result.dml_summary.visible_rows_scanned == 0 &&
+          strict_result.dml_summary.benchmark_clean,
+          "strict document lookup silently used a scan or lost runtime proof");
   Require(EvidenceContains(strict_result,
                            "benchmark_clean_index_runtime_closure",
                            "true"),
@@ -1275,8 +1307,18 @@ void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   CompareSemanticEquivalent(
       "document_path_index_runtime_strict_route",
       AcceptedCapture("document:T1", {"T1|active"}, "document_uuid"),
-      AcceptedCapture("document:T1", {"T1|active"}, "document_uuid",
+      AcceptedCapture("document:T1", {RowField(strict_result, 0, "path:tenant.id") + "|" +
+                                     RowField(strict_result, 0, "path:status")}, "document_uuid",
                       {"document_path_index_runtime_proven=true"}));
+  auto missing = strict;
+  missing.equals_value = "absent-tenant";
+  const auto empty = api::EngineDocumentFind(missing);
+  Require(empty.ok && empty.result_shape.rows.empty() && empty.dml_summary.visible_rows_scanned == 0,
+          "strict missing-value probe returned a canned row or scanned documents");
+  reader_statement.reset();
+  CommitCrudTransaction(reader);
+  RequireDurableTransaction(reader, mga::TransactionState::committed);
+  api::EngineDocumentProviderCleanup(reader, false);
 }
 
 void ProveSnapshotCacheAndMetricsEquivalence() {
@@ -1284,20 +1326,53 @@ void ProveSnapshotCacheAndMetricsEquivalence() {
   auto store = cache.Store(SnapshotStoreRequest());
   Require(store.action == exec::SnapshotSafeCacheAction::kStore,
           "snapshot cache store failed");
-  const auto hit = cache.Lookup(SnapshotLookupRequest());
+  const auto lookup = SnapshotLookupRequest();
+  const auto hit = cache.Lookup(lookup);
   Require(hit.action == exec::SnapshotSafeCacheAction::kHit && hit.cache_hit,
           "snapshot cache did not return equivalent hit");
   Require(Has(hit.evidence, "snapshot_cache_recompute_result_match=true"),
           "snapshot cache missing result recompute proof");
-  Require(Has(hit.evidence, "snapshot_cache_recompute_mga_security_match=true"),
-          "snapshot cache missing MGA/security recompute proof");
+  Require(Has(hit.evidence, "snapshot_cache_statement_context_match=true") &&
+          Has(hit.evidence, "snapshot_cache_catalog_epoch_uuid_match=true") &&
+          hit.retained_entry && hit.retained_entry->payload &&
+          exec::PhysicalMgaStatementContextEqual(hit.retained_entry->producing_statement_context,
+                                                lookup.mga_authority.statement_context) &&
+          hit.retained_entry->key == lookup.key &&
+          hit.retained_entry->key.security_context_uuid == lookup.selected_physical_dag.security_context_uuid &&
+          hit.retained_entry->catalog_epoch_uuid == lookup.selected_catalog_epoch_uuid,
+          "snapshot cache lost actual MGA/security or catalog binding");
+  std::vector<std::string> cached_rows;
+  for (const auto& row : hit.retained_entry->payload->final_result.rows) {
+    Require(row.values.size() == 1, "snapshot cache changed result shape");
+    const auto decoded = exec::DecodeInt64Value(row.values.front());
+    Require(decoded.ok(), "snapshot cache retained undecodable result value");
+    cached_rows.push_back(std::to_string(decoded.value));
+  }
   CompareSemanticEquivalent(
       "snapshot_safe_cache_rows",
-      AcceptedCapture("sha256:orh120-result", {"row-1", "row-2"},
+      AcceptedCapture("sha256:orh120-result", {"42", "42"},
                       "contract_order"),
-      AcceptedCapture("sha256:orh120-result", {"row-1", "row-2"},
+      AcceptedCapture("sha256:orh120-result", cached_rows,
                       "contract_order",
                       {"snapshot_cache_hit=true"}));
+
+  auto crossed_security = lookup;
+  crossed_security.key.security_context_uuid = scratchbird::tests::FixtureUuid(2208, 2);
+  const auto crossed = cache.Lookup(crossed_security);
+  Require(crossed.action == exec::SnapshotSafeCacheAction::kRefuse && !crossed.cache_hit &&
+          !crossed.retained_entry && crossed.diagnostic_code ==
+              "EXECUTOR.SNAPSHOT_RESULT_CACHE.CATALOG_IDENTITY_REQUIRED",
+          "cache accepted a different binary security identity");
+  auto crossed_catalog = lookup;
+  crossed_catalog.key.catalog_epoch_uuid = scratchbird::tests::FixtureUuid(2208, 3);
+  const auto wrong_catalog = cache.Lookup(crossed_catalog);
+  Require(wrong_catalog.action == exec::SnapshotSafeCacheAction::kRefuse &&
+          !wrong_catalog.cache_hit && !wrong_catalog.retained_entry &&
+          wrong_catalog.diagnostic_code == "EXECUTOR.SNAPSHOT_RESULT_CACHE.CATALOG_IDENTITY_REQUIRED",
+          "cache accepted a different binary catalog identity");
+  const auto after_refusal = cache.Lookup(lookup);
+  Require(after_refusal.cache_hit && after_refusal.retained_entry == hit.retained_entry,
+          "crossed-identity refusal evicted or replaced the valid retained result");
 
   auto authority = SnapshotLookupRequest();
   authority.mga_authority.origin =
@@ -1360,7 +1435,9 @@ void ProveIndexDependentBlockersRemainExact() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "optimizer_runtime_hot_path_orh_120_gate");
   ProveOptimizerDifferentialCorpus();
   ProveExtendedStatsDoNotChangeResultSemantics();
   ProveParserFrontDoorCacheEquivalence();
@@ -1372,4 +1449,7 @@ int main() {
   ProveIndexDependentBlockersRemainExact();
   std::cout << "optimizer_runtime_hot_path_orh_120_gate=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

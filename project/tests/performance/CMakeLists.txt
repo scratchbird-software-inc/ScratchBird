@@ -1304,6 +1304,7 @@ target_compile_features(optimizer_runtime_hot_path_orh_120_gate PRIVATE cxx_std_
 target_link_libraries(
   optimizer_runtime_hot_path_orh_120_gate
   PRIVATE
+    sb_engine
     sb_engine_optimizer
     sb_engine_internal_api
     sb_engine_executor
@@ -1319,7 +1320,7 @@ add_test(
   COMMAND optimizer_runtime_hot_path_orh_120_gate
 )
 set_tests_properties(optimizer_runtime_hot_path_orh_120_gate PROPERTIES
-  LABELS "optimizer_runtime_hot_path_orh_120_gate;ORH-120;optimizer_runtime_hot_path;performance;semantic_equivalence;benchmark_clean;index_runtime_blockers;mga_transaction_regression"
+  LABELS "optimizer_runtime_hot_path_orh_120_gate;ORH-120;optimizer_runtime_hot_path;performance;semantic_equivalence;benchmark_clean;index_runtime_blockers;mga_transaction_regression;binary_uuid"
 )
 
 add_executable(
