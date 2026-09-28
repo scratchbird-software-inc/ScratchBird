@@ -1,3 +1,4 @@
+#include "datatype_storage_identity.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -32,6 +33,7 @@
 #include "dml/write_result_policy.hpp"
 #include "bulk_placement_order.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "domain_support/domain_store.hpp"
 #include "ipar_fault_injection.hpp"
@@ -1079,8 +1081,15 @@ struct DirectTypedIndexKeyStats {
   std::uint64_t sbkobin_keys = 0;
 };
 
+// Storage/index binding is not a typed-literal codec capability. Keep the
+// catalog-owned descriptor identity separate from optional codec activation.
+struct DirectIndexDatatypeBinding {
+  EngineUuid descriptor_uuid;
+  std::uint64_t descriptor_generation = 0;
+  std::uint32_t canonical_binary_type_code = 0;
+};
 using DirectIndexDatatypeBindings =
-    std::map<std::string, dt::DatatypeTypeCodecIdentityRowV1>;
+    std::map<std::string, DirectIndexDatatypeBinding>;
 
 bool DirectBindIndexDatatypes(const EngineRequestContext& context,
                              const MgaRelationStorageDescriptor& descriptor,
@@ -1092,17 +1101,19 @@ bool DirectBindIndexDatatypes(const EngineRequestContext& context,
   std::set<EngineUuid> columns, values;
   for (const auto& column : descriptor.columns) {
     const auto& value = column.value_descriptor;
-    const auto row = dt::LookupDatatypeTypeCodecIdentityV1(
-        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-        context.datatype_registry_generation, value.datatype_descriptor_uuid,
-        value.datatype_descriptor_generation);
     if (!core::uuid::IsEngineIdentityUuid(column.column_uuid) || !column.column_generation ||
         !core::uuid::IsEngineIdentityUuid(value.descriptor_uuid) ||
-        !columns.insert(column.column_uuid).second || !values.insert(value.descriptor_uuid).second ||
-        !row.ok || row.row.type_uuid != value.type_uuid ||
-        row.row.canonical_binary_type_code == static_cast<std::uint32_t>(dt::CanonicalTypeId::unknown) ||
-        !bound.emplace(column.canonical_name_key, row.row).second)
+        !columns.insert(column.column_uuid).second || !values.insert(value.descriptor_uuid).second)
       return false;
+    dt::DatatypeStorageIdentityV1 row;
+    if (!dt::LookupDatatypeStorageIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, value.datatype_descriptor_uuid,
+        value.datatype_descriptor_generation, &row) || row.type_uuid != value.type_uuid)
+      return false;
+    DirectIndexDatatypeBinding binding{row.descriptor_uuid, row.descriptor_generation,
+                                       static_cast<std::uint32_t>(row.type_id)};
+    if (!bound.emplace(column.canonical_name_key, binding).second) return false;
   }
   *output = std::move(bound);
   return true;
@@ -2073,6 +2084,19 @@ bool DirectSortableTypedIndexPayload(
     return false;
   }
   switch (target_type) {
+    case dt::CanonicalTypeId::decimal: {
+      const auto decimal = scratchbird::libraries::sbl_numeric::DecodeExactDecimalLittleEndian(
+          raw.data(), raw.size());
+      if (!decimal.ok) return false;
+      // Numeric VALUE decoding is not display rendering. Use the shared
+      // datatype numeric ordering, never the little-endian storage bytes.
+      dt::DatatypeSortKeyRequest request;
+      request.value = {target_type, decimal.canonical_lexical, false};
+      const auto key = dt::MakeDatatypeSortKey(request);
+      if (!key.ok()) return false;
+      out->assign(key.sort_key.begin(), key.sort_key.end());
+      return true;
+    }
     case dt::CanonicalTypeId::boolean:
     case dt::CanonicalTypeId::uuid:
     case dt::CanonicalTypeId::enum_value:

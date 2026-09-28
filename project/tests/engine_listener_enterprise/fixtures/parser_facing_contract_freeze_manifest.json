@@ -38,7 +38,7 @@
     {
             "path": "project/src/server/sblr_dispatch_server.cpp",
             "resource_kind": "server_sblr_dispatch_surface",
-      "sha256": "d7812215ffa57a30213c55ed0483b07d647635479393a19d4b7bc30c6b04c1f5"
+      "sha256": "6d25718f7ea4c0b2e4fb06ce9a44ce28d191a860bf1590f654089d6881d1b2b3"
     },
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
@@ -73,7 +73,7 @@
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
       "resource_kind": "sbsql_family_reconciliation_matrix",
-      "sha256": "e9d8772a8afd61fa79055b929290553741158161a71b9d4a0d219f4a96b6da3c"
+      "sha256": "4c43657d04612c5ef25f254af41db7149756de6a5611147038877feaa933219e"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",

@@ -1,5 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,9 +10,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_dirty_manifest.hpp"
+#include "api_diagnostics.hpp"
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_operations.hpp"
+#include "sbl_numeric.hpp"
 #include "index_key_encoding.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
@@ -29,9 +32,12 @@
 #include "session_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "wire/public_result_packet.hpp"
+#include "wire/parser_server_ipc/parser_server_client.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -58,8 +64,7 @@ namespace uuid = scratchbird::core::uuid;
 namespace dt = scratchbird::core::datatypes;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -148,6 +153,16 @@ struct Fixture {
     }
   }
 };
+
+void InitializeOwnedFixtureDirectory(Fixture& fixture, const std::string& name) {
+  const auto path = std::filesystem::temp_directory_path() /
+      ("scratchbird_cdp040_" + name + "_" +
+       uuid::UuidToString(NewIdentity(platform::UuidKind::object, 1)));
+  Require(std::filesystem::create_directory(path),
+          "CDP-040 fresh owned fixture directory creation failed");
+  fixture.dir = path;
+  fixture.database_path = path / "cdp040.sbdb";
+}
 
 api::EngineTypedValue TextValue(std::string value) {
   api::EngineTypedValue typed;
@@ -266,7 +281,10 @@ api::EngineApiDiagnostic PublishFixtureTable(
     Require(type != metadata.text.end(), "CDP-040 fixture column type missing");
     types.push_back(type->second);
   }
-  return scratchbird::tests::PublishMgaTableFixture(context, table, types);
+  const auto published = scratchbird::tests::PublishDdlTableFixture(context, table, types);
+  Require(published.table_uuid == table.table_uuid && published.columns.size() == table.columns.size(),
+          "CDP-040 actual DDL table publication changed identity or shape");
+  return api::MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 void StartFixtureSession(Fixture& fixture, const api::EngineRequestContext& metadata) {
@@ -424,10 +442,7 @@ api::CrudIndexRecord TypedScalarUniqueIndex(
 Fixture MakeFixture(std::string name, platform::u64 salt) {
   Fixture fixture;
   fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_cdp040_" + name + "_" + std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "cdp040.sbdb";
+  InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -435,7 +450,6 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
-  create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -462,11 +476,7 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
 Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
   Fixture fixture;
   fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_cdp040_" + name + "_" +
-                 std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "cdp040.sbdb";
+  InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -474,7 +484,6 @@ Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt) {
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
-  create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 int64 index database create failed");
 
@@ -499,10 +508,7 @@ Fixture MakeTypedScalarFixture(std::string name,
                                bool with_typed_scalar_indexes = false) {
   Fixture fixture;
   fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_cdp040_" + name + "_" + std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "cdp040.sbdb";
+  InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -510,7 +516,6 @@ Fixture MakeTypedScalarFixture(std::string name,
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
-  create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 typed scalar database create failed");
 
@@ -703,6 +708,33 @@ std::string DescriptorPayloadColumnName(std::size_t index) {
 std::vector<std::uint8_t> DescriptorPayloadForType(const std::string& type,
                                                    int row_index,
                                                    std::size_t type_index) {
+  if (type == "decimal") {
+    const auto encoded = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(
+        std::to_string(row_index) + ".25");
+    Require(encoded.ok, "descriptor decimal fixture encoding failed");
+    return {encoded.canonical_bytes.begin(), encoded.canonical_bytes.end()};
+  }
+  if (type == "json_document") {
+    const std::string json = "{\"value\":" + std::to_string(row_index) + "}";
+    return {json.begin(), json.end()};
+  }
+  if (type == "list") {
+    const std::string text = std::to_string(row_index);
+    std::vector<std::uint8_t> payload{'S','B','T','L','0','0','0','1',1,0,0,0,1};
+    for (unsigned i = 0; i < 4; ++i)
+      payload.push_back(static_cast<std::uint8_t>(text.size() >> (8*i)));
+    payload.insert(payload.end(), text.begin(), text.end());
+    return payload;
+  }
+  if (type == "geometry") {
+    std::vector<std::uint8_t> payload{'S','B','P','1',1,2,0,0};
+    for (double coordinate : {static_cast<double>(row_index), 0.0}) {
+      const auto bits = std::bit_cast<std::uint64_t>(coordinate);
+      for (unsigned i = 0; i < 8; ++i)
+        payload.push_back(static_cast<std::uint8_t>(bits >> (56-8*i)));
+    }
+    return payload;
+  }
   std::size_t size = 16;
   if (type == "blob") {
     size = 24;
@@ -750,10 +782,7 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
                                      bool with_descriptor_indexes = false) {
   Fixture fixture;
   fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_cdp040_" + name + "_" + std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "cdp040.sbdb";
+  InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -761,7 +790,6 @@ Fixture MakeDescriptorPayloadFixture(std::string name,
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
-  create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 descriptor payload database create failed");
 
@@ -1458,28 +1486,13 @@ std::string ReadProtocolString(const std::vector<std::uint8_t>& data,
   return out;
 }
 
-struct ExecuteResultPayload {
-  std::string outcome;
-  std::uint64_t row_count = 0;
-  std::string operation_id;
-  std::string row_packet;
-  std::string detail;
-};
-
-ExecuteResultPayload DecodeExecuteResultPayload(const std::vector<std::uint8_t>& payload) {
-  std::size_t offset = 0;
-  ExecuteResultPayload result;
-  result.outcome = ReadProtocolString(payload, &offset);
-  Require(offset + 16 <= payload.size(), "CDP-040 execute result request UUID missing");
-  offset += 16;
-  Require(offset + 16 <= payload.size(), "CDP-040 execute result cursor UUID missing");
-  offset += 16;
-  Require(offset + 8 <= payload.size(), "CDP-040 execute result row count missing");
-  result.row_count = ReadU64(payload, offset);
-  offset += 8;
-  result.operation_id = ReadProtocolString(payload, &offset);
-  result.row_packet = ReadProtocolString(payload, &offset);
-  result.detail = ReadProtocolString(payload, &offset);
+scratchbird::parser::ipc::ServerExecutionResult DecodeExecuteResultPayload(
+    const std::vector<std::uint8_t>& payload) {
+  scratchbird::parser::ipc::ServerExecutionResult result;
+  scratchbird::parser::ipc::MessageVectorSet messages;
+  Require(scratchbird::parser::ipc::DecodeExecuteResultPayloadV2ForTest(payload, &result, &messages),
+          "CDP-040 complete native V2 execution response failed parser decoding");
+  Require(messages.diagnostics.empty(), "CDP-040 accepted result has unexpected diagnostic messages");
   return result;
 }
 
@@ -2406,6 +2419,68 @@ void TestDescriptorPayloadRowPageStorage() {
   }
 }
 
+void TestDecimalIndexKeysPreserveNumericOrder() {
+  auto fixture = MakeDescriptorPayloadFixture("decimal_numeric_order", 1890, true);
+  auto context = Begin(fixture, "cdp040-decimal-order");
+  const auto& types = DescriptorPayloadTypeNames();
+  const auto found = std::find(types.begin(), types.end(), "decimal");
+  Require(found != types.end(), "CDP-040 decimal datatype fixture missing");
+  const auto ordinal = static_cast<std::size_t>(found - types.begin());
+  const auto column = DescriptorPayloadColumnName(ordinal);
+  // Independent mathematical order: little-endian coefficients and scales
+  // must not be mistaken for lexicographic numeric sort keys.
+  const std::vector<std::string> ordered = {
+      "-99999999999999999999999999999999999999", "-257", "-256", "-255", "-10",
+      "-2.5", "-2.05", "-2", "-1.99", "-0.01", "-0.00000000000000000000000000000000000001",
+      "0", "0.00000000000000000000000000000000000001", "0.01", "1.99", "2", "2.05", "2.5",
+      "10", "255", "256", "257", "99999999999999999999999999999999999999"};
+  std::vector<api::EngineRowValue> rows;
+  std::vector<api::EngineUuid> identities;
+  for (std::size_t i = 0; i < ordered.size(); ++i) {
+    auto row = DescriptorPayloadRow(static_cast<int>(i + 1));
+    const auto decimal = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(ordered[i]);
+    Require(decimal.ok, "CDP-040 exact decimal test value invalid");
+    row.fields[ordinal].second = BinaryScalarValue("decimal",
+        {decimal.canonical_bytes.begin(), decimal.canonical_bytes.end()});
+    identities.push_back(row.requested_row_uuid);
+    rows.push_back(std::move(row));
+  }
+  const auto result = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, context, rows));
+  RequireOk(result, "CDP-040 decimal numeric-order ingest failed");
+  const auto loaded = api::LoadMgaRelationStoreState(context);
+  Require(loaded.ok, "CDP-040 decimal numeric-order state load failed");
+  api::EngineUuid index_uuid;
+  for (const auto& index : loaded.state.relation_metadata.indexes)
+    if (index.table_uuid == fixture.table_uuid && index.column_name == column)
+      index_uuid = index.index_uuid;
+  Require(uuid::IsEngineIdentityUuid(index_uuid), "CDP-040 decimal index identity missing");
+  std::vector<std::pair<std::string, api::EngineUuid>> keys;
+  for (const auto& entry : loaded.state.index_entries)
+    if (entry.index_uuid == index_uuid) keys.emplace_back(entry.key_value, entry.row_uuid);
+  Require(keys.size() == ordered.size(), "CDP-040 decimal index membership count drifted");
+  std::sort(keys.begin(), keys.end(), [](const auto& a, const auto& b) {
+    return std::lexicographical_compare(a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
+        [](unsigned char left, unsigned char right) { return left < right; });
+  });
+  for (std::size_t i = 0; i < keys.size(); ++i)
+    Require(keys[i].second == identities[i], "CDP-040 decimal index byte order differs from numeric order");
+  Commit(context);
+  auto duplicate_context = Begin(fixture, "cdp040-decimal-equality");
+  auto duplicate = DescriptorPayloadRow(100);
+  const auto equivalent = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian("2.50");
+  Require(equivalent.ok, "CDP-040 equivalent decimal encoding failed");
+  duplicate.fields[ordinal].second = BinaryScalarValue("decimal",
+      {equivalent.canonical_bytes.begin(), equivalent.canonical_bytes.end()});
+  const auto refused = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, duplicate_context, {duplicate}));
+  Require(!refused.ok && std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(),
+      [](const auto& diagnostic) { return diagnostic.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION"; }),
+      "CDP-040 decimal unique index accepted a numerically equivalent value");
+  Require(SelectCount(fixture, duplicate_context) == ordered.size(),
+          "CDP-040 refused decimal duplicate changed durable row membership");
+  Rollback(duplicate_context);
+}
+
 void TestDescriptorPayloadIndexKeysUseBinaryPayloads() {
   auto fixture =
       MakeDescriptorPayloadFixture("descriptor_payload_index_keys",
@@ -2465,11 +2540,7 @@ Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
                                            const std::string& type_name) {
   Fixture fixture;
   fixture.salt = salt;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_cdp040_" + name + "_" +
-                 std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "cdp040.sbdb";
+  InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
@@ -2477,7 +2548,6 @@ Fixture MakeOpaqueRenderOnlyPayloadFixture(std::string name,
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
   scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
-  create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "CDP-040 opaque payload database create failed");
 
@@ -2681,17 +2751,39 @@ void TestServerPublicAbiRoute() {
       execute_frame);
   Require(execute.accepted, "CDP-040 server public ABI native ingest was rejected");
   const auto payload = DecodeExecuteResultPayload(execute.payload);
-  Require(payload.outcome == "accepted", "CDP-040 server native ingest outcome drifted");
+  Require(payload.accepted && execute.response_schema_id == 4012,
+          "CDP-040 server native ingest outcome/schema drifted");
+  Require(payload.selected_transaction_present &&
+              payload.selected_transaction.local_transaction_id == context.local_transaction_id &&
+              payload.selected_transaction.transaction_uuid == context.transaction_uuid &&
+              !payload.finalized_transaction_present && !payload.replacement_transaction_present,
+          "CDP-040 native response lost its actual transaction owner or fabricated finality");
   Require(payload.operation_id == "dml.execute_native_bulk_ingest",
           "CDP-040 server native ingest operation id drifted");
-  Require(Contains(payload.row_packet, "operation_id=dml.execute_native_bulk_ingest"),
+  namespace packet = scratchbird::wire::public_result;
+  const auto operation = packet::Find(payload.row_packet, "operation_id");
+  Require(operation && operation->kind == packet::Kind::text &&
+              operation->value == "dml.execute_native_bulk_ingest",
           "CDP-040 server native ingest did not return native operation packet");
-  Require(Contains(payload.row_packet,
-                   "accepted_rows=2;inserted_rows=2;rejected_rows=0") &&
-              Contains(payload.row_packet,
-                       "direct_physical_bulk_row_count:2") &&
-              Contains(payload.row_packet,
-                       "result_payload_policy:summary_only"),
+  const auto summary = packet::Find(payload.row_packet, "row[0]");
+  std::vector<packet::Field> summary_fields;
+  Require(summary && summary->kind == packet::Kind::row &&
+              packet::Decode(summary->value, &summary_fields) && summary_fields.size() == 3,
+          "CDP-040 native ingest summary is not one exact framed three-field row");
+  const auto text_equals = [](std::string_view bytes, std::string_view name, std::string_view expected) {
+    const auto field = packet::Find(bytes, name);
+    return field && field->kind == packet::Kind::text && field->value == expected;
+  };
+  const auto count_evidence = packet::Evidence(payload.row_packet, "direct_physical_bulk_row_count");
+  const auto policy_evidence = packet::Evidence(payload.row_packet, "result_payload_policy");
+  Require(payload.row_count == 2 &&
+              text_equals(payload.row_packet, "row_count", "1") &&
+              !packet::Find(payload.row_packet, "row[1]") &&
+              text_equals(summary->value, "accepted_rows", "2") &&
+              text_equals(summary->value, "inserted_rows", "2") &&
+              text_equals(summary->value, "rejected_rows", "0") &&
+              count_evidence && count_evidence->kind == packet::Kind::text && count_evidence->value == "2" &&
+              policy_evidence && policy_evidence->kind == packet::Kind::text && policy_evidence->value == "summary_only",
           "CDP-040 bounded native ingest summary evidence drifted");
   Require(!Contains(payload.row_packet, "server-payload-1") &&
               !Contains(payload.row_packet, "server-payload-2"),
@@ -2806,11 +2898,30 @@ void TestReopenRecoveryEvidence() {
   Require(std::filesystem::exists(evidence_path),
           "CDP-040 recovery evidence was not persisted");
   const auto evidence = ReadTextFile(evidence_path);
-  Require(evidence.find("SBRECOVERY1") != std::string::npos,
-          "CDP-040 recovery evidence marker missing");
-  Require(evidence.find("WAL") == std::string::npos &&
-              evidence.find("wal") == std::string::npos,
-          "CDP-040 recovery evidence used WAL authority language");
+  Require(evidence.size() == 64 && evidence.starts_with("SBRECV02"),
+          "CDP-040 recovery evidence is not the exact native binary record");
+  platform::Uuid recovery_run;
+  std::copy_n(reinterpret_cast<const std::uint8_t*>(evidence.data() + 8),
+              16, recovery_run.bytes.begin());
+  Require(uuid::IsEngineIdentityUuid(recovery_run),
+          "CDP-040 recovery evidence omitted its native run UUID");
+  const auto read_integer = [&](std::size_t offset, unsigned width) {
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < width; ++i)
+      value |= std::uint64_t(static_cast<unsigned char>(evidence[offset + i])) << (8*i);
+    return value;
+  };
+  std::uint64_t checksum = 1469598103934665603ULL;
+  for (std::size_t i = 0; i < 56; ++i) {
+    checksum ^= static_cast<unsigned char>(evidence[i]);
+    checksum *= 1099511628211ULL;
+  }
+  // Authority is the manifest classification action, not substrings in UUID
+  // octets. Arbitrary binary identities can legitimately contain ASCII WAL.
+  Require(read_integer(24, 8) == 1 && read_integer(32, 8) == 1 &&
+              read_integer(40, 8) != 0 && read_integer(48, 4) == 2 &&
+              read_integer(52, 4) == 1 && read_integer(56, 8) == checksum,
+          "CDP-040 recovery evidence lost manifest authority or completed classification integrity");
 
   const auto second_open = db::OpenDatabaseFile({fixture.database_path.string(), false, false, false});
   Require(second_open.ok(), "CDP-040 second recovery open failed");
@@ -2877,7 +2988,7 @@ void TestSblrRegistryEntry() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   const bool fixed_scalar_only = argc == 2 && std::string_view(argv[1]) == "--native-fixed-scalars";
   Require(argc == 1 || fixed_scalar_only, "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
@@ -2900,11 +3011,17 @@ int main(int argc, char** argv) {
   TestDescriptorPayloadRowPageStorage();
   TestDescriptorPayloadIndexKeysUseBinaryPayloads();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
+  TestDecimalIndexKeysPreserveNumericOrder();
   TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
   TestDisabledAndInvalidRefusals();
   TestLogicalStatementRollbackOnFaultAndCancellation();
   TestServerPublicAbiRoute();
   TestRollbackInvisibilityAndCommittedReopenVisibility();
   TestReopenRecoveryEvidence();
+  std::cout << "native_bulk_ingest=passed descriptor_payload_types=" << DescriptorPayloadTypeNames().size()
+            << " decimal_numeric_order_and_equality=true binary_server_result=true binary_recovery_integrity=true\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

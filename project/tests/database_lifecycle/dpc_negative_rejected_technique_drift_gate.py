@@ -152,9 +152,19 @@ AUTHORITY_POSITIVE = (
     r"requires?|required|source[-_ ]?of[-_ ]?truth|authoritative|finality)"
 )
 AUTHORITY_POSITIVE_RE = re.compile(r"\b" + AUTHORITY_POSITIVE + r"\b", re.I)
+# Requiring a datatype's engine-owned receipt is admission, not a transfer of
+# MGA finality. Requirement language is forbidden here when its object is
+# transaction finality; ownership/decision language retains the wider scope.
+AUTHORITY_OWNERSHIP = (
+    r"(?:owns?|decides?|controls?|authorizes?|publishes?|determines?|drives?|"
+    r"source[-_ ]?of[-_ ]?truth|authoritative|finality)"
+)
+REQUIREMENT_AUTHORITY_TARGET = "(?:" + CRITICAL_AUTHORITY_TARGET + r"|durable|durability)"
 EXTERNAL_AUTHORITY_DRIFT_RE = re.compile(
-    r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b" + AUTHORITY_POSITIVE
+    r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b" + AUTHORITY_OWNERSHIP
     + r"\b[^.;\n]{0,80}\b" + AUTHORITY_TARGET + r"\b|"
+    r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b(?:requires?|required)\b[^.;\n]{0,80}\b"
+    + REQUIREMENT_AUTHORITY_TARGET + r"\b|"
     r"\b" + AUTHORITY_ACTOR + r"\b[^.;\n]{0,80}\b" + CRITICAL_AUTHORITY_TARGET
     + r"\b[^.;\n]{0,80}\b" + AUTHORITY_POSITIVE + r"\b|"
     r"\b" + CRITICAL_AUTHORITY_TARGET + r"\b[^.;\n]{0,80}\b(?:is|=|:|from|by|owned by|driven by|uses?)"
@@ -438,6 +448,8 @@ def detector_self_check() -> list[str]:
         ("wal_recovery_authority", "redo finality authority is diagnostic truth"),
         ("external_finality_authority", "parser owns commit finality for cleanup"),
         ("external_finality_authority", "reference visibility authority is required"),
+        ("external_finality_authority", "parser requires commit authority"),
+        ("external_finality_authority", "UUID owns datatype authority"),
         (
             "hard_coded_catalog_object_uuid",
             f'catalog object_uuid = "{synthetic_uuid_literal()}"',
@@ -494,6 +506,22 @@ def detector_self_check() -> list[str]:
             "detector self-check false positives: "
             + "; ".join(f"{f.category}:{f.detail}" for f in allowed_findings)
         )
+    receipt_diagnostics = (
+        "catalog UUID comparison requires exact statement-owned UUID datatype authority",
+        "timestamp comparison requires engine-owned datatype authority",
+        "parser requires the engine-owned descriptor authority",
+    )
+    path = Path("project/src/core/dpc067_receipt_sentinel.cpp")
+    for receipt in receipt_diagnostics:
+        if scan_text(path, receipt):
+            errors.append(f"datatype receipt was confused with finality: {receipt}")
+        # A legitimate receipt cannot conceal a separate transfer of finality.
+        for actor in ("parser", "client", "driver", "reference", "timestamp", "UUID", "uuidv7", "event-stream"):
+            for target in ("commit", "rollback", "visibility", "cleanup", "recovery", "finality", "durability", "source-of-truth"):
+                for verb in ("owns", "requires", "required"):
+                    sample = receipt + "; " + actor + " " + verb + " " + target + " authority"
+                    if not any(f.category == "external_finality_authority" for f in scan_text(path, sample)):
+                        errors.append(f"datatype receipt concealed external authority: {sample}")
     return errors
 
 

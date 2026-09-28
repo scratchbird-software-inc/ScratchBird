@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -600,34 +601,56 @@ def find_seeder(build_root: Path) -> Path:
     raise AssertionError("unreachable")
 
 
+EXAMPLE_DURABLE_NAMES = ("scratchbird-example.sbdb", "scratchbird-example.manifest.json",
+                         "scratchbird-example.sbdb.sb.txn_publish")
+EXAMPLE_TRANSIENT_NAME = "scratchbird-example.sbdb.sb.owner.lock"
+
+
+def validate_seed_artifacts(source: Path) -> list[Path]:
+    artifacts = {entry.name: entry for entry in source.iterdir()}
+    if set(artifacts) - {*EXAMPLE_DURABLE_NAMES, EXAMPLE_TRANSIENT_NAME}:
+        raise RuntimeError("example seed produced unclassified artifacts")
+    for name, path in artifacts.items():
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("example seed artifact is not a regular owned file: " + name)
+    for name in EXAMPLE_DURABLE_NAMES:
+        if name not in artifacts or artifacts[name].stat().st_size == 0:
+            raise RuntimeError("example seed durable artifact is missing or empty: " + name)
+    return [artifacts[name] for name in EXAMPLE_DURABLE_NAMES]
+
+
 def generate_example_database(args, stage_root: Path, build_root: Path) -> None:
     seeder = find_seeder(build_root)
     example_root = stage_root / "data" / "example"
     example_root.mkdir(parents=True, exist_ok=True)
-    database_path = example_root / "scratchbird-example.sbdb"
-    manifest_path = example_root / "scratchbird-example.manifest.json"
+    if any((example_root / name).exists() or (example_root / name).is_symlink()
+           for name in (*EXAMPLE_DURABLE_NAMES, EXAMPLE_TRANSIENT_NAME)):
+        fail("example publication destination is not fresh")
     resource_root = stage_root / "project" / "resources" / "seed-packs" / "initial-resource-pack"
     env = os.environ.copy()
     env.setdefault("TMPDIR", str(build_root.parent / "tmp"))
     Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            str(seeder),
-            "--output",
-            str(database_path),
-            "--manifest",
-            str(manifest_path),
-            "--resource-seed-pack-root",
-            str(resource_root),
-            "--overwrite",
-        ],
-        stage_root,
-        env,
-    )
-    if not database_path.exists() or database_path.stat().st_size == 0:
-        fail("example database was not generated")
-    if not manifest_path.exists() or manifest_path.stat().st_size == 0:
-        fail("example database manifest was not generated")
+    # Database process locks contain machine-local ownership/security evidence.
+    # Seed outside the release tree and wait for child exit before publishing
+    # only the complete durable database, inventory and descriptive manifest.
+    with tempfile.TemporaryDirectory(prefix="example-seed-", dir=build_root.parent) as temporary:
+        source = Path(temporary)
+        run(
+            [
+                str(seeder),
+                "--output",
+                str(source / EXAMPLE_DURABLE_NAMES[0]),
+                "--manifest",
+                str(source / EXAMPLE_DURABLE_NAMES[1]),
+                "--resource-seed-pack-root",
+                str(resource_root),
+            ],
+            stage_root,
+            env,
+        )
+        artifacts = validate_seed_artifacts(source)
+        for artifact in artifacts:
+            shutil.copy2(artifact, example_root / artifact.name)
 
 
 def sha256_file(path: Path) -> str:

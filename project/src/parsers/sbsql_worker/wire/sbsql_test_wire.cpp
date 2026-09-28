@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "admitted_datatype_cohort.hpp"
 #include "engine/sblr/native_row_field.hpp"
 #include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "wire/native_insert_literals.hpp"
@@ -246,6 +247,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -275,7 +277,6 @@
 #include <cerrno>
 #include <sys/select.h>
 #include <sys/socket.h>
-#include <iostream>
 #include <unistd.h>
 #endif
 
@@ -22479,6 +22480,44 @@ ResolvedObjectReferenceSeed Rcp079ProofSeed(
   return seed;
 }
 
+
+void BindProofColumnDatatype(ipc::PublicRelationColumnDescriptor* column,
+    const core::platform::Uuid& snapshot, std::uint64_t generation) {
+  const auto rows = core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1();
+  const auto found = std::ranges::find_if(rows, [&](const auto& row) {
+    return row.catalog_snapshot_uuid == snapshot &&
+        row.catalog_generation == generation && row.registry_generation == generation &&
+        row.canonical_binary_type_code == static_cast<std::uint32_t>(
+            core::datatypes::CanonicalTypeIdFromStableName(column->canonical_type_name));
+  });
+  if (found == rows.end()) return; // The proof fails; never invent an authority tuple.
+  column->datatype_identity_present = true;
+  column->datatype_descriptor_uuid = found->descriptor_uuid;
+  column->datatype_descriptor_generation = found->descriptor_generation;
+  column->datatype_type_uuid = found->type_uuid;
+  column->datatype_type_generation = found->type_generation;
+  column->datatype_codec_id = found->codec_id;
+  column->datatype_codec_version = found->codec_version;
+  column->datatype_codec_generation = found->codec_generation;
+  column->datatype_canonical_value_bytes = found->canonical_value_bytes;
+  column->datatype_null_encoding = found->null_encoding_code;
+}
+
+
+void BindProofScalarProfiles(ParserStatementContext* statement) {
+  const auto manifest = core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return;
+  static constexpr std::array<std::string_view, 5> types{
+      "int64", "text", "boolean", "json_document", "list"};
+  for (auto& profile : statement->descriptor_profiles) {
+    if (profile.profile_kind < 1 || profile.profile_kind > 10) continue;
+    profile.type_uuid = LookupNativeCanonicalTypeIdentity(manifest.manifest,
+        core::datatypes::CanonicalTypeIdFromStableName(
+            std::string(types[(profile.profile_kind - 1) / 2])))
+        .value_or(core::platform::Uuid{});
+  }
+}
+
 bool Rcp079BuildAndBind(const std::string_view sql,
                         const bool authoritative_text = false,
                         std::string* proof_detail = nullptr,
@@ -22503,14 +22542,15 @@ bool Rcp079BuildAndBind(const std::string_view sql,
         ref, ast.native_relational.catalog_relation_sources.size() >= 2));
   }
   auto statement = Rcp079ProofStatementContext();
+  BindProofScalarProfiles(&statement);
   if (authoritative_text) {
     constexpr core::platform::Uuid kTextDescriptorUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}};
     constexpr core::platform::Uuid kTextTypeUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x19}};
-    constexpr core::platform::Uuid kCatalogSnapshotUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}};
+    constexpr auto kCatalogSnapshotUuid = core::datatypes::kDatatypeCohortV4;
     statement.literal_preliminary_receipt_uuid = Rcp073ProofUuid(8890);
     statement.literal_catalog_snapshot_uuid =
         kCatalogSnapshotUuid;
-    statement.literal_catalog_generation = 1;
+    statement.literal_catalog_generation = 4;
     const auto seed = std::ranges::find_if(seeds, [](const auto& candidate) {
       return std::ranges::any_of(
           candidate.resolved.relation_descriptor.columns,
@@ -22529,7 +22569,7 @@ bool Rcp079BuildAndBind(const std::string_view sql,
         });
     const auto identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            kCatalogSnapshotUuid, 1, 1,
+            kCatalogSnapshotUuid, 4, 4,
             kTextDescriptorUuid, 1);
     if (column == projection.columns.end() || !identity.ok ||
         identity.row.type_uuid != kTextTypeUuid) {
@@ -22541,8 +22581,10 @@ bool Rcp079BuildAndBind(const std::string_view sql,
     }
     projection.datatype_catalog_snapshot_uuid =
         kCatalogSnapshotUuid;
-    projection.datatype_catalog_generation = 1;
-    projection.datatype_registry_generation = 1;
+    projection.datatype_catalog_generation = 4;
+    projection.datatype_registry_generation = 4;
+    for (auto& projected_column : projection.columns)
+      BindProofColumnDatatype(&projected_column, kCatalogSnapshotUuid, 4);
     column->type_descriptor_uuid = kTextDescriptorUuid;
     column->canonical_type_name = "text";
     column->datatype_descriptor_uuid = kTextDescriptorUuid;
@@ -22580,6 +22622,7 @@ bool Rcp079BuildAndBind(const std::string_view sql,
   config.bundle_contract_id = "sbp_sbsql@rcp079-frontdoor-proof-v1";
   config.build_id = "rcp079-frontdoor-proof-v1";
   SessionContext session;
+  session.admitted_parser_package_uuid = config.parser_uuid;
   session.authenticated = true;
   session.session_uuid = Rcp073ProofUuid(8801);
   session.connection_uuid = Rcp073ProofUuid(8802);
@@ -22588,7 +22631,8 @@ bool Rcp079BuildAndBind(const std::string_view sql,
   session.catalog_epoch = 79;
   session.security_policy_epoch = 79;
   session.descriptor_epoch = 79;
-  const auto bound = BindAst(ast, cst, config, session, {}, &*context);
+  auto bound = BindAst(ast, cst, config, session, {}, &*context);
+  bound.command_registry_snapshot_uuid = statement.catalog_epoch_uuid;
   if (!bound.bound || !bound.native_relational.bound ||
       bound.messages.has_errors() ||
       bound.native_relational.catalog_relation_sources.size() !=
@@ -24163,6 +24207,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   if (!ast.native_relational.accepted() || refs.size() != 2) return 0;
 
   auto statement = Rcp079ProofStatementContext();
+  BindProofScalarProfiles(&statement);
   statement.literal_preliminary_receipt_uuid = Rcp073ProofUuid(9900);
   statement.literal_catalog_snapshot_uuid = kCatalogSnapshotUuid;
   statement.literal_catalog_generation = 1;
@@ -24190,7 +24235,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   statement.literal_statement_descriptor_profiles.push_back(
       std::move(literal_filter_profile));
 
-  const auto make_column = [](const std::uint32_t ordinal,
+  const auto make_column = [&](const std::uint32_t ordinal,
                               const std::string& name,
                               const core::platform::Uuid& descriptor_uuid,
                               const core::platform::Uuid& type_uuid,
@@ -24204,6 +24249,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
     column.type_descriptor_kind = "canonical_type_descriptor";
     column.canonical_type_name = type_name;
     column.datatype_type_uuid = type_uuid;
+    BindProofColumnDatatype(&column, kCatalogSnapshotUuid, 1);
     column.encoded_type_descriptor =
         std::string("nullability=") +
         (nullable ? "nullable" : "non_null");
@@ -24318,6 +24364,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   config.bundle_contract_id = "sbp_sbsql@authoritative-multisource-v1";
   config.build_id = "authoritative-multisource-v1";
   SessionContext session;
+  session.admitted_parser_package_uuid = config.parser_uuid;
   session.authenticated = true;
   session.session_uuid = Rcp073ProofUuid(9971);
   session.connection_uuid = Rcp073ProofUuid(9972);
@@ -24380,7 +24427,8 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
                           ? projected.descriptors.end()
                           : projected.descriptors.begin() +
                                 text_descriptor_indices.front();
-    const auto bound = BindAst(ast, cst, config, session, {}, &projected);
+    auto bound = BindAst(ast, cst, config, session, {}, &projected);
+    bound.command_registry_snapshot_uuid = statement.catalog_epoch_uuid;
     const auto lowered = LowerToSblr(bound, cst, session);
     const bool exact_text_tuple =
         text != projected.descriptors.end() &&
@@ -24631,7 +24679,23 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   missing_text.datatype_codec_generation = 0;
   missing_text.datatype_canonical_value_bytes = 0;
   missing_text.datatype_null_encoding = 0;
-  if (!build(statement, missing, nullptr)) mask |= 1ull << 1;
+  bool native_projection_mutations_refused = true;
+  for (std::size_t source = 0; source < seeds.size(); ++source) {
+    for (std::size_t slot = 0; slot < seeds[source].resolved.relation_descriptor.columns.size(); ++slot) {
+      for (unsigned field = 0; field < 2; ++field) {
+        for (std::size_t byte = 0; byte < 16; ++byte) {
+          auto malformed = seeds;
+          auto& column = malformed[source].resolved.relation_descriptor.columns[slot];
+          auto& identity = field == 0 ? column.datatype_descriptor_uuid : column.datatype_type_uuid;
+          identity.bytes[byte] ^= (byte == 6 || byte == 8) ? 1 : 0x80;
+          native_projection_mutations_refused =
+              !build(statement, malformed, nullptr) && native_projection_mutations_refused;
+        }
+      }
+    }
+  }
+  if (!build(statement, missing, nullptr) && native_projection_mutations_refused)
+    mask |= 1ull << 1;
 
   auto partial = seeds;
   partial.front().resolved.relation_descriptor.columns[1]

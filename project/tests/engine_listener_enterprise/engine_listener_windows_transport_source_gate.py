@@ -47,6 +47,7 @@ def compile_windows_object(
         compiler,
         "-std=c++23",
         "-DWIN32_LEAN_AND_MEAN",
+        "-Wa,-mbig-obj",
         f"-I{project_root / 'src/listener'}",
         f"-I{project_root / 'src/parsers/sbsql_worker'}",
         f"-I{project_root / 'src/manager/protocol'}",

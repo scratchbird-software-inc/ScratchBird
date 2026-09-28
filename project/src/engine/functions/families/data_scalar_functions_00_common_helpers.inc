@@ -858,12 +858,11 @@ std::string ContextColumnDescriptorSummaryJson(
 
 std::optional<std::string> ContextColumnDescriptorJson(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
-    std::string_view table_uuid,
+    const scratchbird::core::platform::Uuid& table_uuid,
     std::string_view column_name) {
-  const auto table = scratchbird::core::uuid::ParseUuid(TrimAscii(std::string(table_uuid)));
-  if (!table.ok() || table.value.is_nil()) return std::nullopt;
-  if (table.value != context.database_uuid &&
-      table.value != context.current_schema_uuid) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) return std::nullopt;
+  if (table_uuid != context.database_uuid &&
+      table_uuid != context.current_schema_uuid) {
     return std::nullopt;
   }
   const std::string column = LowerAscii(TrimAscii(std::string(column_name)));
@@ -894,7 +893,8 @@ std::optional<std::string> ContextColumnDescriptorJson(
   std::string out = "{";
   out += "\"descriptor_kind\":\"column_descriptor\"";
   out += ",\"table_uuid\":";
-  out += JsonStringEscape(std::string(table_uuid));
+  // Display projection only, after exact native identity lookup.
+  out += JsonStringEscape(scratchbird::core::uuid::UuidToString(table_uuid));
   out += ",\"column_name\":";
   out += JsonStringEscape(column);
   out += ",\"descriptor_id\":";

@@ -199,10 +199,10 @@ def validate_active_controls(root: Path, workplan_root: Path) -> dict[str, int]:
         ):
             require(row[column].strip(), f"finding {finding_id} has empty {column}")
         require(
-            row["status"] in {"open", "resolved"},
+            row["status"] in {"open", "in_progress", "resolved_component_only", "resolved"},
             f"finding {finding_id} has unknown status {row['status']}",
         )
-        if row["status"] == "resolved":
+        if row["status"] in {"resolved", "resolved_component_only"}:
             require(row["resolution"].strip(), f"resolved finding has no resolution: {finding_id}")
 
     decisions = read_csv(
@@ -270,17 +270,24 @@ def validate_active_controls(root: Path, workplan_root: Path) -> dict[str, int]:
             row["validation_result"] == "PASS",
             f"generated provenance is not retained as PASS: {artifact_id}",
         )
-        generator = Path(row["generator_path"])
-        generator_candidates = (workplan_root / generator, root / generator)
-        require(
-            any(path.is_file() for path in generator_candidates),
-            f"retained generator path is missing: {artifact_id} {row['generator_path']}",
-        )
+        # A recipe may name multiple source generators and an anchored procedure.
+        # Resolve every member, including controlled workspace-relative paths;
+        # finding one valid member must not hide a missing or escaping member.
+        allowed_roots = (root.resolve(), workplan_root.resolve())
+        for reference in row["generator_path"].split(";"):
+            relative = reference.split("#", 1)[0]
+            require(bool(relative), f"empty retained generator member: {artifact_id}")
+            generator = Path(relative)
+            candidates = (workplan_root / generator, root / generator, root.parent / generator)
+            require(any(path.is_file() and any(owner in path.resolve().parents
+                                               for owner in allowed_roots)
+                        for path in candidates),
+                    f"retained generator path is missing or outside controlled roots: {artifact_id} {reference}")
 
     return {
-        "open_findings": sum(row["status"] == "open" for row in findings),
+        "open_findings": sum(row["status"] != "resolved" for row in findings),
         "open_release_blockers": sum(
-            row["status"] == "open" and row["severity"] == "release_blocking"
+            row["status"] != "resolved" and row["severity"] == "release_blocking"
             for row in findings
         ),
         "owner_decisions": len(decisions),

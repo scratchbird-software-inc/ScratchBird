@@ -683,6 +683,17 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
                      ${CMAKE_CURRENT_BINARY_DIR}/sbsql_source_rendering)
   endif()
 
+
+  add_executable(datatype_storage_identity_conformance
+    datatype_storage_identity_conformance.cpp)
+  target_compile_features(datatype_storage_identity_conformance PRIVATE cxx_std_23)
+  target_link_libraries(datatype_storage_identity_conformance
+    PRIVATE sb_core_datatypes sb_core_uuid)
+  add_test(NAME datatype_storage_identity_conformance
+    COMMAND datatype_storage_identity_conformance)
+  set_tests_properties(datatype_storage_identity_conformance PROPERTIES
+    LABELS "binary_uuid;native_datatype_cohort;database_lifecycle_storage;datatype_storage_identity")
+
   add_executable(cdp_native_bulk_ingest_api_gate
     cdp_native_bulk_ingest_api_gate.cpp
   )
@@ -694,6 +705,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sb_engine_internal_api
       sb_engine_sblr
       sbl_sbsql_source_rendering
+      sbl_parser_server_ipc_client
       sb_server_core
       sb_storage_database
   )

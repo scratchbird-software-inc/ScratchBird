@@ -871,9 +871,12 @@
     if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
       return MakeFunctionSuccess(request, {MakeNullValue("json_document")});
     }
+    if (!scratchbird::engine::sblr::SblrUuidPayloadValid(request.arguments[0].value) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.arguments[0].value.uuid_value))
+      return RefuseFunctionInvalidInput(request, "column descriptor requires a binary system UUID");
     const auto descriptor = ContextColumnDescriptorJson(
         request.context.sblr_context,
-        ValueAsText(request.arguments[0].value),
+        request.arguments[0].value.uuid_value,
         ValueAsText(request.arguments[1].value));
     if (!descriptor) return MakeFunctionSuccess(request, {MakeNullValue("json_document")});
     return MakeFunctionSuccess(request, {MakeTextValue("json_document", *descriptor)});

@@ -119,8 +119,10 @@ def validate_master(root: Path, build_root: Path | None) -> dict[str, int | str]
         summary["implementation_items"]
         == summary["command_identities"]
         + summary["opcode_identities"]
-        + summary["envelope_identities"],
-        "implementation population does not equal Core command + opcode + envelope identities",
+        + summary["envelope_identities"]
+        + summary["profile_command_identities"]
+        + summary["implementation_element_identities"],
+        "implementation population does not equal Core identities plus validated profile/element obligations",
     )
     baseline_test_obligations = 4 * (
         summary["command_identities"] + summary["opcode_identities"]
@@ -131,8 +133,8 @@ def validate_master(root: Path, build_root: Path | None) -> dict[str, int | str]
     )
     # The language gate above proves that every identity retains exactly one
     # contract, integration, fault, and E2E baseline obligation.  Additional
-    # narrowly scoped obligations (currently the owner-approved opcode-775
-    # transport/recovery tranche) strengthen that baseline and must not make
+    # narrowly scoped profile, operand, and transport/recovery obligations
+    # strengthen that baseline and must not make
     # the master accounting gate reject an otherwise exact population.
     summary["supplemental_test_obligations"] = (
         summary["test_obligations"] - baseline_test_obligations

@@ -224,20 +224,150 @@ REQUIRED_CTEST_NAMES = {
 }
 
 IMPLEMENTATION_STATUSES = {
-    "absent",
-    "partial",
-    "conformant_verified",
-    "corrected_verified",
-    "exact_refusal_verified",
-    "blocked_owner_decision",
+    "planned", "in_progress", "conformant_verified", "corrected_verified",
+    "normative_refusal_verified",
 }
 
-TEST_STATUSES = {
-    "test_required",
-    "audit_candidate",
-    "verified_pass",
-    "blocked_owner_decision",
+TEST_STATUSES = {"planned", "in_progress", "verified_pass"}
+
+# Explicitly tracked Core-derived profile/operand obligations. This is inventory
+# membership, not proof of implementation or permission to promote a row.
+PROFILE_COMMANDS = {
+    "SBSQL-0B00DEA678E2": "general",
+    "SBSQL-C5D151D17944": "general",
+    "SBSQL-B5E9C0943E63": "general"
 }
+ELEMENT_TEST_FAMILIES = {
+    "PROCEDURE_ABI_AND_ARGUMENT_VECTOR_V1": [
+        [
+            "contract",
+            "strict_pabi_parg_codec"
+        ]
+    ],
+    "SBLR_SOURCE_ARTIFACT_MAP_V1": [
+        [
+            "contract",
+            "all_thirteen_symbol_kinds_codec"
+        ],
+        [
+            "contract",
+            "anchor_and_envelope_binding"
+        ],
+        [
+            "contract",
+            "canonical_hash_resource_bounds"
+        ],
+        [
+            "contract",
+            "external_retain_malformed_checksum_redaction_binding_refusal"
+        ],
+        [
+            "contract",
+            "external_retain_request_ack_codec"
+        ],
+        [
+            "contract",
+            "node_and_object_authority"
+        ],
+        [
+            "contract",
+            "redaction_and_decompile_policy"
+        ],
+        [
+            "contract",
+            "single_executable_member_opcode_stream_node_profile"
+        ],
+        [
+            "contract",
+            "tag_0x30_and_tag_0x12_channel_separation"
+        ],
+        [
+            "e2e",
+            "authenticated_commit_rollback_container_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_commit_rollback_external_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_quoted_create_schema_container_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_quoted_create_schema_external_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_savepoint_control_container_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_savepoint_control_external_render_reparse"
+        ],
+        [
+            "e2e",
+            "authenticated_sbsql_external_reference_server_render_reparse_process"
+        ],
+        [
+            "e2e",
+            "authenticated_sbsql_server_render_reparse_process"
+        ],
+        [
+            "integration",
+            "bare_sbop_and_duplicate_authority_refusal"
+        ],
+        [
+            "integration",
+            "public_container_renderer_udr_reparse"
+        ],
+        [
+            "integration",
+            "receipt_private_external_replay_nondisclosure"
+        ]
+    ],
+    "SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1": [
+        [
+            "contract",
+            "internal_operation_boundary_and_public_parent_partition"
+        ],
+        [
+            "e2e",
+            "policy_evaluation_parent_public_e2e"
+        ],
+        [
+            "e2e",
+            "visibility_parent_public_e2e"
+        ],
+        [
+            "fault",
+            "policy_parent_fault_and_recovery"
+        ]
+    ],
+    "SECURITY_PRIVILEGE_TEMPLATE_DURABLE_CATALOG_V1": [
+        [
+            "contract",
+            "binary_template_identity_roundtrip"
+        ],
+        [
+            "e2e",
+            "parser_resolved_binary_template_public_lifecycle"
+        ],
+        [
+            "fault",
+            "interrupted_uuid_migration_recovery"
+        ],
+        [
+            "integration",
+            "durable_catalog_transaction_visibility"
+        ],
+        [
+            "integration",
+            "versioned_authority_journal_upgrade"
+        ]
+    ]
+}
+ABSORBED_MATCH_TESTS = {"CSC-TEST-003925", "CSC-TEST-005817", "CSC-TEST-005819"}
 
 TEST_FAMILIES = {
     "sbsql_command": {
@@ -580,12 +710,14 @@ def validate_workplan_obligations(
         )
         if row["area_id"] == "IA-EXT-OPT":
             require(
-                row["implementation_status"] in {"absent", "partial"},
+                row["implementation_status"] == "in_progress",
                 "absorbed optimizer/QOW obligation was promoted without an exact "
                 f"local review: {key} {row['implementation_status']}",
             )
             require(
-                row["review_status"].startswith("owner_absorbed_2026-09-04"),
+                row["review_status"].startswith("owner_absorbed_2026-09-04")
+                or (key == ("sblr_opcode", "SBLR_MATCH_RECOGNIZE") and
+                    row["review_status"] == "codex_bounded_match_recognize_profile_verified_2026-09-08"),
                 f"absorbed optimizer/QOW obligation loses its review provenance: {key}",
             )
         implementation_by_key[key] = row
@@ -593,11 +725,18 @@ def validate_workplan_obligations(
     command_families: dict[str, set[str]] = defaultdict(set)
     for command in commands:
         command_families[command["surface_id"]].add(command["family"])
+    for item_id, family in PROFILE_COMMANDS.items():
+        require(item_id not in command_families, "profile command now requires Core reconciliation: " + item_id)
+        row = implementation_by_key.get(("sbsql_command", item_id), {})
+        require(row.get("expected_route") == "parent_profile:SBLR_DDL_CREATE_PROCEDURE",
+                "procedure profile parent route drift: " + item_id)
     expected_commands = {("sbsql_command", item_id) for item_id in command_families}
+    expected_profile_commands = {("sbsql_command", item_id) for item_id in PROFILE_COMMANDS}
+    expected_elements = {("implementation_element", name) for name in ELEMENT_TEST_FAMILIES}
     opcode_by_name = {row["opcode_name"]: row for row in opcodes}
     expected_opcodes = {("sblr_opcode", name) for name in opcode_by_name}
     expected_envelopes = {("sblr_envelope", name) for name in envelopes}
-    expected_implementation = expected_commands | expected_opcodes | expected_envelopes
+    expected_implementation = expected_commands | expected_opcodes | expected_envelopes | expected_elements | expected_profile_commands
     require(
         set(implementation_by_key) == expected_implementation,
         "active implementation ledger does not exactly cover Core command/opcode/envelope identities",
@@ -631,7 +770,7 @@ def validate_workplan_obligations(
         key = (row["item_type"], row["item_id"])
         require(key in implementation_by_key, f"test obligation has no implementation item: {key}")
         require(
-            row["item_type"] in TEST_FAMILIES,
+            row["item_type"] in TEST_FAMILIES or key in expected_elements,
             f"unexpected directly tested item type: {row['item_type']}",
         )
         require(
@@ -643,45 +782,128 @@ def validate_workplan_obligations(
             f"test/implementation area drift for {test_id}",
         )
         require(
-            row["area_id"] in row["planned_ctest_label"]
-            and row["required_layer"] in row["planned_ctest_label"],
+            row["area_id"] in re.split(r"[;|]", row["planned_ctest_label"])
+            and row["required_layer"] in re.split(r"[;|]", row["planned_ctest_label"]),
             f"test obligation label loses area/layer identity: {test_id}",
         )
         if row["area_id"] == "IA-EXT-OPT":
             require(
-                row["implementation_status"] in {"test_required", "audit_candidate"},
+                row["implementation_status"] == ("verified_pass" if test_id in ABSORBED_MATCH_TESTS else "planned")
+                and (test_id not in ABSORBED_MATCH_TESTS or row["item_id"] == "SBLR_MATCH_RECOGNIZE"),
                 "absorbed optimizer/QOW test was promoted without an exact local "
                 f"review: {test_id} {row['implementation_status']}",
             )
+        core_authority_count = 0
+        annotation_fields = {"operand": "operand_contract", "executor": "executor_binding_requirement",
+                             "result": "result_contract", "effect": "transaction_effect"}
         for authority in row["controlling_authority"].split("|"):
+            if authority in {"ordered_execution_algorithm", "IA-DECISION-0010", "E2E_TEST_CONTRACT.md"}:
+                # These annotate the test method/owner directive, never product behavior.
+                if authority == "ordered_execution_algorithm":
+                    require(row["item_type"] == "sblr_opcode" and
+                            "registries/sblr-opcodes.yaml#" in row["controlling_authority"],
+                            "execution algorithm annotation lacks opcode authority: " + test_id)
+                elif authority == "E2E_TEST_CONTRACT.md":
+                    require((workplan_root / authority).is_file(), "missing public-route test contract")
+                else:
+                    decisions = read_csv(workplan_root / "OWNER_DECISIONS.csv",
+                                         {"decision_id", "status"}, "owner decisions")
+                    matches = [d for d in decisions if d["decision_id"] == authority]
+                    require(len(matches) == 1 and matches[0]["status"] == "accepted_full_implementation_requirements",
+                            "owner implementation directive is not admitted")
+                continue
+            if "=" in authority and "/" not in authority:
+                field, value = authority.split("=", 1)
+                opcode = opcode_by_name.get(row["item_id"], {})
+                require(row["item_type"] == "sblr_opcode" and field in annotation_fields and
+                        value == opcode.get(annotation_fields.get(field, "")),
+                        "test opcode annotation differs from Core: " + test_id + " " + authority)
+                continue
             authority_path = authority.split("#", 1)[0]
             if authority_path.startswith("Specifications/Core/"):
                 authority_path = authority_path.removeprefix("Specifications/Core/")
-            require(
-                authority_path in core_authorities,
-                f"test obligation cites non-admitted Core authority: {test_id} {authority_path}",
-            )
+            require(authority_path in core_authorities,
+                    f"test obligation cites non-admitted Core authority: {test_id} {authority_path}")
+            core_authority_count += 1
+        require(core_authority_count > 0, "test has annotations but no Core authority: " + test_id)
         tests_by_item[key].append(row)
 
-    directly_tested_items = expected_commands | expected_opcodes
+    # Grammar children are not independent executor roots. Their exact shared
+    # ABI/create/invoke obligations are retained in addition to every original
+    # Core command/opcode baseline, including each parent's fault obligation.
+    shared_profile_tests = {f"CSC-TEST-{n:06d}" for n in range(5808, 5814)}
+    require(shared_profile_tests <= test_ids, "procedure profile lost shared ABI/public-route evidence")
+    for key in expected_profile_commands:
+        row = implementation_by_key[key]
+        require(row["family"] == PROFILE_COMMANDS[key[1]], "procedure syntax family drift")
+        require(all(test_id in row["existing_test_evidence"] for test_id in shared_profile_tests),
+                "procedure syntax child lost shared obligations: " + key[1])
+    directly_tested_items = expected_commands | expected_opcodes | expected_elements | {("sbsql_command", "SBSQL-0B00DEA678E2")}
     require(
         set(tests_by_item) == directly_tested_items,
         "test ledger does not exactly cover every Core command and opcode identity",
     )
     required_layers = {"contract", "integration", "fault", "e2e"}
     for key, item_tests in tests_by_item.items():
-        expected_families = TEST_FAMILIES[key[0]]
+        if key in expected_profile_commands:
+            require(len(item_tests) == 1 and item_tests[0]["test_id"] == "CSC-TEST-005812" and
+                    item_tests[0]["required_layer"] == "e2e" and
+                    item_tests[0]["test_family"] == "authenticated_one_in_bigint_create_invoke",
+                    "procedure syntax direct obligation drift")
+            continue
+        if key in expected_elements:
+            expected_pairs = sorted(tuple(pair) for pair in ELEMENT_TEST_FAMILIES[key[1]])
+            actual_pairs = sorted((row["required_layer"], row["test_family"]) for row in item_tests)
+            require(actual_pairs == expected_pairs, "implementation element obligation drift: " + str(key))
+            continue
+        expected_families = dict(TEST_FAMILIES[key[0]])
+        if key in {("sbsql_command", "SBSQL-AA3896D3895F"),
+                   ("sbsql_command", "SBSQL-E64AF6FD5CD3")}:
+            expected_families = {"e2e": "canonical_authenticated_public_route",
+                "contract": "strict_command_and_descriptor_carrier",
+                "integration": "authenticated_authority_and_executor_fence",
+                "fault": "cancellation_atomicity_and_replay"}
+        elif key == ("sbsql_command", "SBSQL-CCE2E0A8B006"):
+            expected_families["e2e"] = "canonical_public_observer"
+        elif key == ("sblr_opcode", "SBLR_SECURITY_POLICY_SHOW"):
+            expected_families["e2e"] = "canonical_public_e2e"
+            expected_families["integration"] = "availability_and_refusal"
         baseline_by_layer: dict[str, dict[str, str]] = {}
         for layer in required_layers:
+            candidates = item_tests
+            family = expected_families[layer]
+            expected_count = 1
+            if key == ("sblr_opcode", "SBLR_SECURITY_POLICY_SHOW") and layer == "fault":
+                # The exact command and opcode share the same dedicated
+                # cancellation/receipt-bound public-ABI test, not a generic
+                # fault marker or inference from a successful observer.
+                roots = [command for command in commands
+                         if command["surface_id"] == "SBSQL-CCE2E0A8B006"]
+                require(roots and all(command["root_route"] == "SBLR_SECURITY_POLICY_SHOW"
+                                      for command in roots), "policy observer Core root drift")
+                candidates = [row for row in tests_by_item[("sbsql_command", "SBSQL-CCE2E0A8B006")]
+                              if row["test_id"] == "CSC-TEST-002164"]
+                require(len(candidates) == 1 and
+                        "sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault" in
+                        candidates[0]["existing_test_evidence"], "policy observer lost dedicated fault proof")
+                family = "resource_cancellation"
+            if key == ("sblr_opcode", "SBLR_KV_STRUCTURED_READ"):
+                # Both retained baseline cohorts remain obligations. Neither
+                # may silently disappear when their opcode identity coalesces.
+                offset = {"e2e": 0, "contract": 1, "integration": 2, "fault": 3}[layer]
+                expected_ids = {f"CSC-TEST-{n + offset:06d}" for n in (2561, 3933)}
+                require({row["test_id"] for row in candidates if row["required_layer"] == layer} == expected_ids,
+                        "KV structured read lost a retained baseline cohort")
+                expected_count = 2
             matches = [
                 row
-                for row in item_tests
+                for row in candidates
                 if row["required_layer"] == layer
-                and row["test_family"] == expected_families[layer]
+                and row["test_family"] == family
             ]
             require(
-                len(matches) == 1,
-                "item must retain exactly one baseline obligation for "
+                len(matches) == expected_count,
+                "item must retain its exact baseline obligations for "
                 f"{key} {layer}: observed={len(matches)}",
             )
             baseline_by_layer[layer] = matches[0]
@@ -715,6 +937,8 @@ def validate_workplan_obligations(
         "implementation_items": len(implementation),
         "test_obligations": len(tests),
         "command_identities": len(expected_commands),
+        "profile_command_identities": len(expected_profile_commands),
+        "implementation_element_identities": len(expected_elements),
         "opcode_identities": len(expected_opcodes),
         "envelope_identities": len(expected_envelopes),
         "workplan_status": "in_progress",

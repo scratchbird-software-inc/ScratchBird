@@ -1564,6 +1564,16 @@ set_tests_properties(sbsql_final_language_expansion_closure_gate PROPERTIES
 )
 
 add_test(
+  NAME sbsql_alignment_inventory_contract_regression
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/alignment_inventory_contract_regression.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_alignment_inventory_contract_regression PROPERTIES
+  LABELS "sbsql_parser_worker;alignment_inventory_contract;release_gate"
+)
+
+add_test(
   NAME final_sblr_sbsql_enterprise_proof_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/final_sblr_sbsql_enterprise_proof_closure_gate.py"

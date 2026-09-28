@@ -361,7 +361,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent vector relation descriptor is invalid");
   }
-  if (!api::ExactBoundVectorStorageDescriptorV1(persisted_relation,
+  if (!api::ExactBoundVectorStorageDescriptorV1(input.context, persisted_relation,
                                                  object_uuid)) {
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                   "persistent vector relation type binding is not exact");
@@ -433,7 +433,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
 
   // Each admitted consumer kind occurs at most once; retain issued identities
   // for the full planning/execution/publication invocation.
-  std::array<api::EngineUuid, 12> owned_identities{};
+  std::array<api::EngineUuid, 10> owned_identities{};
   for (auto& identity : owned_identities) {
     const auto issued = core::uuid::IssueRuntimeIdentityV7();
     if (!issued) return refuse("QOW-DIAG-OPTIMIZER-IDENTITY-ISSUANCE-V1",
@@ -456,12 +456,6 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
       owned_identities[6];
   const auto resource_contract_uuid =
       owned_identities[7];
-  const auto suffix = std::to_string(source->node_id) +
-                      ".physical_vector_search_v1";
-  const auto alternative_uuid =
-      owned_identities[8];
-  const auto cost_uuid =
-      owned_identities[9];
   const auto generation =
       std::max<std::uint64_t>(1, input.context.catalog_generation_id);
 
@@ -720,10 +714,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
           "physical_vector_search_v1" ||
       physical.physical_dag.nodes.front().executor_capability_uuid !=
           capability_uuid ||
-      physical.physical_dag.nodes.front().selected_alternative_uuid !=
-          alternative_uuid ||
-      physical.physical_dag.nodes.front().cost_vector_uuid !=
-          cost_uuid) {
+      !core::uuid::IsEngineIdentityUuid(
+          physical.physical_dag.nodes.front().selected_alternative_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(
+          physical.physical_dag.nodes.front().cost_vector_uuid) ||
+      physical.physical_dag.nodes.front().retained_cost.cost_vector_uuid !=
+          physical.physical_dag.nodes.front().cost_vector_uuid) {
     return refuse(
         physical.diagnostic_id.empty()
             ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
@@ -763,7 +759,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
       persisted_relation.descriptor_uuid;
   vector_request.expected_descriptor_generation =
       persisted_relation.descriptor_generation;
-  vector_request.selected_alternative_uuid = alternative_uuid;
+  vector_request.selected_alternative_uuid = vector_physical.selected_alternative_uuid;
   vector_request.selected_provider_uuid = provider_uuid;
   vector_request.selected_capability_uuid = capability_uuid;
   vector_request.selected_implementation_id = "physical_vector_search_v1";
@@ -797,7 +793,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   source_input.operation_id = planning.operation_id;
   source_input.object_uuid = object_uuid;
   source_input.physical_node_id = vector_physical.physical_node_id;
-  source_input.selected_alternative_uuid = alternative_uuid;
+  source_input.selected_alternative_uuid = vector_physical.selected_alternative_uuid;
   source_input.capability_uuid = capability_uuid;
   source_input.provider_uuid = provider_uuid;
   source_input.provider_generation = persisted_relation.descriptor_generation;
@@ -1047,11 +1043,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
-      owned_identities[10];
+      owned_identities[8];
   selected.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.transaction_effect_evidence_uuid =
-      owned_identities[11];
+      owned_identities[9];
   selected.result_publication_request.maximum_row_count =
       source_input.maximum_rows;
   selected.result_publication_request.column_bindings = result_bindings;

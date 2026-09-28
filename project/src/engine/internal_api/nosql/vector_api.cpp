@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql/vector_api.hpp"
+#include "datatype_storage_identity.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -529,80 +530,68 @@ EngineUuid ExactBoundVectorCoreTypeUuid(const std::string_view stable_name) {
 
 
 bool ExactBoundVectorStorageDescriptorImpl(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor,
     const EngineUuid& collection_uuid) {
-  const auto vector_type_uuid = ExactBoundVectorCoreTypeUuid("dense_vector");
-  const auto text_type_uuid = ExactBoundVectorCoreTypeUuid("character");
-  if (descriptor.relation_uuid != collection_uuid ||
-      vector_type_uuid.is_nil() || text_type_uuid.is_nil() ||
-      !CanonicalBoundVectorUuid(descriptor.database_uuid) ||
-      !CanonicalBoundVectorUuid(descriptor.schema_uuid) ||
+  namespace dt = scratchbird::core::datatypes;
+  if (ValidateMgaRelationStorageDescriptor(descriptor).error ||
+      descriptor.database_uuid != context.database_uuid ||
+      descriptor.relation_uuid != collection_uuid ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
-      descriptor.descriptor_generation == 0 ||
-      !CanonicalBoundVectorUuid(descriptor.descriptor_uuid) ||
-      descriptor.columns.size() != 2) {
-    return false;
-  }
-  const auto& embedding = descriptor.columns[0];
-  const auto& metadata = descriptor.columns[1];
-  const bool exact = embedding.ordinal == 0 &&
-         embedding.canonical_name_key == "embedding" && !embedding.nullable &&
-         !embedding.generated && !embedding.identity_column &&
-         embedding.storage_class == "inline_row_value" &&
-         embedding.max_inline_bytes == 4096 &&
-         embedding.overflow_policy == "mga_large_value_locator" &&
-         embedding.charset_uuid.is_nil() && embedding.collation_uuid.is_nil() &&
-         embedding.character_length == 0 &&
-         embedding.value_descriptor.descriptor_kind ==
-             "canonical_type_descriptor" &&
-         embedding.value_descriptor.canonical_type_name == "dense_vector" &&
-         ExactNativeDescriptorFields(
-             embedding.value_descriptor,
-             {{"canonical", "dense_vector"},
-              {"type_uuid", vector_type_uuid},
-              {"nullable", "false"},
-              {"dimension", "3"},
-              {"element_type", "real32"}}) &&
-         metadata.ordinal == 1 &&
-         metadata.canonical_name_key == "metadata" && !metadata.nullable &&
-         !metadata.generated && !metadata.identity_column &&
-         metadata.storage_class == "inline_row_value" &&
-         metadata.max_inline_bytes == 4096 &&
-         metadata.overflow_policy == "mga_large_value_locator" &&
-         metadata.charset_uuid.is_nil() && metadata.collation_uuid.is_nil() &&
-         metadata.character_length == 0 &&
-         metadata.value_descriptor.descriptor_kind ==
-             "canonical_type_descriptor" &&
-         metadata.value_descriptor.canonical_type_name == "text" &&
-         CanonicalBoundVectorUuid(embedding.column_uuid) &&
-         CanonicalBoundVectorUuid(metadata.column_uuid) &&
-         CanonicalBoundVectorUuid(
-             embedding.value_descriptor.descriptor_uuid) &&
-         CanonicalBoundVectorUuid(
-             metadata.value_descriptor.descriptor_uuid) &&
-         metadata.value_descriptor.descriptor_uuid ==
-             metadata.column_uuid &&
-         embedding.column_uuid != metadata.column_uuid &&
-         embedding.value_descriptor.descriptor_uuid !=
-             metadata.value_descriptor.descriptor_uuid &&
-         ExactNativeDescriptorFields(
-             metadata.value_descriptor,
-             {{"canonical", "text"},
-              {"type_uuid", text_type_uuid},
-              {"nullable", "false"},
-              {"column_uuid", metadata.column_uuid},
-              {"datatype_descriptor_uuid",
-               EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x18}}},
-              {"datatype_descriptor_generation", "1"},
-              {"type_generation", "1"},
-              {"codec_uuid",
-               EngineUuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x1a}}},
-              {"codec_id", "datatype.text.utf8.v1"},
-              {"codec_version", "1"},
-              {"codec_generation", "1"},
-              {"null_encoding", "1"}});
-  return exact;
+      descriptor.columns.size() != 2) return false;
+  const auto exact_column = [&](const auto& column, std::uint32_t ordinal,
+                                std::string_view name, dt::CanonicalTypeId kind) {
+    const auto& value = column.value_descriptor;
+    dt::DatatypeStorageIdentityV1 storage;
+    if (!dt::LookupDatatypeStorageIdentityV1(
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation, value.datatype_descriptor_uuid,
+            value.datatype_descriptor_generation, &storage) ||
+        storage.type_id != kind || storage.type_uuid != value.type_uuid) return false;
+    CatalogColumnMetadata actual;
+    if (!DecodeCatalogColumnMetadata(value.encoded_descriptor, &actual)) return false;
+    const bool vector = kind == dt::CanonicalTypeId::dense_vector;
+    CatalogColumnMetadata expected;
+    expected.text = {{"canonical", vector ? "dense_vector" : "text"}, {"nullable", "false"}};
+    expected.identities = {{"type_uuid", storage.type_uuid}};
+    if (vector) {
+      expected.text.emplace("dimension", "3");
+      expected.text.emplace("element_type", "real32");
+    }
+    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+        context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+        context.datatype_registry_generation, storage.descriptor_uuid, storage.descriptor_generation);
+    if (binding.ok) {
+      const auto& codec = binding.row;
+      expected.identities.emplace("column_uuid", column.column_uuid);
+      expected.identities.emplace("datatype_descriptor_uuid", codec.descriptor_uuid);
+      expected.identities.emplace("codec_uuid", codec.codec_uuid);
+      expected.text.emplace("datatype_descriptor_generation", std::to_string(codec.descriptor_generation));
+      expected.text.emplace("type_generation", std::to_string(codec.type_generation));
+      expected.text.emplace("codec_id", codec.codec_id);
+      expected.text.emplace("codec_version", std::to_string(codec.codec_version));
+      expected.text.emplace("codec_generation", std::to_string(codec.codec_generation));
+      expected.text.emplace("null_encoding", std::to_string(codec.null_encoding_code));
+    } else if (!vector) {
+      return false;
+    }
+    return column.ordinal == ordinal && column.canonical_name_key == name &&
+           !column.nullable && !column.generated && !column.identity_column &&
+           column.storage_class == "inline_row_value" && column.max_inline_bytes == 4096 &&
+           column.overflow_policy == "mga_large_value_locator" &&
+           column.charset_uuid.is_nil() && column.collation_uuid.is_nil() &&
+           column.character_length == 0 &&
+           (value.descriptor_kind == "scalar" || value.descriptor_kind == "canonical_type_descriptor") &&
+           value.canonical_type_name == (vector ? "dense_vector" : "text") &&
+           actual.text == expected.text && actual.identities == expected.identities;
+  };
+  // Engine-owned columns and scalar descriptors are separate identity roles.
+  return descriptor.columns[0].column_uuid != descriptor.columns[1].column_uuid &&
+         descriptor.columns[0].value_descriptor.descriptor_uuid !=
+             descriptor.columns[1].value_descriptor.descriptor_uuid &&
+         exact_column(descriptor.columns[0], 0, "embedding", dt::CanonicalTypeId::dense_vector) &&
+         exact_column(descriptor.columns[1], 1, "metadata", dt::CanonicalTypeId::character);
 }
 
 bool ExactBoundVectorOutputDescriptors(
@@ -889,9 +878,10 @@ bool BoundVectorCarrierDescriptorMatches(
 }  // namespace
 
 bool ExactBoundVectorStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor,
     const EngineUuid& collection_uuid) {
-  return ExactBoundVectorStorageDescriptorImpl(descriptor, collection_uuid);
+  return ExactBoundVectorStorageDescriptorImpl(context, descriptor, collection_uuid);
 }
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_VECTOR_API_BEHAVIOR
@@ -1067,7 +1057,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
           request.expected_descriptor_uuid ||
       preflight.descriptor.descriptor_generation !=
           request.expected_descriptor_generation ||
-      !ExactBoundVectorStorageDescriptorV1(preflight.descriptor,
+      !ExactBoundVectorStorageDescriptorV1(request.context, preflight.descriptor,
                                            request.collection_uuid)) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "current vector storage descriptor is outside the exact v1 profile");
@@ -1128,7 +1118,7 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
     return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
                   "current MGA-visible vector base relation is unavailable");
   }
-  if (!ExactBoundVectorStorageDescriptorV1(read.descriptor,
+  if (!ExactBoundVectorStorageDescriptorV1(request.context, read.descriptor,
                                            request.collection_uuid) ||
       read.descriptor.descriptor_uuid !=
           preflight.descriptor.descriptor_uuid ||

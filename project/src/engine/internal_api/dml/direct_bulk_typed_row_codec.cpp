@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "datatype_binary_view.hpp"
 
 #include <algorithm>
 #include <array>
@@ -902,8 +903,13 @@ bool DirectPackTypedPayload(dt::CanonicalTypeId target_type,
   const auto layout = dt::LookupDatatypeStorageLayout(target_type);
   const std::size_t inline_bytes =
       layout.ok() ? static_cast<std::size_t>(layout.layout.inline_bytes) : 0;
-  if (!typed.binary_value.empty() &&
-      (inline_bytes == 0 || typed.binary_value.size() == inline_bytes)) {
+  if (!typed.binary_value.empty()) {
+    // Variable-sized values are not their inline storage descriptor/locator.
+    // Validate the actual canonical value bytes through their datatype codec;
+    // never discard a valid binary payload in favor of empty display text.
+    const auto validated = dt::ValidateDatatypeBinaryValueView(
+        {target_type, false, false, typed.binary_value.data(), typed.binary_value.size()});
+    if (!validated.ok()) return false;
     *out = typed.binary_value;
     return true;
   }

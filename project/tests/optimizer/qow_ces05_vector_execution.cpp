@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "hash_digest.hpp"
 #include "canonical_query_execute.hpp"
+#include "nosql/vector_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -393,6 +397,9 @@ std::uint64_t ProjectionNowMillis() {
 }
 
 struct RelationGenerationFixture {
+  api::EngineRequestContext owner_context;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
   std::filesystem::path directory;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
@@ -408,6 +415,8 @@ struct RelationGenerationFixture {
   std::uint64_t uuid_salt = 0;
 
   ~RelationGenerationFixture() {
+    statement.reset();
+    session.reset();
     std::error_code ignored;
     if (!directory.empty()) std::filesystem::remove_all(directory, ignored);
   }
@@ -423,7 +432,7 @@ api::EngineUuid ProjectionUuid(const platform::UuidKind kind,
 
 api::EngineRequestContext ProjectionBaseContext(
     const RelationGenerationFixture& fixture, std::string request_id) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
@@ -490,21 +499,18 @@ bool ProjectionPublishSnapshot(api::EngineRequestContext* context,
 
 api::EngineUuid ProductionCoreTypeUuid(std::string_view stable_name);
 
-bool ProjectionPersistRelation(const api::EngineRequestContext& context,
+bool ProjectionPersistRelation(api::EngineRequestContext& context,
                                const api::EngineUuid& relation_uuid) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = relation_uuid;
-  table.default_name = "rcp077_generation_projection";
+  table.default_name = "rcp077_generation_projection_" + uuid::UuidToString(relation_uuid);
   table.columns = {{"value",
                     scratchbird::tests::NativeCatalogColumnFixture({
                         {{"canonical", "int64"}, {"nullable", "true"}},
                         {{"type_uuid", ProductionCoreTypeUuid("int64")}}})}};
-  if (api::AppendMgaTableMetadata(context, table).error) return false;
-  api::MgaRelationStorageDescriptor descriptor;
-  return !api::EnsureMgaRelationStorageDescriptor(context, table, {},
-                                                   &descriptor)
-              .error;
+  table = scratchbird::tests::PublishDdlTableFixture(context, table, {"int64"});
+  return api::LoadMgaRelationStorageDescriptor(context, table.table_uuid).ok;
 }
 
 api::CrudRowVersionRecord ProjectionRow(
@@ -553,16 +559,16 @@ bool RelationBaseGenerationProjection() {
   bool passed = true;
   RelationGenerationFixture fixture;
   fixture.uuid_salt = ProjectionNowMillis() % 1'000'000;
-  fixture.directory =
+  const auto directory =
       std::filesystem::temp_directory_path() /
-      ("scratchbird_rcp077_relation_generation_" +
-       std::to_string(fixture.uuid_salt));
+      ("sbvgen_" + uuid::UuidToString(api::GenerateCrudEngineUuid("object")));
   std::error_code filesystem_error;
-  std::filesystem::create_directories(fixture.directory, filesystem_error);
-  if (!Require(!filesystem_error,
+  const bool created = std::filesystem::create_directory(directory, filesystem_error);
+  if (!Require(created && !filesystem_error,
                "relation generation fixture directory creation failed")) {
     return false;
   }
+  fixture.directory = directory;
   fixture.database_path = fixture.directory / "projection.sbdb";
 
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
@@ -580,22 +586,20 @@ bool RelationBaseGenerationProjection() {
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
   create.creation_unix_epoch_millis = ProjectionNowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
-  if (!Require(db::CreateDatabaseFile(create).ok(),
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
+  const auto created_database = db::CreateDatabaseFile(create);
+  if (!created_database.ok()) std::cerr << created_database.diagnostic.diagnostic_code << ':' << created_database.diagnostic.message_key << '\n';
+  if (!Require(created_database.ok(),
                "relation generation database creation failed")) {
     return false;
   }
 
   fixture.database_uuid = database_uuid.value.value;
   fixture.filespace_uuid = filespace_uuid.value.value;
-  fixture.schema_uuid = ProjectionUuid(platform::UuidKind::object,
-                                       fixture.uuid_salt + 10);
-  fixture.principal_uuid = ProjectionUuid(platform::UuidKind::principal,
-                                          fixture.uuid_salt + 11);
-  fixture.session_uuid = ProjectionUuid(platform::UuidKind::object,
-                                        fixture.uuid_salt + 12);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
   fixture.relation_uuid = ProjectionUuid(platform::UuidKind::object,
                                          fixture.uuid_salt + 20);
   fixture.empty_relation_uuid = ProjectionUuid(platform::UuidKind::object,
@@ -620,6 +624,8 @@ bool RelationBaseGenerationProjection() {
     passed &= Require(ProjectionPersistRelation(metadata, *relation),
                       "relation generation descriptor persistence failed");
   }
+  fixture.schema_uuid = metadata.current_schema_uuid;
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
   if (!passed ||
       !Require(ProjectionCommit(metadata),
                "relation generation metadata commit failed")) {
@@ -830,14 +836,20 @@ bool RelationBaseGenerationProjection() {
   passed &= Require(ProjectionAppendRow(reader, foreign_row,
                                         &foreign_generation),
                     "foreign relation event append failed");
-  const auto scoped_root =
-      fixture.database_path.string() + ".sb.mga_relation_scope/";
   const auto foreign_path = api::MgaScopedRelationPath(reader, fixture.other_relation_uuid, ".rows");
-  const auto cross_path = api::MgaScopedRelationPath(reader, fixture.cross_relation_uuid, ".rows");
+  // The empty target has no row locator until this explicit corruption fixture
+  // allocates one. Production consumers remain lookup-only.
+  const auto cross_path = api::MgaScopedRelationPath(reader, fixture.cross_relation_uuid, ".rows", true);
+  const auto foreign_before = api::ReadVisibleMgaHeapRelation(
+      reader, ProjectionReadRequest(fixture.other_relation_uuid));
+  passed &= Require(foreign_before.ok && foreign_before.visible_rows.size() == 1 &&
+                    foreign_before.visible_rows.front().table_uuid == fixture.other_relation_uuid &&
+                    foreign_before.visible_rows.front().row_uuid == foreign_row.row_uuid,
+                    "foreign binary row must be valid before cross-relation mutation");
   std::ifstream foreign_in(foreign_path, std::ios::binary);
   const std::string foreign_bytes{std::istreambuf_iterator<char>(foreign_in),
                                   std::istreambuf_iterator<char>()};
-  std::ofstream cross_out(cross_path, std::ios::binary | std::ios::app);
+  std::ofstream cross_out(cross_path, std::ios::binary | std::ios::trunc);
   cross_out.write(foreign_bytes.data(),
                   static_cast<std::streamsize>(foreign_bytes.size()));
   cross_out.flush();
@@ -862,32 +874,12 @@ api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
   const auto found = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return found == manifest.manifest.descriptor_rows.end()
-             ? api::EngineUuid{}
-             : found->descriptor_uuid.value;
-}
-
-void AddProductionAuthorization(api::EngineRequestContext* context,
-                                const api::EngineUuid& object_uuid) {
-  auto& authorization = context->authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid =
-      ProjectionUuid(platform::UuidKind::object, ProjectionNowMillis() + 301);
-  authorization.principal_uuid = context->principal_uuid;
-  authorization.security_epoch = context->security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context->catalog_generation_id;
-  authorization.effective_subjects.push_back(
-      {context->principal_uuid, "principal"});
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      ProjectionUuid(platform::UuidKind::object, ProjectionNowMillis() + 302);
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = object_uuid;
-  grant.right = "SELECT";
-  grant.security_epoch = context->security_epoch;
-  authorization.grants.push_back(std::move(grant));
+  if (found == manifest.manifest.descriptor_rows.end()) return {};
+  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration, found->descriptor_uuid.value,
+      found->descriptor_epoch);
+  return binding.ok ? binding.row.type_uuid : found->descriptor_uuid.value;
 }
 
 api::RelationalTypeDescriptor ProductionDagDescriptor(
@@ -1010,19 +1002,54 @@ api::TypedRelationalDag ProductionVectorDag(
   return dag;
 }
 
+bool VectorStorageIdentityProof(const api::EngineRequestContext& context,
+                                const api::MgaRelationStorageDescriptor& storage) {
+  bool passed = Require(api::ExactBoundVectorStorageDescriptorV1(
+      context, storage, storage.relation_uuid), "published vector storage binding was refused");
+  std::size_t checks = 0;
+  for (std::size_t column = 0; column < storage.columns.size(); ++column) {
+    for (bool datatype : {false, true}) {
+      for (std::size_t byte = 0; byte < 16; ++byte) {
+        auto changed = storage;
+        auto& value = changed.columns[column].value_descriptor;
+        auto& identity = datatype ? value.datatype_descriptor_uuid : value.type_uuid;
+        identity.bytes[byte] ^= (byte == 6 || byte == 8) ? 1 : 0x80;
+        passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(
+            context, changed, storage.relation_uuid),
+            "substituted native vector storage type/descriptor byte was accepted");
+        ++checks;
+      }
+    }
+    auto changed = storage;
+    ++changed.columns[column].value_descriptor.datatype_descriptor_generation;
+    passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(
+        context, changed, storage.relation_uuid), "stale vector datatype generation accepted");
+  }
+  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+    auto changed = context;
+    if (mutation == 0) changed.database_uuid.bytes[15] ^= 1;
+    if (mutation == 1) changed.datatype_catalog_snapshot_uuid.bytes[15] ^= 1;
+    if (mutation == 2) ++changed.datatype_catalog_generation;
+    if (mutation == 3) ++changed.datatype_registry_generation;
+    passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(
+        changed, storage, storage.relation_uuid), "foreign or stale vector context accepted");
+  }
+  return Require(checks == 64, "vector storage all-byte mutation inventory drifted") && passed;
+}
+
 bool ProductionVectorRoute() {
   RelationGenerationFixture fixture;
   fixture.uuid_salt = ProjectionNowMillis() % 1'000'000;
-  fixture.directory =
+  const auto directory =
       std::filesystem::temp_directory_path() /
-      ("scratchbird_rcp077_vector_production_" +
-       std::to_string(fixture.uuid_salt));
+      ("sbvprod_" + uuid::UuidToString(api::GenerateCrudEngineUuid("object")));
   std::error_code filesystem_error;
-  std::filesystem::create_directories(fixture.directory, filesystem_error);
-  if (!Require(!filesystem_error,
+  const bool created = std::filesystem::create_directory(directory, filesystem_error);
+  if (!Require(created && !filesystem_error,
                "production vector fixture directory creation failed")) {
     return false;
   }
+  fixture.directory = directory;
   fixture.database_path = fixture.directory / "vector.sbdb";
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       platform::UuidKind::database,
@@ -1039,21 +1066,19 @@ bool ProductionVectorRoute() {
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
   create.creation_unix_epoch_millis = ProjectionNowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
-  if (!Require(db::CreateDatabaseFile(create).ok(),
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
+  const auto created_database = db::CreateDatabaseFile(create);
+  if (!created_database.ok()) std::cerr << created_database.diagnostic.diagnostic_code << ':' << created_database.diagnostic.message_key << '\n';
+  if (!Require(created_database.ok(),
                "production vector database creation failed")) {
     return false;
   }
   fixture.database_uuid = database_uuid.value.value;
   fixture.filespace_uuid = filespace_uuid.value.value;
-  fixture.schema_uuid = ProjectionUuid(platform::UuidKind::object,
-                                       fixture.uuid_salt + 410);
-  fixture.principal_uuid = ProjectionUuid(platform::UuidKind::principal,
-                                          fixture.uuid_salt + 411);
-  fixture.session_uuid = ProjectionUuid(platform::UuidKind::object,
-                                        fixture.uuid_salt + 412);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
   fixture.relation_uuid = ProjectionUuid(platform::UuidKind::object,
                                          fixture.uuid_salt + 413);
   const auto dense_vector_type = ProductionCoreTypeUuid("dense_vector");
@@ -1081,12 +1106,27 @@ bool ProductionVectorRoute() {
       {"metadata", scratchbird::tests::NativeCatalogColumnFixture({
                        {{"canonical", "text"}, {"nullable", "false"}}, {{"type_uuid", text_type}}})},
   };
-  api::MgaRelationStorageDescriptor storage;
-  if (!Require(!api::AppendMgaTableMetadata(metadata, table).error &&
-                   !api::EnsureMgaRelationStorageDescriptor(metadata, table, {},
-                                                            &storage)
-                        .error &&
-                   ProjectionCommit(metadata),
+  table = scratchbird::tests::PublishDdlTableFixture(metadata, table, {"dense_vector", "text"});
+  const auto loaded_storage = api::LoadMgaRelationStorageDescriptor(metadata, table.table_uuid);
+  const auto storage = loaded_storage.descriptor;
+  if (!api::ExactBoundVectorStorageDescriptorV1(metadata, storage, table.table_uuid)) {
+    for (const auto& column : storage.columns) {
+      const auto& value = column.value_descriptor;
+      std::cerr << "column " << column.canonical_name_key << " kind=" << value.descriptor_kind
+                << " canonical=" << value.canonical_type_name << " datatype="
+                << uuid::UuidToString(value.datatype_descriptor_uuid) << " generation="
+                << value.datatype_descriptor_generation << " type=" << uuid::UuidToString(value.type_uuid) << '\n';
+      api::CatalogColumnMetadata decoded;
+      if (api::DecodeCatalogColumnMetadata(value.encoded_descriptor, &decoded)) {
+        for (const auto& [key, data] : decoded.text) std::cerr << key << '=' << data << ';';
+        for (const auto& [key, data] : decoded.identities) std::cerr << key << '=' << uuid::UuidToString(data) << ';';
+        std::cerr << '\n';
+      }
+    }
+  }
+  fixture.schema_uuid = metadata.current_schema_uuid;
+  fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
+  if (!Require(loaded_storage.ok && ProjectionCommit(metadata),
                "production vector storage descriptor persistence failed")) {
     return false;
   }
@@ -1137,26 +1177,9 @@ bool ProductionVectorRoute() {
                "production vector reader transaction failed")) {
     return false;
   }
-  reader.statement_timestamp = "2026-08-11T01:02:03Z";
-  if (!Require(ProjectionPublishSnapshot(&reader, fixture.uuid_salt + 440),
-               "production vector statement snapshot failed")) {
-    return false;
-  }
-  reader.statement_metadata_snapshot_engine_owned = true;
-  reader.statement_metadata_snapshot_uuid =
-      ProjectionUuid(platform::UuidKind::object, fixture.uuid_salt + 441);
-  reader.statement_metadata_snapshot_visible_through_local_transaction_id =
-      reader.snapshot_visible_through_local_transaction_id;
-  reader.catalog_epoch_uuid =
-      ProjectionUuid(platform::UuidKind::object, fixture.uuid_salt + 442);
-  reader.optimizer_capability_snapshot_uuid =
-      ProjectionUuid(platform::UuidKind::object, fixture.uuid_salt + 443);
-  reader.optimizer_resource_snapshot_uuid =
-      ProjectionUuid(platform::UuidKind::object, fixture.uuid_salt + 444);
-  reader.optimizer_route_snapshot_uuid =
-      ProjectionUuid(platform::UuidKind::object, fixture.uuid_salt + 445);
-  reader.optimizer_route_epoch = 1;
-  reader.optimizer_route_generation = 1;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner_context);
+  fixture.statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(*fixture.session, reader);
+  reader = fixture.statement->context;
   reader.optimizer_memory_budget_bytes = 16 * 1024 * 1024;
   reader.optimizer_maximum_candidate_count = 4096;
   reader.optimizer_maximum_memo_groups = 4096;
@@ -1164,9 +1187,9 @@ bool ProductionVectorRoute() {
   reader.optimizer_maximum_planning_time_ns = 1'000'000'000;
   reader.current_monotonic_ns = std::to_string(ProjectionNowMillis());
   reader.query_cancellation_requested = [] { return false; };
-  AddProductionAuthorization(&reader, fixture.relation_uuid);
   const auto execution = sblr::ExecuteCanonicalCurrentHeapQuery(
       {reader, ProductionVectorDag(reader, storage)});
+  const bool storage_identity_proved = VectorStorageIdentityProof(reader, storage);
   const bool exact =
       execution.profile_matched && execution.optimizer_admitted &&
       execution.optimizer_selected && execution.physical_dag_published &&
@@ -1189,7 +1212,7 @@ bool ProductionVectorRoute() {
                               : execution.api_result.diagnostics.front().code +
                                     ":" + execution.api_result.diagnostics.front().detail;
   const bool rolled_back = ProjectionRollback(reader);
-  return Require(exact,
+  return storage_identity_proved && Require(exact,
                  "production canonical vector route drifted: " + diagnostic) &&
          Require(rolled_back,
                  "production canonical vector reader rollback failed");
@@ -1905,6 +1928,8 @@ bool RawPersistenceMutationMatrix() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "native-vector-query-authority");
   if (!CarrierKat() || !CanonicalVectorSpine() ||
       !RelationBaseGenerationProjection() ||
       !RawPersistenceMutationMatrix()

@@ -9,6 +9,7 @@ import io
 from pathlib import Path
 import sys
 import unittest
+import tempfile
 from unittest.mock import patch
 
 parser = argparse.ArgumentParser()
@@ -16,6 +17,9 @@ parser.add_argument("--repo-root", type=Path, required=True)
 args, remaining = parser.parse_known_args()
 ROOT = args.repo_root.resolve()
 PROJECT = ROOT / "project"
+# Release scripts normally import sibling policy modules from their script
+# directory. Preserve that environment when loading them for mutation oracles.
+sys.path.insert(0, str(PROJECT / "tools/release"))
 
 
 def load(filename):
@@ -28,6 +32,95 @@ def load(filename):
 
 
 class ReleaseContractOracles(unittest.TestCase):
+
+    def test_example_seed_artifact_partition_is_fail_closed(self):
+        gate = load("public_project_export_gate.py")
+        with tempfile.TemporaryDirectory(prefix="release-artifact-oracle-") as temporary:
+            root = Path(temporary)
+            names = gate.EXAMPLE_DURABLE_NAMES
+            for name in names:
+                (root / name).write_bytes(b"source-oracle-fixture-not-a-database")
+            lock = root / gate.EXAMPLE_TRANSIENT_NAME
+            lock.write_bytes(b"process-local-evidence")
+            self.assertEqual([p.name for p in gate.validate_seed_artifacts(root)], list(names))
+            for variant in ("unknown", "symlink", "directory", "missing", "empty", "lock-symlink"):
+                with self.subTest(variant=variant), tempfile.TemporaryDirectory() as second:
+                    candidate = Path(second)
+                    for name in names:
+                        (candidate / name).write_bytes((root / name).read_bytes())
+                    target = candidate / names[2]
+                    if variant == "unknown":
+                        (candidate / "unclassified").write_bytes(b"unexpected")
+                    elif variant == "lock-symlink":
+                        (candidate / gate.EXAMPLE_TRANSIENT_NAME).symlink_to(lock)
+                    else:
+                        target.unlink()
+                        if variant == "symlink":
+                            target.symlink_to(root / names[2])
+                        elif variant == "directory":
+                            target.mkdir()
+                        elif variant == "empty":
+                            target.touch()
+                    with self.assertRaises(RuntimeError):
+                        gate.validate_seed_artifacts(candidate)
+
+    def test_example_publication_preserves_child_isolation_and_cleanup(self):
+        gate = load("public_project_export_gate.py")
+        with tempfile.TemporaryDirectory(prefix="release-publication-oracle-") as temporary:
+            root = Path(temporary)
+            stage = root / "stage"
+            build = root / "build"
+            build.mkdir()
+            stage.mkdir()
+            output = stage / "data/example"
+            observed = []
+            def child(command, cwd, env):
+                self.assertEqual(cwd, stage)
+                self.assertNotIn("--overwrite", command)
+                database = Path(command[command.index("--output") + 1])
+                manifest = Path(command[command.index("--manifest") + 1])
+                self.assertNotEqual(database.parent, output)
+                self.assertEqual(database.parent.parent, root)
+                self.assertEqual(manifest.parent, database.parent)
+                self.assertEqual(list(output.iterdir()), [])
+                self.assertTrue(Path(env["TMPDIR"]).is_dir())
+                for name in gate.EXAMPLE_DURABLE_NAMES:
+                    (database.parent / name).write_bytes(b"oracle-" + name.encode())
+                (database.parent / gate.EXAMPLE_TRANSIENT_NAME).write_bytes(b"private-process-lock")
+                observed.append(database.parent)
+            with patch.object(gate, "find_seeder", return_value=build / "seeder"), patch.object(gate, "run", side_effect=child):
+                gate.generate_example_database(None, stage, build)
+            self.assertEqual(len(observed), 1)
+            self.assertFalse(observed[0].exists())
+            self.assertEqual({p.name for p in output.iterdir()}, set(gate.EXAMPLE_DURABLE_NAMES))
+            for name in gate.EXAMPLE_DURABLE_NAMES:
+                self.assertEqual((output / name).read_bytes(), b"oracle-" + name.encode())
+            before = {p.name: p.read_bytes() for p in output.iterdir()}
+            with patch.object(gate, "find_seeder", return_value=build / "seeder"), patch.object(gate, "run") as forbidden:
+                with self.assertRaisesRegex(RuntimeError, "destination is not fresh"):
+                    gate.generate_example_database(None, stage, build)
+                forbidden.assert_not_called()
+            self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()}, before)
+            for failure in ("child", "missing", "unknown"):
+                with self.subTest(failure=failure):
+                    failed_stage = root / failure
+                    failed_stage.mkdir()
+                    def failed_child(command, cwd, env):
+                        database = Path(command[command.index("--output") + 1])
+                        observed.append(database.parent)
+                        database.write_bytes(b"partial")
+                        if failure == "child":
+                            raise RuntimeError("seeder failed")
+                        if failure == "unknown":
+                            for name in gate.EXAMPLE_DURABLE_NAMES:
+                                (database.parent / name).write_bytes(b"partial")
+                            (database.parent / "unclassified").write_bytes(b"unknown")
+                    with patch.object(gate, "find_seeder", return_value=build / "seeder"), patch.object(gate, "run", side_effect=failed_child):
+                        with self.assertRaises(RuntimeError):
+                            gate.generate_example_database(None, failed_stage, build)
+                    self.assertFalse(observed[-1].exists())
+                    self.assertEqual(list((failed_stage / "data/example").iterdir()), [])
+
     def test_sblr_surface_membership_retains_exact_trigger_roots(self):
         gate = load("../../tests/sblr_surface/sblr_surface_guardrail_gate.py")
         errors = []

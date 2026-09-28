@@ -161,12 +161,47 @@ bool ExpectNull(std::string_view case_id, const SblrResult& result, std::string_
   return true;
 }
 
+bool CheckNativeColumnDescriptorBoundaries(const FunctionRegistry& registry) {
+  const auto owner = scratchbird::tests::FixtureUuidLiteral(kDatabaseUuid);
+  auto native = scratchbird::engine::sblr::MakeSblrUuidValue(owner);
+  std::vector<SblrValue> invalid{TextValue("uuid", kDatabaseUuid)};
+  auto mixed = native; mixed.text_value = kDatabaseUuid; invalid.push_back(mixed);
+  mixed = native; mixed.encoded_value = kDatabaseUuid; invalid.push_back(mixed);
+  mixed = native; mixed.binary_value.assign(owner.bytes.begin(), owner.bytes.end()); invalid.push_back(mixed);
+  mixed = native; mixed.charset_name = "UTF-8"; invalid.push_back(mixed);
+  mixed = native; mixed.has_uint64_value = true; invalid.push_back(mixed);
+  mixed = native; mixed.uuid_value = {}; invalid.push_back(mixed);
+  mixed = native; mixed.uuid_value.bytes[6] = 0x40; invalid.push_back(mixed);
+  mixed = native; mixed.uuid_value.bytes[8] = 0; invalid.push_back(mixed);
+  for (const auto& value : invalid) {
+    const auto result = Run(registry, "sb.scalar.column_descriptor",
+        {value, TextValue("character", "database_uuid")});
+    if (result.ok() || !result.scalar_values.empty() || result.mutation_attempted ||
+        result.mutation_committed || result.diagnostics.empty() ||
+        result.diagnostics.front().diagnostic_id != "SB_DIAG_FUNCTION_INVALID_INPUT") {
+      std::cerr << "SBSFC033-column-descriptor accepted a text/mixed/invalid system UUID\n";
+      return false;
+    }
+  }
+  // Every byte participates in lookup. Preserve the fixed version/variant
+  // identities while ensuring no textual prefix or truncated key can match.
+  for (std::size_t octet = 0; octet < owner.bytes.size(); ++octet) {
+    auto different = native;
+    different.uuid_value.bytes[octet] ^= (octet == 6 || octet == 8) ? 0x01 : 0x80;
+    if (!ExpectNull("SBSFC033-column-descriptor-native-mismatch",
+          Run(registry, "sb.scalar.column_descriptor", {different, TextValue("character", "database_uuid")}),
+          "json_document")) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
   const auto package = BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;
   bool ok = true;
+  ok = CheckNativeColumnDescriptorBoundaries(registry) && ok;
 
   ok = ExpectUuid("SBSFC033-catalog-object-owner-bare",
                   Run(registry, "sb.scalar.catalog_object_owner", {}),
