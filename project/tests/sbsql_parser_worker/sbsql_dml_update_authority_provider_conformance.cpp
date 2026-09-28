@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/durable_authorization_fixture.hpp"
 #include "dml/update_immutable_authority_provider.hpp"
 #include "dml/delete_security_authority_provider.hpp"
 #include "dml/update_policy_catalog_authority_provider.hpp"
@@ -278,8 +279,7 @@ engine_api::EngineRequestContext SecurityContext(
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_uuid = CanonicalUuid(0x2004);
   context.catalog_generation_id = 41;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:POLICY_ADMIN");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -1241,10 +1241,28 @@ void TestIndependentDeleteSecurityAuthority() {
   TemporaryDirectory work;
   const auto database = CreateDurableDatabase(work.path() / "delete-security.sbdb");
   auto seed = BeginTransaction(database, 1788205000000ull);
+  {
+    const auto before = LoadSecurityState(seed);
+    engine_api::EngineSecurityGrantPrivilegeRequest forged;
+    forged.context = SecurityContext(seed, 0x500f);
+    forged.context.authorization_context = {};
+    forged.context.trace_tags = {"security.fixture_trace_authority", "right:SEC_GRANT_ADMIN"};
+    forged.grant_uuid = CanonicalUuid(0x501f);
+    forged.grantee_uuid = database.principal_uuid;
+    forged.target_object_uuid = kEmptyRelationUuid;
+    forged.target_object_kind = "table";
+    forged.privilege = "DELETE";
+    const auto refused = engine_api::EngineSecurityGrantPrivilege(forged);
+    Require(!refused.ok && !refused.privilege_granted,
+            "trace tags manufactured durable grant authority");
+    const auto after = LoadSecurityState(seed);
+    Require(after.grants.size() == before.grants.size() &&
+                after.security_generation == before.security_generation,
+            "refused trace authority changed durable grants");
+  }
   for (const auto right : {"DELETE", "UPDATE"}) {
     engine_api::EngineSecurityGrantPrivilegeRequest grant;
     grant.context = SecurityContext(seed, 0x5010);
-    grant.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
     grant.grant_uuid = CanonicalUuid(right == std::string_view("DELETE") ? 0x5020 : 0x5021);
     grant.grantee_uuid = database.principal_uuid;
     grant.target_object_uuid = kEmptyRelationUuid;
@@ -1256,7 +1274,6 @@ void TestIndependentDeleteSecurityAuthority() {
   {
     engine_api::EngineSecurityGrantPrivilegeRequest update_only;
     update_only.context = SecurityContext(seed, 0x5011);
-    update_only.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
     update_only.grant_uuid = CanonicalUuid(0x5022);
     update_only.grantee_uuid = database.principal_uuid;
     update_only.target_object_uuid = kOtherRelationUuid;
