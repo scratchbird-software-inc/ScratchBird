@@ -419,6 +419,34 @@ def quote_path(path: Path) -> str:
     return f"'{path}'"
 
 
+def management_defaults(fields: dict[str, str]) -> dict[str, str]:
+    # A catalog generation belongs to one node, not to the default settings.
+    # Server startup persists its actual agent catalog table; an embedded
+    # client does not start those agents. Retain the generation in evidence
+    # and validate its complete local lifecycle below, rather than requiring
+    # independently populated catalogs to have identical generation numbers.
+    return {key: value for key, value in fields.items() if key != "catalog_generation_id"}
+
+
+def validate_catalog_evolution(initial: dict[str, str], created: dict[str, str],
+                               refused: dict[str, str], copied: dict[str, str]) -> dict[str, int]:
+    snapshots = {"initial": initial, "after_create": created,
+                 "after_refusal": refused, "after_copy": copied}
+    epochs: dict[str, int] = {}
+    for phase, fields in snapshots.items():
+        value = fields.get("catalog_generation_id", "")
+        require(re.fullmatch(r"[1-9][0-9]*", value) is not None and int(value) < 2**64,
+                f"{phase} catalog generation is not a positive canonical uint64: {value!r}")
+        epochs[phase] = int(value)
+        require(management_defaults(fields) == management_defaults(initial),
+                f"{phase} changed management defaults or security/resource authority")
+    require(epochs["after_create"] == epochs["initial"] + 1,
+            f"CREATE did not publish exactly one catalog generation: {epochs}")
+    require(epochs["after_refusal"] == epochs["after_create"] == epochs["after_copy"],
+            f"native refusal or row-only COPY changed catalog generation: {epochs}")
+    return epochs
+
+
 def route_live_evidence(route: Route) -> dict[str, Any]:
     rows = route.root / "copy.rows"
     rows.write_text("id=1\nid=2\n", encoding="utf-8")
@@ -428,6 +456,14 @@ def route_live_evidence(route: Route) -> dict[str, Any]:
 
     ddl = run_sql(route, "create_target", f"CREATE TABLE {TARGET} (id int);\n")
     require(ddl.returncode == 0 and not ddl.stderr, f"{route.name} target DDL failed: {ddl.stderr!r}")
+
+    def snapshot(case: str) -> dict[str, str]:
+        observed = run_sql(route, case, "SHOW MANAGEMENT;\n")
+        require(observed.returncode == 0 and not observed.stderr,
+                f"{route.name} {case} failed: {observed.stderr!r}")
+        return parse_show_management(observed.stdout)
+
+    after_create = snapshot("show_management_after_create")
 
     native_disabled = run_sql(
         route,
@@ -439,6 +475,7 @@ def route_live_evidence(route: Route) -> dict[str, Any]:
         native_disabled.diagnostic_code == EXPECTED_DISABLED,
         f"{route.name} disabled native diagnostic drifted: {native_disabled.diagnostic_code!r}",
     )
+    after_refusal = snapshot("show_management_after_refusal")
 
     copy_after_refusal = run_sql(
         route,
@@ -458,9 +495,15 @@ def route_live_evidence(route: Route) -> dict[str, Any]:
         f"rc={copy_after_refusal.returncode} stdout={copy_after_refusal.stdout!r} stderr={copy_after_refusal.stderr!r}",
     )
 
+    after_copy = snapshot("show_management_after_copy")
+    epochs = validate_catalog_evolution(fields, after_create, after_refusal, after_copy)
     return {
         "route": route.name,
         "show_management_fields": fields,
+        "catalog_epoch_evolution": epochs,
+        "show_management_after_create_fields": after_create,
+        "show_management_after_refusal_fields": after_refusal,
+        "show_management_after_copy_fields": after_copy,
         "show_management_stdout_path": str(show.stdout_path),
         "native_disabled": {
             "status": "refused",
@@ -719,7 +762,8 @@ def run_gate(args: argparse.Namespace, work: Path) -> dict[str, Any]:
             for proc in reversed(route.processes):
                 stop_process(proc)
 
-    show_hashes = {sha256(json.dumps(record["show_management_fields"], sort_keys=True)) for record in live}
+    show_hashes = {sha256(json.dumps(management_defaults(record["show_management_fields"]), sort_keys=True))
+                   for record in live}
     require(len(show_hashes) == 1, f"SHOW MANAGEMENT defaults differ by route: {sorted(show_hashes)}")
     vectors = sorted({code for record in live for code in record["native_disabled"]["message_vector"]})
     require(vectors == [EXPECTED_DISABLED], f"disabled refusal vector drifted: {vectors}")

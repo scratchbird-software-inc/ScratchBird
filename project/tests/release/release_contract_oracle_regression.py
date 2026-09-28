@@ -28,6 +28,33 @@ def load(filename):
 
 
 class ReleaseContractOracles(unittest.TestCase):
+    def test_cdp_defaults_validate_node_local_catalog_evolution(self):
+        worker_tests = PROJECT / "tests/sbsql_parser_worker"
+        with patch.object(sys, "path", [str(worker_tests), *sys.path]):
+            gate = load("../../tests/sbsql_parser_worker/cdp_config_defaults_rollback_gate.py")
+        baseline = {"catalog_generation_id": "4", "security_epoch": "1",
+                    "resource_epoch": "1", "copy_append_batching_enabled": "true"}
+        created = {**baseline, "catalog_generation_id": "5"}
+        self.assertEqual(gate.validate_catalog_evolution(baseline, created, created, created),
+                         {"initial": 4, "after_create": 5, "after_refusal": 5, "after_copy": 5})
+        self.assertEqual(gate.management_defaults(baseline), gate.management_defaults(created))
+        for phase in range(4):
+            for field, value in (("catalog_generation_id", "0"), ("catalog_generation_id", "05"),
+                                 ("catalog_generation_id", str(2**64)),
+                                 ("catalog_generation_id", "unknown")):
+                snapshots = [dict(baseline), dict(created), dict(created), dict(created)]
+                snapshots[phase][field] = value
+                with self.subTest(phase=phase, field=field, value=value), self.assertRaises(gate.GateError):
+                    gate.validate_catalog_evolution(*snapshots)
+        for phase in (1, 2, 3):
+            for field, value in (("catalog_generation_id", "4"), ("catalog_generation_id", "6"),
+                                 ("security_epoch", "2"), ("resource_epoch", "2"),
+                                 ("copy_append_batching_enabled", "false")):
+                snapshots = [dict(baseline), dict(created), dict(created), dict(created)]
+                snapshots[phase][field] = value
+                with self.subTest(phase=phase, field=field, value=value), self.assertRaises(gate.GateError):
+                    gate.validate_catalog_evolution(*snapshots)
+
     def test_generated_fixture_manifest_rejects_content_and_membership_drift(self):
         gate = load("public_generated_source_provenance.py")
         manifest = PROJECT / gate.DETERMINISTIC_MANIFEST
