@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Includes native bulk policy and shutdown-identity registrations. Check the
+  // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1421 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1423 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -66,6 +66,15 @@ int main() {
   Sample("AUDIT_TRIGGER.QUEUE_RETRY",S::warning,false,
          "not_specified","continue_or_fail_by_policy","AUDIT_TRIGGER");
   Sample("DIAG.REDACTION_POLICY_INVALID",S::security,true,"false","deny_access","DIAG");
+  Sample("SB_ENGINE_API_EMBEDDED_TRUST_MODE",S::informational,false,
+         "not_applicable","preserve_outcome_and_report_embedded_trust_context","ENGINE_API");
+  Sample("AGENT.PAGE_PREALLOCATION.COMPLETED",S::informational,false,
+         "not_applicable","retain_source_action_evidence_without_implying_transaction_commit","AGENT");
+  for (const auto code : {"SB_ENGINE_API_EMBEDDED_TRUST_MODE", "AGENT.PAGE_PREALLOCATION.COMPLETED"}) {
+    const auto* row = d::FindCanonicalDiagnosticCode(code);
+    Check(row && row->sqlstate == "00000" && row->numeric_binding == "not_applicable",
+          "retained informational source notice metadata drifted");
+  }
   Sample("DML.NATIVE_BULK_INGEST.DISABLED",S::error,true,
          "only_after_authorized_enablement_and_fresh_admission",
          "reject_without_native_bulk_mutation","DML");
@@ -193,7 +202,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x43,0x49,0x3d,0xd0,0x25,0x7c,0x27,0x3b,0x07,0x25,0x5e,0xdc,0x25,0x50,0x12,0x11,0x9b,0x3d,0xd3,0x84,0x91,0x36,0xfb,0xee,0x71,0x27,0x52,0x84,0xd9,0xfd,0x8e,0x74};
+    0x2c,0x6e,0x00,0x9c,0xeb,0x17,0x36,0x45,0xa0,0xc0,0xbe,0x4d,0x98,0x52,0xfb,0x19,0x4c,0xb9,0x83,0xc8,0x82,0xdd,0xf3,0x3e,0x02,0xc0,0x60,0x06,0xa3,0x92,0xc0,0x49};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

@@ -372,6 +372,24 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
         MakeInvalidRequestDiagnostic(kOperation, "agent_runtime_evidence_required"));
   }
 
+  if (!metrics::DefaultMetricRegistry().ObservationOwnerMatches(
+          request.context.database_uuid, request.context.node_uuid)) {
+    return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic("METRIC.OBSERVATION_SOURCE_UNAVAILABLE",
+            "agent.observability.node_queue_required",
+            "observation queue is not owned by the request database/node", true));
+  }
+
+  // Reject malformed batches before emitting even their valid leading records.
+  for (const auto& record : records) {
+    auto diagnostic = ValidateRecord(record);
+    if (diagnostic.error) {
+      return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(
+          request.context, kOperation, std::move(diagnostic));
+    }
+  }
+
   auto result = MakeApiBehaviorSuccess<EngineCollectAgentRuntimeObservabilityResult>(
       request.context,
       kOperation);
@@ -383,13 +401,6 @@ EngineCollectAgentRuntimeObservabilityResult EngineCollectAgentRuntimeObservabil
   result.redaction_applied = true;
 
   for (const auto& record : records) {
-    auto diagnostic = ValidateRecord(record);
-    if (diagnostic.error) {
-      return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(
-          request.context,
-          kOperation,
-          std::move(diagnostic));
-    }
     const auto metric_status = RecordMetrics(record);
     if (!metric_status.ok) {
       return MakeApiBehaviorDiagnostic<EngineCollectAgentRuntimeObservabilityResult>(

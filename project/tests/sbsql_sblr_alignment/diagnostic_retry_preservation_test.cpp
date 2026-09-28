@@ -78,7 +78,7 @@ void Exercise(std::string_view code) {
 
 int main() {
   const auto rows = catalog::CanonicalDiagnosticCodeCatalog();
-  Check(rows.size == 1421, "registration population changed", "catalog");
+  Check(rows.size == 1423, "registration population changed", "catalog");
   for (const auto& row : rows) Exercise(row.code);
   // Unknown, case-variant and substring collisions cannot manufacture policy.
   constexpr std::array<std::string_view, 12> bait = {
@@ -86,7 +86,7 @@ int main() {
       "ack", "lock_timeout", "serialization", "ROLLBACK_COMPLETE",
       "unregistered.no_retry_TIMEOUT"};
   for (const auto code : bait) Exercise(code);
-  Check(render_cases == 8598 && lifecycle_cases == 2866,
+  Check(render_cases == 8610 && lifecycle_cases == 2870,
         "expected finite tuple denominator changed", "matrix");
   std::cout << "registered_codes=" << rows.size << " bait_codes=" << bait.size()
             << " render_cases=" << render_cases << " lifecycle_cases=" << lifecycle_cases

@@ -182,6 +182,12 @@ class MetricRegistry {
   explicit MetricRegistry(std::shared_ptr<MetricObservationQueue>);
   ~MetricRegistry();
 
+  // The node runtime may attach its owned queue exactly once after catalog
+  // bootstrap. This does not activate descriptors/series or grant authority.
+  MetricValidationResult BindObservationQueue(std::shared_ptr<MetricObservationQueue>);
+  bool ObservationOwnerMatches(const MetricUuid& database_uuid,
+                               const MetricUuid& node_uuid) const;
+
   MetricValidationResult RegisterDescriptor(MetricDescriptor descriptor);
   // Retain an already owned local catalog binding; no activation/permission
   // or durable-recording authority is inferred from structural registration.

@@ -1592,7 +1592,7 @@ MetricValidationResult RecordAgentAction(std::string agent_type, std::string act
   return IncrementCounter("sb_agent_actions_total",
                           Labels({{"component", "agent.runtime"}, {"agent_type", std::move(agent_type)},
                                   {"action_class", std::move(action_class)}, {"result", std::move(result)}}),
-                          1.0,
+                          u64{1},
                           "agent_runtime");
 }
 
@@ -1671,7 +1671,7 @@ MetricValidationResult RecordFilespaceAgentCapacityRequest(MetricUuid filespace_
                                   {"filespace_uuid", std::move(filespace_uuid)},
                                   {"request_class", std::move(request_class)},
                                   {"result", std::move(result)}}),
-                          1.0,
+                          u64{1},
                           "filespace_capacity_manager");
 }
 
@@ -1716,7 +1716,7 @@ MetricValidationResult RecordPageAllocationAgentRequest(MetricUuid filespace_uui
                                   {"page_family", std::move(page_family)},
                                   {"request_class", std::move(request_class)},
                                   {"result", std::move(result)}}),
-                          1.0,
+                          u64{1},
                           "page_allocation_manager");
 }
 

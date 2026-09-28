@@ -509,6 +509,26 @@ MetricRegistry::MetricRegistry(std::shared_ptr<MetricObservationQueue> queue)
 }
 MetricRegistry::~MetricRegistry()=default;
 
+MetricValidationResult MetricRegistry::BindObservationQueue(
+    std::shared_ptr<MetricObservationQueue> queue) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!queue || observation_->queue || !queue->binding().cluster_uuid.is_nil())
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE",
+                       "local node queue missing or already bound");
+  auto success = MetricOk();
+  observation_->queue = std::move(queue);
+  return success;
+}
+
+bool MetricRegistry::ObservationOwnerMatches(const MetricUuid& database_uuid,
+                                             const MetricUuid& node_uuid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return observation_->queue &&
+      observation_->queue->binding().database_uuid == database_uuid &&
+      observation_->queue->binding().node_uuid == node_uuid &&
+      observation_->queue->binding().cluster_uuid.is_nil();
+}
+
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {
   if (!ValidateMetricValueDescriptor(descriptor) || !MetricDescriptorReferencesValid(descriptor, descriptor) ||
       descriptor.readiness == MetricReadiness::unvalidated)

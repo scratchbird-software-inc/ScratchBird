@@ -13,6 +13,8 @@
 #include "observability/agent_evidence_retention_api.hpp"
 #include "observability/agent_observability_api.hpp"
 #include "uuid.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "metric_observation_queue.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -79,10 +81,7 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
   context.local_transaction_id = 16017;
   context.catalog_generation_id = 17;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  for (const auto right : rights) {
-    context.trace_tags.push_back("right:" + std::string(right));
-  }
+  scratchbird::tests::MaterializeComponentAuthorization(context, rights);
   return context;
 }
 
@@ -191,7 +190,14 @@ void RequireZeroGreyRows(const api::EngineApiResult& result,
               "zero-grey row used vague diagnostic_code");
     }
     for (const auto& field : row.fields) {
-      RequireUuidAuthority(field.first, Field(row, field.first));
+      const auto value = Field(row, field.first);
+      if (field.first == "actor_uuid" && Field(row, "actor_redacted") == "true") {
+        Require(field.second.descriptor.canonical_type_name == "uuid" &&
+                value == std::string(16, '\0'),
+                "redacted actor must carry only an explicit binary nil UUID");
+      } else {
+        RequireUuidAuthority(field.first, value);
+      }
       Require(field.second.encoded_value.find("best_effort") == std::string::npos,
               "zero-grey row leaked best_effort");
       Require(field.second.encoded_value.find("implementation-defined") == std::string::npos,
@@ -371,14 +377,111 @@ api::EngineAgentRuntimeEvidenceRecord RuntimeEvidence(std::string result_state) 
 }
 
 void TestObservabilityZeroGreyValidation() {
+  namespace metrics = scratchbird::core::metrics;
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context({"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ"});
   request.records.push_back(RuntimeEvidence("success"));
+  auto& registry = metrics::DefaultMetricRegistry();
+  const auto unbound = api::EngineCollectAgentRuntimeObservability(request);
+  Require(!unbound.ok && HasDiagnostic(unbound, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE") &&
+          unbound.result_shape.rows.empty(), "unbound collector invented observation success");
+  auto made = metrics::MetricObservationQueue::Create(
+      {request.context.database_uuid, request.context.node_uuid, {}},
+      {2, 2 * metrics::kMetricSampleMaxBytes});
+  Require(made.ok(), "component observation queue creation failed");
+  std::shared_ptr<metrics::MetricObservationQueue> queue = std::move(made.queue);
+  Require(registry.BindObservationQueue(queue).ok, "component queue binding failed");
+  // Explicit native component catalog inputs. Actual volatile SBMS admission
+  // is checked below; this is not evidence of durable activation or recording.
+  const metrics::MetricLabelSet labels[] = {
+      {{"component", "agent.runtime"}, {"agent_type", "page_allocation_manager"},
+       {"action_class", "request_page_preallocation"}, {"result", "success"}},
+      {{"component", "agent.page_allocation"}, {"agent_type", "page_allocation_manager"},
+       {"filespace_uuid", NativeIdentity(request.records.front().filespace_uuid)},
+       {"page_family", "data"}, {"request_class", "request_page_preallocation"},
+       {"result", "success"}},
+  };
+  std::vector<metrics::MetricDescriptor> descriptors;
+  std::vector<metrics::MetricSeriesIdentity> series;
+  for (unsigned index = 0; index < 2; ++index) {
+    metrics::MetricDescriptor descriptor;
+    descriptor.family = index == 0 ? "sb_agent_actions_total" :
+                                    "sb_agent_page_allocation_requests_total";
+    descriptor.type = metrics::MetricType::counter;
+    descriptor.unit = metrics::MetricUnit::operations;
+    descriptor.namespace_path = "sys.metrics.agents";
+    descriptor.help = "Native observation component fixture";
+    descriptor.producer_owner = index == 0 ? "agent_runtime" : "page_allocation_manager";
+    descriptor.value_type = metrics::MetricScalarType::uint64;
+    descriptor.readiness = metrics::MetricReadiness::implemented;
+    descriptor.metric_uuid = scratchbird::tests::FixtureUuid(2227, 10 + index);
+    descriptor.descriptor_generation = 1;
+    descriptor.label_schema_uuid = scratchbird::tests::FixtureUuid(2227, 20 + index);
+    descriptor.label_schema_generation = 1;
+    descriptor.retention_policy_uuid = scratchbird::tests::FixtureUuid(2227, 30);
+    descriptor.retention_policy_generation = 1;
+    descriptor.visibility_policy_uuid = scratchbird::tests::FixtureUuid(2227, 40);
+    descriptor.visibility_policy_generation = 1;
+    for (const auto& label : labels[index]) {
+      descriptor.labels.push_back({label.key, true, false,
+          label.key == "filespace_uuid" ? metrics::MetricLabelType::system_uuid :
+                                         metrics::MetricLabelType::text});
+    }
+    metrics::MetricRetentionPolicy policy;
+    policy.policy_uuid = descriptor.retention_policy_uuid;
+    policy.generation = descriptor.retention_policy_generation;
+    policy.policy_name = "component observation policy";
+    metrics::MetricHistoryBinding binding;
+    static_cast<metrics::MetricDescriptorBinding&>(binding) = descriptor;
+    binding.database_uuid = request.context.database_uuid;
+    binding.node_uuid = request.context.node_uuid;
+    auto bound = metrics::MakeMetricSeriesIdentity(descriptor, labels[index], policy,
+        binding, scratchbird::tests::FixtureUuid(2227, 50 + index), 1);
+    Require(bound.ok() && registry.RegisterDescriptor(descriptor).ok &&
+            registry.RegisterSeries(*bound.record, policy).ok,
+            "explicit native observation series binding failed");
+    descriptors.push_back(descriptor);
+    series.push_back(*bound.record);
+  }
+  auto foreign = request;
+  foreign.context.database_uuid = scratchbird::tests::FixtureUuid(2227, 90);
+  const auto refused_owner = api::EngineCollectAgentRuntimeObservability(foreign);
+  Require(!refused_owner.ok &&
+          HasDiagnostic(refused_owner, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE") &&
+          refused_owner.result_shape.rows.empty() && queue->Stats().queued == 0 &&
+          registry.SnapshotCurrent().empty(), "foreign node collector mutated local observations");
+  auto mixed = request;
+  mixed.records.push_back(RuntimeEvidence("best_effort"));
+  const auto refused_batch = api::EngineCollectAgentRuntimeObservability(mixed);
+  Require(!refused_batch.ok &&
+          HasDiagnostic(refused_batch, "AGENT.ZERO_GREY.RESULT_STATE_REFUSED") &&
+          refused_batch.result_shape.rows.empty() && queue->Stats().queued == 0 &&
+          registry.SnapshotCurrent().empty(),
+          "malformed trailing record published the valid batch prefix");
   const auto result = api::EngineCollectAgentRuntimeObservability(request);
+  if (!result.ok) for (const auto& diagnostic : result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(result.ok, "observability collector refused exact state");
   RequireZeroGreyRows(result, true, true);
   Require(FirstField(result, "payload_redacted") == "true",
           "observability payload redaction flag was not exact");
+  Require(queue->Stats().queued == 2, "collector did not enqueue both native counters");
+  for (unsigned index = 0; index < 2; ++index) {
+    const auto lease = queue->TryAcquire();
+    Require(lease.ok(), "collector observation could not be acquired");
+    const auto decoded = metrics::DecodeMetricRawSample(
+        descriptors[index], series[index], lease.lease.observation->bytes);
+    Require(decoded.ok() && decoded.record->database_uuid == request.context.database_uuid &&
+            decoded.record->node_uuid == request.context.node_uuid &&
+            decoded.record->series_uuid == series[index].series_uuid &&
+            decoded.record->metric_uuid == descriptors[index].metric_uuid &&
+            decoded.record->publication_time_utc_ns == 0 &&
+            std::get<platform::u64>(decoded.record->value.value) == 1,
+            "collector changed exact native observation identity/value or claimed durable publication");
+    // Component consumer only; no durable recorder receipt is claimed.
+    Require(queue->TryRemove(lease.lease) == metrics::MetricQueueError::none,
+            "component observation consumption failed");
+  }
 
   request.records.front().result_state = "best_effort";
   const auto refused = api::EngineCollectAgentRuntimeObservability(request);
@@ -387,6 +490,8 @@ void TestObservabilityZeroGreyValidation() {
           "observability zero-grey diagnostic missing");
   Require(refused.result_shape.rows.empty(),
           "observability rendered rows after zero-grey refusal");
+  Require(queue->Stats().admitted == 2 && queue->Stats().queued == 0,
+          "zero-grey refusal enqueued observations");
 }
 
 api::EngineSupportBundleAgentEvidenceSource SupportBundleEvidence(std::string result_state) {

@@ -1,5 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,6 +17,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "storage/storage_management_api.hpp"
 #include "uuid.hpp"
+#include "metric_registry.hpp"
 
 // SEARCH_KEY: AEIC_AGENT_SECURITY_NEGATIVE_REDACTION_TESTS
 
@@ -22,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -34,8 +38,7 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(const std::string& message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(message);
 }
 
 void Require(bool condition, const std::string& message) {
@@ -67,26 +70,45 @@ struct Fixture {
   platform::Uuid principal_uuid;
   platform::Uuid agent_uuid;
   platform::Uuid policy_uuid;
+  platform::u64 local_transaction_id = 0;
 
   ~Fixture() {
     std::error_code ignored;
-    std::filesystem::remove_all(dir, ignored);
+    if (!dir.empty()) std::filesystem::remove_all(dir, ignored);
   }
 };
 
-Fixture MakeFixture() {
-  Fixture fixture;
-  fixture.dir = std::filesystem::temp_directory_path() /
-                ("scratchbird_pfar014_" + std::to_string(NowMillis()));
-  std::filesystem::create_directories(fixture.dir);
-  fixture.database_path = fixture.dir / "pfar014.sbdb";
+void InitializeFixture(Fixture& fixture) {
   fixture.database_uuid = MakeIdentity(platform::UuidKind::database, 14);
+  const auto dir = std::filesystem::temp_directory_path() /
+                ("scratchbird_pfar014_" + uuid::UuidToString(fixture.database_uuid));
+  Require(std::filesystem::create_directory(dir), "fixture directory already exists");
+  fixture.dir = dir;
+  fixture.database_path = fixture.dir / "pfar014.sbdb";
   fixture.filespace_uuid = MakeIdentity(platform::UuidKind::filespace, 15);
   fixture.transaction_uuid = MakeIdentity(platform::UuidKind::transaction, 16);
   fixture.principal_uuid = MakeIdentity(platform::UuidKind::principal, 17);
   fixture.agent_uuid = MakeIdentity(platform::UuidKind::object, 18);
   fixture.policy_uuid = MakeIdentity(platform::UuidKind::object, 19);
-  return fixture;
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "agent_management_authorization_policy_gate");
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = uuid::MakeTypedUuid(platform::UuidKind::database,
+                                             fixture.database_uuid).value;
+  create.filespace_uuid = uuid::MakeTypedUuid(platform::UuidKind::filespace,
+      MakeIdentity(platform::UuidKind::filespace, 100)).value;
+  create.allow_minimal_resource_bootstrap = true;
+  create.require_resource_seed_pack = false;
+  create.creation_unix_epoch_millis = NowMillis();
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "fixture database creation failed: " +
+      created.diagnostic.diagnostic_code + ":" + created.diagnostic.message_key);
+  const auto transaction =
+      scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
+          fixture.database_path, "agent_management_authorization_policy_gate");
+  fixture.transaction_uuid = transaction.transaction_uuid;
+  fixture.local_transaction_id = transaction.local_transaction_id;
 }
 
 api::EngineRequestContext Context(const Fixture& fixture,
@@ -100,17 +122,14 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.principal_uuid = fixture.principal_uuid;
   context.session_uuid = scratchbird::tests::FixtureUuid(1208, 501);
   context.transaction_uuid = fixture.transaction_uuid;
-  context.local_transaction_id = 14014;
+  context.local_transaction_id = fixture.local_transaction_id;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
   context.catalog_generation_id = 22;
   context.security_epoch = 23;
   context.resource_epoch = 24;
-  for (const auto right : rights) {
-    context.trace_tags.push_back("right:" + std::string(right));
-  }
-  context.trace_tags.push_back("security.fixture_trace_authority");
+  scratchbird::tests::MaterializeComponentAuthorization(context, rights);
   return context;
 }
 
@@ -131,29 +150,7 @@ api::EngineRequestContext ProductionContext(
   auto context = Context(fixture, {});
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.trace_tags.clear();
-  auto& authorization = context.authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid = context.database_uuid;
-  authorization.principal_uuid = context.principal_uuid;
-  authorization.security_epoch = context.security_epoch;
-  authorization.policy_epoch = context.resource_epoch;
-  authorization.catalog_generation_id = context.catalog_generation_id;
-  authorization.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  std::uint64_t index = 0;
-  auto add_grant = [&](std::string_view right, bool deny) {
-    api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid =
-        scratchbird::tests::FixtureUuid(1603, ++index);
-    grant.subject_uuid = context.principal_uuid;
-    grant.subject_kind = "principal";
-    grant.right = std::string(right);
-    grant.deny = deny;
-    grant.security_epoch = context.security_epoch;
-    authorization.grants.push_back(std::move(grant));
-  };
-  for (const auto right : allowed_rights) add_grant(right, false);
-  for (const auto right : denied_rights) add_grant(right, true);
+  scratchbird::tests::MaterializeComponentAuthorization(context, allowed_rights, denied_rights);
   return context;
 }
 
@@ -461,6 +458,8 @@ void TestFilespacePreallocateAuthorization(const Fixture& fixture) {
       fixture, {"OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL"});
   SeedVisibleFilespaceDescriptor(fixture);
   const auto allowed_result = api::EngineFilespacePreallocate(allowed);
+  if (!allowed_result.ok) for (const auto& diagnostic : allowed_result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(allowed_result.ok, "authorized filespace preallocate failed");
   Require(HasEvidence(allowed_result, "storage_executor", "PreallocateFilespace"),
           "authorized filespace preallocate storage evidence missing");
@@ -525,6 +524,54 @@ void TestHookRequiresStrictObservedMetricSnapshot(const Fixture& fixture) {
 
 void TestProductionHookRequiresDurableResourceReservationContext(
     const Fixture& fixture) {
+  // Explicit descriptor inputs for this negative resource-admission component
+  // test. These are not active producers, observations or durable metrics.
+  namespace metrics = scratchbird::core::metrics;
+  struct Dependency {
+    const char* family;
+    metrics::MetricType type;
+    metrics::MetricUnit unit;
+  };
+  const Dependency dependencies[] = {
+      {"sb_page_free_count", metrics::MetricType::gauge, metrics::MetricUnit::pages},
+      {"sb_page_allocated_count", metrics::MetricType::gauge, metrics::MetricUnit::pages},
+      {"sb_page_reserved_count", metrics::MetricType::gauge, metrics::MetricUnit::pages},
+      {"sb_page_allocation_latency_microseconds", metrics::MetricType::histogram,
+       metrics::MetricUnit::microseconds},
+      {"sb_page_allocation_failures_total", metrics::MetricType::counter,
+       metrics::MetricUnit::errors},
+      {"sb_page_relocation_backlog_count", metrics::MetricType::gauge,
+       metrics::MetricUnit::pages},
+      {"sb_page_relocation_ready_for_filespace_shrink", metrics::MetricType::state,
+       metrics::MetricUnit::none},
+  };
+  std::uint32_t ordinal = 100;
+  for (const auto& dependency : dependencies) {
+    metrics::MetricDescriptor descriptor;
+    descriptor.family = dependency.family;
+    descriptor.type = dependency.type;
+    descriptor.unit = dependency.unit;
+    descriptor.namespace_path = "sys.metrics.storage.pages";
+    descriptor.help = "Component input for resource-admission refusal";
+    descriptor.producer_owner = "storage_page";
+    descriptor.value_type = metrics::MetricScalarType::uint64;
+    if (descriptor.type == metrics::MetricType::state) {
+      descriptor.value_type = metrics::MetricScalarType::enumeration;
+      descriptor.enum_values = {0, 1};
+    }
+    descriptor.readiness = metrics::MetricReadiness::contract_ready_unwired;
+    descriptor.metric_uuid = scratchbird::tests::FixtureUuid(2226, ordinal++);
+    descriptor.descriptor_generation = 1;
+    descriptor.retention_policy_uuid = scratchbird::tests::FixtureUuid(2226, 200);
+    descriptor.retention_policy_generation = 1;
+    descriptor.visibility_policy_uuid = scratchbird::tests::FixtureUuid(2226, 201);
+    descriptor.visibility_policy_generation = 1;
+    if (descriptor.type == metrics::MetricType::histogram)
+      descriptor.histogram_buckets = {platform::u64{100}, platform::u64{1000}};
+    const auto registered = metrics::DefaultMetricRegistry().RegisterDescriptor(descriptor);
+    Require(registered.ok, "component metric descriptor refused: " +
+        registered.diagnostic_code + ":" + registered.detail);
+  }
   auto request = PageHookRequest(fixture);
   request.option_envelopes.push_back("agent_action_hook_production_live:true");
   request.option_envelopes.push_back(
@@ -573,13 +620,19 @@ void TestClusterSecurityBeforeProvider(const Fixture& fixture) {
 }  // namespace
 
 int main() {
-  const auto fixture = MakeFixture();
-  TestCommandSurfaceAuthorization(fixture);
-  TestProductionAgentAuthorityRejectsTraceAndNameSpoofing(fixture);
-  TestFilespacePreallocateAuthorization(fixture);
-  TestHookOpenModeAuthorization(fixture);
-  TestHookRequiresStrictObservedMetricSnapshot(fixture);
-  TestProductionHookRequiresDurableResourceReservationContext(fixture);
-  TestClusterSecurityBeforeProvider(fixture);
-  return EXIT_SUCCESS;
+  try {
+    Fixture fixture;
+    InitializeFixture(fixture);
+    TestCommandSurfaceAuthorization(fixture);
+    TestProductionAgentAuthorityRejectsTraceAndNameSpoofing(fixture);
+    TestFilespacePreallocateAuthorization(fixture);
+    TestHookOpenModeAuthorization(fixture);
+    TestHookRequiresStrictObservedMetricSnapshot(fixture);
+    TestProductionHookRequiresDurableResourceReservationContext(fixture);
+    TestClusterSecurityBeforeProvider(fixture);
+    return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

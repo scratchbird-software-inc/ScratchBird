@@ -174,6 +174,61 @@ void QueuePublication(){
     if(kind==2)Require(std::get<m::MetricEnumValue>(stored.value.value).code==7&&stored.value.state_text=="ready","state queue lost enum or text");
   }
 }
+void OneNodeQueueBinding() {
+  ObservationFixture fixture;
+  m::MetricRegistry registry;
+  const auto& owner = fixture.queue->binding();
+  Require(!registry.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid),
+          "unbound registry claimed a node owner");
+  Require(!registry.BindObservationQueue({}).ok, "nil node queue admitted");
+  Require(registry.RegisterDescriptor(fixture.descriptor).ok,
+          "pre-bind descriptor registration failed");
+  Require(registry.BindObservationQueue(fixture.queue).ok &&
+          registry.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid),
+          "explicit local node queue did not bind");
+  auto foreign = owner.database_uuid;
+  foreign.bytes[14] ^= 0x40;
+  Require(!registry.ObservationOwnerMatches(foreign, owner.node_uuid) &&
+          !registry.ObservationOwnerMatches(owner.database_uuid, foreign),
+          "foreign database/node matched retained queue");
+  auto replacement = m::MetricObservationQueue::Create(
+      {foreign, owner.node_uuid, {}}, {2, 8*m::kMetricSampleMaxBytes});
+  Require(replacement.ok(), "replacement queue setup");
+  Require(!registry.BindObservationQueue(std::move(replacement.queue)).ok &&
+          !registry.BindObservationQueue(fixture.queue).ok &&
+          registry.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid),
+          "queue rebinding replaced retained owner");
+  m::MetricRegistry local_only;
+  auto clustered = m::MetricObservationQueue::Create(
+      {owner.database_uuid, owner.node_uuid, foreign}, {2, 8*m::kMetricSampleMaxBytes});
+  Require(clustered.ok() && !local_only.BindObservationQueue(std::move(clustered.queue)).ok &&
+          !local_only.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid),
+          "local registry accepted a cluster queue");
+  Require(registry.RegisterSeries(fixture.series, fixture.policy).ok &&
+          fixture.Increment(registry).ok && fixture.queue->Stats().queued == 1,
+          "one-time binding did not retain actual observation handoff");
+  m::MetricRegistry racing;
+  auto other = m::MetricObservationQueue::Create(
+      {foreign, owner.node_uuid, {}}, {2, 8*m::kMetricSampleMaxBytes});
+  Require(other.ok(), "competing queue setup failed");
+  std::shared_ptr<m::MetricObservationQueue> second = std::move(other.queue);
+  std::atomic<bool> start{false};
+  bool first_won = false, second_won = false;
+  std::thread first([&] {
+    while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+    first_won = racing.BindObservationQueue(fixture.queue).ok;
+  });
+  std::thread second_thread([&] {
+    while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+    second_won = racing.BindObservationQueue(second).ok;
+  });
+  start.store(true, std::memory_order_release);
+  first.join(); second_thread.join();
+  Require(first_won != second_won &&
+          racing.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid) == first_won &&
+          racing.ObservationOwnerMatches(foreign, owner.node_uuid) == second_won,
+          "concurrent binding admitted multiple owners or lost the winner");
+}
 void QueuePublicationFaults(){
   for(bool existing:{false,true}){unsigned faults=0;bool complete=false;
     for(long budget=0;budget<1000;++budget){ObservationFixture f;m::MetricRegistry registry(f.queue);f.Register(registry);
@@ -229,6 +284,7 @@ void SeriesBindingAndConcurrency(){
 int main() {
   RegistryPublication();
   QueuePublication();
+  OneNodeQueueBinding();
   QueuePublicationFaults();
   SeriesBindingAndConcurrency();
   static_assert(sizeof(m::MetricUuid) == 16);

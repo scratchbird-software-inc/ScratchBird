@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
 #include "agents/agent_management_api.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "cluster_provider/cluster_provider.hpp"
@@ -104,12 +105,9 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000004");
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000005");
   context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f013a-0000-7000-8000-000000000006");
-  context.trace_tags = {
-      "security.fixture_trace_authority",
-      "right:OBS_AGENT_STATE_READ",
-      "right:OBS_CLUSTER_HEALTH_INSPECT",
-      "agent_cluster_route_api_provider_gate",
-  };
+  scratchbird::tests::MaterializeComponentAuthorization(context,
+      {"OBS_AGENT_STATE_READ", "OBS_CLUSTER_HEALTH_INSPECT"});
+  context.trace_tags = {"agent_cluster_route_api_provider_gate"};
   return context;
 }
 
