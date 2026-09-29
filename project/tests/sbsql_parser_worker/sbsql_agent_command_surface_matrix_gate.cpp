@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/component_authorization_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -139,15 +140,14 @@ api::EngineRequestContext EngineContext(std::string_view right,
   context.node_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000203");
   context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000204");
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f013b-0000-7000-8000-000000000205");
-  if (!right.empty()) {
-    context.trace_tags.push_back("right:" + std::string(right));
-    context.trace_tags.push_back("right:OBS_AGENT_CONTROL");
-    context.trace_tags.push_back("right:OBS_POLICY_APPLY");
-    context.trace_tags.push_back("right:OBS_AGENT_OVERRIDE");
+  if (right.empty()) {
+    scratchbird::tests::MaterializeComponentAuthorization(context,
+        {"OBS_AGENT_STATE_READ", "OBS_CLUSTER_HEALTH_INSPECT"});
+  } else {
+    scratchbird::tests::MaterializeComponentAuthorization(context,
+        {right, "OBS_AGENT_CONTROL", "OBS_POLICY_APPLY", "OBS_AGENT_OVERRIDE",
+         "OBS_AGENT_STATE_READ", "OBS_CLUSTER_HEALTH_INSPECT"});
   }
-  context.trace_tags.push_back("right:OBS_AGENT_STATE_READ");
-  context.trace_tags.push_back("right:OBS_CLUSTER_HEALTH_INSPECT");
-  context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("pfar_013b_agent_command_surface");
   return context;
 }
@@ -303,6 +303,19 @@ void RequireDeniedActionFixture() {
           "denied action approval evidence missing");
   Require(!HasEvidence(dispatch.api_result, "agent_action_approval_evidence"),
           "denied action approval created actuator/evidence success row");
+
+  auto trace_only = DispatchRequest(row, "", true);
+  trace_only.context.authorization_context = {};
+  trace_only.context.trace_tags = {"security.fixture_trace_authority",
+      "security.bootstrap", "group:ROOT", "role:ROOT",
+      "right:OBS_AGENT_CONTROL", "right:OBS_AGENT_ACTION_APPROVE"};
+  trace_only.api_request.context = trace_only.context;
+  const auto forged = sblr::DispatchSblrOperation(trace_only);
+  Require(forged.accepted && forged.dispatched_to_api && !forged.api_result.ok &&
+              HasApiDiagnostic(forged.api_result, "AGENT.SECURITY_CONTEXT_REQUIRED"),
+          "trace-only approval authority was not refused");
+  Require(!HasEvidence(forged.api_result, "agent_action_approval_evidence"),
+          "trace-only authority created approval evidence");
 }
 
 }  // namespace

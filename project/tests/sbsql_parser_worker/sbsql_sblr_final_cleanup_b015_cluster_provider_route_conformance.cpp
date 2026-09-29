@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/component_authorization_fixture.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -321,16 +322,9 @@ api::EngineRequestContext EngineContext(bool security_context_present = true) {
   context.catalog_generation_id = 151;
   context.security_epoch = 157;
   context.resource_epoch = 163;
-  context.trace_tags = {
-      "security.bootstrap",
-      "security.fixture_trace_authority",
-      "group:ROOT",
-      "role:ROOT",
-      "right:CLUSTER_INSPECT",
-      "right:CLUSTER_CONTROL",
-      "right:OBS_CLUSTER_HEALTH_INSPECT",
-      "right:OBS_AGENT_STATE_READ",
-  };
+  scratchbird::tests::MaterializeComponentAuthorization(context,
+      {"OBS_CLUSTER_CONTROL", "OBS_CLUSTER_HEALTH_INSPECT",
+       "OBS_AGENT_STATE_READ"});
   return context;
 }
 
@@ -409,6 +403,20 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
   request.api_request.operation_id = std::string(row.operation_id);
   request.api_request.option_envelopes.push_back(std::string("result_shape_contract:") +
                                                  std::string(row.result_shape));
+  if (row.operation_id == "cluster.sys.agents") {
+    auto trace_only = request;
+    trace_only.context.authorization_context = {};
+    trace_only.context.trace_tags = {"security.bootstrap", "security.fixture_trace_authority",
+        "group:ROOT", "role:ROOT", "right:OBS_CLUSTER_HEALTH_INSPECT",
+        "right:OBS_AGENT_STATE_READ"};
+    trace_only.api_request.context = trace_only.context;
+    const auto refused = sblr::DispatchSblrOperation(trace_only);
+    Require(refused.accepted && refused.dispatched_to_api && !refused.api_result.ok &&
+                HasApiDiagnosticCode(refused.api_result, "SB_AGENT_SECURITY.RIGHT_REQUIRED"),
+            "trace-only cluster agent authority was not refused");
+    Require(!HasEvidence(refused.api_result, "cluster_operation", row.operation_id),
+            "unauthorized trace-only cluster inspection reached provider");
+  }
   const auto dispatch = sblr::DispatchSblrOperation(request);
   Require(dispatch.envelope_validated,
           EvidenceMessage(row, "dispatch", "engine envelope validation failed"));
