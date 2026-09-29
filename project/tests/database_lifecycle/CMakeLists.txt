@@ -17,6 +17,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/benchmark_runtime_cleanup_test.py")
   set_tests_properties(benchmark_runtime_cleanup PROPERTIES
     LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
+  add_test(NAME copy_runtime_cleanup
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/copy_runtime_cleanup_test.py")
+  set_tests_properties(copy_runtime_cleanup PROPERTIES
+    LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
 endif()
 
 add_executable(public_name_resolution_native_cache_conformance public_name_resolution_native_cache_conformance.cpp)

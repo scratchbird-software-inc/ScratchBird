@@ -33,6 +33,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "support"))
+from owned_test_runtime import OwnedTestRuntime
+
 from sbsql_sbwp_tls_engine_auth_route_smoke import (
     FEATURE_BULK_REJECTS,
     FEATURE_STREAMING,
@@ -959,7 +962,18 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
-    work = make_work_dir(Path(args.work_dir))
+    # The listener's full UUID socket basename does not fit beneath a deep
+    # build/TMPDIR path. Own this short Linux runtime explicitly so it cannot
+    # escape the enclosing regression runner's artifact cleanup.
+    owned_runtime = None
+    if sys.platform.startswith("linux"):
+        report_root = Path(args.work_dir).resolve()
+        report_root.mkdir(parents=True, exist_ok=True)
+        evidence = Path(tempfile.mkdtemp(prefix="copy_diagnostics_", dir=report_root))
+        owned_runtime = OwnedTestRuntime(parent="/tmp")
+        work = owned_runtime.path
+    else:
+        work = make_work_dir(Path(args.work_dir))
     try:
         fixtures = Path(args.fixture_root)
         for name in ("copy_persist.rows", "copy_rollback.rows", "copy_persist_expected.csv"):
@@ -973,6 +987,12 @@ def main(argv: list[str]) -> int:
         print(f"sbsql_copy_persistence_full_route_gate=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
+    finally:
+        # Both lanes synchronously stop their routes in finally blocks;
+        # start_route also stops children when startup fails. Cleanup performs
+        # its own live-process inspection and refuses any surviving reference.
+        if owned_runtime:
+            owned_runtime.cleanup(evidence, controller_finished=True)
 
 
 if __name__ == "__main__":
