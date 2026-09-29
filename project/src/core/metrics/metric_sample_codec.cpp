@@ -34,7 +34,7 @@ MetricHistorySeriesKey Key(const MetricHistoryBinding& b,const MetricLabelSet& l
 }
 E Validate(const MetricDescriptor& d,const MetricSeriesIdentity& s,const MetricRawSampleRecord& r) {
   if(!LabelsBounded(s.labels)||!LabelsBounded(r.labels)||!LabelsBounded(r.value.labels))return E::size_limit;
-  if(!MetricDescriptorReferencesValid(d,d)||
+  if(!MetricNamespaceMatchesScope(d)||!MetricDescriptorReferencesValid(d,d)||
       static_cast<const MetricDescriptorBinding&>(s)!=static_cast<const MetricDescriptorBinding&>(d)||
       static_cast<const MetricHistoryBinding&>(s)!=static_cast<const MetricHistoryBinding&>(r)||
       !MetricSystemUuidValid(s.database_uuid)||!MetricSystemUuidValid(s.node_uuid)||
@@ -42,6 +42,7 @@ E Validate(const MetricDescriptor& d,const MetricSeriesIdentity& s,const MetricR
       !MetricSystemUuidValid(s.series_uuid)||r.series_uuid!=s.series_uuid||
       !s.series_definition_generation||r.series_definition_generation!=s.series_definition_generation||
       s.metric_family!=d.family||r.metric_family!=d.family||
+      s.namespace_path!=d.namespace_path||s.producer_owner!=d.producer_owner||
       s.scope_class!=(d.cluster_only?"cluster":"local")||
       s.series_key!=Key(s,s.labels)||s.series_key!=Key(r,r.labels)||s.series_key!=Key(r,r.value.labels))
     return E::invalid_binding;

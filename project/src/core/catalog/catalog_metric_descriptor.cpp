@@ -59,8 +59,7 @@ bool Valid(const CatalogMetricDescriptor& r) {
       !Text(d.family, 4096) || !Text(d.namespace_path, 4096) || !Text(d.producer_owner, 4096) ||
       !Text(d.help, 16384, true) || !Text(d.security_family, 4096, true) ||
       d.labels.size() > 1024 || d.aliases.size() > 1024) return false;
-  const std::string_view root = d.cluster_only ? "cluster.sys.metrics." : "sys.metrics.";
-  if (!d.namespace_path.starts_with(root) || d.namespace_path.size() == root.size()) return false;
+  if (!MetricNamespaceMatchesScope(d)) return false;
   for (std::size_t i = 0; i < d.labels.size(); ++i) {
     if (!Text(d.labels[i].key, 4096) || !Code(d.labels[i].value_type, kLabels)) return false;
     for (std::size_t j = 0; j < i; ++j) if (d.labels[i].key == d.labels[j].key) return false;

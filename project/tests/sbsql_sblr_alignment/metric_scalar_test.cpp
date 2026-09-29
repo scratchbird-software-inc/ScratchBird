@@ -33,7 +33,12 @@ m::MetricFloat128 Binary(const std::string& text){
   m::MetricFloat128 out;if(encoded.bytes)out.bytes=*encoded.bytes;return out;
 }
 m::MetricUuid Id(unsigned tag,unsigned version=7){m::MetricUuid id;id.bytes[6]=version<<4;id.bytes[8]=0x80;id.bytes[15]=tag;return id;}
-m::MetricDescriptor Descriptor(T type){m::MetricDescriptor d;d.value_type=type;d.type=m::MetricType::gauge;d.unit=m::MetricUnit::none;d.family="exact-test";return d;}
+m::MetricDescriptor Descriptor(T type){
+  m::MetricDescriptor d;d.value_type=type;d.type=m::MetricType::gauge;
+  d.unit=m::MetricUnit::none;d.family="exact-test";
+  d.namespace_path="sys.metrics.exact_scalar";d.producer_owner="exact_scalar_test";
+  return d;
+}
 void Order(const m::MetricScalar& a,const m::MetricScalar& b,int expected){
   const auto forward=m::CompareMetricScalars(a,b),reverse=m::CompareMetricScalars(b,a);
   Check(forward&&*forward==expected,"exact forward numeric ordering");

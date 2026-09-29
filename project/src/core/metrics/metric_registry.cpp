@@ -17,8 +17,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <new>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -501,6 +503,8 @@ struct MetricRegistry::ObservationState {
 MetricRegistry::MetricRegistry():MetricRegistry(std::shared_ptr<MetricObservationQueue>{}) {}
 MetricRegistry::MetricRegistry(std::shared_ptr<MetricObservationQueue> queue)
     :observation_(std::make_unique<ObservationState>()) {
+  if (queue && !queue->binding().cluster_uuid.is_nil())
+    throw std::invalid_argument("local metric registry cannot own a cluster observation queue");
   observation_->queue=std::move(queue);
   LoadBuiltinDescriptors();
   LoadInsertOptimizationDescriptors(this);
@@ -531,14 +535,14 @@ bool MetricRegistry::ObservationOwnerMatches(const MetricUuid& database_uuid,
 
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {
   if (!ValidateMetricValueDescriptor(descriptor) || !MetricDescriptorReferencesValid(descriptor, descriptor) ||
-      descriptor.readiness == MetricReadiness::unvalidated)
+      (descriptor.readiness != MetricReadiness::implemented &&
+       descriptor.readiness != MetricReadiness::contract_ready_unwired &&
+       descriptor.readiness != MetricReadiness::derived))
     return MetricError("METRIC.VALUE_INVALID", descriptor.family);
   if (descriptor.family.empty() || !StartsWith(descriptor.family, "sb_")) {
     return MetricError("SB-METRICS-DESCRIPTOR-FAMILY-INVALID", descriptor.family);
   }
-  if (descriptor.namespace_path.empty() ||
-      (descriptor.namespace_path.rfind("sys.metrics", 0) != 0 &&
-       descriptor.namespace_path.rfind("cluster.sys.metrics", 0) != 0)) {
+  if (!MetricNamespaceMatchesScope(descriptor)) {
     return MetricError("SB-METRICS-DESCRIPTOR-NAMESPACE-INVALID", descriptor.family);
   }
   if (descriptor.producer_owner.empty()) {
@@ -554,9 +558,6 @@ MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor
   }
   if (descriptor.type == MetricType::histogram && descriptor.histogram_buckets.empty()) {
     return MetricError("SB-METRICS-DESCRIPTOR-HISTOGRAM-BUCKETS-MISSING", descriptor.family);
-  }
-  if (descriptor.cluster_only && descriptor.namespace_path.rfind("cluster.sys.metrics", 0) != 0) {
-    return MetricError("SB-METRICS-DESCRIPTOR-CLUSTER-NAMESPACE-INVALID", descriptor.family);
   }
   return MetricOk();
 }
@@ -722,10 +723,16 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   const auto labels_valid = ValidateLabels(descriptor, labels);
   if (!labels_valid.ok) {
     if (descriptor.family != "sb_metric_samples_rejected_total") {
-      IncrementCounter("sb_metric_samples_rejected_total",
-                       {{"metric_family", descriptor.family}, {"reason", labels_valid.diagnostic_code}},
-                       1.0,
-                       "metrics_runtime");
+      try {
+        (void)IncrementCounter("sb_metric_samples_rejected_total",
+                         {{"metric_family", descriptor.family}, {"reason", labels_valid.diagnostic_code}},
+                         u64{1},
+                         "metrics_registry_manager");
+      } catch (const std::bad_alloc&) {
+        // Telemetry cannot replace the already established producer refusal.
+      } catch (const std::length_error&) {
+        // Retain the original refusal when telemetry exceeds container limits.
+      }
     }
     return labels_valid;
   }

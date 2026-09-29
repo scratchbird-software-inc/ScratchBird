@@ -12,6 +12,7 @@
 #include <atomic>
 #include <new>
 #include <thread>
+#include <stdexcept>
 
 namespace { thread_local long allocation_budget=-1; thread_local bool allocation_failed=false; }
 void* operator new(std::size_t size) {
@@ -174,6 +175,131 @@ void QueuePublication(){
     if(kind==2)Require(std::get<m::MetricEnumValue>(stored.value.value).code==7&&stored.value.state_text=="ready","state queue lost enum or text");
   }
 }
+void DescriptorScopeAdmission() {
+  ObservationFixture fixture;
+  m::MetricRegistry registry(fixture.queue);
+  const std::vector<std::string> invalid_local = {
+      "sys.metrics", "sys.metrics.", "sys.metricsevil.test", "sys.metrics_extra.test",
+      "cluster.sys.metrics.test", "cluster.sys.metrics", "other.sys.metrics.test",
+      std::string("sys.metrics.good\0hidden",23), "sys.metrics." + std::string(4096,'x')};
+  for (const auto& path : invalid_local) {
+    auto descriptor=fixture.descriptor;descriptor.namespace_path=path;
+    Require(!registry.RegisterDescriptor(descriptor).ok,
+            "local descriptor accepted an empty, forged, or cluster namespace root");
+    Require(!m::MakeMetricSeriesIdentity(descriptor, fixture.labels, fixture.policy,
+        fixture.series, fixture.series.series_uuid, fixture.series.series_definition_generation).ok(),
+        "series construction accepted a mismatched namespace scope");
+    Require(registry.Descriptors().empty() && registry.SnapshotCurrent().empty() &&
+            fixture.queue->Stats().queued==0,"invalid scope mutated live state");
+  }
+  for (const auto& path : {"cluster.sys.metrics", "cluster.sys.metrics.",
+                           "cluster.sys.metricsevil.test", "sys.metrics.test"}) {
+    auto descriptor=fixture.descriptor;descriptor.cluster_only=true;descriptor.namespace_path=path;
+    Require(!registry.RegisterDescriptor(descriptor).ok,"cluster descriptor accepted a forged or local namespace root");
+  }
+  auto invalid=fixture.descriptor;invalid.readiness=static_cast<m::MetricReadiness>(255);
+  Require(!registry.RegisterDescriptor(invalid).ok,"unknown readiness became an admitted runtime descriptor");
+  fixture.Register(registry);
+  Require(fixture.Increment(registry).ok,"valid local descriptor/series stopped publishing");
+  m::MetricObservationLease lease;
+  const auto sample=fixture.Read(lease);
+  Require(sample.database_uuid==fixture.series.database_uuid && sample.node_uuid==fixture.series.node_uuid &&
+      sample.cluster_uuid.is_nil(),"valid local observation changed scope");
+  auto cluster=Definition(702);cluster.cluster_only=true;cluster.namespace_path="cluster.sys.metrics.test";
+  Require(registry.RegisterDescriptor(cluster).ok,"valid cluster definition rejected rather than retained as metadata");
+  Require(!registry.IncrementCounter(cluster.family,{},m::u64{1},cluster.producer_owner).ok,
+          "cluster definition manufactured a local series/source");
+  Require(fixture.queue->Stats().queued==1 && registry.SnapshotCurrent().size()==1 &&
+      registry.Descriptors(false).size()==1 && registry.Descriptors(true).size()==2,
+      "cluster metadata crossed local publication or descriptor projection scope");
+}
+void RejectionObservationPublication() {
+  ObservationFixture fixture;
+  fixture.descriptor.family="sb_metric_samples_rejected_total";
+  fixture.descriptor.producer_owner="metrics_registry_manager";
+  fixture.descriptor.labels={{"metric_family",true},{"reason",true}};
+  fixture.descriptor.label_schema_uuid=Id();fixture.descriptor.label_schema_generation=1;
+  fixture.labels={{"metric_family","sb_bad_producer"},{"reason","invalid_label"}};
+  fixture.Bind(fixture.series.series_uuid);
+  auto& registry=m::DefaultMetricRegistry();
+  Require(registry.BindObservationQueue(fixture.queue).ok,"bind rejection counter node queue");
+  fixture.Register(registry);
+  Require(m::RejectSample("sb_bad_producer","invalid_label","bad_producer").ok,
+          "explicit rejection failed exact counter type/registered producer admission");
+  m::MetricObservationLease lease;
+  auto sample=fixture.Read(lease);
+  Require(std::get<m::u64>(sample.value.value)==1 && sample.metric_uuid==fixture.descriptor.metric_uuid,
+          "explicit rejection did not retain exact counter observation");
+  Require(fixture.queue->TryRemove(lease)==m::MetricQueueError::none,"remove inspected rejection sample");
+
+  auto rejected=Definition(703);rejected.family="sb_bad_producer";rejected.producer_owner="bad_producer";
+  rejected.labels={{"required",true}};rejected.label_schema_uuid=Id();rejected.label_schema_generation=1;
+  Require(registry.RegisterDescriptor(rejected).ok,"bind rejected-producer definition");
+  const m::MetricLabelSet automatic_labels={{"metric_family","sb_bad_producer"},
+      {"reason","SB-METRICS-LABEL-REQUIRED-MISSING"}};
+  auto series_uuid=fixture.series.series_uuid;series_uuid.bytes[14]=77;
+  const auto automatic=m::MakeMetricSeriesIdentity(fixture.descriptor,automatic_labels,fixture.policy,
+      fixture.series,series_uuid,fixture.series.series_definition_generation);
+  Require(automatic.ok() && registry.RegisterSeries(*automatic.record,fixture.policy).ok,
+          "bind retained automatic rejection series");
+  const auto refusal=registry.IncrementCounter(rejected.family,{},m::u64{1},rejected.producer_owner);
+  Require(!refusal.ok && refusal.diagnostic_code=="SB-METRICS-LABEL-REQUIRED-MISSING",
+          "rejection observation changed original producer refusal");
+  auto queued=fixture.queue->TryAcquire();Require(queued.ok(),"automatic rejection did not publish queue bytes");
+  const auto decoded=m::DecodeMetricRawSample(fixture.descriptor,*automatic.record,queued.lease.observation->bytes);
+  Require(decoded.ok() && std::get<m::u64>(decoded.record->value.value)==1,
+          "automatic rejection counter has wrong value/type");
+  Require(fixture.queue->TryRemove(queued.lease)==m::MetricQueueError::none,"remove automatic rejection sample");
+  for(const auto& current:registry.SnapshotCurrent())
+    Require(current.family==fixture.descriptor.family,"invalid original producer exposed current state");
+  const auto before=fixture.queue->Stats().admitted;
+  Require(!m::RejectSample("sb_bad_producer","","bad_producer").ok &&
+      fixture.queue->Stats().admitted==before && fixture.queue->Stats().queued==0,
+      "invalid rejection sample recursively published or falsely succeeded");
+  // Telemetry backpressure must not replace the original producer diagnostic
+  // or publish the rejected value, even when the rejection series exists.
+  for (unsigned n=0;n<2;++n)
+    Require(m::RejectSample("sb_bad_producer","invalid_label","bad_producer").ok,
+            "fill actual rejection queue");
+  const auto full_admitted=fixture.queue->Stats().admitted;
+  const auto full_history=registry.SnapshotHistory().size();
+  const auto pressured=registry.IncrementCounter(rejected.family,{},m::u64{1},rejected.producer_owner);
+  Require(!pressured.ok && pressured.diagnostic_code==refusal.diagnostic_code &&
+      pressured.detail==refusal.detail && fixture.queue->Stats().queued==2 &&
+      fixture.queue->Stats().admitted==full_admitted && registry.SnapshotHistory().size()==full_history,
+      "rejection queue backpressure replaced original refusal or published state");
+  for (m::u64 expected=2;expected<=3;++expected) {
+    m::MetricObservationLease retained;
+    const auto value=fixture.Read(retained);
+    Require(std::get<m::u64>(value.value.value)==expected,
+            "failed automatic rejection mutated retained counter observations");
+    Require(fixture.queue->TryRemove(retained)==m::MetricQueueError::none,
+            "remove retained rejection under backpressure");
+  }
+  // Count only the allocations needed to establish the original diagnostic,
+  // then fail the first allocation made by its secondary telemetry path.
+  allocation_budget=1000;
+  const auto measured=registry.ValidateLabels(rejected,{});
+  const long diagnostic_allocations=1000-allocation_budget;
+  allocation_budget=-1;
+  Require(!measured.ok && diagnostic_allocations>0 && diagnostic_allocations<1000,
+          "could not isolate original diagnostic allocations");
+  m::MetricValidationResult allocation_refusal;
+  bool telemetry_threw=false;
+  allocation_failed=false;
+  allocation_budget=diagnostic_allocations;
+  try {
+    allocation_refusal=registry.IncrementCounter(rejected.family,{},m::u64{1},rejected.producer_owner);
+  } catch (const std::bad_alloc&) {
+    telemetry_threw=true;
+  }
+  allocation_budget=-1;
+  Require(allocation_failed && !telemetry_threw && !allocation_refusal.ok &&
+      allocation_refusal.diagnostic_code==refusal.diagnostic_code && allocation_refusal.detail==refusal.detail &&
+      fixture.queue->Stats().queued==0 && fixture.queue->Stats().admitted==full_admitted &&
+      registry.SnapshotHistory().size()==full_history,
+      "rejection telemetry allocation failure replaced original refusal or published state");
+}
 void OneNodeQueueBinding() {
   ObservationFixture fixture;
   m::MetricRegistry registry;
@@ -204,6 +330,19 @@ void OneNodeQueueBinding() {
   Require(clustered.ok() && !local_only.BindObservationQueue(std::move(clustered.queue)).ok &&
           !local_only.ObservationOwnerMatches(owner.database_uuid, owner.node_uuid),
           "local registry accepted a cluster queue");
+  auto constructor_queue = m::MetricObservationQueue::Create(
+      {owner.database_uuid, owner.node_uuid, foreign}, {2, 8*m::kMetricSampleMaxBytes});
+  Require(constructor_queue.ok(), "cluster constructor queue setup");
+  std::shared_ptr<m::MetricObservationQueue> retained_cluster_queue = std::move(constructor_queue.queue);
+  bool refused_constructor = false;
+  try {
+    m::MetricRegistry incorrectly_local(retained_cluster_queue);
+  } catch (const std::invalid_argument&) {
+    refused_constructor = true;
+  }
+  Require(refused_constructor && retained_cluster_queue->Stats().queued == 0 &&
+          retained_cluster_queue->Stats().admitted == 0,
+          "constructor bypassed local ownership admission or modified cluster queue");
   Require(registry.RegisterSeries(fixture.series, fixture.policy).ok &&
           fixture.Increment(registry).ok && fixture.queue->Stats().queued == 1,
           "one-time binding did not retain actual observation handoff");
@@ -285,6 +424,8 @@ int main() {
   RegistryPublication();
   QueuePublication();
   OneNodeQueueBinding();
+  DescriptorScopeAdmission();
+  RejectionObservationPublication();
   QueuePublicationFaults();
   SeriesBindingAndConcurrency();
   static_assert(sizeof(m::MetricUuid) == 16);

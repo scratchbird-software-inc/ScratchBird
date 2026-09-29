@@ -11,7 +11,7 @@ namespace scratchbird::core::metrics {
 namespace {
 using E = MetricHistoryRecordError;
 bool BindingValid(const MetricDescriptor& d, const MetricHistoryBinding& b) {
-  if (!MetricDescriptorReferencesValid(d, d) ||
+  if (!MetricNamespaceMatchesScope(d) || !MetricDescriptorReferencesValid(d, d) ||
       static_cast<const MetricDescriptorBinding&>(d) != static_cast<const MetricDescriptorBinding&>(b)) return false;
   if (!MetricSystemUuidValid(b.metric_uuid) || !b.descriptor_generation ||
       !MetricSystemUuidValid(b.retention_policy_uuid) || !b.retention_policy_generation ||
@@ -63,7 +63,8 @@ MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
     u64 observed, u64 collected, u64 sequence) {
   if (!MetricSystemUuidValid(series.series_uuid)) return {E::invalid_identity, {}};
   if (!series.series_definition_generation || !BindingValid(descriptor, series) || series.series_key != Key(series, series.labels) ||
-      series.metric_family != descriptor.family || series.scope_class != (descriptor.cluster_only ? "cluster" : "local"))
+      series.metric_family != descriptor.family || series.namespace_path != descriptor.namespace_path ||
+      series.producer_owner != descriptor.producer_owner || series.scope_class != (descriptor.cluster_only ? "cluster" : "local"))
     return {E::invalid_binding, {}};
   if (!ValidateMetricLabelSet(descriptor, series.labels).ok || !ValidateMetricLabelSet(descriptor, value.labels).ok ||
       Key(series, value.labels) != series.series_key) return {E::invalid_labels, {}};

@@ -101,6 +101,8 @@ void Bindings() {
   }
   changed_binding=b;changed_binding.cluster_uuid=Id(10);Rejected(m::MakeMetricSeriesIdentity(d,labels,p,changed_binding,Id(9),1));
   auto cluster=d;cluster.cluster_only=true;changed_policy=p;changed_policy.scope="cluster";
+  Rejected(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,changed_binding,Id(9),1));
+  cluster.namespace_path="cluster.sys.metrics.test";
   Rejected(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,b,Id(9),1));
   Check(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,changed_binding,Id(9),1).ok(),"valid cluster record construction rejected");
   Rejected(m::MakeMetricSeriesIdentity(cluster,labels,p,changed_binding,Id(9),1));
@@ -133,6 +135,8 @@ void Samples() {
   auto bad_series=*series.record;bad_series.series_uuid={};Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
   bad_series=*series.record;bad_series.series_definition_generation=0;Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
   bad_series=*series.record;bad_series.metric_uuid=Id(20);Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
+  bad_series=*series.record;bad_series.namespace_path="cluster.sys.metrics.test";Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
+  bad_series=*series.record;bad_series.producer_owner="other-owner";Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
   auto bad_value=value;bad_value.family="other";Rejected(m::MakeMetricRawSampleRecord(d,*series.record,bad_value,1,2,1));
   bad_value=value;bad_value.type=m::MetricType::gauge;Rejected(m::MakeMetricRawSampleRecord(d,*series.record,bad_value,1,2,1));
   bad_value=value;bad_value.labels[0].value=Id(21);Rejected(m::MakeMetricRawSampleRecord(d,*series.record,bad_value,1,2,1));

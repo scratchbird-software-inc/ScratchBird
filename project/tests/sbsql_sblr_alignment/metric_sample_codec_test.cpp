@@ -15,6 +15,7 @@ struct SampleFixture {
 SampleFixture Sample(m::MetricScalar value=U(9007199254740993ULL)) {
   SampleFixture f;auto& d=f.descriptor;
   d=Descriptor(m::MetricScalarTypeOf(value));d.type=m::MetricType::sample;
+  d.namespace_path="sys.metrics.sample_codec";d.producer_owner="sample_codec_test";
   if(d.value_type==T::enumeration)d.enum_values={U(-1)};
   d.metric_uuid=Id(1);d.descriptor_generation=2;d.label_schema_uuid=Id(3);d.label_schema_generation=4;
   d.retention_policy_uuid=Id(5);d.retention_policy_generation=6;d.visibility_policy_uuid=Id(7);d.visibility_policy_generation=8;
@@ -107,10 +108,17 @@ void SampleTypesAndBindings() {
   f=Sample();f.descriptor.descriptor_generation++;SampleEncodeRejected(f);
   f=Sample();f.sample.metric_family="different";SampleEncodeRejected(f);
   f=Sample();f.series.scope_class="cluster";SampleEncodeRejected(f);
+  for (const auto& path : {"sys.metrics", "sys.metrics.", "sys.metricsevil.test", "cluster.sys.metrics.test"}) {
+    f=Sample();f.descriptor.namespace_path=path;f.series.namespace_path=path;
+    SampleEncodeRejected(f);SampleRejected(f,original);
+  }
+  f=Sample();f.series.namespace_path="sys.metrics.other";SampleEncodeRejected(f);SampleRejected(f,original);
+  f=Sample();f.series.producer_owner="other-owner";SampleEncodeRejected(f);SampleRejected(f,original);
   f=Sample();f.sample.labels[2].value=std::string(1048577,'x');SampleEncodeRejected(f);
   // Cluster-shaped retained data is not a cluster provider or membership grant.
   f=Sample();f.descriptor.cluster_only=true;f.series.scope_class="cluster";f.series.cluster_uuid=Id(31);f.sample.cluster_uuid=Id(31);
-  std::get<2>(f.series.series_key)=Id(31);SampleRoundTrip(f);
+  std::get<2>(f.series.series_key)=Id(31);SampleEncodeRejected(f);
+  f.descriptor.namespace_path=f.series.namespace_path="cluster.sys.metrics.test";SampleRoundTrip(f);
   f.sample.cluster_uuid={};SampleEncodeRejected(f);
   f=Sample();f.descriptor.labels.clear();f.descriptor.label_schema_uuid={};f.descriptor.label_schema_generation=0;
   f.series.labels.clear();f.sample.labels.clear();f.sample.value.labels.clear();

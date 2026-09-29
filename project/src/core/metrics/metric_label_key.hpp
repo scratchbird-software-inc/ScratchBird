@@ -4,6 +4,7 @@
 
 #include "metric_registry.hpp"
 #include <algorithm>
+#include <string_view>
 
 namespace scratchbird::core::metrics {
 
@@ -13,6 +14,13 @@ inline bool MetricSystemUuidValid(const MetricUuid& value) noexcept {
 }
 
 // Validation does not mutate any series and does not format or parse UUIDs.
+inline bool MetricNamespaceMatchesScope(const MetricDescriptorDefinition& definition) noexcept {
+  const std::string_view root = definition.cluster_only ? "cluster.sys.metrics." : "sys.metrics.";
+  const auto& path = definition.namespace_path;
+  return path.size() > root.size() && path.size() <= 4096 &&
+      path.starts_with(root) && path.find('\0') == path.npos;
+}
+
 inline bool MetricDescriptorReferencesValid(const MetricDescriptorDefinition& d,
                                             const MetricDescriptorBinding& b) noexcept {
   if (!MetricSystemUuidValid(b.metric_uuid) || !b.descriptor_generation ||

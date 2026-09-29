@@ -53,8 +53,8 @@ MetricValidationResult RejectSample(const std::string& family,
   (void)producer_owner;
   return DefaultMetricRegistry().IncrementCounter("sb_metric_samples_rejected_total",
                                                   Labels({{"metric_family", family}, {"reason", reason}}),
-                                                  1.0,
-                                                  "metrics_runtime");
+                                                  u64{1},
+                                                  "metrics_registry_manager");
 }
 
 }  // namespace scratchbird::core::metrics
