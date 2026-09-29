@@ -187,6 +187,9 @@ class MetricRegistry {
   MetricValidationResult BindObservationQueue(std::shared_ptr<MetricObservationQueue>);
   bool ObservationOwnerMatches(const MetricUuid& database_uuid,
                                const MetricUuid& node_uuid) const;
+  // Retained local queue owner, not an inferred identity or authorization.
+  // A foreign database or unbound runtime has no node observation owner.
+  std::optional<MetricUuid> ObservationNodeForDatabase(const MetricUuid& database_uuid) const;
 
   MetricValidationResult RegisterDescriptor(MetricDescriptor descriptor);
   // Retain an already owned local catalog binding; no activation/permission

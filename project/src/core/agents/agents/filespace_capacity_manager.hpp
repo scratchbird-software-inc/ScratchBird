@@ -57,14 +57,23 @@ enum class FilespaceCapacityHealthState : u32 {
 };
 
 enum class FilespaceCapacityRoleState : u32 {
-  unknown,
-  active_primary,
-  primary_shadow,
-  primary_candidate,
-  secondary_data,
-  temporary,
-  drop_pending,
-  forbidden
+  unknown = 0,
+  active_primary = 1,
+  primary_shadow = 2,
+  primary_snapshot = 3,
+  primary_candidate = 4,
+  secondary_data = 5,
+  secondary_index = 6,
+  secondary_overflow = 7,
+  secondary_history = 8,
+  secondary_shard = 9,
+  archive_history = 10,
+  archive_log = 11,
+  archive_detached = 12,
+  temporary = 13,
+  import_candidate = 14,
+  drop_pending = 15,
+  forbidden = 16
 };
 
 struct FilespaceCapacityManagerMetricSnapshot {

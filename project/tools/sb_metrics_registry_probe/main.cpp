@@ -161,7 +161,7 @@ int main() {
                                                  "active_primary",
                                                  "file").ok,
                 "filespace capacity producer contract accepts bounded sample");
-  ok &= Require(PublishFilespaceHealthState(1.0,
+  ok &= Require(PublishFilespaceHealthState(MetricEnumValue{1},
                                             "healthy",
                                             "database:probe",
                                             "filespace:probe",

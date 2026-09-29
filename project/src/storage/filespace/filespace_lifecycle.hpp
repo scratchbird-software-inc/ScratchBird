@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::core::metrics { struct MetricValidationResult; }
+
 namespace scratchbird::storage::filespace {
 
 using scratchbird::core::platform::DiagnosticRecord;
@@ -175,6 +177,10 @@ struct FilespaceEvidenceRecord {
   std::string diagnostic_code;
   bool durable_state_changed = false;
 };
+
+// Observe the exact role after lifecycle mutation. The retained local metric
+// queue supplies the node owner; no healthy sample is inferred from lifecycle.
+core::metrics::MetricValidationResult PublishFilespaceRoleObservation(const FilespaceDescriptor&);
 
 struct FilespaceLifecyclePolicy {
   bool allow_primary_detach = false;

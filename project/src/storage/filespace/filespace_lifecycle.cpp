@@ -177,81 +177,6 @@ void EmitPinMetric(const FilespaceDescriptor& descriptor) {
       "storage_filespace");
 }
 
-double FilespaceRoleStateValue(FilespaceRole role) {
-  switch (role) {
-    case FilespaceRole::active_primary: return 1.0;
-    case FilespaceRole::primary_shadow: return 2.0;
-    case FilespaceRole::primary_candidate: return 3.0;
-    case FilespaceRole::secondary_data:
-    case FilespaceRole::secondary_index:
-    case FilespaceRole::secondary_overflow:
-    case FilespaceRole::secondary_history:
-    case FilespaceRole::secondary_shard:
-    case FilespaceRole::temporary:
-    case FilespaceRole::import_candidate:
-    case FilespaceRole::drop_pending:
-    case FilespaceRole::forbidden:
-      return 4.0;
-    case FilespaceRole::archive_history:
-    case FilespaceRole::archive_log:
-    case FilespaceRole::archive_detached:
-      return 5.0;
-    case FilespaceRole::primary_snapshot:
-      return 2.0;
-    case FilespaceRole::unknown:
-      return 0.0;
-  }
-  return 0.0;
-}
-
-double FilespaceHealthStateValue(FilespaceState state) {
-  switch (state) {
-    case FilespaceState::online:
-    case FilespaceState::read_only:
-      return 1.0;
-    case FilespaceState::maintenance:
-    case FilespaceState::moving:
-    case FilespaceState::relocating_objects:
-    case FilespaceState::promoting:
-    case FilespaceState::demoting:
-    case FilespaceState::detaching:
-    case FilespaceState::drop_pending:
-      return 2.0;
-    case FilespaceState::quarantine:
-      return 3.0;
-    case FilespaceState::deleted:
-    case FilespaceState::forbidden:
-      return 4.0;
-    case FilespaceState::absent:
-    case FilespaceState::detached:
-    case FilespaceState::archived:
-    case FilespaceState::creating:
-    case FilespaceState::initializing:
-      return 0.0;
-  }
-  return 0.0;
-}
-
-void EmitFilespaceAuthorityMetrics(const FilespaceDescriptor& descriptor) {
-  const auto database_uuid = descriptor.database_uuid.value;
-  const auto filespace_uuid = descriptor.filespace_uuid.value;
-  const std::string role = FilespaceRoleName(descriptor.role);
-  const std::string state = FilespaceStateName(descriptor.state);
-  (void)scratchbird::core::metrics::PublishFilespaceRoleState(FilespaceRoleStateValue(descriptor.role),
-                                                              role,
-                                                              database_uuid,
-                                                              filespace_uuid,
-                                                              {},
-                                                              role,
-                                                              "file");
-  (void)scratchbird::core::metrics::PublishFilespaceHealthState(FilespaceHealthStateValue(descriptor.state),
-                                                                state,
-                                                                database_uuid,
-                                                                filespace_uuid,
-                                                                {},
-                                                                role,
-                                                                "file");
-}
 
 FilespaceOperationResult ErrorResult(std::string diagnostic_code,
                                      std::string message_key,
@@ -979,6 +904,26 @@ FilespaceRegistryManifestLoadResult ManifestLoadError(FilespaceRegistryManifestL
 }
 
 }  // namespace
+
+core::metrics::MetricValidationResult PublishFilespaceRoleObservation(
+    const FilespaceDescriptor& descriptor) {
+  namespace metrics = core::metrics;
+  if (descriptor.database_uuid.kind != core::platform::UuidKind::database ||
+      descriptor.filespace_uuid.kind != core::platform::UuidKind::filespace ||
+      !core::uuid::IsEngineIdentityUuid(descriptor.database_uuid.value) ||
+      !core::uuid::IsEngineIdentityUuid(descriptor.filespace_uuid.value) ||
+      static_cast<u16>(descriptor.role) > static_cast<u16>(FilespaceRole::forbidden))
+    return metrics::MetricError("METRIC.VALUE_INVALID", "filespace_role_identity_or_code_invalid");
+  const auto node = metrics::DefaultMetricRegistry().ObservationNodeForDatabase(
+      descriptor.database_uuid.value);
+  if (!node)
+    return metrics::MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE",
+        "filespace_database_has_no_retained_node_queue");
+  const std::string role = FilespaceRoleName(descriptor.role);
+  return metrics::PublishFilespaceRoleState(
+      metrics::MetricEnumValue{static_cast<u64>(descriptor.role)}, role,
+      descriptor.database_uuid.value, descriptor.filespace_uuid.value, *node, role, "file");
+}
 
 const char* FilespaceRoleName(FilespaceRole role) {
   switch (role) {
@@ -2386,7 +2331,7 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                                                     durable_state_changed);
   EmitLifecycleMetric(FilespaceOperationName(request.operation), "ok", "ok");
   EmitPinMetric(after);
-  EmitFilespaceAuthorityMetrics(after);
+  (void)PublishFilespaceRoleObservation(after);
   return SuccessResult(after, evidence, durable_state_changed, true, physical_file_removed);
 }
 

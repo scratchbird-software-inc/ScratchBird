@@ -454,6 +454,27 @@ void TestPageBoundaryForbiddenActions() {
   }
 }
 
+void TestExactRoleCodesKeepCapacityAuthorityDistinct() {
+  const auto ids = MakeIds(8);
+  const char* names[] = {"unknown","active_primary","primary_shadow","primary_snapshot",
+      "primary_candidate","secondary_data","secondary_index","secondary_overflow",
+      "secondary_history","secondary_shard","archive_history","archive_log",
+      "archive_detached","temporary","import_candidate","drop_pending","forbidden"};
+  for (platform::u32 code=0; code<17; ++code) {
+    auto snapshot=Snapshot(ids);
+    snapshot.role_state=static_cast<agents::FilespaceCapacityRoleState>(code);
+    Require(std::string(agents::FilespaceCapacityRoleStateName(snapshot.role_state))==names[code],
+            "metric role code changed meaning at capacity consumer");
+    const auto result=agents::EvaluateFilespaceCapacityManagerAction(
+        Request(ids, agents::FilespaceCapacityManagerActionKind::request_filespace_expand, 60000+code),
+        snapshot, FullPolicy(ids), SafeState());
+    if(code==1 || (code>=5 && code<=9) || code==13)
+      ExpectAuthorized(result,names[code]);
+    else
+      ExpectRefused(result,"FILESPACE_AGENT.ROLE_DENIED",names[code]);
+  }
+}
+
 void TestCapacityWindowQueueRequiresExplicitExpandAuthority() {
   const auto ids = MakeIds(7);
   auto policy = Policy(ids);
@@ -503,5 +524,6 @@ int main() {
   TestQuarantineAndPromotionSpecialGates();
   TestPageBoundaryForbiddenActions();
   TestCapacityWindowQueueRequiresExplicitExpandAuthority();
+  TestExactRoleCodesKeepCapacityAuthorityDistinct();
   return EXIT_SUCCESS;
 }

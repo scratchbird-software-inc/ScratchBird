@@ -625,7 +625,7 @@ MetricValidationResult PublishFilespaceReservedBytes(double reserved_bytes,
                   "storage_filespace");
 }
 
-MetricValidationResult PublishFilespaceHealthState(double state_value,
+MetricValidationResult PublishFilespaceHealthState(MetricEnumValue state_value,
                                                    std::string state_text,
                                                    MetricUuid database_uuid,
                                                    MetricUuid filespace_uuid,
@@ -644,7 +644,7 @@ MetricValidationResult PublishFilespaceHealthState(double state_value,
                   "storage_filespace");
 }
 
-MetricValidationResult PublishFilespaceRoleState(double state_value,
+MetricValidationResult PublishFilespaceRoleState(MetricEnumValue state_value,
                                                  std::string state_text,
                                                  MetricUuid database_uuid,
                                                  MetricUuid filespace_uuid,

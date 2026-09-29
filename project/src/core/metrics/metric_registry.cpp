@@ -134,6 +134,15 @@ bool MetricRegistry::ObservationOwnerMatches(const MetricUuid& database_uuid,
       observation_->queue->binding().cluster_uuid.is_nil();
 }
 
+std::optional<MetricUuid> MetricRegistry::ObservationNodeForDatabase(
+    const MetricUuid& database_uuid) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!observation_->queue ||
+      observation_->queue->binding().database_uuid != database_uuid ||
+      !observation_->queue->binding().cluster_uuid.is_nil()) return std::nullopt;
+  return observation_->queue->binding().node_uuid;
+}
+
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {
   if (!ValidateMetricValueDescriptor(descriptor) || !MetricDescriptorReferencesValid(descriptor, descriptor) ||
       (descriptor.readiness != MetricReadiness::implemented &&

@@ -122,11 +122,20 @@ bool RolePermitsCapacityWindow(FilespaceCapacityRoleState role) {
   switch (role) {
     case FilespaceCapacityRoleState::active_primary:
     case FilespaceCapacityRoleState::secondary_data:
+    case FilespaceCapacityRoleState::secondary_index:
+    case FilespaceCapacityRoleState::secondary_overflow:
+    case FilespaceCapacityRoleState::secondary_history:
+    case FilespaceCapacityRoleState::secondary_shard:
     case FilespaceCapacityRoleState::temporary:
       return true;
     case FilespaceCapacityRoleState::unknown:
     case FilespaceCapacityRoleState::primary_shadow:
+    case FilespaceCapacityRoleState::primary_snapshot:
     case FilespaceCapacityRoleState::primary_candidate:
+    case FilespaceCapacityRoleState::archive_history:
+    case FilespaceCapacityRoleState::archive_log:
+    case FilespaceCapacityRoleState::archive_detached:
+    case FilespaceCapacityRoleState::import_candidate:
     case FilespaceCapacityRoleState::drop_pending:
     case FilespaceCapacityRoleState::forbidden:
       return false;
@@ -846,10 +855,20 @@ const char* FilespaceCapacityRoleStateName(FilespaceCapacityRoleState state) {
       return "active_primary";
     case FilespaceCapacityRoleState::primary_shadow:
       return "primary_shadow";
+    case FilespaceCapacityRoleState::primary_snapshot:
+      return "primary_snapshot";
     case FilespaceCapacityRoleState::primary_candidate:
       return "primary_candidate";
     case FilespaceCapacityRoleState::secondary_data:
       return "secondary_data";
+    case FilespaceCapacityRoleState::secondary_index: return "secondary_index";
+    case FilespaceCapacityRoleState::secondary_overflow: return "secondary_overflow";
+    case FilespaceCapacityRoleState::secondary_history: return "secondary_history";
+    case FilespaceCapacityRoleState::secondary_shard: return "secondary_shard";
+    case FilespaceCapacityRoleState::archive_history: return "archive_history";
+    case FilespaceCapacityRoleState::archive_log: return "archive_log";
+    case FilespaceCapacityRoleState::archive_detached: return "archive_detached";
+    case FilespaceCapacityRoleState::import_candidate: return "import_candidate";
     case FilespaceCapacityRoleState::temporary:
       return "temporary";
     case FilespaceCapacityRoleState::drop_pending:
@@ -1016,14 +1035,21 @@ FilespaceCapacityManagerActionResult EvaluateFilespaceCapacityManagerAction(
 
   switch (request.action) {
     case FilespaceCapacityManagerActionKind::request_filespace_expand: {
-      if (!RolePermitsCapacityWindow(snapshot.role_state) ||
-          !HealthPermitsCapacityWindow(snapshot, policy)) {
+      if (!RolePermitsCapacityWindow(snapshot.role_state)) {
+        return RefuseAction(request,
+                            snapshot,
+                            policy,
+                            "FILESPACE_AGENT.ROLE_DENIED",
+                            "agents.filespace_capacity.role_denied",
+                            "filespace role state does not permit expansion");
+      }
+      if (!HealthPermitsCapacityWindow(snapshot, policy)) {
         return RefuseAction(request,
                             snapshot,
                             policy,
                             "FILESPACE_AGENT.HEALTH_DENIED",
                             "agents.filespace_capacity.health_denied",
-                            "filespace health or role state does not permit expansion");
+                            "filespace health state does not permit expansion");
       }
       if (!policy.expand_allowed || !policy.expand_request_policy_explicit) {
         return recommend_only();

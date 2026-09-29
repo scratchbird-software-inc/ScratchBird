@@ -2355,6 +2355,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_page_cache_metric_exact_producer PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;metrics;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_filespace_role_observation filespace_role_observation_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_filespace_role_observation PRIVATE sb_core_metrics sb_storage_filespace)
+  add_test(NAME sbsql_sblr_alignment_filespace_role_observation COMMAND sbsql_sblr_alignment_filespace_role_observation)
+  set_tests_properties(sbsql_sblr_alignment_filespace_role_observation PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;metrics;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_metric_binary_label_key
     metric_binary_label_key_test.cpp
     ../../src/core/metrics/metric_producer.cpp
