@@ -9,6 +9,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 #include "api_types.hpp"
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -3272,10 +3273,17 @@ void RequireTransactionalIndexLifecycle(
           "transactional index did not validate against authoritative rows");
 
   // Independent SBCLKEY2 scalar-key oracle: uint32 arity, VALUE state,
-  // uint32 payload length, exact bytes. Raw display text is not a durable key.
+  // uint32 payload length, exact bytes. Bound index entries preserve this
+  // lossless tuple in payload_value; key_value is the derived physical key.
   const std::string key_one("SBCLKEY2\1\0\0\0\0\1\0\0\0" "1", 18);
   const std::string key_two("SBCLKEY2\1\0\0\0\0\1\0\0\0" "2", 18);
   const std::string key_fifteen("SBCLKEY2\1\0\0\0\0\2\0\0\0" "15", 19);
+  const auto has_durable_key = [](const auto& entry,
+                                  const std::string& logical_key) {
+    return entry.payload_value == logical_key &&
+           entry.key_value.starts_with("SBKOBIN:") &&
+           entry.key_value.size() > 8;
+  };
   bool saw_key_change_retire = false;
   bool saw_delete_retire = false;
   for (const auto& entry : state.index_entries) {
@@ -3283,10 +3291,10 @@ void RequireTransactionalIndexLifecycle(
       continue;
     }
     if (entry.creator_tx == updater.local_transaction_id &&
-        entry.row_uuid == kRowA && entry.key_value == key_one) {
+        entry.row_uuid == kRowA && has_durable_key(entry, key_one)) {
       saw_key_change_retire = true;
     }
-    if (entry.row_uuid == kRowB && entry.key_value == key_two) {
+    if (entry.row_uuid == kRowB && has_durable_key(entry, key_two)) {
       saw_delete_retire = true;
     }
   }
@@ -3303,10 +3311,13 @@ void RequireTransactionalIndexLifecycle(
           [&](const auto& entry) {
             return entry.index_uuid == kIndexUuid &&
                    entry.creator_tx == updater.local_transaction_id &&
-                   entry.row_uuid == kRowA && entry.key_value == key_one &&
+                   entry.row_uuid == kRowA && has_durable_key(entry, key_one) &&
                    entry.entry_kind == "retire";
           }),
       missing_retire_state.index_entries.end());
+  Require(missing_retire_state.index_entries.size() + 1 ==
+              state.index_entries.size(),
+          "missing-retire control did not remove exactly one durable marker");
   const auto missing_retire =
       api::ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
           updater, missing_retire_state);
@@ -3323,10 +3334,13 @@ void RequireTransactionalIndexLifecycle(
           [&](const auto& entry) {
             return entry.index_uuid == kIndexUuid &&
                    entry.creator_tx == updater.local_transaction_id &&
-                   entry.row_uuid == kRowA && entry.key_value == key_fifteen &&
+                   entry.row_uuid == kRowA && has_durable_key(entry, key_fifteen) &&
                    entry.entry_kind == "insert";
           }),
       missing_insert_state.index_entries.end());
+  Require(missing_insert_state.index_entries.size() + 1 ==
+              state.index_entries.size(),
+          "missing-insert control did not remove exactly one durable membership");
   const auto missing_insert =
       api::ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
           updater, missing_insert_state);
@@ -3595,6 +3609,9 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.localized_names.push_back(Name("sbsfc021_table"));
   table_request.columns.push_back(Column(0, "id"));
   table_request.columns.push_back(Column(1, "note"));
+  // Only the indexed ID needs comparison resources here. The unindexed note
+  // deliberately exercises sealed non-comparable TEXT assignment below.
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, table_request.columns.front());
   table_request.indexes.push_back(UniqueIdIndex());
   auto table = Dispatch(database_path,
                         "ddl.create_table",
@@ -3928,21 +3945,27 @@ void VerifyTextTargetAuthority(const std::filesystem::path& database_path) {
   Require(!api::CaptureDmlUpdateTextTargetV2(context, key, column.column_generation + 1).ok,
           "stale TEXT column generation was admitted");
   const auto legacy = api::LoadMgaRelationStorageDescriptor(context, kTableUuid);
-  Require(legacy.ok && !legacy.descriptor.columns.empty(), "legacy TEXT fixture did not load");
+  Require(legacy.ok && legacy.descriptor.columns.size() == 2,
+          "legacy TEXT fixture did not load");
+  // The indexed ID now has real comparison resources. Keep this independent
+  // non-comparable assignment control on the unindexed note column.
+  const auto& non_comparable = legacy.descriptor.columns[1];
+  Require(non_comparable.canonical_name_key == "note" && non_comparable.collation_uuid.is_nil(),
+          "legacy TEXT refusal control unexpectedly acquired comparison resources");
   const api::MgaTextColumnKeyV2 legacy_key{
       binary_uuid(legacy.descriptor.relation_uuid),
       binary_uuid(legacy.descriptor.descriptor_uuid),
       legacy.descriptor.descriptor_generation,
-      binary_uuid(legacy.descriptor.columns[0].column_uuid), 0};
+      binary_uuid(non_comparable.column_uuid), 1};
   const auto plain = api::CaptureDmlUpdateTextTargetV2(
-      context, legacy_key, legacy.descriptor.columns[0].column_generation);
+      context, legacy_key, non_comparable.column_generation);
   Require(plain.ok && !plain.handle.snapshot()->contextual &&
               plain.handle.snapshot()->descriptor.exact_bytes.empty() &&
               !plain.handle.snapshot()->collation.present &&
               plain.handle.snapshot()->charset.canonical_name == "UTF-8" &&
               !plain.handle.snapshot()->exact_relation_projection.empty() &&
               plain.handle.snapshot()->exact_persisted_value_descriptor ==
-                  legacy.descriptor.columns[0].value_descriptor.encoded_descriptor,
+                  non_comparable.value_descriptor.encoded_descriptor,
           "sealed non-comparable TEXT assignment lost its exact authority or invented collation");
   const auto integer_relation = api::LoadMgaRelationStorageDescriptor(context, kQueryLeftTableUuid);
   Require(integer_relation.ok && !integer_relation.descriptor.columns.empty(),
