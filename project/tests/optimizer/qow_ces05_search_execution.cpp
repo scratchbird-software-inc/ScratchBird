@@ -532,17 +532,18 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
         for (const auto& [key, value] : metadata.text) std::cerr << key << '=' << value << '\n';
     }
   }
-  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
     auto stale = context;
     if (mutation == 0) stale.datatype_catalog_snapshot_uuid = TestUuid(0xd701);
     if (mutation == 1) ++stale.datatype_catalog_generation;
     if (mutation == 2) ++stale.datatype_registry_generation;
     if (mutation == 3) stale.database_uuid = TestUuid(0xd702);
+    if (mutation == 4) ++stale.resource_epoch;
     passed &= Require(!api::ExactBoundSearchStorageDescriptorV1(stale, storage, kCollection),
                       "search accepted a substituted database or datatype cohort");
   }
   for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
-    for (unsigned mutation = 0; mutation < 18; ++mutation) {
+    for (unsigned mutation = 0; mutation < 27; ++mutation) {
       auto changed = storage;
       auto& column = changed.columns[ordinal];
       auto& descriptor = column.value_descriptor;
@@ -567,6 +568,21 @@ bool SearchDescriptorMutationRefusals(const SearchFixture& fixture) {
       if (mutation == 15) metadata.text["codec_id"] += "-substituted";
       if (mutation == 16) metadata.identities["column_uuid"] = TestUuid(0xd709);
       if (mutation == 17) column.canonical_name_key = "substituted";
+      if (mutation == 18) metadata.identities["charset_uuid"] = TestUuid(0xd710);
+      if (mutation == 19) metadata.identities["collation_uuid"] = TestUuid(0xd711);
+      if (mutation == 20) metadata.text["charset_generation"] = "999";
+      if (mutation == 21) metadata.text["collation_generation"] = "999";
+      if (mutation == 22) metadata.text["resource_epoch"] = "999";
+      if (mutation == 23) ++column.character_length;
+      if (mutation == 24) metadata.text.erase("character_length");
+      if (mutation == 25) {
+        column.charset_uuid = descriptor.charset_uuid = TestUuid(0xd712);
+        metadata.identities["charset_uuid"] = column.charset_uuid;
+      }
+      if (mutation == 26) {
+        column.collation_uuid = descriptor.collation_uuid = {};
+        metadata.identities.erase("collation_uuid");
+      }
       if (!api::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor))
         return Require(false, "search mutation metadata did not encode");
       passed &= Require(!api::ExactBoundSearchStorageDescriptorV1(context, changed, kCollection),
@@ -2158,6 +2174,8 @@ api::TypedRelationalDag ProductionSearchMixedJoinDag(
     descriptor.nullability =
         column.nullable ? api::RelationalNullability::kNullable
                         : api::RelationalNullability::kNonNull;
+    if (!column.collation_uuid.is_nil()) descriptor.collation_uuid = column.collation_uuid;
+    if (column.character_length) descriptor.width = column.character_length;
     dag.descriptors.push_back(std::move(descriptor));
     api::RelationalExpressionRecord expression;
     expression.expression_id = expression_id;

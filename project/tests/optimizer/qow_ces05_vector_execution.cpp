@@ -1025,14 +1025,42 @@ bool VectorStorageIdentityProof(const api::EngineRequestContext& context,
     passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(
         context, changed, storage.relation_uuid), "stale vector datatype generation accepted");
   }
-  for (unsigned mutation = 0; mutation < 4; ++mutation) {
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
     auto changed = context;
     if (mutation == 0) changed.database_uuid.bytes[15] ^= 1;
     if (mutation == 1) changed.datatype_catalog_snapshot_uuid.bytes[15] ^= 1;
     if (mutation == 2) ++changed.datatype_catalog_generation;
     if (mutation == 3) ++changed.datatype_registry_generation;
+    if (mutation == 4) ++changed.resource_epoch;
     passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(
         changed, storage, storage.relation_uuid), "foreign or stale vector context accepted");
+  }
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto changed = storage;
+    auto& column = changed.columns[1];
+    api::CatalogColumnMetadata metadata;
+    if (!api::DecodeCatalogColumnMetadata(column.value_descriptor.encoded_descriptor, &metadata))
+      return Require(false, "vector metadata could not be decoded for resource controls");
+    if (mutation == 0) metadata.identities["charset_uuid"].bytes[15] ^= 1;
+    if (mutation == 1) metadata.identities["collation_uuid"].bytes[15] ^= 1;
+    if (mutation == 2) metadata.text["charset_generation"] = "999";
+    if (mutation == 3) metadata.text["collation_generation"] = "999";
+    if (mutation == 4) metadata.text["resource_epoch"] = "999";
+    if (mutation == 5) ++column.character_length;
+    if (mutation == 6) metadata.text.erase("character_length");
+    if (mutation == 7) {
+      column.charset_uuid.bytes[15] ^= 1;
+      column.value_descriptor.charset_uuid = column.charset_uuid;
+      metadata.identities["charset_uuid"] = column.charset_uuid;
+    }
+    if (mutation == 8) {
+      column.collation_uuid = column.value_descriptor.collation_uuid = {};
+      metadata.identities.erase("collation_uuid");
+    }
+    if (!api::EncodeCatalogColumnMetadata(metadata, &column.value_descriptor.encoded_descriptor))
+      return Require(false, "vector resource control metadata could not be encoded");
+    passed &= Require(!api::ExactBoundVectorStorageDescriptorV1(context, changed, storage.relation_uuid),
+                      "vector admitted stale crossed or incomplete text resources");
   }
   return Require(checks == 64, "vector storage all-byte mutation inventory drifted") && passed;
 }

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql/vector_api.hpp"
+#include "nosql/bound_text_resource_fields.hpp"
 #include "datatype_storage_identity.hpp"
 
 #include "api_diagnostics.hpp"
@@ -576,12 +577,17 @@ bool ExactBoundVectorStorageDescriptorImpl(
     } else if (!vector) {
       return false;
     }
+    if (vector) {
+      if (!column.charset_uuid.is_nil() || !column.collation_uuid.is_nil() || column.character_length != 0)
+        return false;
+    } else if (!BindExactModelTextResourceFields(context, column,
+                   binding.row.canonical_value_maximum_bytes, &expected)) {
+      return false;
+    }
     return column.ordinal == ordinal && column.canonical_name_key == name &&
            !column.nullable && !column.generated && !column.identity_column &&
            column.storage_class == "inline_row_value" && column.max_inline_bytes == 4096 &&
            column.overflow_policy == "mga_large_value_locator" &&
-           column.charset_uuid.is_nil() && column.collation_uuid.is_nil() &&
-           column.character_length == 0 &&
            (value.descriptor_kind == "scalar" || value.descriptor_kind == "canonical_type_descriptor") &&
            value.canonical_type_name == (vector ? "dense_vector" : "text") &&
            actual.text == expected.text && actual.identities == expected.identities;

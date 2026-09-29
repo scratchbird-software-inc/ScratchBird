@@ -5,6 +5,7 @@
 #include "catalog_column_binding_fixture.hpp"
 #include "../../src/engine/internal_api/ddl/create_api.hpp"
 #include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
+#include "../../src/engine/internal_api/catalog/name_resolution_api.hpp"
 
 namespace scratchbird::tests {
 
@@ -58,14 +59,45 @@ inline engine::internal_api::CrudTableRecord PublishDdlTableFixture(
     attributes.text.erase("not_null");
     attributes.text["nullable"] = column.nullable ? "true" : "false";
     const auto type = dt::CanonicalTypeIdFromStableName(canonical_types[i]);
+    BindFixtureColumnDatatype(context, type, column);
     if (type == dt::CanonicalTypeId::character) {
       column.descriptor.canonical_type_name = "text";
       attributes.text.erase("type");
       attributes.text["canonical"] = "text";
+      // Fixtures explicitly select catalog-bound binary UTF8 semantics. The
+      // engine must not infer text resource authority from a bare type name.
+      if (attributes.identities.find("charset_uuid") == attributes.identities.end() &&
+          attributes.identities.find("collation_uuid") == attributes.identities.end()) {
+        const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
+        const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+        if (!charset.ok || !charset.resource_descriptor.present ||
+            !collation.ok || !collation.resource_descriptor.present ||
+            collation.resource_descriptor.parent_resource_uuid != charset.resource_descriptor.resource_uuid)
+          throw std::invalid_argument("DDL fixture requires real UTF8 binary collation resources");
+        attributes.identities["charset_uuid"] = charset.resource_descriptor.resource_uuid;
+        attributes.identities["collation_uuid"] = collation.resource_descriptor.resource_uuid;
+        // Preserve explicit bounds and storage profiles; previously unbounded
+        // fixture text uses the admitted codec capacity, not the integer field
+        // width or an arbitrary SQL default.
+        if (attributes.text.find("character_length") == attributes.text.end() &&
+            attributes.text.find("text_resource_storage") == attributes.text.end()) {
+          const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+              context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+              context.datatype_registry_generation, column.descriptor.datatype_descriptor_uuid,
+              column.descriptor.datatype_descriptor_generation);
+          if (!identity.ok || !identity.row.canonical_value_maximum_bytes)
+            throw std::invalid_argument("DDL fixture text codec capacity is unavailable");
+          attributes.text["character_length"] =
+              std::to_string(identity.row.canonical_value_maximum_bytes);
+        }
+      }
     }
+    if (const auto found = attributes.identities.find("charset_uuid"); found != attributes.identities.end())
+      column.descriptor.charset_uuid = found->second;
+    if (const auto found = attributes.identities.find("collation_uuid"); found != attributes.identities.end())
+      column.descriptor.collation_uuid = found->second;
     if (!api::EncodeCatalogColumnMetadata(attributes, &column.descriptor.encoded_descriptor))
       throw std::invalid_argument("DDL fixture column metadata cannot be encoded");
-    BindFixtureColumnDatatype(context, type, column);
     request.table_columns.push_back(std::move(column));
   }
   checked(api::EngineCreateTable(request));
