@@ -361,8 +361,12 @@ void ValidateDeletePlannerCannotDeferUniqueIndexes() {
           "DPC-019 delete planner selected delta ledger for unique index");
   Require(HasDeleteActionForIndex(plan,
                                   scratchbird::tests::FixtureUuid(1486, 1),
-                                  api::DeleteIndexMaintenanceAction::visibility_recheck_only),
-          "DPC-019 delete planner did not keep unique index on synchronous-safe recheck path");
+                                  api::DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite),
+          "DPC-019 admitted unique index requires synchronous membership retirement");
+  Require(!HasDeleteActionForIndex(plan,
+                                   scratchbird::tests::FixtureUuid(1486, 1),
+                                   api::DeleteIndexMaintenanceAction::visibility_recheck_only),
+          "DPC-019 visibility-only maintenance cannot satisfy admitted unique-index publication");
 }
 
 }  // namespace

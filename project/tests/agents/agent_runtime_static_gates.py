@@ -29,6 +29,7 @@ AGENT_IMPL_DIR_REL = Path("project/src/core/agents/agents")
 METRIC_REGISTRY_CPP_REL = Path("project/src/core/metrics/metric_registry.cpp")
 MANAGEMENT_API_HPP_REL = Path("project/src/engine/internal_api/agents/agent_management_api.hpp")
 MANAGEMENT_API_CPP_REL = Path("project/src/engine/internal_api/agents/agent_management_api.cpp")
+AGENT_AUTHORIZATION_REL = Path("project/src/engine/internal_api/agents/agent_authorization_context.hpp")
 ACTION_HOOKS_HPP_REL = Path("project/src/engine/internal_api/agents/agent_action_hooks_api.hpp")
 ACTION_HOOKS_CPP_REL = Path("project/src/engine/internal_api/agents/agent_action_hooks_api.cpp")
 SUPPORT_BUNDLE_API_CPP_REL = Path("project/src/engine/internal_api/management/support_bundle_api.cpp")
@@ -721,7 +722,8 @@ def gate_management_framework(repo_root: Path) -> list[str]:
             errors.append(f"agent action hook API missing implementation for {function}")
 
     for token in (
-        "SecurityContextHasRight",
+        "agent_authorization::RightAllowed",
+        "agent_authorization::PopulateAgentRuntimeSecurityContext",
         "ValidateAgentSecurity",
         "ResolveAgentMetricDependencies",
         "ValidateAgentPolicy",
@@ -734,6 +736,18 @@ def gate_management_framework(repo_root: Path) -> list[str]:
     ):
         if token not in management_cpp:
             errors.append(f"agent management API missing framework call {token}")
+
+    # Authorization moved to the shared native materialized-context bridge.
+    # Check the owning enforcement path, not a retired local wrapper spelling.
+    if not (repo_root / AGENT_AUTHORIZATION_REL).is_file():
+        errors.append("agent native authorization bridge is missing")
+    else:
+        authorization = read_text(repo_root, AGENT_AUTHORIZATION_REL)
+        for token in ("EvaluateMaterializedAuthorization", "MaterializedContextMatchesRequest",
+                      "IsEngineIdentityUuid", "grant.deny", "runtime->rights.clear()",
+                      "runtime->fixture_authorization_authority = false"):
+            if token not in authorization:
+                errors.append(f"agent native authorization bridge missing enforcement {token}")
 
     for token in (
         "ValidateCommon",
