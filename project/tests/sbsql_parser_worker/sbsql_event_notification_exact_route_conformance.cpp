@@ -332,6 +332,8 @@ sblr::SblrOperationEnvelope CanonicalEventEnvelope(
   record.opcode = opcode;
   record.request_uuid[0] = 1;
   record.security_context_uuid[0] = 2;
+  record.request_uuid[6] = record.security_context_uuid[6] = 0x70;
+  record.request_uuid[8] = record.security_context_uuid[8] = 0x80;
   record.policy_epoch = 1;
   if (opcode != sblr::SblrEventNotificationOpcode::subscription_list) {
     record.transaction_id = 1;
@@ -527,9 +529,38 @@ void RequireExactLowering(const EventRowEvidence& row) {
                      "right.event_delivery_read"),
             "event subscription list delivery-read authority missing");
   } else {
-    Require(Contains(artifacts.envelope.payload,
-                     std::string("\"channel_uuid\":\"") + std::string(kChannelUuid) + "\""),
-            "event notification payload missing channel UUID");
+    constexpr auto expected = scratchbird::tests::FixtureUuidLiteral(
+        "019f0000-0000-7000-8000-000000024901");
+    const auto& operands = artifacts.envelope.operands;
+    const auto target = std::find_if(operands.begin(), operands.end(),
+        [](const auto& operand) { return operand.name == "target_object_uuid"; });
+    Require(target != operands.end() &&
+                std::count_if(operands.begin(), operands.end(),
+                    [](const auto& operand) {
+                      return operand.name == "target_object_uuid";
+                    }) == 1 && target->type == "uuid" && target->value.empty() &&
+                target->canonical_value_kind ==
+                    static_cast<std::uint16_t>(sblr::SblrValueKind::uuid_ref) &&
+                target->canonical_value_body == std::vector<std::uint8_t>(
+                    expected.bytes.begin(), expected.bytes.end()),
+            "event channel identity must be the exact bound binary UUID");
+    Require(!Contains(artifacts.envelope.payload, kChannelUuid) &&
+                !Contains(artifacts.envelope.payload, "\"channel_uuid\""),
+            "event notification payload retained textual identity authority");
+    const auto index = static_cast<std::size_t>(target - operands.begin());
+    auto hostile = artifacts.envelope;
+    hostile.operands[index].canonical_value_body.clear();
+    hostile.operands[index].value = std::string(kChannelUuid);
+    Require(!VerifySblrEnvelope(hostile).admitted,
+            "event channel text identity replacement admitted");
+    hostile = artifacts.envelope;
+    hostile.operands[index].canonical_value_body.back() ^= 1;
+    Require(!VerifySblrEnvelope(hostile).admitted,
+            "event channel identity outside bound cohort admitted");
+    hostile = artifacts.envelope;
+    hostile.operands.push_back(hostile.operands[index]);
+    Require(!VerifySblrEnvelope(hostile).admitted,
+            "duplicate event channel identity admitted");
     Require(!Contains(artifacts.envelope.payload, "audit_channel"),
             "runtime event notification payload embedded channel name text");
   }

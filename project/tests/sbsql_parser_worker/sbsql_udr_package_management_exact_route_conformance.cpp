@@ -1,4 +1,6 @@
-#include "../support/database_fixture_cleanup.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
+#include <stdexcept>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -30,7 +32,6 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -48,8 +49,8 @@ namespace udr_runtime = scratchbird::udr::runtime;
 
 constexpr std::string_view kPackageUuid = "019f0000-0000-7000-8000-000000003901";
 constexpr std::string_view kPackageName = "sbup_demo";
-constexpr std::string_view kDatabasePath =
-    "/tmp/sbsql_udr_package_management_exact_route_conformance.sbdb";
+std::string kDatabasePath;
+api::EngineRequestContext g_owner;
 
 api::EngineUuid g_database_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003801");
 std::uint64_t g_local_transaction_id = 0;
@@ -178,7 +179,7 @@ std::string RouteMessage(const UdrLifecycleRouteCase& route,
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -458,16 +459,10 @@ void RequireLifecycleLowering(const UdrLifecycleRouteCase& route) {
 }
 
 api::EngineRequestContext EngineContext() {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+  auto context = g_owner;
   context.request_id = "sbsql-udr-package-management-exact-route";
-  context.security_context_present = true;
-  context.trace_tags.push_back("right:UDR_MANAGE");
-  context.trace_tags.push_back("right:UDR_INSPECT");
   context.database_path = std::string(kDatabasePath);
   context.database_uuid = g_database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003802");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003803");
   if (g_local_transaction_id != 0) {
     context.transaction_uuid = g_transaction_uuid;
     context.local_transaction_id = g_local_transaction_id;
@@ -478,34 +473,7 @@ api::EngineRequestContext EngineContext() {
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 43;
-  context.security_epoch = 47;
-  context.resource_epoch = 53;
-  context.name_resolution_epoch = 59;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003805");
-  context.authorization_context.security_context_generation = 1;
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = context.resource_epoch;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  context.authorization_context.effective_subjects.push_back(
-      {context.principal_uuid, "principal"});
-  api::EngineMaterializedAuthorizationGrant manage;
-  manage.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003806");
-  manage.subject_uuid = context.principal_uuid;
-  manage.subject_kind = "principal";
-  manage.right = "UDR_MANAGE";
-  manage.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(manage));
-  api::EngineMaterializedAuthorizationGrant inspect;
-  inspect.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000003807");
-  inspect.subject_uuid = context.principal_uuid;
-  inspect.subject_kind = "principal";
-  inspect.right = "UDR_INSPECT";
-  inspect.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(inspect));
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -521,16 +489,13 @@ platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
 }
 
 void CreateRouteDatabase() {
-  scratchbird::tests::RemoveDatabaseFixtureArtifacts(std::string(kDatabasePath));
-
   scratchbird::storage::database::DatabaseCreateConfig create;
   const auto seed = NowMillis();
   create.path = std::string(kDatabasePath);
   create.database_uuid = Generate(platform::UuidKind::database, seed);
   create.filespace_uuid = Generate(platform::UuidKind::filespace, seed + 1);
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
           "failed to generate database/filespace UUIDs for UDR route test");
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
@@ -542,6 +507,7 @@ void CreateRouteDatabase() {
   }
   Require(created.ok(), "failed to create database for UDR route test");
   g_database_uuid = create.database_uuid.value;
+  g_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
 void BeginRouteTransaction() {
@@ -602,20 +568,10 @@ void AddManageUdrOptions(api::EngineApiRequest* request,
   request->option_envelopes.push_back("capability_role:" + descriptor.capability_role);
 }
 
-void SeedActiveTransaction() {
-  std::ofstream out(std::string(kDatabasePath) + ".sb.crud_events",
-                    std::ios::binary | std::ios::app);
-  out << "SBCRUD1\tTX_BEGIN\t" << g_local_transaction_id
-      << "\tsbsql_udr_package_management_exact_route\n";
-  Require(static_cast<bool>(out), "failed to seed MGA transaction evidence for UDR route test");
-}
-
 void RegisterDemoPackage() {
   const auto descriptor = DemoDescriptor();
   const auto runtime_registered = udr_runtime::RegisterPackage(descriptor);
   Require(runtime_registered.ok, "failed to seed UDR runtime package descriptor");
-  SeedActiveTransaction();
-
   api::EngineRegisterUdrPackageRequest request;
   request.context = EngineContext();
   request.target_database.uuid = g_database_uuid;
@@ -624,6 +580,13 @@ void RegisterDemoPackage() {
   request.target_object.object_kind = "udr_package";
   request.localized_names.push_back(LocalizedName(descriptor.package_name));
   AddManageUdrOptions(&request, descriptor);
+  auto trace_only = request;
+  trace_only.context.authorization_context = {};
+  trace_only.context.trace_tags = {"right:UDR_MANAGE", "right:UDR_INSPECT", "right:ROOT"};
+  const auto denied = api::EngineRegisterUdrPackage(trace_only);
+  Require(!denied.ok && std::any_of(denied.diagnostics.begin(), denied.diagnostics.end(),
+      [](const auto& diagnostic) { return diagnostic.code == "SB_ENGINE_API_UDR_PERMISSION_REQUIRED"; }),
+      "UDR registration accepted trace-only permission claims");
   const auto registered = api::EngineRegisterUdrPackage(request);
   for (const auto& diagnostic : registered.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
@@ -738,7 +701,21 @@ void RequireEngineApiInspection(const UdrRowEvidence& row) {
 
 }  // namespace
 
-int main() {
+int main() try {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "native_udr_lifecycle_authority");
+  Require(memory.ok() && memory.fixture_mode, "UDR fixture memory setup failed");
+  // Filesystem name rendering is a test boundary, never engine identity.
+  const auto identity = uuid::GenerateEngineIdentityV7(platform::UuidKind::object, NowMillis());
+  Require(identity.ok(), "UDR fixture directory identity issuance failed");
+  const auto root = std::filesystem::temp_directory_path() /
+      ("sb_udr_lifecycle_" + uuid::UuidToString(identity.value.value));
+  Require(std::filesystem::create_directory(root), "UDR fixture directory was not exclusively created");
+  struct OwnedRoot {
+    std::filesystem::path path;
+    ~OwnedRoot() { std::error_code error; std::filesystem::remove_all(path, error); }
+  } owned{root};
+  kDatabasePath = (root / "udr.sbdb").string();
   udr_runtime::ResetRuntimeForTest();
   CreateRouteDatabase();
   BeginRouteTransaction();
@@ -752,6 +729,12 @@ int main() {
     RequireEngineApiInspection(row);
   }
   RequireLifecycleEngineApis();
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = EngineContext();
+  RequireOk(api::EngineRollbackTransaction(rollback), "UDR fixture transaction rollback failed");
   std::cout << "sbsql_udr_package_management_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

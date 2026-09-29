@@ -415,10 +415,21 @@ sblr::SblrDdlCreateSchemaRecoveryRequestV1 RecoveryRequest(
 
   constexpr std::string_view domain =
       "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1";
-  std::vector<std::uint8_t> path_material(domain.begin(), domain.end());
+  // Independent typed-authority preimage, not the production hash helper.
+  std::vector<std::uint8_t> path_material{'S','B','A','U','T','H','0','2'};
+  const auto append_u64 = [&](std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8)
+      path_material.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  append_u64(domain.size());
+  path_material.insert(path_material.end(), domain.begin(), domain.end());
+  append_u64(1);  // one text field
+  path_material.push_back(1);
+  append_u64(bind.name_atoms.front().raw_utf8.size());
   path_material.insert(path_material.end(), bind.name_atoms.front().raw_utf8.begin(),
                        bind.name_atoms.front().raw_utf8.end());
-  path_material.push_back(0);
+  append_u64(0);  // no integer fields
+  append_u64(0);  // no digest fields
   descriptor.normalized_path_sha256 =
       scratchbird::core::hash::ComputeSha256Digest(path_material).digest;
   descriptor.evidence = {};

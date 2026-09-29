@@ -13,6 +13,7 @@
 #include "uuid.hpp"
 
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "../../src/wire/public_result_packet.hpp"
 
 #include <arpa/inet.h>
 #include <array>
@@ -103,6 +104,93 @@ int HexNibble(char ch) {
   if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
   if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
   return -1;
+}
+
+namespace public_result = scratchbird::wire::public_result;
+constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kTransactionDefaultsEvidence = {{
+    {"transaction_characteristics", "session_defaults_applied"},
+    {"transaction_read_mode", "read_write"},
+    {"transaction_read_only", "false"},
+    {"transaction_isolation_level", "read_committed"},
+    {"parser_finality", "false"},
+}};
+
+bool HasTransactionDefaultsEvidence(std::string_view packet) {
+  for (const auto& [name, value] : kTransactionDefaultsEvidence) {
+    const auto evidence = public_result::Evidence(packet, name);
+    if (!evidence || evidence->kind != public_result::Kind::text || evidence->value != value)
+      return false;
+  }
+  return true;
+}
+
+std::string RequireTransactionDefaultsPacket(const std::vector<std::string>& lines) {
+  constexpr std::string_view prefix =
+      "RESULT transaction.set_characteristics 1 canonical_binary_payload_hex=";
+  std::string packet;
+  bool found = false;
+  for (const auto& line : lines) {
+    if (!line.starts_with(prefix)) continue;
+    Require(!found, "duplicate SET TRANSACTION result packet");
+    found = true;
+    const auto encoded = std::string_view(line).substr(prefix.size());
+    Require(!encoded.empty() && encoded.size() % 2 == 0 && encoded.size() <= 1024 * 1024,
+            "SET TRANSACTION result has invalid client framing extent");
+    packet.reserve(encoded.size() / 2);
+    for (std::size_t at = 0; at < encoded.size(); at += 2) {
+      const auto high = HexNibble(encoded[at]);
+      const auto low = HexNibble(encoded[at + 1]);
+      Require(high >= 0 && low >= 0, "SET TRANSACTION result has invalid client hexadecimal");
+      packet.push_back(static_cast<char>((high << 4) | low));
+    }
+  }
+  Require(found && HasTransactionDefaultsEvidence(packet),
+          "SET TRANSACTION omitted or corrupted exact native session-default evidence");
+  Require(packet.find("WAL") == std::string::npos && packet.find("wal_required=true") == std::string::npos,
+          "SET TRANSACTION decoded result exposed WAL authority evidence");
+  return packet;
+}
+
+void CheckTransactionDefaultsEvidenceOracle() {
+  // Independent framing constructor, not the production serializer.
+  const auto frame = [](const std::vector<public_result::Field>& fields) {
+    std::string packet = "SBRES002";
+    const auto number = [&](std::uint64_t value, unsigned width) {
+      for (unsigned i = 0; i < width; ++i) packet.push_back(static_cast<char>(value >> (8 * i)));
+    };
+    number(fields.size(), 4);
+    for (const auto& field : fields) {
+      number(field.name.size(), 4); packet += field.name;
+      number(static_cast<unsigned>(field.kind), 1);
+      number(field.value.size(), 8); packet += field.value;
+    }
+    return packet;
+  };
+  std::vector<public_result::Field> fields;
+  for (const auto& [name, value] : kTransactionDefaultsEvidence)
+    fields.push_back({"evidence", public_result::Kind::evidence,
+                      frame({{std::string(name), public_result::Kind::text, std::string(value)}})});
+  const auto valid = frame(fields);
+  Require(HasTransactionDefaultsEvidence(valid), "independent client evidence fixture rejected");
+  for (std::size_t length = 0; length < valid.size(); ++length)
+    Require(!HasTransactionDefaultsEvidence(std::string_view(valid).substr(0, length)),
+            "truncated native evidence accepted");
+  Require(!HasTransactionDefaultsEvidence(valid + 'x'), "trailing native evidence accepted");
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    auto wrong = fields;
+    wrong.erase(wrong.begin() + i);
+    Require(!HasTransactionDefaultsEvidence(frame(wrong)), "missing native evidence accepted");
+    wrong = fields; wrong.push_back(fields[i]);
+    Require(!HasTransactionDefaultsEvidence(frame(wrong)), "duplicate native evidence accepted");
+    wrong = fields; wrong[i].kind = public_result::Kind::text;
+    Require(!HasTransactionDefaultsEvidence(frame(wrong)), "text masquerading as evidence accepted");
+    wrong = fields;
+    wrong[i].value = frame({{std::string(kTransactionDefaultsEvidence[i].first),
+        public_result::Kind::bytes, std::string(kTransactionDefaultsEvidence[i].second)}});
+    Require(!HasTransactionDefaultsEvidence(frame(wrong)), "bytes masquerading as text evidence accepted");
+    wrong = fields; wrong[i].value.back() ^= 1;
+    Require(!HasTransactionDefaultsEvidence(frame(wrong)), "wrong semantic evidence accepted");
+  }
 }
 
 std::uint16_t ReadLe16(const std::vector<std::uint8_t>& bytes,
@@ -676,6 +764,7 @@ void RequireInventoryFinality(const std::filesystem::path& database_path) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  CheckTransactionDefaultsEvidenceOracle();
   ::alarm(60);
   if (argc != 4) {
     std::cerr << "usage: sbsql_mga_transaction_full_route_conformance <sb_server> <sb_listener> <sbp_sbsql>\n";
@@ -747,7 +836,7 @@ int main(int argc, char** argv) {
 
   const auto set_transaction = ReadCommandResponse(fd,
                                                    "EXECUTE SET TRANSACTION READ WRITE",
-                                                   "evidence=parser_finality:false",
+                                                   "RESULT transaction.set_characteristics",
                                                    24);
   RequireSetTransactionRegistryRows();
   RequireContains(set_transaction,
@@ -776,14 +865,7 @@ int main(int argc, char** argv) {
                   "SET TRANSACTION did not publish transaction_mode_list row evidence");
   Require(Contains(set_transaction, "RESULT transaction.set_characteristics"),
           "SET TRANSACTION did not execute through engine transaction characteristics operation");
-  Require(Contains(set_transaction, "evidence=transaction_characteristics:session_defaults_applied"),
-          "SET TRANSACTION did not return session-default transaction evidence");
-  Require(Contains(set_transaction, "evidence=transaction_read_mode:read_write"),
-          "SET TRANSACTION did not return read_write transaction evidence");
-  Require(Contains(set_transaction, "evidence=transaction_read_only:false"),
-          "SET TRANSACTION did not return read-only=false transaction evidence");
-  Require(Contains(set_transaction, "evidence=transaction_isolation_level:read_committed"),
-          "SET TRANSACTION did not return read_committed transaction evidence");
+  (void)RequireTransactionDefaultsPacket(set_transaction);
   Require(!Contains(set_transaction, "WAL") && !Contains(set_transaction, "wal_required=true"),
           "SET TRANSACTION route unexpectedly exposed WAL authority evidence");
 
@@ -896,18 +978,20 @@ int main(int argc, char** argv) {
                                                        "EXECUTE ROLLBACK TO SAVEPOINT missing_sp",
                                                        "MESSAGE ERROR",
                                                        12);
-  RequireContains(missing_rollback_to, "SBLR.OPERAND_INVALID",
+  RequireContains(missing_rollback_to, "MESSAGE ERROR MGA.SAVEPOINT.HANDLE_REQUIRED ",
                   "ROLLBACK TO missing savepoint did not refuse its absent canonical handle");
-  Require(Contains(missing_rollback_to, "savepoint handle"),
+  Require(missing_rollback_to.size() == 1 &&
+              Contains(missing_rollback_to, "No engine-issued handle is bound to the requested savepoint label."),
           "ROLLBACK TO missing savepoint did not identify the unavailable handle");
 
   const auto missing_release = ReadCommandResponse(fd,
                                                    "EXECUTE RELEASE SAVEPOINT missing_sp",
                                                    "MESSAGE ERROR",
                                                    12);
-  RequireContains(missing_release, "SBLR.OPERAND_INVALID",
+  RequireContains(missing_release, "MESSAGE ERROR MGA.SAVEPOINT.HANDLE_REQUIRED ",
                   "RELEASE missing savepoint did not refuse its absent canonical handle");
-  Require(Contains(missing_release, "savepoint handle"),
+  Require(missing_release.size() == 1 &&
+              Contains(missing_release, "No engine-issued handle is bound to the requested savepoint label."),
           "RELEASE missing savepoint did not identify the unavailable handle");
 
   const auto rollback_savepoint_tx = ReadCommandResponse(fd, "EXECUTE ROLLBACK", "RESULT engine.op.txn_rollback", 64);

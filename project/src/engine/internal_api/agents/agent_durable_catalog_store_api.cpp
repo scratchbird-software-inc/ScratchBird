@@ -209,7 +209,7 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
                                         : ErrorResult(created.diagnostics.front());
     loaded = LoadMgaRelationStoreState(context);
     if (!loaded.ok) return ErrorResult(loaded.diagnostic);
-    const auto published = FindCatalogTable(BuildCrudCompatibilityStateFromMga(loaded.state), context);
+    const auto published = FindCatalogTable(loaded.state.relation_metadata, context);
     if (!published || published->table_uuid != created.table_object.uuid)
       return ErrorResult("catalog_table_publication_not_visible");
     table = *published;

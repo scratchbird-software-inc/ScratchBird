@@ -38,7 +38,7 @@ recovery authority and not runtime-conformance evidence.
 
 Dependency direction is executor or DML coordinator to the canonical relation
 facade, then to engine-owned MGA/index/page services. The relation facade does
-not call back into executor projection. Parser SQL, donor state, source tokens,
+not call back into executor projection. Parser SQL, external compatibility state, source tokens,
 and UUID ordering never become transaction authority.
 
 `storage_module_authority_gate.py` ratchets the extracted module sizes, build

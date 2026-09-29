@@ -12,7 +12,7 @@ unchanged from `https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt`
 on 2026-09-20. Its SHA-256 is recorded in `uca_manifest.json`. The accompanying
 `resources/collations/uca/UNICODE-LICENSE.txt` is Unicode License v3, obtained
 from `https://www.unicode.org/license.txt` on the same date. These are Unicode
-data assets, not donor implementation source. Runtime normalization uses the
+data assets, not reference implementation source. Runtime normalization uses the
 owning database's retained artifact, never this source pathname or host ICU.
 The independently pinned normalization conformance vectors are test-only and
 are not loaded into database resource catalogs. NFD support alone is not UCA

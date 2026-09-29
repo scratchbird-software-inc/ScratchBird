@@ -6,6 +6,7 @@
 #include "sblr_ddl_create_schema_journal_io.hpp"
 
 #include "api_diagnostics.hpp"
+#include "engine/authority_hash_material.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
@@ -245,12 +246,8 @@ bool NormalizeRecoveryPath(
   }
   constexpr std::string_view kDomain =
       "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1";
-  std::vector<std::uint8_t> material(kDomain.begin(), kDomain.end());
-  material.insert(material.end(), canonical_path->begin(),
-                  canonical_path->end());
-  material.push_back(0);
-  *path_sha256 =
-      scratchbird::core::hash::ComputeSha256Digest(material).digest;
+  *path_sha256 = scratchbird::engine::HashAuthorityMaterial(
+      kDomain, {*canonical_path}, {});
   return NonZero(*path_sha256);
 }
 

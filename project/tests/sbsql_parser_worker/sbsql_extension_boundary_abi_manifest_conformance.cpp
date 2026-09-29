@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
+#include <stdexcept>
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_lifecycle.hpp"
 #include "extensibility/extension_boundary_manifest.hpp"
@@ -22,7 +25,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -39,9 +41,8 @@ namespace sbsql_udr = scratchbird::udr::sbsql_parser_support;
 namespace udr_runtime = scratchbird::udr::runtime;
 namespace uuid = scratchbird::core::uuid;
 
-constexpr std::string_view kDatabaseUuid = "019f6c00-0000-7000-8000-000000000020";
-
-api::EngineUuid g_database_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000020");
+api::EngineUuid g_database_uuid;
+api::EngineRequestContext g_owner;
 std::uint64_t g_local_transaction_id = 0;
 api::EngineUuid g_transaction_uuid;
 std::uint64_t g_snapshot_visible_through_local_transaction_id = 0;
@@ -50,7 +51,7 @@ std::string g_transaction_isolation_level;
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -75,13 +76,10 @@ std::filesystem::path MakeTempDir() {
 
 api::EngineRequestContext Context(const std::filesystem::path& database_path,
                                   std::uint64_t tx = 77) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  auto context = g_owner;
   context.request_id = "sbsql-extension-boundary-abi-manifest";
   context.database_path = database_path.string();
   context.database_uuid = g_database_uuid;
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000201");
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000202");
   if (tx == 77 && g_local_transaction_id != 0) {
     context.transaction_uuid = g_transaction_uuid;
     context.local_transaction_id = g_local_transaction_id;
@@ -89,22 +87,12 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path,
         g_snapshot_visible_through_local_transaction_id;
     context.transaction_isolation_level = g_transaction_isolation_level;
   } else {
-    context.local_transaction_id = tx;
-    if (tx != 0) {
-      context.transaction_uuid = scratchbird::tests::FixtureUuidLiteral("019f6c00-0000-7000-8000-000000000203");
-    }
+    Require(tx == 0, "fixture requested a transaction not issued by the engine");
   }
-  context.security_context_present = true;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:UDR_MANAGE");
-  context.trace_tags.push_back("right:UDR_INVOKE");
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
-  context.catalog_generation_id = 8;
-  context.security_epoch = 8;
-  context.resource_epoch = 8;
-  context.name_resolution_epoch = 8;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -120,24 +108,19 @@ platform::TypedUuid Generate(platform::UuidKind kind, std::uint64_t millis) {
 }
 
 void CreateBoundaryDatabase(const std::filesystem::path& database_path) {
-  std::filesystem::remove(database_path);
-  std::filesystem::remove(database_path.string() + ".sb.owner.lock");
-  std::filesystem::remove(database_path.string() + ".sb.api_events");
-  std::filesystem::remove(database_path.string() + ".sb.crud_events");
-
   scratchbird::storage::database::DatabaseCreateConfig create;
   const auto seed = NowMillis();
   create.path = database_path.string();
   create.database_uuid = Generate(platform::UuidKind::database, seed);
   create.filespace_uuid = Generate(platform::UuidKind::filespace, seed + 1);
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   Require(create.database_uuid.valid() && create.filespace_uuid.valid(),
           "failed to generate UUIDs for extension boundary database");
   Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
           "failed to create extension boundary database");
   g_database_uuid = create.database_uuid.value;
+  g_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
 }
 
 void BeginBoundaryTransaction(const std::filesystem::path& database_path) {
@@ -195,18 +178,6 @@ std::string FieldValue(const api::EngineApiResult& result,
     if (field.first == field_name) return field.second.encoded_value;
   }
   return {};
-}
-
-void SeedActiveTransaction(const std::filesystem::path& database_path,
-                           std::uint64_t tx) {
-  std::ofstream out(database_path.string() + ".sb.crud_events",
-                    std::ios::binary | std::ios::app);
-  const std::uint64_t effective_tx =
-      tx == 77 && g_local_transaction_id != 0 ? g_local_transaction_id : tx;
-  out << "SBCRUD1\tTX_BEGIN\t" << effective_tx
-      << "\textension_boundary_abi_manifest\n";
-  Require(static_cast<bool>(out),
-          "failed to seed MGA transaction evidence for extension boundary test");
 }
 
 void AddManageUdrOptions(api::EngineApiRequest* request,
@@ -347,6 +318,13 @@ void TestTrustedParserSupportUdrBoundary(const std::filesystem::path& database_p
   auto register_request =
       UdrRequest<api::EngineRegisterUdrPackageRequest>(database_path, descriptor);
   AddManageUdrOptions(&register_request, descriptor);
+  auto trace_only = register_request;
+  trace_only.context.authorization_context = {};
+  trace_only.context.trace_tags = {"security.fixture_trace_authority", "right:UDR_MANAGE",
+                                    "right:UDR_INVOKE", "right:ROOT"};
+  const auto denied = api::EngineRegisterUdrPackage(trace_only);
+  Require(!denied.ok && HasDiagnostic(denied, "SB_ENGINE_API_UDR_PERMISSION_REQUIRED"),
+          "trace-only claims supplied missing native UDR management authority");
   const auto registered = api::EngineRegisterUdrPackage(register_request);
   RequireOk(registered, "trusted parser-support UDR registration was refused");
   Require(HasEvidence(registered, "udr_descriptor", "runtime_descriptor_validated"),
@@ -371,6 +349,13 @@ void TestTrustedParserSupportUdrBoundary(const std::filesystem::path& database_p
   auto invoke_request =
       UdrRequest<api::EngineInvokeUdrPackageRequest>(database_path, descriptor);
   AddInvokeUdrOptions(&invoke_request);
+  auto trace_invoke = invoke_request;
+  trace_invoke.context.authorization_context = {};
+  trace_invoke.context.trace_tags = trace_only.context.trace_tags;
+  const auto denied_invoke = api::EngineInvokeUdrPackage(trace_invoke);
+  Require(!denied_invoke.ok && HasDiagnostic(denied_invoke, "SB_ENGINE_API_UDR_PERMISSION_REQUIRED") &&
+              !HasEvidence(denied_invoke, "udr_dispatch", "entrypoint_callback_invoked"),
+          "trace-only claims invoked UDR callback without native authority");
   const auto invoked = api::EngineInvokeUdrPackage(invoke_request);
   RequireOk(invoked, "trusted parser-support UDR SBLR invocation was refused");
   Require(HasEvidence(invoked, "sblr_authority", "SBLR_UDR_INVOKE"),
@@ -536,17 +521,25 @@ void TestClusterProviderBoundary() {
 
 }  // namespace
 
-int main() {
+int main() try {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "native_extension_boundary_authority");
+  Require(memory.ok() && memory.fixture_mode, "extension boundary memory setup failed");
   TestManifestRows();
 
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "extension_boundary_abi.sbdb";
   CreateBoundaryDatabase(database_path);
   BeginBoundaryTransaction(database_path);
-  SeedActiveTransaction(database_path, 77);
   TestParserPackageBoundary(database_path);
   TestTrustedParserSupportUdrBoundary(database_path);
   TestClusterProviderBoundary();
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = Context(database_path);
+  RequireOk(api::EngineRollbackTransaction(rollback), "extension boundary transaction rollback failed");
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

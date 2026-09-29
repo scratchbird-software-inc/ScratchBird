@@ -17,6 +17,10 @@ namespace scratchbird::engine::sblr {
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 constexpr std::size_t kHeader = 80, kDigest = 32, kMaximum = 16384;
+// EVENT-NATIVE-SBOP-DESCRIPTOR-002: codec registration, not runtime authority.
+constexpr std::array<std::uint8_t, 16> kRequestDescriptor{
+    0x01, 0xa0, 0xea, 0xa7, 0xec, 0x69, 0x78, 0xea,
+    0xbb, 0x02, 0x6c, 0xa2, 0xea, 0x89, 0xf9, 0xba};
 struct Spec { SblrEventNotificationOpcode code; std::string_view op, mnemonic, type; bool transaction; std::initializer_list<std::uint16_t> tags; };
 const std::array<Spec, 10>& Specs() { static const std::array<Spec, 10> specs{{
  {SblrEventNotificationOpcode::channel_create,"engine.op.event_channel_create","SBLR_EVENT_CHANNEL_CREATE","event.channel_create.v1",true,{1,2,3,4,5,6}},
@@ -39,8 +43,12 @@ std::uint16_t Get16(const std::uint8_t* p) { return p[0] | static_cast<std::uint
 std::uint32_t Get32(const std::uint8_t* p) { return p[0]|static_cast<std::uint32_t>(p[1])<<8|static_cast<std::uint32_t>(p[2])<<16|static_cast<std::uint32_t>(p[3])<<24; }
 std::uint64_t Get64(const std::uint8_t* p) { std::uint64_t n=0; for(unsigned s=0;s<64;s+=8)n|=static_cast<std::uint64_t>(p[s/8])<<s; return n; }
 bool Zero(const std::uint8_t* p, std::size_t n) { return std::all_of(p,p+n,[](std::uint8_t v){return v==0;}); }
+bool SystemUuid(const std::uint8_t* value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
 bool Uuid(const Bytes& value, bool zero_allowed = false) {
-  return value.size() == 16 && (zero_allowed || !Zero(value.data(), value.size()));
+  return value.size() == 16 &&
+      (SystemUuid(value.data()) || (zero_allowed && Zero(value.data(), value.size())));
 }
 bool Text(const Bytes& value, std::size_t minimum, std::size_t maximum) {
   if (value.size() < minimum || value.size() > maximum) return false;
@@ -144,9 +152,8 @@ bool ValidField(SblrEventNotificationOpcode opcode,
 }
 SblrEventNotificationCodecResult Fail(std::string detail) { SblrEventNotificationCodecResult out; out.diagnostic_id="EVENT.REQUEST_INVALID"; out.detail=std::move(detail); return out; }
 SblrEventNotificationDispatchResult DispatchFail(std::string id, std::string detail) { SblrEventNotificationDispatchResult out; out.diagnostic_id=std::move(id); out.detail=std::move(detail); return out; }
-std::string Hex16(const std::array<std::uint8_t,16>& v) { static constexpr char h[]="0123456789abcdef"; std::string out; out.reserve(32); for(auto b:v){out+=h[b>>4];out+=h[b&15];} return out; }
 SblrEventNotificationCodecResult Validate(const SblrEventNotificationRecord& record) {
- const auto* spec=Find(record.opcode); if(!spec || Zero(record.request_uuid.data(),16)||Zero(record.security_context_uuid.data(),16)) return Fail("opcode_or_identity");
+ const auto* spec=Find(record.opcode); if(!spec || !SystemUuid(record.request_uuid.data()) || !SystemUuid(record.security_context_uuid.data())) return Fail("opcode_or_identity");
  if (spec->transaction != (record.transaction_id != 0)) return Fail("transaction_requirement");
  if(record.fields.size()!=spec->tags.size()) return Fail("field_count");
  for(std::size_t i=0;i<record.fields.size();++i) {
@@ -171,8 +178,26 @@ SblrEventNotificationCodecResult DecodeSblrEventNotificationRecord(const std::ui
  if(!data||size<112||size>kMaximum||data[0]!='S'||data[1]!='B'||data[2]!='E'||data[3]!='N'||Get16(data+4)!=1||Get16(data+6)!=0||Get16(data+10)!=0||Get32(data+12)!=size||Get64(data+72)!=0)return Fail("frame_header"); const auto* spec=Find(static_cast<SblrEventNotificationOpcode>(Get16(data+8)));const auto payload=Get32(data+64),count=Get32(data+68);if(!spec||count!=spec->tags.size()||kHeader+payload+kDigest!=size)return Fail("opcode_or_payload");const auto digest=scratchbird::core::hash::ComputeSha256Digest(data,size-kDigest);if(!digest.ok()||!std::equal(digest.digest.begin(),digest.digest.end(),data+size-kDigest))return Fail("sha256_mismatch");SblrEventNotificationRecord record;record.opcode=spec->code;std::copy_n(data+16,16,record.request_uuid.begin());std::copy_n(data+32,16,record.security_context_uuid.begin());record.policy_epoch=Get64(data+48);record.transaction_id=Get64(data+56);std::size_t at=kHeader;for(std::size_t i=0;i<count;++i){if(at+8>size-kDigest||Get16(data+at+2)!=0)return Fail("field_header");auto tag=Get16(data+at);auto bytes=Get32(data+at+4);at+=8;if(at+bytes>size-kDigest)return Fail("field_size");record.fields.push_back({tag,Bytes(data+at,data+at+bytes)});at+=bytes;}if(at!=size-kDigest)return Fail("payload_size");auto out=Validate(record);if(!out.ok)return out;out.canonical_bytes.assign(data,data+size);out.sha256_hex=scratchbird::core::hash::HexLower(digest.digest);return out;
 }
 SblrEventNotificationCodecResult DecodeSblrEventNotificationOperand(const SblrOperationEnvelope& envelope) {
- const auto* spec=Find(envelope.operation_id);if(!spec||envelope.opcode!=spec->mnemonic||envelope.opcode_code!=static_cast<std::uint16_t>(spec->code)||envelope.operands.size()!=1)return Fail("sbop_identity");const auto& o=envelope.operands.front();if(o.type!=spec->type||o.name!="request"||o.ordinal!=1||o.value_kind!=SblrValueKind::literal_typed||o.value_body.size()<24||Zero(o.value_body.data(),16))return Fail("carrier");std::uint64_t n=0;for(unsigned i=0;i<8;++i)n|=static_cast<std::uint64_t>(o.value_body[16+i])<<(8*i);if(n!=o.value_body.size()-24)return Fail("carrier_size");auto decoded=DecodeSblrEventNotificationRecord(o.value_body.data()+24,n);if(!decoded.ok)return decoded;if(decoded.record.opcode!=spec->code)return Fail("carrier_opcode_mismatch");return decoded;
+ const auto* spec=Find(envelope.operation_id);if(!spec||envelope.opcode!=spec->mnemonic||envelope.opcode_code!=static_cast<std::uint16_t>(spec->code)||envelope.operands.size()!=1)return Fail("sbop_identity");const auto& o=envelope.operands.front();if(o.type!=spec->type||o.name!="request"||o.ordinal!=1||o.value_kind!=SblrValueKind::literal_typed||!o.value.empty()||o.value_flags!=0||o.value_body.size()<24||!std::equal(kRequestDescriptor.begin(),kRequestDescriptor.end(),o.value_body.begin()))return Fail("carrier");std::uint64_t n=0;for(unsigned i=0;i<8;++i)n|=static_cast<std::uint64_t>(o.value_body[16+i])<<(8*i);if(n!=o.value_body.size()-24)return Fail("carrier_size");auto decoded=DecodeSblrEventNotificationRecord(o.value_body.data()+24,n);if(!decoded.ok)return decoded;if(decoded.record.opcode!=spec->code)return Fail("carrier_opcode_mismatch");return decoded;
 }
-SblrOperand MakeSblrEventNotificationOperand(const SblrEventNotificationCodecResult& encoded) { SblrOperand o;if(!encoded.ok)return o;o.type=std::string(SblrEventNotificationOperandType(encoded.record.opcode));o.name="request";o.ordinal=1;o.value_kind=SblrValueKind::literal_typed;o.value_body.assign(24,0);o.value_body[0]=1;for(unsigned i=0;i<8;++i)o.value_body[16+i]=encoded.canonical_bytes.size()>>(8*i);o.value_body.insert(o.value_body.end(),encoded.canonical_bytes.begin(),encoded.canonical_bytes.end());return o; }
-SblrEventNotificationDispatchResult DispatchSblrEventNotification(const SblrOperationEnvelope& envelope,const scratchbird::engine::internal_api::EngineRequestContext& context) { const auto registry=ValidateSblrOpcodeForEnvelope(envelope);if(!registry.ok)return DispatchFail(registry.diagnostic_id,registry.detail);const auto decoded=DecodeSblrEventNotificationOperand(envelope);if(!decoded.ok)return DispatchFail(decoded.diagnostic_id,decoded.detail);if(!context.security_context_present)return DispatchFail("SB_DIAG_SBLR_SECURITY_CONTEXT_REQUIRED","event notification");if(context.query_cancellation_requested&&context.query_cancellation_requested())return DispatchFail("PROCESS.CANCELLED","cancelled_before_event_state_access");SblrEventNotificationDispatchResult out;out.accepted=true;out.record=decoded.record;out.evidence={{"executor_id",std::string(SblrEventNotificationOperationId(decoded.record.opcode))},{"opcode_code",std::to_string(static_cast<std::uint16_t>(decoded.record.opcode))},{"opcode_version","1.0"},{"request_uuid",Hex16(decoded.record.request_uuid)},{"security_context_uuid",Hex16(decoded.record.security_context_uuid)},{"policy_epoch",std::to_string(decoded.record.policy_epoch)},{"transaction_id",std::to_string(decoded.record.transaction_id)},{"request_sha256",decoded.sha256_hex}};return out; }
+SblrOperand MakeSblrEventNotificationOperand(const SblrEventNotificationCodecResult& encoded) {
+  if (!encoded.ok) return {};
+  const auto decoded = DecodeSblrEventNotificationRecord(
+      encoded.canonical_bytes.data(), encoded.canonical_bytes.size());
+  if (!decoded.ok || decoded.record.opcode != encoded.record.opcode) return {};
+  SblrOperand operand;
+  operand.type = std::string(SblrEventNotificationOperandType(decoded.record.opcode));
+  operand.name = "request";
+  operand.ordinal = 1;
+  operand.value_kind = SblrValueKind::literal_typed;
+  operand.value_body.assign(kRequestDescriptor.begin(), kRequestDescriptor.end());
+  operand.value_body.resize(24);
+  const auto size = static_cast<std::uint64_t>(encoded.canonical_bytes.size());
+  for (unsigned i = 0; i < 8; ++i)
+    operand.value_body[16 + i] = static_cast<std::uint8_t>(size >> (8 * i));
+  operand.value_body.insert(operand.value_body.end(),
+                           encoded.canonical_bytes.begin(), encoded.canonical_bytes.end());
+  return operand;
+}
+SblrEventNotificationDispatchResult DispatchSblrEventNotification(const SblrOperationEnvelope& envelope,const scratchbird::engine::internal_api::EngineRequestContext& context) { const auto registry=ValidateSblrOpcodeForEnvelope(envelope);if(!registry.ok)return DispatchFail(registry.diagnostic_id,registry.detail);const auto decoded=DecodeSblrEventNotificationOperand(envelope);if(!decoded.ok)return DispatchFail(decoded.diagnostic_id,decoded.detail);if(!context.security_context_present)return DispatchFail("SB_DIAG_SBLR_SECURITY_CONTEXT_REQUIRED","event notification");if(context.query_cancellation_requested&&context.query_cancellation_requested())return DispatchFail("PROCESS.CANCELLED","cancelled_before_event_state_access");SblrEventNotificationDispatchResult out;out.accepted=true;out.record=decoded.record;out.evidence={{"executor_id",std::string(SblrEventNotificationOperationId(decoded.record.opcode))},{"opcode_code",std::to_string(static_cast<std::uint16_t>(decoded.record.opcode))},{"opcode_version","1.0"},{"request_uuid",scratchbird::engine::internal_api::EngineUuid{decoded.record.request_uuid}},{"security_context_uuid",scratchbird::engine::internal_api::EngineUuid{decoded.record.security_context_uuid}},{"policy_epoch",std::to_string(decoded.record.policy_epoch)},{"transaction_id",std::to_string(decoded.record.transaction_id)},{"request_sha256",decoded.sha256_hex}};return out; }
 }  // namespace scratchbird::engine::sblr

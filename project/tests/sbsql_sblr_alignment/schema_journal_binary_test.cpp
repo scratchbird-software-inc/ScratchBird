@@ -31,6 +31,31 @@ static a::SblrDdlCreateSchemaJournalKeyV1 Key(unsigned n){
   Check(!key.canonical_descriptor_bytes.empty());return key;
 }
 int main(){
+  s::SblrDdlCreateSchemaRequestV1 path_request;
+  path_request.name_atoms.push_back({"QA_SCHEMA",false});
+  std::string path, leaf;
+  a::SblrDdlCreateSchemaJournalHashV1 path_hash{};
+  Check(a::NormalizeRecoveryPath(path_request,&path,&leaf,&path_hash));
+  Check(path=="qa_schema"&&leaf=="qa_schema");
+  constexpr std::array<std::uint8_t,32> expected_path_hash{
+      0x33,0x60,0xd3,0xc4,0x11,0xc5,0x32,0xf4,
+      0x00,0x63,0x76,0xe5,0xe1,0x6d,0x84,0x68,
+      0x9a,0xaf,0x28,0xe9,0xce,0xfc,0x35,0x41,
+      0xed,0x35,0x86,0x96,0x5d,0x69,0x2e,0xf9};
+  Check(path_hash==expected_path_hash);
+  Check(path_hash==scratchbird::engine::HashAuthorityMaterial(
+      "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1",{path},{}));
+  path_request.name_atoms.front().quoted=true;
+  Check(a::NormalizeRecoveryPath(path_request,&path,&leaf,&path_hash));
+  Check(path=="QA_SCHEMA"&&path_hash!=expected_path_hash);
+  path_request.name_atoms.front().raw_utf8="qa_schema";
+  Check(a::NormalizeRecoveryPath(path_request,&path,&leaf,&path_hash));
+  Check(path_hash==expected_path_hash);
+  path_request.name_atoms.push_back({"Nested",false});
+  Check(a::NormalizeRecoveryPath(path_request,&path,&leaf,&path_hash));
+  Check(path=="qa_schema.nested"&&leaf=="nested"&&path_hash!=expected_path_hash);
+  path_request.name_atoms.front().raw_utf8=std::string("qa\0schema",9);
+  Check(!a::NormalizeRecoveryPath(path_request,&path,&leaf,&path_hash));
   const auto directory=std::filesystem::temp_directory_path()/("sb_schema_binary_"+std::to_string(a::ProcessOrdinal()));
   Check(std::filesystem::create_directory(directory));
   a::EngineRequestContext context;context.database_path=(directory/"database.sbdb").string();context.database_uuid=a::NativeUuid(Id(2));

@@ -508,8 +508,16 @@ void VerifyPublicSourceBoundaryText(const std::string& repo_root) {
       LoadText(repo_root + "/project/src/cluster_provider/no_cluster_provider.cpp");
   const auto stub =
       LoadText(repo_root + "/project/src/cluster_provider_stub/stub_cluster_provider.cpp");
-  Require(Contains(header, "external provider target"),
-          "cluster provider header lost external-provider boundary text");
+  // Core CLUSTER-PROXY-RUNNER-ARTIFACT-TREE-CORRECTION-CONTRACT forbids
+  // linking the private implementation into the engine. Public metadata
+  // compatibility is not executable provider admission.
+  for (const auto boundary : {"Private provider implementations must not link",
+                              "canonical public gateway uses a signed proxy",
+                              "separately supervised provider runner",
+                              "cannot substitute for the canonical gateway ABI and host-owned authority"}) {
+    Require(Contains(header, boundary),
+            "cluster provider header lost proxy/runner isolation or admission boundary text");
+  }
   Require(Contains(stub, "contains no cluster implementation code"),
           "public stub lost no-implementation boundary text");
   for (const auto* source : {&no_cluster, &stub}) {
