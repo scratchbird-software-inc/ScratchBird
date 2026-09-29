@@ -5,6 +5,7 @@
 #include "metric_observation_queue.hpp"
 #include "metric_value_update.hpp"
 #include "optimizer_storage_metrics.hpp"
+#include "storage_metrics_management.hpp"
 #include <array>
 #include <iostream>
 #include <limits>
@@ -35,12 +36,24 @@ constexpr std::array<const char*,9> families = {
     "sb_page_cache_context_refusals_total"};
 constexpr m::u64 large = (m::u64{1} << 53) + 1;
 
+m::StorageMetricsManagementRequest ManagementRequest() {
+  m::StorageMetricsManagementRequest request;
+  request.metrics_read_authorized=true;request.support_bundle_requested=true;
+  request.allow_sensitive_labels=true;
+  request.observed_metric_generation=request.current_metric_generation=7;
+  request.database_uuid=Id(1);request.filespace_uuid=Id(2);request.node_uuid=Id(3);
+  return request;
+}
+
 struct Fixture {
   m::MetricRegistry& registry = m::DefaultMetricRegistry();
   std::shared_ptr<m::MetricObservationQueue> queue;
   std::map<m::MetricUuid, std::pair<m::MetricDescriptor,m::MetricSeriesIdentity>> retained;
   Fixture() {
     Require(registry.Descriptors().empty(), "registry acquired unbound descriptor authority");
+    const auto unbound=m::PublishStorageMetricsManagementSurface(ManagementRequest());
+    Require(!unbound.ok && unbound.visible_metrics.empty() && unbound.support_bundle_records.empty(),
+            "management read manufactured an unbound observation source");
     for (auto counter : counters) {
       Require(!counter(0, Id(1), Id(2), "all", "normal", "ok", "test").ok,
               "zero counter manufactured unbound publication success");
@@ -55,6 +68,10 @@ struct Fixture {
     Require(made.ok(), "node queue creation");
     queue = std::move(made.queue);
     Require(registry.BindObservationQueue(queue).ok, "bind actual observation queue");
+    const auto empty=m::PublishStorageMetricsManagementSurface(ManagementRequest());
+    Require(empty.ok && empty.visible_metrics.empty() && empty.support_bundle_records.empty() &&
+        queue->Stats().admitted==0 && registry.Descriptors().empty(),
+        "empty management read fabricated measurements or definitions");
     auto definitions = m::PageCacheContextMetricDefinitions();
     Require(definitions.size() == families.size(), "page-cache definition inventory");
     for (unsigned i=0; i<definitions.size(); ++i) {
@@ -123,6 +140,105 @@ struct Fixture {
     Require(queue->TryRemove(acquired.lease)==m::MetricQueueError::none,"drain checked fixture observation");
   }
 };
+
+void StorageManagementProjection(Fixture& f) {
+  const auto admitted=f.queue->Stats().admitted;
+  const auto history=f.registry.SnapshotHistory().size();
+  const auto stored=f.registry.SnapshotCurrent();
+  auto request=ManagementRequest();
+  const auto visible=m::PublishStorageMetricsManagementSurface(request);
+  Require(visible.ok && visible.visible_metrics.size()==stored.size() &&
+      visible.support_bundle_records.size()==stored.size(),"management projection omitted actual measurements");
+  for(std::size_t i=0;i<stored.size();++i) {
+    const auto* descriptor=f.registry.FindDescriptor(stored[i].family);
+    Require(descriptor!=nullptr,"actual measurement descriptor missing");
+    const auto expected=m::EncodeMetricValue(*descriptor,stored[i]);
+    const auto projected=m::EncodeMetricValue(*descriptor,visible.visible_metrics[i]);
+    Require(expected.ok() && projected.ok() && expected.bytes==projected.bytes &&
+        visible.support_bundle_records[i].metric.encoded_value==expected.bytes,
+        "management read changed exact observed values or emitted synthetic data");
+    Require(visible.support_bundle_records[i].database_uuid==Id(1) &&
+        visible.support_bundle_records[i].filespace_uuid==Id(2),"management read changed raw16 owner identities");
+  }
+  for(unsigned fault=0;fault<5;++fault) {
+    auto denied=request;
+    if(fault==0)denied.database_uuid=Id(90);
+    if(fault==1)denied.node_uuid=Id(90);
+    if(fault==2)denied.metrics_read_authorized=false;
+    if(fault==3)++denied.observed_metric_generation;
+    if(fault==4)denied.filespace_uuid={};
+    const auto refused=m::PublishStorageMetricsManagementSurface(denied);
+    Require(!refused.ok && refused.visible_metrics.empty() && refused.support_bundle_records.empty(),
+            "invalid management scope exposed observations");
+  }
+  request.allow_sensitive_labels=false;request.local_path_sample="private-path";
+  request.protected_payload_sample="private-payload";
+  const auto redacted=m::PublishStorageMetricsManagementSurface(request);
+  Require(redacted.ok && redacted.redaction_applied && redacted.support_bundle_records.size()==stored.size(),
+          "actual management observations could not be redacted");
+  for(const auto& record:redacted.support_bundle_records)
+    Require(record.identities_redacted && record.database_uuid.is_nil() && record.filespace_uuid.is_nil() &&
+        record.local_path_redacted && record.protected_payload_redacted,"management redaction invented or leaked identities");
+  Require(f.queue->Stats().admitted==admitted && f.queue->Stats().queued==0 &&
+      f.registry.SnapshotHistory().size()==history && f.registry.SnapshotCurrent().size()==stored.size(),
+      "read/export mutated producer observations");
+
+  // Additional component observations: a sibling filespace and a node-wide
+  // pressure event. These are actual registry/queue publications, not native
+  // catalog activation or evidence of a real backup/storage-pressure workload.
+  const auto bind=[&](const m::MetricDescriptor& descriptor,m::MetricLabelSet labels,unsigned identity) {
+    m::MetricRetentionPolicy policy;policy.policy_name="component retained policy";
+    policy.policy_uuid=descriptor.retention_policy_uuid;policy.generation=descriptor.retention_policy_generation;
+    m::MetricHistoryBinding binding;static_cast<m::MetricDescriptorBinding&>(binding)=descriptor;
+    binding.database_uuid=Id(1);binding.node_uuid=Id(3);
+    auto series=m::MakeMetricSeriesIdentity(descriptor,std::move(labels),policy,binding,Id(identity),1);
+    Require(series.ok() && f.registry.RegisterSeries(*series.record,policy).ok,"bind additional observed scope");
+    return std::move(*series.record);
+  };
+  const auto& sibling_descriptor=f.retained.at(Id(100)).first;
+  auto labels=f.retained.at(Id(100)).second.labels;
+  for(auto& label:labels)if(label.key=="filespace_uuid")label.value=Id(90);
+  auto sibling=bind(sibling_descriptor,std::move(labels),500);
+  Require(f.registry.SetGauge(sibling_descriptor.family,sibling.labels,m::u64{91},sibling_descriptor.producer_owner).ok,
+          "publish sibling filespace measurement");
+  auto node_descriptor=sibling_descriptor;node_descriptor.metric_uuid=Id(501);
+  node_descriptor.family="sb_storage_pressure_total";node_descriptor.type=m::MetricType::counter;
+  node_descriptor.unit=m::MetricUnit::events;node_descriptor.labels.clear();
+  node_descriptor.label_schema_uuid={};node_descriptor.label_schema_generation=0;
+  node_descriptor.producer_owner="metrics_runtime";
+  Require(f.registry.RegisterDescriptor(node_descriptor).ok,"register node-wide component descriptor");
+  auto node=bind(node_descriptor,{},502);
+  Require(f.registry.IncrementCounter(node_descriptor.family,{},m::u64{1},node_descriptor.producer_owner).ok,
+          "publish node-wide pressure observation");
+  for(const auto* series:{&sibling,&node}) {
+    auto queued=f.queue->TryAcquire();Require(queued.ok(),"additional scope did not publish queue bytes");
+    const auto* descriptor=f.registry.FindDescriptor(series->metric_uuid);
+    const auto decoded=m::DecodeMetricRawSample(*descriptor,*series,queued.lease.observation->bytes);
+    Require(decoded.ok() && std::get<m::u64>(decoded.record->value.value)==(series==&sibling?91:1),
+            "additional scope queue bytes changed");
+    Require(f.queue->TryRemove(queued.lease)==m::MetricQueueError::none,"drain checked scope sample");
+  }
+  const auto final_admitted=f.queue->Stats().admitted;
+  const auto final_history=f.registry.SnapshotHistory().size();
+  request=ManagementRequest();request.filespace_uuid=Id(90);
+  const auto selected=m::PublishStorageMetricsManagementSurface(request);
+  Require(selected.ok && selected.visible_metrics.size()==2 && selected.support_bundle_records.size()==2,
+          "filespace projection leaked another filespace or lost node-wide observations");
+  for(std::size_t i=0;i<selected.visible_metrics.size();++i) {
+    const bool node_wide=selected.visible_metrics[i].family==node_descriptor.family;
+    Require(std::get<m::u64>(selected.visible_metrics[i].value)==(node_wide?1:91) &&
+        selected.support_bundle_records[i].filespace_uuid==(node_wide?m::MetricUuid{}:Id(90)),
+        "projection fabricated requested filespace ownership for a node-wide observation");
+  }
+  request.filespace_uuid=Id(91);
+  const auto absent=m::PublishStorageMetricsManagementSurface(request);
+  Require(absent.ok && absent.visible_metrics.size()==1 &&
+      absent.visible_metrics.front().family==node_descriptor.family &&
+      absent.support_bundle_records.front().filespace_uuid.is_nil(),
+      "unobserved filespace acquired invented measurements");
+  Require(f.queue->Stats().admitted==final_admitted && f.queue->Stats().queued==0 &&
+      f.registry.SnapshotHistory().size()==final_history,"filtered read published measurements");
+}
 }  // namespace
 
 int main() {
@@ -169,7 +285,8 @@ int main() {
       }
       Require(found,"published current counter missing");
     }
-    std::cout<<"page_cache_exact_producers=passed native_bootstrap_claimed=false\n";
+    StorageManagementProjection(f);
+    std::cout<<"page_cache_exact_producers=passed storage_management_observed_only=passed native_bootstrap_claimed=false\n";
   } catch(const std::exception& error) {
     std::cerr<<error.what()<<'\n';return 1;
   }

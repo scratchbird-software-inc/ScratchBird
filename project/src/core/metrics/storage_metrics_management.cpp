@@ -8,8 +8,6 @@
 
 #include "storage_metrics_management.hpp"
 
-#include "metric_contracts.hpp"
-
 #include "uuid.hpp"
 #include <utility>
 
@@ -24,17 +22,6 @@ void AddDiagnostic(StorageMetricsManagementResult* result,
                    std::string diagnostic) {
   result->diagnostics.push_back(std::move(diagnostic));
   result->ok = false;
-}
-
-void AddMetricFailure(StorageMetricsManagementResult* result,
-                      const MetricValidationResult& status) {
-  if (!status.ok) {
-    AddDiagnostic(result, status.diagnostic_code + ":" + status.detail);
-  }
-}
-
-MetricLabelSet Labels(std::initializer_list<MetricLabel> labels) {
-  return MetricLabelSet(labels.begin(), labels.end());
 }
 
 bool StorageMetricFamily(const std::string& family) {
@@ -73,40 +60,9 @@ StorageMetricsManagementResult PublishStorageMetricsManagementSurface(
     AddDiagnostic(&result, "SB-STORAGE-METRICS-NATIVE-IDENTITY-REQUIRED");
     return result;
   }
-  const auto database_uuid = request.database_uuid;
-  const auto filespace_uuid = request.filespace_uuid;
-  const auto node_uuid = request.node_uuid;
-
-  AddMetricFailure(&result, PublishFilespaceCapacitySnapshot(1024 * 1024, 512 * 1024, 512 * 1024, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, PublishFilespaceReservedBytes(64 * 1024, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd", "safety_margin"));
-  AddMetricFailure(&result, PublishFilespaceHealthState(1, "healthy", database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, PublishFilespaceRoleState(1, "active_primary", database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, ObserveFilespaceDeviceReadLatency(42, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, ObserveFilespaceDeviceWriteLatency(43, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, ObserveFilespaceFsyncLatency(44, database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, RecordFilespaceDeviceError("none", database_uuid, filespace_uuid, node_uuid, "active_primary", "ssd"));
-  AddMetricFailure(&result, PublishPageAllocationSnapshot(100, 200, database_uuid, filespace_uuid, node_uuid, "row_data", "heap"));
-  AddMetricFailure(&result, PublishPageReleasedFreeCount(7, database_uuid, filespace_uuid, node_uuid, "row_data", "heap"));
-  AddMetricFailure(&result, PublishPageReservedCount(11, database_uuid, filespace_uuid, node_uuid, "row_data", "heap", "preallocation"));
-  AddMetricFailure(&result, ObservePageAllocationLatency(45, database_uuid, filespace_uuid, node_uuid, "row_data", "heap"));
-  AddMetricFailure(&result, RecordPageAllocationFailure("none", database_uuid, filespace_uuid, node_uuid, "row_data", "heap"));
-  AddMetricFailure(&result, PublishPageCacheSnapshot(20, 327680, 2, 1, database_uuid, filespace_uuid, "row_data"));
-  AddMetricFailure(&result, RecordPageCacheEviction(database_uuid, filespace_uuid, "row_data", "pressure"));
-  AddMetricFailure(&result, PublishArchiveLagBytes(0, "local", "none"));
-  AddMetricFailure(&result, PublishBackupInProgress(1, "backup"));
-  AddMetricFailure(&result, PublishBackupProgressPercent(50, "backup"));
-  AddMetricFailure(&result, ObserveRestoreDrillDuration(1000, "ok"));
-
   auto& registry = DefaultMetricRegistry();
-  AddMetricFailure(&result, registry.SetGauge("sb_filespace_shrink_candidate_bytes", Labels({{"component", "storage.filespace"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"filespace_role", "active_primary"}, {"device_class", "ssd"}}), 128 * 1024, "storage_filespace"));
-  AddMetricFailure(&result, registry.SetGauge("sb_filespace_truncate_ready_bytes", Labels({{"component", "storage.filespace"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"filespace_role", "active_primary"}, {"device_class", "ssd"}}), 32 * 1024, "page_runtime"));
-  AddMetricFailure(&result, registry.SetGauge("sb_page_fragmentation_ratio", Labels({{"component", "storage.page"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"page_family", "row_data"}, {"page_type", "heap"}}), 0.125, "page_runtime"));
-  AddMetricFailure(&result, registry.IncrementCounter("sb_storage_pressure_total", Labels({{"component", "storage.pressure"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"reason", "safety_margin"}}), 1.0, "metrics_runtime"));
-  AddMetricFailure(&result, registry.SetGauge("sb_temp_workspace_bytes", Labels({{"component", "storage.temp"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"reason", "work_table"}}), 4096, "metrics_runtime"));
-  AddMetricFailure(&result, registry.SetGauge("sb_index_build_workspace_bytes", Labels({{"component", "storage.index_build"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"reason", "sort_run"}}), 8192, "metrics_runtime"));
-  AddMetricFailure(&result, registry.IncrementCounter("sb_storage_support_redaction_total", Labels({{"component", "storage.redaction"}, {"database_uuid", database_uuid}, {"filespace_uuid", filespace_uuid}, {"node_uuid", node_uuid}, {"reason", "support_bundle"}}), 1.0, "metrics_runtime"));
-
-  if (!result.diagnostics.empty()) {
+  if (!registry.ObservationOwnerMatches(request.database_uuid, request.node_uuid)) {
+    AddDiagnostic(&result, "METRIC.OBSERVATION_SOURCE_UNAVAILABLE:storage metric owner is not bound");
     return result;
   }
 
@@ -114,6 +70,27 @@ StorageMetricsManagementResult PublishStorageMetricsManagementSurface(
     if (!StorageMetricFamily(value.family)) {
       continue;
     }
+    // Scope comes from the retained observation, never from a requested label
+    // or fabricated sample. Node-wide observations have no filespace identity.
+    MetricUuid observed_filespace;
+    bool selected = true;
+    for (const auto& label : value.labels) {
+      const MetricUuid* expected = nullptr;
+      if (label.key == "database_uuid") expected = &request.database_uuid;
+      else if (label.key == "node_uuid") expected = &request.node_uuid;
+      else if (label.key == "filespace_uuid") expected = &request.filespace_uuid;
+      if (!expected) continue;
+      const auto* identity = std::get_if<MetricUuid>(&label.value);
+      if (!identity || !core::uuid::IsEngineIdentityUuid(*identity)) {
+        result.visible_metrics.clear();
+        result.support_bundle_records.clear();
+        AddDiagnostic(&result, "SB-STORAGE-METRICS-BINARY-PROJECTION-REFUSED");
+        return result;
+      }
+      if (*identity != *expected) selected = false;
+      if (label.key == "filespace_uuid") observed_filespace = *identity;
+    }
+    if (!selected) continue;
     const MetricDescriptor* descriptor = registry.FindDescriptor(value.family);
     StorageMetricSupportRecord record;
     if (!descriptor || !ProjectMetricForSupport(
@@ -127,8 +104,8 @@ StorageMetricsManagementResult PublishStorageMetricsManagementSurface(
     if (request.support_bundle_requested) {
       record.identities_redacted = !request.allow_sensitive_labels;
       if (request.allow_sensitive_labels) {
-        record.database_uuid = database_uuid;
-        record.filespace_uuid = filespace_uuid;
+        record.database_uuid = request.database_uuid;
+        record.filespace_uuid = observed_filespace;
       }
       record.local_path_redacted = !request.local_path_sample.empty();
       record.protected_payload_redacted = !request.protected_payload_sample.empty();
