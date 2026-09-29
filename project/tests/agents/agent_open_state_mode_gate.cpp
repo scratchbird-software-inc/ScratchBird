@@ -2,6 +2,8 @@
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -74,6 +76,7 @@ struct Fixture {
   std::string principal_uuid = Id(platform::UuidKind::principal, 4);
   std::string agent_uuid = Id(platform::UuidKind::object, 5);
   std::string policy_uuid = Id(platform::UuidKind::object, 6);
+  api::EngineRequestContext owner_context;
 
   ~Fixture() {
     std::error_code ignored;
@@ -87,29 +90,44 @@ Fixture MakeFixture() {
                 ("scratchbird_pfar017a_" + std::to_string(NowMillis()));
   std::filesystem::create_directories(fixture.dir);
   fixture.database_path = fixture.dir / "pfar017a.sbdb";
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = uuid::MakeTypedUuid(platform::UuidKind::database,
+      NativeFixtureIdentity(fixture.database_uuid)).value;
+  create.filespace_uuid = uuid::MakeTypedUuid(platform::UuidKind::filespace,
+      NativeFixtureIdentity(fixture.filespace_uuid)).value;
+  create.creation_unix_epoch_millis = NowMillis();
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  Require(created.ok(), "open-state fixture database create failed: " +
+      created.diagnostic.diagnostic_code);
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.principal_uuid = BinaryFixtureIdentity(fixture.owner_context.principal_uuid);
   return fixture;
 }
 
 api::EngineRequestContext Context(const Fixture& fixture,
                                   std::initializer_list<std::string_view> rights) {
-  api::EngineRequestContext context;
+  // These tests isolate lifecycle admission, with authorization from the
+  // persisted bootstrap owner. The rights are expectations, never grants.
+  api::EngineRequestContext context = fixture.owner_context;
   context.request_id = "pfar-017a-open-state-mode";
   context.database_path = fixture.database_path.string();
   context.database_uuid = NativeFixtureIdentity(fixture.database_uuid);
   context.principal_uuid = NativeFixtureIdentity(fixture.principal_uuid);
   context.transaction_uuid = NativeFixtureIdentity(fixture.transaction_uuid);
-  context.session_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 7));
+  const auto session = uuid::IssueRuntimeIdentityV7();
+  Require(session.has_value(), "open-state fixture session issuance failed");
+  context.session_uuid = *session;
   context.node_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 8));
-  context.cluster_uuid = NativeFixtureIdentity(Id(platform::UuidKind::object, 9));
   context.local_transaction_id = 17017;
   context.security_context_present = true;
   context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.catalog_generation_id = 1;
-  context.security_epoch = 1;
   context.resource_epoch = 1;
-  context.trace_tags.push_back("security.fixture_trace_authority");
   for (const auto right : rights) {
-    context.trace_tags.push_back("right:" + std::string(right));
+    Require(api::SecurityContextHasRight(context, std::string(right)),
+            "durable fixture owner lacks required right: " + std::string(right));
   }
   return context;
 }
@@ -313,6 +331,15 @@ void TestManagementAndSblrOpenStateRefusals(const Fixture& fixture) {
   Require(HasDiagnostic(read_result, "AGENT.NONE"),
           "repair-mode read surface diagnostic mismatch");
 
+  auto trace_only = read;
+  trace_only.context.authorization_context = {};
+  trace_only.context.trace_tags = {"security.fixture_trace_authority",
+      "right:OBS_AGENT_RECOMMENDATION_READ"};
+  const auto trace_result = api::EngineAgentCommandSurfaceOperation(trace_only);
+  Require(!trace_result.ok, "trace tags substituted for durable authorization");
+  Require(HasDiagnostic(trace_result, "AGENT.SECURITY_CONTEXT_REQUIRED"),
+          "trace-only request did not fail at the authorization boundary");
+
   auto mutate = CommandRequest(fixture, "agents.disable", {"OBS_AGENT_CONTROL"});
   mutate.option_envelopes.push_back("lifecycle:repair");
   const auto mutate_result = api::EngineAgentCommandSurfaceOperation(mutate);
@@ -385,6 +412,11 @@ void TestActionAndStorageModesRefuseBeforeMutation(const Fixture& fixture) {
 }  // namespace
 
 int main() {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "agent_open_state_mode_gate");
+  Require(memory.ok() && memory.fixture_mode,
+          "open-state fixture memory admission failed");
   const auto fixture = MakeFixture();
   TestRuntimeManagerModesDrainAndSuppressLoops(fixture);
   TestManagementAndSblrOpenStateRefusals(fixture);
