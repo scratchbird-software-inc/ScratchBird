@@ -706,6 +706,67 @@ void TestBinaryUuidOperations() {
           "binary UUID timestamp extraction failed");
 }
 
+void TestIntegerPhysicalSortKeyBytes() {
+  struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
+    const char* minimum; const char* maximum; const char* overflow; };
+  const std::vector<Case> cases = {
+      {dt::CanonicalTypeId::int8, 1, true, "-128", "127", "128"},
+      {dt::CanonicalTypeId::int16, 2, true, "-32768", "32767", "32768"},
+      {dt::CanonicalTypeId::int32, 4, true, "-2147483648", "2147483647", "2147483648"},
+      {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
+      {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
+       "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
+      {dt::CanonicalTypeId::uint8, 1, false, "0", "255", "256"},
+      {dt::CanonicalTypeId::uint16, 2, false, "0", "65535", "65536"},
+      {dt::CanonicalTypeId::uint32, 4, false, "0", "4294967295", "4294967296"},
+      {dt::CanonicalTypeId::uint64, 8, false, "0", "18446744073709551615", "18446744073709551616"},
+      {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
+       "340282366920938463463374607431768211456"}};
+  for (const auto& item : cases) {
+    const auto key = [&](std::string value) {
+      const auto encoded = dt::MakeDatatypeSortKey({Value(item.type, std::move(value))});
+      Require(encoded.ok(), "integer boundary comparison key refused");
+      return encoded.sort_key;
+    };
+    // Independently specified state byte and fixed-width big-endian payload.
+    const auto smallest = std::string(1, '\1') + std::string(item.width, '\0');
+    const auto largest = std::string(1, '\1') + std::string(item.width, static_cast<char>(255));
+    Require(key(item.minimum) == smallest && key(item.maximum) == largest,
+            "integer key is not fixed-width sign-transformed big-endian bytes");
+    std::string zero = smallest;
+    if (item.signed_type) zero[1] = static_cast<char>(128);
+    Require(key("0") == zero && key("+000") == zero,
+            "integer zero lexical aliases changed comparison identity");
+    if (item.signed_type) {
+      Require(key("-0") == zero && key("-1") < zero,
+              "signed zero or negative integer key ordering drifted");
+      std::string below_minimum = "-" + std::string(item.overflow);
+      below_minimum.back() = static_cast<char>(below_minimum.back() + 1);
+      Require(!dt::MakeDatatypeSortKey({Value(item.type, below_minimum)}).ok(),
+              "integer sort key accepted a below-minimum value");
+    } else {
+      Require(!dt::MakeDatatypeSortKey({Value(item.type, "-1")}).ok(),
+              "unsigned integer key admitted a negative value");
+    }
+    auto one = zero;
+    one.back() = static_cast<char>(static_cast<unsigned char>(one.back()) + 1u);
+    Require(key("1") == one && zero < one,
+            "integer one is not encoded in the least significant byte");
+    for (const auto invalid : {std::string(item.overflow), std::string("1x"), std::string(80, '9')})
+      Require(!dt::MakeDatatypeSortKey({Value(item.type, invalid)}).ok(),
+              "invalid integer key was accepted or silently truncated");
+    dt::DatatypeSortKeyRequest null_request;
+    null_request.value = {item.type, {}, true};
+    const auto first = dt::MakeDatatypeSortKey(null_request);
+    null_request.null_ordering = dt::DatatypeNullOrdering::nulls_last;
+    const auto last = dt::MakeDatatypeSortKey(null_request);
+    Require(first.ok() && last.ok() && first.sort_key == std::string(1, '\0') &&
+                last.sort_key == std::string(1, '\2') &&
+                first.sort_key < smallest && largest < last.sort_key,
+            "integer NULL sort key ordering or state drifted");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -721,6 +782,7 @@ int main(int argc, char** argv) {
   // CURRENT-CORE-DATATYPE-NONSCALAR-OPERATORS
   TestBinaryUuidOperations();
   if (uuid_only) return EXIT_SUCCESS;
+  TestIntegerPhysicalSortKeyBytes();
   TestOrderedKeysAndResourceBoundComparison();
   TestLocaleSpecificCharacterCollationProof();
   TestNumericOperationsUseTypedSemantics();

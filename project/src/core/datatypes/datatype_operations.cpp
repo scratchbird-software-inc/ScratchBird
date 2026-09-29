@@ -1862,20 +1862,30 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   return result;
 }
 
-std::string OrderedIntegerKey(const std::string& value) {
+std::string OrderedIntegerKey(CanonicalTypeId type, const std::string& value) {
   const bool negative = !value.empty() && value.front() == '-';
-  std::string magnitude = AbsoluteDecimal(value);
-  if (magnitude.size() > 40) {
-    magnitude = magnitude.substr(magnitude.size() - 40);
+  // The caller has checked the exact datatype range. Work on bytes so the
+  // full 128-bit cohort does not depend on compiler-native integer width.
+  std::string bytes(IntegerBits(type) / 8, '\0');
+  for (const char digit : AbsoluteDecimal(value)) {
+    unsigned carry = static_cast<unsigned>(digit - '0');
+    for (std::size_t i = bytes.size(); i != 0; --i) {
+      const unsigned next = static_cast<unsigned char>(bytes[i - 1]) * 10u + carry;
+      bytes[i - 1] = static_cast<char>(next & 255u);
+      carry = next >> 8u;
+    }
   }
-  magnitude.insert(magnitude.begin(), 40 - magnitude.size(), '0');
-  if (!negative) {
-    return "1" + magnitude;
+  if (negative) {
+    unsigned carry = 1;
+    for (std::size_t i = bytes.size(); i != 0; --i) {
+      const unsigned next = (static_cast<unsigned char>(bytes[i - 1]) ^ 255u) + carry;
+      bytes[i - 1] = static_cast<char>(next & 255u);
+      carry = next >> 8u;
+    }
   }
-  for (char& digit : magnitude) {
-    digit = static_cast<char>('9' - (digit - '0'));
-  }
-  return "0" + magnitude;
+  if (IsSignedInteger(type))
+    bytes.front() = static_cast<char>(static_cast<unsigned char>(bytes.front()) ^ 128u);
+  return bytes;
 }
 
 std::string FixedWidthUnsigned(std::size_t value, std::size_t width) {
@@ -2052,6 +2062,19 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     if (!request.value.is_null) result.sort_key.append(request.value.encoded_value);
     return result;
   }
+  if (IsInteger(request.value.type_id)) {
+    if (!request.value.is_null && !IntegerFits(request.value.type_id, request.value.encoded_value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "integer_sort_key_out_of_range");
+      return result;
+    }
+    result.sort_key.assign(1, request.value.is_null
+        ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
+    if (!request.value.is_null)
+      result.sort_key.append(OrderedIntegerKey(request.value.type_id, request.value.encoded_value));
+    return result;
+  }
   if (request.value.is_null) {
     result.sort_key =
         request.null_ordering == DatatypeNullOrdering::nulls_first ? "00:null" : "ff:null";
@@ -2095,10 +2118,6 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
       }
     }
     result.sort_key = TextComparisonCohort(request.text_seed) + value;
-    return result;
-  }
-  if (IsInteger(request.value.type_id)) {
-    result.sort_key = "10:" + OrderedIntegerKey(value);
     return result;
   }
   if (IsNumeric(request.value.type_id)) {
