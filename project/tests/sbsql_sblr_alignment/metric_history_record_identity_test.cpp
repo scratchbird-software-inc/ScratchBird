@@ -119,6 +119,43 @@ void Bindings() {
   Check(short_key.ok()&&short_key.record->series_key!=result.record->series_key,"typed label sets collided");
   Rejected(m::MakeMetricSeriesIdentity(d,labels,p,b,{},1));
 }
+void OwnerLabels() {
+  for (bool cluster : {false, true}) {
+    auto d=Descriptor();auto b=Binding();auto policy=Policy();
+    if(cluster){d.cluster_only=true;d.namespace_path="cluster.sys.metrics.test";
+      b.cluster_uuid=Id(17);policy.scope="cluster";}
+    for(const auto& key:{"database_uuid","node_uuid","cluster_uuid"}) {
+      const auto expected=std::string(key)=="database_uuid"?b.database_uuid:
+          std::string(key)=="node_uuid"?b.node_uuid:b.cluster_uuid;
+      auto scoped=d;scoped.labels.push_back({key,false,false,m::MetricLabelType::system_uuid});
+      auto labels=Labels();
+      Check(m::MakeMetricSeriesIdentity(scoped,labels,policy,b,Id(9),1).ok(),
+            "optional owner label absence refused");
+      labels.push_back({key,expected});
+      const auto valid=m::MakeMetricSeriesIdentity(scoped,labels,policy,b,Id(9),1);
+      if(!expected.is_nil())Check(valid.ok(),"matching owner label refused");
+      else Rejected(valid);
+      labels.back().value=Id(99);
+      const auto foreign=m::MakeMetricSeriesIdentity(scoped,labels,policy,b,Id(9),1);
+      Check(!foreign.ok()&&!foreign.record&&foreign.error==m::MetricHistoryRecordError::invalid_labels,
+            "foreign owner label accepted by series construction");
+      for(auto type:{m::MetricLabelType::text,m::MetricLabelType::uuid_value}) {
+        scoped.labels.back().value_type=type;
+        labels.back().value=type==m::MetricLabelType::text?
+            m::MetricLabelValue{std::string("00000000-0000-7000-8000-000000000005")}:
+            m::MetricLabelValue{expected.is_nil()?Id(17):expected};
+        Rejected(m::MakeMetricSeriesIdentity(scoped,labels,policy,b,Id(9),1));
+      }
+      if(!valid.ok())continue;
+      scoped.labels.back().value_type=m::MetricLabelType::system_uuid;
+      auto forged=*valid.record;forged.labels.back().value=Id(99);
+      std::get<5>(forged.series_key)=m::MakeMetricSeriesKey({},forged.labels).second;
+      m::MetricValue value;value.family=scoped.family;value.type=scoped.type;
+      value.labels=forged.labels;value.value=13.0;
+      Rejected(m::MakeMetricRawSampleRecord(scoped,forged,value,1,2,1));
+    }
+  }
+}
 void Samples() {
   const auto d=Descriptor();const auto series=m::MakeMetricSeriesIdentity(d,Labels(),Policy(),Binding(),Id(9),1);
   Check(series.ok(),"sample series setup");if(!series.ok())return;
@@ -183,7 +220,7 @@ void IssuanceFailure() {
 }
 }  // namespace
 int main() {
-  Bindings();Samples();Evidence();IssuanceFailure();
+  Bindings();OwnerLabels();Samples();Evidence();IssuanceFailure();
   std::cout<<"metric history record identity checks="<<checks<<" failures="<<failures<<'\n';
   return failures?1:0;
 }

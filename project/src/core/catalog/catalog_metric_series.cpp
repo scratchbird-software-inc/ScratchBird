@@ -49,6 +49,9 @@ bool Valid(const CatalogMetricSeries& r) {
     const auto& l=r.labels[i];
     if (l.key.empty() || l.key.size()>4096 || l.key.find('\0')!=l.key.npos ||
         !metrics::MetricScalarValid(metrics::MetricScalar(l.key)) || !Code(l.type)) return false;
+    if ((metrics::MetricOwnerLabel(l.key) && l.type!=metrics::MetricLabelType::system_uuid) ||
+        !metrics::MetricOwnerLabelMatchesScope(l.key,l.value,b.database_uuid,b.node_uuid,b.cluster_uuid))
+      return false;
     for (std::size_t j=0;j<i;++j) if(r.labels[j].key==l.key) return false;
     std::size_t size=16;
     if (l.type==metrics::MetricLabelType::text) {

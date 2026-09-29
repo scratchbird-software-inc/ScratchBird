@@ -126,6 +126,34 @@ void SampleTypesAndBindings() {
   std::get<4>(f.series.series_key)={};std::get<5>(f.series.series_key).clear();SampleRoundTrip(f);
 }
 void SampleWireMutations() {
+  // A forged input may agree with itself while contradicting its retained
+  // owner. Rebuild every label/key copy and independently encode wire bytes.
+  for(bool cluster:{false,true})for(const auto& key:{"database_uuid","node_uuid","cluster_uuid"}) {
+    auto f=Sample();
+    if(cluster){f.descriptor.cluster_only=true;f.series.scope_class="cluster";
+      f.descriptor.namespace_path=f.series.namespace_path="cluster.sys.metrics.test";
+      f.series.cluster_uuid=f.sample.cluster_uuid=Id(31);std::get<2>(f.series.series_key)=Id(31);}
+    const auto expected=std::string(key)=="database_uuid"?f.series.database_uuid:
+        std::string(key)=="node_uuid"?f.series.node_uuid:f.series.cluster_uuid;
+    f.descriptor.labels.push_back({key,true,false,m::MetricLabelType::system_uuid});
+    f.series.labels.push_back({key,expected});
+    const auto synchronize=[&]{
+      f.sample.labels=f.sample.value.labels=f.series.labels;
+      std::get<5>(f.series.series_key)=m::MakeMetricSeriesKey({},f.series.labels).second;
+    };
+    synchronize();
+    if(!expected.is_nil())SampleRoundTrip(f,false);
+    else {SampleEncodeRejected(f);SampleRejected(f,GoldenSample(f));}
+    f.series.labels.back().value=Id(99);synchronize();
+    SampleEncodeRejected(f);SampleRejected(f,GoldenSample(f));
+    for(auto type:{m::MetricLabelType::text,m::MetricLabelType::uuid_value}) {
+      f.descriptor.labels.back().value_type=type;
+      f.series.labels.back().value=type==m::MetricLabelType::text?
+          m::MetricLabelValue{std::string("00000000-0000-7000-8000-000000000009")}:
+          m::MetricLabelValue{expected.is_nil()?Id(31):expected};
+      synchronize();SampleEncodeRejected(f);SampleRejected(f,GoldenSample(f));
+    }
+  }
   const auto f=Sample();const auto original=GoldenSample(f);
   unsigned accepted=0,refused=0;
   for(std::size_t at=0;at<original.size();++at)for(unsigned bit=0;bit<8;++bit) {

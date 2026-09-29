@@ -95,6 +95,25 @@ void SeriesShapes() {
     if(which==9)r.origin_transaction_uuid.kind=p::UuidKind::object;SeriesInvalid(r);
   }
 }
+void SeriesOwnerLabels() {
+  for(bool cluster:{false,true})for(const auto& key:{"database_uuid","node_uuid","cluster_uuid"}) {
+    auto row=Series();if(cluster)row.binding.cluster_uuid=Id(p::UuidKind::object,80).value;
+    const auto expected=std::string(key)=="database_uuid"?row.binding.database_uuid:
+        std::string(key)=="node_uuid"?row.binding.node_uuid:row.binding.cluster_uuid;
+    row.labels.push_back({key,m::MetricLabelType::system_uuid,expected});
+    if(!expected.is_nil())SeriesRoundTrip(row);
+    else {SeriesInvalid(row);SeriesRefused(SeriesGolden(row));}
+    row.labels.back().value=Id(p::UuidKind::object,90).value;
+    SeriesInvalid(row);SeriesRefused(SeriesGolden(row));
+    for(auto type:{m::MetricLabelType::text,m::MetricLabelType::uuid_value}) {
+      row.labels.back().type=type;
+      row.labels.back().value=type==m::MetricLabelType::text?
+          m::MetricLabelValue{std::string("00000000-0000-7000-8000-00000000002a")}:
+          m::MetricLabelValue{expected.is_nil()?Id(p::UuidKind::object,80).value:expected};
+      SeriesInvalid(row);SeriesRefused(SeriesGolden(row));
+    }
+  }
+}
 void SeriesMalformed() {
   const auto golden=SeriesGolden(Series());
   for(std::size_t size=0;size<golden.size();++size)SeriesRefused(std::string_view(golden).substr(0,size));
@@ -181,5 +200,5 @@ void SeriesAllocations() {
   }
 }
 }
-int main(){MetricDescriptorRegressionMain();const auto before=checks;SeriesShapes();SeriesMalformed();SeriesBindings();SeriesAllocations();
+int main(){MetricDescriptorRegressionMain();const auto before=checks;SeriesShapes();SeriesOwnerLabels();SeriesMalformed();SeriesBindings();SeriesAllocations();
   std::cout<<"metric series checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}

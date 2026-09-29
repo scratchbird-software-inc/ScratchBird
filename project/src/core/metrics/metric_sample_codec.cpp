@@ -44,6 +44,7 @@ E Validate(const MetricDescriptor& d,const MetricSeriesIdentity& s,const MetricR
       s.metric_family!=d.family||r.metric_family!=d.family||
       s.namespace_path!=d.namespace_path||s.producer_owner!=d.producer_owner||
       s.scope_class!=(d.cluster_only?"cluster":"local")||
+      !MetricOwnerLabelsMatchScope(s.labels,s.database_uuid,s.node_uuid,s.cluster_uuid)||
       s.series_key!=Key(s,s.labels)||s.series_key!=Key(r,r.labels)||s.series_key!=Key(r,r.value.labels))
     return E::invalid_binding;
   if(!MetricSystemUuidValid(r.sample_uuid)||(!r.evidence_uuid.is_nil()&&!MetricSystemUuidValid(r.evidence_uuid))||

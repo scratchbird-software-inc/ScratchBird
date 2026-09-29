@@ -13,6 +13,33 @@ inline bool MetricSystemUuidValid(const MetricUuid& value) noexcept {
          (value.bytes[8] & 0xc0) == 0x80;
 }
 
+inline bool MetricOwnerLabel(std::string_view key) noexcept {
+  return key == "database_uuid" || key == "node_uuid" || key == "cluster_uuid";
+}
+
+// Reserved ownership labels repeat native scope. Other labels may describe
+// related objects or user UUID data and are not silently reinterpreted here.
+inline bool MetricOwnerLabelMatchesScope(std::string_view key,
+    const MetricLabelValue& value, const MetricUuid& database_uuid,
+    const MetricUuid& node_uuid, const MetricUuid& cluster_uuid) noexcept {
+  const MetricUuid* expected = nullptr;
+  if (key == "database_uuid") expected = &database_uuid;
+  else if (key == "node_uuid") expected = &node_uuid;
+  else if (key == "cluster_uuid") expected = &cluster_uuid;
+  if (!expected) return true;
+  const auto* identity = std::get_if<MetricUuid>(&value);
+  return identity && MetricSystemUuidValid(*identity) && *identity == *expected;
+}
+
+inline bool MetricOwnerLabelsMatchScope(const MetricLabelSet& labels,
+    const MetricUuid& database_uuid, const MetricUuid& node_uuid,
+    const MetricUuid& cluster_uuid) noexcept {
+  return std::all_of(labels.begin(), labels.end(), [&](const auto& label) {
+    return MetricOwnerLabelMatchesScope(label.key, label.value,
+                                       database_uuid, node_uuid, cluster_uuid);
+  });
+}
+
 // Validation does not mutate any series and does not format or parse UUIDs.
 inline bool MetricNamespaceMatchesScope(const MetricDescriptorDefinition& definition) noexcept {
   const std::string_view root = definition.cluster_only ? "cluster.sys.metrics." : "sys.metrics.";
@@ -47,6 +74,8 @@ inline MetricValidationResult ValidateMetricLabelSet(
         [&](const auto& label) { return label.key == value.key; });
     if (schema == descriptor.labels.end())
       return {false, "SB-METRICS-LABEL-UNKNOWN", descriptor.family + ":" + value.key};
+    if (MetricOwnerLabel(value.key) && schema->value_type != MetricLabelType::system_uuid)
+      return {false, "SB-METRICS-LABEL-INVALID", descriptor.family + ":" + value.key};
     bool valid = false;
     if (schema->value_type == MetricLabelType::text) {
       const auto* text = std::get_if<std::string>(&value.value);

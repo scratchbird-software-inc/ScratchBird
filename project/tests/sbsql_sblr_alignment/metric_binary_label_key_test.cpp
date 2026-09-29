@@ -176,6 +176,33 @@ void QueuePublication(){
   }
 }
 void DescriptorScopeAdmission() {
+  for(const auto& key:{"database_uuid","node_uuid"}) {
+    ObservationFixture f;
+    f.descriptor.labels={{key,true,false,m::MetricLabelType::system_uuid}};
+    f.descriptor.label_schema_uuid=Id();f.descriptor.label_schema_generation=1;
+    const auto expected=std::string(key)=="database_uuid"?
+        f.queue->binding().database_uuid:f.queue->binding().node_uuid;
+    f.labels={{key,expected}};f.Bind(f.series.series_uuid);
+    m::MetricRegistry owner(f.queue);
+    Require(owner.RegisterDescriptor(f.descriptor).ok,"owner-labelled descriptor refused");
+    auto foreign=f.series;auto other=expected;++other.bytes[15];
+    foreign.labels[0].value=other;
+    std::get<5>(foreign.series_key)=m::MakeMetricSeriesKey({},foreign.labels).second;
+    Require(!owner.RegisterSeries(foreign,f.policy).ok&&owner.SnapshotCurrent().empty()&&
+        owner.SnapshotHistory().empty()&&f.queue->Stats().queued==0,
+        "foreign owner label registered or changed observations");
+    Require(owner.RegisterSeries(f.series,f.policy).ok&&f.Increment(owner).ok,
+        "matching binary owner failed actual publication after refused forged series");
+    m::MetricObservationLease lease;const auto sample=f.Read(lease);
+    Require(sample.database_uuid==f.series.database_uuid&&sample.node_uuid==f.series.node_uuid&&
+        m::MakeMetricSeriesKey({},sample.labels)==m::MakeMetricSeriesKey({},f.labels),
+        "publication changed owner or reserved UUID label");
+    auto crossed=f.labels;crossed[0].value=other;
+    Require(!owner.IncrementCounter(f.descriptor.family,crossed,m::u64{1},f.descriptor.producer_owner).ok&&
+        owner.SnapshotCurrent().size()==1&&owner.SnapshotHistory().size()==1&&f.queue->Stats().queued==1,
+        "cross-scope update changed retained observation");
+    Require(f.queue->TryRemove(lease)==m::MetricQueueError::none,"remove verified scope observation");
+  }
   ObservationFixture fixture;
   m::MetricRegistry registry(fixture.queue);
   const std::vector<std::string> invalid_local = {

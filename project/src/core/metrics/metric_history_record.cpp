@@ -42,7 +42,9 @@ MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
       !BindingValid(descriptor, binding) || !ValidateMetricRetentionPolicy(policy).ok ||
       policy.policy_uuid != binding.retention_policy_uuid || policy.generation != binding.retention_policy_generation ||
       (policy.scope == "cluster") != descriptor.cluster_only) return {E::invalid_binding, {}};
-  if (!ValidateMetricLabelSet(descriptor, labels).ok) return {E::invalid_labels, {}};
+  if (!ValidateMetricLabelSet(descriptor, labels).ok ||
+      !MetricOwnerLabelsMatchScope(labels,binding.database_uuid,binding.node_uuid,binding.cluster_uuid))
+    return {E::invalid_labels, {}};
   MetricSeriesIdentity result;
   static_cast<MetricHistoryBinding&>(result) = binding;
   result.series_uuid = series_uuid;
@@ -67,6 +69,7 @@ MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
       series.producer_owner != descriptor.producer_owner || series.scope_class != (descriptor.cluster_only ? "cluster" : "local"))
     return {E::invalid_binding, {}};
   if (!ValidateMetricLabelSet(descriptor, series.labels).ok || !ValidateMetricLabelSet(descriptor, value.labels).ok ||
+      !MetricOwnerLabelsMatchScope(series.labels,series.database_uuid,series.node_uuid,series.cluster_uuid) ||
       Key(series, value.labels) != series.series_key) return {E::invalid_labels, {}};
   if (!observed || !collected || !sequence || value.family != descriptor.family || value.type != descriptor.type ||
       !ValidateMetricValueShape(descriptor, value))
