@@ -720,7 +720,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent time-series descriptor is invalid");
   }
-  if (!api::ExactTimeSeriesStorageDescriptorV1(persisted)) {
+  if (!api::ExactTimeSeriesStorageDescriptorV1(input.context, persisted)) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent time-series descriptor type binding is not exact");
   }

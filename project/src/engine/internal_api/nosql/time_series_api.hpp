@@ -192,6 +192,7 @@ bool EngineExactTimeSeriesBucketStartV1(EngineApiI64 timestamp_ns,
 // and the engine-bound provider. This is a read-only catalog check; it performs
 // no MGA row access and owns no snapshot or transaction-finality decisions.
 bool ExactTimeSeriesStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor);
 
 EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1(

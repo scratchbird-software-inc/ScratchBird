@@ -9,6 +9,8 @@
 #include "canonical_aggregate_registry.hpp"
 
 #if defined(SB_RCP080_PRODUCTION_QUERY_ROUTE)
+#include "../support/engine_statement_fixture.hpp"
+#include "datatype_storage_identity.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_query_execute.hpp"
@@ -25,6 +27,7 @@
 #include "nosql/graph_api.hpp"
 #include "nosql/key_value_api.hpp"
 #include "nosql/spatial_api.hpp"
+#include "nosql/time_series_api.hpp"
 #include "scratchbird/engine/engine.h"
 #include "server_engine_bridge/statement_context.hpp"
 #include "sblr_dispatch.hpp"
@@ -930,6 +933,10 @@ struct ProductionFixtureV1 {
   executor::PhysicalUuid schema_uuid;
   executor::PhysicalUuid principal_uuid;
   executor::PhysicalUuid session_uuid;
+  executor::PhysicalUuid parser_package_uuid;
+  executor::PhysicalUuid registry_snapshot_uuid;
+  executor::PhysicalUuid text_carrier_type_uuid;
+  api::EngineRequestContext owner_context;
   std::array<executor::PhysicalUuid, 9> relation_uuids;
   std::uint64_t salt{0};
 
@@ -1011,9 +1018,10 @@ bool AcquireProductionStatementAuthorityV1(
     ProductionPublicSessionV1* session,
     api::EngineRequestContext* context,
     bridge::StatementContextReceiptHandle* receipt,
-    executor::PhysicalUuid* bound_ast_uuid) {
+    executor::PhysicalUuid* bound_ast_uuid,
+    std::vector<optimizer::MultilegDescriptorProfileV1>* multileg_profiles) {
   if (session == nullptr || session->get() == nullptr || context == nullptr ||
-      receipt == nullptr || bound_ast_uuid == nullptr) {
+      receipt == nullptr || bound_ast_uuid == nullptr || multileg_profiles == nullptr) {
     return false;
   }
   bridge::StatementContextAcquireRequest request;
@@ -1029,33 +1037,21 @@ bool AcquireProductionStatementAuthorityV1(
       !view.inventory_authoritative) {
     return false;
   }
-  context->statement_uuid = view.statement_uuid;
-  context->statement_timestamp = view.statement_timestamp;
-  context->current_timestamp = view.statement_timestamp;
-  context->statement_snapshot_uuid = view.statement_snapshot_uuid;
-  context->snapshot_visible_through_local_transaction_id =
-      view.visible_committed_high_watermark;
-  context->statement_metadata_snapshot_engine_owned = true;
-  context->statement_metadata_snapshot_uuid =
-      view.statement_metadata_snapshot_uuid;
-  context->statement_metadata_snapshot_visible_through_local_transaction_id =
-      view.visible_committed_high_watermark;
-  context->statement_metadata_snapshot_active_excluded_local_transaction_ids =
-      view.active_excluded_local_transaction_ids;
-  context->statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-      view.in_doubt_excluded_local_transaction_ids;
-  context->catalog_epoch_uuid = view.catalog_epoch_uuid;
-  context->optimizer_capability_snapshot_uuid =
-      view.optimizer_capability_snapshot_uuid;
-  context->optimizer_resource_snapshot_uuid =
-      view.optimizer_resource_snapshot_uuid;
-  context->optimizer_route_snapshot_uuid =
-      view.optimizer_route_snapshot_uuid;
-  context->catalog_generation_id = view.catalog_generation_id;
-  context->security_epoch = view.security_epoch;
-  context->resource_epoch = view.resource_epoch;
-  context->optimizer_route_epoch = view.optimizer_route_epoch;
-  context->optimizer_route_generation = view.optimizer_route_generation;
+  diagnostic = nullptr;
+  const auto copied = bridge::CopyStatementContextEngineContextV1(
+      *receipt, context, &diagnostic);
+  if (diagnostic != nullptr) (void)sb_engine_result_release(diagnostic);
+  if (copied != SB_ENGINE_STATUS_OK) return false;
+  multileg_profiles->clear();
+  for (const auto& profile : view.descriptor_profiles) {
+    const auto kind = static_cast<std::uint8_t>(profile.profile_kind);
+    if (kind < 14 || kind > 23) continue;
+    if (!profile.collation_uuid.is_nil() || profile.width || profile.precision || profile.scale)
+      return false;
+    multileg_profiles->push_back({kind, profile.slot, profile.descriptor_uuid,
+                                 profile.type_uuid, profile.nullable});
+  }
+  if (multileg_profiles->size() != 320) return false;
   *bound_ast_uuid = view.bound_ast_uuid;
   return true;
 }
@@ -1082,7 +1078,7 @@ executor::PhysicalUuid ProductionUuidV1(const platform::UuidKind kind,
                         : executor::PhysicalUuid{};
 }
 
-executor::PhysicalUuid ProductionCoreTypeUuidV1(const std::string_view stable_name) {
+executor::PhysicalUuid ProductionCoreDescriptorUuidV1(const std::string_view stable_name) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto found = std::ranges::find_if(
@@ -1093,7 +1089,21 @@ executor::PhysicalUuid ProductionCoreTypeUuidV1(const std::string_view stable_na
              : found->descriptor_uuid.value;
 }
 
-api::EngineDescriptor ProductionColumnDescriptorV1(
+executor::PhysicalUuid ProductionCoreTypeUuidV1(const std::string_view stable_name) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto found = std::ranges::find_if(manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (found == manifest.manifest.descriptor_rows.end()) return {};
+  dt::DatatypeStorageIdentityV1 identity;
+  if (!dt::LookupDatatypeStorageIdentityV1(api::kBootstrapDatatypeCatalogUuid,
+          api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
+          found->descriptor_uuid.value, found->descriptor_epoch, &identity)) return {};
+  return identity.type_uuid;
+}
+
+api::EngineDescriptor BoundProductionColumnDescriptorV1(
+    const api::EngineRequestContext& context,
     std::string canonical_type, const executor::PhysicalUuid& type_uuid,
     std::string attributes) {
   auto descriptor = executor::MakeExecutorDescriptor(canonical_type,
@@ -1107,6 +1117,35 @@ api::EngineDescriptor ProductionColumnDescriptorV1(
   if (row == catalog.manifest.descriptor_rows.end())
     throw std::runtime_error("datatype_fixture_binding_missing");
   descriptor.datatype_descriptor_generation = row->descriptor_epoch;
+  dt::DatatypeStorageIdentityV1 identity;
+  if (!dt::LookupDatatypeStorageIdentityV1(
+          context.datatype_catalog_snapshot_uuid,
+          context.datatype_catalog_generation, context.datatype_registry_generation,
+          descriptor.datatype_descriptor_uuid,
+          descriptor.datatype_descriptor_generation, &identity))
+    throw std::runtime_error("datatype_fixture_storage_identity_missing");
+  descriptor.type_uuid = identity.type_uuid;
+  // TIMESTAMP_TZ is this provider's storage semantic, backed by the catalog's
+  // timestamp datatype, not a second invented datatype identity.
+  if (canonical_type == "timestamp_tz") descriptor.canonical_type_name = "timestamp";
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
+    throw std::runtime_error("datatype_fixture_metadata_invalid");
+  fields.identities["type_uuid"] = identity.type_uuid;
+  if (identity.codec) {
+    const auto& codec = *identity.codec;
+    fields.identities["type_uuid"] = codec.type_uuid;
+    fields.identities["datatype_descriptor_uuid"] = codec.descriptor_uuid;
+    fields.identities["codec_uuid"] = codec.codec_uuid;
+    fields.text["datatype_descriptor_generation"] = std::to_string(codec.descriptor_generation);
+    fields.text["type_generation"] = std::to_string(codec.type_generation);
+    fields.text["codec_id"] = codec.codec_id;
+    fields.text["codec_version"] = std::to_string(codec.codec_version);
+    fields.text["codec_generation"] = std::to_string(codec.codec_generation);
+    fields.text["null_encoding"] = std::to_string(codec.null_encoding_code);
+  }
+  if (!api::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor))
+    throw std::runtime_error("datatype_fixture_metadata_encoding_failed");
   return descriptor;
 }
 
@@ -1122,15 +1161,25 @@ void BindProductionColumnsV1(api::CrudTableRecord* table,
     column.requested_column_uuid = api::GenerateCrudEngineUuid("column");
     column.descriptor = descriptor;
     column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
-    column.descriptor.descriptor_kind = "scalar";
-    column.nullable = descriptor.encoded_descriptor.find("nullable=true") != std::string::npos;
-    table->columns.emplace_back(name, descriptor.encoded_descriptor);
+    column.descriptor.descriptor_kind = "canonical_type_descriptor";
+    api::CatalogColumnMetadata fields;
+    if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
+      throw std::runtime_error("column_fixture_metadata_invalid");
+    column.nullable = fields.text.at("nullable") == "true";
+    if (descriptor.canonical_type_name == "text")
+      fields.identities["column_uuid"] = column.requested_column_uuid;
+    if (!api::EncodeCatalogColumnMetadata(fields, &column.descriptor.encoded_descriptor))
+      throw std::runtime_error("column_fixture_metadata_encoding_failed");
+    table->columns.emplace_back(name, column.descriptor.encoded_descriptor);
     table->bound_columns.push_back(std::move(column));
   }
 }
 
+using ProductionCellV1 = std::variant<std::string, executor::PhysicalUuid,
+                                      api::EngineValueState>;
+
 bool ProductionIdentityCellEqualsV1(const api::EngineTypedValue& value,
-    const std::variant<std::string, executor::PhysicalUuid>& expected) {
+    const ProductionCellV1& expected) {
   const auto* identity = std::get_if<executor::PhysicalUuid>(&expected);
   return identity != nullptr && value.state == api::EngineValueState::value &&
       !value.is_null && value.encoded_value.empty() &&
@@ -1138,8 +1187,9 @@ bool ProductionIdentityCellEqualsV1(const api::EngineTypedValue& value,
       std::equal(value.binary_value.begin(), value.binary_value.end(), identity->bytes.begin());
 }
 
-std::string ProductionCellBytesV1(
-    const std::variant<std::string, executor::PhysicalUuid>& cell) {
+api::CrudStoredValue ProductionCellBytesV1(const ProductionCellV1& cell) {
+  if (const auto* state = std::get_if<api::EngineValueState>(&cell))
+    return {*state, {}};
   if (const auto* text = std::get_if<std::string>(&cell)) return *text;
   const auto& identity = std::get<executor::PhysicalUuid>(cell);
   return std::string(reinterpret_cast<const char*>(identity.bytes.data()), 16);
@@ -1147,7 +1197,7 @@ std::string ProductionCellBytesV1(
 
 api::EngineRequestContext ProductionBaseContextV1(
     const ProductionFixtureV1& fixture, std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner_context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
@@ -1157,10 +1207,6 @@ api::EngineRequestContext ProductionBaseContextV1(
   context.principal_uuid = fixture.principal_uuid;
   context.session_uuid = fixture.session_uuid;
   context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
   context.language_context.default_language_tag = "en";
@@ -1201,27 +1247,15 @@ void AddProductionAuthorizationV1(api::EngineRequestContext* context,
                                   const executor::PhysicalUuid& object_uuid,
                                   const std::uint64_t salt,
                                   const std::string_view right = "SELECT") {
-  auto& authorization = context->authorization_context;
-  authorization.present = true;
-  if (authorization.authority_uuid.is_nil()) {
-    authorization.authority_uuid =
-        ProductionUuidV1(platform::UuidKind::object, salt);
-    authorization.principal_uuid = context->principal_uuid;
-    authorization.security_epoch = context->security_epoch;
-    authorization.policy_epoch = 1;
-    authorization.catalog_generation_id = context->catalog_generation_id;
-    authorization.effective_subjects.push_back(
-        {context->principal_uuid, "principal"});
-  }
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid = ProductionUuidV1(
-      platform::UuidKind::object, salt + 1 + authorization.grants.size());
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = object_uuid;
-  grant.right = std::string(right);
-  grant.security_epoch = context->security_epoch;
-  authorization.grants.push_back(std::move(grant));
+  (void)salt;
+  // The owner and grants must exist in the committed security catalog. A
+  // caller-populated grant vector is not materialized engine authority.
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(*context);
+  const auto admitted = api::EvaluateMaterializedAuthorization(
+      *context, context->authorization_context, std::string(right), object_uuid);
+  if (!admitted.authorized || admitted.denied || admitted.policy_recheck_required ||
+      !admitted.diagnostics.empty())
+    throw std::runtime_error("production fixture durable owner authorization failed");
 }
 
 executor::PhysicalUuid ProductionDescriptorTypeUuidV1(
@@ -1247,8 +1281,7 @@ void SetProductionParserAuthorityV1(
 sbsql::ParserConfig ProductionParserConfigV1(
     const ProductionFixtureV1& fixture) {
   sbsql::ParserConfig config;
-  config.parser_uuid = ProductionUuidV1(platform::UuidKind::object,
-                                        fixture.salt + 300);
+  config.parser_uuid = fixture.parser_package_uuid;
   config.bundle_contract_id = "sbp_sbsql@rcp080-production-v1";
   config.build_id = "rcp080-production-v1";
   return config;
@@ -1258,6 +1291,7 @@ sbsql::SessionContext ProductionParserSessionV1(
     const ProductionFixtureV1& fixture) {
   sbsql::SessionContext session;
   session.authenticated = true;
+  session.admitted_parser_package_uuid = fixture.parser_package_uuid;
   session.session_uuid = fixture.session_uuid;
   session.connection_uuid =
       ProductionUuidV1(platform::UuidKind::object, fixture.salt + 301);
@@ -1413,7 +1447,8 @@ sbsql::NativeRelationalBindingContext ProductionBindingContextV1(
         const auto canonical_type =
             row_identity || series_identity
                 ? std::string("uuid")
-                : column->value_descriptor.canonical_type_name;
+                : output_ordinal == 3 ? std::string("timestamp_tz")
+                                      : column->value_descriptor.canonical_type_name;
         const auto timezone = output_ordinal == 3
                                   ? std::optional<std::string>("UTC")
                                   : std::nullopt;
@@ -1671,6 +1706,59 @@ sbsql::NativeRelationalBindingContext ProductionBindingContextV1(
            source_output->output_name_utf8, expression->descriptor_id, true,
            static_cast<std::uint32_t>(ordinal), relation_id});
     }
+  }
+  // The derived public outputs use the actual statement's V10 pool, in
+  // lexical source/field order. Persisted columns retain their own identities.
+  const auto profiles = optimizer::LookupMultilegDescriptorDispatchScopeV1(reader.statement_uuid);
+  if (!profiles.accepted) throw std::runtime_error("production statement descriptor pool absent");
+  std::array<std::uint16_t, 24> next_slots{};
+  for (std::size_t ordinal = 0; ordinal < storage.size(); ++ordinal) {
+    const auto kind = ast.catalog_relation_sources[ordinal].source_kind;
+    if (kind != sbsql::NativeRelationSourceAstKind::kVector &&
+        kind != sbsql::NativeRelationSourceAstKind::kSearch &&
+        kind != sbsql::NativeRelationSourceAstKind::kSpatial) continue;
+    std::vector<const sbsql::NativeOutputBindingInput*> outputs;
+    for (const auto& output : context.outputs)
+      if (output.relation_id == ast.relations[ordinal].relation_id) outputs.push_back(&output);
+    std::ranges::sort(outputs, {}, &sbsql::NativeOutputBindingInput::ordinal);
+    for (const auto* output : outputs) {
+      auto descriptor = std::ranges::find(context.descriptors, output->descriptor_id,
+                                        &sbsql::NativeDescriptorBindingInput::descriptor_id);
+      if (descriptor == context.descriptors.end()) throw std::runtime_error("derived descriptor missing");
+      const auto& type = descriptor->canonical_type_name;
+      const std::uint8_t profile_kind = type == "uuid" ? 14 : type == "uint64" ? 16 :
+          type == "real64" ? 18 : type == "boolean" ? 20 : type == "geometry" ? 22 : 0;
+      if (!profile_kind) throw std::runtime_error("derived descriptor type unsupported");
+      const auto slot = next_slots[profile_kind]++;
+      const auto profile = std::ranges::find_if(profiles.profiles, [&](const auto& candidate) {
+        return candidate.profile_kind == profile_kind && candidate.slot == slot && !candidate.nullable;
+      });
+      if (profile == profiles.profiles.end() || profile->type_uuid != descriptor->type_uuid)
+        throw std::runtime_error("derived descriptor receipt type mismatch");
+      descriptor->descriptor_uuid = profile->descriptor_uuid;
+    }
+  }
+  for (auto& descriptor : context.descriptors) {
+    const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
+    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+      if (candidate.catalog_snapshot_uuid != reader.datatype_catalog_snapshot_uuid ||
+          candidate.catalog_generation != reader.datatype_catalog_generation ||
+          candidate.registry_generation != reader.datatype_registry_generation ||
+          candidate.type_uuid != descriptor.type_uuid) continue;
+      if (identity) throw std::runtime_error("ambiguous fixture codec authority");
+      identity = &candidate;
+    }
+    if (!identity) continue;  // Manifest-only storage types have no literal codec.
+    if (reader.statement_receipt_uuid.is_nil()) throw std::runtime_error("fixture receipt absent");
+    descriptor.descriptor_generation = identity->descriptor_generation;
+    descriptor.type_generation = identity->type_generation;
+    descriptor.codec_id = identity->codec_id;
+    descriptor.codec_version = identity->codec_version;
+    descriptor.codec_generation = identity->codec_generation;
+    descriptor.statement_receipt_uuid = reader.statement_receipt_uuid;
+    descriptor.datatype_catalog_snapshot_uuid = identity->catalog_snapshot_uuid;
+    descriptor.datatype_catalog_generation = identity->catalog_generation;
+    descriptor.datatype_registry_generation = identity->registry_generation;
   }
   SetProductionParserAuthorityV1(&context);
   return context;
@@ -2347,11 +2435,13 @@ void AppendProductionLittleEndianU64V1(std::vector<std::uint8_t>* output,
 }
 
 void SetProductionEngineOperandValueV1(sblr::SblrOperand* operand,
-                                       const std::string_view value) {
+                                       const std::string_view value,
+                                       const executor::PhysicalUuid& text_type) {
   operand->value.clear();
   operand->value_kind = sblr::SblrValueKind::literal_typed;
-  operand->value_body.assign(16, 0);
-  operand->value_body.front() = 0x73;
+  if (!uuid::IsEngineIdentityUuid(text_type))
+    throw std::runtime_error("production route text carrier type is not bound");
+  operand->value_body.assign(text_type.bytes.begin(), text_type.bytes.end());
   AppendProductionLittleEndianU64V1(&operand->value_body, value.size());
   operand->value_body.insert(operand->value_body.end(), value.begin(),
                              value.end());
@@ -2364,31 +2454,6 @@ std::string EncodeProductionHexV1(const std::string_view value) {
   for (const unsigned char ch : value) {
     encoded.push_back(kHex[ch >> 4]);
     encoded.push_back(kHex[ch & 0x0f]);
-  }
-  return encoded;
-}
-
-std::vector<std::string> SplitProductionFieldsV1(
-    const std::string_view encoded) {
-  std::vector<std::string> fields;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const auto separator = encoded.find('|', start);
-    fields.emplace_back(encoded.substr(
-        start, separator == std::string_view::npos ? encoded.size() - start
-                                                   : separator - start));
-    if (separator == std::string_view::npos) break;
-    start = separator + 1;
-  }
-  return fields;
-}
-
-std::string JoinProductionFieldsV1(
-    const std::vector<std::string>& fields) {
-  std::string encoded;
-  for (std::size_t index = 0; index < fields.size(); ++index) {
-    if (index != 0) encoded.push_back('|');
-    encoded += fields[index];
   }
   return encoded;
 }
@@ -2418,6 +2483,76 @@ std::string JoinProductionHandlesV1(
     encoded += handles[index];
   }
   return encoded;
+}
+
+// Mutation views contain only structural scalar fields. UUID fields stay in
+// their decoded binary record and never pass through the old text wire form.
+std::vector<std::string> ProductionMutationFieldsV1(const sbsql::SblrOperand& operand) {
+  const auto handles = [](const auto& ids) {
+    std::vector<std::string> result;
+    for (const auto id : ids) result.push_back("slot_" + std::to_string(id));
+    return JoinProductionHandlesV1(result);
+  };
+  sblr::RelationalNodeBindingRecord binding;
+  if (sbsql::DecodeRelationalNodeBindingOperand(operand, &binding))
+    return {"-", handles(binding.bound_expression_ids), "-", "-", "-"};
+  api::RelationalExpressionRecord expression;
+  if (!sbsql::DecodeRelationalExpressionOperand(operand, &expression)) return {};
+  return {std::to_string(static_cast<unsigned>(expression.expression_kind)),
+          handles(expression.child_expression_ids),
+          "slot_" + std::to_string(expression.result_descriptor_id), "-", "-",
+          expression.literal_kind ? std::to_string(static_cast<unsigned>(*expression.literal_kind)) : "-",
+          expression.operator_name ? EncodeProductionHexV1(*expression.operator_name) : "-",
+          expression.literal_or_parameter_ref ? EncodeProductionHexV1(*expression.literal_or_parameter_ref) : "-"};
+}
+
+void StoreProductionMutationFieldsV1(sbsql::SblrOperand* operand,
+                                    const std::vector<std::string>& fields) {
+  const auto id = [](std::string_view text) {
+    if (text.starts_with("slot_")) text.remove_prefix(5);
+    std::uint32_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data()+text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data()+text.size())
+      throw std::runtime_error("mutation handle invalid");
+    return value;
+  };
+  const auto handles = [&](const std::string& text) {
+    std::vector<std::uint32_t> ids;
+    for (const auto& item : SplitProductionHandlesV1(text)) ids.push_back(id(item));
+    return ids;
+  };
+  const auto unhex = [](const std::string& text) -> std::optional<std::string> {
+    if (text == "-") return std::nullopt;
+    if (text.size()%2) throw std::runtime_error("mutation text invalid");
+    std::string result;
+    for (std::size_t i=0; i<text.size(); i+=2) {
+      unsigned value = 0;
+      const auto parsed = std::from_chars(text.data()+i, text.data()+i+2, value, 16);
+      if (parsed.ec != std::errc{} || parsed.ptr != text.data()+i+2)
+        throw std::runtime_error("mutation text hex invalid");
+      result.push_back(static_cast<char>(value));
+    }
+    return result;
+  };
+  sblr::RelationalNodeBindingRecord binding;
+  if (fields.size() == 5 && sbsql::DecodeRelationalNodeBindingOperand(*operand, &binding)) {
+    binding.bound_expression_ids = handles(fields[1]);
+    if (!sblr::EncodeRelationalNodeBindingV1(binding, &operand->canonical_value_body))
+      throw std::runtime_error("mutation binding encoding failed");
+    return;
+  }
+  api::RelationalExpressionRecord expression;
+  if (fields.size() != 8 || !sbsql::DecodeRelationalExpressionOperand(*operand, &expression))
+    throw std::runtime_error("mutation record missing");
+  expression.expression_kind = static_cast<api::RelationalExpressionKind>(id(fields[0]));
+  expression.child_expression_ids = handles(fields[1]);
+  expression.result_descriptor_id = id(fields[2]);
+  expression.literal_kind = fields[5] == "-" ? std::nullopt :
+      std::optional(static_cast<api::RelationalLiteralKind>(id(fields[5])));
+  expression.operator_name = unhex(fields[6]);
+  expression.literal_or_parameter_ref = unhex(fields[7]);
+  if (!sblr::EncodeRelationalExpressionV1(expression, &operand->canonical_value_body))
+    throw std::runtime_error("mutation expression encoding failed");
 }
 
 sbsql::SblrOperand* FindProductionExpressionByOperatorV1(
@@ -2474,10 +2609,8 @@ sblr::SblrOperationEnvelope ProductionEngineEnvelopeV1(
           ? "rcp080.production.query-execute.v1"
           : parser_envelope.trace_key);
   engine.opcode_code = operation == nullptr ? 0 : operation->code;
-  engine.parser_package_uuid =
-      ProductionUuidV1(platform::UuidKind::object, fixture.salt + 310);
-  engine.registry_snapshot_uuid =
-      ProductionUuidV1(platform::UuidKind::object, fixture.salt + 311);
+  engine.parser_package_uuid = fixture.parser_package_uuid;
+  engine.registry_snapshot_uuid = fixture.registry_snapshot_uuid;
   engine.result_shape = parser_envelope.result_shape_key;
   engine.diagnostic_shape = "diagnostic.canonical_message_vector";
   engine.requires_security_context = true;
@@ -2501,7 +2634,8 @@ sblr::SblrOperationEnvelope ProductionEngineEnvelopeV1(
       operand.value_kind = static_cast<sblr::SblrValueKind>(parser_operand.canonical_value_kind);
       operand.value_body = parser_operand.canonical_value_body;
     } else {
-      SetProductionEngineOperandValueV1(&operand, parser_operand.value);
+      SetProductionEngineOperandValueV1(&operand, parser_operand.value,
+                                        fixture.text_carrier_type_uuid);
     }
     engine.operands.push_back(std::move(operand));
   }
@@ -3226,6 +3360,67 @@ api::TypedRelationalDag ProductionTimeSeriesExactClosureDagV1(
   join.semantic_variant_id = "join.cross.v1";
   dag.nodes.push_back(std::move(join));
   return dag;
+}
+
+bool ProductionTimeSeriesCohortProofV1(
+    const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& time_series) {
+  bool passed = Require(api::ExactTimeSeriesStorageDescriptorV1(context, time_series),
+                        "current time-series datatype cohort was refused");
+  for (unsigned field = 0; field < 3; ++field) {
+    auto stale = context;
+    if (field == 0) stale.datatype_catalog_snapshot_uuid.bytes.back() ^= 1;
+    if (field == 1) ++stale.datatype_catalog_generation;
+    if (field == 2) ++stale.datatype_registry_generation;
+    passed &= Require(!api::ExactTimeSeriesStorageDescriptorV1(stale, time_series),
+                      "time-series admitted crossed datatype cohort:" + std::to_string(field));
+  }
+  std::size_t negative_count = 3;
+  for (std::size_t ordinal = 0; ordinal < time_series.columns.size(); ++ordinal) {
+    passed &= Require(time_series.columns[ordinal].column_uuid !=
+                          time_series.columns[ordinal].value_descriptor.descriptor_uuid,
+                      "time-series fixture conflates column and value identities");
+    const auto reject = [&](const auto& mutate, std::string_view label) {
+      auto changed = time_series;
+      mutate(changed.columns[ordinal]);
+      ++negative_count;
+      return Require(!api::ExactTimeSeriesStorageDescriptorV1(context, changed),
+                     "time-series admitted changed " + std::string(label) + ":" + std::to_string(ordinal));
+    };
+    passed &= reject([](auto& c) { c.value_descriptor.datatype_descriptor_uuid.bytes.back() ^= 1; }, "datatype UUID");
+    passed &= reject([](auto& c) { ++c.value_descriptor.datatype_descriptor_generation; }, "datatype generation");
+    passed &= reject([](auto& c) { c.value_descriptor.type_uuid.bytes.back() ^= 1; }, "type UUID");
+    passed &= reject([](auto& c) { c.nullable = true; }, "nullability");
+    const auto change_metadata = [&](std::string_view key, bool identity) {
+      return reject([&](auto& c) {
+        api::CatalogColumnMetadata fields;
+        if (!api::DecodeCatalogColumnMetadata(c.value_descriptor.encoded_descriptor, &fields))
+          throw std::runtime_error("time-series mutation metadata decode failed");
+        if (identity) fields.identities.at(std::string(key)).bytes.back() ^= 1;
+        else fields.text.at(std::string(key)) += "x";
+        if (!api::EncodeCatalogColumnMetadata(fields, &c.value_descriptor.encoded_descriptor))
+          throw std::runtime_error("time-series mutation metadata encode failed");
+      }, key);
+    };
+    for (const auto key : {"type_uuid", "datatype_descriptor_uuid", "codec_uuid"})
+      passed &= change_metadata(key, true);
+    for (const auto key : {"canonical", "nullable", "datatype_descriptor_generation",
+                           "type_generation", "codec_id", "codec_version", "codec_generation", "null_encoding"})
+      passed &= change_metadata(key, false);
+    if (ordinal == 2) passed &= change_metadata("column_uuid", true);
+    if (ordinal == 1) {
+      passed &= reject([](auto& c) {
+        api::CatalogColumnMetadata fields;
+        if (!api::DecodeCatalogColumnMetadata(c.value_descriptor.encoded_descriptor, &fields))
+          throw std::runtime_error("time-series timezone decode failed");
+        fields.text["timezone_profile_id"] = "Europe/London";
+        if (!api::EncodeCatalogColumnMetadata(fields, &c.value_descriptor.encoded_descriptor))
+          throw std::runtime_error("time-series timezone encode failed");
+      }, "non-UTC timestamp profile");
+    }
+  }
+  passed &= Require(negative_count == 65, "time-series cohort mutation population changed");
+  return passed;
 }
 
 bool ProductionTimeSeriesExactClosureProofV1(
@@ -4552,12 +4747,19 @@ bool ProductionMultimodelQueryExecuteV1() {
   }
   ProductionFixtureV1 fixture;
   fixture.salt = ProductionNowMillisV1() % 1'000'000;
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("scratchbird_rcp080_multimodel_production_" +
-                       std::to_string(fixture.salt));
-  std::error_code filesystem_error;
-  std::filesystem::create_directories(fixture.directory, filesystem_error);
-  if (!Require(!filesystem_error,
+  // Only delete a directory this fixture created exclusively, never a colliding
+  // prior run's database. The monotonic suffix is a path label, not identity.
+  const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+  for (unsigned attempt = 0; attempt < 256; ++attempt) {
+    const auto candidate = std::filesystem::temp_directory_path() /
+        ("scratchbird_rcp080_multimodel_production_" + std::to_string(suffix) +
+         "_" + std::to_string(attempt));
+    if (std::filesystem::create_directory(candidate)) {
+      fixture.directory = candidate;
+      break;
+    }
+  }
+  if (!Require(!fixture.directory.empty(),
                "production fixture directory creation failed")) {
     return false;
   }
@@ -4579,7 +4781,7 @@ bool ProductionMultimodelQueryExecuteV1() {
   create.creation_unix_epoch_millis = ProductionNowMillisV1();
   create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   create.require_resource_seed_pack = true;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!Require(created.ok(), "production database creation failed:" +
                                      created.diagnostic.diagnostic_code)) {
@@ -4587,24 +4789,27 @@ bool ProductionMultimodelQueryExecuteV1() {
   }
   fixture.database_uuid = database_uuid.value.value;
   fixture.filespace_uuid = filespace_uuid.value.value;
+  fixture.owner_context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   fixture.schema_uuid =
       ProductionUuidV1(platform::UuidKind::schema, fixture.salt + 10);
-  fixture.principal_uuid =
-      ProductionUuidV1(platform::UuidKind::principal, fixture.salt + 11);
-  fixture.session_uuid =
-      ProductionUuidV1(platform::UuidKind::session, fixture.salt + 12);
+  fixture.principal_uuid = fixture.owner_context.principal_uuid;
+  fixture.session_uuid = fixture.owner_context.session_uuid;
+  fixture.parser_package_uuid = ProductionUuidV1(platform::UuidKind::object,
+                                                 fixture.salt + 300);
   for (std::size_t ordinal = 0; ordinal < fixture.relation_uuids.size();
        ++ordinal) {
     fixture.relation_uuids[ordinal] = ProductionUuidV1(
         platform::UuidKind::object, fixture.salt + 20 + ordinal);
   }
-  const auto uuid_type = ProductionCoreTypeUuidV1("uuid");
-  const auto geometry_type = ProductionCoreTypeUuidV1("geometry");
-  const auto text_type = ProductionCoreTypeUuidV1("character");
-  const auto timestamp_type = ProductionCoreTypeUuidV1("timestamp");
-  const auto real64_type = ProductionCoreTypeUuidV1("real64");
-  const auto uint64_type = ProductionCoreTypeUuidV1("uint64");
-  const auto vector_type = ProductionCoreTypeUuidV1("dense_vector");
+  const auto uuid_type = ProductionCoreDescriptorUuidV1("uuid");
+  const auto geometry_type = ProductionCoreDescriptorUuidV1("geometry");
+  const auto text_type = ProductionCoreDescriptorUuidV1("character");
+  const auto timestamp_type = ProductionCoreDescriptorUuidV1("timestamp");
+  const auto real64_type = ProductionCoreDescriptorUuidV1("real64");
+  const auto uint64_type = ProductionCoreDescriptorUuidV1("uint64");
+  const auto vector_type = ProductionCoreDescriptorUuidV1("dense_vector");
+  fixture.text_carrier_type_uuid = BoundProductionColumnDescriptorV1(
+      fixture.owner_context, "text", text_type, "nullable=false").type_uuid;
   const auto spatial_crs_uuid = ProductionUuidV1(
       platform::UuidKind::object, fixture.salt + 29);
   if (!Require(!uuid_type.is_nil() && !geometry_type.is_nil() &&
@@ -4622,6 +4827,21 @@ bool ProductionMultimodelQueryExecuteV1() {
     return false;
   }
   std::array<api::MgaRelationStorageDescriptor, 9> storage;
+  const auto ProductionColumnDescriptorV1 = [&](std::string canonical_type,
+      const executor::PhysicalUuid& descriptor_uuid, std::string attributes) {
+    const bool spatial = canonical_type == "geometry";
+    auto descriptor = BoundProductionColumnDescriptorV1(metadata, std::move(canonical_type),
+        descriptor_uuid, std::move(attributes));
+    if (spatial) {
+      api::CatalogColumnMetadata fields;
+      if (!api::DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
+        throw std::runtime_error("spatial fixture metadata decode failed");
+      fields.identities["crs_uuid"] = spatial_crs_uuid;
+      if (!api::EncodeCatalogColumnMetadata(fields, &descriptor.encoded_descriptor))
+        throw std::runtime_error("spatial fixture CRS encoding failed");
+    }
+    return descriptor;
+  };
   for (std::size_t ordinal = 0; ordinal < storage.size(); ++ordinal) {
     api::CrudTableRecord table;
     table.creator_tx = metadata.local_transaction_id;
@@ -4708,9 +4928,16 @@ bool ProductionMultimodelQueryExecuteV1() {
     if (ordinal == 2) {
       category_descriptor.charset_uuid = ProductionUuidV1(platform::UuidKind::object, fixture.salt + 940);
       category_descriptor.collation_uuid = ProductionUuidV1(platform::UuidKind::object, fixture.salt + 941);
-      category_descriptor.encoded_descriptor += ";character_length=32";
     }
-    if (ordinal == 3) category_descriptor.encoded_descriptor += ";timezone_profile_id=UTC";
+    if (ordinal == 2 || ordinal == 3) {
+      api::CatalogColumnMetadata fields;
+      if (!api::DecodeCatalogColumnMetadata(category_descriptor.encoded_descriptor, &fields))
+        throw std::runtime_error("negative search fixture metadata decode failed");
+      if (ordinal == 2) fields.text["character_length"] = "32";
+      if (ordinal == 3) fields.text["timezone_profile_id"] = "UTC";
+      if (!api::EncodeCatalogColumnMetadata(fields, &category_descriptor.encoded_descriptor))
+        throw std::runtime_error("negative search fixture metadata encode failed");
+    }
     BindProductionColumnsV1(&table, {
         {"body", ProductionColumnDescriptorV1("text", text_type, "nullable=false")},
         {"category", std::move(category_descriptor)}});
@@ -4755,7 +4982,7 @@ bool ProductionMultimodelQueryExecuteV1() {
     AddProductionAuthorizationV1(&writer, fixture.relation_uuids[ordinal],
                                  fixture.salt + 60, "INSERT");
   }
-  std::array<std::vector<std::variant<std::string, executor::PhysicalUuid>>, 9> row_values;
+  std::array<std::vector<ProductionCellV1>, 9> row_values;
   row_values[0] = {
       ProductionUuidV1(platform::UuidKind::row, fixture.salt + 40)};
   row_values[1] = {
@@ -4763,7 +4990,7 @@ bool ProductionMultimodelQueryExecuteV1() {
   row_values[2] = {};
   row_values[3] = {
       ProductionUuidV1(platform::UuidKind::row, fixture.salt + 43),
-      "alpha", "A", "<NULL>"};
+      "alpha", "A", api::EngineValueState::sql_null};
   row_values[4] = {
       ProductionUuidV1(platform::UuidKind::row, fixture.salt + 44),
       ProductionUuidV1(platform::UuidKind::object, fixture.salt + 45),
@@ -4800,7 +5027,11 @@ bool ProductionMultimodelQueryExecuteV1() {
     document_insert.assignments.push_back(
         {storage[1].columns[ordinal].canonical_name_key, std::move(value)});
   }
-  if (!Require(api::EngineDocumentInsert(document_insert).ok,
+  const auto document_persisted = api::EngineDocumentInsert(document_insert);
+  if (!document_persisted.ok)
+    for (const auto& diagnostic : document_persisted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  if (!Require(document_persisted.ok,
                "production explicit document provider persistence failed")) {
     return false;
   }
@@ -4912,12 +5143,18 @@ bool ProductionMultimodelQueryExecuteV1() {
   ProductionPublicSessionV1 public_session(fixture);
   bridge::StatementContextReceiptHandle statement_receipt;
   executor::PhysicalUuid bound_ast_uuid;
+  std::vector<optimizer::MultilegDescriptorProfileV1> multileg_profiles;
   if (!Require(AcquireProductionStatementAuthorityV1(
                    &public_session, &reader, &statement_receipt,
-                   &bound_ast_uuid),
+                   &bound_ast_uuid, &multileg_profiles),
                "production engine statement-context receipt failed")) {
     return false;
   }
+  fixture.registry_snapshot_uuid = reader.catalog_epoch_uuid;
+  auto descriptor_scope = std::make_unique<optimizer::MultilegDescriptorDispatchScopeV1>(
+      reader.statement_uuid, multileg_profiles);
+  if (!Require(descriptor_scope->installed(),
+               "production engine-issued multileg descriptor scope failed")) return false;
   api::EngineTypedValue empty_expiry_key;
   empty_expiry_key.encoded_value = "empty-expiry-key";
   empty_expiry_key.descriptor.canonical_type_name = "text";
@@ -4967,6 +5204,7 @@ bool ProductionMultimodelQueryExecuteV1() {
                                                               storage[2]);
   passed &= ProductionKeyValueExactClosureProofV1(reader, storage[1],
                                                    storage[3]);
+  passed &= ProductionTimeSeriesCohortProofV1(reader, storage[4]);
   passed &= ProductionTimeSeriesExactClosureProofV1(reader, storage[1],
                                                     storage[4]);
   passed &= ProductionSearchExactClosureProofV1(reader, storage[1],
@@ -4983,9 +5221,10 @@ bool ProductionMultimodelQueryExecuteV1() {
       ast.native_relational, reader, bound_ast_uuid,
       std::array{storage[0], storage[7], storage[8]});
   const auto parser_session = ProductionParserSessionV1(fixture);
-  const auto bound = sbsql::BindAst(
+  auto bound = sbsql::BindAst(
       ast, cst, ProductionParserConfigV1(fixture), parser_session, {},
       &binding);
+  bound.command_registry_snapshot_uuid = reader.catalog_epoch_uuid;
   const auto lowered = sbsql::LowerToSblr(bound, cst, parser_session);
   const auto verified = sbsql::VerifySblrEnvelope(lowered);
   auto engine_envelope = ProductionEngineEnvelopeV1(lowered, fixture);
@@ -5094,9 +5333,10 @@ bool ProductionMultimodelQueryExecuteV1() {
   auto explicit_binding = ProductionBindingContextV1(
       explicit_ast.native_relational, reader, bound_ast_uuid,
       std::array{storage[0], storage[1], storage[8]});
-  const auto explicit_bound = sbsql::BindAst(
+  auto explicit_bound = sbsql::BindAst(
       explicit_ast, explicit_cst, ProductionParserConfigV1(fixture),
       parser_session, {}, &explicit_binding);
+  explicit_bound.command_registry_snapshot_uuid = reader.catalog_epoch_uuid;
   const auto explicit_lowered =
       sbsql::LowerToSblr(explicit_bound, explicit_cst, parser_session);
   const auto explicit_verified = sbsql::VerifySblrEnvelope(explicit_lowered);
@@ -5171,9 +5411,10 @@ bool ProductionMultimodelQueryExecuteV1() {
       std::array{storage[0], storage[1], storage[2], storage[5]};
   auto mixed_binding = ProductionBindingContextV1(
       mixed_ast.native_relational, reader, bound_ast_uuid, mixed_storage);
-  const auto mixed_bound = sbsql::BindAst(
+  auto mixed_bound = sbsql::BindAst(
       mixed_ast, mixed_cst, ProductionParserConfigV1(fixture), parser_session,
       {}, &mixed_binding);
+  mixed_bound.command_registry_snapshot_uuid = reader.catalog_epoch_uuid;
   const auto mixed_lowered =
       sbsql::LowerToSblr(mixed_bound, mixed_cst, parser_session);
   const auto mixed_verified = sbsql::VerifySblrEnvelope(mixed_lowered);
@@ -5299,9 +5540,10 @@ bool ProductionMultimodelQueryExecuteV1() {
         full_nine_binding, storage[4],
         full_nine_time_series_relation_record->relation_id);
   }
-  const auto full_nine_bound = sbsql::BindAst(
+  auto full_nine_bound = sbsql::BindAst(
       full_nine_ast, full_nine_cst, ProductionParserConfigV1(fixture),
       parser_session, {}, &full_nine_binding);
+  full_nine_bound.command_registry_snapshot_uuid = reader.catalog_epoch_uuid;
   const auto full_nine_lowered =
       sbsql::LowerToSblr(full_nine_bound, full_nine_cst, parser_session);
   const auto full_nine_verified =
@@ -5340,7 +5582,7 @@ bool ProductionMultimodelQueryExecuteV1() {
   std::string full_nine_wire_inventory;
   for (const auto& operand : full_nine_lowered.operands) {
     if (operand.type != "relational_node_v1" &&
-        operand.type != "relational_node_binding_v1") {
+        operand.type != "relational_node_binding_v2") {
       continue;
     }
     full_nine_wire_inventory += operand.type + ":" + operand.name + ":" +
@@ -5444,12 +5686,12 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* binding =
             FindProductionBindingContainingV1(envelope, range->name);
         if (binding == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(binding->value);
+        auto fields = ProductionMutationFieldsV1(*binding);
         if (fields.size() != 5) return false;
         auto handles = SplitProductionHandlesV1(fields[1]);
         if (!mutate(&handles)) return false;
         fields[1] = JoinProductionHandlesV1(handles);
-        binding->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*binding, fields);
         return true;
       };
   const auto mutate_expression_by_id =
@@ -5457,13 +5699,13 @@ bool ProductionMultimodelQueryExecuteV1() {
          const std::function<bool(std::vector<std::string>*)>& mutate) {
         const auto expression = std::ranges::find_if(
             envelope->operands, [&](const auto& operand) {
-              return operand.type == "relational_expression_v1" &&
+              return operand.type == "relational_expression_v2" &&
                      operand.name == expression_id;
             });
         if (expression == envelope->operands.end()) return false;
-        auto fields = SplitProductionFieldsV1(expression->value);
+        auto fields = ProductionMutationFieldsV1(*expression);
         if (fields.size() != 8 || !mutate(&fields)) return false;
-        expression->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*expression, fields);
         return true;
       };
   const auto time_series_child_id =
@@ -5471,7 +5713,7 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* range =
             FindProductionExpressionByOperatorV1(envelope, "TIME_RANGE");
         if (range == nullptr) return std::string{};
-        const auto fields = SplitProductionFieldsV1(range->value);
+        const auto fields = ProductionMutationFieldsV1(*range);
         if (fields.size() != 8) return std::string{};
         const auto children = SplitProductionHandlesV1(fields[1]);
         return ordinal < children.size() ? children[ordinal] : std::string{};
@@ -5493,7 +5735,7 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* document_binding =
             FindProductionBindingContainingV1(envelope, document->name);
         if (document_binding == nullptr) return false;
-        auto document_fields = SplitProductionFieldsV1(document_binding->value);
+        auto document_fields = ProductionMutationFieldsV1(*document_binding);
         if (document_fields.size() != 5) return false;
         const auto document_handles =
             SplitProductionHandlesV1(document_fields[1]);
@@ -5573,7 +5815,7 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* range =
             FindProductionExpressionByOperatorV1(envelope, "TIME_RANGE");
         if (range == nullptr) return false;
-        const auto range_fields = SplitProductionFieldsV1(range->value);
+        const auto range_fields = ProductionMutationFieldsV1(*range);
         const auto start_id = time_series_child_id(envelope, 1);
         return range_fields.size() == 8 && !start_id.empty() &&
                mutate_expression_by_id(
@@ -5610,12 +5852,12 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* binding =
             FindProductionBindingContainingV1(envelope, document->name);
         if (binding == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(binding->value);
+        auto fields = ProductionMutationFieldsV1(*binding);
         if (fields.size() != 5) return false;
         auto handles = SplitProductionHandlesV1(fields[1]);
         handles.push_back(range->name);
         fields[1] = JoinProductionHandlesV1(handles);
-        binding->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*binding, fields);
         return true;
       });
 
@@ -5678,17 +5920,19 @@ bool ProductionMultimodelQueryExecuteV1() {
         api::RelationalTypeDescriptor descriptor;
         descriptor.descriptor_id = 1;
         descriptor.descriptor_uuid = ProductionUuidV1(platform::UuidKind::object, identity_salt);
-        descriptor.type_uuid = text_type;
+        descriptor.type_uuid = fixture.text_carrier_type_uuid;
         descriptor.nullability = static_cast<api::RelationalNullability>(std::stoul(std::string(nullability)));
         if (timezone != "-") descriptor.timezone_profile_id = std::string(timezone);
         sbsql::SblrOperand operand;
         operand.type = "relational_descriptor_v3";
-        operand.name = "slot_" + descriptor_id;
+        const auto numeric_id = std::string_view(descriptor_id).starts_with("slot_")
+                                    ? descriptor_id.substr(5) : descriptor_id;
+        operand.name = "slot_" + numeric_id;
         operand.canonical_value_kind = static_cast<std::uint16_t>(sblr::SblrValueKind::relational_type_descriptor);
         if (!sblr::EncodeRelationalTypeDescriptorV1(descriptor, &operand.canonical_value_body)) return false;
         // Deliberately corrupt selected structural fields in negative probes;
         // the real encoder must continue refusing invalid records.
-        const auto id = std::stoull(descriptor_id);
+        const auto id = std::stoull(numeric_id);
         if (id > 0xffffffffULL) return false;
         for (unsigned byte = 0; byte < 4; ++byte)
           operand.canonical_value_body[4 + byte] = static_cast<std::uint8_t>(id >> (8 * byte));
@@ -5728,7 +5972,7 @@ bool ProductionMultimodelQueryExecuteV1() {
       "colliding_descriptor_id", [&](auto* envelope) {
         const auto existing = std::ranges::find_if(
             envelope->operands, [](const auto& operand) {
-              return operand.type == "relational_descriptor_v1";
+              return operand.type == "relational_descriptor_v3";
             });
         return existing != envelope->operands.end() &&
                append_local_descriptor_probe(envelope, existing->name,
@@ -5794,13 +6038,13 @@ bool ProductionMultimodelQueryExecuteV1() {
         if (match == nullptr) return false;
         auto* binding = FindProductionBindingContainingV1(envelope, match->name);
         if (binding == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(binding->value);
+        auto fields = ProductionMutationFieldsV1(*binding);
         if (fields.size() != 5) return false;
         auto handles = SplitProductionHandlesV1(fields[1]);
         if (handles.size() != 11) return false;
         handles.push_back(handles.front());
         fields[1] = JoinProductionHandlesV1(handles);
-        binding->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*binding, fields);
         return true;
       });
   passed &= require_search_category_descriptor_refusal(
@@ -5808,10 +6052,10 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* match =
             FindProductionExpressionByOperatorV1(envelope, "SEARCH_MATCH");
         if (match == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(match->value);
+        auto fields = ProductionMutationFieldsV1(*match);
         if (fields.size() != 8) return false;
         fields[6] = EncodeProductionHexV1("DOCUMENT_SOURCE");
-        match->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*match, fields);
         return append_local_descriptor_probe(envelope, "60006",
                                              fixture.salt + 911);
       });
@@ -5874,9 +6118,9 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* operand =
             FindProductionExpressionByOperatorV1(envelope, operator_name);
         if (operand == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(operand->value);
+        auto fields = ProductionMutationFieldsV1(*operand);
         if (fields.size() != 8 || !mutate(&fields)) return false;
-        operand->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*operand, fields);
         return true;
       };
   const auto mutate_search_binding =
@@ -5888,12 +6132,12 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* binding =
             FindProductionBindingContainingV1(envelope, terms->name);
         if (binding == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(binding->value);
+        auto fields = ProductionMutationFieldsV1(*binding);
         if (fields.size() != 5) return false;
         auto handles = SplitProductionHandlesV1(fields[1]);
         if (!mutate(&handles)) return false;
         fields[1] = JoinProductionHandlesV1(handles);
-        binding->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*binding, fields);
         return true;
       };
 
@@ -5937,8 +6181,8 @@ bool ProductionMultimodelQueryExecuteV1() {
             search_binding == foreign_binding) {
           return false;
         }
-        auto search_fields = SplitProductionFieldsV1(search_binding->value);
-        auto foreign_fields = SplitProductionFieldsV1(foreign_binding->value);
+        auto search_fields = ProductionMutationFieldsV1(*search_binding);
+        auto foreign_fields = ProductionMutationFieldsV1(*foreign_binding);
         if (search_fields.size() != 5 || foreign_fields.size() != 5) {
           return false;
         }
@@ -5950,8 +6194,8 @@ bool ProductionMultimodelQueryExecuteV1() {
         foreign_handles.push_back(terms_id);
         search_fields[1] = JoinProductionHandlesV1(search_handles);
         foreign_fields[1] = JoinProductionHandlesV1(foreign_handles);
-        search_binding->value = JoinProductionFieldsV1(search_fields);
-        foreign_binding->value = JoinProductionFieldsV1(foreign_fields);
+        StoreProductionMutationFieldsV1(&*search_binding, search_fields);
+        StoreProductionMutationFieldsV1(&*foreign_binding, foreign_fields);
         return true;
       });
   passed &= require_search_auxiliary_refusal(
@@ -5984,31 +6228,33 @@ bool ProductionMultimodelQueryExecuteV1() {
         auto* terms =
             FindProductionExpressionByOperatorV1(envelope, "SEARCH_TERMS");
         if (terms == nullptr) return false;
-        const auto extra_id = std::string("60000");
+        const auto extra_id = std::string("slot_60000");
         if (std::ranges::any_of(envelope->operands, [&](const auto& operand) {
-              return operand.type == "relational_expression_v1" &&
+              return operand.type == "relational_expression_v2" &&
                      operand.name == extra_id;
             })) {
           return false;
         }
-        const auto terms_value = terms->value;
+        auto extra = *terms;
+        api::RelationalExpressionRecord extra_expression;
+        if (!sbsql::DecodeRelationalExpressionOperand(extra, &extra_expression)) return false;
+        extra_expression.expression_id = 60000;
+        extra.name = extra_id;
+        if (!sblr::EncodeRelationalExpressionV1(extra_expression, &extra.canonical_value_body)) return false;
         auto* binding =
             FindProductionBindingContainingV1(envelope, terms->name);
         if (binding == nullptr) return false;
-        auto fields = SplitProductionFieldsV1(binding->value);
+        auto fields = ProductionMutationFieldsV1(*binding);
         if (fields.size() != 5) return false;
         auto handles = SplitProductionHandlesV1(fields[1]);
         handles.push_back(extra_id);
         fields[1] = JoinProductionHandlesV1(handles);
-        binding->value = JoinProductionFieldsV1(fields);
+        StoreProductionMutationFieldsV1(&*binding, fields);
         const auto insertion = std::ranges::find_if(
             envelope->operands, [](const auto& operand) {
               return operand.type == "relational_output_v1";
             });
-        envelope->operands.insert(
-            insertion,
-            sbsql::SblrOperand{"relational_expression_v1", extra_id,
-                               terms_value});
+        envelope->operands.insert(insertion, std::move(extra));
         return true;
       });
   passed &= require_search_auxiliary_refusal(
@@ -6069,7 +6315,7 @@ bool ProductionMultimodelQueryExecuteV1() {
   auto malformed = engine_envelope;
   const auto model_binding = std::ranges::find_if(
       malformed.operands, [](const auto& operand) {
-        return operand.type == "relational_node_binding_v1" &&
+        return operand.type == "relational_node_binding_v2" &&
                operand.name == "slot_2";
       });
   if (model_binding != malformed.operands.end()) {
@@ -6184,6 +6430,10 @@ bool ProductionMultimodelQueryExecuteV1() {
   context_refusal("monotonic_time_malformed", [](auto* context) {
     context->current_monotonic_ns += "x";
   });
+  descriptor_scope.reset();
+  passed &= Require(!optimizer::LookupMultilegDescriptorDispatchScopeV1(
+                        reader.statement_uuid).accepted,
+                    "production multileg descriptor scope leaked");
   passed &= Require(
       bridge::ReleaseStatementContextReceipt(statement_receipt) ==
           SB_ENGINE_STATUS_OK,

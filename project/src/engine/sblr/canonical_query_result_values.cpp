@@ -9,6 +9,7 @@
 #include "sbl_numeric.hpp"
 #include "uuid.hpp"
 #include "canonical_utf8.hpp"
+#include "datatype_temporal_wire.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -118,6 +119,29 @@ bool MaterializePayload(const api::EngineTypedValue& value,
         payload->resize(8);
         for (std::size_t i = 0; i < 8; ++i)
           (*payload)[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+      }
+      break;
+    case dt::CanonicalTypeId::timestamp:
+      if (!binary) {
+        const auto& text = value.encoded_value;
+        // Retained engine values are explicit UTC, not SQL syntax or a
+        // session-local timestamp needing guessed timezone/resource authority.
+        if (text.size() < 20 || text.size() > 30 || text[10] != 'T' || text.back() != 'Z')
+          return false;
+        dt::ReferenceTemporalWireProfileRequest request;
+        request.wire_profile = "timestamp_timezone_profile";
+        request.encoded_value = text;
+        request.fractional_second_precision = 9;
+        request.require_timezone_seed = false;  // Explicit Z requires no named zone.
+        const auto parsed = dt::ValidateReferenceTemporalWireProfile(request);
+        if (!parsed.ok() || !parsed.comparable_utc_key_available || parsed.used_timezone_seed ||
+            parsed.timezone_offset_minutes != 0 || parsed.timezone_identifier != "Z" ||
+            parsed.comparable_fractional_picoseconds % 1000 != 0) return false;
+        const auto seconds = static_cast<std::uint64_t>(parsed.comparable_utc_whole_seconds);
+        const auto nanos = static_cast<std::uint32_t>(parsed.comparable_fractional_picoseconds / 1000);
+        payload->assign(16, 0);
+        for (unsigned i = 0; i < 8; ++i) (*payload)[i] = static_cast<std::uint8_t>(seconds >> (8*i));
+        for (unsigned i = 0; i < 4; ++i) (*payload)[8+i] = static_cast<std::uint8_t>(nanos >> (8*i));
       }
       break;
     case dt::CanonicalTypeId::binary:

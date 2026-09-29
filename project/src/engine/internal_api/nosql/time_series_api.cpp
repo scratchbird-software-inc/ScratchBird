@@ -11,6 +11,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_storage_identity.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/nosql_batch_point_lookup_support.hpp"
 #include "nosql/nosql_surface_support.hpp"
@@ -1335,82 +1336,53 @@ TagParseStatus CanonicalizeTimeSeriesTags(const std::string_view input,
 
 bool ExactTimeSeriesValueDescriptor(
     const EngineDescriptor& descriptor, const std::string_view expected_type,
-    const EngineUuid& expected_type_uuid,
     const EngineUuid& expected_column_uuid,
-    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1*
-        expected_registry_identity) {
+    const scratchbird::core::datatypes::DatatypeStorageIdentityV1& identity) {
+  const auto canonical_type = expected_type == "timestamp_tz" ? "timestamp" : expected_type;
   if (!QowCanonicalDescriptorIdentityV1(descriptor) ||
       descriptor.descriptor_kind != "canonical_type_descriptor" ||
-      descriptor.canonical_type_name != expected_type) {
+      descriptor.canonical_type_name != canonical_type ||
+      descriptor.datatype_descriptor_uuid != identity.descriptor_uuid ||
+      descriptor.datatype_descriptor_generation != identity.descriptor_generation ||
+      descriptor.type_uuid != identity.type_uuid) {
     return false;
   }
   CatalogColumnMetadata metadata;
-  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata) ||
-      descriptor.type_uuid != expected_type_uuid) return false;
-  const auto& fields = metadata.text;
-  const auto& identities = metadata.identities;
-  const bool contextual_text = expected_type == "text";
-  if ((identities.size() != (contextual_text ? 4U : 1U) ||
-       fields.size() != (contextual_text ? 8U : 2U)) &&
-      !(expected_type == "timestamp_tz" && fields.size() == 3U && identities.size() == 1U)) {
-    return false;
-  }
-  if (
-      !fields.contains("canonical") || !identities.contains("type_uuid") ||
-      !fields.contains("nullable") ||
-      fields.at("canonical") != expected_type ||
-      identities.at("type_uuid") != expected_type_uuid ||
-      fields.at("nullable") != "false") {
-    return false;
-  }
-  const auto timezone = fields.find("timezone_profile_id");
-  const auto column_uuid = identities.find("column_uuid");
-  if (expected_type == "timestamp_tz") {
-    return column_uuid == identities.end() && (fields.size() == 2 ||
-           (fields.size() == 3 && timezone != fields.end() &&
-            timezone->second == "UTC"));
+  if (!DecodeCatalogColumnMetadata(descriptor.encoded_descriptor, &metadata)) return false;
+  CatalogColumnMetadata expected;
+  expected.text = {{"canonical", std::string(expected_type)}, {"nullable", "false"}};
+  expected.identities = {{"type_uuid", identity.type_uuid}};
+  if (identity.codec) {
+    const auto& codec = *identity.codec;
+    expected.identities.emplace("datatype_descriptor_uuid", codec.descriptor_uuid);
+    expected.identities.emplace("codec_uuid", codec.codec_uuid);
+    expected.text.emplace("datatype_descriptor_generation", std::to_string(codec.descriptor_generation));
+    expected.text.emplace("type_generation", std::to_string(codec.type_generation));
+    expected.text.emplace("codec_id", codec.codec_id);
+    expected.text.emplace("codec_version", std::to_string(codec.codec_version));
+    expected.text.emplace("codec_generation", std::to_string(codec.codec_generation));
+    expected.text.emplace("null_encoding", std::to_string(codec.null_encoding_code));
   }
   if (expected_type == "text") {
-    return expected_registry_identity != nullptr && timezone == fields.end() &&
-           column_uuid != identities.end() &&
-           column_uuid->second == expected_column_uuid &&
-           descriptor.descriptor_uuid ==
-               expected_column_uuid &&
-           identities.contains("datatype_descriptor_uuid") &&
-           identities.at("datatype_descriptor_uuid") ==
-               expected_registry_identity->descriptor_uuid &&
-           fields.contains("datatype_descriptor_generation") &&
-           fields.at("datatype_descriptor_generation") ==
-               std::to_string(
-                   expected_registry_identity->descriptor_generation) &&
-           fields.contains("type_generation") &&
-           fields.at("type_generation") ==
-               std::to_string(expected_registry_identity->type_generation) &&
-           identities.contains("codec_uuid") &&
-           identities.at("codec_uuid") == expected_registry_identity->codec_uuid &&
-           fields.contains("codec_id") &&
-           fields.at("codec_id") == expected_registry_identity->codec_id &&
-           fields.contains("codec_version") &&
-           fields.at("codec_version") ==
-               std::to_string(expected_registry_identity->codec_version) &&
-           fields.contains("codec_generation") &&
-           fields.at("codec_generation") ==
-               std::to_string(expected_registry_identity->codec_generation) &&
-           fields.contains("null_encoding") &&
-           fields.at("null_encoding") ==
-               std::to_string(expected_registry_identity->null_encoding_code);
+    if (!identity.codec) return false;
+    expected.identities.emplace("column_uuid", expected_column_uuid);
   }
-  return fields.size() == 2 && timezone == fields.end() &&
-         column_uuid == identities.end();
+  if (expected_type == "timestamp_tz" && metadata.text.contains("timezone_profile_id"))
+    expected.text.emplace("timezone_profile_id", "UTC");
+  // Column identity and scalar value-descriptor identity have separate roles.
+  // The former is bound by column_uuid, never by equating the two UUIDs.
+  return metadata.text == expected.text && metadata.identities == expected.identities;
 }
 
 bool ExactTimeSeriesStorageDescriptorImpl(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
   static constexpr std::array<std::string_view, 4> kNames{
       "metric_uuid", "point_timestamp", "tags", "value"};
   static constexpr std::array<std::string_view, 4> kTypes{
       "uuid", "timestamp_tz", "text", "real64"};
-  if (descriptor.columns.size() != kNames.size()) return false;
+  if (descriptor.columns.size() != kNames.size() ||
+      ValidateMgaRelationStorageDescriptor(descriptor).error) return false;
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
@@ -1432,25 +1404,17 @@ bool ExactTimeSeriesStorageDescriptorImpl(
     const auto& descriptor_row =
         type_row.manifest.descriptor_rows.front();
     const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
-    const auto codec_identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}},
-            manifest.manifest.catalog_epoch, 1, descriptor_uuid,
-            descriptor_row.descriptor_epoch);
-    const auto expected_type_uuid =
-        codec_identity.ok ? codec_identity.row.type_uuid : descriptor_uuid;
-    const auto* expected_registry_identity =
-        codec_identity.ok ? &codec_identity.row : nullptr;
-    if (kTypes[ordinal] == "text" && expected_registry_identity == nullptr) {
-      return false;
-    }
+    scratchbird::core::datatypes::DatatypeStorageIdentityV1 identity;
+    if (!scratchbird::core::datatypes::LookupDatatypeStorageIdentityV1(
+            context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
+            context.datatype_registry_generation, descriptor_uuid,
+            descriptor_row.descriptor_epoch, &identity)) return false;
     if (column.ordinal != ordinal ||
         column.canonical_name_key != kNames[ordinal] || column.nullable ||
         column.generated || column.identity_column ||
         column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
-        column.value_descriptor.canonical_type_name != kTypes[ordinal] ||
         !CanonicalTimeSeriesUuid(column.column_uuid) ||
         !CanonicalTimeSeriesUuid(
             column.value_descriptor.descriptor_uuid) ||
@@ -1462,9 +1426,8 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         column.character_length != 0 ||
         !ExactTimeSeriesValueDescriptor(column.value_descriptor,
                                         kTypes[ordinal],
-                                        expected_type_uuid,
                                         column.column_uuid,
-                                        expected_registry_identity)) {
+                                        identity)) {
       return false;
     }
   }
@@ -1589,8 +1552,9 @@ std::optional<std::uint64_t> BoundTimeSeriesResultLogicalMemoryBytesV1(
 }  // namespace
 
 bool ExactTimeSeriesStorageDescriptorV1(
+    const EngineRequestContext& context,
     const MgaRelationStorageDescriptor& descriptor) {
-  return ExactTimeSeriesStorageDescriptorImpl(descriptor);
+  return ExactTimeSeriesStorageDescriptorImpl(context, descriptor);
 }
 
 bool EngineExactTimeSeriesBucketStartV1(
@@ -1761,7 +1725,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                     "time-series relation descriptor generation changed");
     }
-    if (!ExactTimeSeriesStorageDescriptorV1(current_descriptor.descriptor)) {
+    if (!ExactTimeSeriesStorageDescriptorV1(request.context, current_descriptor.descriptor)) {
       return refuse(
           "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
           "time-series storage descriptor is not the exact four-field raw layout");

@@ -629,6 +629,12 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
                        "datatype.binary.text_payload_noncanonical");
   }
 
+  if (value.type_id == CanonicalTypeId::timestamp && !value.payload_is_toast_reference &&
+      (value.payload_bytes != 16 || LoadLittle32(value.payload_data + 8) >= 1'000'000'000U ||
+       LoadLittle32(value.payload_data + 12) != 0)) {
+    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
+                          "datatype.binary.timestamp_payload_noncanonical");
+  }
   if (value.type_id == CanonicalTypeId::geometry && !value.payload_is_toast_reference) {
     // The admitted geometry codec is exactly one finite 2D SBP1 point.
     constexpr std::array<byte, 8> prefix{'S','B','P','1',1,2,0,0};

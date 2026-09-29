@@ -9,7 +9,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace api = scratchbird::engine::internal_api;
@@ -38,7 +41,7 @@ struct Vector {
 // Independent fixed identities and binary values; no registry/encoder lookup
 // participates in these expected values. These are synthetic internal contexts,
 // not receipt issuance, public-route or all-datatype acceptance evidence.
-const std::array<Vector, 13> vectors{{
+const std::array<Vector, 14> vectors{{
   {scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), scratchbird::tests::FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"), "datatype.boolean.u8.v1", dt::CanonicalTypeId::boolean, 1, "true", {1}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d717"), "datatype.int32.le.v1", dt::CanonicalTypeId::int32, 4, "-2147483648", {0,0,0,128}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d712"), "datatype.int64.le.v1", dt::CanonicalTypeId::int64, 8, "-9223372036854775808", {0,0,0,0,0,0,0,128}},
@@ -52,6 +55,7 @@ const std::array<Vector, 13> vectors{{
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73d"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d73e"), "datatype.json.utf8.v1", dt::CanonicalTypeId::json_document, 0, "[true,null]", {'[','t','r','u','e',',','n','u','l','l',']'}},
   {scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d740"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d741"), "datatype.list.text.framed.v1", dt::CanonicalTypeId::list, 0, std::string("SBTL0001\x02\x00\x00\x00\x01\x03\x00\x00\x00;]\0\x00\x00\x00\x00\x00",25), {'S','B','T','L','0','0','0','1',2,0,0,0,1,3,0,0,0,';',']',0,0,0,0,0,0}}
   ,{scratchbird::tests::FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d743"), "datatype.binary.octets.v1", dt::CanonicalTypeId::binary, 0, std::string("\0\xff\x10",3), {0,255,16}}
+  ,{scratchbird::tests::FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000"), scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d820"), "datatype.timestamp.utc_tuple.le.v1", dt::CanonicalTypeId::timestamp, 16, "1969-12-31T23:59:59.999999999Z", {255,255,255,255,255,255,255,255,255,201,154,59,0,0,0,0}}
 }};
 struct Fixture {
   api::EngineRequestContext context;
@@ -68,6 +72,10 @@ struct Fixture {
     if (type == 12) {
       context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d703");
       context.datatype_catalog_generation = context.datatype_registry_generation = 3;
+    }
+    if (type == 13) {
+      context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d704");
+      context.datatype_catalog_generation = context.datatype_registry_generation = 4;
     }
     context.maximum_typed_result_transport_bytes_per_packet = 65536;
     metadata->statement_receipt_uuid = Bytes(context.statement_receipt_uuid);
@@ -118,6 +126,53 @@ void Reject(std::size_t type, Mutation mutation, const char* code = "DATATYPE.DE
 }
 
 int main() try {
+  // Independent Gregorian calendar oracle, not the production temporal parser.
+  for (const int year : {1,4,100,400,1600,1900,1969,1970,2000,2100,2400,9999})
+  for (unsigned month = 1; month <= 12; ++month)
+  for (unsigned day = 1; day <= 31; ++day) {
+    const std::chrono::year_month_day date{std::chrono::year(year),
+        std::chrono::month(month), std::chrono::day(day)};
+    std::ostringstream lexical;
+    lexical << std::setfill('0') << std::setw(4) << year << '-'
+            << std::setw(2) << month << '-' << std::setw(2) << day
+            << "T12:34:56.123456789Z";
+    Fixture f(13);
+    f.Value().encoded_value = lexical.str();
+    Check(f.Run() == date.ok(), "timestamp Gregorian day admission");
+    if (!date.ok()) continue;
+    const auto seconds = static_cast<std::uint64_t>(
+        std::chrono::sys_days(date).time_since_epoch().count() * 86400LL + 45296);
+    std::vector<std::uint8_t> expected(16,0);
+    for (unsigned i = 0; i < 8; ++i) expected[i] = static_cast<std::uint8_t>(seconds >> (8*i));
+    expected[8]=21; expected[9]=205; expected[10]=91; expected[11]=7;
+    Check(f.shape.query_values->rows[0].cells[0].canonical_payload == expected,
+          "timestamp exact signed seconds/nanos/reserved-byte oracle");
+  }
+  for (const char* invalid : {"", "1970-01-01", "0000-01-01T00:00:00Z",
+       "1970-01-01 00:00:00Z", "1970-01-01T00:00:00z", "1970-01-01T00:00:00+00:00",
+       "1970-01-01T24:00:00Z", "1970-01-01T00:60:00Z", "1970-01-01T00:00:60Z",
+       "1970-01-01T00:00:00.Z", "1970-01-01T00:00:00.0000000001Z",
+       "1970-01-01T00:00:00Z ", " 1970-01-01T00:00:00Z", "<NULL>"})
+    Reject(13, [&](auto& f) { f.Value().encoded_value = invalid; });
+  for (unsigned size = 0; size <= 32; ++size) {
+    if (size == 16) continue;
+    Fixture f(13,1,1,true); f.Value().binary_value.resize(size);
+    Check(!f.Run(), "timestamp exact binary extent");
+  }
+  for (unsigned bit = 0; bit < 32; ++bit) {
+    Fixture f(13,1,1,true);
+    f.Value().binary_value[12 + bit/8] = static_cast<std::uint8_t>(1U << (bit%8));
+    Check(!f.Run(), "timestamp every reserved bit refused");
+  }
+  for (std::uint32_t nanos : {0U,1U,999999999U,1000000000U,0xffffffffU}) {
+    Fixture f(13,1,1,true);
+    for (unsigned i = 0; i < 4; ++i) f.Value().binary_value[8+i] = nanos >> (8*i);
+    Check(f.Run() == (nanos < 1000000000U), "timestamp nanosecond range");
+    dt::DatatypeBinaryValue value;
+    value.type_id = dt::CanonicalTypeId::timestamp; value.payload = f.Value().binary_value;
+    Check(dt::ValidateDatatypeBinaryValue(value).ok() == (nanos < 1000000000U),
+          "timestamp generic binary validator uses same canonical range");
+  }
   for (unsigned mutation = 0; mutation < 6; ++mutation) {
     dt::DatatypeBinaryValue value;
     value.type_id = dt::CanonicalTypeId::geometry;
@@ -183,7 +238,7 @@ int main() try {
     }
   }
   Reject(12, [](auto& f) { f.Value().binary_value = {0,255,16}; });
-  constexpr std::size_t expected = 11 * 2 * 2 * 3 * 3 + 2 * 2 * 3 * 3;
+  constexpr std::size_t expected = 12 * 2 * 2 * 3 * 3 + 2 * 2 * 3 * 3;
   std::cout << "expected_value_tuples=" << expected << '\n';
   std::size_t observed = 0;
   for (std::size_t type = 0; type < vectors.size(); ++type)
