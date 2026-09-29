@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -21,6 +22,7 @@
 #include "time.hpp"
 #include <algorithm>
 #include "dml/insert_api.hpp"
+#include "dml/direct_bulk_append_cache.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -261,6 +263,66 @@ api::EngineLocalizedName Name(std::string name) {
   return value;
 }
 
+void VerifyTextFixtureBindingControls(const api::EngineRequestContext& context,
+                                      const api::EngineColumnDefinition& bound) {
+  const auto refused = [&](api::EngineRequestContext candidate_context,
+                           api::EngineColumnDefinition candidate) {
+    const auto original = candidate;
+    bool rejected = false;
+    try {
+      scratchbird::tests::BindFixtureUtf8BinaryTextResources(candidate_context, candidate);
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    Require(rejected, "TEXT fixture accepted contradictory or unavailable authority");
+    Require(candidate.requested_column_uuid == original.requested_column_uuid &&
+                candidate.descriptor.descriptor_uuid == original.descriptor.descriptor_uuid &&
+                candidate.descriptor.charset_uuid == original.descriptor.charset_uuid &&
+                candidate.descriptor.collation_uuid == original.descriptor.collation_uuid &&
+                candidate.descriptor.encoded_descriptor == original.descriptor.encoded_descriptor,
+            "TEXT fixture refusal partially rewrote column authority");
+  };
+  auto invalid = bound;
+  invalid.descriptor.collation_uuid = bound.descriptor.charset_uuid;
+  refused(context, invalid);
+  invalid = bound;
+  ++invalid.descriptor.datatype_descriptor_generation;
+  refused(context, invalid);
+  api::CatalogColumnMetadata attributes;
+  Require(api::DecodeCatalogColumnMetadata(bound.descriptor.encoded_descriptor, &attributes),
+          "TEXT fixture must carry native binary metadata");
+  auto changed = attributes;
+  changed.identities["collation_uuid"] = bound.descriptor.charset_uuid;
+  invalid = bound;
+  Require(api::EncodeCatalogColumnMetadata(changed, &invalid.descriptor.encoded_descriptor),
+          "TEXT fixture negative identity encoding failed");
+  refused(context, invalid);
+  changed = attributes;
+  changed.text["resource_epoch"] = std::to_string(context.resource_epoch + 1);
+  invalid = bound;
+  Require(api::EncodeCatalogColumnMetadata(changed, &invalid.descriptor.encoded_descriptor),
+          "TEXT fixture negative epoch encoding failed");
+  refused(context, invalid);
+  auto inactive = context;
+  inactive.transaction_uuid = {};
+  refused(inactive, bound);
+  auto foreign = context;
+  foreign.database_uuid = NewIdentity(platform::UuidKind::database, 0);
+  refused(foreign, bound);
+  changed = attributes;
+  changed.text["character_length"] = "127";
+  invalid = bound;
+  Require(api::EncodeCatalogColumnMetadata(changed, &invalid.descriptor.encoded_descriptor),
+          "TEXT fixture explicit bound encoding failed");
+  const auto original = invalid;
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, invalid);
+  Require(invalid.requested_column_uuid == original.requested_column_uuid &&
+              invalid.descriptor.descriptor_uuid == original.descriptor.descriptor_uuid &&
+              invalid.nullable == original.nullable &&
+              invalid.descriptor.encoded_descriptor == original.descriptor.encoded_descriptor,
+          "TEXT fixture changed an existing column identity or declared bound");
+}
+
 void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
   api::EngineCreateSchemaRequest schema;
   schema.context = context;
@@ -304,8 +366,16 @@ void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
     column.descriptor.type_uuid = codec.row.type_uuid;
     column.descriptor.encoded_descriptor = "canonical=" + type +
         (column.nullable ? ";nullable=true" : ";nullable=false");
+    scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
+    VerifyTextFixtureBindingControls(context, column);
     request.table_columns.push_back(std::move(column));
   }
+  api::EngineIndexDefinition index;
+  index.requested_index_uuid = fixture.index_uuid;
+  index.names.push_back(Name("ipar_unique_probe_payload_uidx"));
+  index.index_kind = "btree";
+  index.key_envelopes = {"payload", "unique"};
+  request.table_indexes.push_back(std::move(index));
   const auto created = api::EngineCreateTable(request);
   RequireOk(created, "IPAR unique-probe table publication failed");
   Require(created.table_object.uuid == fixture.table_uuid,
@@ -313,31 +383,21 @@ void CreateTable(Fixture& fixture, const api::EngineRequestContext& context) {
   const auto descriptor = api::LoadMgaRelationStorageDescriptor(context, fixture.table_uuid);
   Require(descriptor.ok && descriptor.descriptor.relation_uuid == fixture.table_uuid &&
               descriptor.descriptor.relation_generation != 0 &&
-              descriptor.descriptor.columns.size() == 1,
+              descriptor.descriptor.columns.size() == 1 &&
+              descriptor.descriptor.indexes.size() == 1 &&
+              descriptor.descriptor.indexes.front().index_uuid == fixture.index_uuid &&
+              descriptor.descriptor.indexes.front().unique,
           "IPAR unique-probe published column binding absent");
   const auto& column = descriptor.descriptor.columns.front();
   const auto& requested = request.table_columns.front();
   Require(column.column_generation != 0 && column.column_uuid == requested.requested_column_uuid &&
               column.value_descriptor.descriptor_uuid == requested.descriptor.descriptor_uuid &&
               column.value_descriptor.datatype_descriptor_uuid == requested.descriptor.datatype_descriptor_uuid &&
-              column.value_descriptor.type_uuid == requested.descriptor.type_uuid,
+              column.value_descriptor.type_uuid == requested.descriptor.type_uuid &&
+              !column.charset_uuid.is_nil() && !column.collation_uuid.is_nil() &&
+              column.charset_uuid == requested.descriptor.charset_uuid &&
+              column.collation_uuid == requested.descriptor.collation_uuid,
           "IPAR unique-probe publication changed native column bindings");
-}
-
-api::CrudIndexRecord UniquePayloadIndex(const Fixture& fixture,
-                                        std::uint64_t creator_tx) {
-  api::CrudIndexRecord index;
-  index.creator_tx = creator_tx;
-  index.index_uuid = fixture.index_uuid;
-  index.table_uuid = fixture.table_uuid;
-  index.column_name = "payload";
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
-  index.default_name = "ipar_unique_probe_payload_uidx";
-  index.unique = true;
-  index.key_envelopes.push_back("payload");
-  index.key_envelopes.push_back("unique");
-  return index;
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
@@ -507,11 +567,9 @@ Fixture MakeFixture() {
   fixture.index_uuid = NewIdentity(platform::UuidKind::object, fixture.salt + 21);
 
   auto metadata = Begin(fixture, "ipar-unique-probe-metadata");
+  // Publish the index in the same DDL/descriptor cohort as its column. A raw
+  // metadata append after publication leaves the sealed relation incomplete.
   CreateTable(fixture, metadata);
-  const auto index = api::AppendMgaIndexMetadata(
-      metadata,
-      UniquePayloadIndex(fixture, metadata.local_transaction_id));
-  Require(!index.error, "IPAR unique-probe index metadata append failed");
   Commit(metadata);
   fixture.session = std::make_shared<ProbeSession>(BaseContext(fixture, "unique-probe-session"));
   return fixture;
@@ -557,6 +615,11 @@ void RequireInsertOk(const api::EngineInsertRowsResult& result,
 
 void RequireUniqueViolation(const api::EngineInsertRowsResult& result,
                             std::string_view message) {
+  if (result.ok) {
+    for (const auto& evidence : result.evidence)
+      std::cerr << evidence.evidence_kind << '='
+                << scratchbird::tests::EvidenceTextFields(evidence.evidence_id) << '\n';
+  }
   Require(!result.ok, message);
   if (!HasDiagnostic(result, "CONSTRAINT_UNIQUE_VIOLATION")) {
     DumpDiagnostics(result);
@@ -724,6 +787,11 @@ void VerifyDuplicateWithinStatementAndTransaction() {
       "IPAR unique-probe same-transaction duplicate unexpectedly succeeded");
   RequirePhysicalProbeEvidence(same_transaction,
                                "insert_unique_probe_candidate_source");
+  api::dml::detail::DirectEvictAppendIndexEntryCache(transaction, fixture.table_uuid);
+  const auto after_eviction = InsertInto(fixture, transaction, "same-transaction-key");
+  RequireUniqueViolation(after_eviction,
+                        "IPAR unique-probe cache eviction hid a persisted duplicate");
+  RequirePhysicalProbeEvidence(after_eviction, "insert_unique_probe_candidate_source");
   Rollback(transaction);
 }
 

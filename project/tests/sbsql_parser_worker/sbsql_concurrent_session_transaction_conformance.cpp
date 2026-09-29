@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 #include "api_types.hpp"
 #include "server_engine_bridge/statement_context.hpp"
 #include <memory>
@@ -669,6 +670,8 @@ void CreateSchemaTableAndIndex(const std::filesystem::path& database_path) {
   create_table_request.requested_table_uuid = table_request.target_object.uuid;
   create_table_request.table_names = table_request.localized_names;
   create_table_request.table_columns = table_request.columns;
+  for (auto& column : create_table_request.table_columns)
+    scratchbird::tests::BindFixtureUtf8BinaryTextResources(ddl_context, column);
   const auto table = api::EngineCreateTable(create_table_request);
   for (const auto& diagnostic : table.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -684,6 +687,8 @@ void CreateSchemaTableAndIndex(const std::filesystem::path& database_path) {
   static_cast<api::EngineApiRequest&>(create_index_request) = index_request;
   create_index_request.context = ddl_context;
   const auto index = api::EngineCreateIndex(create_index_request);
+  for (const auto& diagnostic : index.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(index.ok && index.primary_object.uuid == kIndexUuid,
           "index create did not preserve UUID");
 

@@ -46,6 +46,17 @@ bool DirectAppendIndexEntryCacheAvailable(
     std::uint64_t row_version_count,
     bool require_entry_lookup = false);
 
+// Copy a complete entry cohort only after validating the exact transaction,
+// table, row count, metadata and savepoint authority. Context-cache snapshots
+// do not advance their stored entries when their row count advances.
+bool DirectLookupAppendIndexEntryCache(
+    const EngineRequestContext& context,
+    const EngineUuid& table_uuid,
+    std::uint64_t row_version_count,
+    std::vector<CrudIndexEntryRecord>* entries,
+    std::map<EngineUuid, std::set<std::string>>* keys_by_index,
+    std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>* entry_by_index_key);
+
 // False means cache authority was lost; callers must reload or refuse before
 // accepting a proof. keys_by_index contains provider logical keys, not a mix
 // of logical keys and physical SBKOBIN representations.

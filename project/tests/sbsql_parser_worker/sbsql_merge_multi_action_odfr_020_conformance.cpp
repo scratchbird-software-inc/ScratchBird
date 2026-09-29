@@ -10,6 +10,7 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 #include <map>
 #include <memory>
 #include "api_types.hpp"
@@ -209,6 +210,7 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context, std
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
   scratchbird::tests::BindFixtureColumnDatatype(context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
   return column;
 }
 
@@ -266,6 +268,8 @@ void InsertSeedRow(const api::EngineRequestContext& context) {
   request.target_table.object_kind = "table";
   request.input_rows.push_back(Row(kSeedRow, "1", "seed"));
   auto inserted = api::EngineInsertRows(request);
+  for (const auto& diagnostic : inserted.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   Require(inserted.ok, "seed insert failed");
   Require(inserted.result_shape.rows.size() == 1, "seed insert did not return one row");
 }

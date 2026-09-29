@@ -7782,6 +7782,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (index_entries_authoritative &&
       append_index_cache_hit &&
       index_only_eligibility.row_version_count != 0) {
+    const bool needs_bound_comparison_entries = std::any_of(
+        visible_indexes.begin(), visible_indexes.end(), [](const auto& index) {
+          return DirectIndexIsUnique(index) && bound_index_key::UsesBoundOrderedProfile(index);
+        });
+    std::vector<CrudIndexEntryRecord> bound_comparison_entries;
     if (!DirectBuildAppendIndexConflictCaches(request.context,
                                          request.target_table.uuid,
                                          index_only_eligibility.row_version_count,
@@ -7790,7 +7795,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                          &append_index_key_cache,
                                          sorted_bulk_index_requested
                                              ? &append_index_entry_key_cache
-                                             : nullptr)) {
+                                             : nullptr) ||
+        (needs_bound_comparison_entries &&
+         !detail::DirectLookupAppendIndexEntryCache(
+             request.context, request.target_table.uuid,
+             index_only_eligibility.row_version_count, &bound_comparison_entries,
+             nullptr, nullptr))) {
       // Cache eviction is not a constraint failure. Reacquire the canonical
       // table-scoped index view under the SAME MGA request snapshot. Do not
       // accept a partial cache proof or restart the transaction.
@@ -7811,6 +7821,15 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       append_index_cache_hit = false;
       RecordTestOptimizationBranch("cache_loss_scoped_reload");
     } else {
+      if (needs_bound_comparison_entries) {
+        // Advancing the context-cache row count does not refresh its immutable
+        // read view. Bound proofs cannot use its old entries or a logical-key
+        // match subset: both miss conflicts added by preceding statements or
+        // represented differently under the same comparison policy.
+        if (state != &state_storage) state_storage = *state;
+        state_storage.index_entries = std::move(bound_comparison_entries);
+        state = &state_storage;
+      }
       RecordTestOptimizationBranch("cache_unique_proof");
     }
   }
