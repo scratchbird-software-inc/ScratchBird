@@ -14,6 +14,7 @@
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -61,6 +62,7 @@ bool ExpectApiFailCode(const api::EngineApiResult& result,
                        const std::string& code,
                        const char* message) {
   if (result.ok || result.diagnostics.empty() ||
+      !result.diagnostics.front().error ||
       result.diagnostics.front().code != code) {
     std::cerr << message;
     if (!result.diagnostics.empty()) {
@@ -292,6 +294,9 @@ bool LocationClassificationProof(const Fixture& fixture,
               "PCR-078 local-hot transaction should be queryable") && ok;
   ok = Expect(hot.local_inventory_authoritative && !hot.archive_authoritative,
               "PCR-078 local-hot authority should be inventory hot") && ok;
+  ok = Expect(hot.target_transaction_uuid == seeded.hot_uuid &&
+                  hot.target_local_transaction_id == seeded.hot_local_id,
+              "PCR-078 hot lookup must preserve exact binary transaction identity") && ok;
 
   const auto archived =
       Locate(fixture, seeded, seeded.archive_local_id, "pcr078-archive-locate");
@@ -300,13 +305,17 @@ bool LocationClassificationProof(const Fixture& fixture,
               "PCR-078 archive transaction should classify local_archive") && ok;
   ok = Expect(archived.queryable && archived.archive_authoritative,
               "PCR-078 archive transaction should be queryable as archive") && ok;
+  ok = Expect(archived.target_transaction_uuid == seeded.archive_uuid &&
+                  archived.target_local_transaction_id == seeded.archive_local_id,
+              "PCR-078 archive lookup must preserve exact binary transaction identity") && ok;
 
   api::EngineLocateTransactionRequest retired_request;
   retired_request.context = BaseContext(fixture, "pcr078-retired-locate");
   retired_request.target_local_transaction_id = seeded.archive_local_id + 100;
   retired_request.retired_history_evidence_present = true;
   const auto retired = api::EngineLocateTransaction(retired_request);
-  ok = ExpectApiOk(retired, "PCR-078 retired locate should return classification") && ok;
+  ok = ExpectApiFailCode(retired, "ENGINE.MGA_AUDIT_RETIRED_HISTORY_NOT_QUERYABLE",
+                        "PCR-078 retired locate must return truthful failure with classification") && ok;
   ok = Expect(retired.location_class == "retired" &&
                   retired.fail_closed && !retired.queryable,
               "PCR-078 retired location should fail closed and not query") && ok;
@@ -318,7 +327,8 @@ bool LocationClassificationProof(const Fixture& fixture,
   unknown_request.context = BaseContext(fixture, "pcr078-unknown-locate");
   unknown_request.target_local_transaction_id = seeded.archive_local_id + 200;
   const auto unknown = api::EngineLocateTransaction(unknown_request);
-  ok = ExpectApiOk(unknown, "PCR-078 unknown locate should return classification") && ok;
+  ok = ExpectApiFailCode(unknown, "ENGINE.MGA_AUDIT_LOCATION_UNKNOWN",
+                        "PCR-078 unknown locate must return truthful failure with classification") && ok;
   ok = Expect(unknown.location_class == "unknown" &&
                   unknown.fail_closed && !unknown.queryable,
               "PCR-078 unknown location should fail closed and not query") && ok;
@@ -331,7 +341,8 @@ bool LocationClassificationProof(const Fixture& fixture,
   remote_request.requested_location_class = "remote";
   remote_request.target_local_transaction_id = seeded.hot_local_id;
   const auto remote = api::EngineLocateTransaction(remote_request);
-  ok = ExpectApiOk(remote, "PCR-078 remote locate should return classification") && ok;
+  ok = ExpectApiFailCode(remote, "ENGINE.MGA_AUDIT_REMOTE_CLUSTER_PROVIDER_UNAVAILABLE",
+                        "PCR-078 unavailable remote locate must return truthful failure with classification") && ok;
   ok = Expect(remote.location_class == "remote" &&
                   remote.fail_closed && !remote.queryable &&
                   remote.external_cluster_provider_required,
@@ -424,8 +435,11 @@ bool IdentityMismatchProof(const Fixture& fixture,
   request.target_local_transaction_id = seeded.hot_local_id;
   request.target_transaction_uuid = seeded.archive_uuid;
   const auto mismatch = api::EngineLocateTransaction(request);
-  return ExpectApiOk(mismatch,
-                     "PCR-078 identity mismatch locate should return classification") &&
+  return ExpectApiFailCode(mismatch, "ENGINE.MGA_AUDIT_LOCATION_IDENTITY_MISMATCH",
+                          "PCR-078 identity mismatch must return truthful failure with classification") &&
+         Expect(mismatch.target_transaction_uuid == seeded.archive_uuid &&
+                    mismatch.target_local_transaction_id == seeded.hot_local_id,
+                "PCR-078 mismatch must not replace the requested binary identity") &&
          Expect(mismatch.location_class == "unknown" &&
                     mismatch.fail_closed && !mismatch.queryable,
                 "PCR-078 identity mismatch should fail closed") &&
@@ -434,13 +448,59 @@ bool IdentityMismatchProof(const Fixture& fixture,
                 "PCR-078 identity mismatch diagnostic should be exact");
 }
 
+bool BinaryIdentityLookupProof(const Fixture& fixture,
+                               const SeededTransactions& seeded) {
+  bool ok = true;
+  api::EngineLocateTransactionRequest request;
+  request.context = BaseContext(fixture, "pcr078-binary-identity-lookup");
+  for (bool uuid_only : {false, true}) {
+    request.target_local_transaction_id = uuid_only ? 0 : seeded.hot_local_id;
+    request.target_transaction_uuid = uuid_only ? seeded.hot_uuid : api::EngineUuid{};
+    const auto resolved = api::EngineLocateTransaction(request);
+    ok = ExpectApiOk(resolved, "PCR-078 one exact identity must resolve the durable transaction") && ok;
+    ok = Expect(resolved.queryable && !resolved.fail_closed &&
+                    resolved.target_local_transaction_id == seeded.hot_local_id &&
+                    resolved.target_transaction_uuid == seeded.hot_uuid,
+                "PCR-078 single-key lookup lost the exact durable identity pair") && ok;
+  }
+  request.target_local_transaction_id = seeded.hot_local_id;
+  const auto invalid = [&] {
+    const auto refused = api::EngineLocateTransaction(request);
+    ok = ExpectApiFailCode(refused, "ENGINE.MGA_AUDIT_LOCATION_IDENTITY_MISMATCH",
+                          "PCR-078 malformed system UUID must fail rather than use the local ID") && ok;
+    ok = Expect(refused.fail_closed && !refused.queryable &&
+                    refused.target_transaction_uuid == request.target_transaction_uuid &&
+                    refused.target_local_transaction_id == request.target_local_transaction_id,
+                "PCR-078 malformed UUID was replaced or normalized during refusal") && ok;
+  };
+  for (unsigned version = 0; version < 16; ++version) {
+    if (version == 7) continue;
+    request.target_transaction_uuid = seeded.hot_uuid;
+    request.target_transaction_uuid.bytes[6] =
+        static_cast<unsigned char>((version << 4) | (request.target_transaction_uuid.bytes[6] & 0x0f));
+    invalid();
+  }
+  for (unsigned variant : {0u, 0x40u, 0xc0u}) {
+    request.target_transaction_uuid = seeded.hot_uuid;
+    request.target_transaction_uuid.bytes[8] =
+        static_cast<unsigned char>(variant | (request.target_transaction_uuid.bytes[8] & 0x3f));
+    invalid();
+  }
+  request.target_local_transaction_id = 0;
+  request.target_transaction_uuid = {};
+  ok = ExpectApiFailCode(api::EngineLocateTransaction(request),
+                        "ENGINE.MGA_AUDIT_LOCATION_TARGET_REQUIRED",
+                        "PCR-078 absent identity must not resolve a default transaction") && ok;
+  return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   const std::filesystem::path work_dir =
       argc > 1 ? std::filesystem::path(argv[1])
                : std::filesystem::path("public_mga_audit_transaction_location_gate_tmp");
-  std::filesystem::remove_all(work_dir);
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(work_dir / "pcr078_audit_location.sbdb");
 
   bool ok = ConfigureMemoryFixture();
   const Fixture fixture = MakeFixture(work_dir);
@@ -449,5 +509,6 @@ int main(int argc, char** argv) {
   ok = AuditReadAdmissionProof(fixture, seeded) && ok;
   ok = FailClosedAdmissionProof(fixture, seeded) && ok;
   ok = IdentityMismatchProof(fixture, seeded) && ok;
+  ok = BinaryIdentityLookupProof(fixture, seeded) && ok;
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }
