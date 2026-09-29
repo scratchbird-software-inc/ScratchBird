@@ -74,6 +74,54 @@ void GoldenValues() {
   }
 }
 
+void TotalOrderKeys() {
+  const auto key = [](const Real128Bytes& bytes, bool specials = false) {
+    NumericContext context;
+    context.allow_special_values = specials;
+    return MakeReal128TotalOrderKey(bytes.data(), bytes.size(), context);
+  };
+  Real128Bytes positive_zero{};
+  positive_zero[0] = 0x80;
+  Real128Bytes negative_zero;
+  negative_zero.fill(0xff);
+  negative_zero[0] = 0x7f;
+  Real128Bytes positive_one{};
+  positive_one[0] = 0xbf; positive_one[1] = 0xff;
+  Real128Bytes negative_one;
+  negative_one.fill(0xff);
+  negative_one[0] = 0x40; negative_one[1] = 0;
+  for (const auto& pair : std::vector<std::pair<Real128Bytes, Real128Bytes>>{
+           {Bits(0), positive_zero}, {Bits(0, true), negative_zero},
+           {Bits(0x3fff), positive_one}, {Bits(0x3fff, true), negative_one}}) {
+    const auto result = key(pair.first);
+    Check(result.key && *result.key == pair.second && result.numeric.status == NumericStatusCode::ok &&
+              result.numeric.value.encoded.empty(), "exact binary128 total-order bytes without text rendering");
+  }
+  auto snan = Bits(0x7fff, false, 1), qnan = snan;
+  qnan[13] = 0x80;
+  auto negative_snan = snan, negative_qnan = qnan;
+  negative_snan[15] |= 0x80; negative_qnan[15] |= 0x80;
+  const std::vector<Real128Bytes> ordered{
+      negative_qnan, negative_snan, Bits(0x7fff, true), Bits(0x3fff, true),
+      Bits(0, true, 1), Bits(0, true), Bits(0), Bits(0, false, 1),
+      Bits(0x3fff), Bits(0x7fff), snan, qnan};
+  std::optional<Real128Bytes> previous;
+  for (const auto& bits : ordered) {
+    const auto result = key(bits, true);
+    Check(result.key && (!previous || *previous < *result.key),
+          "binary128 total order preserves sign subnormal zero infinity and NaN class");
+    previous = result.key;
+  }
+  Check(!key(snan).key && !key(qnan).key && !key(Bits(0x7fff)).key,
+        "binary128 key ignored special-value admission policy");
+  for (const std::size_t width : {0u, 15u, 17u, 36u}) {
+    const std::vector<std::uint8_t> bytes(width, 0);
+    const auto result = MakeReal128TotalOrderKey(bytes.data(), bytes.size());
+    Check(!result.key && result.numeric.status != NumericStatusCode::ok,
+          "binary128 key accepted malformed width or returned zero as success");
+  }
+}
+
 void FiniteExponentCorpus() {
   mpfr_t expected, displayed;
   mpfr_init2(expected, 113);
@@ -293,7 +341,7 @@ void AllocationFailure() {
 }
 }
 int main() {
-  GoldenValues(); FiniteExponentCorpus(); Arithmetic(); Specials(); ShapeAndState(); AllocationFailure();
+  GoldenValues(); TotalOrderKeys(); FiniteExponentCorpus(); Arithmetic(); Specials(); ShapeAndState(); AllocationFailure();
   ReleaseReal128ThreadCache();
   std::cout << "checks=" << checks << " failures=" << failures << '\n';
   return failures ? 1 : 0;

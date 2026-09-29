@@ -124,6 +124,14 @@ Real128BinaryResult DecodeReal128LittleEndian(
     const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {},
     bool render_canonical_text = false);
 Real128BinaryResult ApplyReal128BinaryOperation(const Real128BinaryRequest& request);
+struct Real128TotalOrderKeyResult {
+  NumericResult numeric;
+  // Big-endian IEEE total-order key, not a storage value. Distinguishes signed
+  // zeros and NaN signs/payloads; special admission follows the given context.
+  std::optional<Real128Bytes> key;
+};
+Real128TotalOrderKeyResult MakeReal128TotalOrderKey(
+    const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {});
 // Canonical signed two's-complement storage payload; no host encoding accepted.
 NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload);
 inline constexpr std::size_t kExactDecimalBinaryBytes = 24;

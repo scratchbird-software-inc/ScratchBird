@@ -423,6 +423,23 @@ Real128BinaryResult DecodeReal128LittleEndian(
   return result;
 }
 
+Real128TotalOrderKeyResult MakeReal128TotalOrderKey(
+    const std::uint8_t* bytes, std::size_t size, const NumericContext& context) {
+  auto decoded = DecodeReal128LittleEndian(bytes, size, context);
+  Real128TotalOrderKeyResult result;
+  result.numeric = std::move(decoded.numeric);
+  if (result.numeric.status != NumericStatusCode::ok || !decoded.bytes) return result;
+  Real128Bytes key;
+  std::reverse_copy(decoded.bytes->begin(), decoded.bytes->end(), key.begin());
+  if (key.front() & 0x80) {
+    for (auto& byte : key) byte = static_cast<std::uint8_t>(~byte);
+  } else {
+    key.front() ^= 0x80;
+  }
+  result.key = key;
+  return result;
+}
+
 Real128BinaryResult ApplyReal128BinaryOperation(const Real128BinaryRequest& request) {
   Real128BinaryResult result;
   if (!ValidateContext(request.operation, request.context, result.numeric)) return result;
