@@ -242,6 +242,46 @@ class ReleaseContractOracles(unittest.TestCase):
             self.refusal(lambda: gate.check_cmake_controls(ROOT, PROJECT),
                          "direct_private_provider_selection_forbidden")
 
+    def test_commercial_cluster_gate_requires_gateway_isolation(self):
+        gate = load("../../tests/commercial_readiness/commercial_readiness_gate.py")
+        gate.gate_cluster(ROOT)
+        actual = gate.read_text
+        for token in (
+                "if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)",
+                "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract",
+                "if(SB_CLUSTER_PROVIDER_STUB AND NOT SB_ENABLE_CLUSTER_PROVIDER)",
+                "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON",
+                "SB_COMMERCIAL_CLUSTER_PRODUCTION_CLAIMS"):
+            with self.subTest(token=token):
+                def removed(repo, relative, token=token):
+                    source = actual(repo, relative)
+                    return source.replace(token, "REMOVED_BOUNDARY") if relative == "project/CMakeLists.txt" else source
+                with patch.object(gate, "read_text", removed):
+                    self.refusal(lambda: gate.gate_cluster(ROOT), "cluster production block missing " + token)
+
+    def test_fairness_gate_preserves_local_ownership_and_cluster_refusal(self):
+        gate = load("public_workload_fairness_gate.py")
+        actual = gate.read_text
+        surfaces = {
+            "tenant_fairness_scheduler_behavior": (
+                "!SafeProvenance(request.provenance, &reason)",
+                "provenance.cluster_authority ||",
+                "memory_fairness.cluster_category=local_accounting_only_not_cluster_authority"),
+            "tenant_fairness_stress_gate": (
+                "cluster_local.ok()", "ledger.Snapshot().current_bytes == 10",
+                "scheduler.Release(cluster_local.grant).ok()",
+                "cluster.provenance.cluster_authority = true", "!scheduler.Admit(cluster).ok()"),
+        }
+        for surface, tokens in surfaces.items():
+            check = next(row for row in gate.CHECKS if row["surface"] == surface)
+            gate.validate_check(ROOT, check)
+            for token in tokens:
+                with self.subTest(surface=surface, token=token):
+                    def removed(repo, relative, token=token):
+                        return actual(repo, relative).replace(token, "REMOVED_BOUNDARY")
+                    with patch.object(gate, "read_text", removed):
+                        self.refusal(lambda: gate.validate_check(ROOT, check), "token_missing:" + surface)
+
     def test_direct_provider_cmake_guard_is_required(self):
         gate = load("public_platform_matrix_gate.py")
         gate.check_project_cmake(ROOT, PROJECT)

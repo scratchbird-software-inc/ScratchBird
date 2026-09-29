@@ -197,7 +197,9 @@ def gate_cluster(repo: pathlib.Path) -> None:
     cmake = read_text(repo, "project/CMakeLists.txt")
     for needle in [
         "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB",
+        "if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)",
+        "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract",
+        "if(SB_CLUSTER_PROVIDER_STUB AND NOT SB_ENABLE_CLUSTER_PROVIDER)",
         "SB_COMMERCIAL_CLUSTER_PRODUCTION_CLAIMS",
     ]:
         require(needle in cmake, f"cluster production block missing {needle}")
