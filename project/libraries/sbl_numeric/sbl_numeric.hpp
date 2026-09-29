@@ -150,6 +150,44 @@ ExactDecimalBinaryResult EncodeExactDecimalLittleEndian(std::string_view value);
 ExactDecimalBinaryResult DecodeExactDecimalLittleEndian(
     const std::uint8_t* bytes, std::size_t size);
 
+using Decimal128Bytes = std::array<std::uint8_t, 16>;
+enum class Decimal128Class : std::uint8_t { finite, infinity, quiet_nan, signaling_nan };
+struct Decimal128Value {
+  Decimal128Class classification = Decimal128Class::finite;
+  bool negative = false;
+  // Finite quantum exponent, not the adjusted scientific exponent.
+  std::int32_t exponent = 0;
+  // Little-endian unsigned coefficient, or NaN payload. No host ABI encoding.
+  Decimal128Bytes coefficient{};
+};
+struct Decimal128BinaryResult {
+  NumericResult numeric;
+  std::optional<Decimal128Bytes> bytes;
+  std::optional<Decimal128Value> value;
+};
+// Exact canonical BID decimal128 value codec. Preserves finite cohorts, signed
+// zeros and NaN payloads. Cannot silently round, saturate, or reinterpret DPD.
+// Codec selection/version and SQL NULL belong to the caller's bound descriptor.
+Decimal128BinaryResult EncodeDecimal128LittleEndian(
+    std::string_view text, bool allow_special_values = false);
+Decimal128BinaryResult DecodeDecimal128LittleEndian(
+    const std::uint8_t* bytes, std::size_t size, bool allow_special_values = false);
+enum class Decimal128OrderProfile : std::uint8_t {
+  numeric_total_nan_last,
+  ieee_total_order
+};
+using Decimal128OrderKey = std::array<std::uint8_t, 21>;
+struct Decimal128OrderKeyResult {
+  NumericResult numeric;
+  std::optional<Decimal128OrderKey> key;
+};
+// Explicit descriptor-selected comparison profile; this API does not bind a
+// catalog policy. Numeric order coalesces finite cohorts, signed zeros and NaNs.
+// IEEE total order preserves their quantum, sign, class and payload ordering.
+Decimal128OrderKeyResult MakeDecimal128OrderKey(
+    const std::uint8_t* bytes, std::size_t size, Decimal128OrderProfile profile,
+    bool allow_special_values = false);
+
 struct NumericBinaryResult {
   NumericStatusCode status = NumericStatusCode::invalid_left;
   std::vector<std::uint8_t> payload;

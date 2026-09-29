@@ -52,7 +52,7 @@ if(NOT CMAKE_CROSSCOMPILING)
 endif()
 cmake_pop_check_state()
 
-add_library(sbl_numeric sbl_numeric.cpp real128_reference.cpp)
+add_library(sbl_numeric sbl_numeric.cpp real128_reference.cpp decimal128_codec.cpp)
 target_compile_features(sbl_numeric PUBLIC cxx_std_17)
 target_include_directories(sbl_numeric PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(sbl_numeric PRIVATE
