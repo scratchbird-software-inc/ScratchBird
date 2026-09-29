@@ -196,12 +196,18 @@ int main() {
               !third.row_packet.empty(),
           "final canonical descriptor-bound fetch did not return one row at EOS");
 
-  const auto stale_after_eos =
+  // EOS releases the parser's capability. A raw cursor UUID cannot replay a
+  // descriptor which the parser no longer retains. Supplied revoked-descriptor
+  // replay is separately checked at HandleFetch by the stream-descriptor gate.
+  const auto missing_after_eos =
       parser.FetchCursorOnRoute(cursor.server_cursor_uuid, 1);
-  Require(!stale_after_eos.accepted &&
-              HasDiagnostic(stale_after_eos.messages,
-                            "SERVER.STREAM.DESCRIPTOR_STALE"),
-          "post-EOS descriptor replay did not fail closed as stale");
+  Require(!missing_after_eos.accepted && missing_after_eos.row_count == 0 &&
+              missing_after_eos.row_packet.empty() &&
+              HasDiagnostic(missing_after_eos.messages,
+                            "SERVER.STREAM.DESCRIPTOR_REQUIRED"),
+          "post-EOS raw cursor retained descriptor or row authority");
+  Require(!parser.CloseCursorOnRoute(cursor.server_cursor_uuid).accepted,
+          "post-EOS cursor retained live close authority");
 
   const auto bounded = OpenCursor(&parser);
   const auto clamped =

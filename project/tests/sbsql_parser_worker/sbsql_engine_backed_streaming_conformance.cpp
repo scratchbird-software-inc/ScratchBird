@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../../src/wire/public_result_packet.hpp"
 #include "database_lifecycle.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
@@ -21,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -28,6 +30,7 @@ namespace database = scratchbird::storage::database;
 namespace memory = scratchbird::core::memory;
 namespace sbsql = scratchbird::parser::sbsql;
 namespace uuid = scratchbird::core::uuid;
+namespace packet = scratchbird::wire::public_result;
 using scratchbird::core::platform::UuidKind;
 
 [[noreturn]] void Fail(std::string_view message) {
@@ -37,10 +40,6 @@ using scratchbird::core::platform::UuidKind;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
-}
-
-bool Contains(std::string_view haystack, std::string_view needle) {
-  return haystack.find(needle) != std::string_view::npos;
 }
 
 void PrintMessages(const sbsql::MessageVectorSet& messages) {
@@ -56,12 +55,14 @@ void PrintMessages(const sbsql::MessageVectorSet& messages) {
 struct FixtureDatabase {
   std::filesystem::path directory;
   std::filesystem::path path;
+  scratchbird::core::platform::Uuid database_uuid;
 
   FixtureDatabase() = default;
   FixtureDatabase(const FixtureDatabase&) = delete;
   FixtureDatabase& operator=(const FixtureDatabase&) = delete;
   FixtureDatabase(FixtureDatabase&& other) noexcept
-      : directory(std::move(other.directory)), path(std::move(other.path)) {
+      : directory(std::move(other.directory)), path(std::move(other.path)),
+        database_uuid(other.database_uuid) {
     other.directory.clear();
   }
 
@@ -87,6 +88,7 @@ FixtureDatabase CreateFixtureDatabase() {
       UuidKind::filespace, identity_time.fetch_add(2));
   Require(database_uuid.ok() && filespace_uuid.ok(),
           "engine-backed fixture UUID generation failed");
+  fixture.database_uuid = database_uuid.value.value;
 
   database::DatabaseCreateConfig create;
   create.path = fixture.path.string();
@@ -123,8 +125,75 @@ void Authenticate(sbsql::SbsqlTestWireSession* parser,
 struct EngineBackedFixture {
   std::string_view sql;
   std::string_view operation_id;
-  std::string_view expected_field;
+  std::vector<packet::Field> fields;
 };
+
+bool MatchesResult(std::string_view bytes, const EngineBackedFixture& expected) {
+  const auto operation = packet::Find(bytes, "operation_id");
+  const auto count = packet::Find(bytes, "row_count");
+  const auto row = packet::Find(bytes, "row[0]");
+  if (!operation || operation->kind != packet::Kind::text ||
+      operation->value != expected.operation_id || !count ||
+      count->kind != packet::Kind::text || count->value != "1" ||
+      !row || row->kind != packet::Kind::row) return false;
+  std::vector<packet::Field> outer, fields;
+  if (!packet::Decode(bytes, &outer) || !packet::Decode(row->value, &fields) ||
+      fields.size() != expected.fields.size()) return false;
+  for (const auto& field : outer)
+    if (field.kind == packet::Kind::row && field.name != "row[0]") return false;
+  for (const auto& field : expected.fields) {
+    const auto actual = packet::Find(row->value, field.name);
+    if (!actual || actual->kind != field.kind || actual->value != field.value)
+      return false;
+  }
+  return true;
+}
+
+void CheckNativeResultOracle() {
+  // Independent length framing: neither server serializer nor packet encoder.
+  const auto frame = [](const std::vector<packet::Field>& fields) {
+    std::string bytes = "SBRES002";
+    const auto number = [&](std::uint64_t value, unsigned width) {
+      for (unsigned i = 0; i < width; ++i)
+        bytes.push_back(static_cast<char>(value >> (8 * i)));
+    };
+    number(fields.size(), 4);
+    for (const auto& field : fields) {
+      number(field.name.size(), 4); bytes += field.name;
+      number(static_cast<unsigned>(field.kind), 1);
+      number(field.value.size(), 8); bytes += field.value;
+    }
+    return bytes;
+  };
+  const auto identity = scratchbird::tests::FixtureUuidLiteral(
+      "019f08a0-5200-7000-8000-000000000002");
+  const std::string raw(reinterpret_cast<const char*>(identity.bytes.data()), 16);
+  const EngineBackedFixture expected{"", "observability.show_database",
+      {{"database_uuid", packet::Kind::uuid, raw}}};
+  const auto wrap = [&](const std::vector<packet::Field>& fields) {
+    return frame({{"operation_id", packet::Kind::text, std::string(expected.operation_id)},
+                  {"row_count", packet::Kind::text, "1"},
+                  {"row[0]", packet::Kind::row, frame(fields)}});
+  };
+  const auto valid = wrap(expected.fields);
+  Require(MatchesResult(valid, expected), "independent binary result rejected");
+  for (std::size_t n = 0; n < valid.size(); ++n)
+    Require(!MatchesResult(std::string_view(valid).substr(0, n), expected),
+            "truncated binary result accepted");
+  Require(!MatchesResult(valid + 'x', expected), "trailing binary result accepted");
+  Require(!MatchesResult(wrap({}), expected), "missing UUID field accepted");
+  auto fields = expected.fields;
+  fields.push_back(fields.front());
+  Require(!MatchesResult(wrap(fields), expected), "duplicate UUID field accepted");
+  fields = expected.fields; fields[0].kind = packet::Kind::text;
+  Require(!MatchesResult(wrap(fields), expected), "UUID bytes tagged as text accepted");
+  fields[0].value = "019f08a0-5200-7000-8000-000000000002";
+  Require(!MatchesResult(wrap(fields), expected), "text UUID fallback accepted");
+  fields = expected.fields; fields[0].value[15] ^= 1;
+  Require(!MatchesResult(wrap(fields), expected), "foreign database UUID accepted");
+  fields = expected.fields; fields[0].value.pop_back();
+  Require(!MatchesResult(wrap(fields), expected), "short UUID accepted");
+}
 
 void VerifyEngineBackedResult(sbsql::SbsqlTestWireSession* parser,
                               const EngineBackedFixture& fixture) {
@@ -134,8 +203,9 @@ void VerifyEngineBackedResult(sbsql::SbsqlTestWireSession* parser,
           "engine-backed canonical result execute was rejected");
   Require(execute.server_cursor_uuid.is_nil(),
           "non-streaming engine result unexpectedly returned a cursor UUID");
-  Require(Contains(execute.server_result_payload, fixture.expected_field),
-          "engine-backed result did not expose the engine payload");
+  Require(execute.server_row_count == 1 &&
+              MatchesResult(execute.server_result_payload, fixture),
+          "engine-backed result did not expose the exact native typed row");
 }
 
 void VerifyEngineBackedCursor(sbsql::SbsqlTestWireSession* parser) {
@@ -162,6 +232,7 @@ void VerifyEngineBackedCursor(sbsql::SbsqlTestWireSession* parser) {
 }  // namespace
 
 int main() {
+  CheckNativeResultOracle();
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "sb_engine_backed_streaming_conformance";
   const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -182,9 +253,18 @@ int main() {
   sbsql::SbsqlTestWireSession parser(config, &metrics, &cache);
   Authenticate(&parser, fixture.path);
 
-  constexpr EngineBackedFixture kFixtures[] = {
-      {"SHOW VERSION;", "observability.show_version", "product=ScratchBird"},
-      {"SHOW DATABASE;", "observability.show_database", "database_uuid="},
+  const std::string database_bytes(
+      reinterpret_cast<const char*>(fixture.database_uuid.bytes.data()), 16);
+  const EngineBackedFixture kFixtures[] = {
+      {"SHOW VERSION;", "observability.show_version",
+       {{"product", packet::Kind::text, "ScratchBird"},
+        {"component", packet::Kind::text, "sb_engine"},
+        {"api", packet::Kind::text, "1.0"}}},
+      {"SHOW DATABASE;", "observability.show_database",
+       {{"database_path", packet::Kind::text, fixture.path.string()},
+        {"database_uuid", packet::Kind::uuid, database_bytes},
+        {"page_size_bytes", packet::Kind::text, "16384"},
+        {"cluster_authority_active", packet::Kind::text, "false"}}},
   };
   for (const auto& fixture_case : kFixtures) {
     VerifyEngineBackedResult(&parser, fixture_case);
