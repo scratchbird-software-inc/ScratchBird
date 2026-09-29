@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "descriptor_value_runtime.hpp"
@@ -25,6 +29,8 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,6 +45,9 @@ namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
+api::EngineRequestContext g_owner;
+std::unique_ptr<scratchbird::tests::FixtureEngineSession> g_session;
+
 constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090901");
 constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090902");
 constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090903");
@@ -46,7 +55,7 @@ constexpr auto kIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f0000-000
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -58,30 +67,54 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sbsql_query_pivot_having_closure_" +
-          std::to_string(CurrentUnixMillis()) + ".sbdb");
+  const auto parent = std::filesystem::temp_directory_path();
+  for (unsigned attempt = 0; attempt < 64; ++attempt) {
+    const auto root = parent / ("sbsql_query_pivot_having_closure_" +
+        std::to_string(CurrentUnixMillis()) + "_" + std::to_string(attempt));
+    if (std::filesystem::create_directory(root)) return root / "fixture.sbdb";
+  }
+  throw std::runtime_error("could not reserve an isolated pivot fixture directory");
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.crud_events",
-                            ".sb.domain_events",
-                            ".sb.name_events",
-                            ".sb.transaction_inventory",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
+  std::filesystem::remove(path.parent_path());
+}
+
+void RequireOpaqueMetadataGuard() {
+  for (const auto* key : {"type", "canonical", "canonical_type", "base_type"}) {
+    api::CatalogColumnMetadata metadata;
+    metadata.text[key] = "opaque_extension";
+    std::string encoded;
+    Require(api::EncodeCatalogColumnMetadata(metadata, &encoded), "opaque fixture encoding failed");
+    Require(api::CrudColumnDescriptorIsOpaqueRenderOnly(encoded),
+            "binary column metadata lost the opaque comparison guard");
+    metadata.text[key] = "text";
+    metadata.text["display_name"] = "canonical=opaque_extension";
+    Require(api::EncodeCatalogColumnMetadata(metadata, &encoded), "text fixture encoding failed");
+    Require(!api::CrudColumnDescriptorIsOpaqueRenderOnly(encoded),
+            "unrelated metadata text falsely acquired opaque semantics");
+    encoded.resize(8);
+    Require(api::CrudColumnDescriptorIsOpaqueRenderOnly(encoded),
+            "malformed column metadata failed open");
   }
+  Require(api::CrudColumnDescriptorIsOpaqueRenderOnly("opaque_extension") &&
+          api::CrudColumnDescriptorIsOpaqueRenderOnly("type=opaque_extension;nullable=true") &&
+          !api::CrudColumnDescriptorIsOpaqueRenderOnly("type=text;label=opaque_extension"),
+          "admitted scalar attribute classification changed");
+  Require(!api::CrudColumnDescriptorIsOpaqueRenderOnly("uuid"),
+          "native UUID scalar spelling was mistaken for forbidden text identity metadata");
+  api::EngineTypedValue ordinary;
+  ordinary.descriptor.canonical_type_name = "uuid";
+  ordinary.descriptor.encoded_descriptor = "type=uuid";
+  api::EnginePredicateEnvelope predicate;
+  predicate.predicate_kind = "column_equals";
+  predicate.bound_values = {ordinary};
+  Require(!api::CrudPredicateTouchesOpaqueColumn({}, predicate), "UUID scalar became opaque");
+  ordinary.descriptor.canonical_type_name = "account_uuid";
+  ordinary.descriptor.encoded_descriptor = "canonical=binary";
+  predicate.bound_values = {ordinary};
+  Require(!api::CrudPredicateTouchesOpaqueColumn({}, predicate), "domain display name became opaque");
 }
 
 api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
@@ -93,37 +126,26 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810909001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810909002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "query pivot/having closure database create failed");
+  g_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  g_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(g_owner);
   return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContext(const std::filesystem::path& path,
                                         const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+  Require(path.string() == g_owner.database_path && database_uuid == g_owner.database_uuid,
+          "pivot fixture owner mismatch");
+  auto context = g_owner;
   context.request_id = "sbsql-query-pivot-having-closure";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090911");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090912");
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090901");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
-  context.trace_tags.push_back("right:DML_ROUTE_TEST");
   context.trace_tags.push_back("query_pivot_having_closure");
   return context;
 }
@@ -433,8 +455,9 @@ api::EngineLocalizedName Name(std::string text) {
 }
 
 void CreateSchema(const api::EngineRequestContext& context) {
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, context);
   api::EngineCreateSchemaRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090901");
   request.target_object.object_kind = "schema";
   request.localized_names.push_back(Name("cbq009_schema"));
@@ -443,7 +466,8 @@ void CreateSchema(const api::EngineRequestContext& context) {
   Require(result.ok, "CBQ-009 create schema failed");
 }
 
-api::EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::string name, std::string type, std::uint32_t ordinal) {
   api::EngineColumnDefinition column;
   column.requested_column_uuid =
       scratchbird::tests::FixtureUuid(1507, 920 + ordinal);
@@ -451,6 +475,9 @@ api::EngineColumnDefinition Column(std::string name, std::string type, std::uint
   column.descriptor = Descriptor(std::move(type));
   column.ordinal = ordinal;
   column.nullable = true;
+  scratchbird::tests::BindFixtureColumnDatatype(context,
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+          column.descriptor.canonical_type_name), column);
   return column;
 }
 
@@ -464,16 +491,17 @@ api::EngineIndexDefinition UniqueIdIndex() {
 }
 
 void CreateDmlTable(const api::EngineRequestContext& context) {
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, context);
   api::EngineCreateTableRequest request;
-  request.context = context;
+  request.context = statement.context;
   request.target_schema.uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090901");
   request.target_schema.object_kind = "schema";
   request.requested_table_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090902");
   request.table_names.push_back(Name("cbq009_rows"));
-  request.table_columns.push_back(Column("id", "int64", 0));
-  request.table_columns.push_back(Column("category", "text", 1));
-  request.table_columns.push_back(Column("name", "text", 2));
-  request.table_columns.push_back(Column("secret_payload", "opaque_extension", 3));
+  request.table_columns.push_back(Column(request.context, "id", "int64", 0));
+  request.table_columns.push_back(Column(request.context, "category", "text", 1));
+  request.table_columns.push_back(Column(request.context, "name", "text", 2));
+  request.table_columns.push_back(Column(request.context, "secret_payload", "opaque_extension", 3));
   request.table_indexes.push_back(UniqueIdIndex());
   const auto result = api::EngineCreateTable(request);
   if (!result.ok) { std::cerr << FirstDetail(result) << '\n'; }
@@ -492,6 +520,18 @@ api::EngineRowValue DmlRow(api::EngineUuid row_uuid,
                       {"name", TextValue(std::move(name))}});
 }
 
+api::EngineInsertRowsResult ExecuteInsert(api::EngineInsertRowsRequest request) {
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, request.context);
+  request.context = statement.context;
+  return api::EngineInsertRows(request);
+}
+
+api::EngineSelectRowsResult ExecuteSelect(api::EngineSelectRowsRequest request) {
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, request.context);
+  request.context = statement.context;
+  return api::EngineSelectRows(request);
+}
+
 api::EngineInsertRowsResult InsertRows(const api::EngineRequestContext& context,
                                        std::vector<api::EngineRowValue> rows) {
   api::EngineInsertRowsRequest request;
@@ -500,7 +540,7 @@ api::EngineInsertRowsResult InsertRows(const api::EngineRequestContext& context,
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   request.require_generated_row_uuid = false;
-  return api::EngineInsertRows(request);
+  return ExecuteInsert(std::move(request));
 }
 
 void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
@@ -518,7 +558,7 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   select.select_predicate.predicate_kind = "column_in_list";
   select.select_predicate.canonical_predicate_envelope = "category";
   select.select_predicate.bound_values = {TextValue("alpha"), TextValue("gamma")};
-  auto selected = api::EngineSelectRows(select);
+  auto selected = ExecuteSelect(select);
   if (!selected.ok) { std::cerr << FirstDetail(selected) << '\n'; }
   Require(selected.ok && selected.visible_count == 2,
           "DML select supported predicate did not row-scan without index");
@@ -532,7 +572,12 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   opaque_select.select_predicate.predicate_kind = "column_equals";
   opaque_select.select_predicate.canonical_predicate_envelope = "secret_payload";
   opaque_select.select_predicate.bound_values = {TextValue("redacted")};
-  selected = api::EngineSelectRows(opaque_select);
+  selected = ExecuteSelect(opaque_select);
+  if (selected.ok || FirstDetail(selected) != "dml.select_rows:opaque_column_comparison_denied") {
+    std::cerr << "opaque comparison accepted=" << selected.ok << '\n';
+    for (const auto& diagnostic : selected.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':' << diagnostic.detail << '\n';
+  }
   Require(!selected.ok && FirstDetail(selected) == "dml.select_rows:opaque_column_comparison_denied",
           "opaque column comparison diagnostic drifted");
 
@@ -544,7 +589,7 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   conflict.require_generated_row_uuid = false;
   conflict.on_conflict_action = "do_nothing";
   conflict.conflict_target_column = "id";
-  auto conflict_result = api::EngineInsertRows(conflict);
+  auto conflict_result = ExecuteInsert(conflict);
   if (!conflict_result.ok) { std::cerr << FirstDetail(conflict_result) << '\n'; }
   Require(conflict_result.ok && conflict_result.skipped_count == 1,
           "ON CONFLICT DO NOTHING route failed");
@@ -554,7 +599,7 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   conflict.input_rows = {DmlRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090a05"), 1, "alpha", "Grace")};
   conflict.on_conflict_action = "do_update";
   conflict.conflict_update_columns = {"name"};
-  conflict_result = api::EngineInsertRows(conflict);
+  conflict_result = ExecuteInsert(conflict);
   if (!conflict_result.ok) { std::cerr << FirstDetail(conflict_result) << '\n'; }
   Require(conflict_result.ok && conflict_result.updated_count == 1,
           "ON CONFLICT DO UPDATE route failed");
@@ -570,7 +615,7 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   reference.input_rows = {DmlRow(scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000090a06"), 4, "delta", "Reference")};
   reference.require_generated_row_uuid = false;
   reference.reference_unique_checks_relaxed = true;
-  const auto reference_result = api::EngineInsertRows(reference);
+  const auto reference_result = ExecuteInsert(reference);
   Require(!reference_result.ok && FirstDetail(reference_result) == "dml.insert_rows:reference_relaxer_requires_engine_policy",
           "reference relaxer refusal diagnostic drifted");
 }
@@ -830,19 +875,29 @@ void RequireSblrAggregateWindowRuntime() {
 }  // namespace
 
 int main() {
+  const auto path = TestDatabasePath();
+  try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("CBQ-009");
+  RequireOpaqueMetadataGuard();
   RequirePivotAggregates();
   RequireHavingPredicates();
   RequireRetiredSblrQueryPlanRefusal();
   RequireDescriptorQueryRuntime();
   RequireSblrAggregateWindowRuntime();
 
-  const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   const auto context = BeginTransaction(EngineContext(path, database_uuid));
   CreateSchema(context);
   CreateDmlTable(context);
   RequireDmlRowScanAndConflict(context);
+  g_session.reset();
+  RemoveDatabaseArtifacts(path);
   std::cout << "sbsql_query_pivot_having_closure_conformance=passed\n";
   return EXIT_SUCCESS;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    g_session.reset();
+    RemoveDatabaseArtifacts(path);
+    return EXIT_FAILURE;
+  }
 }

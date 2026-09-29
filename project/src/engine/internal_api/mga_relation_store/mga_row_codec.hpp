@@ -14,6 +14,7 @@
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
 #include "mga_relation_store/mga_scoped_index_codec.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 #include "secondary_index_delta_merge.hpp"
 
 #include <chrono>
@@ -32,8 +33,33 @@ namespace scratchbird::engine::internal_api {
 
 inline constexpr std::string_view kScopedRowBinaryBatchMagic = "SBMRBIN1";
 inline constexpr std::uint16_t kScopedRowBinaryVersion = 6;
-inline constexpr std::uint16_t kScopedRowBinaryGeneralVersion = 5;
+inline constexpr std::uint16_t kScopedRowBinaryGeneralVersion = 8;
 inline constexpr std::uint16_t kScopedRowBinaryNativePacketVersion = 7;
+
+inline bool ScopedRowBinaryIsCompact(std::uint16_t version) {
+  return version == kScopedRowBinaryVersion ||
+         version == kScopedRowBinaryNativePacketVersion;
+}
+inline std::size_t ScopedRowBinaryStateBytes(std::uint16_t version,
+                                           std::size_t column_count) {
+  return version == kScopedRowBinaryGeneralVersion
+      ? column_count : (column_count + 7u) / 8u;
+}
+inline std::optional<EngineValueState> ScopedRowBinaryStateAt(
+    std::uint16_t version, std::span<const std::uint8_t> states,
+    std::size_t column) {
+  if (version == kScopedRowBinaryGeneralVersion) {
+    if (column >= states.size()) return std::nullopt;
+    const auto state = static_cast<EngineValueState>(states[column]);
+    if (state != EngineValueState::value && state != EngineValueState::sql_null &&
+        state != EngineValueState::lob_handle) return std::nullopt;
+    return state;
+  }
+  if (!ScopedRowBinaryIsCompact(version) || column / 8u >= states.size())
+    return std::nullopt;
+  return (states[column / 8u] & (1u << (column % 8u)))
+      ? EngineValueState::sql_null : EngineValueState::value;
+}
 
 // SEARCH_KEY: SB_ENGINE_MGA_ROW_CODEC_INTERFACE
 // Row framing converts binary persisted records to version records and back. It

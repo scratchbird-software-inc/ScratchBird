@@ -13,6 +13,8 @@
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/composite_logical_key.hpp"
 #include "catalog/binary_catalog_metadata.hpp"
+#include "catalog/column_metadata_codec.hpp"
+#include "datatype_operations.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <iterator>
 #include <charconv>

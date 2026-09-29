@@ -7,7 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
+#include "transaction_snapshot.hpp"
 #include "mga_relation_store/mga_descriptor_record_codec.hpp"
+#include "mga_relation_store/mga_relation_locator.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 #include <type_traits>
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
@@ -48,8 +53,25 @@ namespace platform = scratchbird::core::platform;
 namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 
-constexpr auto kTypeUuid =
-    scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
+const api::EngineUuid& Int64TypeUuid() {
+  static const auto identity = [] {
+    namespace dt = scratchbird::core::datatypes;
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    if (!manifest.ok()) throw std::runtime_error("int64 catalog unavailable");
+    const auto descriptor = dt::LookupDatatypeCatalogRow(
+        manifest.manifest, dt::CanonicalTypeId::int64);
+    if (!descriptor.ok() || descriptor.manifest.descriptor_rows.size() != 1)
+      throw std::runtime_error("int64 catalog descriptor missing");
+    const auto& row = descriptor.manifest.descriptor_rows.front();
+    const auto codec = dt::LookupDatatypeTypeCodecIdentityV1(
+        api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
+        api::kBootstrapDatatypeRegistryGeneration, row.descriptor_uuid.value,
+        row.descriptor_epoch);
+    if (!codec.ok) throw std::runtime_error("int64 codec identity unavailable");
+    return codec.row.type_uuid;
+  }();
+  return identity;
+}
 
 template <typename T>
 concept HasCallerCandidates = requires(T value) { value.candidates; };
@@ -187,19 +209,26 @@ std::vector<FixtureFileImage> CaptureFixtureFiles(
   return images;
 }
 
-void AppendCompleteRelationDescriptorRecord(
+void AppendRelationDescriptorFields(
     const api::EngineRequestContext& context,
-    const api::MgaRelationStorageDescriptor& descriptor) {
+    const api::EngineUuid& relation_uuid,
+    const std::vector<std::pair<std::string, std::string>>& fields) {
   std::ofstream output(context.database_path + ".sb.mga_relation_descriptors",
                        std::ios::binary | std::ios::app);
   Require(output.good(), "relation descriptor fixture append open failed");
   std::string frame;
-  Require(api::AppendMgaDescriptorRecord(descriptor.relation_uuid,
-              api::SerializeMgaRelationStorageDescriptor(descriptor), &frame),
+  Require(api::AppendMgaDescriptorRecord(relation_uuid, fields, &frame),
           "relation descriptor fixture binary encoding failed");
   output.write(frame.data(), static_cast<std::streamsize>(frame.size()));
   output.flush();
   Require(output.good(), "complete relation descriptor fixture append failed");
+}
+
+void AppendCompleteRelationDescriptorRecord(
+    const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& descriptor) {
+  AppendRelationDescriptorFields(context, descriptor.relation_uuid,
+      api::SerializeMgaRelationStorageDescriptor(descriptor));
 }
 
 std::string NativeAdmissionFingerprint(
@@ -436,6 +465,16 @@ api::EngineUuid NewNativeUuid(const platform::UuidKind kind,
   return NewUuid(kind, salt).value;
 }
 
+void AddDeniedSelectProjection(api::EngineRequestContext& context,
+                               const api::EngineUuid& table_uuid) {
+  // Negative carrier mutation, never durable privilege publication. SysArch
+  // authority may be derived from role membership without an explicit grant;
+  // do not dereference a nonexistent grants.front() in that valid context.
+  context.authorization_context.grants.push_back({
+      NewNativeUuid(platform::UuidKind::object, 6950), context.principal_uuid,
+      "principal", table_uuid, "SELECT", true, context.security_epoch});
+}
+
 struct Fixture {
   std::filesystem::path directory;
   std::filesystem::path database_path;
@@ -455,8 +494,13 @@ struct Fixture {
   api::EngineUuid temporary_table_uuid;
   api::EngineUuid exclusion_table_uuid;
   platform::u64 salt = 0;
+  api::EngineRequestContext owner;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  mutable std::vector<std::shared_ptr<scratchbird::tests::FixtureEngineStatement>> statements;
 
   ~Fixture() {
+    statements.clear();
+    session.reset();
     std::error_code ignored;
     if (!directory.empty()) {
       std::filesystem::remove_all(directory, ignored);
@@ -466,7 +510,7 @@ struct Fixture {
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
@@ -520,59 +564,37 @@ void Prepare(const api::EngineRequestContext& context) {
   RequireOk(api::EnginePrepareTransaction(request), "prepare failed");
 }
 
-api::EngineRequestContext QueryContext(api::EngineRequestContext context,
+api::EngineRequestContext TransactionContext(
+    const Fixture& fixture, const api::EngineRequestContext& context) {
+  // Reacquisition in the same transaction must not feed the prior receipt's
+  // private statement/metadata/capability authority back as caller input.
+  auto transaction = BaseContext(fixture, context.request_id);
+  transaction.local_transaction_id = context.local_transaction_id;
+  transaction.transaction_uuid = context.transaction_uuid;
+  transaction.transaction_isolation_level = context.transaction_isolation_level;
+  transaction.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  return transaction;
+}
+
+api::EngineRequestContext QueryContext(const Fixture& fixture,
+                                       api::EngineRequestContext context,
                                        const api::EngineUuid& table_uuid,
                                        const platform::u64 salt) {
-  context.statement_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 1);
-  context.statement_snapshot_uuid = {};
-  api::EnginePublishStatementSnapshotRequest snapshot_request;
-  snapshot_request.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(snapshot_request);
-  RequireOk(snapshot, "publish statement-stable MGA snapshot failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 2);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.authorization_context.present = true;
-  context.authorization_context.authority_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 3);
-  context.authorization_context.principal_uuid = context.principal_uuid;
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 1;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  api::EngineAuthorizationSubject subject;
-  subject.subject_uuid = context.principal_uuid;
-  subject.subject_kind = "principal";
-  context.authorization_context.effective_subjects.push_back(subject);
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 4);
-  grant.subject_uuid = context.principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = table_uuid;
-  grant.right = "SELECT";
-  grant.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(grant));
-  context.optimizer_capability_snapshot_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 5);
-  context.optimizer_resource_snapshot_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 6);
-  context.optimizer_route_snapshot_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 7);
-  context.catalog_epoch_uuid =
-      NewNativeUuid(platform::UuidKind::object, salt + 8);
-  context.optimizer_route_epoch = 1;
-  context.optimizer_route_generation = 1;
-  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
-  context.optimizer_maximum_candidate_count = 1024;
-  context.optimizer_maximum_memo_groups = 32;
-  context.optimizer_maximum_search_steps = 128;
-  context.optimizer_maximum_planning_time_ns = 1'000'000;
-  context.current_monotonic_ns = "1";
+  (void)table_uuid;
+  (void)salt;
+  const auto transaction = TransactionContext(fixture, context);
+  auto statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+      *fixture.session, transaction);
+  context = statement->context;
+  Require(!context.statement_uuid.is_nil() &&
+              !context.statement_snapshot_uuid.is_nil() &&
+              !context.statement_metadata_snapshot_uuid.is_nil() &&
+              context.statement_metadata_snapshot_engine_owned &&
+              context.authorization_context.present &&
+              !context.optimizer_capability_snapshot_uuid.is_nil(),
+          "query context lacks actual engine-owned statement authority");
+  fixture.statements.push_back(std::move(statement));
   return context;
 }
 
@@ -681,7 +703,7 @@ api::EngineDescriptor InputDescriptor() {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
-  descriptor.type_uuid = kTypeUuid;
+  descriptor.type_uuid = Int64TypeUuid();
   descriptor.encoded_descriptor = EncodedInt64Descriptor();
   return descriptor;
 }
@@ -753,45 +775,53 @@ api::CrudTableRecord Table(const Fixture& fixture,
   return table;
 }
 
-void PersistTable(const Fixture& fixture,
-                  const api::EngineRequestContext& context,
+void PersistTable(Fixture& fixture,
+                  api::EngineRequestContext& context,
                   const api::EngineUuid& table_uuid,
                   const bool temporary = false,
                   const bool full_width = false) {
   const auto table = Table(fixture, context, table_uuid, temporary, full_width);
-  const auto appended = api::AppendMgaTableMetadata(context, table);
-  Require(!appended.error, "table metadata append failed");
-  api::MgaRelationStorageDescriptor descriptor;
-  const auto ensured =
-      api::EnsureMgaRelationStorageDescriptor(context, table, {}, &descriptor);
-  Require(!ensured.error, "persisted relation descriptor creation failed");
+  const auto published = scratchbird::tests::PublishMgaTableFixture(
+      context, table, std::vector<std::string>(table.columns.size(), "int64"));
+  Require(!published.error, "bound table and relation descriptor publication failed");
+  fixture.schema_uuid = context.current_schema_uuid;
+  fixture.owner.current_schema_uuid = context.current_schema_uuid;
+  const auto loaded = api::LoadMgaRelationStorageDescriptor(context, table_uuid);
+  Require(loaded.ok && loaded.descriptor.columns.size() == table.columns.size() &&
+              std::ranges::all_of(loaded.descriptor.columns, [](const auto& column) {
+                return !column.column_uuid.is_nil() &&
+                       !column.value_descriptor.descriptor_uuid.is_nil() &&
+                       !column.value_descriptor.type_uuid.is_nil();
+              }),
+          "published heap relation lacks its bound column cohort");
 }
 
 void InsertRows(const Fixture& fixture,
                 const api::EngineRequestContext& context,
                 const api::EngineUuid& table_uuid,
                 std::vector<api::EngineRowValue> rows) {
-  api::EngineInsertRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineInsertRowsRequest>
+      request(*fixture.session, TransactionContext(fixture, context));
   request.target_schema.uuid = fixture.schema_uuid;
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.target_object = request.target_table;
   request.bound_object_identity.object_uuid = request.target_table.uuid;
   request.bound_object_identity.catalog_generation_id =
-      context.catalog_generation_id;
-  request.bound_object_identity.security_epoch = context.security_epoch;
-  request.bound_object_identity.resource_epoch = context.resource_epoch;
+      request.context.catalog_generation_id;
+  request.bound_object_identity.security_epoch = request.context.security_epoch;
+  request.bound_object_identity.resource_epoch = request.context.resource_epoch;
   request.estimated_row_count = rows.size();
   request.input_rows = std::move(rows);
   RequireOk(api::EngineInsertRows(request), "fixture row insert failed");
 }
 
-void DeleteRow(const api::EngineRequestContext& context,
+void DeleteRow(const Fixture& fixture,
+               const api::EngineRequestContext& context,
                const api::EngineUuid& table_uuid,
                const api::EngineUuid& row_uuid) {
-  api::EngineDeleteRowsRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineDeleteRowsRequest>
+      request(*fixture.session, TransactionContext(fixture, context));
   request.target_table.uuid = table_uuid;
   request.target_table.object_kind = "table";
   request.delete_predicate.predicate_kind = "row_uuid_match";
@@ -818,20 +848,18 @@ Fixture MakeFixture() {
   create.filespace_uuid =
       NewUuid(platform::UuidKind::filespace, fixture.salt + 11);
   create.creation_unix_epoch_millis = NowMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "database creation failed");
 
   fixture.database_uuid = create.database_uuid.value;
   fixture.filespace_uuid = create.filespace_uuid.value;
-  fixture.schema_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 20);
-  fixture.principal_uuid =
-      NewNativeUuid(platform::UuidKind::principal, fixture.salt + 21);
-  fixture.session_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 22);
+  fixture.owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.schema_uuid = fixture.owner.current_schema_uuid;
+  fixture.principal_uuid = fixture.owner.principal_uuid;
+  fixture.session_uuid = fixture.owner.session_uuid;
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner);
   fixture.main_table_uuid =
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 23);
   fixture.empty_table_uuid =
@@ -854,70 +882,57 @@ Fixture MakeFixture() {
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 29);
 
   auto metadata = Begin(fixture, "qow-heap-metadata");
-  auto zero_snapshot_context = metadata;
-  zero_snapshot_context.statement_uuid =
+  // The bootstrap transaction is already committed. A live database cannot
+  // acquire a zero boundary by deleting its committed history or rewriting a
+  // transaction's immutable begin boundary.
+  auto bootstrap_snapshot_context = metadata;
+  bootstrap_snapshot_context.statement_uuid =
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 5004);
-  api::EngineResolveStatementSnapshotRequest zero_resolve_request;
+  api::EnginePublishStatementSnapshotRequest bootstrap_publish;
+  bootstrap_publish.context = bootstrap_snapshot_context;
+  const auto bootstrap_snapshot = api::EnginePublishStatementSnapshot(bootstrap_publish);
+  RequireOk(bootstrap_snapshot, "bootstrap statement snapshot publication failed");
+  Require(bootstrap_snapshot.snapshot_vector.visible_committed_high_watermark > 0,
+          "bootstrap commit is missing from durable visibility authority");
+  bootstrap_snapshot_context.statement_snapshot_uuid = bootstrap_snapshot.statement_snapshot_uuid;
+  bootstrap_snapshot_context.snapshot_visible_through_local_transaction_id =
+      bootstrap_snapshot.snapshot_vector.visible_committed_high_watermark;
+  api::EngineResolveStatementSnapshotRequest bootstrap_resolve;
+  bootstrap_resolve.context = bootstrap_snapshot_context;
+  const auto bootstrap_resolved = api::EngineResolveStatementSnapshot(bootstrap_resolve);
+  RequireOk(bootstrap_resolved, "bootstrap snapshot resolution failed");
+  Require(mga::SnapshotVectorDescriptorEqual(bootstrap_snapshot.snapshot_vector,
+                                            bootstrap_resolved.snapshot_vector),
+          "bootstrap snapshot changed during resolution");
+  auto unresolved = Begin(fixture, "qow-heap-unresolved-history-control");
   {
-    const auto inventory_guard =
-        api::AcquireTransactionInventoryGuard(metadata.database_path);
-    const auto loaded_inventory =
-        db::LoadLocalTransactionInventoryFromDatabase(metadata.database_path);
-    Require(loaded_inventory.ok(),
-            "initial durable inventory load for zero boundary failed");
-    auto zero_inventory = loaded_inventory.inventory;
-    std::erase_if(zero_inventory.entries, [&](const auto& entry) {
-      return entry.identity.local_id.value != metadata.local_transaction_id;
-    });
-    Require(zero_inventory.entries.size() == 1 &&
-                zero_inventory.entries.front().identity.local_id.value ==
-                    metadata.local_transaction_id &&
-                zero_inventory.entries.front().state ==
-                    mga::TransactionState::active &&
-                std::ranges::none_of(
-                    zero_inventory.entries, [](const auto& entry) {
-                      return entry.state == mga::TransactionState::committed ||
-                             entry.state == mga::TransactionState::archived;
-                    }),
-            "isolated zero-boundary inventory was not one active owner");
-    zero_inventory.entries.front()
-        .begin_visible_through_local_transaction_id = 0;
-    Require(zero_inventory.entries.front()
-                .begin_visible_through_local_transaction_id == 0,
-            "isolated zero-boundary owner retained prior visibility");
-    const auto zero_persisted = db::PersistLocalTransactionInventoryToDatabase(
-        metadata.database_path, zero_inventory);
-    Require(zero_persisted.ok(),
-            "isolated no-committed durable inventory publication failed");
-
-    api::EnginePublishStatementSnapshotRequest zero_publish_request;
-    zero_publish_request.context = zero_snapshot_context;
-    const auto zero_published =
-        api::EnginePublishStatementSnapshot(zero_publish_request);
-    RequireOk(zero_published,
-              "initial zero-boundary statement snapshot publication failed");
-    Require(
-        zero_published.snapshot_vector.visible_committed_high_watermark == 0,
-        "initial statement snapshot did not preserve a valid zero boundary");
-    zero_snapshot_context.statement_snapshot_uuid =
-        zero_published.statement_snapshot_uuid;
-    zero_snapshot_context.snapshot_visible_through_local_transaction_id = 0;
-    zero_resolve_request.context = zero_snapshot_context;
-    const auto zero_resolved =
-        api::EngineResolveStatementSnapshot(zero_resolve_request);
-    RequireOk(zero_resolved,
-              "current zero-boundary statement snapshot resolution failed");
-    Require(mga::SnapshotVectorDescriptorEqual(
-                zero_published.snapshot_vector,
-                zero_resolved.snapshot_vector),
-            "zero-boundary statement snapshot changed during resolution");
-
-    const auto restored_inventory =
-        db::PersistLocalTransactionInventoryToDatabase(
-            metadata.database_path, loaded_inventory.inventory);
-    Require(restored_inventory.ok(),
-            "durable bootstrap inventory restoration failed");
+    const auto guard = api::AcquireTransactionInventoryGuard(metadata.database_path);
+    const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(metadata.database_path);
+    Require(loaded.ok(), "bootstrap inventory load failed");
+    const auto before = CaptureFixtureFiles(fixture.directory);
+    for (unsigned mutation = 1; mutation <= 3; ++mutation) {
+      auto altered = loaded.inventory;
+      if (mutation & 1) {
+        std::erase_if(altered.entries, [&](const auto& entry) {
+          return entry.identity.local_id.value != metadata.local_transaction_id;
+        });
+        Require(altered.entries.size() == 1,
+                "zero-boundary negative fixture lacks active owner");
+      }
+      if (mutation & 2) {
+        auto owner = std::ranges::find_if(altered.entries, [&](const auto& entry) {
+          return entry.identity.local_id.value == metadata.local_transaction_id;
+        });
+        Require(owner != altered.entries.end(), "boundary mutation lacks active owner");
+        owner->begin_visible_through_local_transaction_id = 0;
+      }
+      Require(!db::PersistLocalTransactionInventoryToDatabase(metadata.database_path, altered).ok(),
+              "durable publication accepted erased unresolved history or rewritten begin boundary");
+      Require(CaptureFixtureFiles(fixture.directory) == before,
+              "rejected history rewrite changed durable files");
+    }
   }
+  Rollback(unresolved);
   PersistTable(fixture, metadata, fixture.main_table_uuid);
   PersistTable(fixture, metadata, fixture.empty_table_uuid);
   PersistTable(fixture, metadata, fixture.full_width_table_uuid, false, true);
@@ -933,8 +948,8 @@ Fixture MakeFixture() {
   PersistTable(fixture, metadata, fixture.temporary_table_uuid, true);
   PersistTable(fixture, metadata, fixture.exclusion_table_uuid);
   Commit(metadata);
-  Require(!api::EngineResolveStatementSnapshot(zero_resolve_request).ok,
-          "committed owner retained its zero-boundary statement snapshot");
+  Require(!api::EngineResolveStatementSnapshot(bootstrap_resolve).ok,
+          "committed owner retained its bootstrap statement snapshot");
 
   auto writer = Begin(fixture, "qow-heap-main-writer");
   InsertRows(fixture,
@@ -976,7 +991,7 @@ Fixture MakeFixture() {
                         api::CrudValueFields{
                             {"required_value", "1"},
                             {"nullable_value", "2"},
-                            {"nullable_value", "3"}});
+                            {"nullable_probe", "3"}});
   append_full_width_row(fixture.malformed_later_column_table_uuid,
                         fixture.salt + 41,
                         api::CrudValueFields{
@@ -1007,6 +1022,33 @@ Fixture MakeFixture() {
       malformed_writer, malformed, &ignored_sequence);
   Require(!append.error, "malformed fixture row append failed");
   Commit(malformed_writer);
+  {
+    // A duplicate retained name is not a valid commit payload. Publish the
+    // independently named fields first, then corrupt only this test relation's
+    // stored later-column name. This retains the post-read atomicity test
+    // without asking the transaction barrier to certify malformed values.
+    const auto path = api::MgaScopedRelationPath(
+        malformed_width_writer, fixture.duplicate_later_column_table_uuid,
+        ".rows", false);
+    Require(!path.empty(), "duplicate-column corruption target is missing");
+    std::ifstream input(path, std::ios::binary);
+    Require(input.good(), "duplicate-column corruption target cannot be read");
+    const std::string bytes(std::istreambuf_iterator<char>(input),
+                            std::istreambuf_iterator<char>{});
+    input.close();
+    const std::string field_marker = std::string(1, char{14}) +
+        std::string(3, '\0') + "nullable_probe";
+    const auto position = bytes.find(field_marker);
+    Require(bytes.starts_with("SBMRBIN1") && position != std::string::npos &&
+                bytes.find(field_marker, position + field_marker.size()) == std::string::npos,
+            "duplicate-column fixture is not one independently framed field");
+    std::fstream output(path, std::ios::binary | std::ios::in | std::ios::out);
+    Require(output.good(), "duplicate-column corruption target cannot be written");
+    output.seekp(static_cast<std::streamoff>(position + 4));
+    output.write("nullable_value", 14);
+    output.flush();
+    Require(output.good(), "duplicate-column corruption publication failed");
+  }
   return fixture;
 }
 
@@ -1099,7 +1141,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
     api::RelationalTypeDescriptor type;
     type.descriptor_id = id;
     type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
-    type.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
+    type.type_uuid = column.value_descriptor.type_uuid;
     type.nullability = column.nullable
                            ? api::RelationalNullability::kNullable
                            : api::RelationalNullability::kNonNull;
@@ -1423,79 +1465,135 @@ void RequireAtomicObjectAdmissionBuildFailure(
           detail);
 }
 
-void ValidateDurableZeroHighWaterHeapGate(Fixture& fixture) {
-  auto owner = Begin(fixture, "qow-heap-zero-high-water-owner");
-  const auto inventory_guard =
-      api::AcquireTransactionInventoryGuard(owner.database_path);
-  const auto loaded =
-      db::LoadLocalTransactionInventoryFromDatabase(owner.database_path);
-  Require(loaded.ok(), "zero-high-water heap inventory load failed");
-  const auto committed_creator = std::ranges::find_if(
-      loaded.inventory.entries, [&](const auto& entry) {
-        return entry.identity.local_id.value != owner.local_transaction_id &&
-               (entry.state == mga::TransactionState::committed ||
-                entry.state == mga::TransactionState::archived);
-      });
-  Require(committed_creator != loaded.inventory.entries.end(),
-          "zero-high-water fixture lacks a durable committed non-owner");
-  const auto committed_non_owner_id =
-      committed_creator->identity.local_id.value;
-  auto isolated = loaded.inventory;
-  std::erase_if(isolated.entries, [&](const auto& entry) {
-    return entry.identity.local_id.value != owner.local_transaction_id;
-  });
-  Require(isolated.entries.size() == 1 &&
-              isolated.entries.front().state == mga::TransactionState::active,
-          "zero-high-water heap inventory did not isolate one active owner");
-  isolated.entries.front().begin_visible_through_local_transaction_id = 0;
-  Require(db::PersistLocalTransactionInventoryToDatabase(owner.database_path,
-                                                          isolated)
-              .ok(),
-          "zero-high-water heap inventory publication failed");
+void ValidateZeroHighWaterSnapshotComponent(const Fixture& fixture) {
+  // A genuine zero boundary exists before the first commit. Exercise the real
+  // MGA transition/snapshot/row-visibility primitives without presenting this
+  // component inventory as a published database history.
+  auto inventory = mga::MakeEmptyLocalTransactionInventory();
+  for (unsigned i = 0; i < 2; ++i) {
+    const auto begun = mga::BeginLocalTransaction(
+        inventory, NewUuid(platform::UuidKind::transaction, fixture.salt + 6900 + i),
+        NowMillis());
+    Require(begun.ok(), "zero-boundary component transaction begin failed");
+    inventory = begun.inventory;
+  }
+  const auto owner_id = inventory.entries.at(0).identity.local_id;
+  const auto peer_id = inventory.entries.at(1).identity.local_id;
+  const auto published = mga::PublishStatementStableSnapshotVector(
+      inventory, owner_id, NowMillis());
+  Require(published.ok() && published.descriptor.visible_committed_high_watermark == 0,
+          "first-commit-free statement snapshot did not retain zero");
+  const auto snapshot = mga::CreateLocalTransactionSnapshot(inventory, owner_id);
+  Require(snapshot.ok() &&
+              snapshot.visibility_snapshot.visible_through_local_transaction_id_is_boundary &&
+              snapshot.visibility_snapshot.visible_through_local_transaction_id == 0 &&
+              snapshot.visibility_snapshot.visible_through_commit_sequence_is_boundary &&
+              snapshot.visibility_snapshot.visible_through_commit_sequence == 0,
+          "zero boundary became an unspecified visibility limit");
 
+  auto committed = mga::CommitLocalTransaction(inventory, peer_id, NowMillis());
+  Require(committed.ok(), "zero-boundary peer commit failed");
+  inventory = std::move(committed.inventory);
+  const auto resolved = mga::ResolveCurrentStatementStableSnapshotVector(
+      inventory, published.descriptor.snapshot_uuid,
+      published.descriptor.owning_transaction_uuid, owner_id);
+  Require(resolved.ok() &&
+              mga::SnapshotVectorDescriptorEqual(published.descriptor, resolved.descriptor),
+          "first peer commit widened the retained zero snapshot");
+  const auto version = [&](const mga::TransactionInventoryEntry& entry,
+                           platform::u64 ordinal) {
+    const auto row = mga::MakeRowIdentity(
+        NewUuid(platform::UuidKind::row, fixture.salt + 6920 + ordinal));
+    Require(row.ok(), "zero-boundary component row identity failed");
+    const auto identity = mga::MakeRowVersionIdentity(
+        row.identity, entry.identity, ordinal + 1,
+        NewNativeUuid(platform::UuidKind::row, fixture.salt + 6930 + ordinal));
+    Require(identity.ok(), "zero-boundary component version identity failed");
+    mga::RowVersionMetadata result;
+    result.identity = identity.identity;
+    result.state = entry.state == mga::TransactionState::committed
+        ? mga::RowVersionState::committed : mga::RowVersionState::uncommitted;
+    result.creator_transaction_state = entry.state;
+    result.creator_commit_sequence = entry.commit_sequence;
+    result.payload_present = true;
+    return result;
+  };
+  const auto own_version = version(inventory.entries.at(0), 0);
+  const auto peer_version = version(inventory.entries.at(1), 1);
+  const auto own = mga::EvaluateVisibility(own_version, snapshot.visibility_snapshot);
+  const auto peer = mga::EvaluateVisibility(peer_version, snapshot.visibility_snapshot);
+  Require(own.ok() && own.decision == mga::VisibilityDecision::visible &&
+              peer.ok() && peer.decision == mga::VisibilityDecision::invisible,
+          "zero-boundary visibility did not admit only the owner's row");
+  const auto later = mga::BeginLocalTransaction(
+      inventory, NewUuid(platform::UuidKind::transaction, fixture.salt + 6940),
+      NowMillis());
+  Require(later.ok(), "post-commit component reader begin failed");
+  const auto latest_snapshot = mga::CreateLocalTransactionSnapshot(
+      later.inventory, later.inventory.entries.back().identity.local_id);
+  Require(latest_snapshot.ok(), "post-commit component snapshot failed");
+  const auto latest_peer = mga::EvaluateVisibility(peer_version, latest_snapshot.visibility_snapshot);
+  Require(latest_peer.ok() && latest_peer.decision == mga::VisibilityDecision::visible,
+          "new component reader did not observe the actual peer commit");
+  mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);
+  Require(!mga::ResolvePublishedSnapshotVector(published.descriptor.snapshot_uuid).ok(),
+          "revoked zero-boundary publication remained usable");
+  mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);
+}
+
+void ValidateDurableCapturedBoundaryHeapGate(Fixture& fixture) {
+  auto metadata = Begin(fixture, "qow-heap-captured-boundary-metadata");
   const auto relation_uuid =
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 7000);
-  PersistTable(fixture, owner, relation_uuid);
-  InsertRows(fixture, owner, relation_uuid, {Int64Row(701)});
-  api::CrudRowVersionRecord non_owner;
-  non_owner.creator_tx = committed_non_owner_id;
-  non_owner.table_uuid = relation_uuid;
-  non_owner.row_uuid =
-      NewNativeUuid(platform::UuidKind::row, fixture.salt + 7001);
-  non_owner.version_uuid =
-      NewNativeUuid(platform::UuidKind::object, fixture.salt + 7002);
-  non_owner.values = {{"value", "702"}};
-  std::uint64_t ignored_sequence = 0;
-  Require(!api::AppendMgaRowVersion(owner, non_owner, &ignored_sequence).error,
-          "zero-high-water non-owner fixture append failed");
+  PersistTable(fixture, metadata, relation_uuid);
+  Commit(metadata);
 
-  auto query = QueryContext(owner, relation_uuid, fixture.salt + 7010);
-  Require(query.snapshot_visible_through_local_transaction_id == 0,
-          "durable zero-high-water query context was widened");
+  auto owner = Begin(fixture, "qow-heap-captured-boundary-owner");
+  InsertRows(fixture, owner, relation_uuid, {Int64Row(701)});
+  auto query = QueryContext(fixture, owner, relation_uuid, fixture.salt + 7010);
+  const auto boundary = query.snapshot_visible_through_local_transaction_id;
+  Require(boundary > 0, "bootstrapped database lost committed history");
+  auto peer = Begin(fixture, "qow-heap-captured-boundary-peer");
+  InsertRows(fixture, peer, relation_uuid, {Int64Row(702)});
+  Commit(peer);
+
   auto request = RequestFor(query, relation_uuid, fixture.salt + 7020);
-  Require(request.physical_dag.mga_statement_context
-                  .visible_committed_high_watermark == 0 &&
+  Require(request.physical_dag.mga_statement_context.visible_committed_high_watermark == boundary &&
               exec::PhysicalMgaStatementContextEqual(
                   request.mga_authority.statement_context,
                   request.physical_dag.mga_statement_context),
-          "zero-high-water heap request lost its full runtime carrier");
+          "captured boundary heap request lost its full runtime carrier");
   const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
   Require(result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
-              result.output_batch.rows.front().values.front().encoded_value ==
-                  "701" &&
+              result.output_batch.rows.front().values.front().encoded_value == "701" &&
               result.counters.invisible_row_version_count >= 1 &&
-              committed_non_owner_id != owner.local_transaction_id &&
-              result.mga_statement_context
-                      .visible_committed_high_watermark == 0 &&
+              peer.local_transaction_id > owner.local_transaction_id &&
+              result.mga_statement_context.visible_committed_high_watermark == boundary &&
               exec::PhysicalMgaStatementContextEqual(
-                  result.mga_statement_context,
-                  request.mga_authority.statement_context),
-          "zero high-water did not admit only the owner's row under durable authority");
+                  result.mga_statement_context, request.mga_authority.statement_context),
+          "durable captured boundary did not admit only the owner's row");
   ReleaseRequest(&request);
-  Require(db::PersistLocalTransactionInventoryToDatabase(owner.database_path,
-                                                          loaded.inventory)
-              .ok(),
-          "zero-high-water heap inventory restoration failed");
+
+  auto forged = query;
+  forged.snapshot_visible_through_local_transaction_id = 0;
+  api::EngineResolveStatementSnapshotRequest resolve;
+  resolve.context = forged;
+  const auto refused = api::EngineResolveStatementSnapshot(resolve);
+  Require(!refused.ok && std::ranges::any_of(refused.diagnostics, [](const auto& d) {
+            return d.detail.find("statement_snapshot_high_watermark_mismatch") != std::string::npos;
+          }), "caller zero widened or replaced the durable statement snapshot");
+
+  // Preserve a second durable positive: a new reader sees the committed peer
+  // but still cannot see the other transaction's uncommitted owner row.
+  auto fresh = QueryContext(fixture, Begin(fixture, "qow-heap-post-peer-reader"),
+                            relation_uuid, fixture.salt + 7030);
+  auto fresh_request = RequestFor(fresh, relation_uuid, fixture.salt + 7040);
+  const auto current = exec::ExecuteCanonicalHeapRelationAcquisition(fresh_request);
+  Require(current.diagnostic.ok && current.output_batch.rows.size() == 1 &&
+              current.output_batch.rows.front().values.front().encoded_value == "702",
+          "new durable reader did not observe only the committed peer");
+  ReleaseRequest(&fresh_request);
+  Rollback(fresh);
   Rollback(owner);
 }
 
@@ -1519,7 +1617,7 @@ void ValidateDurableCapturedExclusionHeapGate(Fixture& fixture) {
       Begin(fixture, "qow-heap-captured-committed-after");
   Commit(committed_after);
 
-  auto reader = QueryContext(Begin(fixture, "qow-heap-captured-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-captured-reader"),
                              fixture.exclusion_table_uuid,
                              fixture.salt + 7100);
   auto request = RequestFor(reader, fixture.exclusion_table_uuid,
@@ -1569,7 +1667,7 @@ void ValidateDurableCapturedExclusionHeapGate(Fixture& fixture) {
 }
 
 void ValidateRevokedHeapAuthorityHasNoAccess(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-revoked-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-revoked-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 7200);
   auto request = RequestFor(reader, fixture.main_table_uuid,
@@ -1588,7 +1686,7 @@ void ValidateRevokedHeapAuthorityHasNoAccess(Fixture& fixture) {
 }
 
 void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
-  auto reader = QueryContext(
+  auto reader = QueryContext(fixture,
       Begin(fixture, "qow-heap-physical-v2-context-reader"),
       fixture.main_table_uuid, fixture.salt + 7250);
   auto baseline = RequestFor(reader, fixture.main_table_uuid,
@@ -1746,7 +1844,7 @@ bool PreservesPersistedDescriptorFields(
 }
 
 void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 100);
   auto request = RequestFor(reader, fixture.main_table_uuid,
@@ -1783,7 +1881,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
               first.counters.materialized_cell_count == 3 &&
               persisted.descriptor.columns.front().ordinal == 0 &&
               request.relational_dag->outputs.front().ordinal == 0 &&
-              persisted_value_descriptor.type_uuid == kTypeUuid,
+              persisted_value_descriptor.type_uuid == Int64TypeUuid(),
           "committed heap rows were not acquired under bounded MGA authority");
   std::size_t null_count = 0;
   for (const auto& row : first.output_batch.rows) {
@@ -1824,7 +1922,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   ReleaseRequest(&request);
   Rollback(reader);
 
-  auto current_reader = QueryContext(Begin(fixture, "qow-heap-current-reader"),
+  auto current_reader = QueryContext(fixture, Begin(fixture, "qow-heap-current-reader"),
                                      fixture.main_table_uuid,
                                      fixture.salt + 140);
   auto current = RequestFor(current_reader,
@@ -1840,9 +1938,9 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   Rollback(current_reader);
 
   auto delete_writer = Begin(fixture, "qow-heap-delete-writer");
-  DeleteRow(delete_writer, fixture.main_table_uuid, row_to_delete);
+  DeleteRow(fixture, delete_writer, fixture.main_table_uuid, row_to_delete);
   Commit(delete_writer);
-  auto delete_reader = QueryContext(Begin(fixture, "qow-heap-delete-reader"),
+  auto delete_reader = QueryContext(fixture, Begin(fixture, "qow-heap-delete-reader"),
                                     fixture.main_table_uuid,
                                     fixture.salt + 170);
   auto after_delete = RequestFor(delete_reader,
@@ -1863,7 +1961,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
              fixture.main_table_uuid,
              {Int64Row(40)});
   Rollback(rollback_writer);
-  auto rollback_reader = QueryContext(Begin(fixture, "qow-heap-rollback-reader"),
+  auto rollback_reader = QueryContext(fixture, Begin(fixture, "qow-heap-rollback-reader"),
                                       fixture.main_table_uuid,
                                       fixture.salt + 180);
   auto rolled_back = RequestFor(rollback_reader,
@@ -1878,7 +1976,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   ReleaseRequest(&rolled_back);
   Rollback(rollback_reader);
 
-  auto own_writer = QueryContext(Begin(fixture, "qow-heap-own-writer"),
+  auto own_writer = QueryContext(fixture, Begin(fixture, "qow-heap-own-writer"),
                                  fixture.main_table_uuid,
                                  fixture.salt + 220);
   InsertRows(fixture, own_writer, fixture.main_table_uuid, {Int64Row(50)});
@@ -1891,7 +1989,7 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
   ReleaseRequest(&own);
   Rollback(own_writer);
 
-  auto empty_reader = QueryContext(Begin(fixture, "qow-heap-empty-reader"),
+  auto empty_reader = QueryContext(fixture, Begin(fixture, "qow-heap-empty-reader"),
                                    fixture.empty_table_uuid,
                                    fixture.salt + 260);
   auto empty = RequestFor(empty_reader,
@@ -1916,7 +2014,7 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
              {Int64Row(1), Int64Row(2), NullRow()});
   Commit(writer);
 
-  auto reader = QueryContext(Begin(fixture, "qow-heap-count-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-count-reader"),
                              relation_uuid, fixture.salt + 7210);
   api::MgaVisibleHeapRelationCountRequest request;
   request.relation_uuid = relation_uuid;
@@ -1972,7 +2070,7 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
           "streaming COUNT(*) did not observe deterministic cancellation");
   Rollback(reader);
 
-  auto current_reader = QueryContext(
+  auto current_reader = QueryContext(fixture,
       Begin(fixture, "qow-heap-count-current-reader"), relation_uuid,
       fixture.salt + 7220);
   const auto current =
@@ -2138,7 +2236,7 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
 
 // QOW-TEST-QRY-004-HEAP-DISPATCH-V1
 void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-dispatch-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-dispatch-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 281);
   auto acquisition = RequestFor(reader,
@@ -2250,7 +2348,7 @@ void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
   ReleaseRequest(&acquisition);
   Rollback(reader);
 
-  auto empty_reader = QueryContext(Begin(fixture,
+  auto empty_reader = QueryContext(fixture, Begin(fixture,
                                          "qow-heap-dispatch-empty-reader"),
                                    fixture.empty_table_uuid,
                                    fixture.salt + 283);
@@ -2276,7 +2374,7 @@ void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
 }
 
 void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-dispatch-refusals"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-dispatch-refusals"),
                              fixture.main_table_uuid,
                              fixture.salt + 285);
   auto acquisition = RequestFor(reader,
@@ -2412,7 +2510,7 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
           "pre-dispatch cancellation reported a physical read");
 
   auto denied_context = reader;
-  denied_context.authorization_context.grants.front().deny = true;
+  AddDeniedSelectProjection(denied_context, fixture.main_table_uuid);
   mutated = baseline;
   mutated.context = &denied_context;
   result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
@@ -2433,8 +2531,7 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
           "mid-dispatch cancellation did not enter the engine callback");
 
   auto malformed_context = reader;
-  malformed_context.authorization_context.grants.front()
-      .target_uuid = fixture.malformed_table_uuid;
+  // The credentialed owner's materialized grants already cover this object.
   auto malformed_acquisition = RequestFor(malformed_context,
                                           fixture.malformed_table_uuid,
                                           fixture.salt + 287);
@@ -2464,7 +2561,7 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
       NewNativeUuid(platform::UuidKind::object, salt + 1);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
-  descriptor.type_uuid = kTypeUuid;
+  descriptor.type_uuid = Int64TypeUuid();
   descriptor.encoded_descriptor = encoded_descriptor;
   exec::CanonicalResultPublicationRequest request;
   request.statement_uuid =
@@ -2488,14 +2585,14 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
   published.ordinal = 0;
   published.name_utf8 = "value";
   published.descriptor_uuid = descriptor.descriptor_uuid;
-  published.type_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7300-8000-000000420001");
+  published.type_uuid = descriptor.type_uuid;
   published.nullability = published_nullability;
   request.column_bindings.push_back({0, true, published});
   return exec::PublishCanonicalResultEnvelope(request);
 }
 
 void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-result-carrier-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-result-carrier-reader"),
                              fixture.main_table_uuid, fixture.salt + 390);
   auto acquisition = RequestFor(reader, fixture.main_table_uuid,
                                 fixture.salt + 395);
@@ -2594,7 +2691,7 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
 
 // QOW-TEST-QRY-004-HEAP-RESULT-V1
 void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-result-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-result-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 500);
   auto acquisition = RequestFor(reader, fixture.main_table_uuid,
@@ -2640,7 +2737,7 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
                   persisted.descriptor.columns.front()
                       .value_descriptor.descriptor_uuid &&
               publication.envelope.column_descriptors.front().type_uuid ==
-                  kTypeUuid &&
+                  Int64TypeUuid() &&
               publication.envelope.column_descriptors.front().nullability ==
                   exec::CanonicalResultNullability::kNullable &&
               publication.envelope.row_count == 3 &&
@@ -2691,7 +2788,7 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
   ReleaseRequest(&acquisition);
   Rollback(reader);
 
-  auto empty_reader = QueryContext(Begin(fixture, "qow-heap-result-empty"),
+  auto empty_reader = QueryContext(fixture, Begin(fixture, "qow-heap-result-empty"),
                                    fixture.empty_table_uuid,
                                    fixture.salt + 540);
   auto empty_acquisition = RequestFor(empty_reader, fixture.empty_table_uuid,
@@ -2721,7 +2818,7 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
 
 // QOW-TEST-QRY-015-HEAP-TABLESAMPLE-V1
 void ValidateOptimizerSelectedHeapTableSampleMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-table-sample-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-table-sample-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 3600);
   auto acquisition = RequestFor(reader, fixture.main_table_uuid,
@@ -2943,7 +3040,7 @@ void ValidateOptimizerSelectedHeapTableSampleMatrix(Fixture& fixture) {
 
   ReleaseRequest(&acquisition);
   Rollback(reader);
-  auto current_reader = QueryContext(
+  auto current_reader = QueryContext(fixture,
       Begin(fixture, "qow-heap-table-sample-current-reader"),
       fixture.main_table_uuid, fixture.salt + 3660);
   auto current_acquisition = RequestFor(
@@ -2968,7 +3065,7 @@ void ValidateOptimizerSelectedHeapTableSampleMatrix(Fixture& fixture) {
 
 // QOW-TEST-QRY-004-HEAP-FULL-WIDTH-V1
 void ValidateFullWidthHeapMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-full-width-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-full-width-reader"),
                              fixture.full_width_table_uuid,
                              fixture.salt + 700);
   auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
@@ -3055,7 +3152,7 @@ void ValidateFullWidthHeapMatrix(Fixture& fixture) {
                 metadata.descriptor_uuid == persisted.descriptor.columns[ordinal]
                                                 .value_descriptor
                                                 .descriptor_uuid &&
-                metadata.type_uuid == kTypeUuid,
+                metadata.type_uuid == Int64TypeUuid(),
             "selected full-width metadata is not in persisted ordinal order");
   }
   const auto repeated =
@@ -3069,7 +3166,7 @@ void ValidateFullWidthHeapMatrix(Fixture& fixture) {
   ReleaseRequest(&acquisition);
   Rollback(reader);
 
-  auto empty_reader = QueryContext(
+  auto empty_reader = QueryContext(fixture,
       Begin(fixture, "qow-heap-empty-full-width-reader"),
       fixture.empty_full_width_table_uuid, fixture.salt + 730);
   auto empty_acquisition = RequestFor(empty_reader,
@@ -3094,7 +3191,7 @@ void ValidateFullWidthHeapMatrix(Fixture& fixture) {
 }
 
 void ValidateFullWidthHeapRefusals(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-full-width-refusals"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-full-width-refusals"),
                              fixture.full_width_table_uuid,
                              fixture.salt + 760);
   auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
@@ -3272,7 +3369,7 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
       {fixture.malformed_later_column_table_uuid, "malformed"}};
   for (std::size_t index = 0; index < malformed_relations.size(); ++index) {
     const auto& [relation_uuid, category] = malformed_relations[index];
-    auto malformed_context = QueryContext(
+    auto malformed_context = QueryContext(fixture,
         Begin(fixture, "qow-heap-full-width-" + category), relation_uuid,
         fixture.salt + 800 + index * 20);
     auto malformed_acquisition = RequestFor(
@@ -3290,7 +3387,7 @@ void ValidateFullWidthHeapRefusals(Fixture& fixture) {
 }
 
 void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-result-refusals"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-result-refusals"),
                              fixture.main_table_uuid,
                              fixture.salt + 600);
   auto acquisition = RequestFor(reader, fixture.main_table_uuid,
@@ -3450,7 +3547,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
           "pre-registration cancellation reported heap data");
 
   mutated = baseline;
-  mutated.context.authorization_context.grants.front().deny = true;
+  AddDeniedSelectProjection(mutated.context, fixture.main_table_uuid);
   result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
   RequireAtomicSelectedFailure(result,
                                "denied selected heap scan published a result");
@@ -3493,7 +3590,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
   ReleaseRequest(&acquisition);
   Rollback(reader);
 
-  auto malformed_context = QueryContext(
+  auto malformed_context = QueryContext(fixture,
       Begin(fixture, "qow-heap-result-malformed"),
       fixture.malformed_table_uuid, fixture.salt + 640);
   auto malformed_acquisition = RequestFor(
@@ -3509,7 +3606,7 @@ void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
 }
 
 void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-refusal-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-refusal-reader"),
                              fixture.main_table_uuid,
                              fixture.salt + 300);
   auto baseline = RequestFor(reader,
@@ -3518,7 +3615,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   const api::TypedRelationalDag original_relational = *baseline.relational_dag;
 
   auto mutated = baseline;
-  mutated.physical_dag.catalog_generation = 2;
+  ++mutated.physical_dag.catalog_generation;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "catalog generation mismatch was accepted");
 
@@ -3726,6 +3823,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
   auto missing_grant = reader;
   missing_grant.authorization_context.grants.clear();
+  missing_grant.authorization_context.engine_owned_bootstrap_role_uuid = {};
   mutated = baseline;
   mutated.context = &missing_grant;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
@@ -3739,7 +3837,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
                        "stale authorization snapshot was accepted");
 
   auto denied_context = reader;
-  denied_context.authorization_context.grants.front().deny = true;
+  AddDeniedSelectProjection(denied_context, fixture.main_table_uuid);
   mutated = baseline;
   mutated.context = &denied_context;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
@@ -3772,8 +3870,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   const api::EngineUuid invisible_relation_uuid =
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 345);
   auto invisible_context = reader;
-  invisible_context.authorization_context.grants.front()
-      .target_uuid = invisible_relation_uuid;
+  // The credentialed owner's materialized grants already cover this object.
   mutated = baseline;
   mutated.context = &invisible_context;
   const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
@@ -3830,8 +3927,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
           "mid-read cancellation did not return cancellation evidence");
 
   auto temporary_context = reader;
-  temporary_context.authorization_context.grants.front()
-      .target_uuid = fixture.temporary_table_uuid;
+  // The credentialed owner's materialized grants already cover this object.
   auto temporary = RequestFor(temporary_context,
                               fixture.temporary_table_uuid,
                               fixture.salt + 360);
@@ -3846,8 +3942,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   ReleaseRequest(&temporary);
 
   auto malformed_context = reader;
-  malformed_context.authorization_context.grants.front()
-      .target_uuid = fixture.malformed_table_uuid;
+  // The credentialed owner's materialized grants already cover this object.
   auto malformed = RequestFor(malformed_context,
                               fixture.malformed_table_uuid,
                               fixture.salt + 380);
@@ -3863,7 +3958,7 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
 // QOW-TEST-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1
 void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-admission-reader"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-admission-reader"),
                              fixture.full_width_table_uuid,
                              fixture.salt + 3300);
   auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
@@ -3964,7 +4059,8 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
                   reader.catalog_epoch_uuid &&
               result.request.statistics.statistics_generation ==
                   reader.catalog_generation_id &&
-              result.request.statistics.admitted_at_monotonic_ns == 1 &&
+              result.request.statistics.admitted_at_monotonic_ns ==
+                  std::stoull(reader.current_monotonic_ns) &&
               result.request.route.route_snapshot_uuid ==
                   reader.optimizer_route_snapshot_uuid &&
               result.request.route.route_epoch ==
@@ -4042,7 +4138,8 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               estimate.statistics_snapshot_uuid ==
                   reader.statement_uuid &&
               estimate.statistics_generation == reader.catalog_generation_id &&
-              estimate.admitted_at_monotonic_ns == 1 &&
+              estimate.admitted_at_monotonic_ns ==
+                  std::stoull(reader.current_monotonic_ns) &&
               result.request.statistics.captured_before_data_access &&
               !result.request.statistics.data_access_observed &&
               !result.request.statistics.runtime_actuals_present &&
@@ -4216,7 +4313,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
 }
 
 void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
-  auto reader = QueryContext(Begin(fixture, "qow-heap-admission-refusals"),
+  auto reader = QueryContext(fixture, Begin(fixture, "qow-heap-admission-refusals"),
                              fixture.full_width_table_uuid,
                              fixture.salt + 3400);
   auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
@@ -4365,10 +4462,11 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.context.authorization_context.grants.clear();
+  mutated.context.authorization_context.engine_owned_bootstrap_role_uuid = {};
   expect_refusal(mutated, "missing SELECT grant was admitted");
 
   mutated = baseline;
-  mutated.context.authorization_context.grants.front().deny = true;
+  AddDeniedSelectProjection(mutated.context, fixture.full_width_table_uuid);
   expect_refusal(mutated, "denied SELECT grant was admitted");
 
   mutated = baseline;
@@ -4519,7 +4617,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
   mutated.context.prepared_metadata_required_metadata_epoch = 1;
   expect_refusal(mutated, "prepared metadata epoch was admitted");
 
-  auto temporary_context = QueryContext(
+  auto temporary_context = QueryContext(fixture,
       reader, fixture.temporary_table_uuid, fixture.salt + 3460);
   auto temporary_acquisition = RequestFor(
       temporary_context, fixture.temporary_table_uuid, fixture.salt + 3480);
@@ -4544,9 +4642,19 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
                   current_descriptor.descriptor.descriptor_status,
           "persisted descriptor status fixture was not restored");
 
-  auto zero_generation = current_descriptor.descriptor;
-  zero_generation.descriptor_generation = 0;
-  AppendCompleteRelationDescriptorRecord(reader, zero_generation);
+  // The production serializer correctly refuses zero definition generations.
+  // Corrupt the serialized field instead, retaining a complete binary record
+  // so admission must reject the descriptor rather than a truncated frame.
+  auto zero_generation = api::SerializeMgaRelationStorageDescriptor(
+      current_descriptor.descriptor);
+  auto generation_field = std::ranges::find(
+      zero_generation, std::string("descriptor_generation"),
+      &std::pair<std::string, std::string>::first);
+  Require(generation_field != zero_generation.end(),
+          "descriptor generation corruption field was absent");
+  generation_field->second = "0";
+  AppendRelationDescriptorFields(reader,
+      current_descriptor.descriptor.relation_uuid, zero_generation);
   expect_refusal(baseline,
                  "zero/stale persisted relation descriptor generation was admitted");
   AppendCompleteRelationDescriptorRecord(reader, current_descriptor.descriptor);
@@ -4565,7 +4673,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
       invisible_writer, invisible_relation_uuid);
   Require(writer_descriptor.ok && writer_descriptor.descriptor.columns.size() == 2,
           "writer could not load its uncommitted relation descriptor");
-  auto invisible_reader = QueryContext(
+  auto invisible_reader = QueryContext(fixture,
       Begin(fixture, "qow-heap-admission-invisible-reader"),
       invisible_relation_uuid, fixture.salt + 3530);
   auto invisible_acquisition = BoundRequest(
@@ -4581,13 +4689,10 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 }
 
 void ValidateCanonicalInt128GroupedSumMatrix() {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714");
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int128";
-  descriptor.encoded_descriptor =
-      "type_uuid=019d0000-0000-7000-8000-00000000d715;"
-      "nullability=nullable";
+  const auto descriptor = exec::MakeExecutorDescriptor(
+      "int128", "nullability=nullable");
+  Require(!descriptor.descriptor_uuid.is_nil() && !descriptor.type_uuid.is_nil(),
+          "grouped SUM lacks bound binary int128 descriptor/type identities");
 
   exec::CanonicalInt128SumStateV1 all_null;
   auto transition =
@@ -4656,12 +4761,141 @@ void ValidateCanonicalInt128GroupedSumMatrix() {
           "grouped SUM finalized through a substituted result descriptor");
 }
 
+void ValidateExplicitLargeValueStream(Fixture& fixture) {
+  const auto relation = NewNativeUuid(platform::UuidKind::object, fixture.salt + 9801);
+  auto metadata = Begin(fixture, "lob-stream-metadata");
+  api::CrudTableRecord table;
+  table.creator_tx = metadata.local_transaction_id;
+  table.table_uuid = relation;
+  table.default_name = "binary_lob_stream";
+  table.columns = {{"value", "canonical=binary;nullable=true"}};
+  const auto published = scratchbird::tests::PublishMgaTableFixture(
+      metadata, table, {"binary"});
+  Require(!published.error, "LOB stream bound metadata publication failed");
+  Commit(metadata);
+  auto writer = Begin(fixture, "lob-stream-writer");
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(writer, relation);
+  Require(descriptor.ok && descriptor.descriptor.columns.size() == 1,
+          "LOB stream descriptor absent");
+  const auto literal = api::MakeMgaLargeValueLocator(
+      NewNativeUuid(platform::UuidKind::object, fixture.salt + 9802), 1, 1);
+  const std::string large = literal + std::string(12000, 'x');
+  std::vector<api::CrudStoredValue> expected{large, literal, "",
+                                          api::CrudStoredValue::SqlNull()};
+  std::vector<api::EngineRowValue> rows;
+  for (const auto& value : expected) {
+    api::EngineTypedValue typed;
+    typed.descriptor = descriptor.descriptor.columns[0].value_descriptor;
+    typed.setState(value.state);
+    typed.binary_value.assign(value.bytes.begin(), value.bytes.end());
+    api::EngineRowValue row;
+    row.fields.push_back({"value", std::move(typed)});
+    rows.push_back(std::move(row));
+  }
+  InsertRows(fixture, writer, relation, std::move(rows));
+  Commit(writer);
+  auto reader = QueryContext(fixture, Begin(fixture, "lob-stream-reader"),
+                             relation, fixture.salt + 9803);
+  std::vector<api::CrudStoredValue> actual;
+  api::MgaVisibleHeapRelationStreamRequest request;
+  request.relation_uuid = relation;
+  request.maximum_decoded_bytes_per_pass = 8 * 1024 * 1024;
+  request.maximum_memory_bytes = 8 * 1024 * 1024;
+  request.cancellation_requested = [] { return false; };
+  request.prepare_consumer_for_visible_rows =
+      [&](const auto&, std::uint64_t count, std::uint64_t* growth) {
+        if (count != expected.size()) return false;
+        actual.reserve(count);
+        *growth = 65536;
+        return true;
+      };
+  request.consumer_retained_memory_bytes = [&] {
+    std::uint64_t bytes = sizeof(actual) + actual.capacity() * sizeof(api::CrudStoredValue);
+    for (const auto& value : actual) bytes += value.bytes.capacity() + 1;
+    return bytes;
+  };
+  request.consume_visible_row = [&](std::uint64_t, const auto& row) {
+    if (row.values.size() != 1) return false;
+    actual.push_back(row.values[0].second);
+    return true;
+  };
+  const auto result = api::StreamVisibleMgaHeapRelation(reader, request);
+  if (!result.ok) std::cerr << result.diagnostic.detail << '\n';
+  Require(result.ok && result.complete_value_delivery && result.memory_receipt_complete,
+          "LOB stream failed bounded delivery");
+  const auto order = [](const auto& a, const auto& b) {
+    return std::tie(a.state, a.bytes) < std::tie(b.state, b.bytes);
+  };
+  std::ranges::sort(actual, order);
+  std::ranges::sort(expected, order);
+  Require(actual == expected, "LOB stream exposed handles instead of materialized exact values");
+  Require(result.second_pass_decoded_byte_count >
+              result.decoded_byte_count - result.second_pass_decoded_byte_count,
+          "LOB stream receipt did not include actual companion decoding");
+  const auto reset_consumer = [&] { actual.clear(); };
+  reset_consumer();
+  auto byte_bounded = request;
+  // Admit the complete visibility pass, but exhaust the value pass inside
+  // its first selected LOB, before any consumer callback can run.
+  byte_bounded.maximum_decoded_bytes_per_pass =
+      result.decoded_byte_count - result.second_pass_decoded_byte_count;
+  const auto byte_refusal = api::StreamVisibleMgaHeapRelation(reader, byte_bounded);
+  Require(!byte_refusal.ok &&
+              byte_refusal.failure_category == api::MgaHeapReadFailureCategoryV1::kResource &&
+              actual.empty() && !byte_refusal.complete_value_delivery,
+          "LOB stream ignored companion byte budget or published a partial value");
+  reset_consumer();
+  auto memory_bounded = request;
+  memory_bounded.maximum_memory_bytes = result.peak_live_memory_bytes - 1;
+  const auto memory_refusal = api::StreamVisibleMgaHeapRelation(reader, memory_bounded);
+  Require(!memory_refusal.ok &&
+              memory_refusal.failure_category == api::MgaHeapReadFailureCategoryV1::kResource &&
+              actual.empty() && !memory_refusal.complete_value_delivery,
+          "LOB stream ignored materialization memory budget or published a partial value");
+  const auto companion = fixture.database_path.string() + ".sb.mga_large_values";
+  std::ifstream input(companion, std::ios::binary);
+  const std::string bytes{std::istreambuf_iterator<char>(input), {}};
+  input.close();
+  Require(bytes.size() > large.size(), "LOB stream fixture lacks durable companion records");
+  {
+    std::ofstream output(companion, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), bytes.size() - 1);
+    output.close();
+    Require(output.good(), "LOB corruption write failed");
+  }
+  reset_consumer();
+  const auto corrupt = api::StreamVisibleMgaHeapRelation(reader, request);
+  Require(!corrupt.ok &&
+              corrupt.failure_category == api::MgaHeapReadFailureCategoryV1::kCorruptStorage &&
+              actual.empty() && !corrupt.complete_value_delivery,
+          "LOB stream accepted torn companion bytes or published partial value");
+  {
+    std::ofstream output(companion, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), bytes.size());
+    output.close();
+    Require(output.good(), "LOB companion restore failed");
+  }
+  reset_consumer();
+  auto bounded = request;
+  bounded.maximum_delivered_visible_rows = 1;
+  const auto limited = api::StreamVisibleMgaHeapRelation(reader, bounded);
+  Require(limited.ok && limited.delivery_stopped_by_bound &&
+              limited.complete_mga_chain_validation && limited.memory_receipt_complete &&
+              !limited.complete_value_delivery && actual.size() == 1 &&
+              actual[0].isPresent() && actual[0].bytes == large,
+          "LOB stream bounded delivery did not publish one exact materialized value");
+  Rollback(reader);
+}
+
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "QOW-TEST-QRY-004-HEAP-MGA-V1");
   auto fixture = MakeFixture();
   ValidateStatementStableSnapshotAuthority(fixture);
-  ValidateDurableZeroHighWaterHeapGate(fixture);
+  ValidateZeroHighWaterSnapshotComponent(fixture);
+  ValidateDurableCapturedBoundaryHeapGate(fixture);
   ValidateDurableCapturedExclusionHeapGate(fixture);
   ValidateRevokedHeapAuthorityHasNoAccess(fixture);
   ValidatePhysicalV2StatementContextRefusalMatrix(fixture);
@@ -4675,6 +4909,10 @@ int main() {
   ValidatePhysicalHeapDispatchMatrix(fixture);
   ValidatePhysicalHeapDispatchRefusals(fixture);
   ValidateStreamingCountStarMatrix(fixture);
+  {
+    auto lob_fixture = MakeFixture();
+    ValidateExplicitLargeValueStream(lob_fixture);
+  }
   ValidateCanonicalInt128GroupedSumMatrix();
   ValidatePositiveAndVisibilityMatrix(fixture);
   ValidateBindingSecurityAndResourceRefusals(fixture);

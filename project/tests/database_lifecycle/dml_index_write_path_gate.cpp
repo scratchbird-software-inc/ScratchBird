@@ -70,7 +70,14 @@ std::vector<platform::byte> EncodedKey(const platform::Uuid& index_uuid,
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
   component.type_descriptor_uuid = descriptor_uuid.value;
-  component.payload.assign(key.begin(), key.end());
+  // Independent single-column SBCLKEY2 frame oracle. The scalar payload
+  // inside the physical key is no longer an unframed user string.
+  Require(key.size() <= 0xffffffffu, "test logical key length overflow");
+  std::string framed("SBCLKEY2\x01\x00\x00\x00\x00", 13);
+  for (unsigned shift = 0; shift < 32; shift += 8)
+    framed.push_back(static_cast<char>((key.size() >> shift) & 0xff));
+  framed += key;
+  component.payload.assign(framed.begin(), framed.end());
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test key encoding failed");
   return encoded.encoded;

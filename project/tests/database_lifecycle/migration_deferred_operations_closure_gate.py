@@ -442,8 +442,8 @@ GROUPS = (
                 "project/tests/sbsql_parser_worker/sbsql_index_family_runtime_closure_conformance.cpp",
                 (
                     "physically_complete",
-                    "index_family=btree",
-                    "index_family=bitmap",
+                    'EvidenceContains(selected, "index_lookup.index_family", "btree")',
+                    'EvidenceContains(selected, "index_lookup.index_family", "bitmap")',
                 ),
             ),
             SourceEvidence(

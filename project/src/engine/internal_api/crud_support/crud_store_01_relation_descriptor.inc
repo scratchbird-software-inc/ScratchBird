@@ -159,11 +159,9 @@ EngineApiDiagnostic MaterializeCrudLargeValues(CrudState* state) {
       EngineUuid overflow_uuid;
       std::string content_hash;
       std::uint64_t total_bytes = 0;
-      if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
+      if (value.state != EngineValueState::lob_handle) continue;
       if (!ParseCrudLargeValueLocator(value.bytes, &overflow_uuid, &content_hash, &total_bytes)) {
-        if (value.bytes.starts_with(kCrudLargeValueLocatorPrefix) || value.bytes.starts_with("@SB_OVERFLOW_V1:"))
-          return MakeInvalidRequestDiagnostic("crud.large_value", "binary_overflow_locator_invalid");
-        continue;
+        return MakeInvalidRequestDiagnostic("crud.large_value", "binary_overflow_locator_invalid");
       }
       const auto* record = FindCrudLargeValue(*state, overflow_uuid);
       if (record == nullptr) {

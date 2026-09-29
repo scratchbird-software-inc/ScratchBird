@@ -220,9 +220,11 @@ EngineApiDiagnostic ExpandMgaLargeValueLocatorsImpl(const EngineRequestContext& 
     for (auto& [field, value] : row.values) {
       (void)field;
       if (!value.valid()) return MakeInvalidRequestDiagnostic("mga.large_value", "invalid_value_state");
-      if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
-      if (value.bytes.starts_with("SBMGA_LARGE_VALUE:")) return MakeInvalidRequestDiagnostic("mga.large_value", "legacy_text_locator_refused");
-      if (!IsMgaLargeValueLocator(value.bytes)) { continue; }
+      if (value.state != EngineValueState::lob_handle) continue;
+      EngineUuid identity;
+      std::uint64_t checksum = 0, size = 0;
+      if (!ReadMgaLargeValueLocator(value.bytes, &identity, &checksum, &size))
+        return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_locator_invalid");
       const auto payload_it = payloads.locator_payloads.find(value.bytes);
       if (payload_it == payloads.locator_payloads.end()) {
         if (payloads.reclaimed_locators.count(value.bytes) != 0) { continue; }
@@ -238,13 +240,7 @@ bool RowsContainLargeValueLocatorsImpl(const std::vector<CrudRowVersionRecord>& 
   for (const auto& row : rows) {
     for (const auto& [field, value] : row.values) {
       (void)field;
-      if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
-      if (CrudValueIsLargeValueLocator(value.bytes)) {
-        return true;
-      }
-      if (IsMgaLargeValueLocator(value.bytes) || value.bytes.starts_with("SBMGA_LARGE_VALUE:")) {
-        return true;
-      }
+      if (value.state == EngineValueState::lob_handle) return true;
     }
   }
   return false;
@@ -384,9 +380,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
       for (auto it = mutation.replacement_values.begin();
            it != mutation.replacement_values.end();
            ++it) {
-        if (!it->second.isPresent() ||
-            CrudValueIsLargeValueLocator(it->second.bytes) ||
-            IsMgaLargeValueLocator(it->second.bytes)) {
+        if (!it->second.isPresent()) {
           continue;
         }
         if (selected == mutation.replacement_values.end() ||
@@ -435,9 +429,10 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
                                   std::to_string(ChecksumText(fragment))}));
         ++counters->chunks_appended;
       }
-      selected->second = MakeMgaLargeValueLocator(overflow_uuid,
+      selected->second = CrudStoredValue{EngineValueState::lob_handle,
+                                         MakeMgaLargeValueLocator(overflow_uuid,
                                                   ParseU64(content_hash),
-                                                  total_bytes);
+                                                  total_bytes)};
       pending_evidence.push_back({"mga_large_value_overflow", overflow_uuid});
     }
     pending_mutations.push_back(std::move(mutation));

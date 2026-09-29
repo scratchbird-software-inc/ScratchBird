@@ -457,9 +457,20 @@ void DomainBinaryScalarProof() {
                   return evidence.evidence_kind == "constraint_proof_hit";
                 }), "domain cache hit lost validated binary bytes");
     const auto null_row = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
-        {{"v", "<NULL>"}}, reader.local_transaction_id);
-    Require(null_row.ok && null_row.values.front().second == "<NULL>",
+        {{"v", api::CrudStoredValue::SqlNull()}}, reader.local_transaction_id);
+    Require(null_row.ok && null_row.values.front().second.isSqlNull() &&
+                null_row.values.front().second.bytes.empty(),
             "domain row adapter lost SQL NULL");
+    const auto literal_null = api::ApplyDomainRulesToCrudValues(reader, {{"v", column}},
+        {{"v", "<NULL>"}}, reader.local_transaction_id);
+    if (domain.base_canonical_type_name == "uuid") {
+      Require(!literal_null.ok,
+              "UUID domain accepted marker bytes instead of exact binary16");
+    } else {
+      Require(literal_null.ok && literal_null.values.front().second.isPresent() &&
+                  literal_null.values.front().second.bytes == "<NULL>",
+              "binary domain confused marker-shaped data with SQL NULL");
+    }
     input.binary_value.clear();
     input.state = api::EngineValueState::sql_null;
     const auto null_value = validate(input);

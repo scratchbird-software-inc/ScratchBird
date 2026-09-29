@@ -44,19 +44,28 @@ constexpr const char* kSessionUuid = "019f4400-0000-7000-8000-000000000002";
 constexpr const char* kPrincipalUuid = "019f4400-0000-7000-8000-000000000003";
 constexpr const char* kTableUuid = "019f4400-0000-7000-8000-000000000101";
 constexpr const char* kIndexUuid = "019f4400-0000-7000-8000-000000000102";
-constexpr const char* kRowA = "019f4400-0000-7000-8000-000000000201";
-constexpr const char* kRowB = "019f4400-0000-7000-8000-000000000202";
+constexpr char kRowA[] = "019f4400-0000-7000-8000-000000000201";
+constexpr char kRowB[] = "019f4400-0000-7000-8000-000000000202";
 constexpr const char* kVersionA = "019f4400-0000-7000-8000-000000000301";
 constexpr const char* kVersionB = "019f4400-0000-7000-8000-000000000302";
 constexpr const char* kUnknownTable = "019f4400-0000-7000-8000-000000000999";
 constexpr std::uint64_t kExpectedVisibleRows = 2;
 // Independent accounting of the fixture's documented relation-size estimate:
-// one table (196), two row versions (220 each), one index (228), and two
-// index entries (191 each). Each identity occupies 16 bytes, including nil.
-// These estimates describe retained metadata/value payloads, not page sizes.
-constexpr std::uint64_t kExpectedRowStoreBytes = 196 + 2 * 220;
+// Identities occupy 16 bytes including nil. Retained named values carry a
+// state octet; metadata attributes do not. SBCLKEY2 contains an 8-byte magic,
+// 4-byte arity, 1-byte state, 4-byte length and the one-byte id. SBVALS01 has
+// a 12-byte header plus the length-prefixed name, state and value. These are
+// retained metadata/value estimates, not page sizes or process allocations.
+constexpr std::uint64_t kTableBytes = 96 + 2 * 16 + 22 + (8 + 2 + 10) + (8 + 4 + 14);
+constexpr std::uint64_t kRowBytes = 128 + 4 * 16 + (9 + 2 + 1) + (9 + 4 + 5);
+constexpr std::uint64_t kIndexBytes = 128 + 2 * 16 + 2 + 5 + 24 + 29 + (8 + 2);
+constexpr std::uint64_t kLogicalKeyBytes = 8 + 4 + 1 + 4 + 1;
+constexpr std::uint64_t kIndexPayloadBytes = 8 + 4 + (4 + 2) + 1 + (4 + 1);
+constexpr std::uint64_t kIndexEntryBytes =
+    112 + 4 * 16 + 2 + 5 + 5 + kLogicalKeyBytes + kIndexPayloadBytes;
+constexpr std::uint64_t kExpectedRowStoreBytes = kTableBytes + 2 * kRowBytes;
 constexpr std::uint64_t kExpectedTableSizeWithIndexes =
-    kExpectedRowStoreBytes + 228 + 2 * 191;
+    kExpectedRowStoreBytes + kIndexBytes + 2 * kIndexEntryBytes;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -341,6 +350,25 @@ int main() {
   const auto database_uuid = CreateMinimalDatabase(database_path);
   auto context = BeginTransaction(database_path, database_uuid);
   SeedCatalogStatisticsFixture(context);
+  const auto observed = api::LoadMgaRelationStoreState(context);
+  Require(observed.ok, "SBSFC044 independent retained-state inspection failed");
+  Require(observed.state.index_entries.size() == 2,
+          "SBSFC044 retained index entry count drifted");
+  bool seen_a = false, seen_b = false;
+  for (const auto& entry : observed.state.index_entries) {
+    const bool row_a = entry.row_uuid == scratchbird::tests::FixtureUuidLiteral(kRowA);
+    const bool row_b = entry.row_uuid == scratchbird::tests::FixtureUuidLiteral(kRowB);
+    Require((row_a && !seen_a) || (row_b && !seen_b), "SBSFC044 retained row identity drifted");
+    seen_a = seen_a || row_a;
+    seen_b = seen_b || row_b;
+    const std::string value = row_a ? "1" : "2";
+    const std::string key = std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00", 17) + value;
+    const std::string payload = std::string("SBVALS01\x01\x00\x00\x00\x02\x00\x00\x00" "id\x00\x01\x00\x00\x00", 23) + value;
+    Require(entry.column_name == "id" && entry.family == "btree" && entry.entry_kind == "exact" &&
+                entry.key_value == key && entry.payload_value == payload &&
+                key.size() == kLogicalKeyBytes && payload.size() == kIndexPayloadBytes,
+            "SBSFC044 independent retained index frame accounting drifted");
+  }
 
   const auto package = functions::BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;

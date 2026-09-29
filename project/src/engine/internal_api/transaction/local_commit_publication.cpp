@@ -9,6 +9,7 @@
 #include "transaction/local_commit_publication.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "transaction/local_commit_publication_codec.hpp"
+#include "transaction/local_publication_store.hpp"
 #include "engine/authority_hash_material.hpp"
 
 #include "dml/transactional_index_provider.hpp"
@@ -58,13 +59,6 @@ std::string Sha256(std::string_view bytes) {
   return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
 }
 
-std::string ReadFile(const std::filesystem::path& path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) return {};
-  return std::string(std::istreambuf_iterator<char>(input),
-                     std::istreambuf_iterator<char>());
-}
-
 std::string ArtifactPostcondition(const std::filesystem::path& path,
                                   std::uint64_t size) {
   std::ifstream input(path, std::ios::binary);
@@ -74,8 +68,7 @@ std::string ArtifactPostcondition(const std::filesystem::path& path,
 }
 
 std::string ManifestPath(const EngineRequestContext& context) {
-  return context.database_path + ".sb.mga_transaction_publication." +
-         std::to_string(context.local_transaction_id) + ".v2";
+  return local_publication_store::Path(context);
 }
 
 bool IsPublicationManifest(const std::string& filename,
@@ -419,41 +412,9 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
   }
   result.manifest_sha256 = manifest.substr(manifest.size() - 64);
   result.manifest_path = ManifestPath(context);
-  const std::string temporary = result.manifest_path + ".tmp." +
-                                std::to_string(context.local_transaction_id);
-  {
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!output) {
-      result.diagnostic = Refuse("manifest_temporary_open_failed");
-      return result;
-    }
-    output.write(manifest.data(), static_cast<std::streamsize>(manifest.size()));
-    output.close();
-    if (!output) {
-      result.diagnostic = Refuse("manifest_temporary_write_failed");
-      return result;
-    }
-  }
-  const auto temp_sync = SyncFilesystemPath(temporary, true);
-  if (!temp_sync.ok()) {
-    result.diagnostic = Refuse("manifest_temporary_sync_failed");
-    return result;
-  }
-  std::error_code ec;
-  std::filesystem::rename(temporary, result.manifest_path, ec);
-  if (ec) {
-    std::error_code remove_ec;
-    std::filesystem::remove(result.manifest_path, remove_ec);
-    ec.clear();
-    std::filesystem::rename(temporary, result.manifest_path, ec);
-  }
-  if (ec) {
-    result.diagnostic = Refuse("manifest_atomic_publish_failed:" + ec.message());
-    return result;
-  }
-  const auto parent_sync = SyncParentDirectoryPath(result.manifest_path);
-  if (!parent_sync.ok()) {
-    result.diagnostic = Refuse("manifest_parent_sync_failed");
+  std::string publication_error;
+  if (!local_publication_store::Publish(context, manifest, &publication_error)) {
+    result.diagnostic = Refuse(publication_error);
     return result;
   }
   scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
@@ -468,11 +429,10 @@ LocalCommitPublicationRecoveryResult ClassifyLocalCommitPublicationForRecovery(
     const EngineRequestContext& context,
     const scratchbird::transaction::mga::LocalTransactionInventory& inventory) {
   LocalCommitPublicationRecoveryResult result;
-  const std::string manifest_path = ManifestPath(context);
-  const std::string encoded = ReadFile(manifest_path);
-  if (encoded.empty()) {
-    result.diagnostic = Refuse("publication_manifest_missing_or_empty");
-    result.stable_reason = "durable publication manifest is missing or empty";
+  std::string encoded, publication_error;
+  if (!local_publication_store::Read(context, &encoded, &publication_error)) {
+    result.diagnostic = Refuse(publication_error);
+    result.stable_reason = "durable publication receipt collection is missing or invalid";
     return result;
   }
   if (!local_publication_codec::Decode(encoded, context, &result)) {

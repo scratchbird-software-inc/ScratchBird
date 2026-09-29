@@ -3,9 +3,11 @@
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/composite_logical_key.hpp"
+#include "dml/update_retained_value_projection.hpp"
 #include "engine/optimizer/bulk_placement_order.hpp"
 #include <iostream>
 #include <stdexcept>
+#include <tuple>
 
 namespace api = scratchbird::engine::internal_api;
 namespace {
@@ -49,6 +51,40 @@ void CheckValues(const api::CrudValueFields& fields) {
 
 int main() {
   try {
+    for (const auto& [codec, bytes, expected] :
+         std::vector<std::tuple<std::string, std::vector<std::uint8_t>, std::string>>{
+             {"datatype.int32.le.v1", {0, 0, 0, 128}, "-2147483648"},
+             {"datatype.int32.le.v1", {255, 255, 255, 127}, "2147483647"},
+             {"datatype.int64.le.v1", {0, 0, 0, 0, 0, 0, 0, 128}, "-9223372036854775808"},
+             {"datatype.int64.le.v1", {255, 255, 255, 255, 255, 255, 255, 127}, "9223372036854775807"},
+             {"datatype.int64.le.v1", {20, 0, 0, 0, 0, 0, 0, 0}, "20"},
+             {"datatype.text.utf8.v1", {'a', 0, 'b'}, std::string("a\0b", 3)},
+             {"datatype.text.utf8.v1", {}, ""},
+             {"datatype.text.utf8.v1", {'<', 'N', 'U', 'L', 'L', '>'}, "<NULL>"}}) {
+      api::EngineTypedValue native, retained;
+      native.binary_value = bytes;
+      Require(api::ProjectBoundUpdateValueToRetained(native, codec, &retained) &&
+                  retained.encoded_value == expected && retained.binary_value.empty() &&
+                  !retained.isSqlNull() && native.binary_value == bytes && native.encoded_value.empty(),
+              "bound UPDATE projection changed canonical bytes, scalar value or state");
+      native.encoded_value = "second payload";
+      retained.encoded_value = "unchanged";
+      Require(!api::ProjectBoundUpdateValueToRetained(native, codec, &retained) &&
+                  retained.encoded_value == "unchanged", "ambiguous UPDATE projection accepted or changed output");
+    }
+    api::EngineTypedValue projection_null, projection_output;
+    projection_null.setState(api::EngineValueState::sql_null);
+    Require(api::ProjectBoundUpdateValueToRetained(projection_null, "datatype.text.utf8.v1", &projection_output) &&
+                projection_output.isSqlNull() && projection_output.encoded_value.empty() && projection_output.binary_value.empty(),
+            "UPDATE projection changed explicit NULL");
+    projection_null.binary_value = {0};
+    Require(!api::ProjectBoundUpdateValueToRetained(projection_null, "datatype.text.utf8.v1", &projection_output),
+            "UPDATE projection admitted NULL carrying payload");
+    api::EngineTypedValue malformed_projection;
+    malformed_projection.binary_value = {1, 2, 3};
+    Require(!api::ProjectBoundUpdateValueToRetained(malformed_projection, "datatype.int32.le.v1", &projection_output) &&
+                !api::ProjectBoundUpdateValueToRetained(malformed_projection, "unknown", &projection_output),
+            "UPDATE projection guessed a malformed or unknown codec");
     std::string all_bytes;
     for (unsigned byte = 0; byte < 256; ++byte) all_bytes.push_back(static_cast<char>(byte));
     const api::CrudValueFields fields = {
@@ -94,6 +130,33 @@ int main() {
     null_with_payload.setState(api::EngineValueState::sql_null);
     null_with_payload.encoded_value = "<NULL>";
     Refuses([&] { api::CrudTypedValuePayload(null_with_payload); }, "NULL carrying bytes accepted");
+
+    // An admitted domain retains its own name rather than the primitive base
+    // spelling. The row adapter must not discard its validated native bytes.
+    for (const auto& [kind, type, payload] :
+         std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"domain", "account_identity", std::string(16, '\0')},
+             {"domain", "opaque_document", all_bytes},
+             {"scalar", "int64", std::string(8, '\xff')},
+             {"scalar", "binary", "<NULL>"},
+             {"scalar", "uuid", std::string(16, '\xff')}}) {
+      api::EngineTypedValue typed;
+      typed.descriptor.descriptor_kind = kind;
+      typed.descriptor.canonical_type_name = type;
+      typed.binary_value.assign(payload.begin(), payload.end());
+      Require(api::CrudTypedValuePayload(typed) == api::CrudStoredValue(payload),
+              "admitted named/native binary payload lost during storage adaptation");
+      typed.encoded_value = "conflicting payload";
+      Refuses([&] { api::CrudTypedValuePayload(typed); },
+              "nonprimitive dual value carriers accepted");
+    }
+    for (const std::size_t width : {0, 1, 15, 17, 36}) {
+      api::EngineTypedValue typed;
+      typed.descriptor.canonical_type_name = "uuid";
+      typed.binary_value.assign(width, 0);
+      Refuses([&] { api::CrudTypedValuePayload(typed); },
+              "malformed UUID binary width accepted");
+    }
 
     // Every scalar key is framed, so even bytes spelling an entire NULL frame
     // are unambiguously a present value. Compound components retain state too.

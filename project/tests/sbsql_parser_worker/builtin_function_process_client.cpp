@@ -135,12 +135,24 @@ int main(int argc, char** argv) {
        !run("INSERT INTO native_uuid_explicit (payload, id) VALUES "
             "(X'ff0001', UUID '00000000-0000-0000-0000-000000000000')", {}) ||
        !run("COMMIT TRANSACTION", {}))) return 5;
+  const std::string literal_locator_hex =
+      "53424d474c563032019f2100000070008000000000000777"
+      "01000000000000000100000000000000";
+  std::string overflow_binary_hex = literal_locator_hex;
+  for (unsigned i = 0; i < 6000; ++i) overflow_binary_hex += "00ff";
+  const std::string overflow_text = "SBMGA_LARGE_VALUE:ordinary-data-" +
+                                    std::string(12000, 'x');
   if (std::string_view(argv[4]) == "initial0") {
     if (!run("BEGIN TRANSACTION", {}) ||
         !run("CREATE TABLE native_marker_values (id INTEGER, payload BINARY, txt TEXT, null_payload BINARY)", {}) ||
         !run("INSERT INTO native_marker_values VALUES (1, X'3c4e554c4c3e', '<NULL>', NULL)", {}) ||
         !run("INSERT INTO native_marker_values VALUES (2, X'3c44454641554c543e', '<DEFAULT>', NULL)", {}) ||
         !run("INSERT INTO native_marker_values VALUES (3, X'', '', NULL)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (4, X'" + literal_locator_hex +
+             "', 'SBMGA_LARGE_VALUE:ordinary-data', NULL)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (5, X'53424d474c563032', 'SBMGLV02', NULL)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (6, X'" + overflow_binary_hex +
+             "', '" + overflow_text + "', NULL)", {}) ||
         !run("COMMIT TRANSACTION", {})) return 8;
   }
   // Present bytes must remain distinct from SQL NULL and default-request state.
@@ -155,6 +167,17 @@ int main(int argc, char** argv) {
            "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
       !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 3",
            "row[0]=payload=hex:;txt=;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 4",
+           "row[0]=payload=hex:" + literal_locator_hex +
+           ";txt=SBMGA_LARGE_VALUE:ordinary-data;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 5",
+           "row[0]=payload=hex:53424d474c563032;txt=SBMGLV02;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 6",
+           "row[0]=payload=hex:" + overflow_binary_hex + ";txt=" + overflow_text +
+           ";null_payload=hex:", 0,
            "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
       !run("ROLLBACK TRANSACTION", {})) return 8;
   if (std::string_view(argv[4]) == "initial0") {

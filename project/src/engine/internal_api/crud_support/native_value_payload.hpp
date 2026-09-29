@@ -24,18 +24,17 @@ inline CrudStoredValue CrudTypedValuePayload(const EngineTypedValue& value) {
   }
   const auto& type = value.descriptor.canonical_type_name;
   const bool uuid = type == "uuid" || type == "uuid16" || type == "uuidv7";
-  const bool octets = type == "binary" || type == "varbinary" || type == "bytea" ||
-                      type == "bytes" || type == "blob";
-  if (uuid || octets) {
-    if (!value.binary_value.empty()) {
-      if (!value.encoded_value.empty() || (uuid && value.binary_value.size() != 16))
-        throw std::invalid_argument("ambiguous or malformed native value carrier");
-      return {value.state, std::string(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size())};
-    }
-    // Retained columnar strings already contain octets, not UUID spellings.
-    if (uuid && value.encoded_value.size() != 16)
-      throw std::invalid_argument("UUID data requires binary16");
+  // Storage adaptation preserves the admitted carrier, not a display name.
+  // Named domains and other descriptor-bound types can own native bytes too.
+  // Their owning operation validates the exact type before calling this helper.
+  if (!value.binary_value.empty()) {
+    if (!value.encoded_value.empty() || (uuid && value.binary_value.size() != 16))
+      throw std::invalid_argument("ambiguous or malformed native value carrier");
+    return {value.state, std::string(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size())};
   }
+  // Retained columnar strings already contain octets, not UUID spellings.
+  if (uuid && value.encoded_value.size() != 16)
+    throw std::invalid_argument("UUID data requires binary16");
   return {value.state, value.encoded_value};
 }
 

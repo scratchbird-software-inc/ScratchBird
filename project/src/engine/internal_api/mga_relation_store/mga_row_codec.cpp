@@ -350,7 +350,7 @@ std::size_t ScopedRowBinaryBatchEstimateBytes(
       bytes += row.previous_version_uuid.bytes.size();
       bytes += row.temporary_session_uuid.bytes.size();
     }
-    bytes += null_bitmap_bytes;
+    bytes += compact_batch ? null_bitmap_bytes : field_order.size();
     const auto& typed_row = typed_rows[index];
     for (const auto& [_, typed] : typed_row.fields) {
       if (typed.isSqlNull()) { continue; }
@@ -367,13 +367,19 @@ bool ScopedRowBinaryCompactBatchEligible(
 }
 
 bool ScopedRowTypedStatesValid(std::span<const EngineRowValue> rows,
-                              std::size_t field_count) {
+                              std::size_t field_count, bool allow_lob = false) {
   for (const auto& row : rows) {
     if (row.fields.size() != field_count) return false;
     for (const auto& [name, value] : row.fields) {
       (void)name;
       if (value.isSqlNull()) {
         if (!value.encoded_value.empty() || !value.binary_value.empty()) return false;
+      } else if (allow_lob && value.state == EngineValueState::lob_handle) {
+        EngineUuid identity;
+        std::uint64_t checksum = 0, size = 0;
+        if ((!value.binary_value.empty() && !value.encoded_value.empty()) ||
+            !ReadMgaLargeValueLocator(ScopedRowBinaryPayloadView(value),
+                                     &identity, &checksum, &size)) return false;
       } else if (value.state != EngineValueState::value) {
         return false;
       }
@@ -394,7 +400,7 @@ bool AppendScopedRowBinaryBatch(std::string* out,
     return false;
   }
   const bool compact_batch = ScopedRowBinaryCompactBatchEligible(rows);
-  if (!ScopedRowTypedStatesValid(typed_rows, field_order.size())) return false;
+  if (!ScopedRowTypedStatesValid(typed_rows, field_order.size(), !compact_batch)) return false;
   ReserveAmortizedAppendCapacity(
       out,
       ScopedRowBinaryBatchEstimateBytes(rows,
@@ -463,14 +469,22 @@ bool AppendScopedRowBinaryBatch(std::string* out,
             static_cast<std::uint8_t>(1u << (field_index % 8u));
       }
     }
-    for (const std::uint8_t byte : null_bitmap) {
-      AppendBinaryU8(out, byte);
+    if (compact_batch) {
+      for (const std::uint8_t byte : null_bitmap) AppendBinaryU8(out, byte);
+    } else {
+      for (const auto& [name, typed] : typed_row.fields)
+        AppendBinaryU8(out, static_cast<std::uint8_t>(
+            typed.isSqlNull() ? EngineValueState::sql_null : typed.state));
     }
     for (const auto& [_, typed] : typed_row.fields) {
       if (typed.isSqlNull()) { continue; }
       std::string canonical_payload;
-      if (!ScopedRowBinaryCanonicalPayload(typed, &canonical_payload) ||
-          !AppendBinaryString(out, canonical_payload)) {
+      if (typed.state == EngineValueState::lob_handle) {
+        canonical_payload = ScopedRowBinaryPayloadView(typed);
+      } else if (!ScopedRowBinaryCanonicalPayload(typed, &canonical_payload)) {
+        return false;
+      }
+      if (!AppendBinaryString(out, canonical_payload)) {
         return false;
       }
     }
@@ -1070,7 +1084,7 @@ bool DecodeScopedRowBinaryBytes(
         native_field_type_tags.push_back(tag);
         field_types.emplace_back(ScopedRowNativePacketTypeName(tag));
       }
-    } else if (version >= kScopedRowBinaryGeneralVersion) {
+    } else if (version == kScopedRowBinaryGeneralVersion || version == kScopedRowBinaryVersion) {
       for (std::uint32_t index = 0; index < column_count; ++index) {
         std::string type_name;
         if (!ReadBinaryString(bytes, &offset, &type_name) ||
@@ -1089,7 +1103,7 @@ bool DecodeScopedRowBinaryBytes(
     EngineUuid compact_table_uuid;
     EngineUuid compact_temporary_session_uuid;
     std::uint8_t compact_flags = 0;
-    const bool compact_batch = version >= kScopedRowBinaryVersion;
+    const bool compact_batch = ScopedRowBinaryIsCompact(version);
     if (compact_batch) {
       if (!ReadBinaryU64(bytes, &offset, &compact_first_event_sequence) ||
           !ReadBinaryU64(bytes, &offset, &compact_creator_tx) ||
@@ -1133,9 +1147,9 @@ bool DecodeScopedRowBinaryBytes(
       return false;
     }
     const std::size_t null_bitmap_bytes =
-        (static_cast<std::size_t>(column_count) + 7u) / 8u;
+        ScopedRowBinaryStateBytes(version, column_count);
     const std::size_t minimum_row_bytes =
-        (compact_batch ? 32u : 45u) + null_bitmap_bytes;
+        (compact_batch ? 32u : 105u) + null_bitmap_bytes;
     if (row_count >
         static_cast<std::uint64_t>((bytes.size() - offset) /
                                    minimum_row_bytes)) {
@@ -1294,11 +1308,30 @@ bool DecodeScopedRowBinaryBytes(
       row.values.reserve(column_count);
       for (std::uint32_t column_index = 0; column_index < column_count;
            ++column_index) {
-        const bool is_null =
-            (bytes[null_bitmap_offset + column_index / 8u] &
-             static_cast<idx::byte>(1u << (column_index % 8u))) != 0;
-        if (is_null) {
+        const auto state = ScopedRowBinaryStateAt(version,
+            std::span<const std::uint8_t>(bytes.data() + null_bitmap_offset,
+                                          null_bitmap_bytes), column_index);
+        if (!state) {
+          summary->malformed = true;
+          summary->trusted = false;
+          return false;
+        }
+        if (*state == EngineValueState::sql_null) {
           row.values.push_back({field_order[column_index], CrudStoredValue::SqlNull()});
+          continue;
+        }
+        if (*state == EngineValueState::lob_handle) {
+          std::string locator;
+          EngineUuid identity;
+          std::uint64_t checksum = 0, size = 0;
+          if (!ReadBinaryString(bytes, &offset, &locator) ||
+              !ReadMgaLargeValueLocator(locator, &identity, &checksum, &size)) {
+            summary->malformed = true;
+            summary->trusted = false;
+            return false;
+          }
+          row.values.emplace_back(field_order[column_index],
+              CrudStoredValue{EngineValueState::lob_handle, std::move(locator)});
           continue;
         }
         if (version == kScopedRowBinaryNativePacketVersion) {
@@ -1560,7 +1593,8 @@ void AppendRowVersionStoreLine(std::string* out, const CrudRowVersionRecord& row
   for (const auto& [key, value] : values) {
     EngineTypedValue field;
     field.descriptor.canonical_type_name = "text";
-    if (!value.valid() || (!value.isPresent() && !value.isSqlNull()))
+    if (!value.valid() || (!value.isPresent() && !value.isSqlNull() &&
+                          value.state != EngineValueState::lob_handle))
       throw std::invalid_argument("unresolved retained row state");
     field.encoded_value = value.bytes;
     field.setState(value.state);

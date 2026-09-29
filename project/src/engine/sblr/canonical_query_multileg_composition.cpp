@@ -109,22 +109,6 @@ std::optional<api::EngineUuid> Rcp080SystemUuidCell(const api::EngineTypedValue&
   return core::uuid::IsEngineIdentityUuid(uuid) ? std::optional(uuid) : std::nullopt;
 }
 
-void BindCanonicalPersistedRowDescriptorAuthorityForMultilegV1(
-    const api::EngineRequestContext& context,
-    CanonicalRelationalExpressionRuntimeServices* services) {
-  if (services == nullptr) return;
-  services->persisted_row_descriptor_authority =
-      [context = &context](
-          const std::uint32_t,
-          const api::RelationalTypeDescriptor& bound,
-          const api::EngineDescriptor& persisted,
-          const api::RelationalNullability effective_nullability,
-          std::string* refusal_detail) {
-        return ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
-            *context, bound, persisted, effective_nullability,
-            refusal_detail);
-      };
-}
 
 
 }  // namespace
@@ -4625,7 +4609,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
               context, left, right, comparison, diagnostic_id,
               refusal_detail);
         };
-    BindCanonicalPersistedRowDescriptorAuthorityForMultilegV1(input.context,
+    BindCanonicalPersistedRowDescriptorAuthorityForComposition(input.context,
                                                    &predicate_services);
     join_registration = MakeLiveJoinRegistration(
         "join." + join_component + ".3vl.nested.v1", join_capability_uuid, {},

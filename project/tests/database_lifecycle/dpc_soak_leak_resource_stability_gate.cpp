@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "ddl/create_api.hpp"
@@ -97,6 +99,7 @@ struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
   api::EngineUuid database_uuid;
+  api::EngineUuid filespace_uuid;
 };
 
 struct ResourceSnapshot {
@@ -203,7 +206,8 @@ bool HasEvidence(const api::EngineApiResult& result,
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dpc070_stress_resource.XXXXXX";
+  std::string tmpl = (std::filesystem::temp_directory_path() /
+                      "sb_dpc070_stress_resource.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
@@ -309,6 +313,7 @@ Fixture CreateFixture() {
   const auto clean = db::MarkDatabaseCleanShutdown(fixture.database_path.string());
   Require(clean.ok(), "DPC-070 clean shutdown marker failed");
   fixture.database_uuid = create.database_uuid.value;
+  fixture.filespace_uuid = create.filespace_uuid.value;
 
   const auto bootstrap =
       scratchbird::tests::database_lifecycle::BeginDurableBootstrapTransaction(
@@ -446,17 +451,6 @@ sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid) {
   PutUuid(&payload, session_uuid);
   PutString(&payload, "dpc070_stress_loop_disconnect");
   return Frame(sbps::MessageType::kDisconnectNotice, std::move(payload), {}, session_uuid);
-}
-
-std::string TransactionEnvelope(std::string_view operation_id,
-                                bool requires_transaction_context) {
-  const auto* entry = sblr::LookupSblrOperation(operation_id);
-  Require(entry != nullptr, "DPC-070 transaction opcode missing");
-  auto envelope = sblr::MakeSblrEnvelope(std::string(operation_id), entry->opcode,
-      "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE");
-  envelope.requires_transaction_context = requires_transaction_context;
-  envelope.requires_security_context = true;
-  return sblr::EncodeSblrEnvelope(envelope);
 }
 
 ExecuteDecoded DecodeExecute(const SessionOperationResult& result) {
@@ -610,7 +604,7 @@ api::EngineColumnDefinition TextColumn(std::uint32_t ordinal,
                                        api::EngineUuid column_uuid,
                                        api::EngineUuid descriptor_uuid) {
   api::EngineColumnDefinition column;
-  (void)descriptor_uuid;
+  column.descriptor.descriptor_uuid = descriptor_uuid;
   column.ordinal = ordinal;
   column.requested_column_uuid = std::move(column_uuid);
   column.names.push_back(Name(std::move(name)));
@@ -635,6 +629,7 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   api::EngineRequestContext context;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "dpc070-stress-resource-leak";
+  context.default_root_uuid = fixture.filespace_uuid;
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
   context.principal_uuid = api::EngineUuid{session.principal_uuid};
@@ -647,9 +642,7 @@ api::EngineRequestContext EngineApiContext(const Fixture& fixture,
   context.catalog_generation_id = session.catalog_generation;
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.name_resolution_epoch = session.name_resolution_epoch;
   context.trace_tags.push_back("DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE");
   context.trace_tags.push_back("right:CATALOG_MUTATE");
@@ -686,32 +679,42 @@ sblr::SblrDispatchResult DispatchExact(api::EngineRequestContext context,
   return result;
 }
 
-std::string ServerCreateSequenceEnvelope(std::uint64_t index, bool autocommit_emulation = false) {
-  const std::uint64_t base = 1782800500000 + index * 10;
-  auto envelope = sblr::MakeSblrEnvelope("ddl.create_sequence", "SBLR_DDL_CREATE_SEQUENCE",
-      "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE");
-  envelope.requires_transaction_context = true;
-  envelope.requires_security_context = true;
-  const auto identity_operand = [&](const char* name, const api::EngineUuid& id) {
-    sblr::SblrOperand operand;
-    operand.ordinal = static_cast<std::uint32_t>(envelope.operands.size() + 1);
-    operand.type = "option";
-    operand.name = name;
-    operand.value_kind = sblr::SblrValueKind::uuid_ref;
-    operand.value_body.assign(id.bytes.begin(), id.bytes.end());
-    envelope.operands.push_back(std::move(operand));
-  };
-  const auto text_operand = [&](const char* name, const std::string& text) {
-    envelope.operands.push_back({"text", name, text});
-  };
-  identity_operand("sequence_object_uuid", NewIdentity(UuidKind::object, base));
-  identity_operand("target_schema_uuid", NewIdentity(UuidKind::object, base + 1));
-  text_operand("sequence_name", "dpc070_sequence_" + std::to_string(index));
-  if (autocommit_emulation) text_operand("autocommit_emulation", "true");
-  return sblr::EncodeSblrEnvelope(envelope);
+std::string RetiredSequenceTextEnvelope(std::uint64_t index) {
+  // An empty failed binary encoding selects prepared-statement lookup and
+  // does not exercise noncanonical-text rejection. Deliberately submit a
+  // nonempty retired text carrier here; real DDL/DML effects run separately.
+  return "operation_id=ddl.create_sequence;opcode=SBLR_DDL_CREATE_SEQUENCE;"
+         "sequence_name=dpc070_sequence_" + std::to_string(index);
 }
 
+class ServerFixtureStatement {
+ public:
+  ServerFixtureStatement(sb_engine_session_t session, const api::EngineRequestContext& base) {
+    namespace bridge = scratchbird::server_engine_bridge;
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(
+        session, &request, &receipt_, &view, &result);
+    scratchbird::tests::FixtureEngineSession::Check(status, result, "soak statement acquisition");
+    result = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(receipt_, &context, &result);
+    scratchbird::tests::FixtureEngineSession::Check(copied, result, "soak statement context");
+  }
+  ~ServerFixtureStatement() {
+    (void)scratchbird::server_engine_bridge::ReleaseStatementContextReceipt(receipt_);
+  }
+  ServerFixtureStatement(const ServerFixtureStatement&) = delete;
+  ServerFixtureStatement& operator=(const ServerFixtureStatement&) = delete;
+  api::EngineRequestContext context;
+ private:
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
+};
+
 void RunExactDdlDmlApiRoutes(const Fixture& fixture,
+                             ServerSessionRegistry* registry,
                              const scratchbird::server::ServerSessionRecord& session,
                              std::uint64_t local_transaction_id,
                              std::uint64_t index) {
@@ -720,6 +723,10 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   const api::EngineUuid table_uuid = NewIdentity(UuidKind::object, base + 1);
   const api::EngineUuid row_uuid = NewIdentity(UuidKind::object, base + 6);
   const auto context = EngineApiContext(fixture, session, local_transaction_id);
+  std::string detail;
+  auto* engine = scratchbird::server::EnsureServerPublicAbiSessionForContext(
+      registry, session, &detail);
+  Require(engine != nullptr, "DPC-070 authenticated engine session unavailable");
 
   api::EngineCreateSchemaRequest schema;
   schema.operation_id = "ddl.create_schema";
@@ -727,7 +734,11 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   schema.target_object.uuid = schema_uuid;
   schema.target_object.object_kind = "schema";
   schema.localized_names.push_back(Name("dpc070_schema_" + std::to_string(index)));
-  const auto created_schema = api::EngineCreateSchema(schema);
+  const auto created_schema = [&] {
+    ServerFixtureStatement statement(engine->engine_session, context);
+    schema.context = statement.context;
+    return api::EngineCreateSchema(schema);
+  }();
   Require(created_schema.ok &&
               created_schema.primary_object.uuid == schema_uuid,
           "DPC-070 exact schema create did not preserve UUID");
@@ -745,7 +756,15 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   table.table_columns.push_back(TextColumn(
       1, "note", NewIdentity(UuidKind::object, base + 4),
       NewIdentity(UuidKind::object, base + 5)));
-  const auto created_table = api::EngineCreateTable(table);
+  for (auto& column : table.table_columns) {
+    scratchbird::tests::BindFixtureColumnDatatype(
+        context, scratchbird::core::datatypes::CanonicalTypeIdFromStableName("text"), column);
+  }
+  const auto created_table = [&] {
+    ServerFixtureStatement statement(engine->engine_session, context);
+    table.context = statement.context;
+    return api::EngineCreateTable(table);
+  }();
   if (!created_table.ok) {
     for (const auto& diagnostic : created_table.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
@@ -763,7 +782,15 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   insert.input_rows.push_back(Row(
       row_uuid, std::to_string(index),
       "dpc070-exact-dml-" + std::to_string(index)));
-  const auto inserted = api::EngineInsertRows(insert);
+  const auto inserted = [&] {
+    ServerFixtureStatement statement(engine->engine_session, context);
+    insert.context = statement.context;
+    return api::EngineInsertRows(insert);
+  }();
+  if (!inserted.ok) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(inserted.ok && inserted.inserted_count == 1,
           "DPC-070 exact dml.insert_rows did not report one row");
 
@@ -772,7 +799,11 @@ void RunExactDdlDmlApiRoutes(const Fixture& fixture,
   select.context = context;
   select.source_object.uuid = table_uuid;
   select.source_object.object_kind = "table";
-  const auto selected = api::EngineSelectRows(select);
+  const auto selected = [&] {
+    ServerFixtureStatement statement(engine->engine_session, context);
+    select.context = statement.context;
+    return api::EngineSelectRows(select);
+  }();
   Require(selected.ok && !selected.result_shape.rows.empty(),
           "DPC-070 exact dml.select_rows did not return visible rows");
 }
@@ -866,17 +897,25 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
   const auto sequence = Execute(&registry,
                                 engine_state,
                                 attached.session_uuid,
-                                ServerCreateSequenceEnvelope(index));
+                                RetiredSequenceTextEnvelope(index));
+  if (sequence.accepted || !HasDiagnostic(sequence, "SBLR.OPERATION.NONCANONICAL")) {
+    std::cerr << "sequence accepted=" << sequence.accepted << '\n';
+    for (const auto& diagnostic : sequence.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+      for (const auto& field : diagnostic.fields)
+        std::cerr << field.key << '=' << field.value << '\n';
+    }
+  }
   Require(!sequence.accepted &&
               HasDiagnostic(sequence, "SBLR.OPERATION.NONCANONICAL"),
           "DPC-070 retired DDL text bypassed canonical admission");
 
-  RunExactDdlDmlApiRoutes(fixture, session_it->second, local_id, index);
+  RunExactDdlDmlApiRoutes(fixture, &registry, session_it->second, local_id, index);
 
   // The server helper aliases below remain in the loop for route resource
-  // stability. The exact public DML operation ids dml.insert_rows and
-  // dml.select_rows are exercised above through SBLR dispatch because this
-  // server text-envelope fixture does not carry typed table column vectors.
+  // stability. Actual dml.insert_rows and dml.select_rows run above through
+  // the internal API under engine-issued statement receipts. These typed
+  // fixture operations are not SQL/parser/transport end-to-end evidence.
   const auto insert = Execute(&registry,
                               engine_state,
                               attached.session_uuid,
@@ -912,7 +951,7 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
   const auto commit = Execute(&registry,
                               engine_state,
                               attached.session_uuid,
-                              TransactionEnvelope("transaction.commit", true));
+                              "operation_id=transaction.commit;opcode=SBLR_TRANSACTION_COMMIT");
   Require(!commit.accepted &&
               HasDiagnostic(commit, "SBLR.OPERATION.NONCANONICAL") &&
               TransactionHasState(fixture, local_id, tx::TransactionState::active),
@@ -928,6 +967,8 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
   Require(registry.sessions_by_uuid.empty(), "DPC-070 session leaked after disconnect");
   Require(registry.auth_contexts_by_uuid.empty(), "DPC-070 auth context leaked after disconnect");
   Require(registry.cursors_by_uuid.empty(), "DPC-070 cursor leaked after non-cursor loop");
+  Require(registry.public_abi_sessions_by_session_uuid.empty(),
+          "DPC-070 engine session leaked after disconnect");
   Require(registry.job_schedulers_by_database_uuid.empty(),
           "DPC-070 scheduler queue proxy leaked after loop");
   Require(registry.job_quotas_by_database_uuid.empty(),

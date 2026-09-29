@@ -8,6 +8,17 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME owned_test_runtime_cleanup
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/owned_test_runtime_test.py")
+  set_tests_properties(owned_test_runtime_cleanup PROPERTIES
+    LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
+  add_test(NAME benchmark_runtime_cleanup
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/benchmark_runtime_cleanup_test.py")
+  set_tests_properties(benchmark_runtime_cleanup PROPERTIES
+    LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
+endif()
+
 add_executable(public_name_resolution_native_cache_conformance public_name_resolution_native_cache_conformance.cpp)
 target_compile_features(public_name_resolution_native_cache_conformance PRIVATE cxx_std_23)
 target_link_libraries(public_name_resolution_native_cache_conformance PRIVATE sb_core_uuid sb_core_hash)
@@ -899,6 +910,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     PRIVATE
       sb_core_platform
       sb_core_uuid
+      sb_engine
       sb_engine_executor
       sb_engine_internal_api
       sb_storage_database

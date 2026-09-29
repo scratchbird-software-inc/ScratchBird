@@ -532,8 +532,11 @@ void MissingForeignKeyRefusesBeforeAppend() {
           "ODF-046 FK conflict reason evidence missing");
   Require(HasEvidence(imported.evidence,
                       "bulk_fk_proof_missing_parent_key",
-                      "missing-parent"),
+                      "sha256:00dd28863d0f4287f7b34087996ef499e9f190014e6f607f2621cafb7a1d00aa"),
           "ODF-046 missing parent key evidence missing");
+  Require(HasEvidence(imported.evidence, "bulk_fk_proof_missing_parent_key.bytes", "31") &&
+              HasEvidence(imported.evidence, "bulk_fk_proof_missing_parent_key.redacted", "true"),
+          "FK key evidence lost exact byte count or redaction classification");
   AssertNoPhysicalAppendEvidence(imported);
   Require(SelectCount(fixture, context) == 0,
           "ODF-046 missing FK published rows");

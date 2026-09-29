@@ -147,13 +147,10 @@ bool EvidenceContains(const std::vector<api::EngineEvidenceReference>& evidence,
                       const api::EngineUuid& identity) {
   for (const auto& entry : evidence) {
     if (entry.evidence_kind != kind) continue;
-    const auto* bytes = std::get_if<std::string>(&entry.evidence_id);
-    if (!bytes) continue;
-    api::BinaryCatalogMetadata decoded;
-    Require(api::DecodeBinaryCatalogMetadata(*bytes, "crud.index_evidence.v2", &decoded),
-            "index lookup evidence must use the binary metadata schema");
-    const auto found = decoded.identities.find("index_uuid");
-    if (found != decoded.identities.end() && found->second == identity) return true;
+    const auto* actual = std::get_if<api::EngineUuid>(&entry.evidence_id);
+    Require(actual != nullptr,
+            "index lookup evidence must carry the native binary UUID");
+    if (*actual == identity) return true;
   }
   return false;
 }

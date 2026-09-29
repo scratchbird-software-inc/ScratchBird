@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
+#include "crud_support/composite_logical_key.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -218,6 +219,7 @@ struct SecondaryIndexKeyPayload {
   std::string key;
   std::string payload;
   std::string family;
+  std::vector<CrudStoredValue> logical_components;
 };
 
 std::optional<SecondaryIndexKeyPayload> DecodeSecondaryIndexKeyPayload(
@@ -238,7 +240,22 @@ std::optional<SecondaryIndexKeyPayload> DecodeSecondaryIndexKeyPayload(
   const auto expected_family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
                                                     : index.family;
   if (result.family != expected_family) return std::nullopt;
-  // Empty key and payload bytes are values, not evidence of a missing field.
+  // The pair frame is a transport wrapper. Its key is an SBCLKEY2 tuple,
+  // not the user scalar. Validate descriptor-owned arity before comparing
+  // decoded value state and bytes; NULL must never alias the empty value.
+  CrudIndexEntryRecord logical_entry;
+  logical_entry.key_value = result.key;
+  logical_entry.payload_value = result.payload;
+  if (!CrudIndexEntryLogicalKeyValid(index, logical_entry)) return std::nullopt;
+  const auto logical = CrudIndexEntryLogicalKey(index, logical_entry);
+  const auto input = std::span(
+      reinterpret_cast<const std::uint8_t*>(logical.data()), logical.size());
+  std::size_t cursor = kStoredLogicalKeyMagic.size();
+  std::uint32_t arity = 0;
+  if (!ReadBinaryU32(input, &cursor, &arity)) return std::nullopt;
+  auto components = DecodeStoredLogicalKey(logical, arity);
+  if (!components) return std::nullopt;
+  result.logical_components = std::move(*components);
   return result;
 }
 
@@ -271,7 +288,9 @@ bool OverlayPredicateSupported(const EnginePredicateEnvelope& predicate) {
 
 bool OverlayEntryMatchesPredicate(const SecondaryIndexKeyPayload& entry,
                                   const EnginePredicateEnvelope& predicate) {
-  const auto& key = entry.key.rfind("SBKOBIN:", 0) == 0 ? entry.payload : entry.key;
+  if (entry.logical_components.empty() ||
+      !entry.logical_components.front().isPresent()) return false;
+  const auto& key = entry.logical_components.front().bytes;
   if (predicate.predicate_kind == "column_equals" || predicate.predicate_kind == "columns_all_equal") {
     return !predicate.bound_values.empty() &&
            CrudPredicateValuePayload(predicate.bound_values.front()) == key;

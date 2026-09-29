@@ -8,6 +8,7 @@
 
 #include "dml/direct_bulk_typed_row_codec.hpp"
 #include "datatype_binary_view.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1057,9 +1058,22 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
   cells.reserve(values.size());
   std::uint16_t ordinal = 1;
   for (const auto& value : values) {
-    if (!value.second.valid() || (!value.second.isPresent() && !value.second.isSqlNull()))
+    const bool lob = value.second.state == EngineValueState::lob_handle;
+    if (!value.second.valid() || (!value.second.isPresent() && !value.second.isSqlNull() && !lob))
       throw std::invalid_argument("unresolved physical row value state");
+    if (lob) {
+      EngineUuid identity;
+      std::uint64_t checksum = 0, bytes = 0;
+      if (!ReadMgaLargeValueLocator(value.second.bytes, &identity, &checksum, &bytes))
+        throw std::invalid_argument("invalid physical row LOB locator");
+    }
     auto cell = DirectPhysicalCell(ordinal++, value.second.bytes);
+    // This fallback projects opaque retained bytes, not a typed text value.
+    // The typed-input path carries column-bound native datatype cells. Here
+    // labelling arbitrary UUID/BINARY octets as character would impose UTF-8
+    // validation on user data and cannot preserve the retained carrier.
+    cell.value.type_id = dt::CanonicalTypeId::binary;
+    cell.value.payload_is_toast_reference = lob;
     if (value.second.isSqlNull()) {
       cell.value.is_null = true;
       cell.value.type_id = dt::CanonicalTypeId::null_type;

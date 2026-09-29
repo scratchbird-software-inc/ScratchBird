@@ -1,3 +1,7 @@
+#include "transaction/local_publication_store.hpp"
+#include <fstream>
+#include <iterator>
+#include <thread>
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -482,7 +486,7 @@ void ValidateDeferredInsertAndCommitState() {
               idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
               !records.front().delta.committed,
           "DPC-022 deferred insert did not preserve precommit MGA state before commit");
-  Require(PayloadField(records.front(), "key") == "alpha",
+  Require(PayloadField(records.front(), "key") == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "alpha", 22),
           "DPC-022 deferred insert key payload mismatch");
   Require(CountIndexEntries(fixture, context, fixture.non_unique_index_uuid) == 0,
           "DPC-022 deferred path duplicated the durable delta in synchronous base entries");
@@ -530,8 +534,8 @@ void ValidateDeferredUpdateAndRollbackCleanup() {
           "DPC-022 deferred update_before operation kind changed");
   Require(records[1].delta.delta_kind == idx::SecondaryIndexDeltaKind::update_after,
           "DPC-022 deferred update_after operation kind changed");
-  Require(PayloadField(records[0], "key") == "alpha" &&
-              PayloadField(records[1], "key") == "bravo",
+  Require(PayloadField(records[0], "key") == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "alpha", 22) &&
+              PayloadField(records[1], "key") == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "bravo", 22),
           "DPC-022 deferred update key payloads changed");
   Require(RecordIndexUuid(records[0]) == fixture.non_unique_index_uuid &&
               RecordIndexUuid(records[1]) == fixture.non_unique_index_uuid,
@@ -556,7 +560,7 @@ void ValidateDeferredDeleteWritesTombstoneDelta() {
   Require(records.size() == 1, "DPC-022 deferred delete did not write one tombstone delta");
   Require(records.front().delta.delta_kind == idx::SecondaryIndexDeltaKind::delete_row,
           "DPC-022 deferred delete operation kind changed");
-  Require(PayloadField(records.front(), "key") == "alpha",
+  Require(PayloadField(records.front(), "key") == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "alpha", 22),
           "DPC-022 deferred delete key payload mismatch");
   Require(RecordIndexUuid(records.front()) == fixture.non_unique_index_uuid,
           "DPC-022 deferred delete wrote a unique or wrong-index delta");
@@ -582,6 +586,130 @@ void ValidateErrorPathLeavesNoDelta() {
   Rollback(context);
 }
 
+
+void ValidatePublicationReceiptCollection() {
+  auto fixture = MakeFixture("publication_collection", 8000);
+  std::vector<api::EngineRequestContext> committed;
+  for (unsigned i = 0; i < 36; ++i) {
+    auto context = Begin(fixture, "publication-history-" + std::to_string(i));
+    RequireOk(InsertRow(fixture, context, "history-" + std::to_string(i), "payload"),
+              "publication history insert failed");
+    Commit(context);
+    committed.push_back(context);
+  }
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+  Require(inventory.ok(), "publication history inventory reload failed");
+  for (const auto& context : committed) {
+    const auto recovered = api::ClassifyLocalCommitPublicationForRecovery(context, inventory.inventory);
+    Require(recovered.ok && recovered.recovery_class ==
+                api::LocalCommitPublicationRecoveryClass::committed_by_inventory &&
+                !recovered.mutations.empty() && !recovered.artifacts.empty(),
+            "receipt consolidation discarded historical commit evidence");
+  }
+  const auto path = api::local_publication_store::Path(committed.back());
+  const auto read = [&] {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  const auto write = [&](const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), bytes.size());
+    out.close();
+    Require(out.good(), "publication corruption fixture write failed");
+  };
+  const auto baseline = read();
+  Require(baseline.starts_with("SBMPST03") && baseline.size() > 72,
+          "publication collection did not use the independent v3 framing oracle");
+  std::size_t files = 0;
+  const auto prefix = fixture.database_path.filename().string() + ".sb.mga_transaction_publication.";
+  for (const auto& entry : std::filesystem::directory_iterator(fixture.dir))
+    if (entry.path().filename().string().starts_with(prefix)) ++files;
+  Require(files == 1, "publication receipt file count grows with transaction history");
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto damaged = baseline;
+    if (mutation == 0) damaged[8] ^= 1; // database identity/header checksum
+    if (mutation == 1) damaged[24] ^= 1; // record count/header checksum
+    if (mutation == 2) damaged.pop_back();
+    if (mutation == 3) damaged.push_back('x');
+    if (mutation == 4) damaged[105] ^= 1; // first manifest; selected record is later
+    write(damaged);
+    const auto refused = api::ClassifyLocalCommitPublicationForRecovery(committed.back(), inventory.inventory);
+    Require(!refused.ok, "publication collection accepted corrupt retained history");
+    Require(read() == damaged, "recovery mutated refused publication history");
+    write(baseline);
+  }
+  auto retry = Begin(fixture, "publication-retry");
+  const auto first = api::RunLocalCommitPageBarrier(retry);
+  Require(first.ok, "publication retry initial barrier failed");
+  const auto stable = read();
+  const auto again = api::RunLocalCommitPageBarrier(retry);
+  Require(again.ok && again.manifest_sha256 == first.manifest_sha256 && read() == stable,
+          "same-transaction receipt retry changed or duplicated history");
+  std::string first_error, second_error;
+  std::string manifest;
+  Require(api::local_publication_store::Read(retry, &manifest, &first_error),
+          "publication concurrency fixture receipt missing");
+  for (unsigned invalid = 0; invalid < 3; ++invalid) {
+    auto malformed = retry;
+    if (invalid == 0) malformed.database_uuid = {};
+    if (invalid == 1) malformed.transaction_uuid = {};
+    if (invalid == 2) malformed.local_transaction_id = 0;
+    std::string untouched = "untouched";
+    Require(!api::local_publication_store::Read(malformed, &untouched, &first_error) &&
+                untouched == "untouched" &&
+                !api::local_publication_store::Publish(malformed, manifest, &first_error) &&
+                read() == stable,
+            "invalid publication identity altered outputs or retained history");
+  }
+  const auto staging = path + ".tmp";
+  {
+    std::ofstream interrupted(staging, std::ios::binary);
+    interrupted << "interrupted unpublished staging bytes";
+  }
+  Require(api::local_publication_store::Publish(retry, manifest, &first_error) &&
+              !std::filesystem::exists(staging) && read() == stable,
+          "publication did not recover isolated interrupted staging file");
+#if !defined(_WIN32)
+  std::filesystem::create_symlink(std::filesystem::path(path).filename(), staging);
+  Require(!api::local_publication_store::Publish(retry, manifest, &first_error) &&
+              std::filesystem::is_symlink(staging) && read() == stable,
+          "publication followed or removed a substituted staging symlink");
+  std::filesystem::remove(staging);
+#endif
+  bool first_ok = false, second_ok = false;
+  std::thread one([&] { first_ok = api::local_publication_store::Publish(retry, manifest, &first_error); });
+  std::thread two([&] { second_ok = api::local_publication_store::Publish(retry, manifest, &second_error); });
+  one.join(); two.join();
+  Require(first_ok && second_ok && read() == stable,
+          "concurrent publication retry lost or duplicated history");
+  auto parallel_a = Begin(fixture, "publication-distinct-a");
+  auto parallel_b = Begin(fixture, "publication-distinct-b");
+  std::thread publish_a([&] { first_ok = api::RunLocalCommitPageBarrier(parallel_a).ok; });
+  std::thread publish_b([&] { second_ok = api::RunLocalCommitPageBarrier(parallel_b).ok; });
+  publish_a.join(); publish_b.join();
+  std::string receipt_a, receipt_b;
+  Require(first_ok && second_ok &&
+              api::local_publication_store::Read(parallel_a, &receipt_a, &first_error) &&
+              api::local_publication_store::Read(parallel_b, &receipt_b, &second_error) &&
+              !receipt_a.empty() && !receipt_b.empty(),
+          "concurrent distinct transactions lost a publication receipt");
+  Rollback(parallel_a);
+  Rollback(parallel_b);
+  const auto stable_with_parallel = read();
+  auto substituted = retry;
+  substituted.transaction_uuid = committed.front().transaction_uuid;
+  std::string ignored;
+  Require(!api::local_publication_store::Read(substituted, &ignored, &first_error) && read() == stable_with_parallel,
+          "publication read accepted substituted transaction identity");
+  Rollback(retry);
+  const auto rolled_inventory = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+  Require(rolled_inventory.ok(), "publication rollback inventory reload failed");
+  const auto abandoned = api::ClassifyLocalCommitPublicationForRecovery(retry, rolled_inventory.inventory);
+  Require(abandoned.ok && abandoned.recovery_class ==
+              api::LocalCommitPublicationRecoveryClass::abandoned_by_rollback,
+          "consolidated receipt became rollback finality authority");
+}
+
 }  // namespace
 
 int main() {
@@ -600,5 +728,6 @@ int main() {
   ValidateDeferredUpdateAndRollbackCleanup();
   ValidateDeferredDeleteWritesTombstoneDelta();
   ValidateErrorPathLeavesNoDelta();
+  ValidatePublicationReceiptCollection();
   return EXIT_SUCCESS;
 }

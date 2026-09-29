@@ -773,17 +773,17 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
   Require(partial.predicate_kind == "where_eq" && partial.predicate_column == "status" &&
               partial.predicate_value == "active",
           "partial index predicate metadata was not persisted");
-  Require(CountIndexEntries(state, BtreeIndexUuid(), "3") == 1,
+  Require(CountIndexEntries(state, BtreeIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "3", 18)) == 1,
           "btree insert maintenance did not persist new key");
-  Require(CountIndexEntries(state, BitmapIndexUuid(), "active") >= 3,
+  Require(CountIndexEntries(state, BitmapIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x06\x00\x00\x00" "active", 23)) >= 3,
           "bitmap mutation path did not persist active-key entries");
-  Require(CountIndexEntries(state, ExpressionIndexUuid(), "bravo") == 1,
+  Require(CountIndexEntries(state, ExpressionIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "bravo", 22)) == 1,
           "expression update maintenance did not persist lower-case expression key");
-  Require(CountIndexEntries(state, PartialIndexUuid(), "2") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "2", 18)) == 1,
           "partial update maintenance did not add row after predicate became true");
-  Require(CountIndexEntries(state, PartialIndexUuid(), "1", "exact") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "1", 18), "exact") == 1,
           "partial create-index maintenance did not capture existing predicate-matching row");
-  Require(CountIndexEntries(state, PartialIndexUuid(), "1", "retire") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "1", 18), "retire") == 1,
           "partial delete maintenance did not preserve the MGA retire record");
 
   auto selected = SelectRows(context, Predicate("column_range", "id", {TypedValue("int64", "2"),

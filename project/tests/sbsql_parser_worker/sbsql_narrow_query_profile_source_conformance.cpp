@@ -280,14 +280,14 @@ Fixture MakeFixture() {
     row.version_uuid = NewUuid(platform::UuidKind::object);
     row.values = {{"id", std::to_string(fixture.ids[index])},
                   {"k1", k1[index].has_value()
-                             ? std::to_string(*k1[index])
-                             : std::string("<NULL>")},
+                             ? api::CrudStoredValue(std::to_string(*k1[index]))
+                             : api::CrudStoredValue::SqlNull()},
                   {"k2", k2[index].has_value()
-                             ? std::to_string(*k2[index])
-                             : std::string("<NULL>")},
+                             ? api::CrudStoredValue(std::to_string(*k2[index]))
+                             : api::CrudStoredValue::SqlNull()},
                   {"payload", payload[index].has_value()
-                                  ? *payload[index]
-                                  : std::string("<NULL>")}};
+                                  ? api::CrudStoredValue(*payload[index])
+                                  : api::CrudStoredValue::SqlNull()}};
     rows.push_back(std::move(row));
   }
   std::vector<std::uint64_t> sequences;

@@ -700,8 +700,10 @@ void ValidateDeferredChangedKeyDeltasAndNonKeySkip() {
   Require(records[0].delta.delta_kind == idx::SecondaryIndexDeltaKind::update_before &&
               records[1].delta.delta_kind == idx::SecondaryIndexDeltaKind::update_after,
           "DPC-026 deferred changed-key delta kinds changed");
-  Require(PayloadField(records[0], "key") == "alpha" &&
-              PayloadField(records[1], "key") == "bravo",
+  Require(PayloadField(records[0], "key") ==
+              std::string("SBCLKEY2\1\0\0\0\0\5\0\0\0" "alpha", 22) &&
+              PayloadField(records[1], "key") ==
+              std::string("SBCLKEY2\1\0\0\0\0\5\0\0\0" "bravo", 22),
           "DPC-026 deferred changed-key delta payloads changed");
   Require(RecordIndexUuid(records[0]) == commit_fixture.non_unique_index_uuid &&
               RecordIndexUuid(records[1]) == commit_fixture.non_unique_index_uuid,

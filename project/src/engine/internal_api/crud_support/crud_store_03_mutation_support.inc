@@ -221,16 +221,28 @@ std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string,
 }
 
 bool CrudColumnDescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
-  return descriptor == "opaque_extension" || StartsWith(descriptor, "opaque_extension;") ||
-         descriptor == "type=opaque_extension" ||
-         StartsWith(descriptor, "type=opaque_extension;") ||
-         descriptor.find("canonical=opaque_extension") != std::string::npos ||
-         descriptor.find("canonical_type=opaque_extension") != std::string::npos ||
-         descriptor.find("base_type=opaque_extension") != std::string::npos;
+  if (descriptor.find('=') == std::string::npos &&
+      descriptor.find(';') == std::string::npos && descriptor.find('\0') == std::string::npos) {
+    const auto scalar_type = scratchbird::core::datatypes::CanonicalTypeIdFromStableName(descriptor);
+    if (scalar_type != scratchbird::core::datatypes::CanonicalTypeId::unknown)
+      return scalar_type == scratchbird::core::datatypes::CanonicalTypeId::opaque_extension;
+  }
+  CatalogColumnMetadata metadata;
+  // Persisted metadata is a typed binary frame, not a semicolon-delimited
+  // string. Decode before checking attributes, so a real opaque type cannot
+  // lose its guard and an unrelated display label cannot acquire one.
+  if (!AdmitCatalogColumnMetadata(descriptor, &metadata)) return true;
+  for (const auto* key : {"type", "canonical", "canonical_type", "base_type"}) {
+    const auto found = metadata.text.find(key);
+    if (found != metadata.text.end() && found->second == "opaque_extension") return true;
+  }
+  // Scalar type spellings are also used by admitted typed-value callers.
+  const auto scalar = metadata.text.find("opaque_extension");
+  return scalar != metadata.text.end() && scalar->second == "true";
 }
 
 bool CrudTypedValueIsOpaqueRenderOnly(const EngineTypedValue& value) {
-  return CrudColumnDescriptorIsOpaqueRenderOnly(value.descriptor.canonical_type_name) ||
+  return value.descriptor.canonical_type_name == "opaque_extension" ||
          CrudColumnDescriptorIsOpaqueRenderOnly(value.descriptor.encoded_descriptor);
 }
 

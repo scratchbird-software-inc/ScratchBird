@@ -30,7 +30,7 @@ struct Requested {
   std::uint64_t bytes = 0, checksum = 0, next_chunk = 0, creator = 0;
   bool header = false, reclaimed = false;
   std::string payload;
-  std::vector<std::string*> destinations;
+  std::vector<CrudStoredValue*> destinations;
 };
 }  // namespace
 
@@ -57,11 +57,7 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
   std::map<EngineUuid, Requested> requested;
   for (auto& row : *rows) for (auto& [field, value] : row.values) {
     if (!value.valid()) return refuse("large_value_state_invalid");
-    if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
-    if (!IsMgaLargeValueLocator(value.bytes)) {
-      if (CrudValueIsLargeValueLocator(value.bytes) || value.bytes.starts_with("SBMGA_LARGE_VALUE:")) return refuse("large_value_locator_encoding_unadmitted");
-      continue;
-    }
+    if (value.state != EngineValueState::lob_handle) continue;
     EngineUuid overflow_uuid;
     std::uint64_t bytes = 0, checksum = 0;
     if (!ReadMgaLargeValueLocator(value.bytes, &overflow_uuid, &checksum, &bytes))
@@ -81,7 +77,7 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
                target.field != field || target.bytes != bytes || target.checksum != checksum) {
       return refuse("large_value_locator_owner_conflict");
     }
-    target.destinations.push_back(&value.bytes);
+    target.destinations.push_back(&value);
   }
   if (requested.empty()) return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   std::ifstream input(context.database_path + ".sb.mga_large_values", std::ios::binary);
@@ -140,6 +136,7 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
       std::uint64_t bytes = 0, checksum = 0;
       if (count != 11 || target.header || table_uuid != target.row->table_uuid ||
           row_uuid != target.row->row_uuid || fields[7] != target.field ||
+          !creator_visible(creator) ||
           !Number(fields[8], &bytes) || !Number(fields[9], &checksum) ||
           bytes != target.bytes || checksum != target.checksum || fields[10] != "durable_uncommitted")
         return refuse("large_value_header_owner_or_extent_mismatch");
@@ -166,11 +163,14 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
     if (!target.header || target.reclaimed || target.payload.size() != target.bytes ||
         Checksum(target.payload) != target.checksum) return refuse("large_value_payload_missing_or_reclaimed");
   }
-  // Validation of every requested value precedes any caller-row replacement.
+  // Validate and allocate every replacement before publishing any value/state.
+  std::vector<std::pair<CrudStoredValue*, CrudStoredValue>> replacements;
   for (const auto& [id, target] : requested) {
     (void)id;
-    for (auto* value : target.destinations) *value = target.payload;
+    for (auto* value : target.destinations)
+      replacements.emplace_back(value, CrudStoredValue(target.payload));
   }
+  for (auto& [destination, value] : replacements) *destination = std::move(value);
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 }  // namespace scratchbird::engine::internal_api

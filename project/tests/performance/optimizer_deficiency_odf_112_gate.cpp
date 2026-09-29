@@ -13,6 +13,7 @@
 #include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
+#include "dml/constraint_key_evidence.hpp"
 #include "dml/import_execution_api.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "dml/select_api.hpp"
@@ -1309,8 +1310,11 @@ ScenarioEvidence ProofValidationRefusalScenario() {
           "ODF-112 missing FK conflict evidence missing");
   Require(HasEvidence(missing_fk.evidence,
                       "bulk_fk_proof_missing_parent_key",
-                      "missing-parent"),
+                      "sha256:00dd28863d0f4287f7b34087996ef499e9f190014e6f607f2621cafb7a1d00aa"),
           "ODF-112 missing FK parent key evidence missing");
+  Require(HasEvidence(missing_fk.evidence, "bulk_fk_proof_missing_parent_key.bytes", "31") &&
+              HasEvidence(missing_fk.evidence, "bulk_fk_proof_missing_parent_key.redacted", "true"),
+          "FK key evidence lost exact byte count or redaction classification");
   AssertNoPhysicalAppendEvidence(missing_fk);
   Require(SelectCount(fixture, fk_context) == 0,
           "ODF-112 missing FK refusal published rows");
@@ -1418,6 +1422,10 @@ void WriteJson(const std::vector<ScenarioEvidence>& scenarios) {
 }  // namespace
 
 int main() {
+  // Independent SHA-256 oracle for NUL, non-UTF8, quote and newline data.
+  Require(api::ConstraintKeyEvidenceFingerprint(std::string("\x00\xff\x80'\n", 5)) ==
+              "sha256:303fc71c36c7a61918a8eeac89c1e0e1e65c4a2acd2831f373adc5150bd378a0",
+          "constraint evidence did not fingerprint arbitrary key bytes exactly");
   auto policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "odf112_statement_fixture";
   Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(

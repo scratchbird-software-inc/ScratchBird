@@ -715,6 +715,13 @@ void VerifyIndexedKey(const Fixture& fixture, const std::string& key,
   Require(result.visible_count == count, "empty key lookup returned wrong rows");
   Require(result.result_shape.rows.size() == count,
           "empty key result publication has the wrong row count");
+  if (count != 0 && !HasEvidence(result.evidence, "index_lookup")) {
+    std::cerr << "missing-index key-length=" << key.size() << " count=" << count
+              << " overlay=" << overlay << '\n';
+    for (const auto& e : result.evidence)
+      std::cerr << e.evidence_kind << "="
+                << scratchbird::tests::EvidenceTextFields(e.evidence_id) << '\n';
+  }
   if (count != 0) Require(HasEvidence(result.evidence, "index_lookup"),
                          "empty key index result was replaced by a heap scan");
   for (const auto& row : result.result_shape.rows) {

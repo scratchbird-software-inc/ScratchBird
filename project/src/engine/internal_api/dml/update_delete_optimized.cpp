@@ -10,6 +10,7 @@
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "dml/update_column_identity.hpp"
+#include "dml/update_retained_value_projection.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/test_optimization_profile.hpp"
@@ -3373,7 +3374,7 @@ bool DmlUpdateBindLiteral(
     return false;
   }
   value->descriptor = column.value_descriptor;
-  value->encoded_value.assign(literal);
+  value->encoded_value.clear();
   value->binary_value = std::move(canonical_binary);
   value->setState(EngineValueState::value);
   return true;
@@ -5697,7 +5698,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
       if (!prepared.ok) { result.diagnostic = prepared.diagnostic; return result; }
       value.descriptor = column->value_descriptor;
       value.binary_value.assign(prepared.value.bytes().begin(), prepared.value.bytes().end());
-      value.encoded_value.assign(assignment.literal_spelling);
+      value.encoded_value.clear();
       value.setState(state);
       record.text_targets.push_back(target.handle);
     } else if (!DmlUpdateBindLiteral(context, *column, assignment.literal_spelling,
@@ -6359,9 +6360,26 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
         "sblr.dml_update_rows.cancelled_after_revalidation");
     return result;
   }
-  result.ok = true;
   result.request = record.prepared_request;
   result.request.context = context;
+  for (std::size_t i = 0; i < record.assignment_columns.size(); ++i) {
+    auto& value = result.request.assignments[i].second;
+    if (!ProjectBoundUpdateValueToRetained(value, record.assignment_columns[i].codec_id, &value)) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic("SBLR.OPERAND_INVALID",
+          "sblr.dml_update_rows.assignment_vector_invalid", "retained_value_projection_invalid");
+      return result;
+    }
+  }
+  if (record.predicate_column) {
+    for (auto& value : result.request.update_predicate.bound_values) {
+      if (!ProjectBoundUpdateValueToRetained(value, record.predicate_column->codec_id, &value)) {
+        result.diagnostic = DmlUpdateDescriptorDiagnostic("SBLR.OPERAND_INVALID",
+            "sblr.dml_update_rows.predicate_vector_invalid", "retained_value_projection_invalid");
+        return result;
+      }
+    }
+  }
+  result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic(
       "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   // Publish executing only after the complete caller request is allocated.

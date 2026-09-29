@@ -7,11 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
@@ -26,6 +30,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +44,10 @@ namespace db = scratchbird::storage::database;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
+
+api::EngineRequestContext g_owner;
+std::unique_ptr<scratchbird::tests::FixtureEngineSession> g_session;
+bool g_fixture_directory_created = false;
 
 constexpr auto kTableUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000101");
 constexpr auto kSchemaUuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
@@ -70,7 +80,7 @@ struct PipelineArtifacts {
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -263,33 +273,17 @@ std::uint64_t CurrentUnixMillis() {
 std::filesystem::path TestDatabasePath() {
   static const std::filesystem::path path =
       std::filesystem::temp_directory_path() /
-      ("sbsql_sbsfc_067_on_conflict_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+      ("sbsfc067_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count())) /
+      "conflict.sbdb";
   return path;
-}
-
-void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events",
-                            ".sb.crud_events",
-                            ".sb.name_events",
-                            ".sb.transaction_inventory",
-                            ".dirty.manifest",
-                            ".recovery.evidence",
-                            ".sb.owner.lock",
-                            ".sb.mga_row_versions",
-                            ".sb.mga_relation_metadata",
-                            ".sb.mga_index_entries",
-                            ".sb.mga_relation_descriptors",
-                            ".sb.mga_large_values",
-                            ".sb.mga_savepoints"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
 }
 
 api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
   const auto path = TestDatabasePath();
-  RemoveDatabaseArtifacts(path);
+  Require(std::filesystem::create_directory(path.parent_path()),
+          "SBSFC-067 isolated database directory already exists");
+  g_fixture_directory_created = true;
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -298,35 +292,29 @@ api::EngineUuid CreateMinimalDatabaseForEngineDispatch() {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779821606701).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779821606702;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC-067 database create failed");
+  g_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  g_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(g_owner);
   return create.database_uuid.value;
 }
 
 api::EngineRequestContext EngineContextForDatabase(const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+  auto context = g_owner;
   context.request_id = "sbsql-sbsfc-067-on-conflict";
   context.database_path = TestDatabasePath().string();
   context.database_uuid = database_uuid;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000401");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000402");
-  context.security_context_present = true;
-  context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f6700-0000-7000-8000-000000000102");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
   context.name_resolution_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.trace_tags.push_back("right:DML_ROUTE_TEST");
+  scratchbird::tests::UseBootstrapDatatypeCohort(context);
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-0084E23B9299");
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-3635EA022CA5");
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-4C7F112544DA");
@@ -362,7 +350,8 @@ sblr::SblrDispatchResult Dispatch(api::EngineRequestContext context,
                                   api::EngineApiRequest request = {}) {
   envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
       std::move(envelope));
-  const sblr::SblrDispatchRequest dispatch{std::move(context),
+  scratchbird::tests::FixtureEngineStatement statement(*g_session, context);
+  const sblr::SblrDispatchRequest dispatch{statement.context,
                                            std::move(envelope),
                                            std::move(request)};
   auto result = sblr::DispatchSblrOperation(dispatch);
@@ -482,6 +471,9 @@ void SeedSchemaAndTable(const api::EngineRequestContext& context) {
   table_request.localized_names.push_back(Name("customer"));
   table_request.columns.push_back(Column(0, "id", kIdColumnUuid));
   table_request.columns.push_back(Column(1, "name", kNameColumnUuid));
+  for (auto& column : table_request.columns)
+    scratchbird::tests::BindFixtureColumnDatatype(
+        context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   table_request.indexes.push_back(UniqueIdIndex());
   auto table = Dispatch(context,
                         Envelope("ddl.create_table",
@@ -541,6 +533,14 @@ sblr::SblrDispatchResult InsertCustomer(const api::EngineRequestContext& context
 }
 
 void RequireRuntimeConflictBehavior() {
+  struct Cleanup {
+    ~Cleanup() {
+      g_session.reset();
+      std::error_code ignored;
+      if (g_fixture_directory_created)
+        std::filesystem::remove_all(TestDatabasePath().parent_path(), ignored);
+    }
+  } cleanup;
   const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
   SeedSchemaAndTable(context);
@@ -599,11 +599,40 @@ void RequireRuntimeConflictBehavior() {
           "SBSFC-067 DO UPDATE id result mismatch");
   Require(FieldValue(updated.api_result, "name") == "Grace",
           "SBSFC-067 DO UPDATE name result mismatch");
+
+  api::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  Require(api::EngineCommitTransaction(commit).ok,
+          "SBSFC-067 conflict mutations did not commit");
+  const auto reader = BeginEngineTransaction(database_uuid);
+  {
+    scratchbird::tests::FixtureEngineStatement statement(*g_session, reader);
+    const auto stored = api::LoadMgaRelationStoreState(statement.context);
+    Require(stored.ok, "SBSFC-067 committed MGA state is unreadable");
+    const auto view = api::BuildMgaRelationReadView(stored.state);
+    const auto rows = api::VisibleMgaRowsForContext(view, kTableUuid, statement.context);
+    Require(rows.size() == 1 && rows.front().row_uuid == kRowAda,
+            "SBSFC-067 conflict handling changed committed row cardinality or identity");
+    const auto value = [&](std::string_view name) -> const api::CrudStoredValue* {
+      for (const auto& field : rows.front().values)
+        if (field.first == name) return &field.second;
+      return nullptr;
+    };
+    Require(value("id") && *value("id") == api::CrudStoredValue("1") &&
+                value("name") && *value("name") == api::CrudStoredValue("Grace"),
+            "SBSFC-067 mutation result disagrees with committed retained values");
+  }
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = reader;
+  Require(api::EngineRollbackTransaction(rollback).ok,
+          "SBSFC-067 verification transaction did not roll back");
 }
 
 }  // namespace
 
 int main() {
+ try {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("SBSFC-067");
   RequireRegistryEvidence();
   RequireExactLowering(
       "INSERT INTO customer (id, name) VALUES (1, 'Ada') ON CONFLICT (id) DO NOTHING",
@@ -616,4 +645,8 @@ int main() {
   RequireRuntimeConflictBehavior();
   std::cout << "sbsql_sbsfc_067_on_conflict_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+ } catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
+ }
 }

@@ -960,6 +960,9 @@ constexpr std::uint32_t kStreamingCountMaximumMetadataStringBytes =
 
 struct StreamingVisibleSelection {
   std::vector<std::uint8_t> visible_source_ordinals;
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+  std::shared_ptr<const std::map<std::uint64_t, std::string>> transaction_states;
+  std::uint64_t authority_memory_bytes = 0;
   std::string text_path;
   std::string binary_path;
   std::uint64_t text_bytes = 0;
@@ -1241,6 +1244,15 @@ class StreamingCountBinaryReader {
     return size == 0 || ReadExact(value->data(), size);
   }
 
+  bool ReadLobLocator(std::string* value) {
+    EngineUuid identity;
+    std::uint64_t checksum = 0, size = 0;
+    if (!ReadPayloadString(value, 40) ||
+        !ReadMgaLargeValueLocator(*value, &identity, &checksum, &size))
+      return Fail("heap_stream_lob_locator_invalid");
+    return true;
+  }
+
   bool Skip(const std::uint64_t bytes) {
     if (bytes > remaining_) return Fail("heap_count_binary_truncated");
     std::array<char, 64 * 1024> scratch{};
@@ -1516,13 +1528,13 @@ bool DecodeStreamingCountBinaryFile(
         }
         native_tags.push_back(tag);
       }
-    } else if (version >= kScopedRowBinaryGeneralVersion) {
+    } else if (version == kScopedRowBinaryGeneralVersion || version == kScopedRowBinaryVersion) {
       for (std::uint32_t column = 0; column < column_count; ++column) {
         if (!reader.SkipString(false)) return false;
       }
     }
 
-    const bool compact_batch = version >= kScopedRowBinaryVersion;
+    const bool compact_batch = ScopedRowBinaryIsCompact(version);
     std::uint64_t compact_first_event_sequence = 0;
     std::uint64_t compact_creator_tx = 0;
     EngineUuid compact_table_uuid;
@@ -1544,7 +1556,7 @@ bool DecodeStreamingCountBinaryFile(
       return false;
     }
     const std::uint64_t null_bitmap_bytes =
-        (static_cast<std::uint64_t>(column_count) + 7U) / 8U;
+        ScopedRowBinaryStateBytes(version, column_count);
     const std::uint64_t minimum_row_bytes =
         (compact_batch ? 32U : 105U) + null_bitmap_bytes;
     if (minimum_row_bytes == 0 ||
@@ -1597,10 +1609,17 @@ bool DecodeStreamingCountBinaryFile(
         if (!reader.ReadU8(&null_bitmap[byte])) return false;
       }
       for (std::uint32_t column = 0; column < column_count; ++column) {
-        const bool is_null =
-            (null_bitmap[column / 8U] &
-             static_cast<std::uint8_t>(1U << (column % 8U))) != 0;
-        if (is_null) continue;
+        const auto state = ScopedRowBinaryStateAt(version, null_bitmap, column);
+        if (!state) {
+          *detail = "heap_count_value_state_invalid";
+          return false;
+        }
+        if (*state == EngineValueState::sql_null) continue;
+        if (*state == EngineValueState::lob_handle) {
+          std::string locator;
+          if (!reader.ReadLobLocator(&locator)) return false;
+          continue;
+        }
         if (version == kScopedRowBinaryNativePacketVersion) {
           const auto tag = native_tags[column];
           if ((tag == 3 && !reader.Skip(1)) ||
@@ -1816,6 +1835,7 @@ bool ObserveVisibleStreamMemory(
                        kStreamingCountScratchBytes;
   if (!descriptor_bytes.has_value() ||
       !CheckedHeapReadMemoryAdd(*descriptor_bytes, &live) ||
+      !CheckedHeapReadMemoryAdd(selection.authority_memory_bytes, &live) ||
       !AccountHeapReadOwnedString(selection.text_path, &live) ||
       !AccountHeapReadOwnedString(selection.binary_path, &live) ||
       !CheckedHeapReadMemoryAdd(consumer_retained_bytes, &live) ||
@@ -1957,7 +1977,70 @@ bool DeliverVisibleStreamRow(
   return true;
 }
 
+bool ExpandVisibleStreamLargeValues(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const StreamingVisibleSelection& selection,
+    CrudRowVersionRecord* row,
+    MgaVisibleHeapRelationCountResult* phase,
+    MgaVisibleHeapRelationStreamResult* result,
+    std::string* detail) {
+  if (std::ranges::none_of(row->values, [](const auto& field) {
+        return field.second.state == EngineValueState::lob_handle;
+      })) return true;
+  if (!selection.transaction_states ||
+      result->second_pass_decoded_byte_count > request.maximum_decoded_bytes_per_pass) {
+    *detail = "heap_stream_large_value_authority_or_byte_bound_invalid";
+    return false;
+  }
+  std::uint64_t consumer_bytes = 0, retained = 0;
+  if (!StreamConsumerMemory(request, &consumer_bytes, detail) ||
+      !ObserveVisibleStreamMemory(request, result->descriptor, selection, row,
+          consumer_bytes, request.maximum_consumer_growth_bytes_per_row,
+          &retained, detail) ||
+      !CheckedHeapReadMemoryAdd(sizeof(std::vector<CrudRowVersionRecord>), &retained)) {
+    if (detail->empty()) *detail = "heap_stream_large_value_memory_overflow";
+    return false;
+  }
+  // The first pass's admitted snapshot and inventory remain authoritative
+  // under the inventory guard spanning both passes. Only this selected row
+  // is materialized; a locator's byte spelling never supplies value state.
+  std::vector<CrudRowVersionRecord> selected;
+  selected.reserve(1);
+  selected.push_back(std::move(*row));
+  BoundedScopedRowReadControl control;
+  control.maximum_bytes = request.maximum_decoded_bytes_per_pass -
+                          result->second_pass_decoded_byte_count;
+  control.decoded_bytes = phase->decoded_byte_count;
+  control.maximum_memory_bytes = request.maximum_memory_bytes;
+  control.cancellation_requested = request.borrowed_cancellation_requested == nullptr
+      ? &request.cancellation_requested : request.borrowed_cancellation_requested;
+  HeapReadRuntimeObservation observation;
+  control.runtime_observation = &observation;
+  const auto diagnostic = ExpandVisibleMgaLargeValuesBounded(
+      context, &selected, &control, retained, [&](std::uint64_t creator) {
+        return StreamingCountCreatorVisible(creator, selection.snapshot_vector,
+                                             *selection.transaction_states);
+      });
+  result->peak_live_memory_bytes = std::max(result->peak_live_memory_bytes,
+                                           control.peak_live_memory_bytes);
+  result->cancellation_observed |= control.cancellation_observed;
+  phase->decoded_byte_count = control.decoded_bytes;
+  if (!CheckedHeapReadMemoryAdd(observation.storage_bytes_read, &phase->storage_bytes_read)) {
+    *detail = "heap_stream_large_value_byte_counter_overflow";
+    return false;
+  }
+  if (diagnostic.error) {
+    result->failure_category = control.failure_category;
+    *detail = control.refusal_detail;
+    return false;
+  }
+  *row = std::move(selected.front());
+  return true;
+}
+
 bool DecodeVisibleStreamBinaryFile(
+    const EngineRequestContext& context,
     const MgaVisibleHeapRelationStreamRequest& request,
     const EngineUuid& relation_uuid,
     const StreamingVisibleSelection& selection,
@@ -1969,10 +2052,14 @@ bool DecodeVisibleStreamBinaryFile(
     return (general_segment ? selection.text_bytes : selection.binary_bytes) == 0;
   }
   MgaVisibleHeapRelationCountResult phase;
+  if (result->second_pass_decoded_byte_count > request.maximum_decoded_bytes_per_pass) {
+    *detail = "heap_stream_maximum_decoded_bytes_exceeded";
+    return false;
+  }
   StreamingCountBinaryReader reader(
       general_segment ? selection.text_path : selection.binary_path,
       general_segment ? selection.text_bytes : selection.binary_bytes,
-      request.maximum_decoded_bytes_per_pass,
+      request.maximum_decoded_bytes_per_pass - result->second_pass_decoded_byte_count,
       request.borrowed_cancellation_requested == nullptr
           ? &request.cancellation_requested
           : request.borrowed_cancellation_requested,
@@ -2022,7 +2109,7 @@ bool DecodeVisibleStreamBinaryFile(
         native_tags.push_back(tag);
         field_types.emplace_back(name);
       }
-    } else if (version >= kScopedRowBinaryGeneralVersion) {
+    } else if (version == kScopedRowBinaryGeneralVersion || version == kScopedRowBinaryVersion) {
       for (std::uint32_t column = 0; column < column_count; ++column) {
         std::string type;
         if (!reader.ReadString(&type, false)) return false;
@@ -2031,7 +2118,7 @@ bool DecodeVisibleStreamBinaryFile(
     } else {
       field_types.assign(column_count, "text");
     }
-    const bool compact = version >= kScopedRowBinaryVersion;
+    const bool compact = ScopedRowBinaryIsCompact(version);
     std::uint64_t compact_first_sequence = 0;
     std::uint64_t compact_creator_tx = 0;
     EngineUuid compact_table_uuid;
@@ -2051,7 +2138,7 @@ bool DecodeVisibleStreamBinaryFile(
       return false;
     }
     const std::uint64_t bitmap_bytes =
-        (static_cast<std::uint64_t>(column_count) + 7U) / 8U;
+        ScopedRowBinaryStateBytes(version, column_count);
     if (bitmap_bytes > std::numeric_limits<std::size_t>::max()) {
       *detail = "heap_stream_null_bitmap_overflow";
       return false;
@@ -2121,11 +2208,20 @@ bool DecodeVisibleStreamBinaryFile(
       }
       if (selected) row.values.reserve(column_count);
       for (std::uint32_t column = 0; column < column_count; ++column) {
-        const bool is_null =
-            (null_bitmap[column / 8U] &
-             static_cast<std::uint8_t>(1U << (column % 8U))) != 0;
-        if (is_null) {
+        const auto state = ScopedRowBinaryStateAt(version, null_bitmap, column);
+        if (!state) {
+          *detail = "heap_stream_value_state_invalid";
+          return false;
+        }
+        if (*state == EngineValueState::sql_null) {
           if (selected) row.values.push_back({field_order[column], CrudStoredValue::SqlNull()});
+          continue;
+        }
+        if (*state == EngineValueState::lob_handle) {
+          std::string locator;
+          if (!reader.ReadLobLocator(&locator)) return false;
+          if (selected) row.values.emplace_back(field_order[column],
+              CrudStoredValue{EngineValueState::lob_handle, std::move(locator)});
           continue;
         }
         if (!selected) {
@@ -2165,6 +2261,8 @@ bool DecodeVisibleStreamBinaryFile(
             {field_order[column],
              ScopedRowBinaryMaterializeValue(field_types[column], payload)});
       }
+      if (selected && !ExpandVisibleStreamLargeValues(
+          context, request, selection, &row, &phase, result, detail)) return false;
       if (selected &&
           !DeliverVisibleStreamRow(request, result->descriptor, selection,
                                    *source_ordinal, row, result, detail)) {
@@ -2492,6 +2590,25 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
     visible_selection->binary_path = binary_path;
     visible_selection->text_bytes = text_bytes;
     visible_selection->binary_bytes = binary_bytes;
+    const auto transaction_memory = HeapReadTransactionStateMemoryBytes(
+        *prepared_statement->transaction_states);
+    const auto& snapshot = prepared_statement->snapshot_vector;
+    std::uint64_t authority_bytes = 0, vector_bytes = 0;
+    if (!transaction_memory ||
+        !CheckedHeapReadMemoryAdd(*transaction_memory, &authority_bytes) ||
+        !CheckedHeapReadMemoryMultiply(snapshot.active_excluded_local_transaction_ids.size(),
+                                      sizeof(std::uint64_t), &vector_bytes) ||
+        !CheckedHeapReadMemoryAdd(vector_bytes, &authority_bytes) ||
+        !CheckedHeapReadMemoryMultiply(snapshot.in_doubt_excluded_local_transaction_ids.size(),
+                                      sizeof(std::uint64_t), &vector_bytes) ||
+        !CheckedHeapReadMemoryAdd(vector_bytes, &authority_bytes) ||
+        authority_bytes > request.maximum_memory_bytes -
+            std::min(request.maximum_memory_bytes, result.peak_live_memory_bytes)) {
+      return refuse("heap_stream_snapshot_memory_limit", MgaHeapReadFailureCategoryV1::kResource);
+    }
+    visible_selection->transaction_states = prepared_statement->transaction_states;
+    visible_selection->snapshot_vector = snapshot;
+    visible_selection->authority_memory_bytes = authority_bytes;
   }
   if (text_exists &&
       !DecodeStreamingCountBinaryFile(
@@ -2538,6 +2655,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
         !CheckedHeapReadMemoryAdd(
             result.scanned_row_version_count + 1, &selection_memory) ||
         !CheckedHeapReadMemoryAdd(*metadata_memory, &selection_memory) ||
+        !CheckedHeapReadMemoryAdd(visible_selection->authority_memory_bytes, &selection_memory) ||
         selection_memory > request.maximum_memory_bytes) {
       return refuse("heap_count_visible_source_bitmap_exceeds_memory_grant",
                     MgaHeapReadFailureCategoryV1::kResource);
@@ -2737,12 +2855,12 @@ static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
   bool value_pass_ok = true;
   if (delivery_target != 0) {
     value_pass_ok = DecodeVisibleStreamBinaryFile(
-        prepared_request, relation_uuid, selection, &source_ordinal, &result,
+        context, prepared_request, relation_uuid, selection, &source_ordinal, &result,
         &detail, true);
     if (value_pass_ok &&
         !VisibleStreamDeliveryBoundReached(prepared_request, result)) {
       value_pass_ok = DecodeVisibleStreamBinaryFile(
-          prepared_request, relation_uuid, selection, &source_ordinal, &result,
+          context, prepared_request, relation_uuid, selection, &source_ordinal, &result,
           &detail);
     }
   }
@@ -2751,7 +2869,8 @@ static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
     const bool cancelled = result.cancellation_observed ||
                            detail.find("cancelled") != std::string::npos;
     result.cancellation_observed = cancelled;
-    const bool resource = detail.find("memory") != std::string::npos ||
+    const bool resource = result.failure_category == MgaHeapReadFailureCategoryV1::kResource ||
+                          detail.find("memory") != std::string::npos ||
                           detail.find("maximum") != std::string::npos ||
                           detail.find("overflow") != std::string::npos;
     return refuse(detail.empty() ? "heap_stream_value_pass_failed" : detail,
@@ -2811,6 +2930,8 @@ static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
       consumer_bytes;
   if (!descriptor_bytes.has_value() ||
       !CheckedHeapReadMemoryAdd(*descriptor_bytes,
+                                &result.current_live_memory_bytes) ||
+      !CheckedHeapReadMemoryAdd(selection.authority_memory_bytes,
                                 &result.current_live_memory_bytes) ||
       !AccountHeapReadOwnedString(selection.text_path,
                                   &result.current_live_memory_bytes) ||

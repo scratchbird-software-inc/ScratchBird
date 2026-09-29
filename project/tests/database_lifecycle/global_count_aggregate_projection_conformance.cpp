@@ -774,7 +774,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
                   column.value_descriptor.descriptor_uuid,
           "bound aggregate dropped the field UUID or descriptor");
 
-  auto row = [](std::string field_name, std::string value) {
+  auto row = [](std::string field_name, api::CrudStoredValue value) {
     api::CrudRowVersionRecord record;
     record.values.push_back({std::move(field_name), std::move(value)});
     return record;
@@ -785,7 +785,7 @@ void TestBoundIdentityAndTypedIntegerDistinct(
       row("value", "+1"),
       row("value", "0"),
       row("value", "-0"),
-      row("value", "<NULL>")};
+      row("value", api::CrudStoredValue::SqlNull())};
   const auto typed = api::ExecuteGlobalAggregateProjection(
       bound.outputs, loaded.descriptor, typed_rows);
   Require(typed.ok && typed.scanned_visible_row_count == 6 &&
@@ -948,7 +948,7 @@ void TestAvgTypedFinalizationAndRefusals(
                       .encoded_descriptor,
           "bound AVG dropped its function, field, or result descriptor");
 
-  auto row = [](std::string value) {
+  auto row = [](api::CrudStoredValue value) {
     api::CrudRowVersionRecord record;
     record.values.push_back({"value", std::move(value)});
     return record;
@@ -990,9 +990,9 @@ void TestAvgTypedFinalizationAndRefusals(
                   "AVG test_04 finalization failed");
   require_integer({row("5"), row("5"), row("7")}, 5, 6,
                   "AVG test_05 DISTINCT finalization failed");
-  require_integer({row("12"), row("13"), row("14"), row("<NULL>")},
+  require_integer({row("12"), row("13"), row("14"), row(api::CrudStoredValue::SqlNull())},
                   13, 13, "AVG test_07 NULL-elision failed");
-  require_integer({row("<NULL>")}, std::nullopt, std::nullopt,
+  require_integer({row(api::CrudStoredValue::SqlNull())}, std::nullopt, std::nullopt,
                   "AVG test_08 all-NULL finalization failed");
   require_integer({}, std::nullopt, std::nullopt,
                   "empty AVG finalization failed");

@@ -3271,6 +3271,11 @@ void RequireTransactionalIndexLifecycle(
   Require(validated.ok,
           "transactional index did not validate against authoritative rows");
 
+  // Independent SBCLKEY2 scalar-key oracle: uint32 arity, VALUE state,
+  // uint32 payload length, exact bytes. Raw display text is not a durable key.
+  const std::string key_one("SBCLKEY2\1\0\0\0\0\1\0\0\0" "1", 18);
+  const std::string key_two("SBCLKEY2\1\0\0\0\0\1\0\0\0" "2", 18);
+  const std::string key_fifteen("SBCLKEY2\1\0\0\0\0\2\0\0\0" "15", 19);
   bool saw_key_change_retire = false;
   bool saw_delete_retire = false;
   for (const auto& entry : state.index_entries) {
@@ -3278,10 +3283,10 @@ void RequireTransactionalIndexLifecycle(
       continue;
     }
     if (entry.creator_tx == updater.local_transaction_id &&
-        entry.row_uuid == kRowA && entry.key_value == "1") {
+        entry.row_uuid == kRowA && entry.key_value == key_one) {
       saw_key_change_retire = true;
     }
-    if (entry.row_uuid == kRowB && entry.key_value == "2") {
+    if (entry.row_uuid == kRowB && entry.key_value == key_two) {
       saw_delete_retire = true;
     }
   }
@@ -3298,7 +3303,7 @@ void RequireTransactionalIndexLifecycle(
           [&](const auto& entry) {
             return entry.index_uuid == kIndexUuid &&
                    entry.creator_tx == updater.local_transaction_id &&
-                   entry.row_uuid == kRowA && entry.key_value == "1" &&
+                   entry.row_uuid == kRowA && entry.key_value == key_one &&
                    entry.entry_kind == "retire";
           }),
       missing_retire_state.index_entries.end());
@@ -3318,7 +3323,7 @@ void RequireTransactionalIndexLifecycle(
           [&](const auto& entry) {
             return entry.index_uuid == kIndexUuid &&
                    entry.creator_tx == updater.local_transaction_id &&
-                   entry.row_uuid == kRowA && entry.key_value == "15" &&
+                   entry.row_uuid == kRowA && entry.key_value == key_fifteen &&
                    entry.entry_kind == "insert";
           }),
       missing_insert_state.index_entries.end());
@@ -4273,7 +4278,10 @@ void VerifyTypedTextUpdateContract(const std::filesystem::path& database_path) {
     Require(bound.ok, "typed TEXT real binder refused valid bytes");
     const auto executed = api::ExecuteDmlUpdateRowsDescriptorV1(
         TypedUpdateConsumerContext(context), bound.descriptor_ref, 1);
-    if (!executed.ok) std::cerr << executed.diagnostic.code << ':' << executed.diagnostic.detail << '\n';
+    if (!executed.ok) std::cerr << "TEXT bytes=" << value.size() << ':'
+                              << executed.diagnostic.code << ':'
+                              << executed.diagnostic.message_key << ':'
+                              << executed.diagnostic.detail << '\n';
     Require(executed.ok && executed.update_result.updated_count == 1,
             "typed TEXT real executor failed");
     read(value, false);

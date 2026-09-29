@@ -1,6 +1,6 @@
 # Database Lifecycle Traceability Report
 
-Generated: `2026-09-28T21:17:51Z`
+Generated: `2026-09-29T10:07:16Z`
 Slice: `DBLC-013R`
 Acceptance gate: `DBLC_P13R_TRACEABILITY_COMPLETE`
 Status: `passed`
@@ -12,15 +12,15 @@ This report is generated from the database lifecycle tracker, acceptance gates, 
 
 ## Coverage Summary
 
-- Execution_Plan CTest labels observed in current CMake/test files: `9425`
-- Test source inventory entries observed: `22926`
-- Generated trace records: `593`
+- Execution_Plan CTest labels observed in current CMake/test files: `9442`
+- Test source inventory entries observed: `22946`
+- Generated trace records: `594`
 - Fatal findings: `0`
 - Warnings: `0`
 
 | Trace category | Records |
 | --- | ---: |
-| `diagnostic` | `145` |
+| `diagnostic` | `146` |
 | `invalid_transition_or_refusal` | `43` |
 | `operation_family` | `83` |
 | `route` | `24` |
@@ -121,7 +121,7 @@ No findings. Zero open traceability gaps remain for this slice.
 | `state` | `process.quarantined` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
 | `state` | `process.ready` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
 | `state` | `process.starting` | `database_lifecycle_ipc`, `database_lifecycle_listener`, `database_lifecycle_manager`, `database_lifecycle_parser`, `database_lifecycle_process_association`, `database_lifecycle_server_daemon` |
-| `summary` | `513 additional generated records` | `covered` |
+| `summary` | `514 additional generated records` | `covered` |
 
 ## CMake Integration
 

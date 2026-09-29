@@ -498,7 +498,7 @@ bool SerializableIntegratedEngineApiProof() {
   bool exact_primary_proof = false;
   for (const auto& diagnostic : duplicate.diagnostics) {
     if (diagnostic.code != "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION" ||
-        diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=3:key_redacted=true") ==
+        diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=20:key_redacted=true") ==
             std::string::npos) continue;
     for (const auto& [field, identity] : diagnostic.identity_fields)
       if (field == "index_uuid" && identity == fixture.primary_index_uuid)

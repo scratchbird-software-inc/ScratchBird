@@ -23,6 +23,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "support"))
+from owned_test_runtime import OwnedTestRuntime
+
 
 BENCHMARK_PASSWORD = "ScratchBird-E2E-2026!"
 
@@ -270,10 +273,14 @@ def main(argv: list[str]) -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     work = work_root / f"legacy_execution_plan10_live_{int(time.time())}"
     work.mkdir()
-    short_runtime = Path(tempfile.mkdtemp(prefix="sblb_"))
+    # Linux regression owns a short private runtime and checks for live process
+    # references before deletion. Keep persistent reports separate from its
+    # regenerable database and companions; never archive the database.
+    owned_runtime = OwnedTestRuntime(parent="/tmp") if sys.platform.startswith("linux") else None
+    short_runtime = owned_runtime.path if owned_runtime else Path(tempfile.mkdtemp(prefix="sblb_"))
     (work / "short_runtime_root.txt").write_text(str(short_runtime) + "\n", encoding="utf-8")
 
-    database = work / "fresh-benchmark.sbdb"
+    database = (short_runtime if owned_runtime else work) / "fresh-benchmark.sbdb"
     server_control = short_runtime / "sc"
     server_runtime = short_runtime / "sr"
     server_endpoint = server_control / "s"
@@ -289,14 +296,12 @@ def main(argv: list[str]) -> int:
     stress_monitor = work / "execution_plan10-sb_isql-monitor.jsonl"
     comparability_path = work / "execution_plan10-comparability.json"
     comparison_dir = work / "execution_plan10-comparison"
-    cert, key = generate_server_cert(args.openssl, work)
-    port = find_free_port()
-
-    run([args.example_db_seeder, str(database), "benchmark_user", BENCHMARK_PASSWORD], cwd=repo_root)
-
     server = None
     listener = None
     try:
+        cert, key = generate_server_cert(args.openssl, work)
+        port = find_free_port()
+        run([args.example_db_seeder, str(database), "benchmark_user", BENCHMARK_PASSWORD], cwd=repo_root)
         server = subprocess.Popen(
             [
                 args.server,
@@ -470,6 +475,10 @@ def main(argv: list[str]) -> int:
     finally:
         stop_process(listener)
         stop_process(server)
+        if owned_runtime:
+            owned_runtime.cleanup(work, controller_finished=(
+                (listener is None or listener.poll() is not None) and
+                (server is None or server.poll() is not None)))
 
 
 if __name__ == "__main__":

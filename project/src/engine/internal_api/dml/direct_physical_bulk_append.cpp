@@ -27,6 +27,7 @@
 #include "dml/mutation_savepoint_capability.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/constraint_key_evidence.hpp"
 #include "dml/dml_ingestion_pipeline.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
 #include "dml/insert_batch.hpp"
@@ -178,26 +179,27 @@ std::string DirectTypedValueTextPayload(const EngineTypedValue& typed) {
   if (!typed.encoded_value.empty() || typed.binary_value.empty()) {
     return typed.encoded_value;
   }
-  const std::string& type_name = typed.descriptor.canonical_type_name;
-  if (type_name == "boolean" && typed.binary_value.size() == 1) {
+  const auto type = dt::CanonicalTypeIdFromStableName(
+      typed.descriptor.canonical_type_name);
+  if (type == dt::CanonicalTypeId::boolean && typed.binary_value.size() == 1) {
     return typed.binary_value.front() == 0 ? "false" : "true";
   }
-  if (type_name == "int32" && typed.binary_value.size() == 4) {
+  if (type == dt::CanonicalTypeId::int32 && typed.binary_value.size() == 4) {
     const std::uint32_t bits = DirectReadLittleEndianU32(typed.binary_value);
     std::int32_t value = 0;
     std::memcpy(&value, &bits, sizeof(value));
     return DirectI64ToString(value);
   }
-  if (type_name == "int64" && typed.binary_value.size() == 8) {
+  if (type == dt::CanonicalTypeId::int64 && typed.binary_value.size() == 8) {
     const std::uint64_t bits = DirectReadLittleEndianU64(typed.binary_value);
     std::int64_t value = 0;
     std::memcpy(&value, &bits, sizeof(value));
     return DirectI64ToString(value);
   }
-  if (type_name == "uint64" && typed.binary_value.size() == 8) {
+  if (type == dt::CanonicalTypeId::uint64 && typed.binary_value.size() == 8) {
     return DirectU64ToString(DirectReadLittleEndianU64(typed.binary_value));
   }
-  if (type_name == "real64" && typed.binary_value.size() == 8) {
+  if (type == dt::CanonicalTypeId::real64 && typed.binary_value.size() == 8) {
     const std::uint64_t bits = DirectReadLittleEndianU64(typed.binary_value);
     double value = 0.0;
     std::memcpy(&value, &bits, sizeof(value));
@@ -775,7 +777,7 @@ void PopulateDirectForeignKeyViolationFields(
         {"child_column_display_label", proof.child_column_name},
         {"key_display_text",
          "(" + DirectQuotedDiagnosticIdentifier(proof.child_column_name) +
-             " = " + missing_key + ")"}};
+             " = " + ConstraintKeyEvidenceFingerprint(missing_key) + ")"}};
     return;
   }
 }
@@ -1057,7 +1059,16 @@ void AddCoreProofEvidence(
     return;
   }
   for (const auto& evidence : source) {
-    target->push_back({evidence.evidence_kind, evidence.evidence_id});
+    if (evidence.evidence_kind == "bulk_fk_proof_missing_parent_key" ||
+        evidence.evidence_kind == "bulk_unique_proof_conflict_key") {
+      const auto* key = std::get_if<std::string>(&evidence.evidence_id);
+      if (!key) throw std::invalid_argument("bulk_constraint_key_carrier_invalid");
+      target->push_back({evidence.evidence_kind, ConstraintKeyEvidenceFingerprint(*key)});
+      target->push_back({evidence.evidence_kind + ".bytes", std::to_string(key->size())});
+      target->push_back({evidence.evidence_kind + ".redacted", "true"});
+    } else {
+      target->push_back({evidence.evidence_kind, evidence.evidence_id});
+    }
   }
 }
 
