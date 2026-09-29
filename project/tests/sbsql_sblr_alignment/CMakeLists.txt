@@ -10115,6 +10115,11 @@ add_test(NAME sbsql_sblr_alignment_agent_selection_binary_identity
 set_tests_properties(sbsql_sblr_alignment_agent_selection_binary_identity PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;agent_status;component_codec;not_e2e" TIMEOUT 60)
 
+add_test(NAME sbsql_sblr_alignment_server_ready_fixture
+  COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/server_ready_fixture_test.py)
+set_tests_properties(sbsql_sblr_alignment_server_ready_fixture PROPERTIES
+  TIMEOUT 30 LABELS "sbsql_sblr_alignment;readiness;fixture_unit;not_runtime_acceptance")
+
 add_test(NAME sbsql_sblr_alignment_binary_status_client
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/binary_status_client_test.py)
 set_tests_properties(sbsql_sblr_alignment_binary_status_client PROPERTIES
