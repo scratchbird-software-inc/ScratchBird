@@ -16,8 +16,8 @@
 #endif
 
 namespace scratchbird::engine::internal_api::local_publication_store {
-// An atomically replaced, sorted collection of publication receipts. It is
-// neither a redo log nor finality authority. No historical receipt is pruned.
+// An atomically replaced, sorted collection of publication receipts. These are
+// derivative evidence, not recovery or finality authority. No receipt is pruned.
 inline constexpr std::string_view kMagic = "SBMPST03";
 inline constexpr std::size_t kHeaderBytes = 72;
 inline std::string Path(const EngineRequestContext& context) {
