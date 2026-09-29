@@ -33,6 +33,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <stdexcept>
 #include <string_view>
 #include <unistd.h>
 #include <utility>
@@ -58,8 +59,7 @@ struct TestDatabase {
 };
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -100,13 +100,31 @@ std::string Id(platform::UuidKind kind, platform::u64 seed) {
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_pfar016_obs.XXXXXX";
+  std::string tmpl = (std::filesystem::temp_directory_path() /
+                      "sb_pfar016_obs.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "mkdtemp failed for PFAR-016 gate");
   return std::filesystem::path(made);
 }
+
+struct OwnedTempDir {
+  OwnedTempDir() = default;
+  OwnedTempDir(const OwnedTempDir&) = delete;
+  OwnedTempDir& operator=(const OwnedTempDir&) = delete;
+  std::filesystem::path path = MakeTempDir();
+  void Cleanup() {
+    std::filesystem::remove_all(path);
+    path.clear();
+  }
+  ~OwnedTempDir() {
+    if (path.empty()) return;
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+    if (error) std::cerr << "agent observability fixture cleanup failed: " << error.message() << '\n';
+  }
+};
 
 void CleanupDatabase(const std::filesystem::path& path) {
   scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
@@ -702,14 +720,23 @@ void TestNegativeSecurityAndUuid(const std::filesystem::path& temp_dir) {
 
 }  // namespace
 
-int main() {
-  const auto temp_dir = MakeTempDir();
+static int Run() {
+  OwnedTempDir owned;
+  const auto& temp_dir = owned.path;
   TestEngineCollectorAndMetrics(temp_dir);
   TestSupportBundleAndManagerCollectors(temp_dir);
   TestProductionSupportBundleReadsDurableAgentCatalog(temp_dir);
   TestProductionSupportBundleRequiresDurableCatalog(temp_dir);
   TestListenerCollectors();
   TestNegativeSecurityAndUuid(temp_dir);
-  std::filesystem::remove_all(temp_dir);
+  owned.Cleanup();
   return EXIT_SUCCESS;
+}
+
+int main() {
+  try { return Run(); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

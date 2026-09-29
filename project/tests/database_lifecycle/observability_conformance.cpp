@@ -28,6 +28,7 @@ using scratchbird::tests::BinaryFixtureIdentity;
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <unistd.h>
 #include <vector>
 
@@ -39,8 +40,7 @@ namespace server = scratchbird::server;
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -49,13 +49,31 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc015_observability.XXXXXX";
+  std::string tmpl = (std::filesystem::temp_directory_path() /
+                      "sb_dblc015_observability.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "mkdtemp failed for DBLC-015 observability test");
   return std::filesystem::path(made);
 }
+
+struct OwnedTempDir {
+  OwnedTempDir() = default;
+  OwnedTempDir(const OwnedTempDir&) = delete;
+  OwnedTempDir& operator=(const OwnedTempDir&) = delete;
+  std::filesystem::path path = MakeTempDir();
+  void Cleanup() {
+    std::filesystem::remove_all(path);
+    path.clear();
+  }
+  ~OwnedTempDir() {
+    if (path.empty()) return;
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+    if (error) std::cerr << "observability fixture cleanup failed: " << error.message() << '\n';
+  }
+};
 
 std::string ReadFile(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
@@ -414,16 +432,25 @@ void TestParserRendering() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int Run(int argc, char** argv) {
   const bool binary_only = argc == 2 && std::string_view(argv[1]) == "--binary-observation-only";
   Require(argc == 1 || binary_only, "unknown observation test mode");
-  const auto temp_dir = MakeTempDir();
+  OwnedTempDir owned;
+  const auto& temp_dir = owned.path;
   TestDiagnosticShapes();
   TestServerLifecycleObservability(temp_dir);
   TestEngineAudit(temp_dir);
   if (!binary_only) TestEngineMetrics(temp_dir);
   TestIparProjectionSourceAdapters(temp_dir);
   TestParserRendering();
-  std::filesystem::remove_all(temp_dir);
+  owned.Cleanup();
   return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+  try { return Run(argc, argv); }
+  catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }
