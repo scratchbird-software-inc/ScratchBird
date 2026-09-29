@@ -723,6 +723,33 @@ void TestIntegerPhysicalSortKeyBytes() {
       {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
        "340282366920938463463374607431768211456"}};
   for (const auto& item : cases) {
+    const auto compare = [&](std::string left, std::string right) {
+      dt::DatatypeComparisonRequest request;
+      request.left = Value(item.type, std::move(left));
+      request.right = Value(item.type, std::move(right));
+      return dt::CompareDatatypeValues(request);
+    };
+    const auto hash = [&](std::string value) {
+      const auto result = dt::HashDatatypeValue({Value(item.type, std::move(value))});
+      Require(result.ok(), "integer boundary hash refused");
+      return result.stable_hash_hex;
+    };
+    const auto refuse = [&](const std::string& invalid) {
+      Require(!compare(invalid, "0").ok() && !compare("0", invalid).ok(),
+              "integer comparison admitted invalid or out-of-range operand");
+      Require(!dt::HashDatatypeValue({Value(item.type, invalid)}).ok(),
+              "integer hash admitted invalid or out-of-range operand");
+      Require(!dt::MakeDatatypeSortKey({Value(item.type, invalid)}).ok(),
+              "integer sort key admitted invalid or out-of-range operand");
+      dt::DatatypeComparisonRequest request;
+      request.left = Value(item.type, invalid);
+      request.right = {item.type, {}, true};
+      Require(!dt::CompareDatatypeValues(request).ok(),
+              "NULL counterpart bypassed integer operand validation");
+      std::swap(request.left, request.right);
+      Require(!dt::CompareDatatypeValues(request).ok(),
+              "left NULL bypassed integer operand validation");
+    };
     const auto key = [&](std::string value) {
       const auto encoded = dt::MakeDatatypeSortKey({Value(item.type, std::move(value))});
       Require(encoded.ok(), "integer boundary comparison key refused");
@@ -737,6 +764,11 @@ void TestIntegerPhysicalSortKeyBytes() {
     if (item.signed_type) zero[1] = static_cast<char>(128);
     Require(key("0") == zero && key("+000") == zero,
             "integer zero lexical aliases changed comparison identity");
+    for (const auto alias : {"0", "000", "+000"}) {
+      const auto compared = compare(alias, "0");
+      Require(compared.ok() && compared.comparison == 0 && hash(alias) == hash("0"),
+              "integer zero aliases disagree across comparison hash and key");
+    }
     if (item.signed_type) {
       Require(key("-0") == zero && key("-1") < zero,
               "signed zero or negative integer key ordering drifted");
@@ -744,17 +776,42 @@ void TestIntegerPhysicalSortKeyBytes() {
       below_minimum.back() = static_cast<char>(below_minimum.back() + 1);
       Require(!dt::MakeDatatypeSortKey({Value(item.type, below_minimum)}).ok(),
               "integer sort key accepted a below-minimum value");
+      refuse(below_minimum);
+      for (const auto alias : {"-0", "-000"}) {
+        const auto compared = compare(alias, "0");
+        Require(compared.ok() && compared.comparison == 0 &&
+                    hash(alias) == hash("0") && key(alias) == zero,
+                "negative zero disagrees across integer comparison hash and key");
+      }
     } else {
       Require(!dt::MakeDatatypeSortKey({Value(item.type, "-1")}).ok(),
               "unsigned integer key admitted a negative value");
+      refuse("-1");
+      refuse("-0");
     }
     auto one = zero;
     one.back() = static_cast<char>(static_cast<unsigned char>(one.back()) + 1u);
     Require(key("1") == one && zero < one,
             "integer one is not encoded in the least significant byte");
-    for (const auto invalid : {std::string(item.overflow), std::string("1x"), std::string(80, '9')})
+    for (const auto invalid : {std::string(item.overflow), std::string("1x"), std::string(80, '9'),
+                              std::string(), std::string("+"), std::string(" 1"), std::string("1.0")}) {
       Require(!dt::MakeDatatypeSortKey({Value(item.type, invalid)}).ok(),
               "invalid integer key was accepted or silently truncated");
+      refuse(invalid);
+    }
+    const std::vector<std::string> ordered = item.signed_type
+        ? std::vector<std::string>{item.minimum, "-1", "0", "1", item.maximum}
+        : std::vector<std::string>{"0", "1", item.maximum};
+    for (std::size_t left = 0; left < ordered.size(); ++left) {
+      for (std::size_t right = 0; right < ordered.size(); ++right) {
+        const int expected = left < right ? -1 : (left > right ? 1 : 0);
+        const auto compared = compare(ordered[left], ordered[right]);
+        const auto left_key = key(ordered[left]), right_key = key(ordered[right]);
+        const int key_comparison = left_key < right_key ? -1 : (left_key > right_key ? 1 : 0);
+        Require(compared.ok() && compared.comparison == expected && key_comparison == expected,
+                "integer comparison and physical key disagree with independent boundary order");
+      }
+    }
     dt::DatatypeSortKeyRequest null_request;
     null_request.value = {item.type, {}, true};
     const auto first = dt::MakeDatatypeSortKey(null_request);

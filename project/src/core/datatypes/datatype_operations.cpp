@@ -371,14 +371,17 @@ bool IntegerFits(CanonicalTypeId target_type_id, const std::string& value) {
         return false;
       }
     }
-    case CanonicalTypeId::int128: {
-      static const std::string kMax = "170141183460469231731687303715884105727";
-      static const std::string kMinAbs = "170141183460469231731687303715884105728";
-      return CompareUnsignedDecimal(AbsoluteDecimal(value), negative ? kMinAbs : kMax) <= 0;
-    }
+    case CanonicalTypeId::int128:
     case CanonicalTypeId::uint128: {
-      static const std::string kMax = "340282366920938463463374607431768211455";
-      return !negative && CompareUnsignedDecimal(AbsoluteDecimal(value), kMax) <= 0;
+      // Wide numeric range authority belongs to the portable numeric backend.
+      // The lexical check above retains this operation API's admission rules.
+      libraries::sbl_numeric::NumericRequest request;
+      request.type = target_type_id == CanonicalTypeId::int128
+          ? libraries::sbl_numeric::NumericType::int128
+          : libraries::sbl_numeric::NumericType::uint128;
+      request.left = {request.type, value, false};
+      return libraries::sbl_numeric::ApplyNumericOperation(request).status ==
+          libraries::sbl_numeric::NumericStatusCode::ok;
     }
     default:
       return false;
@@ -1758,6 +1761,16 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "canonical_value_encoding_invalid");
     return result;
   }
+  if ((!request.left.is_null && IsInteger(request.left.type_id) &&
+       !IntegerFits(request.left.type_id, request.left.encoded_value)) ||
+      (!request.right.is_null && IsInteger(request.right.type_id) &&
+       !IntegerFits(request.right.type_id, request.right.encoded_value))) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected",
+        "integer_comparison_value_invalid");
+    return result;
+  }
   if (request.left.is_null || request.right.is_null) {
     if (request.left.is_null && request.right.is_null) {
       result.comparison = 0;
@@ -1775,10 +1788,12 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                                         "type_mismatch");
     return result;
   }
-  if (request.left.type_id == CanonicalTypeId::real128) {
+  if (request.left.type_id == CanonicalTypeId::real128 ||
+      request.left.type_id == CanonicalTypeId::int128 ||
+      request.left.type_id == CanonicalTypeId::uint128) {
     DatatypeNumericOperationRequest numeric;
     numeric.operation = DatatypeNumericOperationKind::compare;
-    numeric.type_id = CanonicalTypeId::real128;
+    numeric.type_id = request.left.type_id;
     numeric.left = request.left;
     numeric.right = request.right;
     numeric.context = request.numeric_context;
@@ -1828,6 +1843,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     }
   }
   if (IsInteger(request.left.type_id)) {
+    left = TrimLeadingZeros(std::move(left));
+    right = TrimLeadingZeros(std::move(right));
     const bool left_negative = !left.empty() && left.front() == '-';
     const bool right_negative = !right.empty() && right.front() == '-';
     if (left_negative != right_negative) {
