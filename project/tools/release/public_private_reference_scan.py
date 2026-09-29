@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 from pathlib import Path
 import re
@@ -150,6 +151,62 @@ def contains_banned_reference(label: str, needle: str, text: str) -> bool:
     return needle in text
 
 
+def python_git_dependency_text(text: str) -> str:
+    """Exclude only literal metadata-directory deny predicates, not file access.
+
+    A positive ``any(part in {literal names} for part in path.parts)`` term
+    that unconditionally continues the loop excludes those directories. It
+    does not depend on their contents. Negations, conjunctions, filtered
+    generators, arbitrary expressions and other occurrences remain scanned.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return text
+    for node in ast.walk(tree):
+        if ((isinstance(node, ast.Name) and node.id == "any" and isinstance(node.ctx, ast.Store)) or
+                (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "any") or
+                (isinstance(node, ast.arg) and node.arg == "any") or
+                (isinstance(node, ast.alias) and (node.asname or node.name) == "any")):
+            return text
+    encoded = text.encode("utf-8")
+    offsets = [0]
+    for line in encoded.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    masked = bytearray(encoded)
+    for branch in ast.walk(tree):
+        if (not isinstance(branch, ast.If) or branch.orelse or
+                len(branch.body) != 1 or not isinstance(branch.body[0], ast.Continue)):
+            continue
+        terms = branch.test.values if isinstance(branch.test, ast.BoolOp) and isinstance(branch.test.op, ast.Or) else [branch.test]
+        for term in terms:
+            if (not isinstance(term, ast.Call) or not isinstance(term.func, ast.Name) or
+                    term.func.id != "any" or term.keywords or len(term.args) != 1 or
+                    not isinstance(term.args[0], ast.GeneratorExp)):
+                continue
+            generator = term.args[0]
+            if len(generator.generators) != 1:
+                continue
+            iteration = generator.generators[0]
+            comparison = generator.elt
+            if (iteration.ifs or iteration.is_async or not isinstance(iteration.target, ast.Name) or
+                    not isinstance(iteration.iter, ast.Attribute) or iteration.iter.attr != "parts" or
+                    not isinstance(comparison, ast.Compare) or len(comparison.ops) != 1 or
+                    not isinstance(comparison.ops[0], ast.In) or
+                    not isinstance(comparison.left, ast.Name) or comparison.left.id != iteration.target.id or
+                    not isinstance(comparison.comparators[0], ast.Set)):
+                continue
+            literals = comparison.comparators[0].elts
+            if not all(isinstance(value, ast.Constant) and isinstance(value.value, str) for value in literals):
+                continue
+            for value in literals:
+                if value.value == "." + "git":
+                    start = offsets[value.lineno - 1] + value.col_offset
+                    end = offsets[value.end_lineno - 1] + value.end_col_offset
+                    masked[start:end] = b" " * (end - start)
+    return masked.decode("utf-8")
+
+
 def iter_files(root: Path):
     walk_root = io_path(root) if os.name == "nt" else str(root)
     for dirpath, dirnames, filenames in os.walk(walk_root):
@@ -175,10 +232,14 @@ def scan(root: Path) -> list[str]:
         except FileNotFoundError:
             continue
         rel = path.relative_to(root)
+        git_text = (python_git_dependency_text(text)
+                    if path.suffix == ".py" and GIT_METADATA_REFERENCE_RE.search(text)
+                    else text)
         for label, needle in banned_needles():
             if allow_labeled_reference(label, rel):
                 continue
-            if contains_banned_reference(label, needle, text):
+            candidate = git_text if label == "git_metadata_reference" else text
+            if contains_banned_reference(label, needle, candidate):
                 findings.append(f"{rel}: {label}: {needle}")
     return findings
 

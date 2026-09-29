@@ -950,6 +950,12 @@ set_tests_properties(public_private_reference_scan_gate PROPERTIES
   LABELS "public_release_correctness;public_private_reference_scan_gate;PCR-GATE-002;PCR-003;release_hygiene"
 )
 
+add_test(NAME public_private_reference_scan_semantics
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_private_reference_scan_semantics_test.py)
+set_tests_properties(public_private_reference_scan_semantics PROPERTIES
+  LABELS "public_release_correctness;release_hygiene;unit;negative_controls")
+
 # DBEAVER_MANAGEMENT_PLATFORM_GATE_TEST
 add_test(
   NAME dbeaver_management_platform_gate_test
