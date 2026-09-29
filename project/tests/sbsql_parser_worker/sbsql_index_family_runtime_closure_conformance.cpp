@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/ordered_integer_key_oracle.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -773,8 +774,17 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
   Require(partial.predicate_kind == "where_eq" && partial.predicate_column == "status" &&
               partial.predicate_value == "active",
           "partial index predicate metadata was not persisted");
-  Require(CountIndexEntries(state, BtreeIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "3", 18)) == 1,
+  const auto storage = api::LoadMgaRelationStorageDescriptor(context, TableUuid());
+  Require(storage.ok && !storage.descriptor.columns.empty(), "btree bound descriptor missing");
+  const auto& id_descriptor = storage.descriptor.columns.front().value_descriptor;
+  const auto expected_btree_key = scratchbird::tests::ExpectedInt64OrderedIndexKey(
+      id_descriptor.datatype_descriptor_uuid, id_descriptor.datatype_descriptor_generation, 3);
+  Require(CountIndexEntries(state, BtreeIndexUuid(), expected_btree_key) == 1,
           "btree insert maintenance did not persist new key");
+  for (const auto& entry : state.index_entries)
+    if (entry.index_uuid == BtreeIndexUuid() && entry.key_value == expected_btree_key)
+      Require(entry.payload_value == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00" "3", 18),
+              "btree insert maintenance did not preserve the lossless logical tuple");
   Require(CountIndexEntries(state, BitmapIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x06\x00\x00\x00" "active", 23)) >= 3,
           "bitmap mutation path did not persist active-key entries");
   Require(CountIndexEntries(state, ExpressionIndexUuid(), std::string("SBCLKEY2\x01\x00\x00\x00\x00\x05\x00\x00\x00" "bravo", 22)) == 1,

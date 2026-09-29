@@ -2,6 +2,7 @@
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/native_value_payload.hpp"
 #include "crud_support/composite_logical_key.hpp"
+#include "crud_support/bound_ordered_index_key.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -1782,7 +1783,8 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
           }
         }
       }
-      if (index_entries_authoritative && append_index_key_cache != nullptr) {
+      if (index_entries_authoritative && append_index_key_cache != nullptr &&
+          !bound_index_key::UsesBoundOrderedProfile(*support_index)) {
         AddCachedConflictingVisibleKeysForProof(*support_index,
                                                 unique.incoming_keys,
                                                 append_index_key_cache,
@@ -1907,7 +1909,8 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
         }
       }
     }
-    if (index_entries_authoritative && append_index_key_cache != nullptr) {
+    if (index_entries_authoritative && append_index_key_cache != nullptr &&
+        !bound_index_key::UsesBoundOrderedProfile(index)) {
       AddCachedConflictingVisibleKeysForProof(index,
                                               unique.incoming_keys,
                                               append_index_key_cache,
@@ -1927,6 +1930,40 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                 index_entries_authoritative);
     }
     proof_request.unique_proofs.push_back(std::move(unique));
+  }
+
+  // Logical tuple bytes preserve values, but are not comparison authority:
+  // decimal cohorts and collated strings can differ in representation while
+  // being equal under the index's bound policy. Normalize BOTH sides through
+  // the same descriptor/resource path used by physical index publication.
+  // The logical-key cache above cannot prove absence in this domain.
+  for (auto& unique : proof_request.unique_proofs) {
+    const auto index = std::find_if(visible_indexes.begin(), visible_indexes.end(),
+        [&](const auto& candidate) { return candidate.index_uuid == unique.index_uuid; });
+    if (index == visible_indexes.end()) return fail_before_proof("bulk_unique_proof_index_missing");
+    if (!bound_index_key::UsesBoundOrderedProfile(*index)) continue;
+    std::vector<bound_index_key::OrderedIndexColumn> columns;
+    if (!bound_index_key::BindOrderedIndexColumns(request.context, *index, table.table_uuid,
+                                                 &columns, &selection.diagnostic)) {
+      selection.ok = false;
+      selection.failure_reason = "bulk_unique_proof_datatype_binding_failed";
+      return selection;
+    }
+    for (auto* keys : {&unique.incoming_keys, &unique.visible_keys}) {
+      for (auto& key : *keys) {
+        std::string comparison;
+        bool null_key = false;
+        if (!bound_index_key::EncodeOrderedIndexKey(key.encoded_key, columns, &comparison,
+                                                    &null_key, &selection.diagnostic)) {
+          selection.ok = false;
+          selection.failure_reason = "bulk_unique_proof_comparison_key_failed";
+          return selection;
+        }
+        key.encoded_key = std::move(comparison);
+        key.null_key = null_key;
+      }
+    }
+    unique.incoming_keys_presorted = false;
   }
 
   const auto proven =
@@ -4062,6 +4099,15 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     build.metadata.policy_allows_mutation = true;
     build.metadata.leaf_entry_capacity = 128;
     scratchbird::core::index::UniqueIndexReservationLedger unique_ledger;
+    const bool bound_ordered = bound_index_key::UsesBoundOrderedProfile(index);
+    std::vector<bound_index_key::OrderedIndexColumn> ordered_columns;
+    if (bound_ordered && !bound_index_key::BindOrderedIndexColumns(
+            request.context, index, request.target_table.uuid,
+            &ordered_columns, &selection.diagnostic)) {
+      selection.ok = false;
+      selection.failure_reason = "sorted_bulk_index_binding_refused";
+      return selection;
+    }
     for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
       const auto& values = logical_value_batch[row_index];
       for (const auto& key : CrudIndexKeysForValues(index, values)) {
@@ -4072,6 +4118,15 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
         input.payload_value = EncodeCrudValues({{index.column_name, CrudFieldValue(values, index.column_name)}});
         input.source_ordinal = static_cast<std::uint64_t>(row_index);
         input.null_key = DirectIndexValuesContainNull(index, values);
+        if (bound_ordered) {
+          if (!bound_index_key::EncodeOrderedIndexKey(key, ordered_columns,
+                  &input.encoded_key, &input.null_key, &selection.diagnostic)) {
+            selection.ok = false;
+            selection.failure_reason = "sorted_bulk_index_key_refused";
+            return selection;
+          }
+          input.payload_value = key;
+        }
         build.rows.push_back(std::move(input));
       }
     }
@@ -4166,7 +4221,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     batch.entry_kind = "insert";
     batch.entries.reserve(built.entries.size());
     for (const auto& entry : built.entries) {
-      batch.entries.push_back({entry.encoded_key,
+      batch.entries.push_back({bound_ordered ? "SBKOBIN:" + entry.encoded_key : entry.encoded_key,
                                entry.payload_value,
                                entry.row_uuid,
                                entry.version_uuid});
@@ -7811,6 +7866,45 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
            std::to_string(direct_typed_index_key_stats.sbkobin_keys)});
     }
     mark_phase("index_exact_key_precompute");
+  }
+
+  // Stage-time typed carriers may preserve a representation (for example
+  // decimal coefficient/quantum) rather than its comparison equivalence.
+  // Establish the real bound index keys BEFORE the empty-target fast proof;
+  // otherwise that proof can certify distinct bytes for equivalent values.
+  bool rebound_ordered_keys = false;
+  for (auto& [index_uuid, entries] : direct_precomputed_index_entries) {
+    const auto index = std::find_if(visible_indexes.begin(), visible_indexes.end(),
+        [&](const auto& candidate) { return candidate.index_uuid == index_uuid; });
+    if (index == visible_indexes.end() || !bound_index_key::UsesBoundOrderedProfile(*index)) continue;
+    std::vector<bound_index_key::OrderedIndexColumn> columns;
+    EngineApiDiagnostic diagnostic;
+    if (!bound_index_key::BindOrderedIndexColumns(request.context, *index, table->table_uuid,
+                                                 &columns, &diagnostic))
+      return DirectBulkFailureWithEvidence(request, diagnostic,
+          "bulk_precomputed_index_binding_failed", result.evidence, result.dml_summary);
+    for (auto& entry : entries) {
+      CrudIndexEntryRecord preserved;
+      preserved.key_value = entry.encoded_key;
+      preserved.payload_value = entry.payload_value;
+      const auto logical = CrudIndexEntryLogicalKey(*index, preserved);
+      std::string comparison;
+      bool null_key = false;
+      if (!bound_index_key::EncodeOrderedIndexKey(logical, columns, &comparison, &null_key, &diagnostic))
+        return DirectBulkFailureWithEvidence(request, diagnostic,
+            "bulk_precomputed_index_key_failed", result.evidence, result.dml_summary);
+      entry.encoded_key = "SBKOBIN:" + comparison;
+      entry.payload_value = logical;
+      entry.null_key = null_key;
+    }
+    rebound_ordered_keys = true;
+  }
+  if (rebound_ordered_keys) {
+    DirectSortPrecomputedIndexEntries(&direct_precomputed_index_entries);
+    direct_precomputed_index_order_states.clear();
+    for (const auto& [index_uuid, entries] : direct_precomputed_index_entries)
+      for (const auto& entry : entries)
+        DirectTrackPrecomputedIndexEntryOrder(index_uuid, entry, &direct_precomputed_index_order_states);
   }
 
   const bool empty_target_constraint_fast_path =

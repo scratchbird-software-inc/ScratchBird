@@ -138,6 +138,16 @@ struct DatatypeTypeCodecIdentityRowV1 {
   bool sql_null_requires_zero_payload = false;
   bool variable_width_storage_without_truncation = false;
   std::string invalid_encoding_diagnostic_id;
+  // Numeric policies are immutable catalog identities, not defaults inferred
+  // from the type enum, byte width, or a caller's desired ordering algorithm.
+  scratchbird::core::platform::Uuid numeric_context_uuid;
+  u64 numeric_context_generation = 0;
+  scratchbird::core::platform::Uuid special_value_policy_uuid;
+  u64 special_value_policy_generation = 0;
+  scratchbird::core::platform::Uuid comparison_policy_uuid;
+  u64 comparison_policy_generation = 0;
+  std::string comparison_profile;
+  bool allow_special_values = false;
 };
 
 struct DatatypeTypeCodecIdentityLookupV1 {
@@ -170,6 +180,9 @@ DatatypeTypeCodecIdentityLookupV1 LookupCanonicalBooleanTypeCodecIdentityV1(
 // predicate validates the complete immutable Core row so public projection
 // producers and consumers cannot infer the exception from a name or width.
 bool IsExactCanonicalTextTypeCodecIdentityV1(
+    const DatatypeTypeCodecIdentityRowV1& row);
+
+bool IsExactCanonicalDecimal128TypeCodecIdentityV1(
     const DatatypeTypeCodecIdentityRowV1& row);
 
 // The Core boolean v1 row is the sole admitted descriptor/type UUID alias.

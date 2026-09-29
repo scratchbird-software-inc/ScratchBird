@@ -339,6 +339,7 @@ std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationRead
                                                               std::uint64_t observer_tx);
 bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredicateEnvelope& predicate);
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate);
+std::vector<std::string> CrudIndexKeyColumnNames(const CrudIndexRecord& index);
 std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
                                                 const CrudValueFields& values);
 std::string CrudIndexEntryLogicalKey(const CrudIndexRecord& index,

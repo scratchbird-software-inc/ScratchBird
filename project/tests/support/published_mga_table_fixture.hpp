@@ -4,6 +4,7 @@
 #include "../../src/engine/internal_api/catalog/catalog_object_lifecycle.hpp"
 #include "../../src/engine/internal_api/catalog/column_metadata_codec.hpp"
 #include "../../src/engine/internal_api/catalog/datatype_bootstrap_identity.hpp"
+#include "../../src/engine/internal_api/catalog/name_resolution_api.hpp"
 #include "../../src/engine/internal_api/mga_relation_store/mga_relation_store.hpp"
 #include "../../src/core/datatypes/datatype_catalog_manifest.hpp"
 #include "../../src/core/datatypes/datatype_operations.hpp"
@@ -68,6 +69,42 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
     api::CatalogColumnMetadata attributes;
     if (!api::AdmitCatalogColumnMetadata(table.columns[i].second, &attributes))
       throw std::invalid_argument("fixture column metadata is invalid");
+    // These low-level fixtures select binary UTF8 semantics explicitly. Resolve
+    // real catalog resources before publishing the descriptor; an engine index
+    // writer must never infer collation from a bare character type label.
+    if (canonical_types[i] == "character" &&
+        attributes.identities.find("charset_uuid") == attributes.identities.end() &&
+        attributes.identities.find("collation_uuid") == attributes.identities.end()) {
+      const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
+      const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+      if (!charset.ok || !charset.resource_descriptor.present ||
+          !collation.ok || !collation.resource_descriptor.present ||
+          collation.resource_descriptor.parent_resource_uuid != charset.resource_descriptor.resource_uuid)
+        throw std::invalid_argument("fixture requires real UTF8 binary collation resources");
+      attributes.identities["charset_uuid"] = charset.resource_descriptor.resource_uuid;
+      attributes.identities["collation_uuid"] = collation.resource_descriptor.resource_uuid;
+      // Preserve explicit test bounds. Previously unbounded fixture columns
+      // use the admitted codec capacity, not a guessed SQL default or the
+      // wider integer field used to carry descriptor limits.
+      if (attributes.text.find("character_length") == attributes.text.end() &&
+          attributes.text.find("text_resource_storage") == attributes.text.end()) {
+        if (!binding.row.canonical_value_maximum_bytes)
+          throw std::invalid_argument("fixture text codec capacity is unavailable");
+        attributes.text["character_length"] =
+            std::to_string(binding.row.canonical_value_maximum_bytes);
+      }
+      if (!api::EncodeCatalogColumnMetadata(attributes, &table.columns[i].second))
+        throw std::invalid_argument("fixture bound text metadata encoding failed");
+      column.descriptor.encoded_descriptor = table.columns[i].second;
+    }
+    // Preserve actual catalog-resolved identities explicitly supplied by the
+    // fixture. A type label alone does not grant collation authority.
+    const auto charset = attributes.identities.find("charset_uuid");
+    const auto collation = attributes.identities.find("collation_uuid");
+    if (charset != attributes.identities.end())
+      column.descriptor.charset_uuid = charset->second;
+    if (collation != attributes.identities.end())
+      column.descriptor.collation_uuid = collation->second;
     const auto boolean_attribute = [&](const char* key) -> std::optional<bool> {
       const auto it = attributes.text.find(key);
       if (it == attributes.text.end()) return std::nullopt;

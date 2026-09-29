@@ -601,6 +601,14 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
     return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
                        "datatype.binary.decimal_payload_noncanonical");
   }
+  // Canonical binary structure only. Descriptor/receipt binding independently
+  // authorizes this codec and its special-value policy at the storage boundary.
+  if (value.type_id == CanonicalTypeId::decimal_float && !value.payload_is_toast_reference &&
+      !scratchbird::libraries::sbl_numeric::DecodeDecimal128LittleEndian(
+          value.payload_data, value.payload_bytes, true).value) {
+    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
+                           "datatype.binary.decimal128_payload_noncanonical");
+  }
   if (!decimal_value &&
       !IsValidFixedPayloadSize(layout.layout, static_cast<u32>(value.payload_bytes))) {
     return BinaryViewError("SB-DATATYPE-BINARY-PAYLOAD-SIZE-INVALID",

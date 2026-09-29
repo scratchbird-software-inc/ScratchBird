@@ -358,10 +358,12 @@ DescriptorValidation ValidateDescriptor(
       return {DescriptorValidationKind::datatype,
               "column_canonical_type_unsupported"};
     }
-    const bool decimal_value = column.canonical_type_id == CanonicalTypeId::decimal;
+    const bool decimal_value = column.canonical_type_id == CanonicalTypeId::decimal ||
+                               column.canonical_type_id == CanonicalTypeId::decimal_float;
     if (decimal_value &&
         column.canonical_value_bytes !=
-            scratchbird::libraries::sbl_numeric::kExactDecimalBinaryBytes) {
+            (column.canonical_type_id == CanonicalTypeId::decimal
+                 ? scratchbird::libraries::sbl_numeric::kExactDecimalBinaryBytes : 16)) {
       return {DescriptorValidationKind::datatype,
               "column_decimal_value_width_mismatch"};
     }

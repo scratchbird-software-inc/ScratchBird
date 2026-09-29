@@ -8,6 +8,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_storage_identity.hpp"
+#include "datatype_binary.hpp"
+#include "datatype_binary_view.hpp"
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -256,6 +259,12 @@ void TestTextExactDescriptorTypeCodecIdentity() {
   const auto fixed = dt::LookupDatatypeTypeCodecIdentityV1(
       kSnapshotUuid, 1, 1,
       scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"), 1);
+  reject_text_lookalike([](auto& c) { c.numeric_context_generation=1; },
+                       "text admitted decimal numeric policy generation");
+  reject_text_lookalike([](auto& c) { c.allow_special_values=true; },
+                       "text admitted numeric special value policy");
+  reject_text_lookalike([](auto& c) { c.comparison_profile="decimal128_numeric_total_nan_last_v1"; },
+                       "text admitted numeric comparison policy");
   Require(fixed.ok, "MDF-012 fixed-width control identity lookup failed");
   auto fixed_zero = fixed.row;
   fixed_zero.canonical_value_bytes = 0;
@@ -376,14 +385,14 @@ void TestFixedScalarSuccessorCohort() {
   }};
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   Require(manifest.ok(), "V4 manifest load failed");
-  std::array<std::size_t, 4> counts{};
+  std::array<std::size_t, 5> counts{};
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    Require(row.catalog_generation >= 1 && row.catalog_generation <= 4 &&
+    Require(row.catalog_generation >= 1 && row.catalog_generation <= 5 &&
                 row.registry_generation == row.catalog_generation,
             "codec cohort generation not exact");
     ++counts[row.catalog_generation - 1];
   }
-  Require(counts == std::array<std::size_t, 4>{6, 12, 13, 31},
+  Require(counts == std::array<std::size_t, 5>{6, 12, 13, 31, 32},
           "successor changed immutable predecessor rows");
   std::set<scratchbird::core::platform::Uuid> identities;
   for (const auto& item : expected) {
@@ -431,10 +440,97 @@ void TestFixedScalarSuccessorCohort() {
   }
 }
 
+void TestDecimal128SuccessorCohort() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  using Row = dt::DatatypeTypeCodecIdentityRowV1;
+  const auto descriptor = FixtureUuidLiteral("a1000000-1065-7369-ad61-6c5f666c6f61");
+  const auto type = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d824");
+  const auto lookup = dt::LookupDatatypeTypeCodecIdentityV1(dt::kDatatypeCohortV5,5,5,descriptor,1);
+  Require(lookup.ok && dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(lookup.row),
+          "decimal128 exact policy row missing");
+  const auto& row = lookup.row;
+  Require(row.type_uuid == type && row.codec_id == "datatype.decimal128.bid.le.v1" &&
+          row.codec_uuid == FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d825") &&
+          row.numeric_context_uuid == FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d826") &&
+          row.special_value_policy_uuid == FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d827") &&
+          row.comparison_policy_uuid == FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d828") &&
+          row.comparison_profile == "decimal128_numeric_total_nan_last_v1" &&
+          row.allow_special_values && row.canonical_value_bytes == 16,
+          "decimal128 identity or policy differs from independent registry oracle");
+  for (const auto member : {&Row::catalog_snapshot_uuid, &Row::descriptor_uuid, &Row::type_uuid,
+       &Row::codec_uuid, &Row::numeric_context_uuid, &Row::special_value_policy_uuid,
+       &Row::comparison_policy_uuid}) {
+    for (unsigned bit = 0; bit < 128; ++bit) {
+      auto changed = row;
+      (changed.*member).bytes[bit/8] ^= static_cast<std::uint8_t>(1u << (bit%8));
+      Require(!dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(changed),
+              "decimal128 changed binary authority admitted");
+    }
+  }
+  for (const auto member : {&Row::catalog_generation, &Row::registry_generation,
+       &Row::descriptor_generation, &Row::type_generation, &Row::codec_generation,
+       &Row::numeric_context_generation, &Row::special_value_policy_generation,
+       &Row::comparison_policy_generation}) {
+    for (const auto bad : {0ULL, 2ULL, 4ULL, 6ULL, ~0ULL}) {
+      auto changed = row;
+      changed.*member = bad;
+      Require(!dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(changed),
+              "decimal128 changed generation admitted");
+    }
+  }
+  auto changed = row;
+  changed.comparison_profile = "decimal128_ieee_total_order_v1";
+  Require(!dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(changed), "unbound order policy accepted");
+  changed = row; changed.allow_special_values = false;
+  Require(!dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(changed), "unbound special policy accepted");
+  dt::DatatypeStorageIdentityV1 storage;
+  Require(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV5,5,5,descriptor,1,&storage) &&
+          storage.type_uuid == type && storage.codec &&
+          dt::IsExactCanonicalDecimal128TypeCodecIdentityV1(*storage.codec), "storage lost decimal policy binding");
+  Require(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV4,4,4,descriptor,1,&storage) &&
+          storage.type_uuid == descriptor && !storage.codec, "successor reinterpreted predecessor storage identity");
+  for (unsigned generation = 1; generation <= 4; ++generation) {
+    auto snapshot = dt::kDatatypeCohortV5;
+    snapshot.bytes.back() = generation;
+    Require(!dt::LookupDatatypeTypeCodecIdentityV1(snapshot,generation,generation,descriptor,1).ok,
+            "decimal codec leaked into predecessor");
+  }
+  for (const auto& old : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    if (old.catalog_snapshot_uuid != dt::kDatatypeCohortV4) continue;
+    const auto inherited = dt::LookupDatatypeTypeCodecIdentityV1(dt::kDatatypeCohortV5,5,5,
+        old.descriptor_uuid,old.descriptor_generation);
+    Require(inherited.ok && inherited.row.type_uuid == old.type_uuid &&
+            inherited.row.codec_uuid == old.codec_uuid && inherited.row.codec_id == old.codec_id &&
+            inherited.row.canonical_value_bytes == old.canonical_value_bytes &&
+            inherited.row.canonical_representation == old.canonical_representation &&
+            inherited.row.numeric_context_uuid.is_nil(), "V5 changed inherited codec semantics");
+  }
+  std::array<std::uint8_t,16> one{};
+  one[0]=1; one[14]=0x40; one[15]=0x30;
+  auto valid = [&](const auto& bytes, std::size_t size) {
+    return dt::ValidateDatatypeBinaryValueView({dt::CanonicalTypeId::decimal_float,false,false,
+        bytes.data(),size}).ok();
+  };
+  Require(valid(one,16), "canonical decimal128 binary one rejected");
+  for (const auto size : {0U,1U,15U}) Require(!valid(one,size), "truncated decimal128 admitted");
+  auto bad=one; bad[15]=0x60;
+  Require(!valid(bad,16), "noncanonical steering encoding admitted");
+  bad.fill(0xff);
+  Require(!valid(bad,16), "noncanonical NaN admitted");
+  for (const auto special : {0x78,0xf8,0x7c,0xfc,0x7e,0xfe}) {
+    std::array<std::uint8_t,16> bytes{}; bytes[15]=special;
+    Require(valid(bytes,16), "canonical decimal special value rejected structurally");
+  }
+  Require(dt::ValidateDatatypeBinaryValueView({dt::CanonicalTypeId::decimal_float,true,false,nullptr,0}).ok() &&
+          !dt::ValidateDatatypeBinaryValueView({dt::CanonicalTypeId::decimal_float,true,false,one.data(),16}).ok(),
+          "decimal128 NULL state lost");
+}
+
 }  // namespace
 
 int main() {
   TestFixedScalarSuccessorCohort();
+  TestDecimal128SuccessorCohort();
   // MDF-012-CURRENT-CORE-DATATYPE-CATALOG-MANIFEST
   // DEFER-DTYPE-DESCRIPTOR-IMPLEMENTATION
   // DEFER-DTYPE-CATALOG-DDL

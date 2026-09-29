@@ -5,6 +5,7 @@
 #include "datatype_catalog_manifest.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include <algorithm>
+#include <optional>
 
 namespace scratchbird::core::datatypes {
 
@@ -15,6 +16,7 @@ struct DatatypeStorageIdentityV1 {
   u64 descriptor_generation = 0;
   platform::Uuid type_uuid;
   CanonicalTypeId type_id = CanonicalTypeId::unknown;
+  std::optional<DatatypeTypeCodecIdentityRowV1> codec;
 };
 
 inline bool LookupDatatypeStorageIdentityV1(
@@ -29,13 +31,16 @@ inline bool LookupDatatypeStorageIdentityV1(
     if (codec.row.canonical_binary_type_code == static_cast<u32>(CanonicalTypeId::unknown))
       return false;
     selected = {codec.row.descriptor_uuid, codec.row.descriptor_generation,
-                codec.row.type_uuid, static_cast<CanonicalTypeId>(codec.row.canonical_binary_type_code)};
+                codec.row.type_uuid, static_cast<CanonicalTypeId>(codec.row.canonical_binary_type_code), codec.row};
   } else {
     const auto registry = CurrentDatatypeTypeCodecIdentityRowsV1();
-    // A known codec descriptor never downgrades to storage-only admission.
+    // A codec admitted in this or an earlier cohort never downgrades to
+    // storage-only admission. A successor must not retroactively change V4's
+    // decimal storage identity or pretend it had a canonical value codec.
     if (std::any_of(registry.begin(), registry.end(), [&](const auto& row) {
-          return row.descriptor_uuid == descriptor;
-        }) || snapshot != kDatatypeCohortV4 || catalog_generation != 4 || registry_generation != 4)
+          return row.descriptor_uuid == descriptor && row.catalog_generation <= catalog_generation;
+        }) || !((snapshot == kDatatypeCohortV4 && catalog_generation == 4 && registry_generation == 4) ||
+                (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5)))
       return false;
     static const auto catalog = LoadCurrentCoreDatatypeCatalogManifest();
     if (!catalog.ok()) return false;

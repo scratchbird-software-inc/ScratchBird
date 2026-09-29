@@ -23,6 +23,10 @@
 
 }  // namespace
 
+std::vector<std::string> CrudIndexKeyColumnNames(const CrudIndexRecord& index) {
+  return CrudIndexKeyColumns(index);
+}
+
 bool CrudRowVersionVisibleToContext(const RelationReadSnapshot& state,
                                     const CrudRowVersionRecord& row,
                                     const EngineRequestContext& context) {

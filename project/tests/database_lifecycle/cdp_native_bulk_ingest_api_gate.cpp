@@ -22,6 +22,7 @@
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "hash_digest.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -732,6 +733,12 @@ std::vector<std::uint8_t> DescriptorPayloadForType(const std::string& type,
   if (type == "json_document") {
     const std::string json = "{\"value\":" + std::to_string(row_index) + "}";
     return {json.begin(), json.end()};
+  }
+  if (type == "decimal_float") {
+    const auto encoded = scratchbird::libraries::sbl_numeric::EncodeDecimal128LittleEndian(
+        std::to_string(row_index) + ".25");
+    Require(encoded.bytes.has_value(), "descriptor decimal128 fixture encoding failed");
+    return {encoded.bytes->begin(), encoded.bytes->end()};
   }
   if (type == "list") {
     const std::string text = std::to_string(row_index);
@@ -2062,7 +2069,7 @@ void TestNativeUuidCompositeIndex() {
   for (const auto& [left, right] : values) {
     // Independent byte oracle: no call to the producer's key encoder. Each
     // component has nonnull rank, scalar kind, binary descriptor and epoch,
-    // absent collation, and a zero-escaped raw16 payload plus terminator.
+    // absent collation, present-value state and zero-escaped raw16 payload.
     std::string expected = "SBKOBIN:SBKO";
     for (const auto& value : {left, right}) {
       expected.append("\x7f\0\0\0\1", 5);
@@ -2072,6 +2079,7 @@ void TestNativeUuidCompositeIndex() {
       for (int shift = 56; shift >= 0; shift -= 8)
         expected.push_back(static_cast<char>((descriptor.descriptor_epoch >> shift) & 0xff));
       expected.push_back('\0');
+      expected.push_back('\1');
       for (const auto byte : value.bytes) {
         expected.push_back(static_cast<char>(byte));
         if (byte == 0) expected.push_back(static_cast<char>(0xff));
@@ -2212,6 +2220,7 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
   Require(type.ok() && type.manifest.descriptor_rows.size() == 1, "UUID datatype absent");
   const auto descriptor = type.manifest.descriptor_rows.front().descriptor_uuid;
   std::set<std::string> expected_values, actual_values;
+  std::map<std::string, std::string> native_keys;
   for (const auto& value : values)
     expected_values.emplace(reinterpret_cast<const char*>(value.bytes.data()), 16);
   std::size_t entries = 0;
@@ -2222,15 +2231,23 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
     Require(payload.isPresent() && payload.bytes.size() == 16 &&
                 expected_values.contains(payload.bytes),
             "UUID index logical payload is not exact binary16");
-    scratchbird::core::index::IndexKeyEncodingComponent component;
-    component.type_descriptor_uuid = descriptor;
-    component.payload.assign(payload.bytes.begin(), payload.bytes.end());
-    const auto encoded = scratchbird::core::index::EncodeIndexKey({component}, {});
-    Require(encoded.ok(), "independent canonical UUID key encoding failed");
-    const std::string expected = std::string("SBKOBIN:") +
-        std::string(reinterpret_cast<const char*>(encoded.encoded.data()), encoded.encoded.size());
+    // Independent IPL/DPE bytes, without invoking either production encoder.
+    std::string expected = "SBKOBIN:SBKO";
+    expected.append("\x7f\0\0\0\1\4", 6);
+    expected.append(reinterpret_cast<const char*>(descriptor.value.bytes.data()), 16);
+    const auto generation = type.manifest.descriptor_rows.front().descriptor_epoch;
+    for (int shift = 56; shift >= 0; shift -= 8)
+      expected.push_back(static_cast<char>((generation >> shift) & 0xff));
+    expected.push_back('\0');
+    expected.push_back('\1');
+    for (const unsigned char byte : payload.bytes) {
+      expected.push_back(static_cast<char>(byte));
+      if (byte == 0) expected.push_back(static_cast<char>(0xff));
+    }
+    expected.append(2, '\0');
     Require(entry.key_value == expected,
             "stored UUID key differs from independent canonical binary encoding");
+    native_keys.emplace(payload.bytes, entry.key_value);
     actual_values.insert(payload.bytes);
   }
   Require(entries == values.size() && actual_values == expected_values,
@@ -2326,6 +2343,42 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
   Require(actual_values == expected_values, "UUID physical replay changed one or more of 128 bits");
   Rollback(reader);
 
+  // A second index built through DDL over committed native rows must publish
+  // the same exact physical/logical keys, including for unique indexes.
+  const auto ddl_index_uuid = NewIdentity(platform::UuidKind::object, 1662);
+  auto ddl_context = Begin(fixture, "uuid-binary-ddl-backfill");
+  scratchbird::tests::FixtureEngineRequest<api::EngineCreateIndexRequest> ddl(
+      *fixture.session, ddl_context);
+  ddl.target_object.uuid = fixture.table_uuid;
+  ddl.target_object.object_kind = "table";
+  api::EngineIndexDefinition definition;
+  definition.requested_index_uuid = ddl_index_uuid;
+  definition.physical_profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  definition.key_envelopes = {"value"};
+  if (unique) definition.key_envelopes.push_back("unique");
+  definition.names.push_back({"en", "primary", "", "uuid_ddl_backfill_idx", true});
+  ddl.indexes.push_back(std::move(definition));
+  RequireOk(api::EngineCreateIndex(ddl), "UUID DDL backfill failed");
+  Commit(ddl_context);
+  auto ddl_reader = Begin(fixture, "uuid-binary-ddl-reopen");
+  const auto ddl_stored = api::LoadMgaRelationStoreState(ddl_reader);
+  Require(ddl_stored.ok, "UUID DDL backfill could not be reloaded");
+  std::set<std::string> ddl_values;
+  std::size_t ddl_entries = 0;
+  for (const auto& entry : ddl_stored.state.index_entries) {
+    if (entry.index_uuid != ddl_index_uuid) continue;
+    const auto logical = ScalarLogicalPayload(entry.payload_value);
+    const auto original = native_keys.find(logical.bytes);
+    Require(logical.isPresent() && original != native_keys.end() &&
+                entry.key_value == original->second,
+            "UUID DDL and native producers published different bound physical keys");
+    ddl_values.insert(logical.bytes);
+    ++ddl_entries;
+  }
+  Require(ddl_entries == values.size() && ddl_values == expected_values,
+          "UUID DDL backfill omitted or duplicated committed binary values");
+  Rollback(ddl_reader);
+
   if (!unique) return; // Duplicate refusal is a unique-index contract; all read checks ran above.
 
   // Nil and marker-shaped UUIDs are present data, never SQL NULL. The actual
@@ -2340,17 +2393,29 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
     Require(!refused.ok && !refused.diagnostics.empty(),
             "UUID duplicate was accepted or lacked a refusal diagnostic at ordinal " +
                 std::to_string(ordinal));
+    // The proof compares canonical bound keys, not raw logical tuples. Every
+    // stored key above was checked against an independent byte oracle. Remove
+    // only the storage-carrier tag; keep the complete SBKO comparison bytes.
+    const std::string raw_uuid(reinterpret_cast<const char*>(values[ordinal].bytes.data()), 16);
+    const auto comparison_key = native_keys.at(raw_uuid).substr(8);
+    const auto expected_detail = "bulk_unique_proof_persisted_conflict:key_bytes=" +
+        std::to_string(comparison_key.size()) + ":key_redacted=true";
     const auto proof = std::find_if(refused.diagnostics.begin(), refused.diagnostics.end(),
-        [](const auto& diagnostic) {
+        [&](const auto& diagnostic) {
           return diagnostic.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION" &&
-              // 17 bytes of scalar SBCLKEY2 framing plus the exact 16-byte UUID.
-              diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=33:key_redacted=true") !=
-                  std::string::npos;
+              diagnostic.detail.find(expected_detail) != std::string::npos;
         });
     Require(proof != refused.diagnostics.end(), "UUID duplicate lost its real binary-key proof detail");
     Require(std::any_of(proof->identity_fields.begin(), proof->identity_fields.end(),
         [&](const auto& field) { return field.first == "index_uuid" && field.second == fixture.index_uuid; }),
         "UUID duplicate lost its bound binary index identity");
+    const auto key_digest = scratchbird::core::hash::ComputeSha256Digest(
+        reinterpret_cast<const platform::byte*>(comparison_key.data()), comparison_key.size());
+    Require(key_digest.ok() && HasEvidence(refused.evidence, "bulk_unique_proof_conflict_key",
+                "sha256:" + scratchbird::core::hash::HexLower(key_digest.digest)) &&
+            EvidenceU64(refused.evidence, "bulk_unique_proof_conflict_key.bytes") == comparison_key.size() &&
+            HasEvidence(refused.evidence, "bulk_unique_proof_conflict_key.redacted", "true"),
+            "UUID conflict proof fingerprint did not match the independently verified physical key");
     Require(SelectCount(fixture, duplicate_context) == values.size(),
             "refused UUID duplicate changed visible rows");
     Rollback(duplicate_context);
@@ -2441,29 +2506,53 @@ void TestDescriptorPayloadRowPageStorage() {
   }
 }
 
-void TestDecimalIndexKeysPreserveNumericOrder() {
-  auto fixture = MakeDescriptorPayloadFixture("decimal_numeric_order", 1890, true);
+void TestDecimalIndexKeysPreserveNumericOrder(bool decimal128 = false) {
+  const std::string type = decimal128 ? "decimal_float" : "decimal";
+  auto fixture = MakeDescriptorPayloadFixture(type + "_numeric_order", decimal128 ? 1891 : 1890, true);
   auto context = Begin(fixture, "cdp040-decimal-order");
   const auto& types = DescriptorPayloadTypeNames();
-  const auto found = std::find(types.begin(), types.end(), "decimal");
+  const auto found = std::find(types.begin(), types.end(), type);
   Require(found != types.end(), "CDP-040 decimal datatype fixture missing");
   const auto ordinal = static_cast<std::size_t>(found - types.begin());
   const auto column = DescriptorPayloadColumnName(ordinal);
   // Independent mathematical order: little-endian coefficients and scales
   // must not be mistaken for lexicographic numeric sort keys.
-  const std::vector<std::string> ordered = {
+  const std::vector<std::string> ordered = decimal128 ? std::vector<std::string>{
+      "-Infinity", "-1e6144", "-257", "-256", "-255", "-10", "-2.5", "-2.05",
+      "-2", "-1.99", "-0.01", "-1e-6176", "0", "1e-6176", "0.01", "1.99",
+      "2", "2.05", "2.5", "10", "255", "256", "257", "1e6144", "Infinity", "NaN"}
+      : std::vector<std::string>{
       "-99999999999999999999999999999999999999", "-257", "-256", "-255", "-10",
       "-2.5", "-2.05", "-2", "-1.99", "-0.01", "-0.00000000000000000000000000000000000001",
       "0", "0.00000000000000000000000000000000000001", "0.01", "1.99", "2", "2.05", "2.5",
       "10", "255", "256", "257", "99999999999999999999999999999999999999"};
+  const auto encode = [&](std::string_view lexical) -> std::vector<std::uint8_t> {
+    if (decimal128) {
+      const auto value = scratchbird::libraries::sbl_numeric::EncodeDecimal128LittleEndian(lexical, true);
+      Require(value.bytes.has_value(), "CDP-040 decimal128 test value invalid");
+      return {value.bytes->begin(), value.bytes->end()};
+    }
+    const auto value = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(lexical);
+    Require(value.ok, "CDP-040 exact decimal test value invalid");
+    return {value.canonical_bytes.begin(), value.canonical_bytes.end()};
+  };
   std::vector<api::EngineRowValue> rows;
   std::vector<api::EngineUuid> identities;
+  auto first_alias = DescriptorPayloadRow(201);
+  auto second_alias = DescriptorPayloadRow(202);
+  first_alias.fields[ordinal].second = BinaryScalarValue(type, encode("3.25"));
+  second_alias.fields[ordinal].second = BinaryScalarValue(type, encode("3.250"));
+  const auto duplicate_batch = api::EngineExecuteNativeBulkIngest(
+      NativeRequest(fixture, context, {first_alias, second_alias}));
+  Require(!duplicate_batch.ok && std::any_of(duplicate_batch.diagnostics.begin(), duplicate_batch.diagnostics.end(),
+      [](const auto& d) { return d.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION"; }) &&
+      SelectCount(fixture, context) == 0,
+      "CDP-040 decimal equivalent values escaped empty-target batch uniqueness or left rows: " + type + ":" +
+          (duplicate_batch.ok ? "accepted" : duplicate_batch.diagnostics.empty() ? "no diagnostic" :
+              duplicate_batch.diagnostics.front().code + ":" + duplicate_batch.diagnostics.front().detail));
   for (std::size_t i = 0; i < ordered.size(); ++i) {
     auto row = DescriptorPayloadRow(static_cast<int>(i + 1));
-    const auto decimal = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian(ordered[i]);
-    Require(decimal.ok, "CDP-040 exact decimal test value invalid");
-    row.fields[ordinal].second = BinaryScalarValue("decimal",
-        {decimal.canonical_bytes.begin(), decimal.canonical_bytes.end()});
+    row.fields[ordinal].second = BinaryScalarValue(type, encode(ordered[i]));
     identities.push_back(row.requested_row_uuid);
     rows.push_back(std::move(row));
   }
@@ -2487,12 +2576,19 @@ void TestDecimalIndexKeysPreserveNumericOrder() {
   for (std::size_t i = 0; i < keys.size(); ++i)
     Require(keys[i].second == identities[i], "CDP-040 decimal index byte order differs from numeric order");
   Commit(context);
+  const auto recovered = api::LoadMgaRelationStoreState(BaseContext(fixture, "decimal-index-reload"));
+  Require(recovered.ok, "CDP-040 committed decimal index state failed to reload");
+  std::vector<std::pair<std::string, api::EngineUuid>> reloaded;
+  for (const auto& entry : recovered.state.index_entries)
+    if (entry.index_uuid == index_uuid) reloaded.emplace_back(entry.key_value, entry.row_uuid);
+  std::sort(reloaded.begin(), reloaded.end(), [](const auto& a, const auto& b) {
+    return std::lexicographical_compare(a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
+        [](unsigned char left, unsigned char right) { return left < right; });
+  });
+  Require(reloaded == keys, "CDP-040 committed decimal index keys changed on reload");
   auto duplicate_context = Begin(fixture, "cdp040-decimal-equality");
   auto duplicate = DescriptorPayloadRow(100);
-  const auto equivalent = scratchbird::libraries::sbl_numeric::EncodeExactDecimalLittleEndian("2.50");
-  Require(equivalent.ok, "CDP-040 equivalent decimal encoding failed");
-  duplicate.fields[ordinal].second = BinaryScalarValue("decimal",
-      {equivalent.canonical_bytes.begin(), equivalent.canonical_bytes.end()});
+  duplicate.fields[ordinal].second = BinaryScalarValue(type, encode("2.50"));
   const auto refused = api::EngineExecuteNativeBulkIngest(
       NativeRequest(fixture, duplicate_context, {duplicate}));
   Require(!refused.ok && std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(),
@@ -2501,6 +2597,27 @@ void TestDecimalIndexKeysPreserveNumericOrder() {
   Require(SelectCount(fixture, duplicate_context) == ordered.size(),
           "CDP-040 refused decimal duplicate changed durable row membership");
   Rollback(duplicate_context);
+  if (decimal128) {
+    for (const auto lexical : {"-0e-6176", "0e6111", "-NaN42", "sNaN999", "250e-2"}) {
+      auto attempt = Begin(fixture, "cdp040-decimal128-equivalence");
+      auto row = DescriptorPayloadRow(101);
+      row.fields[ordinal].second = BinaryScalarValue(type, encode(lexical));
+      const auto result = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, attempt, {row}));
+      Require(!result.ok && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+          [](const auto& d) { return d.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION"; }),
+          "CDP-040 decimal128 cohort/zero/NaN equivalence escaped uniqueness");
+      Require(SelectCount(fixture, attempt) == ordered.size(), "decimal128 duplicate changed row membership");
+      Rollback(attempt);
+    }
+    auto attempt = Begin(fixture, "cdp040-decimal128-malformed");
+    auto row = DescriptorPayloadRow(102);
+    auto malformed = encode("1"); malformed[15] = 0x60;
+    row.fields[ordinal].second = BinaryScalarValue(type, malformed);
+    const auto refused = api::EngineExecuteNativeBulkIngest(NativeRequest(fixture, attempt, {row}));
+    Require(!refused.ok && !refused.diagnostics.empty() && SelectCount(fixture, attempt) == ordered.size(),
+            "noncanonical decimal128 ingest changed durable rows");
+    Rollback(attempt);
+  }
 }
 
 void TestDescriptorPayloadIndexKeysUseBinaryPayloads() {
@@ -3034,6 +3151,7 @@ int main(int argc, char** argv) try {
   TestDescriptorPayloadIndexKeysUseBinaryPayloads();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
   TestDecimalIndexKeysPreserveNumericOrder();
+  TestDecimalIndexKeysPreserveNumericOrder(true);
   TestOpaqueRenderOnlyDescriptorPayloadExplicitAllow();
   TestDisabledAndInvalidRefusals();
   TestLogicalStatementRollbackOnFaultAndCancellation();

@@ -61,12 +61,12 @@ void Exact(const sb::NativeDescriptorBindingInput& d, const Expected& row) {
 }
 }
 int main() {
-  std::cout << "EXPECTED statement_profiles=384 literal_profiles=12 registry_rows=62 cohorts=6/12/13/31\n";
+  std::cout << "EXPECTED statement_profiles=384 literal_profiles=12 registry_rows=94 cohorts=6/12/13/31/32\n";
   const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
-  Check(rows.size() == 62, "exact immutable V1-V4 datatype inventory");
-  std::array<std::size_t, 4> cohort_counts{};
+  Check(rows.size() == 94, "exact immutable V1-V5 datatype inventory");
+  std::array<std::size_t, 5> cohort_counts{};
   for (const auto& row : rows) {
-    Check(row.catalog_generation >= 1 && row.catalog_generation <= 4,
+    Check(row.catalog_generation >= 1 && row.catalog_generation <= 5,
           "unexpected datatype cohort generation");
     ++cohort_counts[row.catalog_generation - 1];
     if (row.catalog_snapshot_uuid == Fixed(0xd703)) {
@@ -81,12 +81,23 @@ int main() {
             successor.row.canonical_value_bytes == row.canonical_value_bytes,
             "V4 preserves each V3 predecessor identity and representation");
     }
-    if (row.catalog_snapshot_uuid != Fixed(0xd704)) continue;
+    if (row.catalog_snapshot_uuid == Fixed(0xd704)) {
+      const auto successor = dt::LookupDatatypeTypeCodecIdentityV1(
+          Fixed(0xd705), 5, 5, row.descriptor_uuid, row.descriptor_generation);
+      Check(successor.ok && successor.row.type_uuid == row.type_uuid &&
+            successor.row.type_generation == row.type_generation &&
+            successor.row.codec_uuid == row.codec_uuid && successor.row.codec_id == row.codec_id &&
+            successor.row.codec_version == row.codec_version &&
+            successor.row.codec_generation == row.codec_generation &&
+            successor.row.canonical_value_bytes == row.canonical_value_bytes,
+            "V5 preserves every immutable V4 codec binding");
+    }
+    if (row.catalog_snapshot_uuid != Fixed(0xd704) && row.catalog_snapshot_uuid != Fixed(0xd705)) continue;
     const Expected native{row.descriptor_uuid, row.type_uuid, row.codec_id.c_str()};
     for (const bool nullable : {false, true}) {
       auto c = Context();
-      c.literal_catalog_snapshot_uuid = Fixed(0xd704);
-      c.literal_catalog_generation = 4;
+      c.literal_catalog_snapshot_uuid = row.catalog_snapshot_uuid;
+      c.literal_catalog_generation = row.catalog_generation;
       ipc::ParserStatementContext::DescriptorProfile profile;
       profile.slot = 0; profile.profile_kind = 1; profile.descriptor_uuid = binding;
       profile.type_uuid = row.type_uuid; profile.nullable = nullable;
@@ -99,9 +110,10 @@ int main() {
             d.codec_id == row.codec_id && d.codec_version == row.codec_version &&
             d.codec_generation == row.codec_generation &&
             d.statement_receipt_uuid == receipt &&
-            d.datatype_catalog_snapshot_uuid == Fixed(0xd704) &&
-            d.datatype_catalog_generation == 4 && d.datatype_registry_generation == 4,
-            "V4 native parser binding retains the actual receipt and codec cohort");
+            d.datatype_catalog_snapshot_uuid == row.catalog_snapshot_uuid &&
+            d.datatype_catalog_generation == row.catalog_generation &&
+            d.datatype_registry_generation == row.registry_generation,
+            "native parser binding retains the actual V4/V5 receipt and codec cohort");
       auto stale = d;
       ++stale.codec_generation;
       Check(!sb::PreserveNativeDescriptorAuthority(&stale, c), "V4 stale codec generation admitted");
@@ -112,8 +124,8 @@ int main() {
             "V4 native binding accepted mixed catalog generations");
     }
   }
-  Check(cohort_counts == std::array<std::size_t, 4>{6, 12, 13, 31},
-        "six V1 plus twelve V2 plus thirteen V3 plus thirty-one V4 rows");
+  Check(cohort_counts == std::array<std::size_t, 5>{6, 12, 13, 31, 32},
+        "immutable predecessor counts plus exactly thirty-two V5 rows");
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
     if (row.catalog_snapshot_uuid != Fixed(0xd702)) continue;
     const auto successor = dt::LookupDatatypeTypeCodecIdentityV1(Fixed(0xd703), 3, 3, row.descriptor_uuid, row.descriptor_generation);
@@ -317,7 +329,7 @@ int main() {
       Check(!sb::MatchesNativeNumericDescriptorRecord(altered,numeric),"missing binary numeric authority value refuses");
     }
   }
-  Check(checks == 6456 + 3 * 5 + 12 + 62 + 13 + 31 * 2 * 3 + 1,
-        "fixed assertion population preserves predecessors and checks the complete V4 cohort");
+  Check(checks == 6456 + 3 * 5 + 12 + 94 + 13 + 31 + (31 + 32) * 2 * 3 + 1,
+        "fixed assertion population preserves predecessors and checks complete V4 and V5 cohorts");
   std::cout << "PASS checks=" << checks << "; component projection only; not runtime admission\n";
 }

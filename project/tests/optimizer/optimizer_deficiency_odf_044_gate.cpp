@@ -8,11 +8,16 @@
 
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "memory.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
+#include "crud_support/bound_ordered_index_key.hpp"
 #include "dml/import_execution_api.hpp"
+#include "dml/native_bulk_ingest_api.hpp"
+#include "dml/update_api.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "transaction/transaction_api.hpp"
@@ -196,8 +201,22 @@ api::CrudTableRecord Table(const Fixture& fixture,
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = fixture.table_uuid;
   table.default_name = "odf044_sorted_bulk";
-  table.columns.push_back({"id", "canonical=character;not_null=true"});
-  table.columns.push_back({"city", "canonical=character;not_null=true"});
+  const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");
+  const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UTF8_BINARY", "collation");
+  Require(charset.ok && charset.resource_descriptor.present &&
+              collation.ok && collation.resource_descriptor.present &&
+              collation.resource_descriptor.parent_resource_uuid == charset.resource_descriptor.resource_uuid,
+          "ODF-044 real UTF8 resource binding unavailable");
+  api::CatalogColumnMetadata attributes;
+  attributes.text = {{"canonical", "character"}, {"not_null", "true"},
+                     {"character_length", "256"}};
+  attributes.identities = {{"charset_uuid", charset.resource_descriptor.resource_uuid},
+                          {"collation_uuid", collation.resource_descriptor.resource_uuid}};
+  std::string encoded;
+  Require(api::EncodeCatalogColumnMetadata(attributes, &encoded),
+          "ODF-044 bound text column encoding failed");
+  table.columns.push_back({"id", encoded});
+  table.columns.push_back({"city", encoded});
   return table;
 }
 
@@ -412,13 +431,287 @@ void CreateIndexBackfillsWithSortedExactBuild() {
   std::vector<std::string> keys;
   for (const auto& entry : loaded.state.index_entries) {
     if (entry.index_uuid == city_index_uuid) {
-      keys.push_back(entry.key_value);
+      Require(entry.key_value.starts_with("SBKOBIN:SBKO"),
+              "DDL sorted build did not retain a physical ordered key");
+      keys.push_back(entry.payload_value);
     }
   }
   Require(keys.size() == 3, "ODF-044 DDL exact index entry count drifted");
-  Require(keys[0] == "berlin" && keys[1] == "oslo" && keys[2] == "zurich",
+  Require(keys[0] == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x06\x00\x00\x00" "berlin", 23) && keys[1] == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x04\x00\x00\x00" "oslo", 21) && keys[2] == std::string("SBCLKEY2\x01\x00\x00\x00\x00\x06\x00\x00\x00" "zurich", 23),
           "ODF-044 DDL exact index entries were not sorted");
+  std::string ddl_oslo_key;
+  for (const auto& entry : loaded.state.index_entries)
+    if (entry.index_uuid == city_index_uuid && entry.payload_value == keys[1])
+      ddl_oslo_key = entry.key_value;
+  Require(!ddl_oslo_key.empty(), "ODF-044 DDL equality control missing");
   Commit(ddl_context);
+
+  auto append_context = Begin(fixture, "odf044-after-ddl-import");
+  RequireOk(api::EngineExecuteImportRows(ImportRequest(
+      fixture, append_context, {Row("004", "oslo")}, false)),
+      "ODF-044 post-DDL typed import failed");
+  const auto appended = api::LoadMgaRelationStoreState(append_context);
+  Require(appended.ok, "ODF-044 post-DDL index reload failed");
+  unsigned oslo_entries = 0;
+  for (const auto& entry : appended.state.index_entries) {
+    if (entry.index_uuid != city_index_uuid || entry.payload_value != keys[1]) continue;
+    ++oslo_entries;
+    Require(entry.key_value == ddl_oslo_key,
+            "ODF-044 DDL and later typed import encoded unequal keys for the same bound value");
+  }
+  Require(oslo_entries == 2, "ODF-044 post-DDL import omitted its index membership");
+  Commit(append_context);
+
+  // Independent v2 packet: one row, two text columns, no NULLs. This drives
+  // the native packet lane instead of materializing canonical_rows first.
+  auto native_context = Begin(fixture, "odf044-after-ddl-native");
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> native(
+      *fixture.session, native_context);
+  native.target_table = request.target_object;
+  native.import_policy.reject_mode = "fail_fast";
+  native.import_policy.reject_payload_policy = "diagnostic_only";
+  native.import_policy.resume_policy = "fail_closed";
+  native.checkpoint_policy.checkpoint_mode = "disabled";
+  auto& packet = native.native_row_packet;
+  packet.present = true;
+  packet.version = 2;
+  packet.row_count = 1;
+  packet.column_count = 2;
+  packet.field_order = {"id", "city"};
+  packet.column_type_tags = {1, 1};
+  packet.packet_bytes = {'S','B','N','R',2,0,0,0,1,0,0,0,0,0,0,0,
+      2,0,0,0,1,1,2,0,0,0,'i','d',4,0,0,0,'c','i','t','y',
+      0,3,0,0,0,'0','0','5',4,0,0,0,'o','s','l','o'};
+  packet.row_offsets = {36};
+  packet.row_sizes = {16};
+  const auto native_result = api::EngineExecuteNativeBulkIngest(native);
+  RequireOk(native_result, "ODF-044 post-DDL native packet append failed");
+  Require(native_result.inserted_rows == 1 && native_result.rejected_rows == 0,
+          "ODF-044 native packet append did not insert exactly one row");
+  Commit(native_context);
+
+  auto sorted_context = Begin(fixture, "odf044-after-ddl-sorted");
+  const auto sorted_result = api::EngineExecuteImportRows(ImportRequest(
+      fixture, sorted_context, {Row("006", "oslo")}, true));
+  RequireOk(sorted_result, "ODF-044 post-DDL sorted append failed");
+  Require(sorted_result.inserted_rows == 1, "ODF-044 sorted append count drifted");
+  Commit(sorted_context);
+
+  auto update_context = Begin(fixture, "odf044-after-ddl-update");
+  scratchbird::tests::FixtureEngineRequest<api::EngineUpdateRowsRequest> update(
+      *fixture.session, update_context);
+  update.target_table = request.target_object;
+  update.update_predicate.predicate_kind = "column_equals";
+  update.update_predicate.canonical_predicate_envelope = "id";
+  update.update_predicate.bound_values.push_back(TextValue("003"));
+  update.assignments.push_back({"city", TextValue("oslo")});
+  const auto updated = api::EngineUpdateRows(update);
+  RequireOk(updated, "ODF-044 post-DDL UPDATE failed");
+  Require(updated.matched_count == 1 && updated.updated_count == 1,
+          "ODF-044 UPDATE did not change exactly its selected row");
+  Commit(update_context);
+
+  auto rebuild_context = Begin(fixture, "odf044-after-ddl-rebuild");
+  const auto before_rebuild = api::LoadMgaRelationStoreState(rebuild_context);
+  Require(before_rebuild.ok, "ODF-044 pre-rebuild reload failed");
+  const auto rebuild_state = api::BuildCrudCompatibilityStateFromMga(before_rebuild.state);
+  oslo_entries = 0;
+  for (const auto& entry : before_rebuild.state.index_entries) {
+    if (entry.index_uuid != city_index_uuid || entry.payload_value != keys[1]) continue;
+    ++oslo_entries;
+    Require(entry.key_value == ddl_oslo_key,
+            "ODF-044 native/sorted/UPDATE key differs from DDL for the same value");
+  }
+  Require(oslo_entries == 5, "ODF-044 cross-producer memberships missing");
+  const auto found = std::find_if(rebuild_state.indexes.begin(),
+      rebuild_state.indexes.end(), [&](const auto& index) {
+        return index.index_uuid == city_index_uuid;
+      });
+  Require(found != rebuild_state.indexes.end(), "ODF-044 durable index missing");
+  api::MgaRelationHotAppendContext rebuild_append(rebuild_context);
+  api::MgaTransactionalIndexProvider provider(rebuild_context, &rebuild_append);
+  const auto refused = provider.RebuildFromRelation(rebuild_state, *found, false);
+  Require(!refused.ok && refused.diagnostic.code ==
+              "INDEX.TRANSACTIONAL_PROVIDER.REBUILD_HORIZON_REQUIRED",
+          "ODF-044 rebuild ignored the cleanup horizon");
+  const auto rebuilt = provider.RebuildFromRelation(rebuild_state, *found, true);
+  RequireDiagnosticOk(rebuilt.diagnostic, "ODF-044 index rebuild failed");
+  Require(rebuilt.ok && rebuilt.rebuilt_entry_count == 6,
+          "ODF-044 rebuild did not cover every current row");
+  RequireDiagnosticOk(rebuild_append.FlushIndexEntries(), "ODF-044 rebuild flush failed");
+  Commit(rebuild_context);
+
+  auto reader_context = Begin(fixture, "odf044-after-rebuild-reader");
+  const auto reopened = api::LoadMgaRelationStoreState(reader_context);
+  Require(reopened.ok, "ODF-044 rebuilt index reload failed");
+  unsigned rebuilt_oslo = 0;
+  for (const auto& entry : reopened.state.index_entries) {
+    if (entry.index_uuid != city_index_uuid || entry.payload_value != keys[1]) continue;
+    Require(entry.key_value == ddl_oslo_key, "ODF-044 rebuild changed physical key encoding");
+    if (entry.entry_kind == "rebuild" && entry.creator_tx == rebuild_context.local_transaction_id)
+      ++rebuilt_oslo;
+  }
+  Require(rebuilt_oslo == 5, "ODF-044 rebuild omitted current Oslo memberships");
+  const auto validated = api::MgaTransactionalIndexProvider(reader_context, nullptr)
+      .ValidateAgainstRelation(api::BuildCrudCompatibilityStateFromMga(reopened.state), *found);
+  RequireDiagnosticOk(validated.diagnostic, "ODF-044 rebuilt memberships failed validation");
+  Require(validated.ok && validated.visible_entry_count == 6,
+          "ODF-044 rebuilt index does not match visible relation");
+  Commit(reader_context);
+}
+
+void OrderedKeyAuthorityAndValueStates() {
+  auto fixture = MakeFixture("bound_keys", 44300, false);
+  auto context = Begin(fixture, "odf044-bound-key-authority");
+  auto index = IdIndex(fixture, context);
+  index.key_envelopes = {"city"};
+  index.column_name = "city";
+  std::vector<api::bound_index_key::OrderedIndexColumn> columns;
+  api::EngineApiDiagnostic diagnostic;
+  Require(api::bound_index_key::BindOrderedIndexColumns(context, index, fixture.table_uuid,
+                                                   &columns, &diagnostic),
+          "ODF-044 real ordered-column binding failed");
+  const auto key = [&](const std::vector<api::CrudStoredValue>& values,
+                       const std::vector<api::bound_index_key::OrderedIndexColumn>& binding) {
+    std::string encoded;
+    bool is_null = false;
+    Require(api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey(values),
+                binding, &encoded, &is_null, &diagnostic), "ODF-044 bound key encoding failed");
+    Require(is_null == std::any_of(values.begin(), values.end(), [](const auto& value) {
+              return value.isSqlNull(); }), "ODF-044 index NULL state was inferred from payload bytes");
+    return encoded;
+  };
+  Require(key({api::CrudStoredValue::SqlNull()}, columns) < key({""}, columns) &&
+              key({""}, columns) < key({"<NULL>"}, columns) &&
+              key({"berlin"}, columns) < key({"oslo"}, columns),
+          "ODF-044 character length/state framing controls physical order");
+  auto compound = columns;
+  compound.push_back(columns.front());
+  Require(key({"aa", "z"}, compound) < key({"b", "a"}, compound) &&
+              key({"same", "aa"}, compound) < key({"same", "b"}, compound),
+          "ODF-044 compound component ordering drifted");
+  auto invalid_context = context;
+  ++invalid_context.datatype_catalog_generation;
+  auto unchanged = columns;
+  Require(!api::bound_index_key::BindOrderedIndexColumns(invalid_context, index, fixture.table_uuid,
+                &unchanged, &diagnostic) && unchanged.size() == columns.size(),
+          "ODF-044 stale datatype cohort was accepted");
+  std::string output = "unchanged";
+  bool null_key = false;
+  auto unbound = columns;
+  unbound.front().text_seed = {};
+  Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({"city"}),
+              unbound, &output, &null_key, &diagnostic) && output == "unchanged",
+          "ODF-044 missing collation authority silently used raw byte ordering");
+  Require(!api::bound_index_key::EncodeOrderedIndexKey("city", columns, &output, &null_key, &diagnostic) &&
+              output == "unchanged", "ODF-044 malformed logical key altered output");
+  namespace dt = scratchbird::core::datatypes;
+  const auto registry = dt::CurrentDatatypeTypeCodecIdentityRowsV1();
+  for (const auto type : {dt::CanonicalTypeId::int32, dt::CanonicalTypeId::uuid,
+                         dt::CanonicalTypeId::real128, dt::CanonicalTypeId::decimal,
+                         dt::CanonicalTypeId::decimal_float}) {
+    const auto row = std::find_if(registry.begin(), registry.end(), [&](const auto& candidate) {
+      return candidate.canonical_binary_type_code == static_cast<std::uint32_t>(type);
+    });
+    Require(row != registry.end(), "ODF-044 canonical datatype fixture missing");
+    api::bound_index_key::OrderedIndexColumn binding;
+    Require(dt::LookupDatatypeStorageIdentityV1(context.datatype_catalog_snapshot_uuid,
+                context.datatype_catalog_generation, context.datatype_registry_generation,
+                row->descriptor_uuid, row->descriptor_generation, &binding.datatype),
+            "ODF-044 native datatype fixture authority missing");
+    binding.descriptor = {platform::UuidKind::object, row->descriptor_uuid};
+    if (type == dt::CanonicalTypeId::int32) {
+      Require(key({"-10"}, {binding}) < key({"2"}, {binding}) &&
+                  key({"2"}, {binding}) < key({"100"}, {binding}),
+              "ODF-044 integer physical order is lexical");
+    } else if (type == dt::CanonicalTypeId::decimal) {
+      // Independent coefficient/scale codec bytes for -1, 0, 0.1 and 1.
+      std::string zero(24, '\0'); zero[1] = 1; zero[2] = 1;
+      auto one = zero; one[4] = 1;
+      auto negative = one; negative[0] = static_cast<char>(0x80);
+      auto fraction = one; fraction[0] = 1;
+      Require(key({negative}, {binding}) < key({zero}, {binding}) &&
+                  key({zero}, {binding}) < key({fraction}, {binding}) &&
+                  key({fraction}, {binding}) < key({one}, {binding}),
+              "ODF-044 canonical decimal binary storage lost numeric ordering");
+      Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({"1.0"}),
+                  {binding}, &output, &null_key, &diagnostic) && output == "unchanged",
+              "ODF-044 bound decimal storage guessed a lexical carrier");
+    } else if (type == dt::CanonicalTypeId::decimal_float) {
+      std::string zero(16, '\0'), one(16, '\0');
+      one[0]=1; one[14]=0x40; one[15]=0x30;
+      auto negative=one; negative[15]=static_cast<char>(0xb0);
+      auto equivalent=one; equivalent[0]=100; equivalent[14]=0x3c;
+      auto negative_zero=zero; negative_zero[15]=static_cast<char>(0x80);
+      Require(key({negative},{binding}) < key({zero},{binding}) &&
+              key({zero},{binding}) < key({one},{binding}) &&
+              key({one},{binding}) == key({equivalent},{binding}) &&
+              key({zero},{binding}) == key({negative_zero},{binding}),
+              "ODF-044 bound decimal128 numeric equivalence/order changed");
+      for (const auto invalid : {0,1,2,3,4}) {
+        auto changed=binding;
+        if (invalid==0) changed.datatype.codec.reset();
+        if (invalid==1) changed.datatype.codec->comparison_policy_uuid.bytes[0]^=1;
+        if (invalid==2) ++changed.datatype.codec->numeric_context_generation;
+        if (invalid==3) changed.datatype.codec->allow_special_values=false;
+        if (invalid==4) changed.datatype.codec->comparison_profile="decimal128_ieee_total_order_v1";
+        Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({one}),
+                    {changed}, &output, &null_key, &diagnostic) && output=="unchanged",
+                "ODF-044 substituted decimal128 policy admitted or wrote output");
+      }
+      Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({"1.0"}),
+                  {binding}, &output, &null_key, &diagnostic) && output=="unchanged",
+              "ODF-044 decimal128 storage guessed lexical input");
+    } else if (type == dt::CanonicalTypeId::real128) {
+      std::string positive(16, '\0'), negative(16, '\0'), zero(16, '\0');
+      positive[14] = static_cast<char>(0xff); positive[15] = 0x3f;
+      negative = positive; negative[15] = static_cast<char>(0xbf);
+      Require(key({negative}, {binding}) < key({zero}, {binding}) &&
+                  key({zero}, {binding}) < key({positive}, {binding}),
+              "ODF-044 binary128 retained values were interpreted as decimal text");
+      Require(!api::bound_index_key::EncodeOrderedIndexKey(api::EncodeStoredLogicalKey({"1.0"}),
+                  {binding}, &output, &null_key, &diagnostic) && output == "unchanged",
+              "ODF-044 binary128 key accepted a noncanonical lexical carrier");
+    } else {
+      std::string nil(16, '\0'), user_v4(16, '\0'), maximum(16, static_cast<char>(0xff));
+      user_v4[6] = 0x40; user_v4[8] = static_cast<char>(0x80);
+      Require(key({nil}, {binding}) < key({user_v4}, {binding}) &&
+                  key({user_v4}, {binding}) < key({maximum}, {binding}),
+              "ODF-044 UUID user data was text encoded or constrained to system UUIDv7");
+    }
+  }
+  // Publication must validate all bound key batches before a valid prefix can
+  // reserve sequence numbers, queue jobs, or leave durable memberships.
+  index.unique = false;
+  api::MgaExactIndexEntryAppendBatch valid_batch;
+  valid_batch.index = index;
+  valid_batch.table_uuid = fixture.table_uuid;
+  valid_batch.entry_kind = "insert";
+  valid_batch.entries.push_back({api::EncodeStoredLogicalKey({"oslo"}), {},
+      NewNativeUuid(platform::UuidKind::row, 44380),
+      NewNativeUuid(platform::UuidKind::row, 44381)});
+  const auto before = api::LoadMgaRelationStoreState(context);
+  Require(before.ok, "ODF-044 failure-atomic control snapshot unavailable");
+  for (unsigned malformed = 0; malformed < 2; ++malformed) {
+    auto invalid_batch = valid_batch;
+    if (malformed == 0) invalid_batch.entries.front().encoded_key = "not-a-logical-tuple";
+    else invalid_batch.table_uuid = NewNativeUuid(platform::UuidKind::object, 44382);
+    api::MgaRelationHotAppendContext append(context);
+    const auto refused = append.AppendExactIndexEntryBatches({valid_batch, invalid_batch});
+    const auto expected_reason = malformed == 0
+        ? "mga.index_store:sorted_index_logical_key_invalid"
+        : "mga.index_store:ordered_index_table_identity_mismatch";
+    Require(refused.error && refused.code == "SB_ENGINE_API_INVALID_REQUEST" &&
+                refused.detail == expected_reason && append.counters().index_range_reservations == 0 &&
+                append.counters().index_materialization_jobs_queued == 0,
+            "ODF-044 failed bound-key batch published a valid prefix");
+    RequireDiagnosticOk(append.FlushIndexEntries(), "ODF-044 refused batch retained queued work");
+    const auto after = api::LoadMgaRelationStoreState(context);
+    Require(after.ok && after.state.index_entries.size() == before.state.index_entries.size() &&
+                after.state.max_index_event_sequence == before.state.max_index_event_sequence,
+            "ODF-044 refused bound-key batch mutated durable memberships");
+  }
+  Commit(context);
 }
 
 }  // namespace
@@ -432,5 +725,6 @@ int main() {
   CoreBuilderSortsAndRefusesUniqueDuplicates();
   DirectBulkUsesSortedExactIndexBuild();
   CreateIndexBackfillsWithSortedExactBuild();
+  OrderedKeyAuthorityAndValueStates();
   return EXIT_SUCCESS;
 }

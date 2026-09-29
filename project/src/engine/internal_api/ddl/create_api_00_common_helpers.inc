@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by create_api.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "ddl/create_api.hpp"
+#include "crud_support/bound_ordered_index_key.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 
 #include "api_unsupported.hpp"
@@ -659,22 +660,7 @@ bool HasOptionValue(const std::vector<std::string>& options, const std::string& 
 scratchbird::core::index::IndexFamily CoreIndexFamilyForCreateIndex(
     const CrudIndexRecord& index) {
   namespace idx = scratchbird::core::index;
-  const std::string family =
-      index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
-  const bool has_directives = !index.predicate_kind.empty() ||
-                              !index.include_columns.empty();
-  bool has_expression_or_direction_key = false;
-  for (const auto& key : index.key_envelopes) {
-    if (StartsWithLocal(key, "lower:") || StartsWithLocal(key, "upper:") ||
-        StartsWithLocal(key, "length:") || StartsWithLocal(key, "identity:") ||
-        StartsWithLocal(key, "cast:") || StartsWithLocal(key, "desc:") ||
-        StartsWithLocal(key, "sum:")) {
-      has_expression_or_direction_key = true;
-      break;
-    }
-  }
-  if (family == kCrudIndexFamilyBtree && !index.unique && !has_directives &&
-      !has_expression_or_direction_key) {
+  if (!index.unique && bound_index_key::UsesBoundOrderedProfile(index)) {
     return idx::IndexFamily::btree;
   }
   return idx::IndexFamily::unknown;
@@ -757,14 +743,17 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
   build.metadata.policy_allows_mutation = true;
   build.metadata.leaf_entry_capacity = 128;
 
+  std::vector<bound_index_key::OrderedIndexColumn> ordered_columns;
+  if (!bound_index_key::BindOrderedIndexColumns(context, index, table_uuid,
+          &ordered_columns, &result.diagnostic)) return result;
   for (std::size_t row_index = 0; row_index < rows.size(); ++row_index) {
     for (const auto& key : CrudIndexKeysForValues(index, rows[row_index].values)) {
       scratchbird::core::index::SortedBulkIndexRowInput input;
-      input.encoded_key = key;
+      if (!bound_index_key::EncodeOrderedIndexKey(key, ordered_columns,
+              &input.encoded_key, &input.null_key, &result.diagnostic)) return result;
       input.row_uuid = rows[row_index].row_uuid;
       input.version_uuid = rows[row_index].version_uuid;
-      input.payload_value = EncodeCrudValues({{index.column_name,
-          CrudFieldValue(rows[row_index].values, index.column_name)}});
+      input.payload_value = key;
       input.source_ordinal = static_cast<std::uint64_t>(row_index);
       build.rows.push_back(std::move(input));
     }
@@ -788,7 +777,7 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
   result.batch.table_uuid = table_uuid;
   result.batch.entries.reserve(built.entries.size());
   for (const auto& entry : built.entries) {
-    result.batch.entries.push_back({entry.encoded_key,
+    result.batch.entries.push_back({"SBKOBIN:" + entry.encoded_key,
                                     entry.payload_value,
                                     entry.row_uuid,
                                     entry.version_uuid});

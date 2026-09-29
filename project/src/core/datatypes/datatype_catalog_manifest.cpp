@@ -165,6 +165,7 @@ TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
   }
   // Manifest-admitted V4 identities are constants, never derived from spelling.
   switch (type_id) {
+    case CanonicalTypeId::decimal_float: return {UuidKind::object, platform::Uuid{{0xa1,0,0,0,0x10,0x65,0x73,0x69,0xad,0x61,0x6c,0x5f,0x66,0x6c,0x6f,0x61}}};
     case CanonicalTypeId::int8: return {UuidKind::object, platform::Uuid{{0x64,0x00,0x00,0x00,0x69,0x6e,0x74,0x38,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}};
     case CanonicalTypeId::int16: return {UuidKind::object, platform::Uuid{{0x65,0x00,0x00,0x00,0x69,0x6e,0x74,0x31,0xb6,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}};
     case CanonicalTypeId::uint8: return {UuidKind::object, platform::Uuid{{0x78,0x00,0x00,0x00,0x75,0x69,0x7e,0x74,0xb8,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}};
@@ -502,8 +503,8 @@ CurrentDatatypeTypeCodecIdentityRowsV1() {
        "UTF-8", true, false, true, true, true, true,
        "CTB.TEXT.INVALID_ENCODING"},
   }};
-  static const std::array<DatatypeTypeCodecIdentityRowV1, 62> admitted = [&] {
-    std::array<DatatypeTypeCodecIdentityRowV1, 62> result{};
+  static const std::array<DatatypeTypeCodecIdentityRowV1, 94> admitted = [&] {
+    std::array<DatatypeTypeCodecIdentityRowV1, 94> result{};
     std::copy(rows.begin(), rows.end(), result.begin());
     std::copy(rows.begin(), rows.end(), result.begin() + 6);
     for (std::size_t i = 6; i < 12; ++i) {
@@ -725,6 +726,26 @@ CurrentDatatypeTypeCodecIdentityRowsV1() {
       static_cast<u32>(CanonicalTypeId::interval), platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x23}}, false, false,
       "little_endian", "i32_months_i32_days_i64_nanoseconds", "",
       false, false, false, false, true, false, "DATATYPE.DESCRIPTOR.INVALID"};
+    std::copy_n(result.begin() + 31, 31, result.begin() + 62);
+    for (std::size_t i = 62; i < 93; ++i) {
+      result[i].catalog_snapshot_uuid = kDatatypeCohortV5;
+      result[i].catalog_generation = 5;
+      result[i].registry_generation = 5;
+    }
+    result[93] = {
+      kDatatypeCohortV5, 5, 5,
+      platform::Uuid{{0xa1,0,0,0,0x10,0x65,0x73,0x69,0xad,0x61,0x6c,0x5f,0x66,0x6c,0x6f,0x61}}, 1,
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x24}}, 1,
+      "datatype.decimal128.bid.le.v1", 1, 1, 16, true,
+      "decimal_float", 0, 1, 0, false, 0, 16, 16, 16,
+      static_cast<u32>(CanonicalTypeId::decimal_float),
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x25}}, false, false,
+      "little_endian", "IEEE754_decimal128_canonical_BID", "",
+      false, false, false, false, true, false, "DATATYPE.DESCRIPTOR.INVALID",
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x26}}, 1,
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x27}}, 1,
+      platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x28}}, 1,
+      "decimal128_numeric_total_nan_last_v1", true};
     return result;
   }();
   return admitted;
@@ -764,6 +785,42 @@ DatatypeTypeCodecIdentityLookupV1 LookupCanonicalBooleanTypeCodecIdentityV1(
       scratchbird::core::platform::Uuid{{0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c, 0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1);
 }
 
+bool IsExactCanonicalDecimal128TypeCodecIdentityV1(
+    const DatatypeTypeCodecIdentityRowV1& row) {
+  return row.catalog_snapshot_uuid == kDatatypeCohortV5 &&
+      row.catalog_generation == 5 && row.registry_generation == 5 &&
+      row.descriptor_uuid == platform::Uuid{{0xa1,0,0,0,0x10,0x65,0x73,0x69,0xad,0x61,0x6c,0x5f,0x66,0x6c,0x6f,0x61}} &&
+      row.descriptor_generation == 1 &&
+      row.type_uuid == platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x24}} &&
+      row.type_generation == 1 &&
+      row.codec_uuid == platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x25}} &&
+      row.codec_id == "datatype.decimal128.bid.le.v1" &&
+      row.codec_version == 1 && row.codec_generation == 1 &&
+      row.canonical_value_bytes == 16 && row.null_supported &&
+      row.canonical_name == "decimal_float" && row.datatype_identity_code == 0 &&
+      row.null_encoding_code == 1 && row.byte_order_code == 0 &&
+      !row.signed_code && row.representation_code == 0 &&
+      row.canonical_value_minimum_bytes == 16 && row.canonical_value_maximum_bytes == 16 &&
+      row.canonical_value_exact_bytes == 16 &&
+      row.canonical_binary_type_code == static_cast<u32>(CanonicalTypeId::decimal_float) &&
+      !row.canonical_value_variable_width && !row.canonical_value_exact_zero_is_width_marker &&
+      row.canonical_byte_order == "little_endian" &&
+      row.canonical_representation == "IEEE754_decimal128_canonical_BID" &&
+      row.canonical_charset.empty() && !row.shortest_form_utf8_required &&
+      !row.implicit_normalization_allowed && !row.descriptor_bound_collation_required &&
+      !row.empty_value_distinct_from_sql_null && row.sql_null_requires_zero_payload &&
+      !row.variable_width_storage_without_truncation &&
+      row.invalid_encoding_diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID" &&
+      row.numeric_context_uuid == platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x26}} &&
+      row.numeric_context_generation == 1 &&
+      row.special_value_policy_uuid == platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x27}} &&
+      row.special_value_policy_generation == 1 &&
+      row.comparison_policy_uuid == platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x28}} &&
+      row.comparison_policy_generation == 1 &&
+      row.comparison_profile == "decimal128_numeric_total_nan_last_v1" &&
+      row.allow_special_values;
+}
+
 bool IsExactCanonicalTextTypeCodecIdentityV1(
     const DatatypeTypeCodecIdentityRowV1& row) {
   return IsAdmittedDatatypeCohort(row.catalog_snapshot_uuid, row.catalog_generation,
@@ -798,7 +855,11 @@ bool IsExactCanonicalTextTypeCodecIdentityV1(
          row.empty_value_distinct_from_sql_null &&
          row.sql_null_requires_zero_payload &&
          row.variable_width_storage_without_truncation &&
-         row.invalid_encoding_diagnostic_id == "CTB.TEXT.INVALID_ENCODING";
+         row.invalid_encoding_diagnostic_id == "CTB.TEXT.INVALID_ENCODING" &&
+         row.numeric_context_uuid.is_nil() && row.numeric_context_generation == 0 &&
+         row.special_value_policy_uuid.is_nil() && row.special_value_policy_generation == 0 &&
+         row.comparison_policy_uuid.is_nil() && row.comparison_policy_generation == 0 &&
+         row.comparison_profile.empty() && !row.allow_special_values;
 }
 
 bool IsExactCanonicalBooleanDescriptorTypeAliasV1(

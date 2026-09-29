@@ -1,4 +1,7 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/engine_statement_fixture.hpp"
+#include "../../../support/ordered_integer_key_oracle.hpp"
+#include "../../../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../../../support/projection_uuid_literal_checks.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -42,7 +45,7 @@ using sblr::SblrValuePayloadKind;
 constexpr const char* kDatabaseUuid = "019f4400-0000-7000-8000-000000000001";
 constexpr const char* kSessionUuid = "019f4400-0000-7000-8000-000000000002";
 constexpr const char* kPrincipalUuid = "019f4400-0000-7000-8000-000000000003";
-constexpr const char* kTableUuid = "019f4400-0000-7000-8000-000000000101";
+constexpr char kTableUuid[] = "019f4400-0000-7000-8000-000000000101";
 constexpr const char* kIndexUuid = "019f4400-0000-7000-8000-000000000102";
 constexpr char kRowA[] = "019f4400-0000-7000-8000-000000000201";
 constexpr char kRowB[] = "019f4400-0000-7000-8000-000000000202";
@@ -56,13 +59,21 @@ constexpr std::uint64_t kExpectedVisibleRows = 2;
 // 4-byte arity, 1-byte state, 4-byte length and the one-byte id. SBVALS01 has
 // a 12-byte header plus the length-prefixed name, state and value. These are
 // retained metadata/value estimates, not page sizes or process allocations.
-constexpr std::uint64_t kTableBytes = 96 + 2 * 16 + 22 + (8 + 2 + 10) + (8 + 4 + 14);
+// Binary note metadata: SBMETA02 + schema + counts, two text fields
+// (character_length=16777216 and type=character), two raw UUID references.
+constexpr std::uint64_t kNoteMetadataBytes =
+    8 + 4 + 9 + 4 + 4 + (4 + 16 + 4 + 8) + (4 + 4 + 4 + 9) +
+    (4 + 12 + 16) + (4 + 14 + 16);
+constexpr std::uint64_t kTableBytes = 96 + 2 * 16 + 22 + (8 + 2 + 10) + (8 + 4 + kNoteMetadataBytes);
 constexpr std::uint64_t kRowBytes = 128 + 4 * 16 + (9 + 2 + 1) + (9 + 4 + 5);
 constexpr std::uint64_t kIndexBytes = 128 + 2 * 16 + 2 + 5 + 24 + 29 + (8 + 2);
 constexpr std::uint64_t kLogicalKeyBytes = 8 + 4 + 1 + 4 + 1;
-constexpr std::uint64_t kIndexPayloadBytes = 8 + 4 + (4 + 2) + 1 + (4 + 1);
+// SBKOBIN: + SBKO + rank + scalar kind + typed UUID + generation +
+// absent collation + present int64 payload (six escaped zero bytes) + end.
+constexpr std::uint64_t kPhysicalKeyBytes = 8 + 4 + 1 + 4 + 17 + 8 + 1 + 1 + 8 + 6 + 2;
+constexpr std::uint64_t kIndexPayloadBytes = kLogicalKeyBytes;
 constexpr std::uint64_t kIndexEntryBytes =
-    112 + 4 * 16 + 2 + 5 + 5 + kLogicalKeyBytes + kIndexPayloadBytes;
+    112 + 4 * 16 + 2 + 5 + 5 + kPhysicalKeyBytes + kIndexPayloadBytes;
 constexpr std::uint64_t kExpectedRowStoreBytes = kTableBytes + 2 * kRowBytes;
 constexpr std::uint64_t kExpectedTableSizeWithIndexes =
     kExpectedRowStoreBytes + kIndexBytes + 2 * kIndexEntryBytes;
@@ -91,7 +102,7 @@ void CleanupDatabase(const std::filesystem::path& path) {
   std::filesystem::remove(path.string() + ".sb.mga_savepoints");
 }
 
-api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
+db::DatabaseCreateConfig CreateFixtureDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -100,8 +111,7 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1789810444001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1789810444002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -109,17 +119,13 @@ api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC044 database create failed");
-  return create.database_uuid.value;
+  return create;
 }
 
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+api::EngineRequestContext BaseContext(const db::DatabaseCreateConfig& create) {
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "sbsfc044-catalog-statistics";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000002");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000003");
   context.security_context_present = true;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -128,17 +134,16 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& path,
   return context;
 }
 
-api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
-                                           const api::EngineUuid& database_uuid) {
+api::EngineRequestContext BeginTransaction(const db::DatabaseCreateConfig& create) {
   api::EngineBeginTransactionRequest begin;
-  begin.context = BaseContext(path, database_uuid);
+  begin.context = BaseContext(create);
   const auto begun = api::EngineBeginTransaction(begin);
   for (const auto& diagnostic : begun.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(begun.ok, "SBSFC044 transaction.begin failed");
   Require(begun.local_transaction_id != 0, "SBSFC044 transaction.begin returned no local id");
-  auto context = BaseContext(path, database_uuid);
+  auto context = begin.context;
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
@@ -147,12 +152,12 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
   return context;
 }
 
-void SeedCatalogStatisticsFixture(const api::EngineRequestContext& context) {
+void SeedCatalogStatisticsFixture(api::EngineRequestContext& context) {
   api::CrudTableRecord table;
   table.table_uuid = scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101");
   table.default_name = "sbsfc044_catalog_stats";
   table.columns = {{"id", "type=int64"}, {"note", "type=character"}};
-  auto diagnostic = api::AppendMgaTableMetadata(context, table);
+  auto diagnostic = scratchbird::tests::PublishMgaTableFixture(context, table, {"int64", "character"});
   Require(!diagnostic.error, "SBSFC044 table metadata append failed");
 
   api::CrudIndexRecord index;
@@ -345,16 +350,21 @@ bool ExpectProjectionUint64(std::string_view case_id,
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("sbsfc044-catalog-statistics");
   const auto database_path = TempDatabasePath();
   CleanupDatabase(database_path);
-  const auto database_uuid = CreateMinimalDatabase(database_path);
-  auto context = BeginTransaction(database_path, database_uuid);
+  const auto database = CreateFixtureDatabase(database_path);
+  auto context = BeginTransaction(database);
   SeedCatalogStatisticsFixture(context);
   const auto observed = api::LoadMgaRelationStoreState(context);
   Require(observed.ok, "SBSFC044 independent retained-state inspection failed");
   Require(observed.state.index_entries.size() == 2,
           "SBSFC044 retained index entry count drifted");
   bool seen_a = false, seen_b = false;
+  const auto storage = api::LoadMgaRelationStorageDescriptor(context, scratchbird::tests::FixtureUuidLiteral(kTableUuid));
+  Require(storage.ok && storage.descriptor.columns.size() == 2,
+          "SBSFC044 bound column descriptor missing");
+  const auto& datatype = storage.descriptor.columns.front().value_descriptor;
   for (const auto& entry : observed.state.index_entries) {
     const bool row_a = entry.row_uuid == scratchbird::tests::FixtureUuidLiteral(kRowA);
     const bool row_b = entry.row_uuid == scratchbird::tests::FixtureUuidLiteral(kRowB);
@@ -362,11 +372,12 @@ int main() {
     seen_a = seen_a || row_a;
     seen_b = seen_b || row_b;
     const std::string value = row_a ? "1" : "2";
-    const std::string key = std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00", 17) + value;
-    const std::string payload = std::string("SBVALS01\x01\x00\x00\x00\x02\x00\x00\x00" "id\x00\x01\x00\x00\x00", 23) + value;
+    const auto key = scratchbird::tests::ExpectedInt64OrderedIndexKey(
+        datatype.datatype_descriptor_uuid, datatype.datatype_descriptor_generation, row_a ? 1 : 2);
+    const std::string payload = std::string("SBCLKEY2\x01\x00\x00\x00\x00\x01\x00\x00\x00", 17) + value;
     Require(entry.column_name == "id" && entry.family == "btree" && entry.entry_kind == "exact" &&
                 entry.key_value == key && entry.payload_value == payload &&
-                key.size() == kLogicalKeyBytes && payload.size() == kIndexPayloadBytes,
+                key.size() == kPhysicalKeyBytes && payload.size() == kIndexPayloadBytes,
             "SBSFC044 independent retained index frame accounting drifted");
   }
 

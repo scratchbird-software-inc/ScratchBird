@@ -445,6 +445,36 @@ void Int128MinimumMaximumRoundTrip() {
           "short INT128 payload was admitted");
 }
 
+void Decimal128BinaryRoundTrip() {
+  auto column = Int128Column(0, "decimal_float", 0, 0x18);
+  column.canonical_type_id = datatypes::CanonicalTypeId::decimal_float;
+  column.codec_id = "datatype.decimal128.bid.le.v1";
+  const auto descriptor = Descriptor({column});
+  // Literal BID encodings, independent of the numeric encoder. The transport
+  // test verifies structure/preservation, not live catalog receipt authority.
+  std::vector<byte> one(16,0); one[0]=1; one[14]=0x40; one[15]=0x30;
+  std::vector<byte> negative_zero(16,0); negative_zero[14]=0x3c; negative_zero[15]=0xb0;
+  std::vector<byte> nan(16,0); nan[0]=42; nan[15]=0xfe;
+  const auto batch = Batch(descriptor, {Row(0,{Present(0,0,one)}),
+      Row(1,{Present(0,0,negative_zero)}), Row(2,{Present(0,0,nan)}), Row(3,{Null(0,0)})});
+  const auto binding = ExecuteBinding(batch);
+  const auto encoded = wire::EncodeTypedResultBatch(batch,descriptor,binding);
+  Require(encoded.ok(), "decimal128 batch encode failed: " + encoded.detail);
+  const auto decoded = wire::DecodeTypedResultBatch(encoded.encoded,descriptor,binding);
+  Require(decoded.ok(), "decimal128 batch decode failed: " + decoded.detail);
+  for (std::size_t i=0;i<4;++i)
+    Require(decoded.batch.rows[i].cells[0].canonical_payload == batch.rows[i].cells[0].canonical_payload &&
+            decoded.batch.rows[i].cells[0].state == batch.rows[i].cells[0].state,
+            "decimal128 binary value or NULL changed on transport");
+  for (const auto width : {0U,15U,17U,24U}) {
+    auto changed=descriptor; changed.columns[0].canonical_value_bytes=width;
+    Require(!wire::EncodeTypedResultRowDescriptor(changed).ok(), "decimal128 descriptor accepted wrong width");
+  }
+  auto malformed=batch; malformed.rows[0].cells[0].canonical_payload[15]=0x60;
+  Require(!wire::EncodeTypedResultBatch(malformed,descriptor,ExecuteBinding(malformed)).ok(),
+          "transport accepted noncanonical decimal128");
+}
+
 void BatchEvidenceShapeAndCursorConsistency() {
   const auto descriptor = Descriptor(
       {TextColumn(0, "left", 0, 0x16),
@@ -732,6 +762,7 @@ int main() {
     DelimiterPayloadAndDuplicateNameRoundTrip();
     EmptyAndNullRemainDistinct();
     Int128MinimumMaximumRoundTrip();
+    Decimal128BinaryRoundTrip();
     BatchEvidenceShapeAndCursorConsistency();
   } catch (const std::exception& error) {
     std::cerr << "typed result transport codec test failed: " << error.what()

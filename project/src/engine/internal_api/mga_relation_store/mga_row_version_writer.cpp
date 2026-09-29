@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
+#include "crud_support/bound_ordered_index_key.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -1682,9 +1683,29 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
                                                         MgaMutationProducer::unknown);
     if (admission.error) return admission;
   }
+  // Resolve the complete direct ordered producer set before queuing writes.
+  // UPDATE/rebuild/row-at-a-time callers must not return to length-framed
+  // logical keys after DDL has published a bound comparison-key profile.
+  std::vector<MgaExactIndexEntryAppendBatch> ordered_batches;
+  for (const auto& batch : batches) {
+    if (!bound_index_key::UsesBoundOrderedProfile(batch.index) || batch.rows.empty()) continue;
+    MgaExactIndexEntryAppendBatch ordered;
+    ordered.index = batch.index;
+    ordered.table_uuid = batch.table_uuid;
+    ordered.entry_kind = batch.entry_kind;
+    for (const auto& row : batch.rows)
+      for (const auto& logical : CrudIndexKeysForValues(batch.index, row.values))
+        ordered.entries.push_back({logical, {}, row.row_uuid, row.version_uuid});
+    ordered_batches.push_back(std::move(ordered));
+  }
+  if (!ordered_batches.empty()) {
+    const auto appended = AppendExactIndexEntryBatches(ordered_batches);
+    if (appended.error) return appended;
+  }
   const bool inline_materialization = batches.size() <= 1;
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
+    if (bound_index_key::UsesBoundOrderedProfile(batch.index)) continue;
     try {
       ++impl_->counters.index_materialization_jobs_queued;
       if (inline_materialization) {
@@ -1720,17 +1741,31 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
-    const std::vector<MgaExactIndexEntryAppendBatch>& batches) {
+    const std::vector<MgaExactIndexEntryAppendBatch>& input_batches) {
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
-  for (const auto& batch : batches) {
+  for (const auto& batch : input_batches) {
     if (batch.entries.empty()) continue;
     const auto admission = AdmitMgaSavepointProducer(impl_->context,
         IsAdmittedMgaSavepointIndexProfile(batch.index) ? MgaMutationProducer::index_membership :
                                                         MgaMutationProducer::unknown);
     if (admission.error) return admission;
   }
+  std::vector<MgaExactIndexEntryAppendBatch> canonical_batches;
+  const auto* admitted_batches = &input_batches;
+  if (std::any_of(input_batches.begin(), input_batches.end(), [](const auto& batch) {
+        return !batch.entries.empty() && bound_index_key::UsesBoundOrderedProfile(batch.index);
+      })) {
+    canonical_batches = input_batches;
+    for (auto& batch : canonical_batches) {
+      EngineApiDiagnostic diagnostic;
+      if (!bound_index_key::CanonicalizePublicationBatch(impl_->context, &batch, &diagnostic))
+        return diagnostic;
+    }
+    admitted_batches = &canonical_batches;
+  }
+  const auto& batches = *admitted_batches;
   if (batches.size() == 1 && impl_->pending_prepared_index_jobs.empty() &&
       impl_->pending_index_materialization_jobs.empty() &&
       ExactIndexBatchAlreadyInAppendOrder(batches.front())) {
