@@ -1,6 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
-#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -204,27 +204,12 @@ Fixture MakeFixture(platform::u32 page_size, platform::u64 salt) {
   schema.localized_names.push_back({"en", "primary", "", "ipar_preallocation", true});
   RequireOk(api::EngineCreateSchema(schema), "IPAR preallocation schema publication failed");
   fixture.context.current_schema_uuid = schema.target_object.uuid;
-  api::EngineCreateTableRequest table;
-  table.context = fixture.context;
-  table.target_schema.uuid = fixture.context.current_schema_uuid;
-  table.target_schema.object_kind = "schema";
-  table.requested_table_uuid = fixture.table_uuid;
-  table.table_names.push_back({"en", "primary", "", "ipar_page_size_preallocation", true});
-  for (const auto& [name, metadata] : Table(fixture).columns) {
-    api::EngineColumnDefinition column;
-    column.names.push_back({"en", "primary", "", name, true});
-    column.ordinal = table.table_columns.size();
-    column.nullable = name != "id";
-    column.descriptor.descriptor_kind = "scalar";
-    column.descriptor.canonical_type_name = "text";
-    column.descriptor.encoded_descriptor = metadata;
-    scratchbird::tests::BindFixtureColumnDatatype(
-        fixture.context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
-    table.table_columns.push_back(std::move(column));
-  }
   // Publish the PRIMARY KEY through DDL so its support UUID and constraint
   // binding are real catalog authority, not a disconnected metadata index.
-  RequireOk(api::EngineCreateTable(table), "IPAR preallocation table publication failed");
+  // Indexed TEXT also requires the actual node's charset/collation resources;
+  // datatype identity alone does not authorize text comparison.
+  scratchbird::tests::PublishDdlTableFixture(
+      fixture.context, Table(fixture), {"character", "character"});
   const auto stored = api::LoadMgaRelationStoreState(fixture.context);
   Require(stored.ok, "IPAR preallocation metadata readback failed");
   const auto indexes = api::VisibleCrudIndexesForTable(

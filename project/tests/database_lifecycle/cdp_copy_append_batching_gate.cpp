@@ -1,6 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
-#include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -279,26 +279,16 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   RequireOk(api::EngineCreateSchema(schema), "CDP-011 schema publication failed");
   metadata.current_schema_uuid = schema.target_object.uuid;
   fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
-  api::EngineCreateTableRequest table;
-  table.context = metadata;
-  table.target_schema.uuid = metadata.current_schema_uuid;
-  table.target_schema.object_kind = "schema";
-  table.requested_table_uuid = fixture.table_uuid;
-  table.table_names.push_back({"en", "primary", "", "cdp_copy_append_batching", true});
-  for (const std::string column_name : {"id", "note"}) {
-    api::EngineColumnDefinition column;
-    column.names.push_back({"en", "primary", "", column_name, true});
-    column.ordinal = table.table_columns.size();
-    column.nullable = column_name != "id";
-    column.descriptor.descriptor_kind = "scalar";
-    column.descriptor.canonical_type_name = "text";
-    column.descriptor.encoded_descriptor = column_name == "id"
-        ? "type=text;primary_key=true;nullable=false" : "type=text";
-    scratchbird::tests::BindFixtureColumnDatatype(metadata,
-        scratchbird::core::datatypes::CanonicalTypeId::character, column);
-    table.table_columns.push_back(std::move(column));
-  }
-  RequireOk(api::EngineCreateTable(table), "CDP-011 table and primary-key publication failed");
+  api::CrudTableRecord table;
+  table.creator_tx = metadata.local_transaction_id;
+  table.table_uuid = fixture.table_uuid;
+  table.default_name = "cdp_copy_append_batching";
+  table.columns = {{"id", "type=text;primary_key=true;nullable=false"},
+                   {"note", "type=text"}};
+  // Keep the real primary-key support index and bind its TEXT comparison to
+  // catalog-issued charset/collation UUIDs in this database.
+  scratchbird::tests::PublishDdlTableFixture(
+      metadata, table, {"character", "character"});
   const auto stored = api::LoadMgaRelationStoreState(metadata);
   Require(stored.ok, "CDP-011 relation metadata readback failed");
   const auto indexes = api::VisibleCrudIndexesForTable(
