@@ -596,6 +596,7 @@ add_library(sb_engine_internal_api
   security/database_local_security_event_store.cpp
   security/security_principal_lifecycle.cpp
   security/security_model.cpp
+  security/metric_visibility_policy.cpp
   security/standard_bundle_api.cpp
   backup_archive/backup_archive_api.cpp
   security/visibility_api.cpp

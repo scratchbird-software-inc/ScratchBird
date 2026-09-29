@@ -1330,6 +1330,7 @@ set_tests_properties(sbsql_sblr_alignment_metric_history_record_identity PROPERT
 add_executable(sbsql_sblr_alignment_catalog_metric_retention_policy
   catalog_metric_retention_policy_test.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
@@ -1365,6 +1366,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_descriptor
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
@@ -1388,6 +1390,30 @@ set_tests_properties(sbsql_sblr_alignment_catalog_metric_descriptor PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-12;binary_uuid;native_descriptor;component_regression;not_runtime_acceptance"
   TIMEOUT 30)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  get_target_property(metric_visibility_sources sbsql_sblr_alignment_catalog_metric_descriptor SOURCES)
+  list(REMOVE_ITEM metric_visibility_sources catalog_metric_descriptor_test.cpp)
+  add_executable(sbsql_sblr_alignment_metric_visibility_policy
+    metric_visibility_policy_test.cpp ${metric_visibility_sources}
+    ../../src/engine/internal_api/security/metric_visibility_policy.cpp
+    ../../src/engine/internal_api/security/security_model.cpp
+    ../../src/engine/internal_api/behavior_support/api_behavior_rows.cpp
+    ../../src/engine/internal_api/crud_support/crud_identity.cpp
+    ../../src/engine/internal_api/api_unsupported.cpp)
+  get_target_property(metric_visibility_includes sbsql_sblr_alignment_catalog_metric_descriptor INCLUDE_DIRECTORIES)
+  target_include_directories(sbsql_sblr_alignment_metric_visibility_policy PRIVATE
+    ${metric_visibility_includes} ../../src/engine/internal_api)
+  target_compile_features(sbsql_sblr_alignment_metric_visibility_policy PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_metric_visibility_policy PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_metric_visibility_policy PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_metric_visibility_policy PRIVATE
+    sb_core_platform sb_core_uuid sb_core_hash sbl_numeric sb_core_time sb_core_diagnostic_catalog)
+  add_test(NAME sbsql_sblr_alignment_metric_visibility_policy COMMAND sbsql_sblr_alignment_metric_visibility_policy)
+  set_tests_properties(sbsql_sblr_alignment_metric_visibility_policy PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;binary_uuid;native_policy;security;component_regression;not_runtime_acceptance"
+    TIMEOUT 30)
+endif()
+
 add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   catalog_metric_label_schema_test.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
@@ -1395,6 +1421,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
@@ -1425,6 +1452,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_series
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
@@ -1456,6 +1484,7 @@ add_executable(sbsql_sblr_alignment_catalog_metric_binding
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
+  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp

@@ -12,6 +12,7 @@
 #include "catalog_security_record_codec.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
+#include "catalog_metric_visibility_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
 #include "catalog_metric_series.hpp"
@@ -156,6 +157,10 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
                       "policy_binary_payload_or_header_invalid");
   }
+  if (IsCatalogMetricVisibilityPolicyPayload(record.payload) &&
+      !CatalogMetricVisibilityPolicyMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_visibility.invalid",
+                      "visibility_binary_payload_or_header_invalid");
   if (record.payload.size() > kMaxBinaryRecordBytes - kBinaryHeaderBytes) {
     return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                       "catalog.record_codec.fields_missing", "binary_record_size_limit");
@@ -306,6 +311,10 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
       !CatalogMetricDescriptorMatchesMetadata(value))
     return MetadataError("metric_descriptor_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
+  if ((value.object_subtype == "metric_visibility" ||
+       IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
+      !CatalogMetricVisibilityPolicyMatchesMetadata(value))
+    return MetadataError("metric_visibility_definition_binding_invalid");
   if ((value.object_subtype == "metric_retention" ||
        IsCatalogMetricRetentionPolicyPayload(value.record.payload)) &&
       !CatalogMetricRetentionPolicyMatchesMetadata(value))
@@ -447,6 +456,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
   return CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
       CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
+      CatalogMetricVisibilityPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricDescriptorPreservesOrigin(previous,successor) &&
       CatalogMetricLabelSchemaPreservesOrigin(previous,successor) &&
       CatalogMetricSeriesPreservesOrigin(previous,successor);

@@ -55,6 +55,7 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/core/catalog/catalog_metric_label_schema.cpp
   ../../src/core/catalog/catalog_metric_descriptor.cpp
   ../../src/core/catalog/catalog_metric_retention_policy.cpp
+  ../../src/core/catalog/catalog_metric_visibility_policy.cpp
   ../../src/core/catalog/catalog_name_envelope.cpp
   ../../src/core/catalog/catalog_name_record_codec.cpp
   ../../src/core/datatypes/datatype_binary.cpp

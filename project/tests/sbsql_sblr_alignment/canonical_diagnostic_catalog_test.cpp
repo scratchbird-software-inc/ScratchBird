@@ -38,7 +38,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1423 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1426 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -66,6 +66,17 @@ int main() {
   Sample("AUDIT_TRIGGER.QUEUE_RETRY",S::warning,false,
          "not_specified","continue_or_fail_by_policy","AUDIT_TRIGGER");
   Sample("DIAG.REDACTION_POLICY_INVALID",S::security,true,"false","deny_access","DIAG");
+  Sample("METRIC.ACCESS_DENIED",S::error,true,"only_after_authority_or_binding_revalidation",
+         "deny_read_without_rows_or_existence_disclosure","METRIC");
+  const auto* metric_denied=d::FindCanonicalDiagnosticCode("METRIC.ACCESS_DENIED");
+  Check(metric_denied&&metric_denied->sqlstate=="42501"&&metric_denied->numeric_binding=="not_applicable",
+        "metric visibility refusal must retain authorization SQLSTATE");
+  Sample("FILESPACE_AGENT.ROLE_DENIED",S::error,true,
+         "only_after_authorized_role_change_and_fresh_evidence",
+         "refuse_capacity_action_without_physical_mutation","FILESPACE_AGENT");
+  Sample("FILESPACE_AGENT.HEALTH_DENIED",S::error,true,
+         "only_after_fresh_health_evidence_and_policy_revalidation",
+         "refuse_capacity_action_without_physical_mutation","FILESPACE_AGENT");
   Sample("SB_ENGINE_API_EMBEDDED_TRUST_MODE",S::informational,false,
          "not_applicable","preserve_outcome_and_report_embedded_trust_context","ENGINE_API");
   Sample("AGENT.PAGE_PREALLOCATION.COMPLETED",S::informational,false,
@@ -202,7 +213,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x2c,0x6e,0x00,0x9c,0xeb,0x17,0x36,0x45,0xa0,0xc0,0xbe,0x4d,0x98,0x52,0xfb,0x19,0x4c,0xb9,0x83,0xc8,0x82,0xdd,0xf3,0x3e,0x02,0xc0,0x60,0x06,0xa3,0x92,0xc0,0x49};
+    0xcf,0x73,0xf4,0x22,0xb8,0x84,0x56,0xe1,0xef,0x41,0x08,0xb7,0xd6,0x9c,0xaf,0xae,0xd6,0xef,0xce,0x74,0x40,0x45,0xba,0x81,0x25,0xf2,0x64,0x36,0x42,0x63,0xa6,0xd9};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
