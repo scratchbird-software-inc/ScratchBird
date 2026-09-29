@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "engine_database_runtime.hpp"
+#include "uuid.hpp"
 
 #include <string>
 #include <utility>
@@ -321,7 +322,10 @@ EngineDatabaseRuntimeStateResult MakeEngineDatabaseRuntimeState(DatabaseLifecycl
     return RuntimeError("SB-ENGINE-RUNTIME-DATABASE-NOT-OPEN",
                         "engine.database_runtime.database_not_open");
   }
-  if (!database.database_uuid.valid()) {
+  // TypedUuid::valid only excludes nil/unknown. Runtime ownership additionally
+  // requires the database identity class and the system UUIDv7 representation.
+  if (database.database_uuid.kind != scratchbird::core::platform::UuidKind::database ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(database.database_uuid.value)) {
     return RuntimeError("SB-ENGINE-RUNTIME-DATABASE-UUID-INVALID",
                         "engine.database_runtime.database_uuid_invalid");
   }

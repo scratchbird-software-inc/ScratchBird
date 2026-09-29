@@ -175,6 +175,59 @@ void TestRuntimeCreatedFreshBaselineAndModeDenials() {
           "PFAR-015B runtime created restricted route opened after schema refusal");
 }
 
+void TestRuntimeDatabaseUuidAdmission() {
+  for (const auto route_mode : {api::EngineDatabaseRuntimeRouteMode::server_inet,
+                               api::EngineDatabaseRuntimeRouteMode::local_ipc,
+                               api::EngineDatabaseRuntimeRouteMode::embedded_direct}) {
+    api::EngineDatabaseRuntimeRouteAdmissionOptions route;
+    route.route_mode = route_mode;
+    route.database_file_lock_owned = true;
+    const auto database = RuntimeDatabase(db::DatabaseLifecyclePhase::opened);
+    const auto valid = api::MakeEngineDatabaseRuntimeState(database, {}, {}, {}, route);
+    Require(valid.ok() && valid.state.database_open &&
+                valid.state.database.database_uuid.kind == platform::UuidKind::database &&
+                valid.state.database.database_uuid.value == database.database_uuid.value,
+            "runtime changed or refused a valid binary database owner");
+    const auto refused = [&](const platform::TypedUuid& identity) {
+      auto candidate = database;
+      candidate.database_uuid = identity;
+      auto resources = scratchbird::core::resources::ResourceSeedCatalogImage{};
+      resources.active = true;
+      const auto result = api::MakeEngineDatabaseRuntimeState(candidate, {}, resources, {}, route);
+      Require(!result.ok() && result.diagnostic.diagnostic_code ==
+                  "SB-ENGINE-RUNTIME-DATABASE-UUID-INVALID",
+              "runtime accepted a foreign kind or malformed system database UUID");
+      Require(!result.state.database_open && !result.state.resources_active &&
+                  !result.state.agent_catalog_schema_validated &&
+                  result.state.database.database_uuid.value.is_nil(),
+              "invalid database owner reached runtime activation or exposed partial identity");
+      Require(candidate.database_uuid.kind == identity.kind &&
+                  candidate.database_uuid.value == identity.value,
+              "runtime rewrote the supplied database UUID");
+    };
+    auto malformed = database.database_uuid;
+    malformed.value = {};
+    refused(malformed);
+    for (unsigned kind = 0; kind < 256; ++kind) {
+      if (kind == static_cast<unsigned>(platform::UuidKind::database)) continue;
+      malformed = database.database_uuid;
+      malformed.kind = static_cast<platform::UuidKind>(kind);
+      refused(malformed);
+    }
+    for (unsigned version = 0; version < 16; ++version) {
+      if (version == 7) continue;
+      malformed = database.database_uuid;
+      malformed.value.bytes[6] = (malformed.value.bytes[6] & 0x0f) | (version << 4);
+      refused(malformed);
+    }
+    for (unsigned variant : {0u, 0x40u, 0xc0u}) {
+      malformed = database.database_uuid;
+      malformed.value.bytes[8] = (malformed.value.bytes[8] & 0x3f) | variant;
+      refused(malformed);
+    }
+  }
+}
+
 void TestRuntimeOpenRouteObservedSchemaRefusalsAndMigrationIntent() {
   auto observations = api::CurrentAgentCatalogRuntimeSchemaObservations();
   observations.erase(std::remove_if(observations.begin(),
@@ -397,7 +450,14 @@ void TestUnknownSurfaceRefusal() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  Require(argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--uuid-owner-only"),
+          "unrecognized runtime schema test selection");
+  TestRuntimeDatabaseUuidAdmission();
+  if (argc == 2) {
+    std::cout << "runtime_database_uuid_admission=passed routes=3 native_activation_claimed=false\n";
+    return EXIT_SUCCESS;
+  }
   TestContractInventoryUsesImplementedSources();
   TestRuntimeOpenRouteDefaultCurrentPasses();
   TestRuntimeCreatedFreshBaselineAndModeDenials();

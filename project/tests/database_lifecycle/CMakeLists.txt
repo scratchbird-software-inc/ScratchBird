@@ -2567,6 +2567,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "PFAR-015B;agent_catalog_runtime_schema_versioning_gate;database_lifecycle_catalog;mga_transaction_regression"
   )
 
+  # Keep the complete historical schema gate above. This additional component
+  # test isolates owner admission; it cannot certify schema/native activation.
+  add_test(NAME agent_runtime_database_uuid_admission_gate
+    COMMAND agent_catalog_runtime_schema_versioning_gate --uuid-owner-only)
+  set_tests_properties(agent_runtime_database_uuid_admission_gate PROPERTIES
+    LABELS "binary_uuid;database_lifecycle_catalog;runtime_owner_admission;component_regression;not_runtime_acceptance"
+    TIMEOUT 30)
+
   add_executable(agent_show_sys_surface_parity_gate
     agent_show_sys_surface_parity_gate.cpp
   )
