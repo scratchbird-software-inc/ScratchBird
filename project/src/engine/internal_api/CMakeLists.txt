@@ -432,6 +432,7 @@ add_library(sb_engine_internal_api
   dml/direct_bulk_generated_projection.cpp
   dml/direct_bulk_ordered_ingest.cpp
   dml/direct_bulk_typed_row_codec.cpp
+  dml/direct_bulk_scalar_projection.cpp
   dml/direct_bulk_uuid_authority.cpp
   dml/dml_ingestion_pipeline.cpp
   dml/dml_index_write_path.cpp

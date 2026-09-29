@@ -56,14 +56,8 @@ using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 using scratchbird::transaction::mga::TransactionState;
 
-constexpr const char* kRowStoreMagic = "SBMGA1";
-
 std::string IndexStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_index_entries";
-}
-
-std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
-  return context.database_path + ".sb.mga_relation_scope";
 }
 
 std::string ScopedRowStorePath(const EngineRequestContext& context,
@@ -113,13 +107,6 @@ bool FileExistsAndNotEmpty(const std::string& path) {
   std::error_code error;
   return std::filesystem::exists(path, error) &&
          std::filesystem::file_size(path, error) != 0;
-}
-
-std::uint64_t ParseU64(const std::string& value) {
-  std::uint64_t parsed = 0;
-  const auto result = std::from_chars(value.data(), value.data() + value.size(),
-                                      parsed);
-  return result.ec == std::errc{} ? parsed : 0;
 }
 
 idx::SecondaryIndexDeltaLedgerLimits DefaultSecondaryIndexDeltaLedgerLimits() {
