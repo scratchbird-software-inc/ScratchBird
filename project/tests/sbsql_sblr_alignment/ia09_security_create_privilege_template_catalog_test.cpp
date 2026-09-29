@@ -7,9 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/component_authorization_fixture.hpp"
+#include <stdexcept>
+#include <utility>
 #include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "memory.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -29,8 +34,7 @@ namespace uuid = scratchbird::core::uuid;
 constexpr std::uint64_t kBaseMillis = 1970000000000ull;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -52,6 +56,14 @@ struct Fixture {
   api::EngineUuid database_uuid = MakeUuid(platform::UuidKind::database, 1);
   api::EngineUuid filespace_uuid = MakeUuid(platform::UuidKind::filespace, 2);
   api::EngineUuid admin_uuid = MakeUuid(platform::UuidKind::principal, 3);
+
+  api::EngineRequestContext owner;
+  Fixture() = default;
+  Fixture(const Fixture&) = delete;
+  Fixture(Fixture&& other) noexcept
+      : root(std::exchange(other.root, {})), database_path(std::move(other.database_path)),
+        database_uuid(other.database_uuid), filespace_uuid(other.filespace_uuid),
+        admin_uuid(other.admin_uuid), owner(std::move(other.owner)) {}
 
   ~Fixture() {
     std::error_code error;
@@ -76,8 +88,7 @@ Fixture CreateFixture() {
   config.filespace_uuid = {platform::UuidKind::filespace, fixture.filespace_uuid};
   config.page_size = 16384;
   config.creation_unix_epoch_millis = kBaseMillis;
-  config.allow_minimal_resource_bootstrap = true;
-  config.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(config);
   config.allow_overwrite = false;
   const auto created = database::CreateDatabaseFile(config);
   if (!created.ok()) {
@@ -85,28 +96,17 @@ Fixture CreateFixture() {
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "privilege-template database creation failed");
+  fixture.owner = scratchbird::tests::BootstrapFixtureOwnerContext(config);
+  fixture.admin_uuid = fixture.owner.principal_uuid;
   return fixture;
 }
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::uint64_t session_ordinal) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  auto context = fixture.owner;
   context.request_id = "ia09-privilege-template-catalog";
-  context.database_path = fixture.database_path.string();
-  context.database_uuid = fixture.database_uuid;
-  context.principal_uuid = fixture.admin_uuid;
-  context.session_uuid = MakeUuid(platform::UuidKind::object,
-                                  100 + session_ordinal);
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.security_context_present = true;
-  context.trace_tags = {"security.fixture_trace_authority",
-                        "right:POLICY_ADMIN",
-                        "right:SEC_GRANT_ADMIN",
-                        "right:OBS_POLICY_READ"};
+  context.session_uuid = MakeUuid(platform::UuidKind::object, 100 + session_ordinal);
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -189,7 +189,12 @@ void RequireDiagnostic(const api::EngineApiResult& result,
 
 }  // namespace
 
-int main() {
+int main() try {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "native_privilege_template_authority");
+  Require(memory.ok() && memory.fixture_mode,
+          "privilege-template memory manager setup failed");
   auto fixture = CreateFixture();
   const auto template_uuid = MakeUuid(platform::UuidKind::object, 200);
   const auto conflicting_uuid = MakeUuid(platform::UuidKind::object, 201);
@@ -246,8 +251,9 @@ int main() {
   auto unauthorized = CreateRequest(
       writer, invalid_uuid, "unauthorized_template", grantee_uuid,
       "unauthorized-template-v1");
-  unauthorized.context.trace_tags = {"security.fixture_trace_authority",
-                                     "right:POLICY_ADMIN"};
+  scratchbird::tests::MaterializeComponentAuthorization(unauthorized.context, {"POLICY_ADMIN"});
+  unauthorized.context.trace_tags = {"security.fixture_trace_authority", "group:ROOT",
+      "right:SEC_GRANT_ADMIN", "right:POLICY_ADMIN"};
   const auto unauthorized_result =
       api::EngineSecurityCreatePrivilegeTemplate(unauthorized);
   RequireDiagnostic(unauthorized_result,
@@ -343,4 +349,7 @@ int main() {
 
   std::cout << "CSC-TEST-005829 privilege-template durable catalog passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
