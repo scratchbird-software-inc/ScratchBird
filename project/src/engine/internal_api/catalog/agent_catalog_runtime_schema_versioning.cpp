@@ -11,6 +11,7 @@
 #include "agent_runtime.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "metric_registry.hpp"
+#include "metric_builtin_definitions.hpp"
 
 #include <algorithm>
 #include <map>
@@ -194,9 +195,17 @@ void AddAgentMetricContracts(std::vector<AgentCatalogRuntimeSchemaContract>* con
         "AgentMetricDependencyContractRegistry",
         dep.cluster_only));
   }
+  // This inventory describes compiled schema, not installed native objects.
+  // A node registry may legitimately be unbound during bootstrap; consulting
+  // it here silently erased required schemas and conflated schema with readiness.
+  const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
   for (const auto& family : metric_families) {
-    const auto* descriptor = metrics::DefaultMetricRegistry().FindDescriptorOrAlias(family);
-    if (descriptor == nullptr) { continue; }
+    const auto descriptor = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& value) {
+          return value.family == family ||
+              std::find(value.aliases.begin(), value.aliases.end(), family) != value.aliases.end();
+        });
+    if (descriptor == definitions.end()) { continue; }
     std::vector<std::string> fields = {"family",
                                        "type",
                                        "unit",
@@ -214,7 +223,7 @@ void AddAgentMetricContracts(std::vector<AgentCatalogRuntimeSchemaContract>* con
     contracts->push_back(Contract("agent.metric.schema." + descriptor->family,
                                   AgentCatalogRuntimeSchemaSurfaceKind::metric_schema,
                                   UniqueSorted(std::move(fields)),
-                                  "DefaultMetricRegistry",
+                                  "BuiltinMetricDescriptorDefinitions",
                                   descriptor->cluster_only));
   }
 }

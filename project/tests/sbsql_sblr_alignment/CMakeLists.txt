@@ -2366,6 +2366,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/core/metrics/metric_value_codec.cpp
     ../../src/core/metrics/metric_sample_codec.cpp
     ../../src/core/metrics/metric_observation_queue.cpp)
+  add_executable(sbsql_sblr_alignment_metric_builtin_definitions
+    metric_builtin_definitions_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_metric_builtin_definitions PRIVATE sb_core_metrics)
+  add_test(NAME sbsql_sblr_alignment_metric_builtin_definitions
+    COMMAND sbsql_sblr_alignment_metric_builtin_definitions)
+  set_tests_properties(sbsql_sblr_alignment_metric_builtin_definitions PROPERTIES
+    LABELS "sbsql_sblr_alignment;metrics;component_regression;not_runtime_acceptance")
   target_compile_features(sbsql_sblr_alignment_metric_binary_label_key PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_metric_binary_label_key PRIVATE
     ../../src/core/metrics)

@@ -8,8 +8,10 @@
 
 #include "catalog/agent_catalog_runtime_schema_versioning.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "agent_runtime.hpp"
 #include "database_lifecycle.hpp"
 #include "engine_database_runtime.hpp"
+#include "metric_builtin_definitions.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -82,6 +84,9 @@ db::DatabaseLifecycleState RuntimeDatabase(db::DatabaseLifecyclePhase phase) {
 }
 
 void TestContractInventoryUsesImplementedSources() {
+  auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
+  Require(registry.Descriptors().empty() && registry.SnapshotCurrent().empty(),
+          "schema inventory fixture unexpectedly has active metric bindings");
   const auto& contracts = api::BuiltinAgentCatalogRuntimeSchemaContracts();
   Require(!contracts.empty(), "PFAR-015B schema contract inventory is empty");
   Require(HasKind(api::AgentCatalogRuntimeSchemaSurfaceKind::catalog_sys_view_definition),
@@ -115,6 +120,31 @@ void TestContractInventoryUsesImplementedSources() {
 
   RequireContract("agent.policy.schema.page_preallocation_policy");
   RequireContract("agent.metric.schema.sb_page_free_count");
+  const auto definitions = scratchbird::core::metrics::BuiltinMetricDescriptorDefinitions();
+  for (const auto& dependency : scratchbird::core::agents::AgentMetricDependencyContractRegistry()) {
+    RequireContract("agent.metric.schema." + dependency.dependency.metric_family);
+  }
+  for (const auto& contract : contracts) {
+    constexpr std::string_view prefix = "agent.metric.schema.";
+    if (contract.surface_id.rfind(prefix, 0) != 0) continue;
+    const auto family = contract.surface_id.substr(prefix.size());
+    const auto definition = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& value) { return value.family == family; });
+    Require(definition != definitions.end() &&
+                contract.derived_from == "BuiltinMetricDescriptorDefinitions" &&
+                contract.cluster_scoped == definition->cluster_only,
+            "metric schema lacks its identity-free compiled source");
+    for (const auto& label : definition->labels) {
+      const auto field = "label:" + label.key +
+          (label.required ? ":required" : ":optional") +
+          (label.sensitive ? ":sensitive" : ":public");
+      Require(std::find(contract.required_fields.begin(), contract.required_fields.end(), field) !=
+                  contract.required_fields.end(),
+              "metric schema lost required/sensitive label shape");
+    }
+  }
+  Require(registry.Descriptors().empty() && registry.SnapshotCurrent().empty(),
+          "declaring metric schema installed runtime identities or observations");
   RequireContract("storage.page_filespace_handoff.record.request_queue");
   RequireContract("storage.filespace_growth.record.ledger");
 }

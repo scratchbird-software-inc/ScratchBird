@@ -231,7 +231,6 @@ class MetricRegistry {
                                      MetricType operation_type);
   using CurrentKey = std::pair<MetricUuid, std::vector<std::pair<std::string, MetricLabelValue>>>;
   CurrentKey NormalizeKey(const MetricUuid& metric_uuid, const MetricLabelSet& labels) const;
-  void LoadBuiltinDescriptors();
 
   mutable std::mutex mutex_;
   std::map<MetricUuid, MetricDescriptor> descriptors_;

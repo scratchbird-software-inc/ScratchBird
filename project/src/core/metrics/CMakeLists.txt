@@ -15,6 +15,7 @@ add_library(sb_core_metrics
   metric_history_record.cpp
   metric_producer.cpp
   metric_registry.cpp
+  metric_builtin_definitions.cpp
   metric_scalar.cpp
   metric_value_update.cpp
   metric_value_codec.cpp
