@@ -6,10 +6,65 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from owned_test_runtime import CleanupRefused, OwnedTestRuntime
+from types import SimpleNamespace
+from unittest import mock
+from owned_test_runtime import CleanupRefused, OwnedTestRuntime, _active_references, _process_exit_confirmed
 
 
 class RuntimeCleanupTest(unittest.TestCase):
+    def test_inaccessible_process_requires_verified_disappearance(self):
+        for final_state in (FileNotFoundError(), ProcessLookupError(),
+                            SimpleNamespace(st_uid=os.getuid())):
+            with self.subTest(final_state=final_state):
+                process = mock.MagicMock()
+                process.name = str(os.getpid() + 1)
+                process.stat.side_effect = [SimpleNamespace(st_uid=os.getuid()), final_state]
+                process.__truediv__.return_value.read_bytes.side_effect = PermissionError()
+                with mock.patch("owned_test_runtime.Path.iterdir", return_value=iter([process])), \
+                     mock.patch("owned_test_runtime._process_exit_confirmed", return_value=False):
+                    if isinstance(final_state, BaseException):
+                        self.assertEqual(_active_references(Path("/fixture-runtime")), [])
+                    else:
+                        with self.assertRaises(CleanupRefused):
+                            _active_references(Path("/fixture-runtime"))
+                self.assertEqual(process.stat.call_count, 2)
+
+    def test_process_lifetime_handle_distinguishes_live_from_exited(self):
+        child = subprocess.Popen([sys.executable, "-c",
+                                  "import sys; print('ready', flush=True); sys.stdin.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            process = Path("/proc") / str(child.pid)
+            self.assertFalse(_process_exit_confirmed(process))
+            child.stdin.close()
+            # EOF proves the child has closed stdout; do not reap it yet. The
+            # pidfd observes exit and the terminal proc entry is checked too.
+            self.assertEqual(child.stdout.read(), "")
+            self.assertTrue(_process_exit_confirmed(process))
+        finally:
+            if not child.stdin.closed:
+                child.stdin.close()
+            child.wait(timeout=5)
+            child.stdout.close()
+
+    def test_terminal_handle_does_not_excuse_reused_or_unreadable_pid(self):
+        process = mock.MagicMock()
+        process.name = "42"
+        for contents, expected in (("42 (exited worker) Z 1 2", True),
+                                   ("42 (reused worker) S 1 2", False),
+                                   ("invalid", False), (PermissionError(), False)):
+            with self.subTest(contents=contents):
+                reader = process.__truediv__.return_value.read_text
+                reader.side_effect = contents if isinstance(contents, BaseException) else None
+                reader.return_value = contents
+                with mock.patch("owned_test_runtime.os.pidfd_open", return_value=91), \
+                     mock.patch("owned_test_runtime.os.close") as close, \
+                     mock.patch("owned_test_runtime.select.poll") as poll:
+                    poll.return_value.poll.return_value = [(91, 1)]
+                    self.assertEqual(_process_exit_confirmed(process), expected)
+                    close.assert_called_once_with(91)
+
     def test_success_and_failure_keep_evidence_not_database(self):
         for exit_code in (0, 1):
             with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as parent:

@@ -11,6 +11,7 @@ collect fixtures that ignore TMPDIR; those need explicit fixture-level cleanup.
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import stat
 import sys
@@ -19,6 +20,38 @@ import tempfile
 
 class CleanupRefused(RuntimeError):
     pass
+
+
+def _process_exit_confirmed(process):
+    # Wait on the kernel's process-lifetime handle, not a guessed delay. A
+    # bounded wait lets an exiting process reach its terminal state without
+    # accepting an inaccessible live process or blocking cleanup indefinitely.
+    try:
+        descriptor = os.pidfd_open(int(process.name))
+    except ProcessLookupError:
+        return True
+    except (AttributeError, OSError):
+        return False
+    try:
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+        events = poller.poll(50)
+        if not any(fd == descriptor and flags & select.POLLIN for fd, flags in events):
+            return False
+        # A reused PID must not borrow the old handle's terminal result. If
+        # the current proc entry still exists, it must itself be terminal.
+        try:
+            status = (process / "stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return True
+        except (OSError, UnicodeError):
+            return False
+        if not status.startswith(process.name + " ("):
+            return False
+        _, delimiter, fields = status.rpartition(") ")
+        return bool(delimiter and fields.split() and fields.split()[0] in {"Z", "X"})
+    finally:
+        os.close(descriptor)
 
 
 def _active_references(root):
@@ -50,6 +83,15 @@ def _active_references(root):
         except (FileNotFoundError, ProcessLookupError):
             continue  # Process terminated during inspection.
         except PermissionError as error:
+            # Procfs can revoke access while an owned process exits. Only a
+            # fresh disappearance or verified exit permits continuing; a live
+            # process (including a reused PID) remains a fail-closed refusal.
+            try:
+                process.stat()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if _process_exit_confirmed(process):
+                continue
             raise CleanupRefused("cannot inspect an owned process: " + process.name) from error
     return active
 
