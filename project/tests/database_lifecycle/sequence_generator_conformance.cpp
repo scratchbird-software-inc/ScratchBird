@@ -1,5 +1,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -13,6 +15,7 @@
 #include "database_lifecycle.hpp"
 #include "core/uuid/uuid.hpp"
 #include <map>
+#include <set>
 
 #include <chrono>
 #include <cstdlib>
@@ -26,6 +29,8 @@ namespace {
 namespace seq_api = scratchbird::engine::internal_api;
 using scratchbird::tests::FixtureUuid;
 std::map<std::string, std::map<std::uint64_t, seq_api::EngineRequestContext>> contexts;
+std::map<std::string, seq_api::EngineRequestContext> owners;
+std::set<std::filesystem::path> owned_directories;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -69,15 +74,26 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path TestPath(std::string_view label) {
-  return std::filesystem::temp_directory_path() /
-         ("sb_dblc_013ah_" + std::string(label) + "_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+  const auto identity = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, CurrentUnixMillis());
+  Require(identity.ok(), "sequence fixture directory identity allocation failed");
+  const auto directory = std::filesystem::temp_directory_path() /
+      ("sb_sequence_" + scratchbird::core::uuid::UuidToString(identity.value.value));
+  Require(std::filesystem::create_directory(directory),
+          "sequence fixture directory must be newly created");
+  std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+  owned_directories.insert(directory);
+  return directory / (std::string(label) + ".sbdb");
 }
 
 void Cleanup(const std::filesystem::path& path) {
   contexts.erase(path.string());
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.sequence_generator_events", ignored);
+  owners.erase(path.string());
+  Require(owned_directories.contains(path.parent_path()),
+          "sequence cleanup target is not an owned fixture directory");
+  if (!std::filesystem::exists(path)) return;
+  std::filesystem::remove_all(path.parent_path());
+  owned_directories.erase(path.parent_path());
 }
 
 seq_api::EngineRequestContext Context(const std::filesystem::path& path,
@@ -94,18 +110,16 @@ seq_api::EngineRequestContext Context(const std::filesystem::path& path,
         scratchbird::core::platform::UuidKind::filespace, FixtureUuid(1295, 2)).value;
     config.page_size = 16384;
     config.creation_unix_epoch_millis = CurrentUnixMillis();
-    config.allow_minimal_resource_bootstrap = true;
-    config.require_resource_seed_pack = false;
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(config);
     Require(scratchbird::storage::database::CreateDatabaseFile(config).ok(), "sequence fixture database create failed");
+    owners.emplace(path.string(), scratchbird::tests::BootstrapFixtureOwnerContext(config));
   }
-  seq_api::EngineRequestContext context;
-  context.database_path = path.string();
-  context.database_uuid = FixtureUuid(1295, 1);
-  context.principal_uuid = FixtureUuid(1295, 3);
+  Require(owners.contains(path.string()), "sequence fixture has no admitted bootstrap owner");
+  auto context = owners.at(path.string());
   context.session_uuid = FixtureUuid(1295, 1000 + tx);
   context.request_id = "sequence-fixture";
-  context.security_context_present = true;
   context.cluster_authority_available = cluster_authority;
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   seq_api::EngineBeginTransactionRequest begin;
   begin.context = context;
   begin.isolation_level = "SNAPSHOT";
@@ -114,6 +128,7 @@ seq_api::EngineRequestContext Context(const std::filesystem::path& path,
   context.transaction_uuid = begun.transaction_uuid;
   context.local_transaction_id = begun.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
   transactions.emplace(tx, context);
   return context;
 }
@@ -463,6 +478,10 @@ void TestMgaRetentionInteraction() {
 }  // namespace
 
 int main() {
+  const auto configured = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "sequence_generator_conformance");
+  Require(configured.ok(), "sequence fixture memory admission failed");
   TestCacheWindowPersistenceAndRecovery();
   TestRollbackAndReusableTransactionSemantics();
   TestRestartAlterDropAndExhaustion();

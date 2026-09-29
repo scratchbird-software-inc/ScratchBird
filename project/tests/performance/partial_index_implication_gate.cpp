@@ -73,6 +73,9 @@ opt::IndexStats BasePartialIndex(const scratchbird::core::platform::Uuid& relati
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
+  // Positive component fixture: this index supplies ordered-range access.
+  // The family label alone is deliberately insufficient to grant it.
+  stats.ordered_range_supported = true;
   stats.descriptor_digest = "desc:partial:v1";
   stats.collation_identity = "unicode.casefold.det";
   stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1486, 405)};
@@ -296,7 +299,7 @@ bool OptimizerRouteConsumesCoreProof() {
       [&](const opt::PlanCandidate& candidate) {
         return candidate.candidate_id == "CAND-OPT-INDEX" && candidate.index_uuid == index.index_uuid;
       });
-  return Require(found != candidates.end(),
+  if (!(Require(found != candidates.end(),
                  "access path candidate using partial index was missing") &&
          Require(found->cost.selectable,
                  "partial index access path was refused after proof") &&
@@ -305,7 +308,26 @@ bool OptimizerRouteConsumesCoreProof() {
                  "access path did not carry core proof reason") &&
          Require(Has(found->acceptance_reasons,
                      "base_row_mga_recheck_required=true"),
-                 "access path did not carry MGA recheck evidence");
+                 "access path did not carry MGA recheck evidence"))) return false;
+
+  // Predicate implication must never substitute for physical route support.
+  request.candidate_indexes.front().ordered_range_supported = false;
+  const auto missing_capability = opt::GenerateFullAccessPathCandidates(request);
+  const auto refused = std::find_if(missing_capability.begin(), missing_capability.end(),
+      [&](const opt::PlanCandidate& candidate) {
+        return candidate.candidate_id == "CAND-OPT-INDEX-REFUSED" &&
+               candidate.index_uuid == index.index_uuid;
+      });
+  return Require(refused != missing_capability.end(),
+                 "partial predicate proof supplied absent physical range capability") &&
+         Require(!refused->cost.selectable &&
+                     Has(refused->refusal_reasons, "index_predicate_mismatch"),
+                 "missing ordered-range capability was not refused exactly") &&
+         Require(std::none_of(missing_capability.begin(), missing_capability.end(),
+                     [&](const opt::PlanCandidate& candidate) {
+                       return candidate.index_uuid == index.index_uuid && candidate.cost.selectable;
+                     }),
+                 "a selectable fallback reused the unsupported index");
 }
 
 bool OptimizerRouteRefusesUnsafeCoreProof() {
