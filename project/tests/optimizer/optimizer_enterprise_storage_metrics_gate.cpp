@@ -52,6 +52,7 @@ page::OptimizerStorageMetricSample GoodSample() {
   sample.source_generation = 9;
   sample.page_count = 100;
   sample.resident_pages = 40;
+  sample.resident_bytes = 40ull * 32768ull;
   sample.pinned_pages = 3;
   sample.dirty_pages = 4;
   sample.writeback_pages = 2;

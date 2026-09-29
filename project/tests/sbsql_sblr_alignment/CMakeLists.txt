@@ -2347,6 +2347,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     crud_binary_identity_test.cpp
     ../../src/engine/internal_api/behavior_support/api_behavior_identity.cpp
     ../../src/engine/internal_api/crud_support/crud_identity.cpp)
+  add_executable(sbsql_sblr_alignment_page_cache_metric_exact_producer
+    page_cache_metric_exact_producer_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_page_cache_metric_exact_producer PRIVATE sb_core_metrics sb_storage_page)
+  add_test(NAME sbsql_sblr_alignment_page_cache_metric_exact_producer
+    COMMAND sbsql_sblr_alignment_page_cache_metric_exact_producer)
+  set_tests_properties(sbsql_sblr_alignment_page_cache_metric_exact_producer PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;metrics;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_metric_binary_label_key
     metric_binary_label_key_test.cpp
     ../../src/core/metrics/metric_producer.cpp

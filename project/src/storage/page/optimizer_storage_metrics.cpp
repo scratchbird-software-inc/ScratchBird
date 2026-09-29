@@ -122,6 +122,10 @@ bool EmptyRequiredField(const OptimizerStorageMetricSample& sample,
     if (field != nullptr) *field = "evidence_digest";
     return true;
   }
+  if (!sample.resident_bytes) {
+    if (field != nullptr) *field = "resident_bytes";
+    return true;
+  }
   return false;
 }
 
@@ -338,10 +342,10 @@ OptimizerStorageMetricPublishResult PublishOptimizerStorageMetrics(
         "storage_filespace");
 
   Push(&result, metrics::PublishPageCacheSnapshot(
-                    static_cast<double>(sample.resident_pages),
-                    static_cast<double>(sample.resident_pages * 4096u),
-                    static_cast<double>(sample.pinned_pages),
-                    static_cast<double>(sample.dirty_pages),
+                    sample.resident_pages,
+                    *sample.resident_bytes,
+                    sample.pinned_pages,
+                    sample.dirty_pages,
                     sample.database_uuid, sample.filespace_uuid,
                     sample.page_family));
   Push(&result, metrics::PublishFilespaceCapacitySnapshot(

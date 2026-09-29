@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <iterator>
-#include <mutex>
 #include <utility>
 
 namespace scratchbird::core::metrics {
@@ -43,94 +42,9 @@ MetricLabelSet MergeLabels(MetricLabelSet first, MetricLabelSet second) {
   return first;
 }
 
-MetricLabelDescriptor ContractLabel(std::string key, bool required = false, bool sensitive = false) {
-  return {std::move(key), required, sensitive};
-}
-
-MetricLabelDescriptor UuidContractLabel(std::string key, bool required = false, bool sensitive = false) {
-  return {std::move(key), required, sensitive, MetricLabelType::system_uuid};
-}
-
-MetricDescriptor PageCacheContextDescriptor(std::string family,
-                                            MetricType type,
-                                            MetricUnit unit,
-                                            std::string help) {
-  MetricDescriptor descriptor;
-  descriptor.family = std::move(family);
-  descriptor.type = type;
-  descriptor.unit = unit;
-  descriptor.namespace_path = "sys.metrics.storage.pages.cache";
-  descriptor.help = std::move(help);
-  descriptor.producer_owner = "storage_page";
-  descriptor.security_family = "OBS_METRICS_READ_FAMILY";
-  descriptor.visibility = MetricVisibilityScope::family;
-  descriptor.readiness = MetricReadiness::implemented;
-  descriptor.labels = {ContractLabel("component", true),
-                       UuidContractLabel("database_uuid", true),
-                       UuidContractLabel("filespace_uuid", true),
-                       ContractLabel("page_family", true),
-                       ContractLabel("context", true),
-                       ContractLabel("result", true),
-                       ContractLabel("reason", true)};
-  return descriptor;
-}
-
-void EnsurePageCacheContextMetricDescriptors() {
-  static std::once_flag once;
-  std::call_once(once, [] {
-    auto& registry = DefaultMetricRegistry();
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_resident_pages",
-        MetricType::gauge,
-        MetricUnit::count,
-        "Resident page-cache pages by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_resident_bytes",
-        MetricType::gauge,
-        MetricUnit::bytes,
-        "Resident page-cache bytes by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_pinned_pages",
-        MetricType::gauge,
-        MetricUnit::count,
-        "Pinned page-cache pages by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_dirty_pages",
-        MetricType::gauge,
-        MetricUnit::count,
-        "Dirty page-cache pages by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_admissions_total",
-        MetricType::counter,
-        MetricUnit::count,
-        "Page-cache admissions by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_reuses_total",
-        MetricType::counter,
-        MetricUnit::count,
-        "Page-cache ring or slot reuses by IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_evictions_total",
-        MetricType::counter,
-        MetricUnit::count,
-        "Page-cache evictions by owning IO context."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_protected_normal_hot_skips_total",
-        MetricType::counter,
-        MetricUnit::count,
-        "Normal hot page eviction skips caused by scan-resistant IO contexts."));
-    (void)registry.RegisterDescriptor(PageCacheContextDescriptor(
-        "sb_page_cache_context_refusals_total",
-        MetricType::counter,
-        MetricUnit::count,
-        "Page-cache scan-lane admissions refused by bounded ring or budget pressure."));
-  });
-}
-
 }  // namespace
 
 std::vector<MetricProducerContractStatus> MetricProducerContractsForOwner(const std::string& producer_owner) {
-  EnsurePageCacheContextMetricDescriptors();
   std::vector<MetricProducerContractStatus> contracts;
   for (const auto& descriptor : DefaultMetricRegistry().Descriptors(true)) {
     if (descriptor.producer_owner != producer_owner) {
@@ -888,10 +802,10 @@ MetricValidationResult RecordPageAllocationFailure(std::string error_class,
                           "storage_page");
 }
 
-MetricValidationResult PublishPageCacheSnapshot(double resident_pages,
-                                                double resident_bytes,
-                                                double pinned_pages,
-                                                double dirty_pages,
+MetricValidationResult PublishPageCacheSnapshot(u64 resident_pages,
+                                                u64 resident_bytes,
+                                                u64 pinned_pages,
+                                                u64 dirty_pages,
                                                 MetricUuid database_uuid,
                                                 MetricUuid filespace_uuid,
                                                 std::string page_family) {
@@ -930,7 +844,7 @@ MetricValidationResult RecordPageCacheEviction(MetricUuid database_uuid,
                                   {"filespace_uuid", std::move(filespace_uuid)},
                                   {"page_family", std::move(page_family)},
                                   {"result", std::move(result)}}),
-                          1.0,
+                          u64{1},
                           "storage_page");
 }
 
@@ -971,20 +885,14 @@ MetricLabelSet PageCacheContextLabels(MetricUuid database_uuid,
 }
 
 MetricValidationResult RecordPageCacheContextCounter(const std::string& family,
-                                                     double count,
+                                                     u64 count,
                                                      MetricUuid database_uuid,
                                                      MetricUuid filespace_uuid,
                                                      std::string page_family,
                                                      std::string context,
                                                      std::string result,
                                                      std::string reason) {
-  EnsurePageCacheContextMetricDescriptors();
-  if (count == 0.0) {
-    return MetricOk();
-  }
-  auto status = RequireRange(family, count, 0.0, 1.0e18);
-  if (!status.ok) { return status; }
-  status = RequirePageCacheContextIdentity(database_uuid, filespace_uuid, page_family, context, result, reason);
+  auto status = RequirePageCacheContextIdentity(database_uuid, filespace_uuid, page_family, context, result, reason);
   if (!status.ok) { return status; }
   return IncrementCounter(family,
                           PageCacheContextLabels(std::move(database_uuid),
@@ -999,17 +907,16 @@ MetricValidationResult RecordPageCacheContextCounter(const std::string& family,
 
 }  // namespace
 
-MetricValidationResult PublishPageCacheContextSnapshot(double resident_pages,
-                                                       double resident_bytes,
-                                                       double pinned_pages,
-                                                       double dirty_pages,
+MetricValidationResult PublishPageCacheContextSnapshot(u64 resident_pages,
+                                                       u64 resident_bytes,
+                                                       u64 pinned_pages,
+                                                       u64 dirty_pages,
                                                        MetricUuid database_uuid,
                                                        MetricUuid filespace_uuid,
                                                        std::string page_family,
                                                        std::string context,
                                                        std::string result,
                                                        std::string reason) {
-  EnsurePageCacheContextMetricDescriptors();
   auto status = RequirePageCacheContextIdentity(database_uuid, filespace_uuid, page_family, context, result, reason);
   if (!status.ok) { return status; }
   auto labels = PageCacheContextLabels(database_uuid,
@@ -1027,7 +934,7 @@ MetricValidationResult PublishPageCacheContextSnapshot(double resident_pages,
   return SetGauge("sb_page_cache_context_dirty_pages", std::move(labels), dirty_pages, "storage_page");
 }
 
-MetricValidationResult RecordPageCacheContextAdmission(double admissions,
+MetricValidationResult RecordPageCacheContextAdmission(u64 admissions,
                                                        MetricUuid database_uuid,
                                                        MetricUuid filespace_uuid,
                                                        std::string page_family,
@@ -1044,7 +951,7 @@ MetricValidationResult RecordPageCacheContextAdmission(double admissions,
                                        std::move(reason));
 }
 
-MetricValidationResult RecordPageCacheContextReuse(double reuses,
+MetricValidationResult RecordPageCacheContextReuse(u64 reuses,
                                                    MetricUuid database_uuid,
                                                    MetricUuid filespace_uuid,
                                                    std::string page_family,
@@ -1061,7 +968,7 @@ MetricValidationResult RecordPageCacheContextReuse(double reuses,
                                        std::move(reason));
 }
 
-MetricValidationResult RecordPageCacheContextEviction(double evictions,
+MetricValidationResult RecordPageCacheContextEviction(u64 evictions,
                                                       MetricUuid database_uuid,
                                                       MetricUuid filespace_uuid,
                                                       std::string page_family,
@@ -1078,7 +985,7 @@ MetricValidationResult RecordPageCacheContextEviction(double evictions,
                                        std::move(reason));
 }
 
-MetricValidationResult RecordPageCacheContextProtectedNormalHotSkip(double skips,
+MetricValidationResult RecordPageCacheContextProtectedNormalHotSkip(u64 skips,
                                                                     MetricUuid database_uuid,
                                                                     MetricUuid filespace_uuid,
                                                                     std::string page_family,
@@ -1095,7 +1002,7 @@ MetricValidationResult RecordPageCacheContextProtectedNormalHotSkip(double skips
                                        std::move(reason));
 }
 
-MetricValidationResult RecordPageCacheContextRefusal(double refusals,
+MetricValidationResult RecordPageCacheContextRefusal(u64 refusals,
                                                      MetricUuid database_uuid,
                                                      MetricUuid filespace_uuid,
                                                      std::string page_family,

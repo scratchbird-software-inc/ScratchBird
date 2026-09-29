@@ -12,6 +12,7 @@
 #include "metric_registry.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,9 @@ struct OptimizerStorageMetricSample {
   std::uint64_t source_generation = 0;
   std::uint64_t page_count = 0;
   std::uint64_t resident_pages = 0;
+  // Measured by the cache; mixed page sizes forbid pages * a fixed size.
+  // Absence is not a zero-byte measurement.
+  std::optional<std::uint64_t> resident_bytes;
   std::uint64_t pinned_pages = 0;
   std::uint64_t dirty_pages = 0;
   std::uint64_t writeback_pages = 0;

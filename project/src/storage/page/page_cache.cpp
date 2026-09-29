@@ -509,13 +509,13 @@ void EvictUnlocked(PageCacheLedger* ledger,
 void PublishSnapshot(const PageCacheSnapshot& snapshot) {
   for (const auto& scope : snapshot.metric_scopes) {
     (void)scratchbird::core::metrics::PublishPageCacheSnapshot(
-        static_cast<double>(scope.resident_pages), static_cast<double>(scope.resident_bytes),
-        static_cast<double>(scope.pinned_pages), static_cast<double>(scope.dirty_pages),
+        scope.resident_pages, scope.resident_bytes,
+        scope.pinned_pages, scope.dirty_pages,
         scope.database_uuid, scope.filespace_uuid, "all");
     for (const auto& context : scope.contexts) {
       (void)scratchbird::core::metrics::PublishPageCacheContextSnapshot(
-          static_cast<double>(context.resident_pages), static_cast<double>(context.resident_bytes),
-          static_cast<double>(context.pinned_pages), static_cast<double>(context.dirty_pages),
+          context.resident_pages, context.resident_bytes,
+          context.pinned_pages, context.dirty_pages,
           scope.database_uuid, scope.filespace_uuid, "all", context.context_name,
           "current", "snapshot");
     }
@@ -527,7 +527,7 @@ void RecordAdmissionMetric(const PageCacheEntry& scope, PageCacheIoContext conte
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextAdmission(
-      static_cast<double>(count),
+      count,
       scope.database_uuid.value,
       scope.filespace_uuid.value,
       "all",
@@ -541,7 +541,7 @@ void RecordReuseMetric(const PageCacheEntry& scope, PageCacheIoContext context, 
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextReuse(
-      static_cast<double>(count),
+      count,
       scope.database_uuid.value,
       scope.filespace_uuid.value,
       "all",
@@ -555,7 +555,7 @@ void RecordProtectedSkipMetric(const PageCacheEntry& scope, PageCacheIoContext c
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextProtectedNormalHotSkip(
-      static_cast<double>(count),
+      count,
       scope.database_uuid.value,
       scope.filespace_uuid.value,
       "all",
@@ -569,7 +569,7 @@ void RecordRefusalMetric(const PageCacheEntry& scope, PageCacheIoContext context
     return;
   }
   (void)scratchbird::core::metrics::RecordPageCacheContextRefusal(
-      static_cast<double>(count),
+      count,
       scope.database_uuid.value,
       scope.filespace_uuid.value,
       "all",
@@ -589,7 +589,7 @@ void RecordContextEvictionMetrics(const PageCacheScopedEvictions& evictions,
       (void)scratchbird::core::metrics::RecordPageCacheEviction(
           database_uuid, filespace_uuid, "all", aggregate_result ? aggregate_result : reason);
     (void)scratchbird::core::metrics::RecordPageCacheContextEviction(
-        static_cast<double>(count), database_uuid, filespace_uuid, "all",
+        count, database_uuid, filespace_uuid, "all",
         PageCacheIoContextName(context), result, reason);
   }
 }
