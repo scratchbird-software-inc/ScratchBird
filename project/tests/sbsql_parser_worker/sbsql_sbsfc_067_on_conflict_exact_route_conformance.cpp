@@ -9,6 +9,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -474,6 +475,8 @@ void SeedSchemaAndTable(const api::EngineRequestContext& context) {
   for (auto& column : table_request.columns)
     scratchbird::tests::BindFixtureColumnDatatype(
         context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(
+      context, table_request.columns.front());
   table_request.indexes.push_back(UniqueIdIndex());
   auto table = Dispatch(context,
                         Envelope("ddl.create_table",

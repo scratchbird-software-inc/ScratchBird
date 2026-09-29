@@ -8,6 +8,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "catalog/name_registry.hpp"
@@ -247,9 +248,11 @@ api::EngineCreateTableResult CreateTableComponent(
     api::EngineCreateTableRequest request) {
   request.operation_id = "engine.op.ddl_create_table";
   request.context = context;
-  for (auto& column : request.table_columns)
+  for (auto& column : request.table_columns) {
     scratchbird::tests::BindFixtureColumnDatatype(context,
         scratchbird::core::datatypes::CanonicalTypeId::character, column);
+    scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
+  }
   return api::EngineCreateTable(request);
 }
 

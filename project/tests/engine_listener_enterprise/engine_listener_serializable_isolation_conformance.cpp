@@ -1,6 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/catalog_text_binding_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -367,6 +368,8 @@ ApiFixture MakeApiFixture() {
     column.descriptor.type_uuid = binding.row.type_uuid;
     column.descriptor.encoded_descriptor = definition.columns[ordinal].second;
     column.nullable = ordinal != 0;
+    if (ordinal == 0)
+      scratchbird::tests::BindFixtureUtf8BinaryTextResources(metadata, column);
     table_request.table_columns.push_back(std::move(column));
   }
   const auto table_created = api::EngineCreateTable(table_request);
@@ -467,6 +470,30 @@ bool SerializableIntegratedEngineApiProof() {
   ok = Require(unique_seed.ok, "real primary-key fixture seed failed") && ok;
   Commit(unique_writer);
   auto duplicate_writer = Begin(fixture, "eler021-unique-duplicate", "read_committed");
+  // The proof compares physical comparison keys, not the lossless logical
+  // tuple. Read the actual committed membership independently of the encoder
+  // and retain an explicit logical-byte oracle for the seeded value.
+  const auto committed_index = api::LoadMgaRelationStoreState(duplicate_writer);
+  const std::string logical_key("SBCLKEY2\1\0\0\0\0\3\0\0\0" "001", 20);
+  std::size_t physical_key_bytes = 0;
+  std::size_t matching_memberships = 0;
+  if (committed_index.ok) {
+    for (const auto& entry : committed_index.state.index_entries) {
+      if (entry.index_uuid != fixture.primary_index_uuid ||
+          entry.table_uuid != fixture.table_uuid ||
+          entry.creator_tx != unique_writer.local_transaction_id ||
+          entry.payload_value != logical_key ||
+          !entry.key_value.starts_with("SBKOBIN:") ||
+          entry.key_value.size() <= 8 ||
+          (entry.entry_kind != "insert" && entry.entry_kind != "exact")) continue;
+      ++matching_memberships;
+      physical_key_bytes = entry.key_value.size() - 8;
+    }
+  }
+  ok = Require(committed_index.ok && matching_memberships == 1,
+      "primary-key seed did not persist exactly one bound comparison membership") && ok;
+  const auto expected_proof = "bulk_unique_proof_persisted_conflict:key_bytes=" +
+      std::to_string(physical_key_bytes) + ":key_redacted=true";
   const auto duplicate = InsertRow(fixture, duplicate_writer, "001", "duplicate");
   if (duplicate.ok || FirstDiagnosticCode(duplicate) != "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION") {
     PrintDiagnostics(duplicate);
@@ -498,12 +525,13 @@ bool SerializableIntegratedEngineApiProof() {
   bool exact_primary_proof = false;
   for (const auto& diagnostic : duplicate.diagnostics) {
     if (diagnostic.code != "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION" ||
-        diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=20:key_redacted=true") ==
+        diagnostic.detail.find(expected_proof) ==
             std::string::npos) continue;
     for (const auto& [field, identity] : diagnostic.identity_fields)
       if (field == "index_uuid" && identity == fixture.primary_index_uuid)
         exact_primary_proof = true;
   }
+  if (!exact_primary_proof) PrintDiagnostics(duplicate);
   ok = Require(exact_primary_proof,
       "primary-key refusal lost its actual redacted proof or binary support-index identity") && ok;
   const auto retained = SelectRange(fixture, duplicate_writer, "001", "001");
