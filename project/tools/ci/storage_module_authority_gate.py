@@ -12,6 +12,9 @@ INTERNAL_API = PROJECT_ROOT / "src" / "engine" / "internal_api"
 CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
+    "dml/direct_bulk_index_order.cpp": (
+        240, 10_000, "SB_ENGINE_DIRECT_BULK_INDEX_ORDER_AUTHORITY",
+    ),
     "dml/direct_bulk_scalar_projection.cpp": (
         190, 7_000, "SB_ENGINE_DIRECT_BULK_SCALAR_PROJECTION_AUTHORITY",
     ),
@@ -176,6 +179,13 @@ MODULES = {
 }
 
 FORBIDDEN_BY_MODULE = {
+    "dml/direct_bulk_index_order.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "ofstream",
+    ),
     "dml/direct_bulk_scalar_projection.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",

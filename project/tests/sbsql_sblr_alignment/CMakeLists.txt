@@ -10161,6 +10161,17 @@ add_test(NAME sbsql_sblr_alignment_page_selection_binary COMMAND sbsql_sblr_alig
 set_tests_properties(sbsql_sblr_alignment_page_selection_binary PROPERTIES
   TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;storage_codec;mga;not_runtime_acceptance")
 
+add_executable(sbsql_sblr_alignment_direct_bulk_index_order
+  direct_bulk_index_order_test.cpp
+  ../../src/engine/internal_api/dml/direct_bulk_index_order.cpp)
+target_compile_features(sbsql_sblr_alignment_direct_bulk_index_order PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_direct_bulk_index_order PRIVATE ../../src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_direct_bulk_index_order PRIVATE sb_core_index sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_direct_bulk_index_order COMMAND sbsql_sblr_alignment_direct_bulk_index_order)
+set_tests_properties(sbsql_sblr_alignment_direct_bulk_index_order PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;index_order;component_regression;not_runtime_acceptance"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_direct_bulk_uuid_payload direct_bulk_uuid_payload_test.cpp)
 target_compile_features(sbsql_sblr_alignment_direct_bulk_uuid_payload PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_direct_bulk_uuid_payload PRIVATE sb_engine_internal_api)
