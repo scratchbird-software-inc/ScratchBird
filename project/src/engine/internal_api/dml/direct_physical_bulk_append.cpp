@@ -1165,12 +1165,12 @@ using detail::kDirectSbkoBinaryPrefix;
 bool DirectIndexValuesContainNull(
     const CrudIndexRecord& index,
     const CrudValueFields& values) {
-  for (const auto& column : DirectIndexKeyColumns(index)) {
-    const auto* value = DirectFieldValuePtr(values, column);
-    if (value == nullptr || !value->valid() ||
-        (!value->isPresent() && !value->isSqlNull()))
-      throw std::invalid_argument("unresolved_index_component");
-    if (DirectNullValue(*value)) return true;
+  // Expression envelopes are projections, not row field names. Inspect the
+  // resolved key state so lower/length/sum and ordinary keys share NULL rules.
+  for (const auto& key : CrudIndexKeysForValues(index, values)) {
+    const auto contains_null = StoredLogicalKeyHasNull(key);
+    if (!contains_null) throw std::invalid_argument("unresolved_index_component");
+    if (*contains_null) return true;
   }
   return false;
 }
@@ -6923,12 +6923,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                 "insert_batch_memory_budget_refused");
 	      }
 	      const auto validation_start = row_stage_timer_start();
-	      const auto batch_constraint =
-	          ValidateInsertBatchConstraints(batch_context, *state, prepared);
-	      if (batch_constraint.error) {
+	      const auto storage_shape =
+	          ValidatePreparedInsertStorageShape(batch_context, prepared);
+	      if (storage_shape.error) {
 	        return DirectBulkFailure(request,
-	                                 batch_constraint,
-	                                 "insert_batch_constraint_refused");
+	                                 storage_shape,
+	                                 "insert_storage_shape_refused");
 	      }
 	      add_row_stage_elapsed(row_stage_validation_us, validation_start);
 
@@ -7472,12 +7472,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "insert_batch_memory_budget_refused");
     }
     const auto validation_start = row_stage_timer_start();
-    const auto batch_constraint =
-        ValidateInsertBatchConstraints(batch_context, *state, prepared);
-    if (batch_constraint.error) {
+    const auto storage_shape =
+        ValidatePreparedInsertStorageShape(batch_context, prepared);
+    if (storage_shape.error) {
       return DirectBulkFailure(request,
-                               batch_constraint,
-                               "insert_batch_constraint_refused");
+                               storage_shape,
+                               "insert_storage_shape_refused");
     }
     add_row_stage_elapsed(row_stage_validation_us, validation_start);
 

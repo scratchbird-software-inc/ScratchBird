@@ -1,4 +1,7 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/published_ddl_table_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -87,8 +90,11 @@ struct Fixture {
   std::string index_profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
   bool index_unique = false;
   platform::u64 salt = 0;
+  api::EngineRequestContext owner;
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
 
   ~Fixture() {
+    session.reset();
     if (!dir.empty()) {
       std::error_code ignored;
       std::filesystem::remove_all(dir, ignored);
@@ -138,15 +144,11 @@ api::CrudIndexRecord SecondaryIndex(const Fixture& fixture,
 
 api::EngineRequestContext BaseContext(const Fixture& fixture,
                                       std::string request_id) {
-  api::EngineRequestContext context;
+  auto context = fixture.owner;
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database_uuid;
-  context.principal_uuid =
-      NativeIdentity(platform::UuidKind::principal, fixture.salt + 100);
-  context.session_uuid =
-      NativeIdentity(platform::UuidKind::object, fixture.salt + 101);
   context.security_context_present = true;
   context.identifier_profile_uuid = "sbsql_v3";
   context.language_context.language_tag = "en";
@@ -207,8 +209,7 @@ Fixture MakeFixture(std::string name,
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);
   create.creation_unix_epoch_millis = UniqueMillis();
-  create.require_resource_seed_pack = false;
-  create.allow_minimal_resource_bootstrap = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -218,12 +219,21 @@ Fixture MakeFixture(std::string name,
   Require(created.ok(), "ORH-210 database create failed");
 
   fixture.database_uuid = create.database_uuid.value;
+  fixture.owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(fixture.owner);
   fixture.table_uuid = NativeIdentity(platform::UuidKind::object, salt + 10);
   fixture.index_uuid = NativeIdentity(platform::UuidKind::object, salt + 11);
 
   auto metadata = Begin(fixture, "orh-batch4-metadata");
-  const auto table = api::AppendMgaTableMetadata(metadata, Table(fixture, metadata));
-  Require(!table.error, "ORH-210 table metadata append failed");
+  const auto table = scratchbird::tests::PublishDdlTableFixture(
+      metadata, Table(fixture, metadata), {"character", "character"});
+  const auto descriptor = api::LoadMgaRelationStorageDescriptor(metadata, table.table_uuid);
+  Require(table.table_uuid == fixture.table_uuid && descriptor.ok &&
+              descriptor.descriptor.columns.size() == 2 &&
+              std::ranges::all_of(descriptor.descriptor.columns, [](const auto& column) {
+                return !column.column_uuid.is_nil() && !column.value_descriptor.descriptor_uuid.is_nil();
+              }), "ORH-210 table publication lacks bound columns");
+  fixture.owner.current_schema_uuid = metadata.current_schema_uuid;
   const auto index =
       api::AppendMgaIndexMetadata(metadata, SecondaryIndex(fixture, metadata));
   Require(!index.error, "ORH-210 index metadata append failed");
@@ -241,12 +251,12 @@ std::vector<api::EngineRowValue> Rows(std::string prefix, int count) {
   return rows;
 }
 
-api::EngineExecuteNativeBulkIngestRequest NativeRequest(
+scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> NativeRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows) {
-  api::EngineExecuteNativeBulkIngestRequest request;
-  request.context = context;
+  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest>
+      request(*fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
@@ -307,7 +317,9 @@ void RequireDiagnostic(const api::EngineApiResult& result,
   Require(!result.diagnostics.empty(), message);
   if (result.diagnostics.front().code != code) {
     std::cerr << "expected=" << code
-              << " actual=" << result.diagnostics.front().code << '\n';
+              << " actual=" << result.diagnostics.front().code
+              << " key=" << result.diagnostics.front().message_key
+              << " detail=" << result.diagnostics.front().detail << '\n';
   }
   Require(result.diagnostics.front().code == code, message);
 }
@@ -426,11 +438,16 @@ void TestNativeBulkRuntimeAndAllocatorEvidence() {
                       "direct_physical"),
           "ORH-210 direct physical lane evidence missing");
   Require(HasEvidence(result.evidence, "direct_bulk_uuid_generation_mode",
-                      "batched"),
+                      "binary_shared_crypto"),
           "ORH-210 batched UUID evidence missing");
   Require(HasEvidence(result.evidence, "direct_bulk_version_uuid_generation_mode",
-                      "batched"),
+                      "binary_shared_crypto"),
           "ORH-210 batched version UUID evidence missing");
+  Require(HasEvidence(result.evidence, "direct_bulk_uuid_batch_row_capacity", "4") &&
+              HasEvidence(result.evidence, "direct_bulk_uuid_batch_version_capacity", "4") &&
+              HasEvidence(result.evidence, "direct_bulk_generated_row_uuids", "4") &&
+              HasEvidence(result.evidence, "direct_bulk_caller_row_uuids", "0"),
+          "ORH-210 shared binary issuer did not publish the complete row/version cohort");
   Require(HasEvidence(result.evidence, "direct_mga_append",
                       "row_version_batch"),
           "ORH-210 direct MGA append evidence missing");
@@ -724,13 +741,19 @@ void TestDeferredIndexBulkPublishFailClosedSpoofAndFamilies() {
   const auto reference = api::EngineExecuteNativeBulkIngest(reference_request);
   RequireDiagnostic(
       reference,
-      "SB_ORH_DEFERRED_INDEX_BULK_PUBLISH.FAMILY_ROUTE_UNSUPPORTED",
+      "SBLR.OPERATION_UNSUPPORTED",
       "ORH-211 reference-emulated family was accepted as authority");
-  Require(HasEvidence(reference.evidence,
-                      "orh_deferred_index_bulk_publish_family_blocked",
-                      std::string(api::kCrudIndexFamilyReferenceEmulated) +
-                          "=not_ordered_write_family"),
-          "ORH-211 reference-emulated family blocker evidence missing");
+  // This unreleased family is rejected by statement rollback admission before
+  // any deferred-index route can run. The admitted hash family above still
+  // exercises the ordered-route refusal itself.
+  Require(reference.diagnostics.front().message_key ==
+              "mga.savepoint.mutation_provider_unavailable" &&
+              reference.diagnostics.front().detail ==
+              "index_membership:unregistered_or_unreleased_family:reference_emulated",
+          "ORH-211 reference-emulated family blocker identity missing");
+  const auto refused_state = LoadedState(reference_context);
+  Require(refused_state.row_versions.empty() && refused_state.index_entries.empty(),
+          "ORH-211 unreleased reference family published row/index mutations");
   Rollback(reference_context);
 
   auto unique_fixture =
@@ -761,6 +784,8 @@ void TestDeferredIndexBulkPublishFailClosedSpoofAndFamilies() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "optimizer_runtime_hot_path_orh_210_211_212_gate");
   TestNativeBulkRuntimeAndAllocatorEvidence();
   TestDeferredIndexBulkPublishConsumesLiveRoute();
   TestDeferredIndexBulkPublishRollbackVisibility();

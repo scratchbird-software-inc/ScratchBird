@@ -604,8 +604,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
   auto exception_failure = [&](std::string reason) {
     const bool allocation_failure =
         reason == "direct_physical_allocation_failure";
-    return rollback_failure(
-        NativeFailure(
+    auto failure = NativeFailure(
             request,
             MakeEngineApiDiagnostic(
                 allocation_failure ? "RESOURCE.BUDGET_EXCEEDED"
@@ -615,8 +614,10 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
                     : "dml.native_bulk_ingest.executor_exception",
                 reason,
                 true),
-            true),
-        std::move(reason));
+            true);
+    // Build the diagnostic before moving its reason to rollback handling;
+    // argument evaluation order must not empty the published detail.
+    return rollback_failure(std::move(failure), std::move(reason));
   };
 
   if (scan_scalar_fallback || dml_trigger_runtime::HasActiveTableTriggerDescriptors(

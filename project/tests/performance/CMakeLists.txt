@@ -1609,6 +1609,7 @@ target_compile_features(optimizer_runtime_hot_path_orh_210_211_212_gate PRIVATE 
 target_link_libraries(
   optimizer_runtime_hot_path_orh_210_211_212_gate
   PRIVATE
+    sb_engine
     sb_engine_internal_api
     sb_storage_database
 )

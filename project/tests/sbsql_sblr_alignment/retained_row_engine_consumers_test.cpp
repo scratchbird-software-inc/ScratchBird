@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
+#include "dml/insert_batch.hpp"
 #include <iostream>
 #include <stdexcept>
 namespace api = scratchbird::engine::internal_api;
@@ -105,6 +106,39 @@ void RowCodecStateAdmission() {
   }
 }
 
+void PreparedInsertStorageAdmission() {
+  api::InsertBatchContext context;
+  api::InsertRowEncoderColumnPlan first, second;
+  first.column_name = "a"; second.column_name = "b";
+  context.row_encoder_plan.columns = {first, second};
+  api::PreparedInsertRow row;
+  const auto admits = [&] {
+    return !api::ValidatePreparedInsertStorageShape(context, row).error;
+  };
+  for (const auto& value : std::vector<api::CrudStoredValue>{
+           "", "<NULL>", "<DEFAULT>", std::string(16, '\0'), api::CrudStoredValue::SqlNull()}) {
+    row.values = {{"b", value}, {"a", "unchanged"}};
+    const auto before = row.values;
+    Check(admits() && row.values == before,
+          "prepared insert rejected/reinterpreted resolved payload or reordered fields");
+  }
+  for (unsigned tag = 1; tag < 256; ++tag) {
+    row.values = {{"a", "ok"}, {"b", {static_cast<api::EngineValueState>(tag), "<NULL>"}}};
+    Check(!admits(), "prepared insert admitted a non-value state with marker payload");
+    row.values[1].second.bytes.clear();
+    Check(admits() == (tag == 1), "prepared insert admitted unresolved payload-free state");
+  }
+  row.values = {{"a", "ok"}};
+  Check(!admits(), "prepared insert admitted missing column");
+  row.values.push_back({"a", "duplicate"});
+  Check(!admits(), "prepared insert admitted duplicate column");
+  row.values[1].first = "unbound";
+  Check(!admits(), "prepared insert admitted unbound column");
+  row.values[1].first = "b";
+  row.values.push_back({"extra", "extra"});
+  Check(!admits(), "prepared insert admitted extra column");
+}
+
 void FramedVectorScoring() {
   api::EngineUuid table;
   table.bytes = {1, 144, 10, 9, 0, 124, 112, 0, 128, 0, 0, 0, 0, 0, 0, 1};
@@ -152,6 +186,7 @@ int main() {
   try {
     RetainedStateConsumers();
     RowCodecStateAdmission();
+    PreparedInsertStorageAdmission();
     FramedVectorScoring();
     std::cout << "PASS retained engine index, predicate and result-state consumers\n";
   } catch (const std::exception& error) {

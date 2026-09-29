@@ -318,9 +318,10 @@ EngineApiDiagnostic ValidateStrictBulkLoadEligibility(const InsertBatchContext& 
                                                       const CrudTableRecord& table);
 EngineApiDiagnostic ValidateInsertBatchMemoryBudget(const InsertBatchContext& context,
                                                     std::uint64_t projected_bytes);
-EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext& context,
-                                                   const MgaRelationReadView& state,
-                                                   const PreparedInsertRow& row);
+// Final storage-shape admission, after the route's defaults, domains, logical
+// constraints and security checks. It does not replace any of those owners.
+EngineApiDiagnostic ValidatePreparedInsertStorageShape(const InsertBatchContext& context,
+                                                       const PreparedInsertRow& row);
 EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
                                              const CrudIndexRecord& index);
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,

@@ -71,6 +71,21 @@ void Require(bool condition, std::string_view message) {
   if (!condition) Fail(message);
 }
 
+api::CrudStoredValue ScalarLogicalPayload(std::string_view frame) {
+  // Independent SBCLKEY2 oracle: one component, explicit state, exact length.
+  // Do not use the production decoder to validate the production encoder.
+  Require(frame.size() >= 17 && frame.substr(0, 8) == "SBCLKEY2" &&
+              frame[8] == 1 && frame[9] == 0 && frame[10] == 0 && frame[11] == 0,
+          "CDP-040 scalar logical payload frame header/arity invalid");
+  const auto state = static_cast<unsigned char>(frame[12]);
+  std::uint32_t width = 0;
+  for (unsigned i = 0; i != 4; ++i)
+    width |= static_cast<std::uint32_t>(static_cast<unsigned char>(frame[13 + i])) << (8 * i);
+  Require(state <= 1 && width == frame.size() - 17 && (state == 0 || width == 0),
+          "CDP-040 scalar logical payload state/length invalid");
+  return {static_cast<api::EngineValueState>(state), std::string(frame.substr(17))};
+}
+
 memory::AllocationPolicy MemoryPolicy() {
   memory::AllocationPolicy policy;
   policy.policy_name = "cdp_native_bulk_ingest_api_gate";
@@ -1666,9 +1681,11 @@ void TestTypedInt64IndexKeysUseBinaryOrder() {
     if (entry.index_uuid != fixture.index_uuid) {
       continue;
     }
-    if (entry.payload_value == "2") {
+    const auto payload = ScalarLogicalPayload(entry.payload_value);
+    Require(payload.isPresent(), "CDP-040 int64 index payload became NULL");
+    if (payload.bytes == "2") {
       key_two = entry.key_value;
-    } else if (entry.payload_value == "10") {
+    } else if (payload.bytes == "10") {
       key_ten = entry.key_value;
     }
   }
@@ -1711,7 +1728,9 @@ void TestTypedInt64IndexKeysUseFullSignedSortOrder() {
   std::map<std::string, std::string> keys_by_value;
   for (const auto& entry : loaded.state.index_entries) {
     if (entry.index_uuid == fixture.index_uuid) {
-      keys_by_value[entry.payload_value] = entry.key_value;
+      const auto payload = ScalarLogicalPayload(entry.payload_value);
+      Require(payload.isPresent(), "CDP-040 signed int64 index payload became NULL");
+      keys_by_value[payload.bytes] = entry.key_value;
     }
   }
   const std::vector<std::string> order = {"-257", "-1", "0", "2", "256"};
@@ -1753,9 +1772,10 @@ void TestTypedNullIndexKeyUsesNullOrder() {
     if (entry.index_uuid != fixture.index_uuid) {
       continue;
     }
-    if (entry.payload_value == "<NULL>") {
+    const auto payload = ScalarLogicalPayload(entry.payload_value);
+    if (payload.isSqlNull()) {
       key_null = entry.key_value;
-    } else if (entry.payload_value == "0") {
+    } else if (payload.isPresent() && payload.bytes == "0") {
       key_zero = entry.key_value;
     }
   }
@@ -2198,19 +2218,20 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
   for (const auto& entry : stored.state.index_entries) {
     if (entry.index_uuid != fixture.index_uuid) continue;
     ++entries;
-    Require(entry.payload_value.size() == 16 &&
-                expected_values.contains(entry.payload_value),
+    const auto payload = ScalarLogicalPayload(entry.payload_value);
+    Require(payload.isPresent() && payload.bytes.size() == 16 &&
+                expected_values.contains(payload.bytes),
             "UUID index logical payload is not exact binary16");
     scratchbird::core::index::IndexKeyEncodingComponent component;
     component.type_descriptor_uuid = descriptor;
-    component.payload.assign(entry.payload_value.begin(), entry.payload_value.end());
+    component.payload.assign(payload.bytes.begin(), payload.bytes.end());
     const auto encoded = scratchbird::core::index::EncodeIndexKey({component}, {});
     Require(encoded.ok(), "independent canonical UUID key encoding failed");
     const std::string expected = std::string("SBKOBIN:") +
         std::string(reinterpret_cast<const char*>(encoded.encoded.data()), encoded.encoded.size());
     Require(entry.key_value == expected,
             "stored UUID key differs from independent canonical binary encoding");
-    actual_values.insert(entry.payload_value);
+    actual_values.insert(payload.bytes);
   }
   Require(entries == values.size() && actual_values == expected_values,
           "UUID index replay omitted or duplicated a value");
@@ -2322,7 +2343,8 @@ void TestNativeUuidBinaryIndexAndValues(bool unique = true) {
     const auto proof = std::find_if(refused.diagnostics.begin(), refused.diagnostics.end(),
         [](const auto& diagnostic) {
           return diagnostic.code == "CLI.CONSTRAINT_UNIQUE_VIOLATION" &&
-              diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=16:key_redacted=true") !=
+              // 17 bytes of scalar SBCLKEY2 framing plus the exact 16-byte UUID.
+              diagnostic.detail.find("bulk_unique_proof_persisted_conflict:key_bytes=33:key_redacted=true") !=
                   std::string::npos;
         });
     Require(proof != refused.diagnostics.end(), "UUID duplicate lost its real binary-key proof detail");

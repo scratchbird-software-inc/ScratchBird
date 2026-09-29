@@ -1473,9 +1473,32 @@ EngineApiDiagnostic ValidateInsertBatchMemoryBudget(const InsertBatchContext& co
   return OkDiagnostic();
 }
 
-EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext&,
-                                                   const MgaRelationReadView&,
-                                                   const PreparedInsertRow&) {
+EngineApiDiagnostic ValidatePreparedInsertStorageShape(const InsertBatchContext& context,
+                                                       const PreparedInsertRow& row) {
+  const auto& columns = context.row_encoder_plan.columns;
+  if (row.values.size() != columns.size()) {
+    return MakeInvalidRequestDiagnostic("dml.insert_rows", "prepared_row_column_count_mismatch");
+  }
+  // Inputs can be reordered by defaults/domain owners. Validate membership and
+  // uniqueness without using order as column authority or changing payloads.
+  for (std::size_t ordinal = 0; ordinal != row.values.size(); ++ordinal) {
+    const auto& [name, value] = row.values[ordinal];
+    if (std::none_of(columns.begin(), columns.end(), [&](const auto& column) {
+          return column.column_name == name;
+        })) {
+      return MakeInvalidRequestDiagnostic("dml.insert_rows", "prepared_row_column_not_bound");
+    }
+    for (std::size_t previous = 0; previous != ordinal; ++previous) {
+      if (row.values[previous].first == name) {
+        return MakeInvalidRequestDiagnostic("dml.insert_rows", "prepared_row_duplicate_column");
+      }
+    }
+    // LOB locators are created by the storage owner after this boundary; an
+    // incoming locator, unresolved DEFAULT or hidden/error cell is not data.
+    if (!value.valid() || (!value.isPresent() && !value.isSqlNull())) {
+      return MakeInvalidRequestDiagnostic("dml.insert_rows", "prepared_row_unresolved_value_state");
+    }
+  }
   return OkDiagnostic();
 }
 

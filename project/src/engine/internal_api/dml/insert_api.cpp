@@ -4294,9 +4294,9 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     if (memory_validation.error) {
       return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", memory_validation);
     }
-    const auto constraint_check = ValidateInsertBatchConstraints(batch_context, state, prepared);
-    if (constraint_check.error) {
-      return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", constraint_check);
+    const auto storage_shape = ValidatePreparedInsertStorageShape(batch_context, prepared);
+    if (storage_shape.error) {
+      return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", storage_shape);
     }
     EngineUuid version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;

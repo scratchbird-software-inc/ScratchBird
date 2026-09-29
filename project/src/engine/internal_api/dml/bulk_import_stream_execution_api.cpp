@@ -834,7 +834,8 @@ class CanonicalCsvDecoder final {
         if (!ParseCanonicalInt32(parsed.text, &value)) {
           return Fail("int32_conversion_invalid");
         }
-        typed.encoded_value = parsed.text;
+        // Native ingestion owns one canonical payload. Keeping the CSV text
+        // beside the typed bytes creates competing value authorities.
         const std::uint32_t bits = static_cast<std::uint32_t>(value);
         typed.binary_value.resize(4);
         for (unsigned byte = 0; byte < 4; ++byte) {
@@ -849,7 +850,6 @@ class CanonicalCsvDecoder final {
             parsed.text.size() > column.max_inline_bytes) {
           return Fail("character_constraint_invalid");
         }
-        typed.encoded_value = parsed.text;
         typed.binary_value.assign(parsed.text.begin(), parsed.text.end());
       } else {
         return Fail("converter_not_admitted");
@@ -1045,9 +1045,32 @@ bool ExactRowValues(const CrudRowVersionRecord& actual,
   if (actual_values.size() != expected.fields.size()) return false;
   for (const auto& [name, typed] : expected.fields) {
     const auto found = actual_values.find(name);
-    const auto expected_value = CrudTypedValuePayload(typed);
-    if (found == actual_values.end() || found->second != expected_value) {
-      return false;
+    if (found == actual_values.end() || !found->second.valid()) return false;
+    if (typed.isSqlNull()) {
+      if (!found->second.isSqlNull()) return false;
+      continue;
+    }
+    if (!found->second.isPresent() || typed.state != EngineValueState::value ||
+        !typed.encoded_value.empty()) return false;
+    // The CSV converter produces canonical typed bytes, while the retained
+    // int32 row profile is decimal. Compare in the converter's typed domain;
+    // an absent display cache is not an empty value and not a NULL marker.
+    const auto type = CanonicalBulkColumnType(typed.descriptor.canonical_type_name);
+    if (type == scratchbird::core::datatypes::CanonicalTypeId::int32) {
+      std::int32_t number = 0;
+      if (!ParseCanonicalInt32(found->second.bytes, &number) ||
+          typed.binary_value.size() != 4) return false;
+      const auto bits = static_cast<std::uint32_t>(number);
+      for (unsigned byte = 0; byte != 4; ++byte)
+        if (typed.binary_value[byte] != static_cast<std::uint8_t>(bits >> (byte * 8))) return false;
+    } else if (type == scratchbird::core::datatypes::CanonicalTypeId::character) {
+      if (found->second.bytes.size() != typed.binary_value.size() ||
+          !std::equal(typed.binary_value.begin(), typed.binary_value.end(),
+                      found->second.bytes.begin(), [](std::uint8_t a, char b) {
+                        return a == static_cast<std::uint8_t>(b);
+                      })) return false;
+    } else {
+      return false; // Not a type admitted by CanonicalCsvDecoder.
     }
   }
   return true;
