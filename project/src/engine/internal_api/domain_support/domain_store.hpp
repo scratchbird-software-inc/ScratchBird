@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "crud_support/retained_row_value.hpp"
 #include "api_diagnostics.hpp"
 
 #include <cstdint>
@@ -72,14 +73,14 @@ struct DomainValueValidationResult {
 struct DomainRowValidationResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
   std::vector<EngineEvidenceReference> evidence;
 };
 
 struct DomainReadPolicyResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
   std::vector<EngineEvidenceReference> evidence;
 };
 
@@ -105,13 +106,13 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
 DomainRowValidationResult ApplyDomainRulesToCrudValues(
     const EngineRequestContext& context,
     const std::vector<std::pair<std::string, std::string>>& table_columns,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     std::uint64_t observer_tx,
     ConstraintDmlValidationCache* cache = nullptr);
 DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
     const EngineRequestContext& context,
     const std::vector<std::pair<std::string, std::string>>& table_columns,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     std::uint64_t observer_tx);
 bool DomainHasCrudDependencies(const EngineRequestContext& context,
                                const EngineUuid& domain_uuid,

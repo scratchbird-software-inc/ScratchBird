@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/bulk_import_stream_execution_api.hpp"
+#include "crud_support/native_value_payload.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "dml/bulk_import_column_digest.hpp"
 
 #include "core/hash/hash_digest.hpp"
@@ -1036,15 +1038,14 @@ BulkSha ExecutorEvidence(const BulkImportStreamAllocation& allocation,
 bool ExactRowValues(const CrudRowVersionRecord& actual,
                     const EngineRowValue& expected) {
   if (actual.deleted) return false;
-  std::map<std::string, std::string> actual_values;
+  std::map<std::string, CrudStoredValue> actual_values;
   for (const auto& [name, value] : actual.values) {
     if (!actual_values.emplace(name, value).second) return false;
   }
   if (actual_values.size() != expected.fields.size()) return false;
   for (const auto& [name, typed] : expected.fields) {
     const auto found = actual_values.find(name);
-    const std::string expected_value =
-        typed.isSqlNull() ? std::string("<NULL>") : typed.encoded_value;
+    const auto expected_value = CrudTypedValuePayload(typed);
     if (found == actual_values.end() || found->second != expected_value) {
       return false;
     }

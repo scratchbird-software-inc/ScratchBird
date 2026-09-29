@@ -1155,12 +1155,13 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     if (base_row.values.size() != 2 ||
         base_row.values[0].first != "body" ||
         base_row.values[1].first != "category" ||
-        !ValidBoundSearchUtf8(base_row.values[1].second) ||
-        base_row.values[1].second.size() > 4096) {
+        !base_row.values[0].second.isPresent() || !base_row.values[1].second.isPresent() ||
+        !ValidBoundSearchUtf8(base_row.values[1].second.bytes) ||
+        base_row.values[1].second.bytes.size() > 4096) {
       return refuse("SB_MODEL_SEARCH_DOCUMENT_INVALID_V1",
                     "visible search row does not match BODY/CATEGORY TEXT");
     }
-    const auto analysis = AnalyzeBoundSearchAscii(base_row.values[0].second);
+    const auto analysis = AnalyzeBoundSearchAscii(base_row.values[0].second.bytes);
     if (!analysis.ok) {
       return refuse(analysis.input_too_large || analysis.token_too_large
                         ? "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1"
@@ -1179,9 +1180,9 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
     std::uint64_t row_memory = sizeof(BoundSearchDocument);
     if (!CheckedBoundSearchAdd(row_memory, base_row.row_uuid.bytes.size(),
                                &row_memory) ||
-        !CheckedBoundSearchAdd(row_memory, base_row.values[0].second.size(),
+        !CheckedBoundSearchAdd(row_memory, base_row.values[0].second.bytes.size(),
                                &row_memory) ||
-        !CheckedBoundSearchAdd(row_memory, base_row.values[1].second.size(),
+        !CheckedBoundSearchAdd(row_memory, base_row.values[1].second.bytes.size(),
                                &row_memory) ||
         !CheckedBoundSearchAdd(accounted_memory, row_memory,
                                &accounted_memory) ||
@@ -1194,7 +1195,7 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
       ++filtered_rows;
       continue;
     }
-    documents.push_back({base_row.row_uuid, base_row.values[1].second,
+    documents.push_back({base_row.row_uuid, base_row.values[1].second.bytes,
                          analysis.tokens});
   }
   if (documents.size() > request.maximum_candidates) {

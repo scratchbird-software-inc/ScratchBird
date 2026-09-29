@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "dml/delete_candidate_mutation.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "dml/datatype_operator_registry_projection.hpp"
@@ -99,16 +100,19 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
       callback_failure = Error("visible_source_identity", "DML.DELETE_FAILED"); return false;
     }
     if (!all_rows) {
-      const std::string* value = nullptr;
+      const CrudStoredValue* value = nullptr;
       for (const auto& field : row.values) if (Fold(field.first) == predicate_column) {
         if (value) { callback_failure = Error("duplicate_predicate_column", "DATATYPE.DESCRIPTOR.INVALID"); return false; }
         value = &field.second;
       }
       if (!value) { callback_failure = Error("missing_predicate_column", "DATATYPE.DESCRIPTOR.INVALID"); return false; }
-      if (*value == "<NULL>" && predicate_nullable) return true; // UNKNOWN does not qualify.
+      if (value->isSqlNull() && value->valid() && predicate_nullable) return true; // UNKNOWN does not qualify.
+      if (!value->isPresent()) {
+        callback_failure = Error("invalid_predicate_value_state", "DATATYPE.DESCRIPTOR.INVALID"); return false;
+      }
       std::int64_t parsed = 0;
-      const auto converted = std::from_chars(value->data(), value->data() + value->size(), parsed);
-      if (converted.ec != std::errc{} || converted.ptr != value->data() + value->size() ||
+      const auto converted = std::from_chars(value->bytes.data(), value->bytes.data() + value->bytes.size(), parsed);
+      if (converted.ec != std::errc{} || converted.ptr != value->bytes.data() + value->bytes.size() ||
           (b.predicate.records[1].canonical_value.size() == 4 &&
            (parsed < std::numeric_limits<std::int32_t>::min() ||
             parsed > std::numeric_limits<std::int32_t>::max()))) {
@@ -180,7 +184,8 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
       // payload before retaining a request (including multi-entry profiles).
       if (dynamic > budget / 1024) return fail(Error("index_key_expansion_workspace_bound"));
       const auto keys = CrudIndexKeysForValues(plan.index, row.values);
-      const auto payload = CrudFieldValue(row.values, plan.index.column_name);
+      const auto payload = EncodeCrudValues({{plan.index.column_name,
+          CrudFieldValue(row.values, plan.index.column_name)}});
       for (const auto& key : keys) {
         if (plan.action == DeleteIndexMaintenanceAction::tombstone_delta_ledger) continue;
         if (retires.size() + deltas.size() + candidates.size() >= b.resource_budget.maximum_effects ||

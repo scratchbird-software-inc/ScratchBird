@@ -3220,10 +3220,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           output.residual_recheck_complete = true;
           output.base_row_mga_recheck_complete = true;
           output.security_recheck_complete = true;
-          const auto value_for = [](const api::CrudRowVersionRecord& row,
+          const auto cell_for = [](const api::CrudRowVersionRecord& row,
                                     const std::string_view name)
-              -> const std::string* {
-            const std::string* value = nullptr;
+              -> const api::CrudStoredValue* {
+            const api::CrudStoredValue* value = nullptr;
             for (const auto& [field, candidate] : row.values) {
               if (field != name) continue;
               if (value != nullptr) return nullptr;
@@ -3231,16 +3231,25 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
             }
             return value;
           };
+          const auto value_for = [&](const api::CrudRowVersionRecord& row,
+                                     std::string_view name) -> const std::string* {
+            const auto* value = cell_for(row, name);
+            return value && value->valid() && value->isPresent() ? &value->bytes : nullptr;
+          };
           for (std::size_t row_ordinal = 0;
                row_ordinal < read.visible_rows.size(); ++row_ordinal) {
             const auto& row = read.visible_rows[row_ordinal];
             exec::DescriptorTuple tuple;
             for (const auto& column : prepared_copy.columns) {
-              const auto* value = value_for(row, column.stable_name);
+              const auto* value = cell_for(row, column.stable_name);
+              if (value == nullptr || !value->valid() ||
+                  (!value->isPresent() && !value->isSqlNull()))
+                return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
+                            "composition provider row lacks a resolved column");
               // Decode the retained row state before projecting its payload.
               // UUID-typed columns are user data; only the independently
               // retained row/provider identities below require system UUIDv7.
-              const bool is_null = value == nullptr || *value == "<NULL>";
+              const bool is_null = value->isSqlNull();
               if (is_null && !column.nullable) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "composition provider row lacks a non-null column");
@@ -3248,9 +3257,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               api::EngineTypedValue typed;
               typed.descriptor = column.descriptor;
               if (!api::RestoreStoredScalarPayloadV1(
-                      is_null ? std::string_view{} : std::string_view(*value),
-                      is_null ? api::EngineValueState::sql_null
-                              : api::EngineValueState::value, &typed)) {
+                      value->bytes, value->state, &typed)) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "stored scalar has no valid native payload");
               }

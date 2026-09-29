@@ -38,7 +38,10 @@ int main() {
   head.transaction_uuid=Id(c::UuidKind::transaction,7);head.creator_local_transaction_id=8;head.row_version=9;
   head.hot_filespace_class="hot_row";head.cold_row_filespace_class="cold_row";
   head.hot_fields.push_back({"id",std::string(reinterpret_cast<const char*>(head.row_uuid.value.bytes.data()),16)});
-  bytes=p::SerializeHotColdRowHead(head);Check(bytes.starts_with("SBHCR002"));
+  head.hot_fields.push_back({"null", "", false, false, false, true});
+  head.hot_fields.push_back({"empty", ""});
+  head.hot_fields.push_back({"marker", "<NULL>"});
+  bytes=p::SerializeHotColdRowHead(head);Check(bytes.starts_with("SBHCR003"));
   p::payload_binary::Reader reader{bytes,8};c::TypedUuid id;
   Check(reader.Uuid(id)&&id.value==head.row_uuid.value);
   Check(reader.Uuid(id)&&id.value==head.owner_object_uuid.value);
@@ -46,7 +49,15 @@ int main() {
   std::uint64_t number=0;std::string text;
   Check(reader.U64(number)&&number==8);Check(reader.U64(number)&&number==9);
   Check(reader.String(text)&&text=="hot_row");Check(reader.String(text)&&text=="cold_row");
-  Check(reader.U64(number)&&number==1);Check(reader.String(text)&&text=="id");
-  Check(reader.String(text)&&text.size()==16);Check(reader.U64(number)&&number==0);
+  Check(reader.U64(number)&&number==4);
+  for (const auto& field : head.hot_fields) {
+    Check(reader.cursor < bytes.size());
+    Check(static_cast<unsigned char>(bytes[reader.cursor++]) == (field.is_null ? 1 : 0));
+    Check(reader.String(text)&&text==field.field_name);
+    Check(reader.String(text)&&text==field.encoded_value);
+  }
+  Check(reader.U64(number)&&number==0);
   Check(reader.cursor==bytes.size());
+  head.hot_fields[1].encoded_value="<NULL>";
+  Check(p::SerializeHotColdRowHead(head).empty());
 }

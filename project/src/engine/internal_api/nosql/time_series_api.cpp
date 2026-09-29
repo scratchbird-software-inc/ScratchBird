@@ -740,7 +740,7 @@ bool AccountTimeSeriesCrudRowMemoryV1(const CrudRowVersionRecord& row,
   std::uint64_t value_bytes = 0;
   if (!CheckedTimeSeriesMultiply(
           static_cast<std::uint64_t>(row.values.capacity()),
-          sizeof(std::pair<std::string, std::string>), &value_bytes) ||
+          sizeof(CrudValueFields::value_type), &value_bytes) ||
       !CheckedTimeSeriesAdd(value_bytes, total) ||
       !CheckedTimeSeriesOwnedDynamicBytes(row.table_uuid, total) ||
       !CheckedTimeSeriesOwnedDynamicBytes(row.row_uuid, total) ||
@@ -751,7 +751,7 @@ bool AccountTimeSeriesCrudRowMemoryV1(const CrudRowVersionRecord& row,
   }
   for (const auto& [key, value] : row.values) {
     if (!CheckedTimeSeriesOwnedDynamicBytes(key, total) ||
-        !CheckedTimeSeriesOwnedDynamicBytes(value, total)) {
+        !CheckedTimeSeriesOwnedDynamicBytes(value.bytes, total)) {
       return false;
     }
   }
@@ -1926,6 +1926,8 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
     const std::string* tags = nullptr;
     const std::string* stored_value = nullptr;
     for (const auto& [name, field_value] : row.values) {
+      if (!field_value.isPresent()) return refuse("SB_MODEL_TIME_SERIES_VALUE_INVALID_V1",
+          "time-series stored row has a non-present value state");
       std::string const** destination = nullptr;
       if (name == "metric_uuid") destination = &metric;
       else if (name == "point_timestamp") destination = &timestamp;
@@ -1935,12 +1937,10 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
         return refuse("SB_MODEL_TIME_SERIES_VALUE_INVALID_V1",
                       "time-series stored row has an unknown or duplicated field");
       }
-      *destination = &field_value;
+      *destination = &field_value.bytes;
     }
     if (metric == nullptr || timestamp == nullptr || tags == nullptr ||
-        stored_value == nullptr || *metric == "<NULL>" ||
-        *timestamp == "<NULL>" || *tags == "<NULL>" ||
-        *stored_value == "<NULL>" ||
+        stored_value == nullptr ||
         metric->size() != 16) {
       return refuse("SB_MODEL_TIME_SERIES_IDENTITY_INVALID_V1",
                     "time-series selected row has null or invalid identity fields");

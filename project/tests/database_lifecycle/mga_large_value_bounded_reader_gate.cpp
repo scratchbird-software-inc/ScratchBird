@@ -105,7 +105,8 @@ int main() {
   run(checksum_corrupt, false, limit, limit, false);
   api::EngineUuid overflow_uuid;
   std::uint64_t checksum = 0, logical_size = 0;
-  expect(api::ReadMgaLargeValueLocator(row.values[0].second, &overflow_uuid, &checksum, &logical_size),
+  expect(row.values[0].second.valid() &&
+             api::ReadMgaLargeValueLocator(row.values[0].second.bytes, &overflow_uuid, &checksum, &logical_size),
          "fixture overflow locator did not preserve native identity");
   const auto reclaimed = api::EncodeMgaMetadataFields(
       {"SBMGL002", "LARGE_VALUE_RECLAIMED", "1", api::MetadataUuidBytes(overflow_uuid),

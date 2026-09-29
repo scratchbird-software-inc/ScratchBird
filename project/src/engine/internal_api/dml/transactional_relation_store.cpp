@@ -217,7 +217,7 @@ EngineApiDiagnostic ValidateMgaUniqueIndexesForRow(
     const MgaRelationReadView& view,
     const EngineUuid& table_uuid,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const EngineRequestContext& context) {
   return ValidateCrudUniqueIndexesForRow(view, table_uuid, row_uuid, values,
                                          context);

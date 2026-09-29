@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_locator.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -355,7 +356,7 @@ void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
       job->entries.reserve(job->entries.size() + keys.size());
     }
     const std::string payload =
-        CrudFieldValue(row.values, batch.index.column_name);
+        EncodeCrudValues({{batch.index.column_name, CrudFieldValue(row.values, batch.index.column_name)}});
     for (const auto& key : keys) {
       job->entries.push_back({table_uuid,
                               batch.index.index_uuid,
@@ -803,7 +804,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     std::vector<CrudRowVersionRecord>* rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+    const std::vector<CrudValueFields>*
         value_batch,
     std::vector<std::uint64_t>* written_event_sequences) {
   if (value_batch == nullptr) {
@@ -968,13 +969,13 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows) {
   return AppendRowVersionsReadOnly(
       rows,
-      static_cast<const std::vector<std::vector<std::pair<std::string, std::string>>>*>(
+      static_cast<const std::vector<CrudValueFields>*>(
           nullptr));
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+    const std::vector<CrudValueFields>*
         value_batch) {
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
@@ -1128,7 +1129,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
 EngineApiDiagnostic
 MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     const std::vector<CrudRowVersionRecord>& rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+    const std::vector<CrudValueFields>*
         value_batch,
     bool shared_key_order_known) {
   if (!impl_->prepared_row_sequences.empty()) {
@@ -1156,7 +1157,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
   std::uint64_t event_sequence = reservation.first;
   std::vector<std::string> encoded_key_cache;
   const auto row_values = [&](std::size_t index)
-      -> const std::vector<std::pair<std::string, std::string>>& {
+      -> const CrudValueFields& {
     return value_batch == nullptr ? rows[index].values : (*value_batch)[index];
   };
   if (!rows.empty()) {

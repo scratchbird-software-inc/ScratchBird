@@ -9,6 +9,7 @@
 #include "dml/hot_cold_row_split_api.hpp"
 
 #include "api_diagnostics.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -49,13 +50,11 @@ std::vector<page::HotColdFieldInput> BuildFieldInputs(
   for (const auto& [name, value] : request.row.fields) {
     page::HotColdFieldInput field;
     field.field_name = name;
-    if (value.descriptor.canonical_type_name == "uuid" && !value.isSqlNull()) {
-      if (!value.encoded_value.empty() || value.binary_value.size() != 16)
-        throw std::invalid_argument("hot_cold_uuid_binary16_required");
-      field.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
-    } else {
-      field.encoded_value = value.encoded_value;
-    }
+    const auto stored = CrudTypedValuePayload(value);
+    if (!stored.valid() || (!stored.isPresent() && !stored.isSqlNull()))
+      throw std::invalid_argument("hot_cold_unresolved_value_state");
+    field.is_null = stored.isSqlNull();
+    field.encoded_value = stored.bytes;
     if (const auto* policy = PolicyForField(request.field_policy, name)) {
       field.metadata = policy->metadata;
       field.indexed = policy->indexed;
@@ -110,7 +109,14 @@ EngineDmlHotColdSplitResult EngineDmlSplitHotColdRow(
     const EngineDmlHotColdSplitRequest& request) {
   constexpr const char* kOperation = "dml.hot_cold_row_split";
   EngineDmlHotColdSplitResult result;
-  auto split = page::SplitHotColdRow(BuildStorageRequest(request));
+  page::HotColdRowSplitRequest storage;
+  try {
+    storage = BuildStorageRequest(request);
+  } catch (const std::invalid_argument& error) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(kOperation, error.what());
+    return result;
+  }
+  auto split = page::SplitHotColdRow(storage);
   if (!split.ok()) {
     result.diagnostic = StorageDiagnostic(kOperation, split.diagnostic);
     AddStorageEvidence(split.evidence, &result.evidence);
@@ -122,10 +128,12 @@ EngineDmlHotColdSplitResult EngineDmlSplitHotColdRow(
   result.hot_head = std::move(split.hot_head);
   result.serialized_hot_head = page::SerializeHotColdRowHead(result.hot_head);
   for (const auto& hot : result.hot_head.hot_fields) {
-    result.storage_values.push_back({hot.field_name, hot.encoded_value});
+    result.storage_values.push_back({hot.field_name,
+        hot.is_null ? CrudStoredValue::SqlNull() : CrudStoredValue(hot.encoded_value)});
   }
   for (const auto& cold : result.hot_head.cold_fields) {
-    result.storage_values.push_back({cold.field_name, cold.descriptor_text});
+    result.storage_values.push_back({cold.field_name,
+        {EngineValueState::lob_handle, cold.descriptor_text}});
   }
   AddStorageEvidence(split.evidence, &result.evidence);
   result.evidence.push_back({"dml_hot_cold_split_routed", "true"});
@@ -179,7 +187,12 @@ EngineDmlHotColdUpdateResult EngineDmlUpdateHotColdRow(
   EngineDmlHotColdUpdateResult result;
   page::HotColdRowUpdateRequest storage;
   storage.previous_hot_head = request.previous_hot_head;
-  storage.replacement = BuildStorageRequest(request.replacement);
+  try {
+    storage.replacement = BuildStorageRequest(request.replacement);
+  } catch (const std::invalid_argument& error) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(kOperation, error.what());
+    return result;
+  }
   auto updated = page::UpdateHotColdRow(storage);
   if (!updated.ok()) {
     result.diagnostic = StorageDiagnostic(kOperation, updated.diagnostic);

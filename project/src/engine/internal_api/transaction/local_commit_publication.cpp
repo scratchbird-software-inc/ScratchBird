@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction/local_commit_publication.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "transaction/local_commit_publication_codec.hpp"
 #include "engine/authority_hash_material.hpp"
 
@@ -257,7 +258,7 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
         NativeMaterial({row.previous_version_uuid, std::to_string(row.previous_sequence)});
     const std::string postcondition = NativeMaterial({row.table_uuid, row.row_uuid,
         row.version_uuid, std::to_string(row.sequence),
-        std::string_view(row.deleted ? "deleted" : "live"), PairMaterial(row.values)});
+        std::string_view(row.deleted ? "deleted" : "live"), EncodeCrudValues(row.values)});
     mutations.push_back(Mutation(
         "row_version", kind, row.table_uuid, row.row_uuid,
         "database_page_or_mga_row_segment", row.previous_sequence,

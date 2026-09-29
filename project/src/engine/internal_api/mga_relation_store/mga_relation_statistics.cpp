@@ -44,6 +44,13 @@ std::uint64_t PairBytes(
   return total;
 }
 
+std::uint64_t PairBytes(const CrudValueFields& values) {
+  std::uint64_t total = 0;
+  for (const auto& [name, value] : values)
+    AddBytes(&total, 9 + TextBytes(name) + TextBytes(value.bytes));
+  return total;
+}
+
 std::uint64_t StringListBytes(const std::vector<std::string>& values) {
   std::uint64_t total = 0;
   for (const auto& value : values) {

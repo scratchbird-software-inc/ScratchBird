@@ -11,11 +11,11 @@
   }
   if (predicate.predicate_kind == "vector_exact_nearest" || predicate.predicate_kind == "vector_approx_nearest") {
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
-           !ParseCrudVector(entry.key_value).empty();
+           !ParseCrudVector(first_key).empty();
   }
   if (predicate.predicate_kind == "expression_equals") {
     return !predicate.bound_values.empty() && columns.size() == 1 && predicate.canonical_predicate_envelope == columns.front() &&
-           entry.key_value == predicate.bound_values.front().encoded_value;
+           CrudPredicateValuePayload(predicate.bound_values.front()) == first_key;
   }
   if (predicate.predicate_kind == "partial_index_probe") { return true; }
   return false;
@@ -164,15 +164,15 @@ bool IsApproximateCrudIndexFamily(const std::string& family) {
   return family == kCrudIndexFamilyVectorHnsw || family == kCrudIndexFamilyVectorIvf;
 }
 
-std::vector<std::pair<std::string, std::string>> RowValuePairs(const EngineRowValue& row) {
-  std::vector<std::pair<std::string, std::string>> values;
+CrudValueFields RowValuePairs(const EngineRowValue& row) {
+  CrudValueFields values;
   for (const auto& [field, typed] : row.fields) { values.push_back({field, CrudTypedValuePayload(typed)}); }
   return values;
 }
 
-std::size_t EncodedValueBytes(const std::vector<std::pair<std::string, std::string>>& values) {
+std::size_t EncodedValueBytes(const CrudValueFields& values) {
   std::size_t total = 0;
-  for (const auto& [key, value] : values) { total += key.size() + value.size(); }
+  for (const auto& [key, value] : values) { total += key.size() + value.bytes.size(); }
   return total;
 }
 
@@ -181,11 +181,11 @@ bool CrudValueIsLargeValueLocator(const std::string& value) {
 }
 
 EngineApiDiagnostic PersistCrudLargeValuesForRow(const EngineRequestContext& context,
-                                                 const std::string& table_uuid,
-                                                 const std::string& row_uuid,
-                                                 const std::string& version_uuid,
+                                                 const EngineUuid& table_uuid,
+                                                 const EngineUuid& row_uuid,
+                                                 const EngineUuid& version_uuid,
                                                  bool force_large_value,
-                                                 std::vector<std::pair<std::string, std::string>>* values,
+                                                 CrudValueFields* values,
                                                  std::vector<EngineEvidenceReference>* evidence) {
   (void)context;
   (void)table_uuid;
@@ -197,7 +197,7 @@ EngineApiDiagnostic PersistCrudLargeValuesForRow(const EngineRequestContext& con
   return MakeInvalidRequestDiagnostic("crud.large_value", "crud_large_value_store_retired_use_mga_relation_store");
 }
 
-std::string CrudFieldValue(const std::vector<std::pair<std::string, std::string>>& values, const std::string& field) {
+CrudStoredValue CrudFieldValue(const CrudValueFields& values, const std::string& field) {
   for (const auto& [key, value] : values) {
     if (key == field) { return value; }
   }
@@ -205,7 +205,7 @@ std::string CrudFieldValue(const std::vector<std::pair<std::string, std::string>
   for (const auto& [key, value] : values) {
     if (LowerAscii(key) == lowered_field) { return value; }
   }
-  return {};
+  return CrudStoredValue::Missing();
 }
 
 std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string, std::string>>& columns,

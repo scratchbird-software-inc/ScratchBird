@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/direct_bulk_append_cache.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "direct_bulk_index_cache_projection.hpp"
 
 #include <algorithm>
@@ -177,7 +178,7 @@ bool DirectBuildAppendIndexConflictCaches(
     const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const std::vector<CrudIndexRecord>& indexes,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
+    const std::vector<CrudValueFields>& logical_value_batch,
     std::map<EngineUuid, std::set<std::string>>* keys_by_index,
     std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>*
         entry_by_index_key) {
@@ -523,7 +524,8 @@ void DirectAppendIndexBatchesToCache(
         entry.family = batch.index.family;
         entry.entry_kind = "exact";
         entry.key_value = key;
-        entry.payload_value = CrudFieldValue(row.values, batch.index.column_name);
+        entry.payload_value = EncodeCrudValues({{batch.index.column_name,
+            CrudFieldValue(row.values, batch.index.column_name)}});
         entry.row_uuid = row.row_uuid;
         entry.version_uuid = row.version_uuid;
         DirectAppendIndexEntryToCacheRecord(&record,

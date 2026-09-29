@@ -524,7 +524,7 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
     if (count == 1) {
       const auto found = std::find_if(rows[0].values.begin(), rows[0].values.end(),
           [](const auto& field) { return field.first == "key_value"; });
-      Require(found != rows[0].values.end() && found->second == key,
+      Require(found != rows[0].values.end() && found->second.isPresent() && found->second.bytes == key,
               family, "savepoint restored wrong row value");
     }
     const auto& live_index = FindIndex(snapshot, fixture, family);
@@ -780,7 +780,9 @@ void ValidateMutationAdmissionRefusals() {
     valid.row_uuid = rows.front().row_uuid;
     valid.version_uuid = rows.front().version_uuid;
     valid.predecessor_version_uuid = rows.front().version_uuid;
-    valid.key_value = test_case.old_key;
+    const auto valid_keys = api::CrudIndexKeysForValues(valid.index, rows.front().values);
+    Require(valid_keys.size() == 1, "admission", "batch baseline logical key missing");
+    valid.key_value = valid_keys.front();
     const auto before = durable_bytes();
     for (const bool retire : {false, true}) {
       for (const bool empty_key : {false, true}) {
@@ -788,7 +790,11 @@ void ValidateMutationAdmissionRefusals() {
           auto invalid = valid;
           // A present empty key is valid. It must not rescue an invalid native
           // identity, and a bad suffix must never publish the valid prefix.
-          if (empty_key) invalid.key_value.clear();
+          if (empty_key) {
+            const auto empty_keys = api::CrudIndexKeysForValues(valid.index, {{"key_value", ""}});
+            Require(empty_keys.size() == 1, "admission", "present empty logical key missing");
+            invalid.key_value = empty_keys.front();
+          }
           if (invalid_field == 0) invalid.version_uuid = {};
           if (invalid_field == 1) invalid.index.family = "policy_blocked";
           if (invalid_field == 2) invalid.table_uuid = {};

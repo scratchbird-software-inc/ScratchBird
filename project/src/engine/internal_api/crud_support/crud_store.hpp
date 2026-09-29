@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "api_diagnostics.hpp"
+#include "retained_row_value.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -89,7 +90,7 @@ struct CrudRowVersionRecord {
   EngineUuid previous_version_uuid;
   std::uint64_t previous_sequence = 0;
   bool deleted = false;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
 };
 
 struct CrudIndexRecord {
@@ -291,17 +292,17 @@ std::string NormalizeCrudIndexProfile(const std::string& profile);
 std::string CrudIndexFamilyForProfile(const std::string& profile);
 bool IsSupportedCrudIndexProfile(const std::string& profile);
 bool IsApproximateCrudIndexFamily(const std::string& family);
-std::vector<std::pair<std::string, std::string>> RowValuePairs(const EngineRowValue& row);
-std::size_t EncodedValueBytes(const std::vector<std::pair<std::string, std::string>>& values);
+CrudValueFields RowValuePairs(const EngineRowValue& row);
+std::size_t EncodedValueBytes(const CrudValueFields& values);
 bool CrudValueIsLargeValueLocator(const std::string& value);
 EngineApiDiagnostic PersistCrudLargeValuesForRow(const EngineRequestContext& context,
                                                  const EngineUuid& table_uuid,
                                                  const EngineUuid& row_uuid,
                                                  const EngineUuid& version_uuid,
                                                  bool force_large_value,
-                                                 std::vector<std::pair<std::string, std::string>>* values,
+                                                 CrudValueFields* values,
                                                  std::vector<EngineEvidenceReference>* evidence);
-std::string CrudFieldValue(const std::vector<std::pair<std::string, std::string>>& values, const std::string& field);
+CrudStoredValue CrudFieldValue(const CrudValueFields& values, const std::string& field);
 std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string, std::string>>& columns,
                                         const std::string& column_name);
 bool CrudColumnDescriptorIsOpaqueRenderOnly(const std::string& descriptor);
@@ -339,7 +340,7 @@ std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationRead
 bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredicateEnvelope& predicate);
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate);
 std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
-                                                const std::vector<std::pair<std::string, std::string>>& values);
+                                                const CrudValueFields& values);
 std::string CrudIndexEntryLogicalKey(const CrudIndexRecord& index,
                                      const CrudIndexEntryRecord& entry);
 bool CrudIndexEntryLogicalKeyValid(const CrudIndexRecord& index,
@@ -372,7 +373,7 @@ std::string MakeCrudRowVersionEvent(std::uint64_t creator_tx,
                                     bool deleted,
                                     const EngineUuid& previous_version_uuid,
                                     std::uint64_t previous_sequence,
-                                    const std::vector<std::pair<std::string, std::string>>& values);
+                                    const CrudValueFields& values);
 std::string CrudIndexEvidenceId(const CrudIndexRecord& index,
                                 const EnginePredicateEnvelope& predicate,
                                 std::size_t candidate_count,
@@ -400,19 +401,19 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
 EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
                                                     const EngineUuid& table_uuid,
                                                     const EngineUuid& row_uuid,
-                                                    const std::vector<std::pair<std::string, std::string>>& values,
+                                                    const CrudValueFields& values,
                                                     const EngineRequestContext& context);
 EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& context,
                                                    const CrudIndexRecord& index,
                                                    const EngineUuid& row_uuid,
                                                    const EngineUuid& version_uuid,
-                                                   const std::vector<std::pair<std::string, std::string>>& values);
+                                                   const CrudValueFields& values);
 EngineApiDiagnostic AppendCrudIndexEntriesForRow(const EngineRequestContext& context,
                                                  const RelationReadSnapshot& state,
                                                  const EngineUuid& table_uuid,
                                                  const EngineUuid& row_uuid,
                                                  const EngineUuid& version_uuid,
-                                                 const std::vector<std::pair<std::string, std::string>>& values);
+                                                 const CrudValueFields& values);
 EngineApiDiagnostic ApplyCrudTemporaryOnCommitActions(const EngineRequestContext& context,
                                                       std::uint64_t local_transaction_id,
                                                       std::uint64_t* deleted_row_count);

@@ -174,6 +174,7 @@ bool StrictShortestUtf8(std::string_view value) {
 struct StoredFieldLookup {
   bool found = false;
   bool duplicate = false;
+  EngineValueState state = EngineValueState::missing;
   std::string_view value;
 };
 
@@ -187,7 +188,8 @@ StoredFieldLookup LookupStoredField(const CrudRowVersionRecord& row,
       continue;
     }
     result.found = true;
-    result.value = value;
+    result.state = value.state;
+    result.value = value.bytes;
   }
   return result;
 }
@@ -401,7 +403,13 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
         column.column_uuid);
     return false;
   }
-  const bool is_null = stored.value == "<NULL>";
+  const bool is_null = stored.state == EngineValueState::sql_null;
+  if ((is_null && !stored.value.empty()) ||
+      (!is_null && stored.state != EngineValueState::value)) {
+    *diagnostic = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                            "sblr.query_execute.storage_value_state_invalid", column.column_uuid);
+    return false;
+  }
   if (is_null) {
     if (!column.nullable) {
       *diagnostic = Diagnostic(

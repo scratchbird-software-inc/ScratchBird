@@ -479,7 +479,7 @@ void DmlIngestionPipeline::ProcessPreallocationBatch(
   EngineApiU64 row_count = 0;
   EngineApiU64 source_hint_pages = 0;
   EngineApiU64 source_hint_bytes = 0;
-  std::vector<const std::vector<std::pair<std::string, std::string>>*> index_value_refs;
+  std::vector<const CrudValueFields*> index_value_refs;
   index_value_refs.reserve(work.size());
   for (auto& item : work) {
     if (item.source_hint_pages != 0) {

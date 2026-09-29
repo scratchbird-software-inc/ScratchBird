@@ -105,16 +105,14 @@ std::string MergeSurfaceVariant(const EngineMergeRowsRequest& request) {
   return variant;
 }
 
-EngineTypedValue MergeTypedValueFromCrudValue(const std::string& encoded) {
+EngineTypedValue MergeTypedValueFromCrudValue(const CrudStoredValue& encoded) {
   EngineTypedValue value;
   value.descriptor.descriptor_kind = "scalar";
   value.descriptor.canonical_type_name = "text";
   value.descriptor.encoded_descriptor = "type=text";
-  if (encoded == "<NULL>") {
-    value.setState(EngineValueState::sql_null);
-    return value;
-  }
-  value.encoded_value = encoded;
+  if (!encoded.valid()) throw std::invalid_argument("invalid merge value state");
+  value.setState(encoded.state);
+  value.encoded_value = encoded.bytes;
   return value;
 }
 

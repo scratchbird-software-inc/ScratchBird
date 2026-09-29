@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "crud_support/native_value_payload.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "dml/update_column_identity.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -146,7 +148,7 @@ EngineUpdateRowsResult AllocationFailureResult(const EngineRequestContext& conte
 struct StagedUpdateRow {
   CrudRowVersionRecord row_record;
   CrudRowVersionRecord original_row;
-  std::vector<std::pair<std::string, std::string>> logical_values;
+  CrudValueFields logical_values;
   mga::HotStableRowHeadDecisionResult hot_plus_decision;
   struct IndexKeyState {
     bool materialized = false;
@@ -334,7 +336,7 @@ void NormalizeUpdatePredicateFromLoweredOptions(EngineUpdateRowsRequest* request
         predicate_value_type.empty() ? "text" : predicate_value_type;
     typed.descriptor.encoded_descriptor =
         "type=" + typed.descriptor.canonical_type_name;
-    typed.is_null = predicate_value == "<NULL>";
+    typed.is_null = predicate_value_type == "null";
     typed.encoded_value = typed.is_null ? std::string{} : predicate_value;
     if (typed.is_null) {
       typed.setState(EngineValueState::sql_null);
@@ -367,12 +369,12 @@ struct UpdateAssignmentExpression {
 
 bool ParseLongDoubleValue(const std::string& value, long double* out);
 bool ParseLongLongValue(const std::string& value, long long* out);
-const std::string* CachedCrudFieldValuePtr(
-    const std::vector<std::pair<std::string, std::string>>& values,
+const CrudStoredValue* CachedCrudFieldValuePtr(
+    const CrudValueFields& values,
     const std::string& field,
     std::size_t* cached_index);
-std::string* CachedMutableCrudFieldValuePtr(
-    std::vector<std::pair<std::string, std::string>>* values,
+CrudStoredValue* CachedMutableCrudFieldValuePtr(
+    CrudValueFields* values,
     const std::string& field,
     std::size_t* cached_index);
 
@@ -519,7 +521,7 @@ std::string EvaluateCaseGeThresholds(const std::string& source_value,
 }
 
 bool ParseLongDoubleValue(const std::string& value, long double* out) {
-  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  if (out == nullptr || value.empty()) { return false; }
   try {
     std::size_t consumed = 0;
     const long double parsed = std::stold(value, &consumed);
@@ -532,7 +534,7 @@ bool ParseLongDoubleValue(const std::string& value, long double* out) {
 }
 
 bool ParseLongLongValue(const std::string& value, long long* out) {
-  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  if (out == nullptr || value.empty()) { return false; }
   errno = 0;
   char* end = nullptr;
   const long long parsed = std::strtoll(value.c_str(), &end, 10);
@@ -565,63 +567,50 @@ std::string FormatArithmeticResult(long double value, bool integral) {
 
 EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
     std::vector<UpdateAssignmentExpression>* expressions,
-    std::vector<std::pair<std::string, std::string>>* values) {
-  if (values == nullptr) {
-    return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_values_required");
-  }
-  if (expressions == nullptr) {
-    return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_plan_required");
-  }
+    CrudValueFields* values) {
+  const auto invalid = [](const char* detail) {
+    return MakeInvalidRequestDiagnostic("dml.update_rows", detail);
+  };
+  if (!values) return invalid("assignment_values_required");
+  if (!expressions) return invalid("assignment_plan_required");
   for (auto& expression : *expressions) {
-    std::string new_value = expression.literal_value;
-    const std::string* source_value =
-        expression.source_column.empty()
-            ? nullptr
-            : CachedCrudFieldValuePtr(*values,
-                                      expression.source_column,
-                                      &expression.cached_source_index);
-    if (expression.operation == "copy_column") {
-      new_value = source_value == nullptr ? std::string{} : *source_value;
-    } else if (expression.operation == "concat") {
-      new_value = (source_value == nullptr ? std::string{} : *source_value) +
-                  expression.literal_value;
-    } else if (expression.operation == "case_ge_thresholds") {
-      bool case_ok = false;
-      new_value = EvaluateCaseGeThresholds(
-          source_value == nullptr ? std::string{} : *source_value,
-          expression,
-          &case_ok);
-      if (!case_ok) {
-        return MakeInvalidRequestDiagnostic("dml.update_rows",
-                                            "assignment_case_threshold_evaluation_failed");
-      }
-    } else if (expression.operation == "add" ||
-               expression.operation == "subtract" ||
-               expression.operation == "multiply") {
-      long double left = 0.0;
-      long double right = 0.0;
-      if (source_value == nullptr ||
-          !ParseLongDoubleValue(*source_value, &left) ||
-          !ParseLongDoubleValue(expression.literal_value, &right)) {
-        return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_arithmetic_requires_numeric_values");
-      }
-      long double computed = left + right;
-      if (expression.operation == "subtract") {
-        computed = left - right;
-      } else if (expression.operation == "multiply") {
-        computed = left * right;
-      }
-      new_value = FormatArithmeticResult(computed,
-                                         LooksIntegralText(*source_value) &&
-                                             LooksIntegralText(expression.literal_value));
+    CrudStoredValue new_value = expression.literal_type == "null"
+        ? CrudStoredValue::SqlNull() : CrudStoredValue(expression.literal_value);
+    const auto* source = expression.source_column.empty() ? nullptr
+        : CachedCrudFieldValuePtr(*values, expression.source_column, &expression.cached_source_index);
+    if (expression.operation != "literal") {
+      if (!source || !source->valid() || (!source->isPresent() && !source->isSqlNull()))
+        return invalid("assignment_source_value_state_invalid");
+      if (source->isSqlNull()) {
+        new_value = expression.operation == "case_ge_thresholds" && expression.case_fallback
+            ? CrudStoredValue(*expression.case_fallback) : CrudStoredValue::SqlNull();
+      } else if (expression.operation == "copy_column") {
+        new_value = *source;
+      } else if (expression.operation == "concat") {
+        new_value = source->bytes + expression.literal_value;
+      } else if (expression.operation == "case_ge_thresholds") {
+        bool ok = false;
+        new_value = EvaluateCaseGeThresholds(source->bytes, expression, &ok);
+        if (!ok) return invalid("assignment_case_threshold_evaluation_failed");
+      } else if (expression.operation == "add" || expression.operation == "subtract" ||
+                 expression.operation == "multiply") {
+        long double left = 0.0, right = 0.0;
+        if (!ParseLongDoubleValue(source->bytes, &left) ||
+            !ParseLongDoubleValue(expression.literal_value, &right))
+          return invalid("assignment_arithmetic_requires_numeric_values");
+        const long double computed = expression.operation == "subtract" ? left - right
+            : expression.operation == "multiply" ? left * right : left + right;
+        const bool integral = LooksIntegralText(source->bytes) && LooksIntegralText(expression.literal_value);
+        if (!std::isfinite(computed) ||
+            (integral && (computed < std::numeric_limits<long long>::min() ||
+                          computed > std::numeric_limits<long long>::max())))
+          return invalid("assignment_arithmetic_overflow");
+        new_value = FormatArithmeticResult(computed, integral);
+      } else return invalid("assignment_operation_invalid");
     }
-    std::string* target_value =
-        CachedMutableCrudFieldValuePtr(values,
-                                       expression.target_column,
-                                       &expression.cached_target_index);
-    if (target_value != nullptr) {
-      *target_value = std::move(new_value);
-    } else {
+    auto* target = CachedMutableCrudFieldValuePtr(values, expression.target_column, &expression.cached_target_index);
+    if (target) *target = std::move(new_value);
+    else {
       values->push_back({expression.target_column, std::move(new_value)});
       expression.cached_target_index = values->size() - 1;
     }
@@ -682,7 +671,7 @@ void NormalizeDeletePredicateFromLoweredOptions(EngineDeleteRowsRequest* request
         predicate_value_type.empty() ? "text" : predicate_value_type;
     typed.descriptor.encoded_descriptor =
         "type=" + typed.descriptor.canonical_type_name;
-    typed.is_null = predicate_value == "<NULL>";
+    typed.is_null = predicate_value_type == "null";
     typed.encoded_value = typed.is_null ? std::string{} : predicate_value;
     if (typed.is_null) {
       typed.setState(EngineValueState::sql_null);
@@ -851,8 +840,8 @@ EngineTypedValue TextPredicateBoundValue(std::string value, std::string type_nam
   return typed;
 }
 
-const std::string* CrudFieldValuePtr(
-    const std::vector<std::pair<std::string, std::string>>& values,
+const CrudStoredValue* CrudFieldValuePtr(
+    const CrudValueFields& values,
     const std::string& field) {
   for (const auto& [name, value] : values) {
     if (name == field) { return &value; }
@@ -861,7 +850,7 @@ const std::string* CrudFieldValuePtr(
 }
 
 std::size_t FindCrudFieldValueIndex(
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& field) {
   for (std::size_t index = 0; index < values.size(); ++index) {
     if (values[index].first == field) { return index; }
@@ -875,8 +864,8 @@ std::size_t FindCrudFieldValueIndex(
   return std::string::npos;
 }
 
-const std::string* CachedCrudFieldValuePtr(
-    const std::vector<std::pair<std::string, std::string>>& values,
+const CrudStoredValue* CachedCrudFieldValuePtr(
+    const CrudValueFields& values,
     const std::string& field,
     std::size_t* cached_index) {
   if (cached_index != nullptr && *cached_index < values.size() &&
@@ -888,8 +877,8 @@ const std::string* CachedCrudFieldValuePtr(
   return found == std::string::npos ? nullptr : &values[found].second;
 }
 
-std::string* CachedMutableCrudFieldValuePtr(
-    std::vector<std::pair<std::string, std::string>>* values,
+CrudStoredValue* CachedMutableCrudFieldValuePtr(
+    CrudValueFields* values,
     const std::string& field,
     std::size_t* cached_index) {
   if (values == nullptr) { return nullptr; }
@@ -903,7 +892,7 @@ std::string* CachedMutableCrudFieldValuePtr(
 }
 
 bool TryParseFiniteDoubleNoThrow(const std::string& value, double* out) {
-  if (out == nullptr || value.empty() || value == "<NULL>") {
+  if (out == nullptr || value.empty()) {
     return false;
   }
   errno = 0;
@@ -959,7 +948,7 @@ PreparedUpdatePredicate PrepareUpdatePredicate(
     prepared.column_name = predicate.canonical_predicate_envelope;
     prepared.in_list_values.reserve(predicate.bound_values.size());
     for (const auto& bound : predicate.bound_values) {
-      prepared.in_list_values.insert(bound.encoded_value);
+      if (const auto payload = CrudPredicateValuePayload(bound)) prepared.in_list_values.insert(*payload);
     }
   }
   return prepared;
@@ -976,11 +965,11 @@ bool CrudRowMatchesPreparedUpdatePredicate(
     const auto* value = CachedCrudFieldValuePtr(row.values,
                                                 prepared->column_name,
                                                 &prepared->cached_column_index);
-    if (value == nullptr || value->empty() || *value == "<NULL>") {
-      return true;
-    }
+    if (value == nullptr) return false;
+    if (value->isSqlNull()) return true;
+    if (!value->isPresent()) return false;
     double parsed = 0.0;
-    if (!TryParseFiniteDoubleNoThrow(*value, &parsed)) {
+    if (!TryParseFiniteDoubleNoThrow(value->bytes, &parsed)) {
       return CrudRowMatchesPredicate(row, predicate);
     }
     return parsed < prepared->numeric_bound;
@@ -990,7 +979,7 @@ bool CrudRowMatchesPreparedUpdatePredicate(
                                                 prepared->column_name,
                                                 &prepared->cached_column_index);
     double parsed = 0.0;
-    if (value == nullptr || !TryParseFiniteDoubleNoThrow(*value, &parsed)) {
+    if (value == nullptr || !value->isPresent() || !TryParseFiniteDoubleNoThrow(value->bytes, &parsed)) {
       return CrudRowMatchesPredicate(row, predicate);
     }
     if (prepared->compare_kind == "column_less") {
@@ -1011,7 +1000,7 @@ bool CrudRowMatchesPreparedUpdatePredicate(
     const auto* value = CachedCrudFieldValuePtr(row.values,
                                                 prepared->column_name,
                                                 &prepared->cached_column_index);
-    return prepared->in_list_values.find(value == nullptr ? std::string{} : *value) !=
+    return value != nullptr && value->isPresent() && prepared->in_list_values.find(value->bytes) !=
            prepared->in_list_values.end();
   }
   return CrudRowMatchesPredicate(row, predicate);
@@ -1109,6 +1098,7 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
   resolved.canonical_predicate_envelope =
       request.update_predicate.canonical_predicate_envelope;
   std::set<std::string> admitted_values;
+  bool selected_null = false;
   std::vector<const CrudRowVersionRecord*> source_row_refs;
   auto prepared_source_predicate = PrepareUpdatePredicate(source_predicate);
   std::size_t select_column_index = std::string::npos;
@@ -1126,11 +1116,12 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
       const auto* selected_value = CachedCrudFieldValuePtr(row->values,
                                                            select_column,
                                                            &select_column_index);
-      const std::string value =
-          selected_value == nullptr ? std::string{} : *selected_value;
-      if (!value.empty() && value != "<NULL>") {
-        admitted_values.insert(value);
+      if (!selected_value || (!selected_value->isPresent() && !selected_value->isSqlNull())) {
+        resolution.diagnostic = MakeInvalidRequestDiagnostic("dml.update_rows", "subquery_value_state_invalid");
+        return resolution;
       }
+      if (selected_value->isSqlNull()) selected_null = true;
+      else admitted_values.insert(selected_value->bytes);
     }
     resolution.evidence.push_back({"dml_subquery_source_rows",
                                    "append_only_ref_fast_path"});
@@ -1147,15 +1138,21 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
       const auto* selected_value = CachedCrudFieldValuePtr(row.values,
                                                            select_column,
                                                            &select_column_index);
-      const std::string value =
-          selected_value == nullptr ? std::string{} : *selected_value;
-      if (!value.empty() && value != "<NULL>") {
-        admitted_values.insert(value);
+      if (!selected_value || (!selected_value->isPresent() && !selected_value->isSqlNull())) {
+        resolution.diagnostic = MakeInvalidRequestDiagnostic("dml.update_rows", "subquery_value_state_invalid");
+        return resolution;
       }
+      if (selected_value->isSqlNull()) selected_null = true;
+      else admitted_values.insert(selected_value->bytes);
     }
   }
   for (const auto& value : admitted_values) {
     resolved.bound_values.push_back(TextPredicateBoundValue(value));
+  }
+  if (selected_null) {
+    auto null_value = TextPredicateBoundValue({});
+    null_value.setState(EngineValueState::sql_null);
+    resolved.bound_values.push_back(std::move(null_value));
   }
   resolution.ok = true;
   resolution.predicate = std::move(resolved);
@@ -2182,8 +2179,8 @@ bool HotUpdateShapeEnabled(const EngineUpdateRowsRequest& request) {
 }
 
 bool IndexKeysChanged(const CrudIndexRecord& index,
-                      const std::vector<std::pair<std::string, std::string>>& before,
-                      const std::vector<std::pair<std::string, std::string>>& after) {
+                      const CrudValueFields& before,
+                      const CrudValueFields& after) {
   return CrudIndexKeysForValues(index, before) != CrudIndexKeysForValues(index, after);
 }
 
@@ -2231,7 +2228,7 @@ std::uint64_t HotPlusSamePageBudgetBytes(const EngineUpdateRowsRequest& request)
 
 bool HotPlusSamePageBudgetAvailable(
     const EngineUpdateRowsRequest& request,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     bool toast_required) {
   if (toast_required) {
     return false;
@@ -2275,7 +2272,7 @@ bool UpdatePlanHasMaintainableIndexWork(
 std::vector<StagedUpdateRow::IndexKeyState> BuildStagedUpdateIndexKeyStates(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values) {
+    const CrudValueFields& new_values) {
   std::vector<StagedUpdateRow::IndexKeyState> states;
   states.resize(batch_context.index_plan.entries.size());
   for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
@@ -2305,7 +2302,7 @@ const StagedUpdateRow::IndexKeyState* StagedUpdateIndexKeyStateAt(
 bool HotPlusExactIndexKeysUnchanged(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values,
+    const CrudValueFields& new_values,
     const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
   for (std::size_t index = 0; index < batch_context.index_plan.entries.size(); ++index) {
     const auto& entry = batch_context.index_plan.entries[index];
@@ -2435,7 +2432,7 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
     const CrudRowVersionRecord& new_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values,
+    const CrudValueFields& new_values,
     const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states,
     std::size_t new_values_encoded_bytes,
     bool toast_required,
@@ -2584,7 +2581,7 @@ void RecordHotPlusDecisionCounter(
 std::uint64_t CountUnaffectedExactIndexChurnAvoided(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values,
+    const CrudValueFields& new_values,
     const mga::HotStableRowHeadDecisionResult& decision,
     const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
   if (!HotPlusDecisionAvoidsExactChurn(decision)) {
@@ -2615,7 +2612,7 @@ std::uint64_t CountUnaffectedExactIndexChurnAvoided(
 bool ShouldMaintainUpdateIndex(const UpdateIndexMaintenancePlanEntry& entry,
                                std::size_t entry_index,
                                const CrudRowVersionRecord& old_row,
-                               const std::vector<std::pair<std::string, std::string>>& new_values,
+                               const CrudValueFields& new_values,
                                bool hot_update_shape_enabled,
                                const mga::HotStableRowHeadDecisionResult& hot_plus_decision,
                                const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states) {
@@ -2684,7 +2681,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> UpdateDeltaEntries(
     const UpdateBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
     const CrudRowVersionRecord& new_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values,
+    const CrudValueFields& new_values,
     const std::vector<StagedUpdateRow::IndexKeyState>* index_key_states,
     bool hot_update_shape_enabled,
     const mga::HotStableRowHeadDecisionResult& hot_plus_decision,
@@ -2820,8 +2817,8 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
         new_keys = &fallback_new_keys;
       }
       if (*old_keys != *new_keys) {
-        const std::string old_payload = CrudFieldValue(
-            staged.original_row.values, entry.index.column_name);
+        const std::string old_payload = EncodeCrudValues({{entry.index.column_name, CrudFieldValue(
+            staged.original_row.values, entry.index.column_name)}});
         for (const auto& key : *old_keys) {
           retire_requests.push_back(
               {entry.index,
@@ -2833,8 +2830,8 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
                old_payload});
         }
       }
-      const std::string new_payload = CrudFieldValue(
-          staged.logical_values, entry.index.column_name);
+      const std::string new_payload = EncodeCrudValues({{entry.index.column_name, CrudFieldValue(
+          staged.logical_values, entry.index.column_name)}});
       for (const auto& key : *new_keys) {
         insert_requests.push_back(
             {entry.index,
@@ -2959,7 +2956,7 @@ EngineApiDiagnostic PrepareSynchronousDeleteIndexRetires(
       const auto& old_row = staged_rows[row_index].original_row;
       const auto& tombstone = tombstone_rows[row_index];
       const std::string payload =
-          CrudFieldValue(old_row.values, plan_entry.index.column_name);
+          EncodeCrudValues({{plan_entry.index.column_name, CrudFieldValue(old_row.values, plan_entry.index.column_name)}});
       for (const auto& key :
            CrudIndexKeysForValues(plan_entry.index, old_row.values)) {
         requests.push_back({plan_entry.index,
@@ -7382,12 +7379,12 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     } else {
       std::size_t assignment_target_index = std::string::npos;
       for (const auto& [field, typed] : request.assignments) {
-        std::string* existing_value =
+        CrudStoredValue* existing_value =
             CachedMutableCrudFieldValuePtr(&values, field, &assignment_target_index);
         if (existing_value != nullptr) {
-          *existing_value = typed.is_null ? "<NULL>" : typed.encoded_value;
+          *existing_value = CrudTypedValuePayload(typed);
         } else {
-          values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value});
+          values.push_back({field, CrudTypedValuePayload(typed)});
           assignment_target_index = values.size() - 1;
         }
       }
@@ -7488,7 +7485,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         !suppress_payload_rows || executable_trigger_descriptors_present ||
         update_toast_required ||
         UpdatePlanHasMaintainableIndexWork(batch_context);
-    std::vector<std::pair<std::string, std::string>> stage_logical_values;
+    CrudValueFields stage_logical_values;
     if (retain_stage_logical_values) {
       stage_logical_values = row_record.values;
     }

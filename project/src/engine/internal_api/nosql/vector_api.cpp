@@ -1172,17 +1172,18 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
     }
     if (base_row.values.size() != 2 ||
         base_row.values[0].first != "embedding" ||
-        base_row.values[1].first != "metadata") {
+        base_row.values[1].first != "metadata" ||
+        !base_row.values[0].second.isPresent() || !base_row.values[1].second.isPresent()) {
       return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                     "current vector row does not match the persisted descriptor");
     }
     std::array<float, 3> stored_vector{};
-    if (!ParseCanonicalBoundVectorLiteral(base_row.values[0].second,
+    if (!ParseCanonicalBoundVectorLiteral(base_row.values[0].second.bytes,
                                           &stored_vector)) {
       return refuse("SB_MODEL_VECTOR_ELEMENT_INVALID_V1",
                     "current MGA-visible stored vector is invalid");
     }
-    if (!CanonicalBoundVectorMetadata(base_row.values[1].second)) {
+    if (!CanonicalBoundVectorMetadata(base_row.values[1].second.bytes)) {
       return refuse("SB_MODEL_VECTOR_METADATA_INVALID_V1",
                     "current MGA-visible metadata is not canonical JSON object text");
     }

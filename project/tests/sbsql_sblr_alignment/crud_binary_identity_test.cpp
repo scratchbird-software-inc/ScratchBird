@@ -195,7 +195,10 @@ void UniqueLatestRowRecheck() {
     std::vector<std::string> keys;
     for(const auto& [role,value]:row.values) {
       if(role=="excluded")return std::vector<std::string>{};
-      if(role=="key")keys.push_back(value);
+      if(role=="key") {
+        Check(value.valid() && value.isPresent(), "logical key fixture must be present");
+        keys.push_back(value.bytes);
+      }
     }
     return keys;
   };
@@ -344,6 +347,7 @@ void SuppliedIdentity() {
   clock_fails=false;
   entropy_mode=1;
 }
+
 void PrimaryObjectBinding() {
   static_assert(std::is_same_v<decltype(api::ApiBehaviorObjectUuid(
       std::declval<const api::EngineApiRequest&>(),std::declval<const std::string&>())),

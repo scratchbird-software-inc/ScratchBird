@@ -247,7 +247,7 @@ bool DescriptorValueSafe(std::string_view value) {
          value.find('\0') == std::string_view::npos;
 }
 
-bool HasColumnValue(const std::vector<std::pair<std::string, std::string>>& values,
+bool HasColumnValue(const CrudValueFields& values,
                     const std::string& column_name) {
   return std::any_of(values.begin(),
                      values.end(),
@@ -256,7 +256,7 @@ bool HasColumnValue(const std::vector<std::pair<std::string, std::string>>& valu
                      });
 }
 
-void RemoveColumnValue(std::vector<std::pair<std::string, std::string>>* values,
+void RemoveColumnValue(CrudValueFields* values,
                        const std::string& column_name) {
   if (values == nullptr) return;
   values->erase(std::remove_if(values->begin(),
@@ -267,7 +267,7 @@ void RemoveColumnValue(std::vector<std::pair<std::string, std::string>>* values,
                 values->end());
 }
 
-bool RenameColumnValue(std::vector<std::pair<std::string, std::string>>* values,
+bool RenameColumnValue(CrudValueFields* values,
                        const std::string& column_name,
                        const std::string& new_column_name) {
   if (values == nullptr) return false;
@@ -305,7 +305,7 @@ std::vector<CrudRowVersionRecord> BuildAlteredColumnRowVersions(
     bool changed = false;
     if (action == "add_column") {
       if (!HasColumnValue(updated.values, column_name)) {
-        updated.values.push_back({column_name, "<NULL>"});
+        updated.values.push_back({column_name, CrudStoredValue::SqlNull()});
         changed = true;
       }
     } else if (action == "drop_column") {
@@ -316,7 +316,7 @@ std::vector<CrudRowVersionRecord> BuildAlteredColumnRowVersions(
     } else if (action == "rename_column") {
       changed = RenameColumnValue(&updated.values, column_name, new_column_name);
       if (!changed && !HasColumnValue(updated.values, new_column_name)) {
-        updated.values.push_back({new_column_name, "<NULL>"});
+        updated.values.push_back({new_column_name, CrudStoredValue::SqlNull()});
         changed = true;
       }
     }

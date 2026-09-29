@@ -67,11 +67,10 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
       }
       const auto logical_key = CrudIndexEntryLogicalKey(*selected, entry);
       const auto arity = CrudIndexKeyColumns(*selected).size();
-      const auto components = arity > 1
-          ? DecodeCompositeLogicalKey(logical_key, arity)
-          : std::optional<std::vector<std::string_view>>{{logical_key}};
+      const auto components = DecodeStoredLogicalKey(logical_key, arity);
       if (!components || components->empty()) return false;
-      const std::string first_key(components->front());
+      if (!components->front().isPresent()) return false;
+      const auto& first_key = components->front().bytes;
       return in_list_key_values.find(first_key) !=
              in_list_key_values.end();
     };
@@ -79,9 +78,9 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
       if (!use_in_list_key_values) {
         return CrudRowMatchesPredicate(row, predicate);
       }
-      const std::string value =
+      const auto value =
           CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
-      return in_list_key_values.find(value) != in_list_key_values.end();
+      return value.isPresent() && in_list_key_values.find(value.bytes) != in_list_key_values.end();
     };
     std::set<EngineUuid> seen_row_uuids;
     std::vector<CrudRowVersionRecord> rows;
@@ -116,7 +115,13 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
     ++candidate_count;
     double score = 0.0;
     if (!predicate.bound_values.empty()) {
-      score = CrudVectorDistance(entry.key_value, predicate.bound_values.front().encoded_value);
+      const auto components = DecodeStoredLogicalKey(
+          CrudIndexEntryLogicalKey(*selected, entry), CrudIndexKeyColumns(*selected).size());
+      const auto query = CrudPredicateValuePayload(predicate.bound_values.front());
+      if (!components || components->empty() || !components->front().isPresent() || !query)
+        continue;
+      score = CrudVectorDistance(components->front().bytes, *query);
+      if (!std::isfinite(score)) continue;
     }
     const auto existing = candidate_scores.find(entry.row_uuid);
     if (existing == candidate_scores.end() || score < existing->second) { candidate_scores[entry.row_uuid] = score; }
@@ -147,7 +152,7 @@ std::string MakeCrudRowVersionEvent(std::uint64_t creator_tx,
                                     bool deleted,
                                     const EngineUuid& previous_version_uuid,
                                     std::uint64_t previous_sequence,
-                                    const std::vector<std::pair<std::string, std::string>>& values) {
+                                    const CrudValueFields& values) {
   (void)creator_tx;
   (void)table_uuid;
   (void)row_uuid;
@@ -234,7 +239,7 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
 EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
                                                     const EngineUuid& table_uuid,
                                                     const EngineUuid& row_uuid,
-                                                    const std::vector<std::pair<std::string, std::string>>& values,
+                                                    const CrudValueFields& values,
                                                     const EngineRequestContext& context) {
   const std::uint64_t observer_tx = context.local_transaction_id;
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
@@ -254,7 +259,7 @@ EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& c
                                                    const CrudIndexRecord& index,
                                                    const EngineUuid& row_uuid,
                                                    const EngineUuid& version_uuid,
-                                                   const std::vector<std::pair<std::string, std::string>>& values) {
+                                                   const CrudValueFields& values) {
   (void)context;
   (void)index;
   (void)row_uuid;
@@ -268,7 +273,7 @@ EngineApiDiagnostic AppendCrudIndexEntriesForRow(const EngineRequestContext& con
                                                  const EngineUuid& table_uuid,
                                                  const EngineUuid& row_uuid,
                                                  const EngineUuid& version_uuid,
-                                                 const std::vector<std::pair<std::string, std::string>>& values) {
+                                                 const CrudValueFields& values) {
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, context.local_transaction_id)) {
     const auto appended = AppendCrudIndexEntriesForIndex(context, index, row_uuid, version_uuid, values);
     if (appended.error) { return appended; }
@@ -284,8 +289,9 @@ EngineResultShape CrudRowsToResultShape(const std::vector<CrudRowVersionRecord>&
     out_row.requested_row_uuid = row.row_uuid;
     for (const auto& [field, value] : row.values) {
       EngineTypedValue typed;
-      typed.encoded_value = value;
-      typed.is_null = value == "<NULL>";
+      if (!value.valid()) throw std::invalid_argument("invalid retained value state");
+      typed.encoded_value = value.bytes;
+      typed.setState(value.state);
       out_row.fields.push_back({field, typed});
     }
     shape.rows.push_back(std::move(out_row));

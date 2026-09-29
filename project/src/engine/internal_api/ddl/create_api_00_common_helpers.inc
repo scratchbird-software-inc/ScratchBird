@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by create_api.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "ddl/create_api.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 
 #include "api_unsupported.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
@@ -762,8 +763,8 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
       input.encoded_key = key;
       input.row_uuid = rows[row_index].row_uuid;
       input.version_uuid = rows[row_index].version_uuid;
-      input.payload_value = CrudFieldValue(rows[row_index].values,
-                                           index.column_name);
+      input.payload_value = EncodeCrudValues({{index.column_name,
+          CrudFieldValue(rows[row_index].values, index.column_name)}});
       input.source_ordinal = static_cast<std::uint64_t>(row_index);
       build.rows.push_back(std::move(input));
     }

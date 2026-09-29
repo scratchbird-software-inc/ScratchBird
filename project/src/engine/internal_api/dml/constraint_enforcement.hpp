@@ -31,7 +31,7 @@ namespace scratchbird::engine::internal_api {
 struct ConstraintDmlValidationResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
   std::vector<EngineEvidenceReference> evidence;
 };
 
@@ -89,13 +89,13 @@ void RecordIndexBackedUniquePreflightProof(
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::vector<EngineEvidenceReference>* evidence = nullptr);
 
 ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     ConstraintDmlValidationCache* cache = nullptr);
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraints(
@@ -103,7 +103,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& mutation_kind,
     ConstraintDmlValidationCache* cache = nullptr);
 
@@ -112,7 +112,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& mutation_kind,
     const ConstraintDmlValidationOptions& options,
     ConstraintDmlValidationCache* cache = nullptr);
@@ -128,7 +128,7 @@ EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& old_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values);
+    const CrudValueFields& new_values);
 
 bool UpdateTouchesImmediateConstraintColumns(
     const CrudTableRecord& table,

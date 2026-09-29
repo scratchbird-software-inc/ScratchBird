@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "crud_support/composite_logical_key.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "dml/mga_relation_read_view.hpp"
@@ -330,9 +331,11 @@ std::string FieldValue(const api::CrudRowVersionRecord& row,
                        std::string_view field_name) {
   for (const auto& field : row.values) {
     if (field.first == field_name) {
-      return field.second;
+      Require(field.second.isPresent(), "ORH expected a present base-row index key");
+      return field.second.bytes;
     }
   }
+  Require(false, "ORH base row omitted the index key");
   return {};
 }
 
@@ -354,10 +357,16 @@ std::vector<std::string> PersistedIndexKeys(
     const api::MgaRelationStoreState& state,
     const Fixture& fixture) {
   std::vector<std::string> keys;
+  const auto& indexes = state.relation_metadata.indexes;
+  const auto index = std::find_if(indexes.begin(), indexes.end(),
+      [&](const auto& candidate) { return candidate.index_uuid == fixture.index_uuid; });
+  Require(index != indexes.end(), "ORH persisted index descriptor missing");
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid == fixture.index_uuid &&
         entry.table_uuid == fixture.table_uuid) {
-      keys.push_back(entry.key_value);
+      const auto logical = api::DecodeStoredLogicalKey(api::CrudIndexEntryLogicalKey(*index, entry), 1);
+      Require(logical && logical->front().isPresent(), "ORH persisted index projection lost framing/state");
+      keys.push_back(logical->front().bytes);
     }
   }
   std::sort(keys.begin(), keys.end());

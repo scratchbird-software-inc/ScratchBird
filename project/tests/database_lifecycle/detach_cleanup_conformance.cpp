@@ -1720,8 +1720,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
                 binary_summary.row_version_count == 2 && binary_rows.size() == 2 &&
                 binary_rows[0].row_uuid == stored_row->row_uuid &&
                 binary_rows[1].row_uuid == stored_second_row->row_uuid &&
-                binary_rows[0].values == std::vector<std::pair<std::string, std::string>>{{"id", "17"}} &&
-                binary_rows[1].values == std::vector<std::pair<std::string, std::string>>{{"id", "18"}},
+                binary_rows[0].values == api::CrudValueFields{{"id", "17"}} &&
+                binary_rows[1].values == api::CrudValueFields{{"id", "18"}},
             "complete binary segment did not publish exact actual row identities and values");
   };
   const auto verify_binary_refusal = [&] {
@@ -1820,7 +1820,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
                 used_rows && scoped_rows.size() == 2 &&
                 scoped_rows[0].row_uuid == stored_row->row_uuid &&
                 scoped_rows[1].row_uuid == stored_second_row->row_uuid &&
-                scoped_rows[1].values == std::vector<std::pair<std::string, std::string>>{{"id", second_value}},
+                scoped_rows[1].values == api::CrudValueFields{{"id", second_value}},
             "row cache did not decode exact current binary bytes");
   };
   replace_scoped_binary(binary_fixture); verify_scoped_binary("18"); verify_scoped_binary("18");

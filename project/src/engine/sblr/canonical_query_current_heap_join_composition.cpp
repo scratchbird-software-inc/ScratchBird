@@ -2266,17 +2266,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             for (std::size_t ordinal = 0; ordinal < binding->columns.size();
                  ++ordinal) {
               const auto* column = binding->columns[ordinal];
-              const std::string* payload = nullptr;
+              const api::CrudStoredValue* payload = nullptr;
               for (const auto& [name, value] : stored.values) {
                 if (name != column->canonical_name_key) continue;
                 if (payload != nullptr) return false;
                 payload = &value;
               }
-              if (payload == nullptr) return false;
-              if (*payload == "<NULL>") {
+              if (payload == nullptr || !payload->valid() ||
+                  (!payload->isPresent() && !payload->isSqlNull())) return false;
+              if (payload->isSqlNull()) {
+                if (!column->nullable) return false;
                 row.nulls[ordinal] = true;
               } else {
-                row.values[ordinal] = *payload;
+                row.values[ordinal] = payload->bytes;
               }
             }
             if (!row.nulls[key_ordinal]) {

@@ -8015,17 +8015,14 @@ std::vector<EngineDescriptor> CrudRelationColumnDescriptors(const CrudTableRecor
   return descriptors;
 }
 
-EngineTypedValue CrudRelationTypedValue(const std::string& value,
+EngineTypedValue CrudRelationTypedValue(const CrudStoredValue& value,
                                         const EngineDescriptor* descriptor) {
   EngineTypedValue typed;
   if (descriptor != nullptr) { typed.descriptor = *descriptor; }
-  typed.is_null = value == "<NULL>";
-  if (typed.is_null) {
-    typed.setState(EngineValueState::sql_null);
-  } else {
-    typed.encoded_value = value;
-    typed.setState(EngineValueState::value);
-  }
+  if (!value.valid() || (!value.isPresent() && !value.isSqlNull()))
+    throw std::invalid_argument("unresolved relation value state");
+  typed.setState(value.state);
+  typed.encoded_value = value.bytes;
   return typed;
 }
 
@@ -9599,7 +9596,7 @@ bool CountFastPathCanUseTargetRows(const EnginePlanOperationRequest& request,
 bool CrudRowFieldIsNotNull(const CrudRowVersionRecord& row,
                            const std::string& field_name) {
   for (const auto& [field, value] : row.values) {
-    if (field == field_name) return value != "<NULL>";
+    if (field == field_name) return value.isPresent();
   }
   return false;
 }
@@ -11132,7 +11129,7 @@ EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
     }
     relation.rows.reserve(rows.size());
     for (const auto& row : rows) {
-      std::unordered_map<std::string, const std::string*> values_by_name;
+      std::unordered_map<std::string, const CrudStoredValue*> values_by_name;
       values_by_name.reserve(row.values.size());
       for (const auto& [field, value] : row.values) {
         values_by_name.emplace(field, &value);

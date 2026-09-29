@@ -162,15 +162,15 @@ std::string DirectPhysicalClusteringKeyColumn(
   return placement_key_column;
 }
 
-std::string DirectValueForColumn(
-    const std::vector<std::pair<std::string, std::string>>& values,
+CrudStoredValue DirectValueForColumn(
+    const CrudValueFields& values,
     const std::string& column_name) {
   for (const auto& [name, value] : values) {
     if (name == column_name) {
       return value;
     }
   }
-  return {};
+  return CrudStoredValue::Missing();
 }
 
 template <typename T>
@@ -190,7 +190,7 @@ std::vector<T> ApplySourceOrdinalPermutation(
 DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     const DirectPhysicalBulkAppendRequest& request,
     std::vector<CrudRowVersionRecord>* staged_rows,
-    std::vector<std::vector<std::pair<std::string, std::string>>>* logical_value_batch) {
+    std::vector<CrudValueFields>* logical_value_batch) {
   DirectOrderedIngestSelection selection;
   if (staged_rows == nullptr || logical_value_batch == nullptr ||
       staged_rows->size() != logical_value_batch->size()) {
@@ -247,8 +247,10 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     scratchbird::engine::optimizer::BulkPlacementOrderRow row;
     row.source_ordinal = static_cast<std::uint64_t>(index);
     row.row_uuid = (*staged_rows)[index].row_uuid;
-    row.placement_key =
-        DirectValueForColumn((*logical_value_batch)[index], placement_key_column);
+    const auto key = DirectValueForColumn((*logical_value_batch)[index], placement_key_column);
+    row.placement_key = key.bytes;
+    row.placement_key_present = key.valid() && (key.isPresent() || key.isSqlNull());
+    row.placement_key_null = key.isSqlNull();
     plan_request.rows.push_back(std::move(row));
   }
 

@@ -320,7 +320,7 @@ void VerifyLargeValueBatchAllocation() {
   for (const auto& row : loaded.state.row_versions) {
     if (row.table_uuid != fixture.table_uuid || row.deleted) { continue; }
     for (const auto& value : row.values) {
-      if (value.first == "payload" && value.second.size() == kPayloadBytes) {
+      if (value.first == "payload" && value.second.isPresent() && value.second.bytes.size() == kPayloadBytes) {
         ++visible_payloads;
       }
     }

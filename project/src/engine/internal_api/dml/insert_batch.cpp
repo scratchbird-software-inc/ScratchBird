@@ -1516,7 +1516,7 @@ EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
 
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,
                                                        const CrudTableRecord& table,
-                                                       const std::vector<std::pair<std::string, std::string>>& values) {
+                                                       const CrudValueFields& values) {
   if (context == nullptr) {
     return MakeInvalidRequestDiagnostic("dml.insert_rows", "insert_batch_context_required");
   }
@@ -1536,14 +1536,15 @@ EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* conte
 
 bool MaterializeOmittedInsertColumns(
     const InsertRowEncoderPlan& plan,
-    std::vector<std::pair<std::string, std::string>>* values) {
+    CrudValueFields* values) {
   if (values == nullptr) return false;
   bool changed = false;
   for (const auto& column : plan.columns) {
     if (std::none_of(values->begin(), values->end(), [&](const auto& value) {
           return value.first == column.column_name;
         })) {
-      values->emplace_back(column.column_name, column.default_bound ? "<DEFAULT>" : "<NULL>");
+      values->emplace_back(column.column_name, column.default_bound
+          ? CrudStoredValue::DefaultRequested() : CrudStoredValue::SqlNull());
       changed = true;
     }
   }

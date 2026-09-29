@@ -954,7 +954,7 @@ Fixture MakeFixture() {
       fixture, "qow-heap-malformed-full-width-writer");
   const auto append_full_width_row = [&](const api::EngineUuid& table_uuid,
                                          const platform::u64 row_salt,
-                                         auto values) {
+                                         api::CrudValueFields values) {
     api::CrudRowVersionRecord row;
     row.creator_tx = malformed_width_writer.local_transaction_id;
     row.table_uuid = table_uuid;
@@ -969,17 +969,17 @@ Fixture MakeFixture() {
   };
   append_full_width_row(fixture.missing_later_column_table_uuid,
                         fixture.salt + 37,
-                        std::vector<std::pair<std::string, std::string>>{
+                        api::CrudValueFields{
                             {"required_value", "1"}});
   append_full_width_row(fixture.duplicate_later_column_table_uuid,
                         fixture.salt + 39,
-                        std::vector<std::pair<std::string, std::string>>{
+                        api::CrudValueFields{
                             {"required_value", "1"},
                             {"nullable_value", "2"},
                             {"nullable_value", "3"}});
   append_full_width_row(fixture.malformed_later_column_table_uuid,
                         fixture.salt + 41,
-                        std::vector<std::pair<std::string, std::string>>{
+                        api::CrudValueFields{
                             {"required_value", "1"},
                             {"nullable_value", "not-an-int64"}});
   Commit(malformed_width_writer);
@@ -1982,12 +1982,12 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
               current.memory_receipt_complete,
           "streaming COUNT(*) did not count the newly visible committed row");
 
-  std::vector<std::string> streamed_values;
+  std::vector<api::CrudStoredValue> streamed_values;
   const auto retained_bytes = [&]() {
     std::uint64_t bytes = sizeof(streamed_values) +
-                          streamed_values.capacity() * sizeof(std::string);
+                          streamed_values.capacity() * sizeof(api::CrudStoredValue);
     for (const auto& value : streamed_values) {
-      bytes += value.capacity() + 1;
+      bytes += value.bytes.capacity() + 1;
     }
     return bytes;
   };
@@ -2021,7 +2021,9 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
   };
   const auto streamed =
       api::StreamVisibleMgaHeapRelation(current_reader, stream);
-  std::ranges::sort(streamed_values);
+  std::ranges::sort(streamed_values, [](const auto& left, const auto& right) {
+    return left.state != right.state ? left.state < right.state : left.bytes < right.bytes;
+  });
   Require(streamed.ok && !streamed.diagnostic.error &&
               streamed.complete_mga_chain_validation &&
               streamed.exact_segment_extent_revalidated &&
@@ -2042,7 +2044,7 @@ void ValidateStreamingCountStarMatrix(Fixture& fixture) {
                   streamed.memory_grant_bytes &&
               streamed.memory_receipt_complete &&
               streamed_values ==
-                  std::vector<std::string>{"1", "2", "4", "<NULL>"},
+                  std::vector<api::CrudStoredValue>{"1", "2", "4", api::CrudStoredValue::SqlNull()},
           "two-pass visible-row stream lost MGA, extent, row, or memory authority");
 
   auto stream_delivery_bounded = stream;

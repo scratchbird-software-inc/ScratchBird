@@ -37,7 +37,7 @@ bool DirectPhysicalClusteringRequested(
 DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
     const DirectPhysicalBulkAppendRequest& request,
     std::vector<CrudRowVersionRecord>* staged_rows,
-    std::vector<std::vector<std::pair<std::string, std::string>>>*
+    std::vector<CrudValueFields>*
         logical_value_batch);
 
 }  // namespace scratchbird::engine::internal_api::dml::detail

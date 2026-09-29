@@ -1014,7 +1014,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     tuple.values.reserve(output_width);
     for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
       const auto& column = *projected_columns[ordinal];
-      const std::string* encoded_value = nullptr;
+      const api::CrudStoredValue* encoded_value = nullptr;
       for (const auto& [name, value] : stored_row.values) {
         if (name != column.canonical_name_key) { continue; }
         if (encoded_value != nullptr) {
@@ -1040,13 +1040,17 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
             true);
       }
       value.descriptor = output_descriptors[ordinal];
-      if (*encoded_value == "<NULL>") {
+      if (!encoded_value->valid() || (!encoded_value->isPresent() && !encoded_value->isSqlNull())) {
+        return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                       "stored scalar has an unresolved value state", true);
+      }
+      if (encoded_value->isSqlNull()) {
         value.is_null = true;
         value.state = api::EngineValueState::sql_null;
       } else {
         std::uint64_t encoded_allocation_bytes = 0;
         if (!AccountHeapOwnedValueMemory(
-                *encoded_value, &encoded_allocation_bytes) ||
+                encoded_value->bytes, &encoded_allocation_bytes) ||
             !account_materialization(encoded_allocation_bytes)) {
           return invalid(
               "SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -1054,7 +1058,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
               true);
         }
         if (!api::RestoreStoredScalarPayloadV1(
-                *encoded_value, api::EngineValueState::value, &value)) {
+                encoded_value->bytes, encoded_value->state, &value)) {
           return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
                          "stored scalar has no valid native payload", true);
         }

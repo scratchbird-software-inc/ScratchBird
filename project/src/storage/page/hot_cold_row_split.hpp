@@ -36,6 +36,7 @@ struct HotColdFieldInput {
   bool rare_projection = false;
   bool force_hot = false;
   bool force_cold = false;
+  bool is_null = false;
 };
 
 struct HotColdHotField {
@@ -44,6 +45,7 @@ struct HotColdHotField {
   bool metadata = false;
   bool indexed = false;
   bool frequently_filtered = false;
+  bool is_null = false;
 };
 
 struct HotColdColdFieldDescriptor {

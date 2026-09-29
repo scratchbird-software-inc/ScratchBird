@@ -1052,12 +1052,19 @@ scratchbird::storage::page::RowDataCell DirectPhysicalCellFromTypedValueWithPlan
 }
 
 std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   std::vector<scratchbird::storage::page::RowDataCell> cells;
   cells.reserve(values.size());
   std::uint16_t ordinal = 1;
   for (const auto& value : values) {
-    cells.push_back(DirectPhysicalCell(ordinal++, value.second));
+    if (!value.second.valid() || (!value.second.isPresent() && !value.second.isSqlNull()))
+      throw std::invalid_argument("unresolved physical row value state");
+    auto cell = DirectPhysicalCell(ordinal++, value.second.bytes);
+    if (value.second.isSqlNull()) {
+      cell.value.is_null = true;
+      cell.value.type_id = dt::CanonicalTypeId::null_type;
+    }
+    cells.push_back(std::move(cell));
   }
   return cells;
 }

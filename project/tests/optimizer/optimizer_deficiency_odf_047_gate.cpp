@@ -146,12 +146,12 @@ bool AnyEvidenceContains(const std::vector<api::EngineEvidenceReference>& eviden
   return false;
 }
 
-std::string FieldValue(const std::vector<std::pair<std::string, std::string>>& values,
+api::CrudStoredValue FieldValue(const api::CrudValueFields& values,
                        std::string_view field_name) {
   for (const auto& [name, value] : values) {
     if (name == field_name) { return value; }
   }
-  return {};
+  return api::CrudStoredValue::Missing();
 }
 
 void AssertNoRuntimeDocLeaks(const api::EngineApiResult& result) {

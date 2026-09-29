@@ -1658,7 +1658,9 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
             "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
             "visible document row field binding is ambiguous");
       }
-      if (encoded == "<NULL>") {
+      if (!encoded.valid() || (!encoded.isPresent() && !encoded.isSqlNull()))
+        return access_failure("SB_MODEL_TYPED_EXCHANGE_INVALID_V1", "visible document row has an unresolved value state");
+      if (encoded.isSqlNull()) {
         if (!column->nullable) {
           return access_failure(
               "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -1668,10 +1670,10 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       if (retain_path(path) &&
           (!account_record_bytes(
                sizeof(std::pair<const std::string, std::string>) +
-               3 * sizeof(void*) + path.size() + encoded.size()) ||
+               3 * sizeof(void*) + path.size() + encoded.bytes.size()) ||
            !account_record_bytes(sizeof(std::pair<const std::string, std::string>) +
                3 * sizeof(void*) + path.size() + column->value_descriptor.canonical_type_name.size()) ||
-           (encoded == "<NULL>" &&
+           (encoded.isSqlNull() &&
             !account_record_bytes(sizeof(std::string) +
                                   3 * sizeof(void*) + path.size())))) {
         return access_failure("SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
@@ -1695,11 +1697,11 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       const auto column = std::ranges::find_if(read.descriptor.columns,
           [&](const auto& candidate) { return candidate.canonical_name_key == path; });
       record.fragment_types.emplace(path, column->value_descriptor.canonical_type_name);
-      if (encoded == "<NULL>") {
+      if (encoded.isSqlNull()) {
         record.fragments.emplace(path, std::string{});
         record.null_paths.insert(path);
       } else {
-        record.fragments.emplace(path, encoded);
+        record.fragments.emplace(path, encoded.bytes);
       }
     }
     const auto document_uuid = record.fragments.find("document_uuid");

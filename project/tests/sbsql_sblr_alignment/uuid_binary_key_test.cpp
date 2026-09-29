@@ -304,7 +304,7 @@ void HeapBinaryMemoryContract() {
       row.values.reserve(3);
       row.values.emplace_back("payload", std::string(n + 17, 'x'));
       const auto dynamic = row.values.capacity() * sizeof(row.values[0]) +
-          string_bytes(row.values[0].first) + string_bytes(row.values[0].second);
+          string_bytes(row.values[0].first) + string_bytes(row.values[0].second.bytes);
       expected += dynamic;
       std::uint64_t measured = 13;
       check(api::AccountHeapReadRowDynamicMemoryBytes(row, &measured) && measured == 13 + dynamic,

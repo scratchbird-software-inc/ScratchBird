@@ -32,7 +32,7 @@ enum class DmlIndexWriteOperation {
 struct DmlIndexWriteRowImage {
   EngineUuid row_uuid;
   EngineUuid version_uuid;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
 };
 
 struct DmlIndexWriteEvent {

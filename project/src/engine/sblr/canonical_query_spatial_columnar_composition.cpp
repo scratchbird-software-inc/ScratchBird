@@ -1678,12 +1678,12 @@ std::optional<std::uint64_t> Rcp079VisibleRowsMemoryBytesV1(
         !account_string(row.previous_version_uuid) ||
         !CheckedMultiply(
             row.values.capacity(),
-            sizeof(std::pair<std::string, std::string>), &values_bytes) ||
+            sizeof(api::CrudValueFields::value_type), &values_bytes) ||
         !CheckedAdd(bytes, values_bytes, &bytes)) {
       return std::nullopt;
     }
     for (const auto& [name, value] : row.values) {
-      if (!account_string(name) || !account_string(value)) {
+      if (!account_string(name) || !account_string(value.bytes)) {
         return std::nullopt;
       }
     }
@@ -2378,8 +2378,9 @@ Rcp079SpatialSourceMaterializationAdditionalBytesV1(
     const std::string* point = nullptr;
     const std::string* crs = nullptr;
     for (const auto& [name, value] : row.values) {
-      if (name == "spatial_value") point = &value;
-      if (name == "crs_uuid") crs = &value;
+      if (!value.valid() || !value.isPresent()) return std::nullopt;
+      if (name == "spatial_value") point = &value.bytes;
+      if (name == "crs_uuid") crs = &value.bytes;
     }
     if (point == nullptr || crs == nullptr ||
         !add_string(row.row_uuid) ||
@@ -3283,7 +3284,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                      ++ordinal) {
                   const auto& column =
                       source_copy.persisted.columns[ordinal];
-                  const std::string* encoded = nullptr;
+                  const api::CrudStoredValue* encoded = nullptr;
                   for (const auto& [name, value] : row.values) {
                     if (name == column.canonical_name_key) {
                       if (encoded != nullptr) {
@@ -3293,21 +3294,22 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                       encoded = &value;
                     }
                   }
-                  if (encoded == nullptr) {
+                  if (encoded == nullptr || !encoded->valid() ||
+                      (!encoded->isPresent() && !encoded->isSqlNull())) {
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar row omits a field");
                   }
-                  if (*encoded == "<NULL>" && !column.nullable) {
+                  if (encoded->isSqlNull() && !column.nullable) {
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar row nulls a non-null field");
                   }
                   api::EngineTypedValue value;
                   value.descriptor = source_copy.columns[ordinal].descriptor;
-                  if (*encoded == "<NULL>") {
+                  if (encoded->isSqlNull()) {
                     value.setState(api::EngineValueState::sql_null);
                   } else {
                     if (!api::RestoreStoredScalarPayloadV1(
-                            *encoded, api::EngineValueState::value, &value)) {
+                            encoded->bytes, encoded->state, &value)) {
                       return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                   "columnar stored scalar has no valid native payload");
                     }
@@ -3451,7 +3453,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                      ++ordinal) {
                   const auto& persisted_column =
                       source_copy.persisted.columns[ordinal];
-                  const std::string* expected_encoded = nullptr;
+                  const api::CrudStoredValue* expected_encoded = nullptr;
                   for (const auto& [name, value] : source_row.values) {
                     if (name == persisted_column.canonical_name_key) {
                       if (expected_encoded != nullptr) {
@@ -3461,20 +3463,18 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                       expected_encoded = &value;
                     }
                   }
-                  if (expected_encoded == nullptr) {
+                  if (expected_encoded == nullptr || !expected_encoded->valid() ||
+                      (!expected_encoded->isPresent() && !expected_encoded->isSqlNull())) {
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar source row omitted a field during receipt replay");
                   }
                   const auto& actual = actual_row.values[ordinal];
-                  const bool expected_null = *expected_encoded == "<NULL>";
                   if (!CanonicalQueryEngineDescriptorExactlyEqual(
                           actual.descriptor,
                           source_copy.columns[ordinal].descriptor) ||
                       !api::StoredScalarPayloadMatchesV1(
                           actual,
-                          expected_null ? std::string_view{} : std::string_view(*expected_encoded),
-                          expected_null ? api::EngineValueState::sql_null
-                                        : api::EngineValueState::value)) {
+                          expected_encoded->bytes, expected_encoded->state)) {
                     return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                                 "columnar source reconstructed value changed");
                   }
@@ -4849,7 +4849,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                         "model-family row identity or width is invalid");
           }
           for (const auto& column : persisted.columns) {
-            const std::string* encoded = nullptr;
+            const api::CrudStoredValue* encoded = nullptr;
             for (const auto& [name, value] : row.values) {
               if (name != column.canonical_name_key) continue;
               if (encoded != nullptr) {
@@ -4858,8 +4858,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               }
               encoded = &value;
             }
-            if (encoded == nullptr ||
-                (*encoded == "<NULL>" && !column.nullable)) {
+            if (encoded == nullptr || !encoded->valid() ||
+                (!encoded->isPresent() && !encoded->isSqlNull()) ||
+                (encoded->isSqlNull() && !column.nullable)) {
               return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                           "model-family row omits or nulls a required field");
             }
@@ -4941,16 +4942,21 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
 
         auto& batch = provider.provider_batch;
         std::uint64_t contextual_post_consume_retained_memory = 0;
-        const auto value_for = [](const api::CrudRowVersionRecord& row,
+        const auto cell_for = [](const api::CrudRowVersionRecord& row,
                                   const std::string_view name)
-            -> const std::string* {
-          const std::string* value = nullptr;
+            -> const api::CrudStoredValue* {
+          const api::CrudStoredValue* value = nullptr;
           for (const auto& [field, candidate] : row.values) {
             if (field != name) continue;
             if (value != nullptr) return nullptr;
             value = &candidate;
           }
           return value;
+        };
+        const auto value_for = [&](const api::CrudRowVersionRecord& row,
+                                   std::string_view name) -> const std::string* {
+          const auto* value = cell_for(row, name);
+          return value && value->valid() && value->isPresent() ? &value->bytes : nullptr;
         };
         if (source_input.family_id == "spatial") {
           std::vector<api::nosql::SpatialSourceRowV1> source_rows;
@@ -5879,19 +5885,20 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                 return fail(cancellation_diagnostic(),
                             "columnar value reconstruction was cancelled");
               }
-              const auto* encoded = value_for(
+              const auto* encoded = cell_for(
                   row, persisted.columns[ordinal].canonical_name_key);
-              if (encoded == nullptr) {
+              if (encoded == nullptr || !encoded->valid() ||
+                  (!encoded->isPresent() && !encoded->isSqlNull())) {
                 return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                             "persistent columnar row omits a logical column");
               }
               api::EngineTypedValue value;
               value.descriptor = logical_rows.columns[ordinal].descriptor;
-              if (*encoded == "<NULL>") {
+              if (encoded->isSqlNull()) {
                 value.setState(api::EngineValueState::sql_null);
               } else {
                 if (!api::RestoreStoredScalarPayloadV1(
-                        *encoded, api::EngineValueState::value, &value)) {
+                        encoded->bytes, encoded->state, &value)) {
                   return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                               "columnar stored scalar has no valid native payload");
                 }
@@ -6320,24 +6327,22 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               }
               for (std::size_t ordinal = 0;
                    ordinal < persisted.columns.size(); ++ordinal) {
-                const auto* expected_encoded = value_for(
+                const auto* expected_encoded = cell_for(
                     source_row,
                     persisted.columns[ordinal].canonical_name_key);
-                if (expected_encoded == nullptr) {
+                if (expected_encoded == nullptr || !expected_encoded->valid() ||
+                    (!expected_encoded->isPresent() && !expected_encoded->isSqlNull())) {
                   return fail(
                       "SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                       "columnar source row omitted a field during receipt replay");
                 }
                 const auto& actual = actual_row.values[ordinal];
-                const bool expected_null = *expected_encoded == "<NULL>";
                 if (!CanonicalQueryEngineDescriptorExactlyEqual(
                         actual.descriptor,
                         public_columns[ordinal].descriptor) ||
                     !api::StoredScalarPayloadMatchesV1(
                         actual,
-                        expected_null ? std::string_view{} : std::string_view(*expected_encoded),
-                        expected_null ? api::EngineValueState::sql_null
-                                      : api::EngineValueState::value)) {
+                        expected_encoded->bytes, expected_encoded->state)) {
                   return fail("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                               "columnar source reconstructed value changed");
                 }

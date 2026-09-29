@@ -1262,11 +1262,16 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   }
   std::vector<ProcessTaskRow> candidates;
   for (const auto& row : VisibleCrudRowsForContext(state, task_table_uuid, request.context)) {
-    const auto priority = ParseI64(CrudFieldValue(row.values, "priority"), 0);
+    const auto priority_value = CrudFieldValue(row.values, "priority");
+    const auto id_value = CrudFieldValue(row.values, "task_id");
+    const auto label_value = CrudFieldValue(row.values, "task_label");
+    if (!priority_value.isPresent() || !id_value.isPresent() || !label_value.isPresent())
+      return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused, "proc_task_value_state_invalid");
+    const auto priority = ParseI64(priority_value.bytes, 0);
     if (priority < threshold) { continue; }
     ProcessTaskRow task;
-    task.task_id = ParseI64(CrudFieldValue(row.values, "task_id"), 0);
-    task.label = CrudFieldValue(row.values, "task_label");
+    task.task_id = ParseI64(id_value.bytes, 0);
+    task.label = label_value.bytes;
     task.priority = priority;
     candidates.push_back(std::move(task));
   }

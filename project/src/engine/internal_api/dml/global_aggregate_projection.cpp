@@ -138,6 +138,7 @@ const MgaRelationColumnStorageDescriptor* FindColumnByUuid(
 struct StoredFieldValueLookup {
   bool found = false;
   bool duplicate = false;
+  EngineValueState state = EngineValueState::missing;
   std::string_view value;
 };
 
@@ -152,7 +153,8 @@ StoredFieldValueLookup StoredFieldValueExact(
       continue;
     }
     lookup.found = true;
-    lookup.value = value;
+    lookup.state = value.state;
+    lookup.value = value.bytes;
   }
   return lookup;
 }
@@ -974,7 +976,11 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
             "global_aggregate_source_field_missing_from_visible_row");
         return result;
       }
-      if (value.value == "<NULL>") continue;
+      if (value.state == EngineValueState::sql_null && value.value.empty()) continue;
+      if (value.state != EngineValueState::value) {
+        result.diagnostic = AggregateDiagnostic("global_aggregate_source_value_state_invalid");
+        return result;
+      }
 
       if (output.operation ==
           EngineGlobalAggregateOperation::count_non_null_field) {

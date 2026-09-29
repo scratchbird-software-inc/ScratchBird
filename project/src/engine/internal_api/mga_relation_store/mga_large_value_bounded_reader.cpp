@@ -56,13 +56,15 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
     return refuse("large_value_read_memory_limit", true);
   std::map<EngineUuid, Requested> requested;
   for (auto& row : *rows) for (auto& [field, value] : row.values) {
-    if (!IsMgaLargeValueLocator(value)) {
-      if (CrudValueIsLargeValueLocator(value) || value.starts_with("SBMGA_LARGE_VALUE:")) return refuse("large_value_locator_encoding_unadmitted");
+    if (!value.valid()) return refuse("large_value_state_invalid");
+    if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
+    if (!IsMgaLargeValueLocator(value.bytes)) {
+      if (CrudValueIsLargeValueLocator(value.bytes) || value.bytes.starts_with("SBMGA_LARGE_VALUE:")) return refuse("large_value_locator_encoding_unadmitted");
       continue;
     }
     EngineUuid overflow_uuid;
     std::uint64_t bytes = 0, checksum = 0;
-    if (!ReadMgaLargeValueLocator(value, &overflow_uuid, &checksum, &bytes))
+    if (!ReadMgaLargeValueLocator(value.bytes, &overflow_uuid, &checksum, &bytes))
       return refuse("large_value_locator_invalid");
     std::uint64_t charge = 0;
     if (!HeapReadMemoryMultiply(bytes, 4, &charge) || !HeapReadMemoryAdd(4096, &charge) ||
@@ -79,7 +81,7 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
                target.field != field || target.bytes != bytes || target.checksum != checksum) {
       return refuse("large_value_locator_owner_conflict");
     }
-    target.destinations.push_back(&value);
+    target.destinations.push_back(&value.bytes);
   }
   if (requested.empty()) return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   std::ifstream input(context.database_path + ".sb.mga_large_values", std::ios::binary);

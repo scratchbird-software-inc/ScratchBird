@@ -160,12 +160,12 @@ std::string RewriteHeaderSchemaVersion(std::string encoded,
   return encoded;
 }
 
-std::string FieldValue(const std::vector<std::pair<std::string, std::string>>& values,
+api::CrudStoredValue FieldValue(const api::CrudValueFields& values,
                        const std::string& field) {
   for (const auto& [name, value] : values) {
     if (name == field) { return value; }
   }
-  return {};
+  return api::CrudStoredValue::Missing();
 }
 
 api::CrudTableRecord FindCatalogTable(const api::MgaRelationReadView& state) {

@@ -66,6 +66,8 @@ bool ColdFieldExists(const std::vector<HotColdColdFieldDescriptor>& fields,
 }
 
 HotColdFieldTemperature ClassifyField(const HotColdFieldInput& field, u64 threshold) {
+  // NULL is metadata, never an allocated empty cold payload.
+  if (field.is_null) return HotColdFieldTemperature::hot;
   if (field.force_cold) {
     return HotColdFieldTemperature::cold;
   }
@@ -127,6 +129,12 @@ HotColdRowUpdateResult RefuseUpdate(std::string diagnostic_code,
 }
 
 bool ValidSplitRequest(const HotColdRowSplitRequest& request, std::string* detail) {
+  for (const auto& field : request.fields) {
+    if (field.is_null && !field.encoded_value.empty()) {
+      *detail = "SQL NULL field must not carry payload bytes";
+      return false;
+    }
+  }
   if (request.large_payload_store == nullptr) {
     *detail = "large payload store is required";
     return false;
@@ -175,15 +183,18 @@ const char* HotColdFieldTemperatureName(HotColdFieldTemperature temperature) {
 
 std::string SerializeHotColdRowHead(const HotColdRowHead& hot_head) {
   using namespace payload_binary;
-  std::string bytes="SBHCR002";
+  std::string bytes="SBHCR003";
   for(const auto* id:{&hot_head.row_uuid,&hot_head.owner_object_uuid,&hot_head.transaction_uuid})
     if(!PutUuid(bytes,*id))return {};
   PutU64(bytes,hot_head.creator_local_transaction_id);PutU64(bytes,hot_head.row_version);
   if(!PutString(bytes,hot_head.hot_filespace_class)||!PutString(bytes,hot_head.cold_row_filespace_class))return {};
   if(hot_head.hot_fields.size()>65536||hot_head.cold_fields.size()>65536)return {};
   PutU64(bytes,hot_head.hot_fields.size());
-  for(const auto& field:hot_head.hot_fields)
+  for(const auto& field:hot_head.hot_fields) {
+    if(field.is_null && !field.encoded_value.empty())return {};
+    bytes.push_back(field.is_null ? '\1' : '\0');
     if(!PutString(bytes,field.field_name)||!PutString(bytes,field.encoded_value))return {};
+  }
   PutU64(bytes,hot_head.cold_fields.size());
   for(const auto& field:hot_head.cold_fields)
     if(!PutString(bytes,field.field_name)||!PutString(bytes,field.descriptor_text))return {};
@@ -232,7 +243,8 @@ HotColdRowSplitResult SplitHotColdRow(const HotColdRowSplitRequest& request) {
                                             field.encoded_value,
                                             field.metadata,
                                             field.indexed,
-                                            field.frequently_filtered});
+                                            field.frequently_filtered,
+                                            field.is_null});
       continue;
     }
 

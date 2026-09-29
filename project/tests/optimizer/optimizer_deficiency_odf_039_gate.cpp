@@ -107,9 +107,9 @@ api::EngineRowValue Row(std::initializer_list<std::pair<std::string, std::option
   return row;
 }
 
-std::vector<std::pair<std::string, std::string>> CrudValues(
-    std::initializer_list<std::pair<std::string, std::string>> fields) {
-  std::vector<std::pair<std::string, std::string>> values;
+api::CrudValueFields CrudValues(
+    std::initializer_list<std::pair<std::string, api::CrudStoredValue>> fields) {
+  api::CrudValueFields values;
   for (const auto& [name, value] : fields) { values.push_back({name, value}); }
   return values;
 }

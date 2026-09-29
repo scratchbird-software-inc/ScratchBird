@@ -86,7 +86,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& cont
                                                 const EngineUuid& table_uuid,
                                                 const EngineUuid& row_uuid,
                                                 const EngineUuid& version_uuid,
-                                                const std::vector<std::pair<std::string, std::string>>& values) {
+                                                const CrudValueFields& values) {
   return AppendMgaIndexEntriesForRows(context,
                                       state,
                                       table_uuid,
@@ -152,7 +152,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForIndex(const EngineRequestContext& co
                                                   const CrudIndexRecord& index,
                                                   const EngineUuid& row_uuid,
                                                   const EngineUuid& version_uuid,
-                                                  const std::vector<std::pair<std::string, std::string>>& values) {
+                                                  const CrudValueFields& values) {
   MgaIndexEntryAppendBatch batch;
   batch.index = index;
   batch.table_uuid = index.table_uuid;

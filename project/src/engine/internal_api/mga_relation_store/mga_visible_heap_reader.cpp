@@ -2125,7 +2125,7 @@ bool DecodeVisibleStreamBinaryFile(
             (null_bitmap[column / 8U] &
              static_cast<std::uint8_t>(1U << (column % 8U))) != 0;
         if (is_null) {
-          if (selected) row.values.push_back({field_order[column], "<NULL>"});
+          if (selected) row.values.push_back({field_order[column], CrudStoredValue::SqlNull()});
           continue;
         }
         if (!selected) {

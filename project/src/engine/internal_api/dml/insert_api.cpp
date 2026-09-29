@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/insert_api.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <stdexcept>
 
@@ -405,7 +406,7 @@ std::optional<CrudIndexRecord> FindConflictTargetIndex(
 
 std::vector<std::string> ConflictUpdateColumns(
     const EngineInsertRowsRequest& request,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& target_column) {
   if (!request.conflict_update_columns.empty()) return request.conflict_update_columns;
   auto option_columns = InsertOptionValues(request, "conflict_update_column:");
@@ -1167,7 +1168,7 @@ std::vector<InsertConflictAssignmentExpression> ParseInsertConflictAssignmentPla
 }
 
 bool ParseLongDoubleValue(const std::string& value, long double* out) {
-  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  if (out == nullptr || value.empty()) { return false; }
   try {
     std::size_t consumed = 0;
     const long double parsed = std::stold(value, &consumed);
@@ -1200,18 +1201,21 @@ std::string FormatArithmeticResult(long double value, bool integral) {
 
 EngineApiDiagnostic ApplyInsertConflictAssignmentExpressions(
     const std::vector<InsertConflictAssignmentExpression>& expressions,
-    std::vector<std::pair<std::string, std::string>>* values) {
+    CrudValueFields* values) {
   if (values == nullptr) {
     return MakeInvalidRequestDiagnostic("dml.insert_rows",
                                         "on_conflict_assignment_values_required");
   }
   for (const auto& expression : expressions) {
-    std::string new_value = expression.literal_value;
+    CrudStoredValue new_value = expression.literal_value;
     if (expression.operation == "add" || expression.operation == "subtract") {
-      const std::string source_value = CrudFieldValue(*values, expression.source_column);
+      const auto source_value = CrudFieldValue(*values, expression.source_column);
       long double left = 0.0;
       long double right = 0.0;
-      if (!ParseLongDoubleValue(source_value, &left) ||
+      if (source_value.isSqlNull()) {
+        new_value = CrudStoredValue::SqlNull();
+      } else {
+      if (!source_value.isPresent() || !ParseLongDoubleValue(source_value.bytes, &left) ||
           !ParseLongDoubleValue(expression.literal_value, &right)) {
         return MakeInvalidRequestDiagnostic(
             "dml.insert_rows",
@@ -1221,8 +1225,9 @@ EngineApiDiagnostic ApplyInsertConflictAssignmentExpressions(
           expression.operation == "subtract" ? left - right : left + right;
       new_value = FormatArithmeticResult(
           computed,
-          LooksIntegralText(source_value) &&
+          LooksIntegralText(source_value.bytes) &&
               LooksIntegralText(expression.literal_value));
+      }
     }
     bool replaced = false;
     for (auto& [field, value] : *values) {
@@ -1237,10 +1242,11 @@ EngineApiDiagnostic ApplyInsertConflictAssignmentExpressions(
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-bool ReplaceValueFromExcluded(std::vector<std::pair<std::string, std::string>>* target_values,
-                              const std::vector<std::pair<std::string, std::string>>& excluded_values,
+bool ReplaceValueFromExcluded(CrudValueFields* target_values,
+                              const CrudValueFields& excluded_values,
                               const std::string& column) {
-  const std::string excluded_value = CrudFieldValue(excluded_values, column);
+  const auto excluded_value = CrudFieldValue(excluded_values, column);
+  if (!excluded_value.isPresent() && !excluded_value.isSqlNull()) return false;
   bool replaced = false;
   for (auto& [field, value] : *target_values) {
     if (field == column) {
@@ -1279,7 +1285,7 @@ EngineInsertRowsResult AllocationFailureResult(const EngineRequestContext& conte
 
 struct StagedInsertRow {
   CrudRowVersionRecord row_record;
-  std::vector<std::pair<std::string, std::string>> logical_values;
+  CrudValueFields logical_values;
   bool toast_required = false;
 };
 
@@ -1374,8 +1380,8 @@ std::vector<CrudIndexRecord> SynchronousInsertIndexes(
 }
 
 bool IndexKeysChanged(const CrudIndexRecord& index,
-                      const std::vector<std::pair<std::string, std::string>>& before,
-                      const std::vector<std::pair<std::string, std::string>>& after) {
+                      const CrudValueFields& before,
+                      const CrudValueFields& after) {
   return CrudIndexKeysForValues(index, before) != CrudIndexKeysForValues(index, after);
 }
 
@@ -1385,7 +1391,7 @@ EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
     const EngineUuid& table_uuid,
     const CrudRowVersionRecord* old_row,
     const CrudRowVersionRecord& new_row,
-    const std::vector<std::pair<std::string, std::string>>& logical_new_values,
+    const CrudValueFields& logical_new_values,
     MgaRelationHotAppendContext* append_context,
     std::vector<EngineEvidenceReference>* evidence) {
   MgaTransactionalIndexProvider provider(context, append_context);
@@ -1409,7 +1415,7 @@ EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
     const bool keys_changed = old_row != nullptr && old_keys != new_keys;
     if (old_row != nullptr && (new_row.deleted || keys_changed)) {
       const std::string old_payload =
-          CrudFieldValue(old_row->values, index.column_name);
+          EncodeCrudValues({{index.column_name, CrudFieldValue(old_row->values, index.column_name)}});
       for (const auto& key : old_keys) {
         retires.push_back({index,
                            table_uuid,
@@ -1422,7 +1428,7 @@ EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
     }
     if (old_row == nullptr || keys_changed) {
       const std::string new_payload =
-          CrudFieldValue(logical_new_values, index.column_name);
+          EncodeCrudValues({{index.column_name, CrudFieldValue(logical_new_values, index.column_name)}});
       for (const auto& key : new_keys) {
         inserts.push_back({index,
                            table_uuid,
@@ -1719,7 +1725,7 @@ std::string InsertColumnTypeName(std::string_view descriptor) {
 EngineTypedValue TypedValueFromStagedInsertField(
     const CrudTableRecord& table,
     const std::string& field_name,
-    const std::string& encoded_value) {
+    const CrudStoredValue& encoded_value) {
   const std::string column_descriptor =
       CrudColumnDescriptorForName(table.columns, field_name);
   EngineDescriptor descriptor;
@@ -1729,12 +1735,12 @@ EngineTypedValue TypedValueFromStagedInsertField(
       column_descriptor.empty()
           ? "type=" + descriptor.canonical_type_name
           : column_descriptor;
-  const bool is_null = encoded_value == "<NULL>";
+  if (!encoded_value.valid() || (!encoded_value.isPresent() && !encoded_value.isSqlNull()))
+    throw std::invalid_argument("unresolved staged insert value state");
   EngineTypedValue typed;
   typed.descriptor = std::move(descriptor);
-  typed.encoded_value = is_null ? std::string{} : encoded_value;
-  typed.is_null = is_null;
-  typed.state = is_null ? EngineValueState::sql_null : EngineValueState::value;
+  typed.encoded_value = encoded_value.bytes;
+  typed.setState(encoded_value.state);
   return typed;
 }
 
@@ -2175,7 +2181,7 @@ struct InsertRuntimeSecurityPolicyDecision {
 
 InsertRuntimeSecurityPolicyDecision EvaluateInsertRuntimeSecurityPolicyEnvelope(
     const std::string& envelope,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   InsertRuntimeSecurityPolicyDecision decision;
   std::string normalized = LowerAscii(envelope);
   if (StartsWith(normalized, "sblr_predicate:")) {
@@ -2218,7 +2224,7 @@ InsertRuntimeSecurityPolicyDecision EvaluateInsertRuntimeSecurityPolicyEnvelope(
 EngineEvaluateDeepSecurityResult EvaluateInsertRuntimeSecurityRecheck(
     const EngineInsertRowsRequest& request,
     const EngineUuid& table_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::vector<EngineEvidenceReference>* evidence) {
   std::string rls_policy = "allow";
   for (const auto& policy : request.context.authorization_context.policies) {
@@ -2479,7 +2485,7 @@ void RecordDmlAllocationResourceMetrics(
 }
 
 struct InsertPreworkQueueItem {
-  std::vector<std::pair<std::string, std::string>> logical_values;
+  CrudValueFields logical_values;
   EngineApiU64 encoded_bytes = 0;
 };
 
@@ -2528,7 +2534,7 @@ class InsertPreworkQueue {
 
   ~InsertPreworkQueue() { (void)Finish(); }
 
-  bool Enqueue(std::vector<std::pair<std::string, std::string>> logical_values,
+  bool Enqueue(CrudValueFields logical_values,
                EngineApiU64 encoded_bytes) {
     if (!stats_.enabled) {
       return true;
@@ -2696,7 +2702,7 @@ class InsertPreworkQueue {
       return;
     }
 
-    std::vector<std::vector<std::pair<std::string, std::string>>> index_value_batch;
+    std::vector<CrudValueFields> index_value_batch;
     index_value_batch.reserve(work.size());
     for (auto& item : work) {
       index_value_batch.push_back(std::move(item.logical_values));
@@ -2958,7 +2964,7 @@ EngineInsertRowsResult InsertDiagnosticResultWithEvidence(
 }
 
 bool RowHasUniqueIndexKey(const CrudIndexRecord& index,
-                          const std::vector<std::pair<std::string, std::string>>& values,
+                          const CrudValueFields& values,
                           const std::string& key_value) {
   const auto keys = CrudIndexKeysForValues(index, values);
   return std::find(keys.begin(), keys.end(), key_value) != keys.end();
@@ -3177,7 +3183,7 @@ std::optional<UniqueConflictProbeResult> FindUniqueConflictByIndex(
     const UniquePhysicalProbeCache& physical_probe_cache,
     const CrudIndexRecord& index,
     const EngineUuid& exclude_row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   const auto keys = CrudIndexKeysForValues(index, values);
   if (keys.empty()) {
     return std::nullopt;
@@ -3203,7 +3209,7 @@ EngineApiDiagnostic ValidateIndexBackedUniquePreflightForRow(
     const UniquePhysicalProbeCache& physical_probe_cache,
     const std::vector<CrudIndexRecord>& indexes,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     ConstraintDmlValidationCache* constraint_cache,
     std::vector<EngineEvidenceReference>* evidence) {
   for (const auto& index : indexes) {
@@ -3253,7 +3259,7 @@ EngineApiDiagnostic ValidateIndexBackedUniquePreflightForRow(
 bool ApplyStatementOverlayUpdateToStagedInsert(
     std::vector<StagedInsertRow>* staged_insert_rows,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& update_values,
+    const CrudValueFields& update_values,
     bool toast_required) {
   for (auto& staged : *staged_insert_rows) {
     if (staged.row_record.row_uuid != row_uuid) {
@@ -3271,7 +3277,7 @@ bool ApplyStatementOverlayUpdateToStagedInsert(
 std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> InsertDeltaEntries(
     const InsertBatchContext& batch_context,
     const CrudRowVersionRecord& row_record,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> entries;
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action != InsertIndexMaintenanceAction::committed_delta_ledger) {
@@ -3295,7 +3301,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> ConflictUpdateDeltaEntries(
     const InsertBatchContext& batch_context,
     const CrudRowVersionRecord& old_row,
     const EngineUuid& new_version_uuid,
-    const std::vector<std::pair<std::string, std::string>>& new_values) {
+    const CrudValueFields& new_values) {
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> entries;
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action != InsertIndexMaintenanceAction::committed_delta_ledger ||
@@ -3999,7 +4005,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           ++result.updated_count;
           continue;
         }
-        std::vector<std::pair<std::string, std::string>> storage_values = update_values;
+        CrudValueFields storage_values = update_values;
         EngineUuid version_uuid = GenerateCrudEngineUuid("row");
         const auto row_allocation_start = InsertSteadyClock::now();
         const auto row_allocation = ReserveDmlPageAllocationRuntime(
@@ -4479,7 +4485,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                      "write",
                      std::to_string(window_size));
 
-      std::vector<std::vector<std::pair<std::string, std::string>>> index_value_batch;
+      std::vector<CrudValueFields> index_value_batch;
       index_value_batch.reserve(window_size);
       for (std::size_t index = window_begin; index < window_end; ++index) {
         index_value_batch.push_back(staged_insert_rows[index].logical_values);
@@ -4535,7 +4541,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 
       std::vector<CrudRowVersionRecord> row_records;
       row_records.reserve(window_size);
-      std::vector<std::vector<std::pair<std::string, std::string>>> storage_value_batch;
+      std::vector<CrudValueFields> storage_value_batch;
       storage_value_batch.reserve(window_size);
       for (std::size_t index = window_begin; index < window_end; ++index) {
         auto& staged = staged_insert_rows[index];

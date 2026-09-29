@@ -67,7 +67,7 @@ bool DirectPackTypedPayload(
     std::vector<scratchbird::core::platform::byte>* out);
 
 std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
-    const std::vector<std::pair<std::string, std::string>>& values);
+    const CrudValueFields& values);
 
 DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
     const EngineRowValue& input_row,

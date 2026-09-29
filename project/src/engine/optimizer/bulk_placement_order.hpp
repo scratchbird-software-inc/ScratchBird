@@ -21,6 +21,8 @@ struct BulkPlacementOrderRow {
   std::uint64_t source_ordinal = 0;
   scratchbird::core::platform::Uuid row_uuid;
   std::string placement_key;
+  bool placement_key_present = true;
+  bool placement_key_null = false;
 };
 
 struct BulkPlacementOrderRequest {

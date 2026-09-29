@@ -104,7 +104,12 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       row.row_uuid = CrudBinaryIdentity(parts[4]);
       row.version_uuid = CrudBinaryIdentity(parts[5]);
       row.deleted = parts[6] == "1";
-      row.values = DecodeCrudPairs(parts[7]);
+      auto decoded_values = DecodeCrudValues(parts[7]);
+      if (!decoded_values) {
+        result.diagnostic = MakeInvalidRequestDiagnostic("crud.load_state", "row_value_state_frame_invalid");
+        return result;
+      }
+      row.values = std::move(*decoded_values);
       row.sequence = ++result.state.max_sequence;
       result.state.row_versions.push_back(std::move(row));
     } else if (event == "ROW_VERSION_V2" && parts.size() >= 10) {
@@ -117,7 +122,12 @@ CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
       row.deleted = parts[6] == "1";
       row.previous_version_uuid = CrudBinaryIdentity(parts[7], true);
       row.previous_sequence = ParseU64(parts[8]);
-      row.values = DecodeCrudPairs(parts[9]);
+      auto decoded_values = DecodeCrudValues(parts[9]);
+      if (!decoded_values) {
+        result.diagnostic = MakeInvalidRequestDiagnostic("crud.load_state", "row_value_state_frame_invalid");
+        return result;
+      }
+      row.values = std::move(*decoded_values);
       row.sequence = ++result.state.max_sequence;
       result.state.row_versions.push_back(std::move(row));
     } else if (event == "INDEX_CREATE" && parts.size() >= 8) {

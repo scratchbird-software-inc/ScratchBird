@@ -181,7 +181,7 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
 EngineApiDiagnostic ValidateUpdateBatchMemoryBudget(const UpdateBatchContext& context,
                                                     std::uint64_t projected_bytes);
 EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* context,
-                                                       const std::vector<std::pair<std::string, std::string>>& values,
+                                                       const CrudValueFields& values,
                                                        const EngineUuid& row_uuid);
 void AddUpdateTrace(UpdateBatchContext* context, std::string event_name, std::string phase, EngineEvidenceValue detail = {});
 void AddUpdateBatchEvidenceToResult(const UpdateBatchContext& context, EngineApiResult* result);

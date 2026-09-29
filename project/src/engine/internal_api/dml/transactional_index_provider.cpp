@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/transactional_index_provider.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/crud_index_evidence.hpp"
 #include "dml/test_optimization_profile.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
@@ -184,12 +185,12 @@ class DeferredIndexProofs {
   bool Match(const CrudIndexRecord& index, const EngineUuid& row_uuid,
              const EngineUuid& version_uuid, std::uint64_t creator_tx,
              core_index::SecondaryIndexDeltaKind kind, const std::string& key,
-             const std::vector<std::pair<std::string, std::string>>& values) {
+             const CrudValueFields& values) {
     if (index.unique || ResolvedFamily(index) == "unique_btree" ||
         (index.family != kCrudIndexFamilyBtree && index.family != kCrudIndexFamilyHash &&
          index.family != kCrudIndexFamilyBitmap) || !Load()) return false;
     const auto expected = EncodeCrudPairs({{"key", key},
-        {"payload", CrudFieldValue(values, index.column_name)}, {"family", index.family}});
+        {"payload", EncodeCrudValues({{index.column_name, CrudFieldValue(values, index.column_name)}})}, {"family", index.family}});
     for (const auto& record : ledger_.ledger.records) {
       const auto& delta = record.delta;
       if (delta.index_uuid.value != index.index_uuid || delta.table_uuid.value != index.table_uuid ||
@@ -677,7 +678,7 @@ MgaOrderedBtreeTransactionalIndexProvider::RebuildFromRelation(
       request.version_uuid = row.version_uuid;
       request.predecessor_version_uuid = row.previous_version_uuid;
       request.key_value = key;
-      request.payload_value = CrudFieldValue(row.values, index.column_name);
+      request.payload_value = EncodeCrudValues({{index.column_name, CrudFieldValue(row.values, index.column_name)}});
       auto prepared = PrepareEntry(request, "rebuild");
       if (!prepared.ok) return prepared;
       ++result.rebuilt_entry_count;

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "direct_bulk_index_cache_projection.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 namespace scratchbird::engine::internal_api::dml::detail {
 // SEARCH_KEY: SB_ENGINE_DIRECT_BULK_INDEX_CACHE_PROJECTION_IMPLEMENTATION_AUTHORITY
 // Pure advisory projections of supplied entries. No cache admission, durable
@@ -69,7 +70,8 @@ std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromRetailBatches(
         entry.family = batch.index.family;
         entry.entry_kind = "exact";
         entry.key_value = key;
-        entry.payload_value = CrudFieldValue(row.values, batch.index.column_name);
+        entry.payload_value = EncodeCrudValues({{batch.index.column_name,
+            CrudFieldValue(row.values, batch.index.column_name)}});
         entry.row_uuid = row.row_uuid;
         entry.version_uuid = row.version_uuid;
         entries.push_back(std::move(entry));

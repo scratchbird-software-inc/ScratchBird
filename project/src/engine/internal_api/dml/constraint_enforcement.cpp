@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/constraint_enforcement.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <stdexcept>
 
@@ -58,11 +59,11 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
-bool IsNullValue(const std::string& value) {
-  return value == "<NULL>";
+bool IsNullValue(const CrudStoredValue& value) {
+  return value.isSqlNull();
 }
 
-bool HasField(const std::vector<std::pair<std::string, std::string>>& values,
+bool HasField(const CrudValueFields& values,
               const std::string& field) {
   for (const auto& [name, ignored] : values) {
     (void)ignored;
@@ -71,17 +72,17 @@ bool HasField(const std::vector<std::pair<std::string, std::string>>& values,
   return false;
 }
 
-std::string FieldValue(const std::vector<std::pair<std::string, std::string>>& values,
+CrudStoredValue FieldValue(const CrudValueFields& values,
                        const std::string& field) {
   for (const auto& [name, value] : values) {
     if (name == field) { return value; }
   }
-  return {};
+  return CrudStoredValue::Missing();
 }
 
-void UpsertField(std::vector<std::pair<std::string, std::string>>* values,
+void UpsertField(CrudValueFields* values,
                  const std::string& field,
-                 const std::string& value) {
+                 const CrudStoredValue& value) {
   for (auto& [name, existing] : *values) {
     if (name == field) {
       existing = value;
@@ -299,7 +300,7 @@ scratchbird::engine::sblr::SblrExecutionContext ConstraintSblrContext(
   return out;
 }
 
-std::optional<std::string> MaterializeDefault(const EngineRequestContext& context,
+std::optional<CrudStoredValue> MaterializeDefault(const EngineRequestContext& context,
                                               const std::string& envelope) {
   if (envelope.empty()) { return std::nullopt; }
   if (StartsWith(envelope, "literal:")) { return envelope.substr(8); }
@@ -322,7 +323,7 @@ std::optional<std::string> MaterializeDefault(const EngineRequestContext& contex
     return result.scalar_values.front().encoded_value;
   }
   const std::string lower = LowerAscii(envelope);
-  if (lower == "null" || envelope == "<NULL>") { return std::string("<NULL>"); }
+  if (lower == "null") { return CrudStoredValue::SqlNull(); }
   if (!StartsWith(lower, "sblr:") && !StartsWith(lower, "sblr_expression:") &&
       !StartsWith(lower, "generated:")) {
     return envelope;
@@ -352,17 +353,18 @@ bool NumberCompare(const std::string& left, const std::string& op, const std::st
   return false;
 }
 
-CheckResult EvaluateCheckEnvelope(const std::string& envelope, const std::string& value) {
+CheckResult EvaluateCheckEnvelope(const std::string& envelope, const CrudStoredValue& value) {
   if (envelope.empty()) { return {true, false, {}}; }
   if (StartsWith(envelope, "sblr_predicate:")) {
     return EvaluateCheckEnvelope(envelope.substr(15), value);
   }
   if (envelope == "not_null") {
-    return {!IsNullValue(value), false, "check_not_null_failed"};
+    return {value.isPresent(), false, "check_not_null_failed"};
   }
   if (envelope == "not_empty") {
-    return {!value.empty() && !IsNullValue(value), false, "check_not_empty_failed"};
+    return {value.isPresent() && !value.bytes.empty(), false, "check_not_empty_failed"};
   }
+  if (!value.isPresent()) return {false, false, "check_value_state_not_present"};
   const auto pos = envelope.find(':');
   if (pos == std::string::npos) {
     return {false, true, "check_constraint_requires_sblr_executor"};
@@ -372,7 +374,7 @@ CheckResult EvaluateCheckEnvelope(const std::string& envelope, const std::string
   if (op == "eq") { return {value == rhs, false, "check_eq_failed"}; }
   if (op == "ne") { return {value != rhs, false, "check_ne_failed"}; }
   if (op == "gt" || op == "gte" || op == "lt" || op == "lte") {
-    return {NumberCompare(value, op, rhs), false, "check_" + op + "_failed"};
+    return {NumberCompare(value.bytes, op, rhs), false, "check_" + op + "_failed"};
   }
   if (op == "length_gt" || op == "length_gte" || op == "length_lt" || op == "length_lte") {
     std::size_t rhs_length = 0;
@@ -381,7 +383,7 @@ CheckResult EvaluateCheckEnvelope(const std::string& envelope, const std::string
     } catch (...) {
       return {false, false, "check_length_rhs_invalid"};
     }
-    const std::size_t length = value.size();
+    const std::size_t length = value.bytes.size();
     if (op == "length_gt") { return {length > rhs_length, false, "check_length_gt_failed"}; }
     if (op == "length_gte") { return {length >= rhs_length, false, "check_length_gte_failed"}; }
     if (op == "length_lt") { return {length < rhs_length, false, "check_length_lt_failed"}; }
@@ -462,9 +464,9 @@ std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const MgaRelation
 
 bool AnyNullIndexComponent(
     const CrudIndexRecord& index,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   for (const auto& column : KeyColumnsForIndex(index)) {
-    if (FieldValue(values, column) == "<NULL>") { return true; }
+    if (FieldValue(values, column).isSqlNull()) { return true; }
   }
   return false;
 }
@@ -677,14 +679,16 @@ const std::set<std::string>& CachedColumnValues(
     static thread_local std::set<std::string> uncached_values;
     uncached_values.clear();
     for (const auto& row : VisibleMgaRowsForContext(state, table_uuid, context)) {
-      uncached_values.insert(FieldValue(row.values, column_name));
+      const auto value = FieldValue(row.values, column_name);
+      if (value.isPresent()) uncached_values.insert(value.bytes);
     }
     return uncached_values;
   }
   if (cache->column_values_built_for_table_column.insert(key).second) {
     auto& values = cache->column_values_by_table_column[key];
     for (const auto& row : CachedVisibleRowsForTable(cache, state, table_uuid, context)) {
-      values.insert(FieldValue(row.values, column_name));
+      const auto value = FieldValue(row.values, column_name);
+      if (value.isPresent()) values.insert(value.bytes);
     }
   }
   return cache->column_values_by_table_column[key];
@@ -696,7 +700,7 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
     const CrudTableRecord& table,
     const CrudIndexRecord& index,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const CatalogColumnMetadata& fields,
     const std::string& column_name,
     const std::string& constraint_class,
@@ -789,12 +793,13 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
     const CrudTableRecord& table,
     const CatalogColumnMetadata& fields,
     const std::string& column_name,
-    const std::string& value,
+    const CrudStoredValue& value,
     ConstraintDmlValidationCache* cache,
     std::vector<EngineEvidenceReference>* evidence) {
   const auto reference = ParseForeignKeyReference(fields);
   if (!reference.has_value()) { return std::nullopt; }
   if (IsNullValue(value)) { return std::nullopt; }
+  if (!value.isPresent()) return MakeInvalidRequestDiagnostic("constraint.foreign_key", "unresolved_value_state");
   const EngineUuid constraint_uuid = ConstraintUuid(fields, table, column_name, "foreign_key");
   const auto parent = VisibleTableByUuid(state,
                                          reference->parent_table_uuid,
@@ -956,7 +961,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                 "none");
   }
   const std::string proof_identity =
-      EncodeMgaMetadataFields({"constraint.foreign.proof.v2",MetadataUuidBytes(constraint_uuid),MetadataUuidBytes(parent_index->index_uuid),value});
+      EncodeMgaMetadataFields({"constraint.foreign.proof.v2",MetadataUuidBytes(constraint_uuid),MetadataUuidBytes(parent_index->index_uuid),value.bytes});
   if (FindConstraintDmlProofPayload(cache,
                                     context,
                                     "foreign_key_parent_exists",
@@ -967,7 +972,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
   }
   const auto& parent_values =
       CachedColumnValues(cache, state, parent->table_uuid, reference->parent_column, context);
-  if (parent_values.count(value) != 0) {
+  if (parent_values.count(value.bytes) != 0) {
     StoreConstraintDmlProof(cache,
                             context,
                             "foreign_key_parent_exists",
@@ -980,7 +985,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                        table,
                                        fields,
                                        column_name,
-                                       value,
+                                       value.bytes,
                                        "parent_missing");
 }
 
@@ -1013,10 +1018,11 @@ ExclusionInterval ParseExclusionInterval(std::string value) {
   }
 }
 
-bool ExclusionValuesConflict(const std::string& left, const std::string& right) {
+bool ExclusionValuesConflict(const CrudStoredValue& left, const CrudStoredValue& right) {
   if (IsNullValue(left) || IsNullValue(right)) { return false; }
-  const auto left_interval = ParseExclusionInterval(left);
-  const auto right_interval = ParseExclusionInterval(right);
+  if (!left.isPresent() || !right.isPresent()) throw std::invalid_argument("unresolved exclusion value state");
+  const auto left_interval = ParseExclusionInterval(left.bytes);
+  const auto right_interval = ParseExclusionInterval(right.bytes);
   if (left_interval.valid && right_interval.valid) {
     return left_interval.lower < right_interval.upper &&
            right_interval.lower < left_interval.upper;
@@ -1178,7 +1184,7 @@ void RecordIndexBackedUniquePreflightProof(
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::vector<EngineEvidenceReference>* evidence) {
   if (cache == nullptr) {
     return;
@@ -1198,13 +1204,13 @@ void RecordIndexBackedUniquePreflightProof(
 ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
     const EngineRequestContext& context,
     const CrudTableRecord& table,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     ConstraintDmlValidationCache* cache) {
   ConstraintDmlValidationResult result;
   result.values = input_values;
   for (const auto& [column_name, fields] : CachedConstraintColumns(cache, table)) {
     const bool present = HasField(result.values, column_name);
-    const bool requested_default = present && FieldValue(result.values, column_name) == "<DEFAULT>";
+    const bool requested_default = present && FieldValue(result.values, column_name).isDefaultRequested();
     if (present && !requested_default) { continue; }
     const std::string default_envelope =
         FieldOrEmpty(fields, {"default_expression", "default_constraint", "default_value", "default"});
@@ -1255,7 +1261,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& mutation_kind,
     ConstraintDmlValidationCache* cache) {
   return ValidateImmediateRowConstraintsWithOptions(
@@ -1274,7 +1280,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const EngineUuid& row_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::string& mutation_kind,
     const ConstraintDmlValidationOptions& options,
     ConstraintDmlValidationCache* cache) {
@@ -1286,7 +1292,11 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
                           BoolField(fields, {"primary_key", "pk"}) ||
                           FalseField(fields, {"nullable"});
     const bool present = HasField(values, column_name);
-    const std::string value = present ? FieldValue(values, column_name) : std::string("<NULL>");
+    const auto value = FieldValue(values, column_name);
+    if (!value.valid() || (!value.isPresent() && !value.isSqlNull())) {
+      result.diagnostic = MakeInvalidRequestDiagnostic("constraint.validate_row", "unresolved_value_state:" + column_name);
+      return result;
+    }
     const bool deferred_timing = TimingRequiresDeferredStore(fields);
     auto record_deferred = [&result, &fields, &table, &column_name](const std::string& constraint_class) {
       result.evidence.push_back({"constraint_deferred_pending_check",
@@ -1338,7 +1348,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           const std::string proof_identity =
               EncodeMgaMetadataFields({"constraint.check.proof.v2",
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
-                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,"<NULL>"});
+                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (!FindConstraintDmlProofPayload(cache,
                                              context,
                                              "check_predicate",
@@ -1357,7 +1367,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
           const std::string proof_identity =
               EncodeMgaMetadataFields({"constraint.check.proof.v2",
                   MetadataUuidBytes(ConstraintUuid(fields, table, column_name, "check_constraint")),
-                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,value});
+                  MetadataUuidBytes(table.table_uuid),column_name,check_envelope,unknown_policy,EncodeCrudValues({{"value", value}})});
           if (FindConstraintDmlProofPayload(cache,
                                             context,
                                             "check_predicate",
@@ -1626,13 +1636,14 @@ EngineApiDiagnostic ValidateImmediateDeleteConstraints(
     const bool candidate_key = BoolField(fields, {"primary_key", "pk"}) ||
                                BoolField(fields, {"unique", "unique_key"});
     if (!candidate_key) { continue; }
-    const std::string value = FieldValue(deleted_row.values, column_name);
-    if (value.empty() || IsNullValue(value)) { continue; }
+    const auto value = FieldValue(deleted_row.values, column_name);
+    if (IsNullValue(value)) continue;
+    if (!value.isPresent()) return MakeInvalidRequestDiagnostic("constraint.delete", "unresolved_parent_key_state");
     if (const auto diagnostic = ValidateChildReferencesForParentValue(context,
                                                                       state,
                                                                       table,
                                                                       column_name,
-                                                                      value,
+                                                                      value.bytes,
                                                                       "delete")) {
       return *diagnostic;
     }
@@ -1664,19 +1675,20 @@ EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
     const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& old_row,
-    const std::vector<std::pair<std::string, std::string>>& new_values) {
+    const CrudValueFields& new_values) {
   for (const auto& [column_name, fields] : ConstraintColumns(table)) {
     const bool candidate_key = BoolField(fields, {"primary_key", "pk"}) ||
                                BoolField(fields, {"unique", "unique_key"});
     if (!candidate_key) { continue; }
-    const std::string old_value = FieldValue(old_row.values, column_name);
-    const std::string new_value = FieldValue(new_values, column_name);
-    if (old_value == new_value || old_value.empty() || IsNullValue(old_value)) { continue; }
+    const auto old_value = FieldValue(old_row.values, column_name);
+    const auto new_value = FieldValue(new_values, column_name);
+    if (old_value == new_value || IsNullValue(old_value)) continue;
+    if (!old_value.isPresent()) return MakeInvalidRequestDiagnostic("constraint.update", "unresolved_parent_key_state");
     if (const auto diagnostic = ValidateChildReferencesForParentValue(context,
                                                                       state,
                                                                       table,
                                                                       column_name,
-                                                                      old_value,
+                                                                      old_value.bytes,
                                                                       "update")) {
       return *diagnostic;
     }

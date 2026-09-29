@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -958,7 +959,7 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                 {"previous_sequence", std::to_string(row.previous_sequence)},
                                 {"lineage_checksum", std::to_string(Fnv1a64(lineage_material))},
                                 {"deleted", row.deleted ? "1" : "0"},
-                                {"values", EncodeBinaryPairs(row.values)}});
+                                {"values", EncodeCrudValues(row.values)}});
   }
   return body.str();
 }
@@ -2731,7 +2732,10 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
       row.row_uuid = BinaryIdentity(fields.at("row_uuid"));
       row.version_uuid = BinaryIdentity(fields.at("version_uuid"));
       row.deleted = fields.at("deleted") == "1";
-      row.values = DecodeBinaryPairs(fields.at("values"));
+      auto values = DecodeCrudValues(fields.at("values"));
+      if (!values) return MakeApiBehaviorDiagnostic<EngineRestoreLogicalBackupResult>(
+          request.context, kOperation, BackupInvalid(kOperation, "row_value_state_frame_invalid"));
+      row.values = std::move(*values);
       rows.push_back(std::move(row));
     }
   }
@@ -2896,7 +2900,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                 {"previous_sequence", std::to_string(row.previous_sequence)},
                                 {"lineage_checksum", std::to_string(Fnv1a64(lineage_material))},
                                 {"deleted", row.deleted ? "1" : "0"},
-                                {"values", EncodeBinaryPairs(row.values)}});
+                                {"values", EncodeCrudValues(row.values)}});
   }
   return body.str();
 }
@@ -3459,7 +3463,10 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
       row.row_uuid = BinaryIdentity(fields.at("row_uuid"));
       row.version_uuid = BinaryIdentity(fields.at("version_uuid"));
       row.deleted = fields.at("deleted") == "1";
-      row.values = DecodeBinaryPairs(fields.at("values"));
+      auto values = DecodeCrudValues(fields.at("values"));
+      if (!values) return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(
+          request.context, kOperation, BackupInvalid(kOperation, "row_value_state_frame_invalid"));
+      row.values = std::move(*values);
       rows.push_back(std::move(row));
     }
   }

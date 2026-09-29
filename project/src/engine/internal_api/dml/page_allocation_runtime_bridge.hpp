@@ -51,7 +51,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::string mutation_phase);
 
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
@@ -59,7 +59,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
+    const std::vector<CrudValueFields>& row_values,
     std::string mutation_phase);
 
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
@@ -67,7 +67,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
+    const std::vector<const CrudValueFields*>& row_values,
     std::string mutation_phase);
 
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(

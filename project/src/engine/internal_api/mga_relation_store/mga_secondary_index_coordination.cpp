@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_locator.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
@@ -169,9 +170,9 @@ EngineApiDiagnostic ParseLedgerTypedUuid(const EngineUuid& identity,
 std::string MakeSecondaryIndexDeltaKeyPayload(
     const CrudIndexRecord& index,
     const std::string& key,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   return EncodeCrudPairs({{"key", key},
-                          {"payload", CrudFieldValue(values, index.column_name)},
+                          {"payload", EncodeCrudValues({{index.column_name, CrudFieldValue(values, index.column_name)}})},
                           {"family", index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
                                                           : index.family}});
 }

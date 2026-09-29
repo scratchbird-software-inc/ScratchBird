@@ -1839,7 +1839,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
               stream_detail = "grouped SUM stored row width changed";
               return false;
             }
-            std::array<const std::string*, 2> payloads{};
+            std::array<const api::CrudStoredValue*, 2> payloads{};
             for (std::size_t ordinal = 0; ordinal < binding.columns.size();
                  ++ordinal) {
               for (const auto& [name, value] : stored.values) {
@@ -1853,17 +1853,19 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                 }
                 payloads[ordinal] = &value;
               }
-              if (payloads[ordinal] == nullptr) {
+              if (payloads[ordinal] == nullptr || !payloads[ordinal]->valid() ||
+                  (!payloads[ordinal]->isPresent() && !payloads[ordinal]->isSqlNull()) ||
+                  (payloads[ordinal]->isSqlNull() && !binding.columns[ordinal]->nullable)) {
                 stream_descriptor_refusal = true;
                 stream_detail = "grouped SUM stored row omits a field";
                 return false;
               }
             }
             std::optional<std::int64_t> key;
-            if (*payloads[0] != "<NULL>") {
+            if (payloads[0]->isPresent()) {
               api::EngineTypedValue key_value;
               key_value.descriptor = binding.descriptors[0];
-              key_value.encoded_value = *payloads[0];
+              key_value.encoded_value = payloads[0]->bytes;
               key_value.state = api::EngineValueState::value;
               const auto decoded = exec::DecodeInt64Value(key_value);
               if (!decoded.ok()) {
@@ -1894,10 +1896,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
               }
               retained_memory = prospective;
             }
-            if (*payloads[1] == "<NULL>") return true;
+            if (payloads[1]->isSqlNull()) return true;
             api::EngineTypedValue value;
             value.descriptor = binding.descriptors[1];
-            value.encoded_value = *payloads[1];
+            value.encoded_value = payloads[1]->bytes;
             value.state = api::EngineValueState::value;
             const auto decoded = exec::DecodeInt64Value(value);
             if (!decoded.ok()) {
@@ -2462,7 +2464,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
             for (std::size_t ordinal = 0; ordinal < binding.columns.size();
                  ++ordinal) {
               const auto* column = binding.columns[ordinal];
-              const std::string* payload = nullptr;
+              const api::CrudStoredValue* payload = nullptr;
               for (const auto& [name, value] : stored.values) {
                 if (name != column->canonical_name_key) continue;
                 if (payload != nullptr) {
@@ -2472,15 +2474,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSource
                 }
                 payload = &value;
               }
-              if (payload == nullptr) {
+              if (payload == nullptr || !payload->valid() ||
+                  (!payload->isPresent() && !payload->isSqlNull()) ||
+                  (payload->isSqlNull() && !column->nullable)) {
                 stream_descriptor_refusal = true;
                 stream_detail = "streaming top-K stored row omits a field";
                 return false;
               }
-              if (*payload == "<NULL>") {
+              if (payload->isSqlNull()) {
                 row.nulls[ordinal] = 1;
               } else {
-                row.values[ordinal] = *payload;
+                row.values[ordinal] = payload->bytes;
               }
             }
             if (!MaterializeCurrentHeapStreamingRow(binding, row,

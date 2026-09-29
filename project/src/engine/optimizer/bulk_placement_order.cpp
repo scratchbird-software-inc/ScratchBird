@@ -54,7 +54,7 @@ BulkPlacementOrderResult PlanBulkPlacementOrder(
     return result;
   }
   for (const auto& row : request.rows) {
-    if (row.placement_key.empty()) {
+    if (!row.placement_key_present || (row.placement_key_null && !row.placement_key.empty())) {
       result.ok = false;
       result.diagnostic_code = "SB_OPT_BULK_PLACEMENT_KEY_VALUE_REQUIRED";
       AddEvidence(&result,
@@ -72,6 +72,8 @@ BulkPlacementOrderResult PlanBulkPlacementOrder(
                    sorted.end(),
                    [](const BulkPlacementOrderRow& left,
                       const BulkPlacementOrderRow& right) {
+                     if (left.placement_key_null != right.placement_key_null)
+                       return left.placement_key_null;
                      if (left.placement_key != right.placement_key) {
                        return left.placement_key < right.placement_key;
                      }
@@ -79,6 +81,7 @@ BulkPlacementOrderResult PlanBulkPlacementOrder(
                    });
 
   std::string previous_key;
+  bool previous_key_null = false;
   bool first_key = true;
   for (std::size_t index = 0; index < sorted.size(); ++index) {
     const auto& row = sorted[index];
@@ -86,9 +89,10 @@ BulkPlacementOrderResult PlanBulkPlacementOrder(
     if (row.source_ordinal != index) {
       ++result.reordered_row_count;
     }
-    if (first_key || row.placement_key != previous_key) {
+    if (first_key || row.placement_key_null != previous_key_null || row.placement_key != previous_key) {
       ++result.placement_key_run_count;
       previous_key = row.placement_key;
+      previous_key_null = row.placement_key_null;
       first_key = false;
     }
   }

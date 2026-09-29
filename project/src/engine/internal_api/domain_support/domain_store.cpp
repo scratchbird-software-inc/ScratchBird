@@ -11,6 +11,8 @@
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "crud_support/native_value_payload.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "datatype_operations.hpp"
 #include "disk_device.hpp"
 #include "dml/constraint_enforcement.hpp"
@@ -340,23 +342,23 @@ std::string NormalizeDomainPath(std::string path) {
   return path;
 }
 
-std::string FieldValue(const std::vector<std::pair<std::string, std::string>>& values, const std::string& field) {
+CrudStoredValue FieldValue(const CrudValueFields& values, const std::string& field) {
   for (const auto& [name, value] : values) {
     if (name == field) { return value; }
   }
-  return {};
+  return CrudStoredValue::Missing();
 }
 
-bool HasField(const std::vector<std::pair<std::string, std::string>>& values, const std::string& field) {
+bool HasField(const CrudValueFields& values, const std::string& field) {
   for (const auto& [name, ignored] : values) {
     if (name == field) { return true; }
   }
   return false;
 }
 
-void UpsertField(std::vector<std::pair<std::string, std::string>>* values,
+void UpsertField(CrudValueFields* values,
                  const std::string& field,
-                 const std::string& value) {
+                 const CrudStoredValue& value) {
   for (auto& [name, existing] : *values) {
     if (name == field) {
       existing = value;
@@ -603,7 +605,7 @@ std::string ApplyPrimitiveMask(const std::string& policy, const std::string& val
 
 struct PathMaskResult {
   bool ok = false;
-  std::string value;
+  CrudStoredValue value;
   bool masked = false;
   bool unmasked = false;
   std::string rejection_detail;
@@ -647,7 +649,8 @@ PathMaskResult ApplyDomainMaskPolicy(const EngineRequestContext& context,
     return result;
   }
   if (!StartsWith(policy, "path:") && policy.find("|path:") == std::string::npos) {
-    result.value = ApplyPrimitiveMask(policy, value);
+    result.value = policy == "null" ? CrudStoredValue::SqlNull()
+                                    : CrudStoredValue(ApplyPrimitiveMask(policy, value));
     result.masked = result.value != value;
     result.ok = true;
     return result;
@@ -686,10 +689,10 @@ PathMaskResult ApplyDomainMaskPolicy(const EngineRequestContext& context,
   return result;
 }
 
-std::string MaterializeDefault(const std::string& envelope) {
+std::optional<CrudStoredValue> MaterializeDefault(const std::string& envelope) {
   if (StartsWith(envelope, "literal:")) { return envelope.substr(8); }
   if (StartsWith(envelope, "value:")) { return envelope.substr(6); }
-  return {};
+  return std::nullopt;
 }
 
 bool EncodeBinaryDomainRecord(const BinaryDomainRecord&,std::vector<byte>*);
@@ -1270,9 +1273,7 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
           : input_value.descriptor.canonical_type_name);
   const bool input_is_binary = input_type == dt::CanonicalTypeId::uuid ||
                                input_type == dt::CanonicalTypeId::binary;
-  const bool legacy_row_null = !input_is_binary && input_value.binary_value.empty() &&
-                               input_value.encoded_value == "<NULL>";
-  if (input_value.isSqlNull() || legacy_row_null) {
+  if (input_value.isSqlNull()) {
     if (input_value.isSqlNull() &&
         (!input_value.binary_value.empty() || !input_value.encoded_value.empty())) {
       result.diagnostic = DomainValidationDiagnostic("domain_null_payload_invalid");
@@ -1371,7 +1372,7 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
 DomainRowValidationResult ApplyDomainRulesToCrudValues(
     const EngineRequestContext& context,
     const std::vector<std::pair<std::string, std::string>>& table_columns,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     std::uint64_t observer_tx,
     ConstraintDmlValidationCache* cache) {
   DomainRowValidationResult result;
@@ -1393,33 +1394,48 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
       return result;
     }
     const bool present = HasField(result.values, column_name);
-    if (!present) {
-      const std::string default_value = MaterializeDefault(domain->default_expression_envelope);
-      if (!default_value.empty()) {
-        UpsertField(&result.values, column_name, default_value);
+    if (!present || FieldValue(result.values, column_name).isDefaultRequested()) {
+      const auto default_value = MaterializeDefault(domain->default_expression_envelope);
+      if (default_value) {
+        UpsertField(&result.values, column_name, *default_value);
+      } else if (!domain->default_expression_envelope.empty()) {
+        result.diagnostic = DomainValidationDiagnostic("domain_default_expression_invalid:" + column_name);
+        return result;
       } else if (!domain->nullable) {
         result.diagnostic = DomainValidationDiagnostic("domain_required_column_missing:" + column_name);
         return result;
       } else {
-        continue;
+        UpsertField(&result.values, column_name, CrudStoredValue::SqlNull());
       }
     }
     EngineDescriptor descriptor = DomainDescriptor(*domain);
     EngineTypedValue value;
     value.descriptor.canonical_type_name = "character";
-    value.encoded_value = FieldValue(result.values, column_name);
-    value.is_null = value.encoded_value == "<NULL>";
+    const auto stored_value = FieldValue(result.values, column_name);
+    if (!stored_value.valid() || (!stored_value.isPresent() && !stored_value.isSqlNull())) {
+      result.diagnostic = DomainValidationDiagnostic("domain_value_state_invalid:" + column_name);
+      return result;
+    }
+    value.encoded_value = stored_value.bytes;
+    value.setState(stored_value.state);
     std::string proof_identity("domain_check.v2");
     proof_identity.append(reinterpret_cast<const char*>(domain_uuid.bytes.data()),16);
     proof_identity.append(reinterpret_cast<const char*>(domain->base_descriptor_uuid.bytes.data()),16);
     for(const auto* field:std::initializer_list<const std::string*>{&column_name,&domain->base_descriptor_kind,&domain->base_canonical_type_name,&domain->check_constraint_envelope,&value.encoded_value})AppendBinaryString(&proof_identity,*field);
+    AppendBinaryU8(&proof_identity,static_cast<std::uint8_t>(value.state));
     AppendBinaryU8(&proof_identity,domain->nullable?1:0);AppendBinaryU64(&proof_identity,observer_tx);
     if (const auto cached_value = FindConstraintDmlProofPayload(cache,
                                                                 context,
                                                                 "domain_check",
                                                                 proof_identity,
                                                                 &result.evidence)) {
-      UpsertField(&result.values, column_name, *cached_value);
+      const auto cached_fields = DecodeCrudValues(*cached_value);
+      if (!cached_fields || cached_fields->size() != 1 || cached_fields->front().first != column_name ||
+          (!cached_fields->front().second.isPresent() && !cached_fields->front().second.isSqlNull())) {
+        result.diagnostic = DomainValidationDiagnostic("domain_cached_value_state_invalid:" + column_name);
+        return result;
+      }
+      UpsertField(&result.values, column_name, cached_fields->front().second);
       result.evidence.push_back({"domain_validation", domain_uuid});
       if (!domain->check_constraint_envelope.empty()) {
         result.evidence.push_back({"domain_check", domain_uuid});
@@ -1442,18 +1458,14 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
       result.diagnostic = validation.diagnostic;
       return result;
     }
-    std::string row_value = validation.value.is_null ? "<NULL>" : validation.value.encoded_value;
-    if (!validation.value.binary_value.empty()) {
-      row_value.assign(reinterpret_cast<const char*>(validation.value.binary_value.data()),
-                       validation.value.binary_value.size());
-    }
+    const auto row_value = CrudTypedValuePayload(validation.value);
     UpsertField(&result.values, column_name, row_value);
     for (const auto& evidence : validation.evidence) { result.evidence.push_back(evidence); }
     StoreConstraintDmlProof(cache,
                             context,
                             "domain_check",
                             proof_identity,
-                            row_value,
+                            EncodeCrudValues({{column_name, row_value}}),
                             &result.evidence);
   }
   result.ok = true;
@@ -1478,7 +1490,7 @@ bool DomainHasCrudDependencies(const EngineRequestContext& context,
 DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
     const EngineRequestContext& context,
     const std::vector<std::pair<std::string, std::string>>& table_columns,
-    const std::vector<std::pair<std::string, std::string>>& input_values,
+    const CrudValueFields& input_values,
     std::uint64_t observer_tx) {
   DomainReadPolicyResult result;
   result.values = input_values;
@@ -1501,9 +1513,9 @@ DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
     }
     result.evidence.push_back({"domain_read_policy", domain_uuid});
     if (!domain->masking_policy_envelope.empty()) {
-      const std::string value = FieldValue(result.values, column_name);
-      if (HasField(result.values, column_name) && value != "<NULL>") {
-        const auto mask = ApplyDomainMaskPolicy(context, *domain, column_name, value);
+      const auto value = FieldValue(result.values, column_name);
+      if (HasField(result.values, column_name) && value.isPresent()) {
+        const auto mask = ApplyDomainMaskPolicy(context, *domain, column_name, value.bytes);
         if (!mask.ok) {
           result.diagnostic = DomainValidationDiagnostic(mask.rejection_detail);
           return result;

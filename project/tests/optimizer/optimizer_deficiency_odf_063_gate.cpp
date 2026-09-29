@@ -301,6 +301,43 @@ void DmlHelperRoutesThroughSplitModel() {
   auto updated = api::EngineDmlUpdateHotColdRow(update);
   Require(updated.ok && !updated.retired_descriptors.empty(),
           "ODF-063 DML update helper did not retire old cold descriptor");
+
+  // Explicit state survives both the hot head and cold materialization. The
+  // marker bytes remain ordinary data; malformed NULL is rejected pre-write.
+  auto state_request = BaseDmlRequest(&store, ids, 30);
+  auto marker = TextValue("");
+  marker.descriptor.canonical_type_name = "binary";
+  marker.binary_value = {'<', 'N', 'U', 'L', 'L', '>'};
+  state_request.row.fields[2].second = marker;
+  auto null_value = TextValue("");
+  null_value.setState(api::EngineValueState::sql_null);
+  state_request.row.fields.push_back({"null_cell", null_value});
+  state_request.row.fields.push_back({"empty_cell", TextValue("")});
+  state_request.field_policy.push_back({"null_cell", false, false, false, true, false, true});
+  const auto state_split = api::EngineDmlSplitHotColdRow(state_request);
+  Require(state_split.ok && state_split.hot_head.cold_fields.size() == 1,
+          "ODF-063 NULL allocated a cold payload");
+  auto retained = [&](const std::string& name) -> const api::CrudStoredValue& {
+    for (const auto& [field, value] : state_split.storage_values)
+      if (field == name) return value;
+    throw std::runtime_error("ODF-063 retained field missing");
+  };
+  Require(retained("null_cell").isSqlNull() && retained("null_cell").bytes.empty(),
+          "ODF-063 hot NULL lost explicit state");
+  Require(retained("empty_cell").isPresent() && retained("empty_cell").bytes.empty(),
+          "ODF-063 empty hot value became NULL");
+  Require(retained("body").state == api::EngineValueState::lob_handle,
+          "ODF-063 cold descriptor published as present user data");
+  materialize.context = state_request.context;
+  materialize.hot_head = state_split.hot_head;
+  const auto state_read = api::EngineDmlMaterializeColdFields(materialize);
+  Require(state_read.ok && state_read.cold_values.size() == 1 &&
+              state_read.cold_values[0].second.isPresent() &&
+              state_read.cold_values[0].second.bytes == "<NULL>",
+          "ODF-063 binary cold marker became NULL or lost bytes");
+  state_request.row.fields[3].second.encoded_value = "<NULL>";
+  Require(!api::EngineDmlSplitHotColdRow(state_request).ok,
+          "ODF-063 malformed NULL payload admitted");
 }
 
 struct NoSqlFixture {
@@ -364,7 +401,7 @@ void RequireNoSqlHotColdPayload(const api::EngineApiResult& result,
     std::cerr << result.diagnostics.front().code << ':' << result.diagnostics.front().detail << '\n';
   Require(result.ok, "ODF-063 NoSQL split API call failed");
   const auto payload = RowField(result, payload_field);
-  Require(payload.starts_with("SBHCR002"), "ODF-063 binary hot/cold row head missing");
+  Require(payload.starts_with("SBHCR003"), "ODF-063 binary hot/cold row head missing");
   page::payload_binary::Reader reader{std::string_view(payload).substr(8)};
   platform::TypedUuid row, owner, transaction;
   platform::u64 creator = 0, version = 0, hot_count = 0, cold_count = 0;
@@ -382,7 +419,11 @@ void RequireNoSqlHotColdPayload(const api::EngineApiResult& result,
           "ODF-063 binary hot/cold row native authority fields mismatch");
   for (platform::u64 i = 0; i < hot_count; ++i) {
     std::string name, value;
+    Require(reader.cursor < reader.bytes.size(), "ODF-063 hot field state missing");
+    const auto state = static_cast<unsigned char>(reader.bytes[reader.cursor++]);
+    Require(state <= 1, "ODF-063 hot field state invalid");
     Require(reader.String(name) && reader.String(value), "ODF-063 hot field framing mismatch");
+    Require(state == 0 || value.empty(), "ODF-063 NULL hot field carried payload");
   }
   Require(reader.U64(cold_count) && cold_count != 0 && cold_count <= 65536,
           "ODF-063 cold descriptor count mismatch");

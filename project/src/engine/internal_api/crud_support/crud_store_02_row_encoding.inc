@@ -24,16 +24,15 @@
                              state->index_entries.end());
 }
 
-std::string BuildCompositeKey(const std::vector<std::pair<std::string, std::string>>& values,
+std::string BuildCompositeKey(const CrudValueFields& values,
                               const std::vector<std::string>& columns) {
   if (columns.empty()) return {};
-  if (columns.size() == 1) return CrudFieldValue(values, columns.front());
-  std::vector<std::string> components;
+  std::vector<CrudStoredValue> components;
   components.reserve(columns.size());
   for (const auto& column : columns) {
     components.push_back(CrudFieldValue(values, column));
   }
-  return EncodeCompositeLogicalKey({components.begin(), components.end()});
+  return EncodeStoredLogicalKey(components);
 }
 
 std::vector<std::string> TokenizeCrudText(const std::string& value) {
@@ -183,44 +182,51 @@ std::string ExtractFunctionArgument(const std::string& expression, const std::st
   return expression.substr(prefix.size(), expression.size() - prefix.size() - 1);
 }
 
-std::string ExpressionKeyForValues(const std::string& expression,
-                                   const std::vector<std::pair<std::string, std::string>>& values) {
-  if (StartsWith(expression, "lower:")) { return LowerAscii(CrudFieldValue(values, expression.substr(6))); }
-  if (StartsWith(expression, "upper:")) {
-    std::string value = CrudFieldValue(values, expression.substr(6));
-    for (char& c : value) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
-    return value;
-  }
-  if (StartsWith(expression, "length:")) { return std::to_string(CrudFieldValue(values, expression.substr(7)).size()); }
-  if (StartsWith(expression, "identity:")) { return CrudFieldValue(values, expression.substr(9)); }
-  if (StartsWith(expression, "desc:")) { return CrudFieldValue(values, expression.substr(5)); }
-  if (StartsWith(expression, "sum:")) {
-    const std::string rest = expression.substr(4);
-    const auto pos = rest.find(':');
-    if (pos == std::string::npos) return {};
-    try {
-      const auto left = std::stoll(CrudFieldValue(values, rest.substr(0, pos)));
-      const auto right = std::stoll(CrudFieldValue(values, rest.substr(pos + 1)));
-      return std::to_string(left + right);
-    } catch (...) {
-      return {};
+CrudStoredValue ExpressionKeyForValues(const std::string& expression,
+                                      const CrudValueFields& values) {
+  const auto unary = [&](std::string column, std::string_view operation) {
+    auto value = CrudFieldValue(values, column);
+    if (!value.isPresent()) return value;
+    if (operation == "length") return CrudStoredValue(std::to_string(value.bytes.size()));
+    for (char& c : value.bytes) {
+      const auto byte = static_cast<unsigned char>(c);
+      c = static_cast<char>(operation == "lower" ? std::tolower(byte) : std::toupper(byte));
     }
+    return value;
+  };
+  if (StartsWith(expression, "lower:")) return unary(expression.substr(6), "lower");
+  if (StartsWith(expression, "upper:")) return unary(expression.substr(6), "upper");
+  if (StartsWith(expression, "length:")) return unary(expression.substr(7), "length");
+  if (StartsWith(expression, "identity:")) return CrudFieldValue(values, expression.substr(9));
+  if (StartsWith(expression, "desc:")) return CrudFieldValue(values, expression.substr(5));
+  if (StartsWith(expression, "sum:")) {
+    const auto rest = expression.substr(4);
+    const auto pos = rest.find(':');
+    if (pos == std::string::npos) throw std::invalid_argument("invalid sum key expression");
+    const auto left = CrudFieldValue(values, rest.substr(0, pos));
+    const auto right = CrudFieldValue(values, rest.substr(pos + 1));
+    if (left.isSqlNull() || right.isSqlNull()) return CrudStoredValue::SqlNull();
+    if (!left.isPresent() || !right.isPresent())
+      throw std::invalid_argument("unresolved sum key value state");
+    std::size_t left_end = 0, right_end = 0;
+    const auto lhs = std::stoll(left.bytes, &left_end);
+    const auto rhs = std::stoll(right.bytes, &right_end);
+    if (left_end != left.bytes.size() || right_end != right.bytes.size())
+      throw std::invalid_argument("invalid sum key integer");
+    if ((rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
+        (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs))
+      throw std::overflow_error("sum key integer overflow");
+    return std::to_string(lhs + rhs);
   }
   if (StartsWith(expression, "cast:")) {
-    const std::string rest = expression.substr(5);
+    const auto rest = expression.substr(5);
     const auto pos = rest.find(':');
     return CrudFieldValue(values, pos == std::string::npos ? rest : rest.substr(0, pos));
   }
-  const std::string lower_arg = ExtractFunctionArgument(expression, "lower");
-  if (!lower_arg.empty()) { return LowerAscii(CrudFieldValue(values, lower_arg)); }
-  const std::string upper_arg = ExtractFunctionArgument(expression, "upper");
-  if (!upper_arg.empty()) {
-    std::string value = CrudFieldValue(values, upper_arg);
-    for (char& c : value) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
-    return value;
+  for (const auto operation : {"lower", "upper", "length"}) {
+    const auto argument = ExtractFunctionArgument(expression, operation);
+    if (!argument.empty()) return unary(argument, operation);
   }
-  const std::string length_arg = ExtractFunctionArgument(expression, "length");
-  if (!length_arg.empty()) { return std::to_string(CrudFieldValue(values, length_arg).size()); }
   return CrudFieldValue(values, expression);
 }
 
@@ -235,14 +241,16 @@ bool ExpressionEnvelopeSupported(const std::string& expression) {
 }
 
 std::vector<std::string> CrudIndexEntryKeysForValues(const CrudIndexRecord& index,
-                                                     const std::vector<std::pair<std::string, std::string>>& values) {
+                                                     const CrudValueFields& values) {
   if (!index.predicate_kind.empty()) {
     if (index.predicate_kind == "where_eq" && CrudFieldValue(values, index.predicate_column) != index.predicate_value) { return {}; }
     if (index.predicate_kind == "where_mod_eq") {
       const auto equals = index.predicate_value.find('=');
       if (equals == std::string::npos) { return {}; }
       try {
-        const auto value = std::stoll(CrudFieldValue(values, index.predicate_column));
+        const auto field = CrudFieldValue(values, index.predicate_column);
+        if (!field.isPresent()) return {};
+        const auto value = std::stoll(field.bytes);
         const auto divisor = std::stoll(index.predicate_value.substr(0, equals));
         const auto expected = std::stoll(index.predicate_value.substr(equals + 1));
         if (divisor == 0 || value % divisor != expected) { return {}; }
@@ -259,24 +267,27 @@ std::vector<std::string> CrudIndexEntryKeysForValues(const CrudIndexRecord& inde
   const auto columns = CrudIndexKeyColumns(index);
   const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
   if (columns.empty()) { return {}; }
-  if (CrudTokenIndexFamily(family)) {
-    return TokenizeCrudText(CrudFieldValue(values, columns.front()));
+  if (CrudTokenIndexFamily(family) || CrudNgramIndexFamily(family) ||
+      family == kCrudIndexFamilyDocumentPath) {
+    const auto value = CrudFieldValue(values, columns.front());
+    if (value.isSqlNull()) return {};
+    if (!value.isPresent()) throw std::invalid_argument("unresolved token index value state");
+    auto tokens = CrudTokenIndexFamily(family) ? TokenizeCrudText(value.bytes)
+        : CrudNgramIndexFamily(family) ? TokenizeCrudNgrams(value.bytes)
+                                      : TokenizeCrudDocumentPath(value.bytes);
+    for (auto& token : tokens) token = EncodeStoredLogicalKey({CrudStoredValue(std::move(token))});
+    return tokens;
   }
-  if (CrudNgramIndexFamily(family)) {
-    return TokenizeCrudNgrams(CrudFieldValue(values, columns.front()));
-  }
-  if (family == kCrudIndexFamilyDocumentPath) {
-    return TokenizeCrudDocumentPath(CrudFieldValue(values, columns.front()));
-  }
-  if (family == kCrudIndexFamilyExpression) { return {ExpressionKeyForValues(columns.front(), values)}; }
+  if (family == kCrudIndexFamilyExpression)
+    return {EncodeStoredLogicalKey({ExpressionKeyForValues(columns.front(), values)})};
   return {BuildCompositeKey(values, columns)};
 }
 
 std::string CrudIndexPayloadForValues(const CrudIndexRecord& index,
-                                      const std::vector<std::pair<std::string, std::string>>& values) {
-  std::vector<std::pair<std::string, std::string>> payload;
+                                      const CrudValueFields& values) {
+  CrudValueFields payload;
   for (const auto& column : index.include_columns) { payload.push_back({column, CrudFieldValue(values, column)}); }
-  return EncodeCrudPairs(payload);
+  return EncodeCrudValues(payload);
 }
 
 bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
@@ -287,11 +298,11 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   const std::string first_column = columns.empty() ? index.column_name : columns.front();
   const std::string logical_entry_key =
       CrudIndexEntryLogicalKey(index, entry);
-  const auto components = columns.size() > 1
-      ? DecodeCompositeLogicalKey(logical_entry_key, columns.size())
-      : std::optional<std::vector<std::string_view>>{{logical_entry_key}};
+  const auto components = DecodeStoredLogicalKey(logical_entry_key, columns.size());
   if (!components || components->empty()) return false;
-  const std::string first_key(components->front());
+  const auto& first_value = components->front();
+  if (!first_value.isPresent()) return false;
+  const auto& first_key = first_value.bytes;
   if (predicate.predicate_kind == "column_equals") {
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
            CrudPredicateValuePayload(predicate.bound_values.front()) == first_key;
@@ -305,7 +316,7 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
     }
     for (std::size_t index = 0; index < predicate_columns.size(); ++index) {
       if (columns[index] != predicate_columns[index] ||
-          CrudPredicateValuePayload(predicate.bound_values[index]) != key_parts[index]) {
+          (!key_parts[index].isPresent() || CrudPredicateValuePayload(predicate.bound_values[index]) != key_parts[index].bytes)) {
         return false;
       }
     }
@@ -330,11 +341,11 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   }
   if (predicate.predicate_kind == "text_term_contains") {
     const std::string term = !predicate.bound_values.empty() ? predicate.bound_values.front().encoded_value : predicate.canonical_predicate_envelope;
-    return entry.key_value == LowerAscii(term);
+    return first_key == LowerAscii(term);
   }
   if (predicate.predicate_kind == "text_all_terms") {
     for (const auto& term : predicate.bound_values) {
-      if (entry.key_value == LowerAscii(term.encoded_value)) { return true; }
+      if (first_key == LowerAscii(term.encoded_value)) { return true; }
     }
     return false;
   }
@@ -344,7 +355,7 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   }
   if (predicate.predicate_kind == "spatial_bbox_intersects" || predicate.predicate_kind == "spatial_bbox_contains") {
     if (predicate.canonical_predicate_envelope != first_column || predicate.bound_values.empty()) { return false; }
-    const auto row_box = ParseCrudBBox(entry.key_value);
+    const auto row_box = ParseCrudBBox(first_key);
     const auto query_box = ParseCrudBBox(predicate.bound_values.front().encoded_value);
     if (predicate.predicate_kind == "spatial_bbox_intersects") { return BBoxIntersects(row_box, query_box); }
     return BBoxContains(row_box, query_box);

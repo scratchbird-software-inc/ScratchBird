@@ -273,7 +273,7 @@ std::string MissingCatalogRowDetail(const RelationReadSnapshot& state,
              << ":catalog_row_state="
              << (tx == state.transactions.end() ? "missing" : tx->second)
              << ":catalog_row_kind="
-             << CrudFieldValue(row.values, "record_kind");
+             << CrudFieldValue(row.values, "record_kind").bytes;
     }
   }
   const auto visible = VisibleCrudRowsForContext(state, table_uuid, context);
@@ -309,10 +309,10 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   if (!ReadIdentity(table.table_uuid, &table_uuid)) return ErrorResult("catalog_table_identity_invalid");
   const auto previous = LatestCatalogRow(state, request.context, table_uuid);
   if (previous) {
-    const std::string previous_root =
+    const auto previous_root =
         CrudFieldValue(previous->values, "catalog_root_digest");
     const bool source_matches =
-        !previous_root.empty() &&
+        previous_root.isPresent() && !previous_root.bytes.empty() &&
         (previous_root == request.expected_catalog_root_digest ||
          previous_root == request.image.authority.catalog_root_digest ||
          previous_root == request.image.authority.previous_catalog_root_digest);
@@ -415,19 +415,20 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
     return ErrorResult(MissingCatalogRowDetail(state, context, table->table_uuid));
   }
 
-  const std::string encoded = CrudFieldValue(latest->values, "encoded_catalog_image");
+  const auto encoded = CrudFieldValue(latest->values, "encoded_catalog_image");
+  if (!encoded.isPresent()) return ErrorResult("catalog_image_value_state_invalid");
   auto validation =
-      agents::ValidateDurableAgentCatalogImage(encoded, request.production_live_path);
+      agents::ValidateDurableAgentCatalogImage(encoded.bytes, request.production_live_path);
   if (!validation.status.ok) {
     return ErrorResult(validation.status.diagnostic_code);
   }
-  const std::string expected_root =
+  const auto expected_root =
       CrudFieldValue(latest->values, "catalog_root_digest");
   const std::string validated_source_root =
       validation.migrated && !validation.image.migrations.empty()
           ? validation.image.migrations.back().source_root_digest
           : validation.image.authority.catalog_root_digest;
-  if (expected_root.empty() || expected_root != validated_source_root) {
+  if (!expected_root.isPresent() || expected_root.bytes.empty() || expected_root != validated_source_root) {
     return ErrorResult("catalog_root_digest_record_mismatch");
   }
 
@@ -459,8 +460,9 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
   result.row_uuid = IdentityBytes(latest->row_uuid);
   result.version_uuid = IdentityBytes(latest->version_uuid);
   result.row_event_sequence = latest->sequence;
-  result.storage_linkage_digest =
-      CrudFieldValue(latest->values, "storage_linkage_digest");
+  const auto linkage = CrudFieldValue(latest->values, "storage_linkage_digest");
+  if (!linkage.isPresent()) return ErrorResult("storage_linkage_value_state_invalid");
+  result.storage_linkage_digest = linkage.bytes;
   result.schema_migration_applied = validation.migrated;
   return result;
 }

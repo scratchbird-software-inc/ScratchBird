@@ -111,6 +111,14 @@ bool TryParseDecimalValue(const std::string& value, long double* out) {
   return true;
 }
 
+bool TryParseI64Value(const CrudStoredValue& value, std::int64_t* out) {
+  return value.isPresent() && TryParseI64Value(value.bytes, out);
+}
+
+bool TryParseDecimalValue(const CrudStoredValue& value, long double* out) {
+  return value.isPresent() && TryParseDecimalValue(value.bytes, out);
+}
+
 std::string FormatDecimalScale(long double value, int scale) {
   std::ostringstream out;
   out << std::fixed << std::setprecision(scale) << static_cast<double>(value);
@@ -218,7 +226,7 @@ std::optional<std::int64_t> RoutineArgumentI64(const EngineSelectRowsRequest& re
 
 CrudRowVersionRecord MakeProcedureRow(const EngineUuid& routine_uuid,
                                        std::uint64_t sequence,
-                                       std::vector<std::pair<std::string, std::string>> values) {
+                                       CrudValueFields values) {
   CrudRowVersionRecord row;
   row.table_uuid = routine_uuid;
   row.row_uuid = GenerateCrudEngineUuid("row");
@@ -446,24 +454,28 @@ void ApplyOrdering(const EngineOrderingEnvelope& ordering, std::vector<CrudRowVe
   const bool ascending = OrderingAscending(ordering);
   const std::string nulls_placement = OrderingNullsPlacement(ordering);
   std::stable_sort(rows->begin(), rows->end(), [&](const CrudRowVersionRecord& lhs, const CrudRowVersionRecord& rhs) {
-    const std::string left_value = CrudFieldValue(lhs.values, column);
-    const std::string right_value = CrudFieldValue(rhs.values, column);
-    const bool left_null = left_value == "<NULL>";
-    const bool right_null = right_value == "<NULL>";
+    const auto left_value = CrudFieldValue(lhs.values, column);
+    const auto right_value = CrudFieldValue(rhs.values, column);
+    if ((!left_value.isPresent() && !left_value.isSqlNull()) ||
+        (!right_value.isPresent() && !right_value.isSqlNull()))
+      throw std::invalid_argument("unresolved ordering value state");
+    const bool left_null = left_value.isSqlNull();
+    const bool right_null = right_value.isSqlNull();
     if (left_null || right_null) {
       if (left_null == right_null) return false;
       if (nulls_placement == "first") return left_null;
       if (nulls_placement == "last") return right_null;
+      return ascending ? left_null : right_null;
     }
     if (left_value == right_value) { return false; }
-    return ascending ? ValueLess(left_value, right_value) : ValueLess(right_value, left_value);
+    return ascending ? ValueLess(left_value.bytes, right_value.bytes) : ValueLess(right_value.bytes, left_value.bytes);
   });
 }
 
 void ApplyProjection(const EngineProjectionEnvelope& projection, std::vector<CrudRowVersionRecord>* rows) {
   if (projection.canonical_projection_envelopes.empty()) { return; }
   for (auto& row : *rows) {
-    std::vector<std::pair<std::string, std::string>> projected;
+    CrudValueFields projected;
     for (const auto& column : projection.canonical_projection_envelopes) {
       projected.push_back({column, CrudFieldValue(row.values, column)});
     }
@@ -528,8 +540,8 @@ EngineTypedValue SelectPredicateBoundValue(std::string value,
 bool SelectBoundValueAlreadyPresent(const std::vector<EngineTypedValue>& values,
                                     const std::string& candidate) {
   for (const auto& value : values) {
-    if (value.encoded_value == candidate ||
-        CompareSelectScalar(value.encoded_value, candidate) == 0) {
+    if (!value.isSqlNull() && (value.encoded_value == candidate ||
+        CompareSelectScalar(value.encoded_value, candidate) == 0)) {
       return true;
     }
   }
@@ -624,10 +636,19 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
         !CrudRowMatchesPredicate(row, source_predicate)) {
       continue;
     }
-    const std::string value = CrudFieldValue(row.values, select_column);
-    if (value.empty() || value == "<NULL>") continue;
-    if (!SelectBoundValueAlreadyPresent(resolved.bound_values, value)) {
-      resolved.bound_values.push_back(SelectPredicateBoundValue(value));
+    const auto value = CrudFieldValue(row.values, select_column);
+    if (value.isSqlNull()) {
+      if (std::none_of(resolved.bound_values.begin(), resolved.bound_values.end(),
+                       [](const auto& bound) { return bound.isSqlNull(); })) {
+        auto bound = SelectPredicateBoundValue({});
+        bound.setState(EngineValueState::sql_null);
+        resolved.bound_values.push_back(std::move(bound));
+      }
+    } else if (!value.isPresent()) {
+      resolution.diagnostic = MakeInvalidRequestDiagnostic("dml.select_rows", "subquery_value_state_invalid");
+      return resolution;
+    } else if (!SelectBoundValueAlreadyPresent(resolved.bound_values, value.bytes)) {
+      resolved.bound_values.push_back(SelectPredicateBoundValue(value.bytes));
     }
   }
 

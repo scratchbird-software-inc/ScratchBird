@@ -54,7 +54,7 @@ bool DirectBuildAppendIndexConflictCaches(
     const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const std::vector<CrudIndexRecord>& indexes,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>&
+    const std::vector<CrudValueFields>&
         logical_value_batch,
     std::map<EngineUuid, std::set<std::string>>* keys_by_index,
     std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>*

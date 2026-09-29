@@ -219,11 +219,13 @@ EngineApiDiagnostic ExpandMgaLargeValueLocatorsImpl(const EngineRequestContext& 
   for (auto& row : *rows) {
     for (auto& [field, value] : row.values) {
       (void)field;
-      if (value.starts_with("SBMGA_LARGE_VALUE:")) return MakeInvalidRequestDiagnostic("mga.large_value", "legacy_text_locator_refused");
-      if (!IsMgaLargeValueLocator(value)) { continue; }
-      const auto payload_it = payloads.locator_payloads.find(value);
+      if (!value.valid()) return MakeInvalidRequestDiagnostic("mga.large_value", "invalid_value_state");
+      if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
+      if (value.bytes.starts_with("SBMGA_LARGE_VALUE:")) return MakeInvalidRequestDiagnostic("mga.large_value", "legacy_text_locator_refused");
+      if (!IsMgaLargeValueLocator(value.bytes)) { continue; }
+      const auto payload_it = payloads.locator_payloads.find(value.bytes);
       if (payload_it == payloads.locator_payloads.end()) {
-        if (payloads.reclaimed_locators.count(value) != 0) { continue; }
+        if (payloads.reclaimed_locators.count(value.bytes) != 0) { continue; }
         return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_locator_missing");
       }
       value = payload_it->second;
@@ -236,10 +238,11 @@ bool RowsContainLargeValueLocatorsImpl(const std::vector<CrudRowVersionRecord>& 
   for (const auto& row : rows) {
     for (const auto& [field, value] : row.values) {
       (void)field;
-      if (CrudValueIsLargeValueLocator(value)) {
+      if (!value.isPresent() && value.state != EngineValueState::lob_handle) continue;
+      if (CrudValueIsLargeValueLocator(value.bytes)) {
         return true;
       }
-      if (IsMgaLargeValueLocator(value) || value.starts_with("SBMGA_LARGE_VALUE:")) {
+      if (IsMgaLargeValueLocator(value.bytes) || value.bytes.starts_with("SBMGA_LARGE_VALUE:")) {
         return true;
       }
     }
@@ -325,7 +328,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& cont
                                                 const EngineUuid& row_uuid,
                                                 const EngineUuid& version_uuid,
                                                 bool force_large_value,
-                                                std::vector<std::pair<std::string, std::string>>* values,
+                                                CrudValueFields* values,
                                                 std::vector<EngineEvidenceReference>* evidence) {
   MgaLargeValuePersistBatchCounters counters;
   return PersistMgaLargeValuesForRows(
@@ -352,8 +355,8 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
   counters->rows_seen = static_cast<std::uint64_t>(rows.size());
 
   struct PendingValueMutation {
-    std::vector<std::pair<std::string, std::string>>* values = nullptr;
-    std::vector<std::pair<std::string, std::string>> replacement_values;
+    CrudValueFields* values = nullptr;
+    CrudValueFields replacement_values;
   };
 
   std::vector<PendingValueMutation> pending_mutations;
@@ -381,13 +384,13 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
       for (auto it = mutation.replacement_values.begin();
            it != mutation.replacement_values.end();
            ++it) {
-        if (it->second == "<NULL>" ||
-            CrudValueIsLargeValueLocator(it->second) ||
-            IsMgaLargeValueLocator(it->second)) {
+        if (!it->second.isPresent() ||
+            CrudValueIsLargeValueLocator(it->second.bytes) ||
+            IsMgaLargeValueLocator(it->second.bytes)) {
           continue;
         }
         if (selected == mutation.replacement_values.end() ||
-            it->second.size() > selected->second.size()) {
+            it->second.bytes.size() > selected->second.bytes.size()) {
           selected = it;
         }
       }
@@ -397,7 +400,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
       }
 
       force_one_remaining = false;
-      const std::string original = selected->second;
+      const std::string original = selected->second.bytes;
       const EngineUuid overflow_uuid = GenerateCrudEngineUuid("object");
       const std::string content_hash = std::to_string(ChecksumText(original));
       const std::uint64_t total_bytes =

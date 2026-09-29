@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "crud_support/retained_row_value.hpp"
 #include "hot_cold_row_split.hpp"
 
 #include <string>
@@ -44,7 +45,7 @@ struct EngineDmlHotColdSplitResult {
   EngineApiDiagnostic diagnostic;
   scratchbird::storage::page::HotColdRowHead hot_head;
   std::string serialized_hot_head;
-  std::vector<std::pair<std::string, std::string>> storage_values;
+  CrudValueFields storage_values;
   std::vector<EngineEvidenceReference> evidence;
 };
 
@@ -61,7 +62,7 @@ struct EngineDmlHotColdMaterializeRequest {
 struct EngineDmlHotColdMaterializeResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
-  std::vector<std::pair<std::string, std::string>> cold_values;
+  CrudValueFields cold_values;
   std::vector<EngineEvidenceReference> evidence;
 };
 

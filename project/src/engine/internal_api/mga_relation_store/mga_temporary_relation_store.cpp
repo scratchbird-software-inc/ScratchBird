@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
@@ -143,7 +144,7 @@ EngineApiDiagnostic AppendTemporaryRowTombstones(
       const auto& row = rows[row_index];
       const auto& tombstone = tombstones[row_index];
       const std::string payload =
-          CrudFieldValue(row.values, index.column_name);
+          EncodeCrudValues({{index.column_name, CrudFieldValue(row.values, index.column_name)}});
       for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
         retire_requests.push_back({index,
                                    table.table_uuid,

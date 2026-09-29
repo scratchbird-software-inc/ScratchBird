@@ -475,7 +475,7 @@ EngineApiDiagnostic ValidateUpdateBatchMemoryBudget(const UpdateBatchContext& co
 }
 
 EngineApiDiagnostic ValidateUpdateBatchUniquePreflight(UpdateBatchContext* context,
-                                                       const std::vector<std::pair<std::string, std::string>>& values,
+                                                       const CrudValueFields& values,
                                                        const EngineUuid& row_uuid) {
   (void)row_uuid;
   if (context == nullptr) {

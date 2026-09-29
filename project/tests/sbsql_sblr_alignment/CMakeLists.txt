@@ -22,6 +22,26 @@ set_tests_properties(sbsql_sblr_alignment_large_payload_binary PROPERTIES TIMEOU
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+add_executable(sbsql_sblr_alignment_retained_row_value_state retained_row_value_state_conformance.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/optimizer/bulk_placement_order.cpp)
+target_compile_features(sbsql_sblr_alignment_retained_row_value_state PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_retained_row_value_state PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api
+  ${CMAKE_SOURCE_DIR}/src/core/platform ${CMAKE_SOURCE_DIR}/src/core/uuid
+  ${CMAKE_SOURCE_DIR}/src/core/diagnostics ${CMAKE_SOURCE_DIR}/src/core/time
+  ${CMAKE_SOURCE_DIR}/libraries/sbl_numeric ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/generated)
+add_test(NAME sbsql_sblr_alignment_retained_row_value_state COMMAND sbsql_sblr_alignment_retained_row_value_state)
+set_tests_properties(sbsql_sblr_alignment_retained_row_value_state PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;explicit_value_state;binary_payload;component_regression;not_SQL_E2E")
+
+add_executable(sbsql_sblr_alignment_retained_row_engine_consumers retained_row_engine_consumers_test.cpp)
+target_compile_features(sbsql_sblr_alignment_retained_row_engine_consumers PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_retained_row_engine_consumers PRIVATE sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_retained_row_engine_consumers COMMAND sbsql_sblr_alignment_retained_row_engine_consumers)
+set_tests_properties(sbsql_sblr_alignment_retained_row_engine_consumers PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;explicit_value_state;binary_payload;engine_consumers;not_SQL_E2E")
+
 add_executable(sbsql_sblr_alignment_native_column_binding native_column_binding_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_column_binding PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_column_binding PRIVATE

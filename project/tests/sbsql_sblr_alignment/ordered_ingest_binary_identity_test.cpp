@@ -59,7 +59,7 @@ int main() {
   second.row_uuid.bytes[2] = '|';
   second.row_uuid.bytes[15] ^= 1;
   const std::vector<api::CrudRowVersionRecord> original{first, second};
-  const std::vector<std::vector<std::pair<std::string, std::string>>> values{
+  const std::vector<api::CrudValueFields> values{
       {{"city", "zurich"}}, {{"city", "berlin"}}};
   auto staged = original;
   auto logical = values;

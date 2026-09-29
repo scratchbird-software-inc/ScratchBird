@@ -214,7 +214,7 @@ std::string_view ScopedRowBinaryPayloadView(const EngineTypedValue& typed) {
 
 bool ScopedRowBinaryCanonicalPayload(const EngineTypedValue& typed,
                                      std::string* payload) {
-  if (payload == nullptr || typed.isSqlNull()) {
+  if (payload == nullptr || typed.isSqlNull() || typed.state != EngineValueState::value) {
     return false;
   }
   payload->clear();
@@ -366,6 +366,22 @@ bool ScopedRowBinaryCompactBatchEligible(
   return false;
 }
 
+bool ScopedRowTypedStatesValid(std::span<const EngineRowValue> rows,
+                              std::size_t field_count) {
+  for (const auto& row : rows) {
+    if (row.fields.size() != field_count) return false;
+    for (const auto& [name, value] : row.fields) {
+      (void)name;
+      if (value.isSqlNull()) {
+        if (!value.encoded_value.empty() || !value.binary_value.empty()) return false;
+      } else if (value.state != EngineValueState::value) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool AppendScopedRowBinaryBatch(std::string* out,
                                 const std::vector<CrudRowVersionRecord>& rows,
                                 std::span<const EngineRowValue> typed_rows,
@@ -378,6 +394,7 @@ bool AppendScopedRowBinaryBatch(std::string* out,
     return false;
   }
   const bool compact_batch = ScopedRowBinaryCompactBatchEligible(rows);
+  if (!ScopedRowTypedStatesValid(typed_rows, field_order.size())) return false;
   ReserveAmortizedAppendCapacity(
       out,
       ScopedRowBinaryBatchEstimateBytes(rows,
@@ -508,6 +525,7 @@ bool AppendScopedRowIdentityBinaryBatch(
       field_order.size() > std::numeric_limits<std::uint32_t>::max()) {
     return false;
   }
+  if (!ScopedRowTypedStatesValid(typed_rows, field_order.size())) return false;
   ReserveAmortizedAppendCapacity(
       out,
       ScopedRowBinaryIdentityBatchEstimateBytes(row_identities,
@@ -874,7 +892,7 @@ bool AdmitBoundedScopedRow(BoundedScopedRowReadControl* control,
     return false;
   }
   for (const auto& [key, value] : row.values) {
-    if (!add_decoded_size(key.size()) || !add_decoded_size(value.size())) {
+    if (!add_decoded_size(key.size()) || !add_decoded_size(value.bytes.size())) {
       return false;
     }
   }
@@ -1280,7 +1298,7 @@ bool DecodeScopedRowBinaryBytes(
             (bytes[null_bitmap_offset + column_index / 8u] &
              static_cast<idx::byte>(1u << (column_index % 8u))) != 0;
         if (is_null) {
-          row.values.push_back({field_order[column_index], "<NULL>"});
+          row.values.push_back({field_order[column_index], CrudStoredValue::SqlNull()});
           continue;
         }
         if (version == kScopedRowBinaryNativePacketVersion) {
@@ -1515,33 +1533,6 @@ void AppendEncodedCrudPairsFieldWithEncodedKeys(
   }
 }
 
-void AppendEncodedTypedFieldsFieldWithEncodedKeys(
-    std::string* line,
-    bool* first,
-    const EngineRowValue& row,
-    std::span<const std::string> field_order,
-    const std::vector<std::string>& encoded_keys) {
-  if (line == nullptr || first == nullptr ||
-      field_order.size() != row.fields.size() ||
-      encoded_keys.size() != field_order.size()) {
-    return;
-  }
-  if (!*first) {
-    line->push_back('\t');
-  }
-  *first = false;
-  for (std::size_t index = 0; index < row.fields.size(); ++index) {
-    if (index != 0) {
-      line->push_back('|');
-    }
-    line->append(encoded_keys[index]);
-    line->push_back('=');
-    const auto& typed = row.fields[index].second;
-    AppendHexEncoded(line, typed.isSqlNull() ? std::string_view("<NULL>")
-                                             : std::string_view(typed.encoded_value));
-  }
-}
-
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
   if (out == nullptr) { return; }
   const std::size_t required = out->size() + extra;
@@ -1560,7 +1551,7 @@ void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra) {
 
 void AppendRowVersionStoreLine(std::string* out, const CrudRowVersionRecord& row,
     std::uint64_t event_sequence_override,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::vector<std::string>* encoded_keys) {
   if (!out) throw std::invalid_argument("row output required");
   (void)encoded_keys;
@@ -1569,8 +1560,10 @@ void AppendRowVersionStoreLine(std::string* out, const CrudRowVersionRecord& row
   for (const auto& [key, value] : values) {
     EngineTypedValue field;
     field.descriptor.canonical_type_name = "text";
-    field.encoded_value = value;
-    if (value == "<NULL>") field.setState(EngineValueState::sql_null);
+    if (!value.valid() || (!value.isPresent() && !value.isSqlNull()))
+      throw std::invalid_argument("unresolved retained row state");
+    field.encoded_value = value.bytes;
+    field.setState(value.state);
     typed.fields.emplace_back(key, std::move(field));
     order.push_back(key);
   }

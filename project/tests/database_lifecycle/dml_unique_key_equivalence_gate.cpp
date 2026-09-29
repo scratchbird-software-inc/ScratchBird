@@ -6,6 +6,7 @@
 #include "dml/direct_bulk_append_cache.hpp"
 #include "dml/insert_batch.hpp"
 #include "crud_support/composite_logical_key.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "index_key_encoding.hpp"
 #include "uuid.hpp"
 
@@ -44,6 +45,20 @@ std::string TypedKey(const api::EngineUuid& index_uuid, unsigned char value) {
   return key;
 }
 
+std::string LogicalKeyOracle(const std::vector<api::CrudStoredValue>& cells) {
+  std::string encoded = "SBCLKEY2";
+  const auto number = [&](std::size_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8)
+      encoded.push_back(static_cast<char>((value >> shift) & 255));
+  };
+  number(cells.size());
+  for (const auto& cell : cells) {
+    encoded.push_back(static_cast<char>(cell.state));
+    number(cell.bytes.size()); encoded += cell.bytes;
+  }
+  return encoded;
+}
+
 void CompositeBinaryKeys(const api::CrudIndexRecord& base) {
   auto index = base;
   index.creator_tx = 7;
@@ -58,27 +73,28 @@ void CompositeBinaryKeys(const api::CrudIndexRecord& base) {
   Require(key("a\x1f", "b") != key("a", "\x1f" "b"),
           "compound component delimiter aliased distinct tuples");
   const auto empty = key("", "");
-  const auto empty_parts = api::DecodeCompositeLogicalKey(empty, 2);
-  Require(empty_parts && empty_parts->size() == 2 && (*empty_parts)[0].empty() &&
-              (*empty_parts)[1].empty(), "empty compound tuple did not round trip");
+  const auto empty_parts = api::DecodeStoredLogicalKey(empty, 2);
+  Require(empty_parts && empty_parts->size() == 2 && (*empty_parts)[0] == "" &&
+              (*empty_parts)[1] == "", "empty compound tuple did not round trip");
   for (unsigned position = 0; position < 16; ++position) {
     for (unsigned octet = 0; octet < 256; ++octet) {
       std::string left(16, '\0'), right(16, static_cast<char>(0xff));
       left[position] = static_cast<char>(octet);
       right[15 - position] = static_cast<char>(octet);
       const auto encoded = key(left, right);
-      const auto parts = api::DecodeCompositeLogicalKey(encoded, 2);
+      const auto parts = api::DecodeStoredLogicalKey(encoded, 2);
       Require(parts && (*parts)[0] == left && (*parts)[1] == right,
               "compound UUID projection changed arbitrary user bits");
-      Require(encoded.size() == 52 && encoded.substr(16, 16) == left &&
-                  encoded.substr(36, 16) == right,
+      Require(encoded == LogicalKeyOracle({left, right}) && encoded.size() == 54 &&
+                  encoded[12] == 0 && encoded[33] == 0 && encoded.substr(17, 16) == left &&
+                  encoded.substr(38, 16) == right,
               "compound UUID components are not exact binary16");
       for (std::size_t width = 0; width < encoded.size(); ++width)
-        Require(!api::DecodeCompositeLogicalKey(std::string_view(encoded).substr(0, width), 2),
+        Require(!api::DecodeStoredLogicalKey(std::string_view(encoded).substr(0, width), 2),
                 "truncated compound key accepted");
-      Require(!api::DecodeCompositeLogicalKey(encoded, 3) &&
-                  !api::DecodeCompositeLogicalKey(encoded + "x", 2) &&
-                  !api::DecodeCompositeLogicalKey(left + '\x1f' + right, 2),
+      Require(!api::DecodeStoredLogicalKey(encoded, 3) &&
+                  !api::DecodeStoredLogicalKey(encoded + "x", 2) &&
+                  !api::DecodeStoredLogicalKey(left + '\x1f' + right, 2),
               "compound key admitted wrong arity, trailing bytes, or legacy delimiters");
 
       // Exercise the actual compound index consumers, including the separate
@@ -148,21 +164,26 @@ int main() {
     return result;
   };
   const auto typed8 = TypedKey(index.index_uuid, 8);
+  const auto key6 = LogicalKeyOracle({"6"});
+  const auto key8 = LogicalKeyOracle({"8"});
+  const auto key9 = LogicalKeyOracle({"9"});
+  const auto payload6 = api::EncodeCrudValues({{"id", "6"}});
+  const auto payload9 = api::EncodeCrudValues({{"id", "9"}});
   cache::DirectStoreAppendIndexEntryCache(context, index.table_uuid, 2, view,
-                                        {entry("6", "6"), entry(typed8, "8")});
+                                        {entry(key6, payload6), entry(typed8, key8)});
   std::map<api::EngineUuid, std::set<std::string>> keys;
   std::map<api::EngineUuid, std::map<std::string, api::CrudIndexEntryRecord>> entries;
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 2,
       {index}, {{{"id", "6"}}, {{"id", "8"}}, {{"id", "9"}}}, &keys, &entries),
       "mixed key cache lookup failed");
-  Require(keys[index.index_uuid] == std::set<std::string>{"6", "8"},
+  Require(keys[index.index_uuid] == std::set<std::string>{key6, key8},
           "raw key match hid a typed key conflict");
-  Require(entries[index.index_uuid].contains("6") &&
+  Require(entries[index.index_uuid].contains(key6) &&
           entries[index.index_uuid].contains(typed8), "physical entries were lost");
   keys.clear();
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 2,
       {index}, {}, &keys, nullptr), "typed-only lookup failed");
-  Require(keys[index.index_uuid] == std::set<std::string>{"6", "8"},
+  Require(keys[index.index_uuid] == std::set<std::string>{key6, key8},
           "typed-only lookup did not return the complete logical key set");
 
   // Cache identity is a tuple of raw UUIDs and authority generations, not a
@@ -197,13 +218,13 @@ int main() {
   api::MgaExactIndexEntryAppendBatch batch;
   batch.index = index;
   batch.table_uuid = index.table_uuid;
-  batch.entries.push_back({TypedKey(index.index_uuid, 9), "9", {}, {}});
+  batch.entries.push_back({TypedKey(index.index_uuid, 9), key9, {}, {}});
   cache::DirectAppendIndexBatchesToCache(context, index.table_uuid, 2, 1,
                                         {batch}, {}, false);
   keys.clear();
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 3,
       {index}, {{{"id", "9"}}}, &keys, nullptr), "incremental lookup failed");
-  Require(keys[index.index_uuid] == std::set<std::string>{"9"},
+  Require(keys[index.index_uuid] == std::set<std::string>{key9},
           "projection missed a newly appended typed key");
   Require(!cache::DirectBuildAppendIndexConflictCaches(
               context, index.table_uuid, 3, {index}, {}, nullptr, &entries),
@@ -225,10 +246,10 @@ int main() {
   Require(!cache::DirectBuildAppendIndexConflictCaches(other, index.table_uuid, 3,
       {index}, {}, &keys, nullptr), "another transaction accepted the cache");
   cache::DirectStoreAppendIndexEntryCache(context, index.table_uuid, 1, view,
-                                        {entry("6", "6")});
+                                        {entry(key6, payload6)});
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 1,
       {index}, {}, &keys, nullptr), "replacement cache lookup failed");
-  Require(keys[index.index_uuid] == std::set<std::string>{"6"},
+  Require(keys[index.index_uuid] == std::set<std::string>{key6},
           "replacement cache retained stale logical keys");
 
   // Eviction after proof but before publication cannot turn an append delta
@@ -236,7 +257,7 @@ int main() {
   auto alternate_owner = context;
   alternate_owner.session_uuid.bytes[15] = 1;
   cache::DirectStoreAppendIndexEntryCache(alternate_owner, index.table_uuid, 1,
-                                        view, {entry("6", "6")});
+                                        view, {entry(key6, payload6)});
   Require(cache::DirectAppendIndexEntryCacheAvailable(
               alternate_owner, index.table_uuid, 1),
           "alternate owner cache was not stored");
@@ -253,14 +274,14 @@ int main() {
           "empty cache initialization refused");
   cache::DirectEvictAppendIndexEntryCache(context, index.table_uuid);
   cache::DirectAppendIndexEntriesToCache(context, index.table_uuid, 1, 1,
-                                        {entry("9", "9")});
+                                        {entry(key9, payload9)});
   Require(!cache::DirectAppendIndexEntryCacheAvailable(context, index.table_uuid, 2),
           "scalar cache delta hid missing prior entries");
   cache::DirectAppendIndexEntriesToCache(context, index.table_uuid, 0, 1,
-                                        {entry("9", "9")});
+                                        {entry(key9, payload9)});
   keys.clear();
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 1,
-      {index}, {}, &keys, nullptr) && keys[index.index_uuid] == std::set<std::string>{"9"},
+      {index}, {}, &keys, nullptr) && keys[index.index_uuid] == std::set<std::string>{key9},
       "scalar cache empty-baseline rebuild failed");
 
   cache::DirectAppendIndexEntriesToCache(

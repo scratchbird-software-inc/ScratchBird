@@ -38,8 +38,8 @@ struct DmlExecutableTriggerRuntimeResult {
 };
 
 struct DmlTriggerUpdateRowImage {
-  std::vector<std::pair<std::string, std::string>> old_values;
-  std::vector<std::pair<std::string, std::string>> new_values;
+  CrudValueFields old_values;
+  CrudValueFields new_values;
 };
 
 inline std::string LowerAscii(std::string value) {
@@ -136,7 +136,7 @@ inline bool TriggerDescriptorMatches(const EngineExecutableObjectRecord& object,
   return PayloadFieldValue(object.payload, "compiled_body_descriptor:") == descriptor;
 }
 
-inline std::string ValueFor(const std::vector<std::pair<std::string, std::string>>& values,
+inline CrudStoredValue ValueFor(const CrudValueFields& values,
                             const std::string& field) {
   return CrudFieldValue(values, field);
 }
@@ -148,6 +148,16 @@ inline EngineTypedValue TypedValue(std::string type_name,
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type_name);
   return EngineTypedValue(std::move(descriptor), std::move(value), is_null);
+}
+
+inline EngineTypedValue StoredTypedValue(std::string type_name,
+                                         CrudStoredValue value, bool force_null = false) {
+  if (force_null) value = CrudStoredValue::SqlNull();
+  if (!value.valid() || (!value.isPresent() && !value.isSqlNull()))
+    throw std::invalid_argument("unresolved trigger row value state");
+  auto typed = TypedValue(std::move(type_name), std::move(value.bytes), value.isSqlNull());
+  typed.setState(value.state);
+  return typed;
 }
 
 inline std::uint64_t ParseAuditId(std::string_view value) {
@@ -167,8 +177,10 @@ inline std::uint64_t NextAuditId(const MgaRelationReadView& state,
                                  const EngineRequestContext& context) {
   std::uint64_t max_audit_id = 0;
   for (const auto& row : VisibleMgaRowsForContext(state, audit_table_uuid, context)) {
+    const auto value = CrudFieldValue(row.values, "audit_id");
+    if (!value.isPresent()) throw std::invalid_argument("invalid audit identity value state");
     max_audit_id =
-        std::max(max_audit_id, ParseAuditId(CrudFieldValue(row.values, "audit_id")));
+        std::max(max_audit_id, ParseAuditId(value.bytes));
   }
   return max_audit_id + 1;
 }
@@ -259,19 +271,18 @@ inline bool NextSequenceAuditId(const EngineRequestContext& context,
 
 inline EngineRowValue AuditRow(std::uint64_t audit_id,
                                std::string event_kind,
-                               std::string item_id,
-                               std::string old_price,
+                               CrudStoredValue item_id,
+                               CrudStoredValue old_price,
                                bool old_price_null,
-                               std::string new_price,
+                               CrudStoredValue new_price,
                                bool new_price_null,
                                std::string note) {
   EngineRowValue row;
-  const bool item_id_null = item_id.empty();
   row.fields.push_back({"audit_id", TypedValue("integer", std::to_string(audit_id))});
   row.fields.push_back({"event_kind", TypedValue("varchar", std::move(event_kind))});
-  row.fields.push_back({"item_id", TypedValue("integer", std::move(item_id), item_id_null)});
-  row.fields.push_back({"old_price", TypedValue("decimal", std::move(old_price), old_price_null)});
-  row.fields.push_back({"new_price", TypedValue("decimal", std::move(new_price), new_price_null)});
+  row.fields.push_back({"item_id", StoredTypedValue("integer", std::move(item_id))});
+  row.fields.push_back({"old_price", StoredTypedValue("decimal", std::move(old_price), old_price_null)});
+  row.fields.push_back({"new_price", StoredTypedValue("decimal", std::move(new_price), new_price_null)});
   row.fields.push_back({"audit_note", TypedValue("varchar", std::move(note))});
   return row;
 }
@@ -744,7 +755,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
       }
       audit_rows.push_back(AuditRow(audit_id,
                                     "UPDATE_STMT",
-                                    {},
+                                    CrudStoredValue::SqlNull(),
                                     {},
                                     true,
                                     {},

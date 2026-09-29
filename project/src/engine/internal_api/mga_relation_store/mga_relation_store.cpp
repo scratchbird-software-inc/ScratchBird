@@ -1178,6 +1178,17 @@ void AddMaterializedPairs(
   }
 }
 
+void AddMaterializedPairs(const CrudValueFields& values, std::uint64_t* bytes,
+                          std::uint64_t* allocation_units) {
+  if (values.empty()) return;
+  ++(*allocation_units);
+  *bytes += static_cast<std::uint64_t>(values.size() * sizeof(CrudValueFields::value_type));
+  for (const auto& [key, value] : values) {
+    AddMaterializedString(key, bytes, allocation_units);
+    AddMaterializedString(value.bytes, bytes, allocation_units);
+  }
+}
+
 void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
   if (result == nullptr) { return; }
   const auto& state = result->state;

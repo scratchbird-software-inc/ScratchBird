@@ -1131,7 +1131,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
       return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
                     "key/value stored row width differs from its descriptor");
     }
-    std::unordered_map<std::string, std::string> fields;
+    std::unordered_map<std::string, CrudStoredValue> fields;
     for (const auto& [name, encoded] : row.values) {
       if (!fields.emplace(name, encoded).second) {
         return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
@@ -1143,28 +1143,30 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
     const auto stored_expiry = fields.find("expires_at");
     if (stored_key == fields.end() || stored_value == fields.end() ||
         stored_expiry == fields.end() || fields.size() != 3 ||
-        stored_key->second == "<NULL>" || stored_value->second == "<NULL>") {
+        !stored_key->second.isPresent() || !stored_value->second.isPresent() ||
+        !stored_expiry->second.valid() ||
+        (!stored_expiry->second.isPresent() && !stored_expiry->second.isSqlNull())) {
       return refuse("SB_MODEL_KEY_VALUE_VALUE_TYPE_REFUSED_V1",
                     "key/value stored row has null or unknown fields");
     }
-    if (!WellFormedUtf8(stored_key->second) ||
-        !WellFormedUtf8(stored_value->second)) {
+    if (!WellFormedUtf8(stored_key->second.bytes) ||
+        !WellFormedUtf8(stored_value->second.bytes)) {
       return refuse("SB_MODEL_KEY_VALUE_TEXT_INVALID_V1",
                     "key/value stored row contains malformed UTF-8");
     }
-    if (!visible_keys.insert(stored_key->second).second) {
+    if (!visible_keys.insert(stored_key->second.bytes).second) {
       return refuse("SB_MODEL_KEY_VALUE_DUPLICATE_VISIBLE_KEY_REFUSED_V1",
                     "more than one MGA-visible logical row has the same key");
     }
     VisibleRow selected;
-    selected.public_row = {row.row_uuid, stored_key->second,
-                           stored_value->second};
-    if (stored_expiry->second != "<NULL>") {
-      if (!CanonicalKeyValueTimestamp(stored_expiry->second, true)) {
+    selected.public_row = {row.row_uuid, stored_key->second.bytes,
+                           stored_value->second.bytes};
+    if (!stored_expiry->second.isSqlNull()) {
+      if (!CanonicalKeyValueTimestamp(stored_expiry->second.bytes, true)) {
         return refuse("SB_MODEL_KEY_VALUE_EXPIRES_AT_INVALID_V1",
                       "key/value expires_at is not canonical TIMESTAMP_TZ");
       }
-      selected.expires_at = stored_expiry->second;
+      selected.expires_at = stored_expiry->second.bytes;
     }
     if (!CheckedAddU64(selected.public_row.key.size(),
                        &retained_value_bytes) ||

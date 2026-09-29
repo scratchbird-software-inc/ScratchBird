@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
+#include "crud_support/native_value_payload.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include <stdexcept>
 #include "dml/serializable_mutation_guard.hpp"
@@ -258,8 +260,14 @@ u64 ParseU64(const std::string& value) {
   }
 }
 
-std::string RowFieldKey(std::string_view column, std::string_view encoded_value) {
-  return "column:" + std::string(column) + ":" + std::string(encoded_value);
+std::string RowFieldKey(std::string_view column, const CrudStoredValue& value) {
+  if (!value.valid() || (!value.isPresent() && !value.isSqlNull()))
+    throw std::invalid_argument("unresolved serializable value state");
+  std::string key = "SBSPKEY1";
+  if (!AppendBinaryString(&key, column)) throw std::length_error("serializable column key too long");
+  AppendBinaryU8(&key, static_cast<std::uint8_t>(value.state));
+  key += value.bytes;
+  return key;
 }
 
 std::string PredicateDigest(const EnginePredicateEnvelope& predicate) {
@@ -267,7 +275,8 @@ std::string PredicateDigest(const EnginePredicateEnvelope& predicate) {
                        predicate.canonical_predicate_envelope + ":" +
                        std::to_string(predicate.bound_values.size());
   for (const auto& value : predicate.bound_values) {
-    digest += ":" + value.encoded_value;
+    const auto encoded = EncodeCrudValues({{"value", CrudTypedValuePayload(value)}});
+    if (!AppendBinaryString(&digest, encoded)) throw std::length_error("serializable predicate too long");
   }
   return digest;
 }
@@ -302,7 +311,7 @@ std::vector<mga::SerializableKeyRange> RangesForPredicate(
     ranges.push_back(mga::MakeSerializablePointRange(
         relation_uuid,
         RowFieldKey(predicate.canonical_predicate_envelope,
-                    predicate.bound_values.front().encoded_value)));
+                    CrudTypedValuePayload(predicate.bound_values.front()))));
     return ranges;
   }
   if (predicate.predicate_kind == "column_in_list" &&
@@ -311,7 +320,7 @@ std::vector<mga::SerializableKeyRange> RangesForPredicate(
       ranges.push_back(mga::MakeSerializablePointRange(
           relation_uuid,
           RowFieldKey(predicate.canonical_predicate_envelope,
-                      value.encoded_value)));
+                      CrudTypedValuePayload(value))));
     }
     if (!ranges.empty()) {
       return ranges;
@@ -323,9 +332,9 @@ std::vector<mga::SerializableKeyRange> RangesForPredicate(
     ranges.push_back(mga::MakeSerializableBoundedRange(
         relation_uuid,
         RowFieldKey(predicate.canonical_predicate_envelope,
-                    predicate.bound_values[0].encoded_value),
+                    CrudTypedValuePayload(predicate.bound_values[0])),
         RowFieldKey(predicate.canonical_predicate_envelope,
-                    predicate.bound_values[1].encoded_value)));
+                    CrudTypedValuePayload(predicate.bound_values[1]))));
     return ranges;
   }
   auto range = FullRelationRange(relation_uuid);
@@ -365,7 +374,7 @@ std::vector<mga::SerializableKeyRange> RangesForRows(
       }
       ranges.push_back(mga::MakeSerializablePointRange(
           relation_uuid,
-          RowFieldKey(column, value.is_null ? "<NULL>" : value.encoded_value)));
+          RowFieldKey(column, CrudTypedValuePayload(value))));
     }
   }
   if (ranges.empty()) {

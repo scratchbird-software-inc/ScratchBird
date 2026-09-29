@@ -1247,7 +1247,7 @@ DmlPageAllocationRuntimeResult ReserveRuntimeLocked(
 std::uint64_t IndexPagesForValues(const MgaRelationReadView& state,
                                   const EngineRequestContext& context,
                                   const EngineUuid& table_uuid,
-                                  const std::vector<std::pair<std::string, std::string>>& values,
+                                  const CrudValueFields& values,
                                   EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, context.local_transaction_id)) {
@@ -1266,7 +1266,7 @@ std::uint64_t IndexPagesForValueBatch(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const EngineUuid& table_uuid,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
+    const std::vector<CrudValueFields>& row_values,
     EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto& values : row_values) {
@@ -1279,7 +1279,7 @@ std::uint64_t IndexPagesForValueRefs(
     const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const EngineUuid& table_uuid,
-    const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
+    const std::vector<const CrudValueFields*>& row_values,
     EngineUuid* first_index_uuid) {
   std::uint64_t pages = 0;
   for (const auto* values : row_values) {
@@ -1439,7 +1439,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::string mutation_phase) {
   EngineUuid index_uuid;
   const auto pages = IndexPagesForValues(state, context, table_uuid, values, &index_uuid);
@@ -1459,7 +1459,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
+    const std::vector<CrudValueFields>& row_values,
     std::string mutation_phase) {
   EngineUuid index_uuid;
   const auto pages = IndexPagesForValueBatch(state, context, table_uuid, row_values, &index_uuid);
@@ -1479,7 +1479,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const std::vector<std::string>& option_envelopes,
     const MgaRelationReadView& state,
     const EngineUuid& table_uuid,
-    const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
+    const std::vector<const CrudValueFields*>& row_values,
     std::string mutation_phase) {
   EngineUuid index_uuid;
   const auto pages = IndexPagesForValueRefs(state, context, table_uuid, row_values, &index_uuid);

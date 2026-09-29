@@ -59,14 +59,14 @@ std::optional<std::uint64_t> HeapReadRowVectorMemoryBytes(
   for (const auto& row : rows) {
     if (!CheckedHeapReadMemoryMultiply(
             static_cast<std::uint64_t>(row.values.capacity()),
-            sizeof(std::pair<std::string, std::string>),
+            sizeof(CrudValueFields::value_type),
             &allocation_bytes) ||
         !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
       return std::nullopt;
     }
     for (const auto& [key, value] : row.values) {
       if (!AccountHeapReadOwnedString(key, &bytes) ||
-          !AccountHeapReadOwnedString(value, &bytes)) {
+          !AccountHeapReadOwnedString(value.bytes, &bytes)) {
         return std::nullopt;
       }
     }
@@ -79,14 +79,14 @@ bool AccountHeapReadRowDynamicMemoryBytes(
   std::uint64_t allocation_bytes = 0;
   if (!CheckedHeapReadMemoryMultiply(
           static_cast<std::uint64_t>(row.values.capacity()),
-          sizeof(std::pair<std::string, std::string>),
+          sizeof(CrudValueFields::value_type),
           &allocation_bytes) ||
       !CheckedHeapReadMemoryAdd(allocation_bytes, total)) {
     return false;
   }
   for (const auto& [key, value] : row.values) {
     if (!AccountHeapReadOwnedString(key, total) ||
-        !AccountHeapReadOwnedString(value, total)) {
+        !AccountHeapReadOwnedString(value.bytes, total)) {
       return false;
     }
   }

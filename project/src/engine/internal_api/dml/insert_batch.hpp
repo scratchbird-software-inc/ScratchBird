@@ -276,7 +276,7 @@ struct InsertBatchContext {
 };
 
 struct PreparedInsertRow {
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
   EngineUuid row_uuid;
   bool toast_required = false;
   std::uint64_t encoded_bytes = 0;
@@ -325,7 +325,7 @@ EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
                                              const CrudIndexRecord& index);
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,
                                                        const CrudTableRecord& table,
-                                                       const std::vector<std::pair<std::string, std::string>>& values);
+                                                       const CrudValueFields& values);
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template);
@@ -338,7 +338,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
 // omitted columns with no default are SQL NULL and remain subject to NOT NULL.
 bool MaterializeOmittedInsertColumns(
     const InsertRowEncoderPlan& plan,
-    std::vector<std::pair<std::string, std::string>>* values);
+    CrudValueFields* values);
 EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestContext& request_context,
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,

@@ -1415,7 +1415,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
         -> const std::string* {
       const auto value = std::ranges::find_if(
           row.values, [&](const auto& item) { return item.first == key; });
-      return value == row.values.end() ? nullptr : &value->second;
+      return value == row.values.end() || !value->second.isPresent() ? nullptr : &value->second.bytes;
     };
     const auto* kind = value_for("record_kind");
     if (kind == nullptr) {
@@ -1441,6 +1441,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
       vertex.vertex_id = *id;
       std::vector<std::pair<std::size_t, std::string>> ordered_labels;
       for (const auto& [key, value] : row.values) {
+        if (!value.isPresent()) return invalid("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", "persistent graph field has an unresolved value state");
         if (const auto* diagnostic = GraphCancellationDiagnostic(request)) {
           return invalid(diagnostic,
                          "persistent graph normalization was cancelled");
@@ -1453,7 +1454,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
           const auto parsed = std::from_chars(
               ordinal_text.data(), ordinal_text.data() + ordinal_text.size(),
               ordinal);
-          if (ordinal_text.empty() || value.empty() ||
+          if (ordinal_text.empty() || value.bytes.empty() ||
               parsed.ec != std::errc{} ||
               parsed.ptr != ordinal_text.data() + ordinal_text.size() ||
               std::to_string(ordinal) != ordinal_text) {
@@ -1461,12 +1462,12 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                            "persistent graph vertex label is malformed");
           }
           if (!reserve_retained(2 * sizeof(std::string)) ||
-              !reserve_retained(string_reservation(value))) {
+              !reserve_retained(string_reservation(value.bytes))) {
             return invalid(
                 "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                 "persistent graph normalized corpus exceeded budget");
           }
-          ordered_labels.push_back({ordinal, value});
+          ordered_labels.push_back({ordinal, value.bytes});
         } else if (key.starts_with("property.")) {
           if (key.size() == 9) {
             return invalid("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -1474,12 +1475,12 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
           }
           if (!reserve_retained(2 * sizeof(EngineGraphProperty)) ||
               !reserve_retained(string_reservation(key)) ||
-              !reserve_retained(string_reservation(value))) {
+              !reserve_retained(string_reservation(value.bytes))) {
             return invalid(
                 "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                 "persistent graph normalized corpus exceeded budget");
           }
-          vertex.properties.push_back({key.substr(9), value});
+          vertex.properties.push_back({key.substr(9), value.bytes});
         } else {
           return invalid("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                          "persistent graph vertex field is unsupported");
@@ -1547,6 +1548,7 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                        "persistent graph edge weight is malformed");
       }
       for (const auto& [key, value] : row.values) {
+        if (!value.isPresent()) return invalid("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1", "persistent graph field has an unresolved value state");
         if (const auto* diagnostic = GraphCancellationDiagnostic(request)) {
           return invalid(diagnostic,
                          "persistent graph normalization was cancelled");
@@ -1558,12 +1560,12 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
         } else if (key.starts_with("property.") && key.size() > 9) {
           if (!reserve_retained(2 * sizeof(EngineGraphProperty)) ||
               !reserve_retained(string_reservation(key)) ||
-              !reserve_retained(string_reservation(value))) {
+              !reserve_retained(string_reservation(value.bytes))) {
             return invalid(
                 "SB_MODEL_RESOURCE_MEMORY_REFUSED_V1",
                 "persistent graph normalized corpus exceeded budget");
           }
-          edge.properties.push_back({key.substr(9), value});
+          edge.properties.push_back({key.substr(9), value.bytes});
         } else {
           return invalid("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                          "persistent graph edge field is unsupported");
@@ -1937,7 +1939,7 @@ EngineGraphWriteResult StructuredGraphWrite(
   std::vector<CrudRowVersionRecord> rows;
   const auto append_properties = [](
       const std::vector<EngineGraphProperty>& properties,
-      std::vector<std::pair<std::string, std::string>>* values) {
+      CrudValueFields* values) {
     std::set<std::string> keys;
     for (const auto& property : properties) {
       if (property.key.empty() || !keys.insert(property.key).second) {

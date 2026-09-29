@@ -817,7 +817,7 @@ std::vector<api::CrudRowVersionRecord> VisibleRows(const Fixture& fixture) {
   return read.visible_rows;
 }
 
-std::map<std::string, std::string> Values(
+std::map<std::string, api::CrudStoredValue> Values(
     const api::CrudRowVersionRecord& row) {
   return {row.values.begin(), row.values.end()};
 }
@@ -853,17 +853,17 @@ int main(int argc, char** argv) {
           "strict CSV terminal execution failed");
   auto rows = VisibleRows(fixture);
   Require(rows.size() == 4, "strict CSV did not publish four rows");
-  std::map<std::string, std::string> payload_by_id;
+  std::map<std::string, api::CrudStoredValue> payload_by_id;
   for (const auto& row : rows) {
     const auto values = Values(row);
-    Require(values.contains("id") && values.contains("payload"),
+    Require(values.contains("id") && values.contains("payload") && values.at("id").isPresent(),
             "published row shape drifted");
-    payload_by_id.emplace(values.at("id"), values.at("payload"));
+    payload_by_id.emplace(values.at("id").bytes, values.at("payload"));
   }
   Require(payload_by_id["1"] == "plain" &&
               payload_by_id["2"] == "comma,value" &&
               payload_by_id["3"] == "\\N" &&
-              payload_by_id["4"] == "<NULL>",
+              payload_by_id["4"].isSqlNull() && payload_by_id["4"].bytes.empty(),
           "strict CSV quote/null conversion drifted");
 
   const auto malformed = CoordinateAndSeal(

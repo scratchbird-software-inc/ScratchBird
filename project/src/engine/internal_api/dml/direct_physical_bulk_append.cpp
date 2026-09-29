@@ -1,4 +1,7 @@
 #include "datatype_storage_identity.hpp"
+#include "crud_support/retained_row_value_codec.hpp"
+#include "crud_support/native_value_payload.hpp"
+#include "crud_support/composite_logical_key.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -204,9 +207,17 @@ std::string DirectTypedValueTextPayload(const EngineTypedValue& typed) {
                      typed.binary_value.size());
 }
 
+CrudStoredValue DirectTypedStoredValue(const EngineTypedValue& typed) {
+  if (typed.isSqlNull() || typed.state != EngineValueState::value)
+    return CrudTypedValuePayload(typed);
+  if (!typed.encoded_value.empty() && !typed.binary_value.empty())
+    throw std::invalid_argument("ambiguous direct row payload");
+  return DirectTypedValueTextPayload(typed);
+}
+
 EngineApiU64 DirectTypedValuePayloadSize(const EngineTypedValue& typed) {
   if (typed.isSqlNull()) {
-    return static_cast<EngineApiU64>(sizeof("<NULL>") - 1);
+    return 0;
   }
   if (!typed.encoded_value.empty()) {
     return static_cast<EngineApiU64>(typed.encoded_value.size());
@@ -369,7 +380,7 @@ struct DirectRuntimeSecurityPolicyDecision {
 
 DirectRuntimeSecurityPolicyDecision EvaluateDirectRuntimeSecurityPolicyEnvelope(
     const std::string& envelope,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   DirectRuntimeSecurityPolicyDecision decision;
   std::string normalized = LowerAscii(envelope);
   if (StartsWithDirect(normalized, "sblr_predicate:")) {
@@ -412,7 +423,7 @@ DirectRuntimeSecurityPolicyDecision EvaluateDirectRuntimeSecurityPolicyEnvelope(
 EngineEvaluateDeepSecurityResult EvaluateDirectRuntimeInsertSecurityRecheck(
     const DirectPhysicalBulkAppendRequest& request,
     const EngineUuid& table_uuid,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     std::vector<EngineEvidenceReference>* evidence) {
   std::string rls_policy = "allow";
   for (const auto& policy : request.context.authorization_context.policies) {
@@ -776,11 +787,16 @@ bool DirectBoolField(const DirectColumnFields& fields,
          value == "required" || value == "primary" || value == "unique";
 }
 
-bool DirectNullValue(const std::string& value) {
-  return value == "<NULL>";
+bool DirectNullValue(const CrudStoredValue& value) {
+  return value.isSqlNull();
 }
+bool DirectNullValue(const std::string&) = delete;
 
-inline constexpr char kDirectNullMarker[] = "<NULL>";
+bool DirectLogicalKeyNull(const std::string& key) {
+  const auto contains_null = StoredLogicalKeyHasNull(key);
+  if (!contains_null) throw std::invalid_argument("invalid logical key state frame");
+  return *contains_null;
+}
 
 EngineUuid DirectConstraintUuid(
     const DirectColumnFields& fields,
@@ -987,8 +1003,8 @@ bool DirectIndexCoversColumn(const CrudIndexRecord& index,
   return columns.size() == 1 && columns.front() == column_name;
 }
 
-const std::string* DirectFieldValuePtr(
-    const std::vector<std::pair<std::string, std::string>>& values,
+const CrudStoredValue* DirectFieldValuePtr(
+    const CrudValueFields& values,
     const std::string& field) {
   for (const auto& [key, value] : values) {
     if (key == field) { return &value; }
@@ -1148,10 +1164,13 @@ using detail::kDirectSbkoBinaryPrefix;
 
 bool DirectIndexValuesContainNull(
     const CrudIndexRecord& index,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   for (const auto& column : DirectIndexKeyColumns(index)) {
     const auto* value = DirectFieldValuePtr(values, column);
-    if (value == nullptr || DirectNullValue(*value)) return true;
+    if (value == nullptr || !value->valid() ||
+        (!value->isPresent() && !value->isSqlNull()))
+      throw std::invalid_argument("unresolved_index_component");
+    if (DirectNullValue(*value)) return true;
   }
   return false;
 }
@@ -1392,7 +1411,7 @@ scratchbird::core::bulk_load::BulkConstraintProofKeyRef DirectProofKey(
   ref.row_uuid = std::move(row_uuid);
   ref.version_uuid = std::move(version_uuid);
   ref.source_ordinal = source_ordinal;
-  ref.null_key = null_key.value_or(DirectNullValue(ref.encoded_key));
+  ref.null_key = null_key ? *null_key : DirectLogicalKeyNull(ref.encoded_key);
   return ref;
 }
 
@@ -1482,8 +1501,7 @@ void AddVisibleRowKeysForSortedBuild(
       input.version_uuid = entry.version_uuid;
       input.payload_value = entry.payload_value;
       input.source_ordinal = ordinal++;
-      input.null_key = DirectNullValue(input.encoded_key) ||
-                       DirectEncodedScalarKeyIsNull(input.encoded_key);
+      input.null_key = DirectLogicalKeyNull(CrudIndexEntryLogicalKey(index, entry));
       keys->push_back(std::move(input));
     }
     return;
@@ -1497,7 +1515,7 @@ void AddVisibleRowKeysForSortedBuild(
       input.encoded_key = key;
       input.row_uuid = row.row_uuid;
       input.version_uuid = row.version_uuid;
-      input.payload_value = CrudFieldValue(row.values, index.column_name);
+      input.payload_value = EncodeCrudValues({{index.column_name, CrudFieldValue(row.values, index.column_name)}});
       input.source_ordinal = ordinal++;
       input.null_key = DirectIndexValuesContainNull(index, row.values);
       keys->push_back(std::move(input));
@@ -1519,8 +1537,7 @@ void AddVisibleRowKeysForSortedBuild(
     input.version_uuid = entry.version_uuid;
     input.payload_value = entry.payload_value;
     input.source_ordinal = ordinal++;
-    input.null_key = DirectNullValue(input.encoded_key) ||
-                     DirectEncodedScalarKeyIsNull(input.encoded_key);
+    input.null_key = DirectLogicalKeyNull(CrudIndexEntryLogicalKey(index, entry));
     keys->push_back(std::move(input));
   }
 }
@@ -1551,8 +1568,7 @@ void AddCachedConflictingVisibleKeysForSortedBuild(
     input.version_uuid = by_key->second.version_uuid;
     input.payload_value = by_key->second.payload_value;
     input.source_ordinal = ordinal++;
-    input.null_key = DirectNullValue(input.encoded_key) ||
-                     DirectEncodedScalarKeyIsNull(input.encoded_key);
+    input.null_key = DirectLogicalKeyNull(CrudIndexEntryLogicalKey(index, by_key->second));
     keys->push_back(std::move(input));
   }
 }
@@ -1579,7 +1595,7 @@ void AddVisibleParentKeysForProof(
                               context.local_transaction_id)) {
         continue;
       }
-      keys->push_back(DirectProofKey(entry.key_value,
+      keys->push_back(DirectProofKey(CrudIndexEntryLogicalKey(parent_index, entry),
                                      entry.row_uuid,
                                      entry.version_uuid,
                                      ordinal++));
@@ -1589,7 +1605,7 @@ void AddVisibleParentKeysForProof(
   std::set<std::pair<EngineUuid, EngineUuid>> visible_parent_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, parent_table_uuid, context)) {
-    const std::string key = CrudFieldValue(row.values, parent_column);
+    const std::string key = EncodeStoredLogicalKey({CrudFieldValue(row.values, parent_column)});
     keys->push_back(DirectProofKey(key,
                                    row.row_uuid,
                                    row.version_uuid,
@@ -1606,7 +1622,7 @@ void AddVisibleParentKeysForProof(
         !visible_parent_versions.contains({entry.row_uuid, entry.version_uuid})) {
       continue;
     }
-    keys->push_back(DirectProofKey(entry.key_value,
+    keys->push_back(DirectProofKey(CrudIndexEntryLogicalKey(parent_index, entry),
                                    entry.row_uuid,
                                    entry.version_uuid,
                                    ordinal++));
@@ -1645,7 +1661,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& visible_indexes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
+    const std::vector<CrudValueFields>& logical_value_batch,
     bool index_entries_authoritative,
     const std::map<EngineUuid, std::set<std::string>>* append_index_key_cache,
     const DirectPrecomputedIndexEntryMap* precomputed_entries) {
@@ -1818,13 +1834,13 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
          ++row_index) {
       const auto& values = logical_value_batch[row_index];
       foreign_key.child_keys.push_back(
-          DirectProofKey(CrudFieldValue(values, column_name),
+          DirectProofKey(EncodeStoredLogicalKey({CrudFieldValue(values, column_name)}),
                          staged_rows[row_index].row_uuid,
                          staged_rows[row_index].version_uuid,
                          row_index));
       if (parent->table_uuid == table.table_uuid) {
         foreign_key.batch_parent_keys.push_back(
-            DirectProofKey(CrudFieldValue(values, reference->parent_column),
+            DirectProofKey(EncodeStoredLogicalKey({CrudFieldValue(values, reference->parent_column)}),
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
                            row_index));
@@ -1982,7 +1998,7 @@ EngineApiU64 DirectUniqueIndexProbeCount(
 std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DirectDeltaEntries(
     const InsertBatchContext& batch_context,
     const CrudRowVersionRecord& row_record,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> entries;
   for (const auto& entry : batch_context.index_plan.entries) {
     if (entry.action != InsertIndexMaintenanceAction::committed_delta_ledger) {
@@ -2335,7 +2351,7 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
     const std::vector<CrudIndexRecord>& indexes,
     const DirectIndexDatatypeBindings& datatypes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
+    const std::vector<CrudValueFields>& logical_value_batch,
     std::span<const EngineRowValue> typed_input_rows = {},
     const InsertRowEncoderPlan* row_encoder_plan = nullptr,
     DirectTypedIndexKeyStats* typed_key_stats = nullptr) {
@@ -2361,7 +2377,7 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
            row_index < staged_rows.size();
            ++row_index) {
         const auto& values = logical_value_batch[row_index];
-        const std::string* value = nullptr;
+        const CrudStoredValue* value = nullptr;
         if (simple_ordinal.has_value() &&
             *simple_ordinal < values.size() &&
             values[*simple_ordinal].first == simple_column) {
@@ -2370,7 +2386,8 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
           value = DirectFieldValuePtr(values, simple_column);
         }
         if (value == nullptr) { continue; }
-        std::string encoded_key = *value;
+        const auto logical_key = EncodeStoredLogicalKey({*value});
+        std::string encoded_key = logical_key;
         bool typed_key_built = false;
         if (!typed_input_rows.empty() &&
             row_encoder_plan != nullptr &&
@@ -2383,9 +2400,8 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
                                                            &encoded_key,
                                                            typed_key_stats);
         }
-        if (value->empty() && !typed_key_built) { continue; }
         entries.push_back({encoded_key,
-                           *value,
+                           typed_key_built ? logical_key : EncodeCrudValues({{simple_column, *value}}),
                            staged_rows[row_index].row_uuid,
                            staged_rows[row_index].version_uuid,
                            static_cast<std::uint64_t>(row_index),
@@ -2396,7 +2412,7 @@ DirectPrecomputedIndexEntryMap DirectPrecomputeIndexEntries(
     }
     for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
       const auto& values = logical_value_batch[row_index];
-      const std::string payload = CrudFieldValue(values, index.column_name);
+      const std::string payload = EncodeCrudValues({{index.column_name, CrudFieldValue(values, index.column_name)}});
       for (const auto& key : CrudIndexKeysForValues(index, values)) {
         std::string physical_key;
         bool null_key = false;
@@ -2489,7 +2505,7 @@ void DirectReserveStageSimpleIndexEntries(
 
 void DirectAppendStageSimpleIndexEntries(
     const std::vector<DirectStageSimpleIndexPrecomputePlan>& plans,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const CrudRowVersionRecord& row,
     const EngineRowValue* typed_input_row,
     const InsertRowEncoderPlan* row_encoder_plan,
@@ -2508,7 +2524,8 @@ void DirectAppendStageSimpleIndexEntries(
     if (field_value.first != plan.column_name) {
       continue;
     }
-    std::string encoded_key = field_value.second;
+    const auto logical_key = EncodeStoredLogicalKey({field_value.second});
+    std::string encoded_key = logical_key;
     bool typed_key_built = false;
     if (typed_input_row != nullptr && row_encoder_plan != nullptr) {
       if (plan.ordinal < typed_input_row->fields.size() &&
@@ -2529,11 +2546,8 @@ void DirectAppendStageSimpleIndexEntries(
         }
       }
     }
-    if (field_value.second.empty() && !typed_key_built) {
-      continue;
-    }
     DirectPrecomputedIndexEntry entry{encoded_key,
-                                      field_value.second,
+                                      typed_key_built ? logical_key : EncodeCrudValues({field_value}),
                                       row.row_uuid,
                                       row.version_uuid,
                                       source_ordinal,
@@ -2577,8 +2591,7 @@ void DirectAppendStageSimpleTypedIndexEntries(
     }
     DirectPrecomputedIndexEntry entry{
         std::move(encoded_key),
-        typed.is_null ? std::string(kDirectNullMarker)
-                      : DirectTypedValueTextPayload(typed),
+        EncodeStoredLogicalKey({DirectTypedStoredValue(typed)}),
         row.row_uuid,
         row.version_uuid,
         source_ordinal, typed.isSqlNull()};
@@ -2861,7 +2874,7 @@ std::string DirectNativePacketPayloadText(
     const EngineNativeRowPacketFrame& frame,
     const DirectNativePacketValueRef& ref) {
   if (ref.is_null) {
-    return std::string(kDirectNullMarker);
+    throw std::invalid_argument("NULL has no native packet payload text");
   }
   const auto payload = DirectNativePacketPayloadSpan(frame, ref);
   switch (ref.tag) {
@@ -2897,6 +2910,12 @@ std::string DirectNativePacketPayloadText(
       return std::string(reinterpret_cast<const char*>(payload.data()),
                          payload.size());
   }
+}
+
+CrudStoredValue DirectNativePacketStoredValue(const EngineNativeRowPacketFrame& frame,
+                                              const DirectNativePacketValueRef& ref) {
+  return ref.is_null ? CrudStoredValue::SqlNull()
+                     : CrudStoredValue(DirectNativePacketPayloadText(frame, ref));
 }
 
 void DirectStoreBigEndianU32(
@@ -3282,7 +3301,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
               inline_payload.data(),
               inline_size),
           encoded_key)) {
-    *payload_value = DirectNativePacketPayloadText(frame, ref);
+    *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref)});
     if (stats != nullptr) {
       ++stats->typed_key_encoded;
       ++stats->sbkobin_keys;
@@ -3310,8 +3329,7 @@ bool DirectBuildTypedSimpleIndexKeyFromNativePacket(
     if (stats != nullptr) { ++stats->typed_key_fallback; }
     return false;
   }
-  *payload_value = ref.is_null ? std::string(kDirectNullMarker)
-                               : DirectNativePacketPayloadText(frame, ref);
+  *payload_value = EncodeStoredLogicalKey({DirectNativePacketStoredValue(frame, ref)});
   if (stats != nullptr) {
     ++stats->typed_key_encoded;
     ++stats->sbkobin_keys;
@@ -3380,8 +3398,7 @@ void DirectAppendStageSimpleNativePacketIndexEntries(
                                                    typed_key_stats)) {
         continue;
       }
-      payload_value = typed.is_null ? std::string(kDirectNullMarker)
-                                    : DirectTypedValueTextPayload(typed);
+      payload_value = EncodeStoredLogicalKey({DirectTypedStoredValue(typed)});
     }
     const bool null_key = DirectEncodedScalarKeyIsNull(encoded_key);
     DirectPrecomputedIndexEntry entry{
@@ -3938,7 +3955,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     const MgaRelationReadView& state,
     const std::vector<CrudIndexRecord>& synchronous_indexes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
+    const std::vector<CrudValueFields>& logical_value_batch,
     bool index_entries_authoritative,
     const std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>* append_index_entry_key_cache) {
   DirectSortedBulkIndexBuildSelection selection;
@@ -4041,7 +4058,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
         input.encoded_key = key;
         input.row_uuid = staged_rows[row_index].row_uuid;
         input.version_uuid = staged_rows[row_index].version_uuid;
-        input.payload_value = CrudFieldValue(values, index.column_name);
+        input.payload_value = EncodeCrudValues({{index.column_name, CrudFieldValue(values, index.column_name)}});
         input.source_ordinal = static_cast<std::uint64_t>(row_index);
         input.null_key = DirectIndexValuesContainNull(index, values);
         build.rows.push_back(std::move(input));
@@ -4190,11 +4207,11 @@ std::uint64_t DirectOptionU64(const DirectPhysicalBulkAppendRequest& request,
 
 
 std::uint64_t EstimateDirectPhysicalValueBytes(
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   std::uint64_t bytes = 112;  // row header plus slot directory entry.
   for (const auto& field : values) {
     bytes += 16;  // cell header.
-    bytes += static_cast<std::uint64_t>(field.second.size());
+    bytes += static_cast<std::uint64_t>(field.second.bytes.size());
   }
   return std::max<std::uint64_t>(128, bytes);
 }
@@ -4207,7 +4224,7 @@ std::uint64_t EstimateDirectPhysicalRowBytes(
 std::uint64_t DefaultDirectPhysicalRowsPerPage(
     const DirectPhysicalBulkAppendRequest& request,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+    const std::vector<CrudValueFields>*
         value_batch) {
   if (staged_rows.empty()) {
     return 16;
@@ -4303,10 +4320,10 @@ PreparedInsertRow PrepareDirectBulkOrderedRowFast(
   row.values.reserve(input_row.fields.size());
   for (const auto& [field, typed] : input_row.fields) {
     if (typed.is_null) {
-      row.values.push_back({field, kDirectNullMarker});
-      row.encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+      row.values.push_back({field, CrudStoredValue::SqlNull()});
+      row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, DirectTypedValueTextPayload(typed)});
+      row.values.push_back({field, DirectTypedStoredValue(typed)});
       row.encoded_bytes += field.size() + DirectTypedValuePayloadSize(typed);
     }
   }
@@ -4328,10 +4345,10 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
     const auto& typed = input_row.fields[field_index].second;
     const std::string& field = DirectInputFieldName(request, input_row, field_index);
     if (typed.is_null) {
-      row.values.push_back({field, kDirectNullMarker});
-      row.encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+      row.values.push_back({field, CrudStoredValue::SqlNull()});
+      row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, DirectTypedValueTextPayload(typed)});
+      row.values.push_back({field, DirectTypedStoredValue(typed)});
       row.encoded_bytes += field.size() + DirectTypedValuePayloadSize(typed);
     }
   }
@@ -4342,7 +4359,7 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
 
 std::string DirectNotNullValidationFailure(
     const InsertRowEncoderPlan& row_encoder_plan,
-    const std::vector<std::pair<std::string, std::string>>& values) {
+    const CrudValueFields& values) {
   for (const auto& column : row_encoder_plan.columns) {
     if (!column.not_null_bound) {
       continue;
@@ -4372,7 +4389,7 @@ std::vector<std::size_t> DirectNotNullValidationOrdinals(
 
 std::string DirectNotNullValidationFailureOrdered(
     const InsertRowEncoderPlan& row_encoder_plan,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::vector<std::size_t>& ordinals) {
   for (const std::size_t ordinal : ordinals) {
     if (ordinal >= values.size() || DirectNullValue(values[ordinal].second)) {
@@ -4409,7 +4426,7 @@ struct DirectPhysicalMgaCowWriteResult {
 DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     const DirectPhysicalBulkAppendRequest& request,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>*
+    const std::vector<CrudValueFields>*
         value_batch = nullptr,
     bool engine_generated_unique_insert_rows = false,
     const InsertRowEncoderPlan* row_encoder_plan = nullptr) {
@@ -5213,22 +5230,15 @@ struct DirectStrictBulkLifecycleResult {
 };
 
 std::string EncodedStrictBulkRow(
-    const std::vector<std::pair<std::string, std::string>>& values) {
-  std::ostringstream encoded;
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    if (index != 0) {
-      encoded << ';';
-    }
-    encoded << values[index].first << '=' << values[index].second;
-  }
-  return encoded.str().empty() ? "empty-row" : encoded.str();
+    const CrudValueFields& values) {
+  return EncodeCrudValues(values);
 }
 
 DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
     const DirectPhysicalBulkAppendRequest& request,
     const InsertBatchContext& batch_context,
     const std::vector<CrudRowVersionRecord>& staged_rows,
-    const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
+    const std::vector<CrudValueFields>& logical_value_batch) {
   DirectStrictBulkLifecycleResult result;
   if (!batch_context.strict_bulk_load_selected) {
     return result;
@@ -6001,7 +6011,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   ConstraintDmlValidationCache constraint_cache;
 	  std::vector<CrudRowVersionRecord> staged_rows;
 	  std::vector<CrudRowVersionRecord> returning_rows;
-	  std::vector<std::vector<std::pair<std::string, std::string>>> logical_value_batch;
+	  std::vector<CrudValueFields> logical_value_batch;
   const bool page_allocation_runtime_requested =
       DirectPageAllocationRuntimeRequested(request);
   DmlIngestionPipelineConfig ingestion_config;
@@ -6473,7 +6483,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	      row_record.temporary_session_uuid =
 	          table->temporary ? request.context.session_uuid : EngineUuid{};
 	      row_record.deleted = false;
-	      std::vector<std::pair<std::string, std::string>> row_values;
+	      CrudValueFields row_values;
 	      row_values.reserve(generated_counter_plan.projections.size());
 
       std::uint64_t encoded_bytes = 0;
@@ -6493,7 +6503,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         }
         if (field_index < not_null_ordinal_mask.size() &&
             not_null_ordinal_mask[field_index] &&
-            DirectNullValue(value)) {
+            DirectNullValue(CrudStoredValue(value))) {
           not_null_failure = projection.column_name;
           break;
 	        }
@@ -6679,7 +6689,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             &direct_precomputed_index_order_states);
       }
       if (!native_bulk_typed_logical_batch_bypass) {
-        std::vector<std::pair<std::string, std::string>> row_values;
+        CrudValueFields row_values;
         row_values.reserve(native_frame.field_order.size());
         for (std::size_t field_index = 0;
              field_index < native_frame.field_order.size();
@@ -6696,7 +6706,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                 "native_row_packet_value_decode_failed");
           }
           row_values.emplace_back(native_frame.field_order[field_index],
-                                  DirectNativePacketPayloadText(native_frame,
+                                  DirectNativePacketStoredValue(native_frame,
                                                                 value_ref));
         }
         logical_value_batch.push_back(std::move(row_values));
@@ -6739,7 +6749,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	      }
 
 	      const auto convert_start = row_stage_timer_start();
-	      std::vector<std::pair<std::string, std::string>> values;
+	      CrudValueFields values;
 	      values.reserve(native_frame.field_order.size());
 	      std::uint64_t encoded_bytes = 0;
 	      for (std::size_t field_index = 0;
@@ -6756,10 +6766,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                           "native_row_packet_value_decode_failed"),
 	              "native_row_packet_value_decode_failed");
 	        }
-	        std::string value =
-	            DirectNativePacketPayloadText(native_frame, value_ref);
+	        auto value =
+	            DirectNativePacketStoredValue(native_frame, value_ref);
 	        encoded_bytes += native_frame.field_order[field_index].size() +
-	                         value.size();
+	                         value.bytes.size();
 	        values.emplace_back(native_frame.field_order[field_index],
 	                            std::move(value));
 	      }
@@ -6774,7 +6784,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           MaterializeOmittedInsertColumns(batch_context.row_encoder_plan, &values);
 	      const bool default_requested =
 	          std::any_of(values.begin(), values.end(), [](const auto& field) {
-	            return field.second == "<DEFAULT>";
+	            return field.second.isDefaultRequested();
 	          });
 	      if (has_default_validators || default_requested) {
 	        const auto validation_start = row_stage_timer_start();
@@ -6981,9 +6991,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           break;
         }
         const auto& typed = input_row.fields[ordinal].second;
-        if (typed.is_null ||
-            (!compact_typed_null_state_authoritative &&
-             DirectNullValue(typed.encoded_value))) {
+        if (typed.isSqlNull()) {
           not_null_failure =
               ordinal < batch_context.row_encoder_plan.columns.size()
                   ? batch_context.row_encoder_plan.columns[ordinal].column_name
@@ -7008,7 +7016,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           const std::string& field =
               DirectInputFieldName(request, input_row, field_index);
           encoded_bytes += field.size();
-          encoded_bytes += typed.is_null ? sizeof(kDirectNullMarker) - 1
+          encoded_bytes += typed.is_null ? 0
                                          : DirectTypedValuePayloadSize(typed);
         }
         const bool toast_required =
@@ -7101,7 +7109,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             table->temporary ? request.context.session_uuid : EngineUuid{};
         row_record.deleted = false;
       }
-      std::vector<std::pair<std::string, std::string>> external_row_values;
+      CrudValueFields external_row_values;
       auto& staged_value_target =
           stage_values_externally_for_shared_rowset ? external_row_values
                                                     : row_record.values;
@@ -7124,9 +7132,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             break;
           }
           const auto& typed = input_row.fields[ordinal].second;
-          if (typed.is_null ||
-              (!compact_typed_null_state_authoritative &&
-               DirectNullValue(typed.encoded_value))) {
+          if (typed.isSqlNull()) {
             not_null_failure =
                 ordinal < batch_context.row_encoder_plan.columns.size()
                     ? batch_context.row_encoder_plan.columns[ordinal].column_name
@@ -7143,15 +7149,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
               DirectInputFieldName(request, input_row, field_index);
           if (!rowset_default_markers_absent &&
               !typed.is_null &&
-              typed.encoded_value == "<DEFAULT>") {
+              typed.state == EngineValueState::default_requested) {
             saw_default_marker = true;
             break;
           }
           if (field_index < not_null_ordinal_mask.size() &&
               not_null_ordinal_mask[field_index] &&
-              (typed.is_null ||
-               (!compact_typed_null_state_authoritative &&
-                DirectNullValue(typed.encoded_value)))) {
+              typed.isSqlNull()) {
             not_null_failure =
                 field_index < batch_context.row_encoder_plan.columns.size()
                     ? batch_context.row_encoder_plan.columns[field_index].column_name
@@ -7160,10 +7164,10 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           }
           if (typed.is_null) {
             if (!native_bulk_typed_logical_batch_bypass) {
-              staged_value_target.emplace_back(field, kDirectNullMarker);
+              staged_value_target.emplace_back(field, CrudStoredValue::SqlNull());
             }
             if (row_stage_needs_encoded_bytes) {
-              encoded_bytes += field.size() + sizeof(kDirectNullMarker) - 1;
+              encoded_bytes += field.size() + 0;
             }
           } else {
             if (!native_bulk_typed_logical_batch_bypass) {
@@ -7331,7 +7335,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
     const bool default_requested =
         std::any_of(values.begin(), values.end(), [](const auto& field) {
-          return field.second == "<DEFAULT>";
+          return field.second.isDefaultRequested();
         });
     if (has_default_validators || default_requested) {
       const auto validation_start = row_stage_timer_start();
@@ -7586,7 +7590,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	        logical_value_batch.reserve(staged_rows.size());
 	        if (request.borrowed_input_rows.size() == staged_rows.size()) {
 	          for (const auto& input_row : request.borrowed_input_rows) {
-	            std::vector<std::pair<std::string, std::string>> values;
+	            CrudValueFields values;
 	            values.reserve(input_row.fields.size());
 	            for (std::size_t field_index = 0;
 	                 field_index < input_row.fields.size();
@@ -7595,8 +7599,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	              const std::string& field =
 	                  DirectInputFieldName(request, input_row, field_index);
 	              values.emplace_back(field,
-	                                  typed.is_null ? std::string(kDirectNullMarker)
-	                                                : DirectTypedValueTextPayload(typed));
+	                                  DirectTypedStoredValue(typed));
 	            }
 	            logical_value_batch.push_back(std::move(values));
 	          }
@@ -7608,7 +7611,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	          const auto& native_frame = *request.native_row_packet;
 	          for (std::size_t row_index = 0; row_index < staged_rows.size();
 	               ++row_index) {
-	            std::vector<std::pair<std::string, std::string>> values;
+	            CrudValueFields values;
 	            values.reserve(native_frame.field_order.size());
 	            for (std::size_t field_index = 0;
 	                 field_index < native_frame.field_order.size();
@@ -7622,7 +7625,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                return false;
 	              }
 	              values.emplace_back(native_frame.field_order[field_index],
-	                                  DirectNativePacketPayloadText(native_frame,
+	                                  DirectNativePacketStoredValue(native_frame,
 	                                                                value_ref));
 	            }
 	            logical_value_batch.push_back(std::move(values));
@@ -8142,7 +8145,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	    }
   }
   if (large_value_persistence_required) {
-    std::vector<std::vector<std::pair<std::string, std::string>>>
+    std::vector<CrudValueFields>
         storage_value_batch;
 	    storage_value_batch.reserve(staged_rows.size());
 	    for (std::size_t index = 0; index < staged_rows.size(); ++index) {

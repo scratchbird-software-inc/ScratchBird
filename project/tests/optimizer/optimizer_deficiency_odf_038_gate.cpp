@@ -597,7 +597,7 @@ void TestPreparedRowSequenceIdentity() {
   std::vector<std::uint64_t> written;
   Require(append.AppendRowVersionsReadOnly(rows).error,
           "ODF-038 read-only append bypassed prepared version identity");
-  std::vector<std::vector<std::pair<std::string, std::string>>> values;
+  std::vector<api::CrudValueFields> values;
   for (const auto& row : rows) values.push_back(row.values);
   Require(append.AppendRowVersions(&rows, &values, &written).error,
           "ODF-038 alternate value append bypassed prepared version identity");

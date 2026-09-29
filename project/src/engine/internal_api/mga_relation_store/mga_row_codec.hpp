@@ -133,7 +133,7 @@ void AppendRowVersionStoreLine(
     std::string* out,
     const CrudRowVersionRecord& row,
     std::uint64_t event_sequence_override,
-    const std::vector<std::pair<std::string, std::string>>& values,
+    const CrudValueFields& values,
     const std::vector<std::string>* encoded_keys = nullptr);
 void AppendTypedRowVersionStoreLine(
     std::string* out,

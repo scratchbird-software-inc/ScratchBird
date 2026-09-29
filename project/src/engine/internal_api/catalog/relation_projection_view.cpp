@@ -642,7 +642,7 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
     remember(row.previous_version_uuid);
     for (const auto& [field, value] : row.values) {
       (void)field;
-      remember(BinaryViewUuid(value));
+      if (value.isPresent()) remember(BinaryViewUuid(value.bytes));
     }
   }
   for (const auto& entry : visible_crud.index_entries) {
@@ -782,6 +782,7 @@ bool SemanticOutputExactlyMatches(
 struct StoredFieldValueLookup {
   bool found = false;
   bool duplicate = false;
+  EngineValueState state = EngineValueState::missing;
   std::string_view value;
 };
 
@@ -796,7 +797,8 @@ StoredFieldValueLookup StoredFieldValueExact(
       continue;
     }
     lookup.found = true;
-    lookup.value = value;
+    lookup.state = value.state;
+    lookup.value = value.bytes;
   }
   return lookup;
 }
@@ -1771,11 +1773,12 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
     projected.requested_row_uuid = row.row_uuid;
     EngineTypedValue source_value;
     source_value.descriptor = source_type;
-    if (stored.value == "<NULL>") {
+    if (stored.state == EngineValueState::sql_null && stored.value.empty()) {
       source_value.setState(EngineValueState::sql_null);
     } else {
       std::string canonical;
-      if (!CanonicalInt32Value(source_type, stored.value, &canonical)) {
+      if (stored.state != EngineValueState::value ||
+          !CanonicalInt32Value(source_type, stored.value, &canonical)) {
         result.result_shape.rows.clear();
         result.scanned_visible_row_count = 0;
         result.diagnostic = ViewDiagnostic(

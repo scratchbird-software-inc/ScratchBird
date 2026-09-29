@@ -551,7 +551,7 @@ struct MgaTemporaryRecoveryClassificationResult {
 struct MgaIndexEntryRowInput {
   EngineUuid row_uuid;
   EngineUuid version_uuid;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
 };
 
 struct MgaIndexEntryAppendBatch {
@@ -618,7 +618,7 @@ struct MgaLargeValuePersistBatchRowInput {
   EngineUuid row_uuid;
   EngineUuid version_uuid;
   bool force_large_value = false;
-  std::vector<std::pair<std::string, std::string>>* values = nullptr;
+  CrudValueFields* values = nullptr;
 };
 
 struct MgaLargeValuePersistBatchCounters {
@@ -651,18 +651,18 @@ class MgaRelationHotAppendContext {
       std::vector<std::uint64_t>* written_event_sequences);
   EngineApiDiagnostic AppendRowVersions(
       std::vector<CrudRowVersionRecord>* rows,
-      const std::vector<std::vector<std::pair<std::string, std::string>>>*
+      const std::vector<CrudValueFields>*
           value_batch,
       std::vector<std::uint64_t>* written_event_sequences);
   EngineApiDiagnostic AppendRowVersionsReadOnly(
       const std::vector<CrudRowVersionRecord>& rows);
   EngineApiDiagnostic AppendRowVersionsReadOnly(
       const std::vector<CrudRowVersionRecord>& rows,
-      const std::vector<std::vector<std::pair<std::string, std::string>>>*
+      const std::vector<CrudValueFields>*
           value_batch);
   EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnly(
       const std::vector<CrudRowVersionRecord>& rows,
-      const std::vector<std::vector<std::pair<std::string, std::string>>>*
+      const std::vector<CrudValueFields>*
           value_batch,
       bool shared_key_order_known = false);
   EngineApiDiagnostic AppendRowVersionsReadOnlyScopedOnlyTyped(
@@ -703,7 +703,7 @@ struct MgaSecondaryIndexDeltaLedgerEntryInput {
   EngineUuid table_uuid;
   EngineUuid row_uuid;
   EngineUuid version_uuid;
-  std::vector<std::pair<std::string, std::string>> values;
+  CrudValueFields values;
   scratchbird::core::index::SecondaryIndexDeltaKind delta_kind =
       scratchbird::core::index::SecondaryIndexDeltaKind::insert;
   std::string cleanup_horizon_token;
@@ -986,7 +986,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& cont
                                                 const EngineUuid& table_uuid,
                                                 const EngineUuid& row_uuid,
                                                 const EngineUuid& version_uuid,
-                                                const std::vector<std::pair<std::string, std::string>>& values);
+                                                const CrudValueFields& values);
 EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& context,
                                                  const RelationReadSnapshot& state,
                                                  const EngineUuid& table_uuid,
@@ -1002,7 +1002,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForIndex(const EngineRequestContext& co
                                                   const CrudIndexRecord& index,
                                                   const EngineUuid& row_uuid,
                                                   const EngineUuid& version_uuid,
-                                                  const std::vector<std::pair<std::string, std::string>>& values);
+                                                  const CrudValueFields& values);
 
 MgaSecondaryIndexDeltaLedgerResult LoadMgaSecondaryIndexDeltaLedger(
     const EngineRequestContext& context);
@@ -1039,7 +1039,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& cont
                                                 const EngineUuid& row_uuid,
                                                 const EngineUuid& version_uuid,
                                                 bool force_large_value,
-                                                std::vector<std::pair<std::string, std::string>>* values,
+                                                CrudValueFields* values,
                                                 std::vector<EngineEvidenceReference>* evidence);
 EngineApiDiagnostic PersistMgaLargeValuesForRows(
     const EngineRequestContext& context,

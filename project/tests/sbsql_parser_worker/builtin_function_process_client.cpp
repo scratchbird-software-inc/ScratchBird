@@ -43,7 +43,9 @@ int main(int argc, char** argv) {
     if (!expected_metadata.empty()) {
       const auto metadata = result_packet::Find(packet, "row_meta[0]");
       if (!metadata || metadata->kind != result_packet::Kind::text || metadata->value != expected_metadata) {
-        std::cerr << "unexpected row metadata for " << sql << '\n'; return false;
+        std::cerr << "unexpected row metadata for " << sql << " expected=" << expected_metadata
+                  << " actual=" << (metadata ? metadata->value : "<absent>") << '\n';
+        return false;
       }
     }
     const auto row = result_packet::Find(packet, "row[0]");
@@ -133,6 +135,28 @@ int main(int argc, char** argv) {
        !run("INSERT INTO native_uuid_explicit (payload, id) VALUES "
             "(X'ff0001', UUID '00000000-0000-0000-0000-000000000000')", {}) ||
        !run("COMMIT TRANSACTION", {}))) return 5;
+  if (std::string_view(argv[4]) == "initial0") {
+    if (!run("BEGIN TRANSACTION", {}) ||
+        !run("CREATE TABLE native_marker_values (id INTEGER, payload BINARY, txt TEXT, null_payload BINARY)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (1, X'3c4e554c4c3e', '<NULL>', NULL)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (2, X'3c44454641554c543e', '<DEFAULT>', NULL)", {}) ||
+        !run("INSERT INTO native_marker_values VALUES (3, X'', '', NULL)", {}) ||
+        !run("COMMIT TRANSACTION", {})) return 8;
+  }
+  // Present bytes must remain distinct from SQL NULL and default-request state.
+  // Independent parser sessions repeat these exact value and nullability checks
+  // both before and after a real server restart.
+  if (!run("BEGIN TRANSACTION", {}) ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 1",
+           "row[0]=payload=hex:3c4e554c4c3e;txt=<NULL>;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 2",
+           "row[0]=payload=hex:3c44454641554c543e;txt=<DEFAULT>;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("SELECT payload, txt, null_payload FROM native_marker_values WHERE id = 3",
+           "row[0]=payload=hex:;txt=;null_payload=hex:", 0,
+           "payload:binary:not_null;txt:text:not_null;null_payload:binary:null") ||
+      !run("ROLLBACK TRANSACTION", {})) return 8;
   if (std::string_view(argv[4]) == "initial0") {
     if (!run("BEGIN TRANSACTION", {}) ||
         !run("CREATE TABLE native_uuid_predicate (value UUID)", {})) return 6;

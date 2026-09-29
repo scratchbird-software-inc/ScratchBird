@@ -9,6 +9,7 @@
 #include "sblr_domain_runtime.hpp"
 
 #include "domain_support/domain_store.hpp"
+#include "crud_support/native_value_payload.hpp"
 #include "query/expression_api.hpp"
 
 #include <string>
@@ -64,9 +65,17 @@ api::EngineDescriptor DescriptorFromSblrValue(const SblrValue& value) {
 api::EngineTypedValue ToEngineValue(const SblrValue& value) {
   api::EngineTypedValue out;
   out.descriptor = DescriptorFromSblrValue(value);
-  out.is_null = value.is_null;
+  out.setState(value.is_null ? api::EngineValueState::sql_null : api::EngineValueState::value);
   if (value.is_null) {
-    out.encoded_value = "<NULL>";
+    // Preserve conflicting bytes so typed admission can reject malformed NULL.
+    out.encoded_value = value.encoded_value.empty() ? value.text_value : value.encoded_value;
+    out.binary_value = value.binary_value;
+  } else if (value.payload_kind == SblrValuePayloadKind::uuid_binary) {
+    if (!CopySblrUuidPayload(value, &out.binary_value))
+      throw std::invalid_argument("domain_UUID_payload_invalid");
+  } else if (value.payload_kind == SblrValuePayloadKind::binary) {
+    out.binary_value = value.binary_value;
+    out.encoded_value = value.encoded_value;
   } else if (!value.encoded_value.empty()) {
     out.encoded_value = value.encoded_value;
   } else if (!value.text_value.empty()) {
@@ -86,8 +95,13 @@ SblrValue FromEngineValue(const api::EngineTypedValue& value) {
   out.descriptor_id = value.descriptor.descriptor_kind == "domain" && !value.descriptor.descriptor_uuid.is_nil()
                           ? api::DomainColumnDescriptor(value.descriptor.descriptor_uuid)
                           : value.descriptor.canonical_type_name;
-  out.is_null = value.is_null || value.encoded_value == "<NULL>";
+  out.is_null = value.isSqlNull();
   if (out.is_null) return out;
+  if (!value.binary_value.empty()) {
+    out.binary_value = value.binary_value;
+    out.payload_kind = SblrValuePayloadKind::binary;
+    return out;
+  }
   out.encoded_value = value.encoded_value;
   out.text_value = value.encoded_value;
   out.payload_kind = SblrValuePayloadKind::text;
@@ -114,22 +128,18 @@ SblrResult ScalarDomainResult(std::string operation_id, SblrValue value) {
   return out;
 }
 
-std::string ValueText(const SblrValue& value) {
-  if (value.is_null) return "<NULL>";
-  if (!value.encoded_value.empty()) return value.encoded_value;
-  if (!value.text_value.empty()) return value.text_value;
-  if (value.has_int64_value) return std::to_string(value.int64_value);
-  if (value.has_uint64_value) return std::to_string(value.uint64_value);
-  if (value.has_real64_value) return std::to_string(value.real64_value);
-  return {};
-}
-
 SblrResult ValidateViaEngine(const SblrDomainRequest& request, std::string operation_id) {
   api::EngineValidateDomainValueRequest api_request;
   api_request.context = ToEngineContext(request.context);
   api_request.operation_id = "query.validate_domain_value";
   api_request.domain_descriptor = DomainDescriptorFromUuid(request.domain_uuid);
-  api_request.input_value = ToEngineValue(request.value);
+  try {
+    api_request.input_value = ToEngineValue(request.value);
+  } catch (const std::invalid_argument& error) {
+    return SblrDomainFailure(std::move(operation_id), request.context,
+        {"SB_DIAG_DOMAIN_RUNTIME_FAILED", "domain.validate.invalid_value", error.what(), true},
+        request.domain_uuid);
+  }
   const auto result = api::EngineValidateDomainValue(api_request);
   if (!result.ok) {
     const auto diagnostic = result.diagnostics.empty() ? api::EngineApiDiagnostic{"SB_DIAG_DOMAIN_VALIDATION_FAILED",
@@ -169,7 +179,19 @@ SblrResult ValidateSblrDomainValue(const SblrDomainRequest& request) {
 SblrResult ApplySblrDomainReadPolicy(const SblrDomainRequest& request) {
   const auto engine_context = ToEngineContext(request.context);
   const std::vector<std::pair<std::string, std::string>> columns = {{"value", api::DomainColumnDescriptor(request.domain_uuid)}};
-  const std::vector<std::pair<std::string, std::string>> values = {{"value", ValueText(request.value)}};
+  api::CrudStoredValue stored;
+  try {
+    const auto typed = ToEngineValue(request.value);
+    stored = api::CrudTypedValuePayload(typed);
+    // Domain descriptors do not erase the admitted SBLR binary carrier.
+    if (stored.isPresent() && !typed.binary_value.empty())
+      stored.bytes.assign(typed.binary_value.begin(), typed.binary_value.end());
+  } catch (const std::invalid_argument& error) {
+    return SblrDomainFailure("sblr.domain.read_policy", request.context,
+        {"SB_DIAG_DOMAIN_RUNTIME_FAILED", "domain.read_policy.invalid_value", error.what(), true},
+        request.domain_uuid);
+  }
+  const api::CrudValueFields values = {{"value", stored}};
   const auto result = api::ApplyDomainReadPoliciesToCrudValues(engine_context,
                                                                columns,
                                                                values,
@@ -180,11 +202,24 @@ SblrResult ApplySblrDomainReadPolicy(const SblrDomainRequest& request) {
   SblrValue out = request.value;
   for (const auto& [key, value] : result.values) {
     if (key == "value") {
-      out.is_null = value == "<NULL>";
-      out.encoded_value = out.is_null ? "" : value;
+      out.is_null = value.isSqlNull();
+      out.encoded_value = out.is_null ? "" : value.bytes;
       out.text_value = out.encoded_value;
+      out.binary_value.clear();
+      out.uuid_value = {};
+      out.uuid_array_value.clear();
+      out.has_int64_value = false;
+      out.has_uint64_value = false;
+      out.has_real64_value = false;
       out.descriptor_id = api::DomainColumnDescriptor(request.domain_uuid);
       out.payload_kind = out.is_null ? SblrValuePayloadKind::none : SblrValuePayloadKind::text;
+      if (!out.is_null && (request.value.payload_kind == SblrValuePayloadKind::binary ||
+                           request.value.payload_kind == SblrValuePayloadKind::uuid_binary)) {
+        out.binary_value.assign(value.bytes.begin(), value.bytes.end());
+        out.encoded_value.clear();
+        out.text_value.clear();
+        out.payload_kind = SblrValuePayloadKind::binary;
+      }
       break;
     }
   }
@@ -196,7 +231,13 @@ SblrResult InvokeSblrDomainMethod(const SblrDomainRequest& request) {
   api_request.context = ToEngineContext(request.context);
   api_request.operation_id = "query.invoke_domain_method";
   api_request.domain_descriptor = DomainDescriptorFromUuid(request.domain_uuid);
-  api_request.input_value = ToEngineValue(request.value);
+  try {
+    api_request.input_value = ToEngineValue(request.value);
+  } catch (const std::invalid_argument& error) {
+    return SblrDomainFailure("sblr.domain.invoke_method", request.context,
+        {"SB_DIAG_DOMAIN_RUNTIME_FAILED", "domain.invoke.invalid_value", error.what(), true},
+        request.domain_uuid);
+  }
   api_request.method_name = request.method_name;
   const auto result = api::EngineInvokeDomainMethod(api_request);
   if (!result.ok) {
