@@ -1,4 +1,3 @@
-#include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,6 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_evidence_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
+#include <map>
+#include <memory>
 #include "api_types.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
@@ -35,10 +39,7 @@ namespace {
 #define SB_ODFR020_SEED_PACK_ROOT "project/resources/seed-packs/initial-resource-pack"
 #endif
 
-constexpr const char* kDatabaseUuid = "019f2200-0000-7000-8000-000000000001";
-constexpr const char* kSchemaUuid = "019f2200-0000-7000-8000-000000000101";
-constexpr const char* kTableUuid = "019f2200-0000-7000-8000-000000000102";
-constexpr const char* kUniqueIdIndexUuid = "019f2200-0000-7000-8000-000000000103";
+constexpr auto kUniqueIdIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000103");
 constexpr auto kSeedRow = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000201");
 constexpr auto kRowUuidInsert = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000202");
 constexpr auto kColumnInsert = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000203");
@@ -48,7 +49,7 @@ constexpr auto kRollbackDeleteRow = scratchbird::tests::FixtureUuidLiteral("019f
 void Require(bool condition, std::string_view message) {
   if (condition) return;
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 memory::AllocationPolicy MemoryPolicy() {
@@ -112,25 +113,24 @@ std::string FieldValue(const api::EngineApiResult& result,
   return {};
 }
 
+api::EngineRequestContext fixture_owner;
+std::map<api::EngineUuid, std::unique_ptr<scratchbird::tests::FixtureEngineSession>> fixture_sessions;
+std::vector<std::unique_ptr<scratchbird::tests::FixtureEngineStatement>> fixture_statements;
+struct OwnedFixtureRoot {
+  std::filesystem::path path = MakeTempDir();
+  ~OwnedFixtureRoot() {
+    fixture_statements.clear(); fixture_sessions.clear();
+    if (!path.empty()) { std::error_code error; std::filesystem::remove_all(path, error); }
+  }
+};
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      api::EngineUuid session_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000001")) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.request_id = "odfr020-merge-multi-action";
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000002");
+                                      api::EngineUuid session_uuid) {
+  auto context = fixture_owner;
+  Require(context.database_path == database_path.string(), "MERGE bootstrap path mismatch");
   context.session_uuid = session_uuid;
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("ODFR-020");
-  context.trace_tags.push_back("merge-multi-action");
+  context.request_id = "odfr020-merge-multi-action";
+  context.trace_tags = {"ODFR-020", "merge-multi-action"};
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -162,7 +162,10 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
       begin.snapshot_visible_through_local_transaction_id != 0
           ? begin.snapshot_visible_through_local_transaction_id
           : EvidenceU64(begin, "snapshot_visible_through_local_transaction_id");
-  return context;
+  auto& session = fixture_sessions[context.session_uuid];
+  if (!session) session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  fixture_statements.push_back(std::make_unique<scratchbird::tests::FixtureEngineStatement>(*session, context));
+  return fixture_statements.back()->context;
 }
 
 void Commit(const api::EngineRequestContext& context) {
@@ -192,7 +195,7 @@ api::EngineLocalizedName Name(std::string name) {
   return {"en", "primary", name, name, true};
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context, std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000300");
@@ -205,6 +208,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -245,8 +249,8 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("odfr020_table"));
-  table_request.table_columns.push_back(Column(0, "id"));
-  table_request.table_columns.push_back(Column(1, "note"));
+  table_request.table_columns.push_back(Column(context, 0, "id"));
+  table_request.table_columns.push_back(Column(context, 1, "note"));
   table_request.table_indexes.push_back(UniqueIdIndex());
   auto table = api::EngineCreateTable(table_request);
   Require(table.ok, "table create failed");
@@ -275,7 +279,7 @@ void RequireCommonMergeEvidence(const api::EngineMergeRowsResult& result) {
           "merge unmatched source count evidence missing");
   Require(HasEvidence(result, "merge_returning", "affected_rows"),
           "merge returning evidence missing");
-  Require(HasEvidence(result, "merge_output_order", "source_order"),
+  Require(HasEvidence(result, "merge_output_order", "source_ordinal_then_target_uuid"),
           "merge source-order evidence missing");
   Require(HasEvidence(result, "mga_visibility_recheck", "required"),
           "merge MGA recheck evidence missing");
@@ -312,7 +316,7 @@ void VerifyRowUuidMerge(const api::EngineRequestContext& context) {
           "row_uuid merge access evidence missing");
   Require(HasEvidence(merged, "merge_repeated_full_scan", "false"),
           "row_uuid merge repeated scan evidence missing");
-  Require(HasEvidence(merged, "merge_action_execution", "action_batches"),
+  Require(HasEvidence(merged, "merge_action_execution", "source_ordered_action_batches"),
           "row_uuid merge batched execution evidence missing");
   Require(HasEvidence(merged, "merge_update_batch_count", "1"),
           "row_uuid merge update batch count missing");
@@ -325,7 +329,7 @@ void VerifyRowUuidMerge(const api::EngineRequestContext& context) {
   Require(HasNoEvidence(merged, "update_row_candidate_stream", "table_scan"),
           "row_uuid merge update batch fell back to table scan");
   Require(EvidenceContains(merged, "merge_target_access_plan_evidence",
-                           "hot_point_lookup_cache_admission=deferred_until_successful_row_locator"),
+                           "hot_point_lookup_cache_admission=requires_successful_row_locator"),
           "row_uuid merge cache admission was not deferred until lookup success");
   Require(EvidenceContains(merged, "merge_hot_point_lookup_cache",
                            "hot_point_lookup_cache_actual_row_locator"),
@@ -359,8 +363,18 @@ void VerifyUniqueIndexMerge(const api::EngineRequestContext& context) {
           "unique index merge second returning row was not insert");
   Require(HasEvidence(merged, "merge_target_access_kind", "unique_index_lookup"),
           "unique index merge access evidence missing");
-  Require(EvidenceContains(merged, "merge_target_access_plan", kUniqueIdIndexUuid),
-          "unique index merge serialized plan missing index uuid");
+  for (std::uint64_t ordinal = 0; ordinal < 2; ++ordinal) {
+    const auto kind = "merge_target_access_plan." + std::to_string(ordinal) + ".index_uuid";
+    unsigned matched = 0;
+    for (const auto& evidence : merged.evidence) {
+      if (evidence.evidence_kind != kind) continue;
+      const auto* native = std::get_if<api::EngineUuid>(&evidence.evidence_id);
+      Require(native && *native == kUniqueIdIndexUuid,
+              "unique index merge selected plan identity differs from actual native index");
+      ++matched;
+    }
+    Require(matched == 1, "unique index merge source occurrence lacks exact selected native index");
+  }
   Require(HasEvidence(merged,
                       "mga_secondary_index_lookup_path",
                       "unique_synchronous_bypass"),
@@ -369,7 +383,7 @@ void VerifyUniqueIndexMerge(const api::EngineRequestContext& context) {
           "unique index conflict proof evidence missing");
   Require(HasEvidence(merged, "merge_repeated_full_scan", "false"),
           "unique index merge repeated scan evidence missing");
-  Require(HasEvidence(merged, "merge_action_execution", "action_batches"),
+  Require(HasEvidence(merged, "merge_action_execution", "source_ordered_action_batches"),
           "unique index merge batched execution evidence missing");
   Require(HasEvidence(merged, "merge_update_batch_count", "1"),
           "unique index merge update batch count missing");
@@ -382,7 +396,7 @@ void VerifyUniqueIndexMerge(const api::EngineRequestContext& context) {
   Require(HasNoEvidence(merged, "update_row_candidate_stream", "table_scan"),
           "unique index merge update batch fell back to table scan");
   Require(EvidenceContains(merged, "merge_target_access_plan_evidence",
-                           "hot_point_lookup_cache_admission=deferred_until_successful_row_locator"),
+                           "hot_point_lookup_cache_admission=requires_successful_row_locator"),
           "unique index merge cache admission was not deferred until lookup success");
   Require(EvidenceContains(merged, "merge_hot_point_lookup_cache",
                            "hot_point_lookup_cache_actual_row_locator"),
@@ -513,16 +527,26 @@ void VerifyRollbackDeleteBranchReopens(const std::filesystem::path& database_pat
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
-  const auto work = MakeTempDir();
+  OwnedFixtureRoot owner;
+  const auto work = owner.path;
   Require(!work.empty(), "failed to create temp directory");
   const auto database_path = work / "odfr020.sbdb";
 
-  const auto created =
-      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
-          database_path, SB_ODFR020_SEED_PACK_ROOT);
+  namespace db = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  namespace platform = scratchbird::core::platform;
+  db::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, 1790637600000).value;
+  create.filespace_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::filespace, 1790637600000).value;
+  create.creation_unix_epoch_millis = 1790637600000;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
+  const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "credentialed lifecycle fixture database create failed");
+  fixture_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   CreateSchemaAndTable(database_path);
 
   auto writer = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2200-0000-7000-8000-000000000201"));
@@ -536,4 +560,7 @@ int main() {
 
   std::cout << "sbsql_merge_multi_action_odfr_020_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

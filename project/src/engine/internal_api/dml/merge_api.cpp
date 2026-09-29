@@ -17,6 +17,7 @@
 #include "dml/delete_api.hpp"
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/dml_target_access_plan.hpp"
+#include "dml/dml_target_plan_identity_evidence.hpp"
 #include "dml/update_api.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -306,7 +307,9 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
 }
 
 void AddMergeTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan,
+                                      std::uint64_t source_ordinal,
                                       std::vector<EngineEvidenceReference>* evidence) {
+  AppendDmlTargetPlanIdentityEvidence(plan, "merge_target_access_plan", evidence, source_ordinal);
   evidence->push_back({"merge_target_access_plan",
                        SerializeDmlTargetAccessPlanEvidence(plan)});
   evidence->push_back({"merge_target_access_kind",
@@ -864,7 +867,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                                           &unsupported_predicate,
                                           &unusable_index_present);
     DmlTargetAccessPlan plan = BuildDmlTargetAccessPlan(plan_request);
-    AddMergeTargetAccessPlanEvidence(plan, &result.evidence);
+    AddMergeTargetAccessPlanEvidence(plan, source_ordinal, &result.evidence);
     if (!plan.ok) {
       auto rejected = MakeCrudDiagnosticResult<EngineMergeRowsResult>(
           request.context,

@@ -22,6 +22,7 @@
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/dml_target_access_plan.hpp"
+#include "dml/dml_target_plan_identity_evidence.hpp"
 #include "dml/index_apply_locality_bridge.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
@@ -1428,6 +1429,7 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
 void AddTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan,
                                  std::string_view target_access_kind_evidence,
                                  std::vector<EngineEvidenceReference>* evidence) {
+  AppendDmlTargetPlanIdentityEvidence(plan, "dml_target_access_plan", evidence);
   evidence->push_back({"dml_target_access_plan",
                        SerializeDmlTargetAccessPlanEvidence(plan)});
   evidence->push_back({std::string(target_access_kind_evidence),

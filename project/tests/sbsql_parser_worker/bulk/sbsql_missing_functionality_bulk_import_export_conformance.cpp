@@ -8,6 +8,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../support/binary_uuid_fixture.hpp"
+#include "../../support/engine_statement_fixture.hpp"
+#include "../../support/catalog_column_binding_fixture.hpp"
+#include <memory>
 #include "api_types.hpp"
 #include "ast/ast.hpp"
 #include "artifacts/artifact_api.hpp"
@@ -19,6 +22,8 @@
 #include "dml/import_reject_model.hpp"
 #include "dml/import_resume_checkpoint.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
+#include "dml/select_api.hpp"
+#include <map>
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "lowering/lowering.hpp"
 #include "memory.hpp"
@@ -68,7 +73,7 @@ constexpr std::string_view kPlanImportPublicAbiProofTarget =
 void Require(bool condition, std::string_view message) {
   if (condition) return;
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 memory::AllocationPolicy MemoryPolicy() {
@@ -144,7 +149,8 @@ api::EngineTypedValue BoolValue(bool value) {
   return typed;
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
+                                  std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid =
@@ -155,6 +161,8 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(
+      context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -221,60 +229,29 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
   return 0;
 }
 
-void Grant(api::EngineRequestContext* context,
-           std::string right,
-           api::EngineUuid target_uuid = kTableUuid) {
-  api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid =
-      scratchbird::tests::FixtureUuid(1576, 300 + context->authorization_context.grants.size());
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = std::move(target_uuid);
-  grant.right = std::move(right);
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
-}
-
-void AddAuthorization(api::EngineRequestContext* context) {
-  context->authorization_context.present = true;
-  context->authorization_context.authority_uuid = context->database_uuid;
-  context->authorization_context.principal_uuid = context->principal_uuid;
-  context->authorization_context.security_epoch = context->security_epoch;
-  context->authorization_context.policy_epoch = 1;
-  context->authorization_context.catalog_generation_id =
-      context->catalog_generation_id;
-  context->authorization_context.effective_subjects.push_back(
-      {context->principal_uuid, "principal"});
-  Grant(context, "INSERT");
-  Grant(context, "SELECT");
-  Grant(context, "CATALOG_MUTATE", {});
-}
-
+api::EngineRequestContext fixture_owner;
+std::unique_ptr<scratchbird::tests::FixtureEngineSession> fixture_session;
+std::vector<std::unique_ptr<scratchbird::tests::FixtureEngineStatement>> fixture_statements;
+struct OwnedFixtureRoot {
+  std::filesystem::path path = MakeTempDir();
+  ~OwnedFixtureRoot() {
+    fixture_statements.clear(); fixture_session.reset();
+    if (!path.empty()) { std::error_code error; std::filesystem::remove_all(path, error); }
+  }
+};
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      std::string_view session_suffix = "001") {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
+                                     std::string_view session_suffix = "001") {
+  auto context = fixture_owner;
+  Require(context.database_path == database_path.string(), "MISS-009 bootstrap path mismatch");
   context.request_id = "miss009-bulk-import-export";
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2900-0000-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2900-0000-7000-8000-000000000002");
-  context.session_uuid =
-      scratchbird::tests::FixtureUuid(1576, 1000 + std::stoull(std::string(session_suffix)));
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
+  context.session_uuid = scratchbird::tests::FixtureUuid(1576, 1000 + std::stoull(std::string(session_suffix)));
   context.trace_tags.push_back("SBSQL-MISS-009");
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
 api::EngineRequestContext BeginTransaction(const std::filesystem::path& database_path,
-                                           std::string_view session_suffix,
-                                           bool authorized = true) {
+                                           std::string_view session_suffix) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(database_path, session_suffix);
   auto begin = api::EngineBeginTransaction(request);
@@ -286,7 +263,6 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
       begin.snapshot_visible_through_local_transaction_id != 0
           ? begin.snapshot_visible_through_local_transaction_id
           : EvidenceU64(begin, "snapshot_visible_through_local_transaction_id");
-  if (authorized) AddAuthorization(&context);
   return context;
 }
 
@@ -298,7 +274,7 @@ void Commit(const api::EngineRequestContext& context) {
 }
 
 void CreateSchemaAndTable(const std::filesystem::path& database_path) {
-  auto context = BeginTransaction(database_path, "101", false);
+  auto context = BeginTransaction(database_path, "101");
 
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
@@ -316,8 +292,8 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2900-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("miss009_table"));
-  table_request.table_columns.push_back(Column(0, "id"));
-  table_request.table_columns.push_back(Column(1, "note"));
+  table_request.table_columns.push_back(Column(context, 0, "id"));
+  table_request.table_columns.push_back(Column(context, 1, "note"));
   table_request.table_indexes.push_back(UniqueIdIndex());
   auto table = api::EngineCreateTable(table_request);
   Require(table.ok, "MISS-009 table create failed");
@@ -333,37 +309,9 @@ api::EngineUuid PlanFixtureUuid(std::uint64_t salt) {
 
 api::EngineRequestContext AttachPlanStatementAuthority(
     api::EngineRequestContext context) {
-  const auto salt = context.local_transaction_id * 32;
-  context.statement_uuid = PlanFixtureUuid(salt + 1);
-  context.statement_snapshot_uuid = {};
-  api::EnginePublishStatementSnapshotRequest publish;
-  publish.context = context;
-  const auto snapshot = api::EnginePublishStatementSnapshot(publish);
-  Require(snapshot.ok, "MISS-009 plan statement snapshot publication failed");
-  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
-  context.statement_snapshot_generation =
-      snapshot.snapshot_vector.publication_inventory_next_local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_receipt_uuid = PlanFixtureUuid(salt + 2);
-  context.statement_metadata_snapshot_uuid = PlanFixtureUuid(salt + 3);
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_visible_through_local_transaction_id =
-      snapshot.snapshot_vector.visible_committed_high_watermark;
-  context.statement_metadata_snapshot_active_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
-  context.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
-  context.transaction_policy_snapshot_uuid = PlanFixtureUuid(salt + 4);
-  context.transaction_policy_snapshot_generation = 1;
-  context.resource_admission_uuid = PlanFixtureUuid(salt + 5);
-  context.authorization_context.security_context_generation = 1;
-  context.authorization_context.authority_uuid = PlanFixtureUuid(salt + 6);
-  context.authorization_context.security_epoch = context.security_epoch;
-  context.authorization_context.policy_epoch = 1;
-  context.authorization_context.catalog_generation_id =
-      context.catalog_generation_id;
-  return context;
+  if (!fixture_session) fixture_session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  fixture_statements.push_back(std::make_unique<scratchbird::tests::FixtureEngineStatement>(*fixture_session, context));
+  return fixture_statements.back()->context;
 }
 
 api::SblrExecutorAvailabilityRowIdentity PlanAvailabilityIdentity() {
@@ -434,7 +382,7 @@ sblr::SblrOperationEnvelope ExactPlanEnvelope(
 
 api::EnginePlanImportRowsResult VerifyImportPlanning(
     const api::EngineRequestContext& transaction_context) {
-  auto context = AttachPlanStatementAuthority(transaction_context);
+  auto context = transaction_context;
   const auto installed = api::LoadSblrExecutorAvailabilitySnapshot(
       context, PlanAvailabilityIdentity());
   Require(installed.ok && installed.snapshot.installed &&
@@ -848,20 +796,27 @@ void VerifyBulkParserRoutes() {
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
   VerifyBulkParserRoutes();
-  const auto work = MakeTempDir();
+  OwnedFixtureRoot owner;
+  const auto work = owner.path;
   Require(!work.empty(), "MISS-009 failed to create temp directory");
   const auto database_path = work / "miss009.sbdb";
 
-  const auto created =
-      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
-          database_path, SB_MISS009_SEED_PACK_ROOT);
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, 1790637300000).value;
+  create.filespace_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::filespace, 1790637300000).value;
+  create.creation_unix_epoch_millis = 1790637300000;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
   Require(created.ok(), "MISS-009 credentialed fixture database create failed");
+  fixture_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   CreateSchemaAndTable(database_path);
 
-  auto context = BeginTransaction(database_path, "201");
+  auto context = AttachPlanStatementAuthority(BeginTransaction(database_path, "201"));
   VerifyImportPlanning(context);
   VerifyRejectAndCheckpointModels(context);
   VerifyFailFastCopyExecution(context);
@@ -870,9 +825,30 @@ int main() {
   VerifyCatalogArtifactExportImport(context);
   Commit(context);
 
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(work, cleanup_error);
+  fixture_statements.clear();
+  fixture_session.reset();
+  auto observer = AttachPlanStatementAuthority(BeginTransaction(database_path, "202"));
+  api::EngineSelectRowsRequest select;
+  select.context = observer;
+  select.source_object.uuid = kTableUuid;
+  select.source_object.object_kind = "table";
+  const auto persisted = api::EngineSelectRows(select);
+  Require(persisted.ok && persisted.visible_count == 5 && persisted.result_shape.rows.size() == 5,
+          "MISS-009 independent session did not observe exactly five committed import rows");
+  std::map<std::string, std::string> actual;
+  for (std::size_t n = 0; n < persisted.result_shape.rows.size(); ++n)
+    Require(actual.emplace(FieldValue(persisted, "id", n), FieldValue(persisted, "note", n)).second,
+            "MISS-009 independent session observed duplicate imported keys");
+  const std::map<std::string, std::string> expected{
+      {"1", "copy-fast-a"}, {"2", "copy-fast-b"}, {"3", "copy-reject-valid"},
+      {"4", "native-bulk-a"}, {"5", "native-bulk-b"}};
+  Require(actual == expected, "MISS-009 committed import values differ or rejected row became visible");
+  Commit(observer);
+
   std::cout << "plan_import_public_abi_proof="
             << kPlanImportPublicAbiProofTarget << '\n';
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

@@ -3159,6 +3159,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND TARGET sb_server_
   target_link_libraries(
     sbsql_missing_functionality_dml_upsert_variants_conformance
     PRIVATE
+      sb_engine
       sb_engine_internal_api
       sb_engine_sblr
       sb_server_core
@@ -3190,6 +3191,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND TARGET sb_server_
   target_link_libraries(
     sbsql_missing_functionality_bulk_import_export_conformance
     PRIVATE
+      sb_engine
       sbl_sbsql_parser_pipeline
       sb_engine_internal_api
       sb_engine_sblr
@@ -5931,6 +5933,7 @@ if(TARGET sb_server_core AND TARGET sb_engine_sblr)
   target_link_libraries(
     sbsql_merge_multi_action_odfr_020_conformance
     PRIVATE
+      sb_engine
       sb_server_core
       sb_engine_sblr
   )
@@ -5955,6 +5958,7 @@ if(TARGET sb_server_core AND TARGET sb_engine_sblr)
   target_link_libraries(
     optimizer_runtime_hot_path_orh_040_041_050_gate
     PRIVATE
+      sb_engine
       sb_server_core
       sb_engine_sblr
   )

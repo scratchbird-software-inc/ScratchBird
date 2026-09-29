@@ -7,11 +7,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../support/binary_uuid_fixture.hpp"
+#include "../../support/engine_statement_fixture.hpp"
+#include "../../support/catalog_column_binding_fixture.hpp"
+#include <map>
+#include <memory>
 #include "api_types.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/merge_api.hpp"
+#include "dml/select_api.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "security/security_model.hpp"
@@ -45,7 +50,7 @@ constexpr auto kUniqueIdIndexUuid = scratchbird::tests::FixtureUuidLiteral("019f
 void Require(bool condition, std::string_view message) {
   if (condition) return;
   std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 memory::AllocationPolicy MemoryPolicy() {
@@ -94,7 +99,7 @@ api::EngineTypedValue TextValue(std::string value) {
   return typed;
 }
 
-api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
+api::EngineColumnDefinition Column(const api::EngineRequestContext& context, std::uint32_t ordinal, std::string name) {
   api::EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.requested_column_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000300");
@@ -106,6 +111,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal, std::string name) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
+  scratchbird::tests::BindFixtureColumnDatatype(context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
   return column;
 }
 
@@ -145,62 +151,23 @@ api::EnginePredicateEnvelope IdIn(std::initializer_list<std::string_view> ids) {
   return predicate;
 }
 
-void Grant(api::EngineRequestContext* context, std::string right) {
-  api::EngineMaterializedAuthorizationGrant grant;
-  if (right == "INSERT") {
-    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000601");
-  } else if (right == "UPDATE") {
-    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000602");
-  } else if (right == "DELETE") {
-    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000603");
-  } else if (right == "SELECT") {
-    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000604");
-  } else {
-    grant.grant_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000605");
+api::EngineRequestContext fixture_owner;
+std::map<api::EngineUuid, std::unique_ptr<scratchbird::tests::FixtureEngineSession>> fixture_sessions;
+std::vector<std::unique_ptr<scratchbird::tests::FixtureEngineStatement>> fixture_statements;
+struct OwnedFixtureRoot {
+  std::filesystem::path path = MakeTempDir();
+  ~OwnedFixtureRoot() {
+    fixture_statements.clear(); fixture_sessions.clear();
+    if (!path.empty()) { std::error_code error; std::filesystem::remove_all(path, error); }
   }
-  grant.subject_uuid = context->principal_uuid;
-  grant.subject_kind = "principal";
-  grant.target_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
-  grant.right = std::move(right);
-  grant.security_epoch = context->security_epoch;
-  context->authorization_context.grants.push_back(std::move(grant));
-}
-
-void AddDmlAuthorization(api::EngineRequestContext* context) {
-  context->authorization_context.present = true;
-  context->authorization_context.authority_uuid = context->database_uuid;
-  context->authorization_context.principal_uuid = context->principal_uuid;
-  context->authorization_context.security_epoch = context->security_epoch;
-  context->authorization_context.policy_epoch = 1;
-  context->authorization_context.catalog_generation_id =
-      context->catalog_generation_id;
-  context->authorization_context.effective_subjects.push_back(
-      {context->principal_uuid, "principal"});
-  Grant(context, "INSERT");
-  Grant(context, "UPDATE");
-  Grant(context, "DELETE");
-  Grant(context, "SELECT");
-  Grant(context, "CATALOG_MUTATE");
-}
-
+};
 api::EngineRequestContext BaseContext(const std::filesystem::path& database_path,
-                                      api::EngineUuid session_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000001")) {
-  api::EngineRequestContext context;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.request_id = "miss008-dml-upsert-variants";
-  context.database_path = database_path.string();
-  context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000001");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000002");
+                                      api::EngineUuid session_uuid) {
+  auto context = fixture_owner;
+  Require(context.database_path == database_path.string(), "UPSERT bootstrap path mismatch");
   context.session_uuid = session_uuid;
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("SBSQL-MISS-008");
+  context.request_id = "miss008-dml-upsert-variants";
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   return context;
 }
 
@@ -220,8 +187,7 @@ std::uint64_t EvidenceU64(const api::EngineApiResult& result,
 }
 
 api::EngineRequestContext BeginTransaction(const std::filesystem::path& database_path,
-                                           api::EngineUuid session_uuid,
-                                           bool dml_authorized = true) {
+                                           api::EngineUuid session_uuid) {
   api::EngineBeginTransactionRequest request;
   request.context = BaseContext(database_path, session_uuid);
   auto begin = api::EngineBeginTransaction(request);
@@ -233,10 +199,10 @@ api::EngineRequestContext BeginTransaction(const std::filesystem::path& database
       begin.snapshot_visible_through_local_transaction_id != 0
           ? begin.snapshot_visible_through_local_transaction_id
           : EvidenceU64(begin, "snapshot_visible_through_local_transaction_id");
-  if (dml_authorized) {
-    AddDmlAuthorization(&context);
-  }
-  return context;
+  auto& session = fixture_sessions[context.session_uuid];
+  if (!session) session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
+  fixture_statements.push_back(std::make_unique<scratchbird::tests::FixtureEngineStatement>(*session, context));
+  return fixture_statements.back()->context;
 }
 
 void Commit(const api::EngineRequestContext& context) {
@@ -247,7 +213,7 @@ void Commit(const api::EngineRequestContext& context) {
 }
 
 void CreateSchemaAndTable(const std::filesystem::path& database_path) {
-  auto context = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101"), false);
+  auto context = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000101"));
 
   api::EngineCreateSchemaRequest schema_request;
   schema_request.context = context;
@@ -265,8 +231,8 @@ void CreateSchemaAndTable(const std::filesystem::path& database_path) {
   table_request.target_object.uuid = scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000102");
   table_request.target_object.object_kind = "table";
   table_request.table_names.push_back(Name("miss008_table"));
-  table_request.table_columns.push_back(Column(0, "id"));
-  table_request.table_columns.push_back(Column(1, "note"));
+  table_request.table_columns.push_back(Column(context, 0, "id"));
+  table_request.table_columns.push_back(Column(context, 1, "note"));
   table_request.table_indexes.push_back(UniqueIdIndex());
   auto table = api::EngineCreateTable(table_request);
   Require(table.ok, "MISS-008 table create failed");
@@ -297,6 +263,9 @@ void VerifyRights(const api::EngineRequestContext& context) {
           "MISS-008 DELETE right not materialized");
   auto denied = context;
   denied.authorization_context.grants.clear();
+  Require(api::SecurityContextHasRight(denied, "DELETE", kTableUuid),
+          "MISS-008 actual bootstrap role authority was lost when explicit grants were empty");
+  denied.authorization_context.engine_owned_bootstrap_role_uuid = {};
   Require(!api::SecurityContextHasRight(denied, "DELETE", kTableUuid),
           "MISS-008 empty grants unexpectedly authorized DELETE");
 }
@@ -372,16 +341,26 @@ void VerifyDeleteVariant(const api::EngineRequestContext& context,
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
-  const auto work = MakeTempDir();
+  OwnedFixtureRoot owner;
+  const auto work = owner.path;
   Require(!work.empty(), "MISS-008 failed to create temp directory");
   const auto database_path = work / "miss008.sbdb";
 
-  const auto created =
-      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
-          database_path, SB_MISS008_SEED_PACK_ROOT);
-  Require(created.ok(), "MISS-008 credentialed fixture database create failed");
+  namespace db = scratchbird::storage::database;
+  namespace uuid = scratchbird::core::uuid;
+  namespace platform = scratchbird::core::platform;
+  db::DatabaseCreateConfig create;
+  create.path = database_path.string();
+  create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, 1790638200000).value;
+  create.filespace_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::filespace, 1790638200000).value;
+  create.creation_unix_epoch_millis = 1790638200000;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "credentialed lifecycle fixture database create failed");
+  fixture_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   CreateSchemaAndTable(database_path);
 
   auto context = BeginTransaction(database_path, scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000201"));
@@ -413,7 +392,43 @@ int main() {
                       1);
   Commit(context);
 
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(work, cleanup_error);
+  fixture_statements.clear();
+  fixture_sessions.clear();
+  auto observer = BeginTransaction(database_path,
+      scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000202"));
+  api::EngineSelectRowsRequest select;
+  select.context = observer;
+  select.source_object.uuid = kTableUuid;
+  select.source_object.object_kind = "table";
+  const auto visible = api::EngineSelectRows(select);
+  Require(visible.ok && visible.visible_count == 3 && visible.result_shape.rows.size() == 3,
+          "MISS-008 independent session did not observe exact committed variant effects");
+  std::map<std::string, std::pair<std::string, api::EngineUuid>> actual;
+  for (const auto& row : visible.result_shape.rows) {
+    std::string id, note;
+    for (const auto& [name, value] : row.fields) {
+      if (name == "id") { Require(!value.is_null, "MISS-008 committed key became null"); id=value.encoded_value; }
+      if (name == "note") { Require(!value.is_null, "MISS-008 committed note became null"); note=value.encoded_value; }
+    }
+    Require(actual.emplace(id, std::make_pair(note, row.requested_row_uuid)).second,
+            "MISS-008 independent session observed duplicate variant keys");
+  }
+  Require(actual.contains("1") && actual.at("1").first == "upsert-updated" &&
+              actual.at("1").second == scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000201") &&
+              actual.contains("2") && actual.at("2").first == "upsert-inserted" &&
+              actual.at("2").second == scratchbird::tests::FixtureUuidLiteral("019f2800-0000-7000-8000-000000000302"),
+          "MISS-008 committed UPSERT values or native lineage identities differ");
+  Require(actual.contains("b1") != actual.contains("b2"),
+          "MISS-008 bounded DELETE did not retain exactly one admitted batch row");
+  Require((actual.contains("b1") && actual.at("b1").first == "batch-one") ||
+              (actual.contains("b2") && actual.at("b2").first == "batch-two"),
+          "MISS-008 retained batch row value changed");
+  Require(!actual.contains("e1") && !actual.contains("s1"),
+          "MISS-008 erased or dropped series row remained visible");
+  Commit(observer);
+  std::cout << "native_upsert_delete_variants_and_independent_poststate=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

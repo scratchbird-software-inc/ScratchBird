@@ -684,6 +684,14 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   endif()
 
 
+  add_executable(dml_target_plan_evidence_conformance dml_target_plan_evidence_conformance.cpp)
+  target_compile_features(dml_target_plan_evidence_conformance PRIVATE cxx_std_23)
+  target_link_libraries(dml_target_plan_evidence_conformance
+    PRIVATE sb_engine_internal_api sb_wire_typed_update_carrier_codec)
+  add_test(NAME dml_target_plan_evidence_conformance COMMAND dml_target_plan_evidence_conformance)
+  set_tests_properties(dml_target_plan_evidence_conformance PROPERTIES
+    LABELS "database_lifecycle;binary_uuid;typed_update;unit;independent_oracle")
+
   add_executable(crud_index_evidence_conformance crud_index_evidence_conformance.cpp)
   target_compile_features(crud_index_evidence_conformance PRIVATE cxx_std_23)
   target_link_libraries(crud_index_evidence_conformance
