@@ -12,6 +12,7 @@
 #include "catalog_security_record_codec.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
+#include "catalog_storage_action_policy.hpp"
 #include "catalog_metric_visibility_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
@@ -157,6 +158,10 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
                       "policy_binary_payload_or_header_invalid");
   }
+  if (IsCatalogStorageActionPolicyPayload(record.payload) &&
+      !CatalogStorageActionPolicyMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
+                      "storage_action_binary_payload_or_header_invalid");
   if (IsCatalogMetricVisibilityPolicyPayload(record.payload) &&
       !CatalogMetricVisibilityPolicyMatchesHeader(record))
     return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_visibility.invalid",
@@ -310,6 +315,10 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
        value.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
       !CatalogMetricDescriptorMatchesMetadata(value))
     return MetadataError("metric_descriptor_definition_binding_invalid");
+  if ((value.object_subtype == "storage_action" ||
+       IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
+      !CatalogStorageActionPolicyMatchesMetadata(value))
+    return MetadataError("storage_action_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
   if ((value.object_subtype == "metric_visibility" ||
        IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
@@ -455,6 +464,7 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
   return CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
+      CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricVisibilityPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricDescriptorPreservesOrigin(previous,successor) &&

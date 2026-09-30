@@ -6,12 +6,14 @@
 #include "physical_mga_cow_store.hpp"
 #include "catalog_schema_definition.hpp"
 #include "catalog_metric_retention_policy.hpp"
+#include "catalog_storage_action_policy.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
 #include "native_filespace_capacity.hpp"
+#include "native_storage_policy_lookup.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -3141,7 +3143,7 @@ struct CatalogTestPin {
   ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
 };
 void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
-  const bool metric_policy=metric_family==1,metric_series=metric_family==2;
+  const bool metric_policy=metric_family==1,metric_series=metric_family==2,storage_policy=metric_family==3;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
     z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
@@ -3162,6 +3164,19 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       metadata.record.header.kind=catalog::CatalogRecordKind::policy;metadata.record.header.parent_uuid.kind=platform::UuidKind::object;
       metadata.default_name_uuid={platform::UuidKind::object,Id(231)};metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};metadata.object_subtype="metric_retention";
       const auto payload=catalog::EncodeCatalogMetricRetentionPolicy(record);Check(payload.ok(),"encode actual metric policy definition");
+      metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+    };
+    const auto bind_storage=[&](auto& metadata,const catalog::CatalogStorageActionPolicy* prior=nullptr){
+      catalog::CatalogStorageActionPolicy record;
+      if(prior)record=*prior;
+      else {record.origin_transaction_uuid=metadata.creator_transaction_uuid;record.origin_local_transaction_id=metadata.creator_local_transaction_id;
+        record.database_uuid=Id(1);record.filespace_uuid=fs;record.storage_profile_uuid=Id(233);record.page_size_profile_uuid=Profile(profile);
+        record.maximum_total_pages=128;record.maximum_pages_per_action=8;record.maximum_work_bytes=8*sizes[profile];
+        record.maximum_retained_image_bytes=1<<26;record.maximum_runtime_microseconds=5000000;}
+      record.policy_uuid=metadata.record.header.object_uuid.value;record.generation=metadata.definition_version;
+      metadata.record.header.kind=catalog::CatalogRecordKind::policy;metadata.record.header.parent_uuid.kind=platform::UuidKind::object;
+      metadata.default_name_uuid={platform::UuidKind::object,Id(231)};metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};metadata.object_subtype="storage_action";
+      const auto payload=catalog::EncodeCatalogStorageActionPolicy(record);Check(payload.ok(),"encode actual binary storage policy");
       metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
     };
     const auto bind_series=[](auto& metadata,const catalog::CatalogMetricSeries* prior=nullptr){
@@ -3188,6 +3203,8 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       bind_series(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native series source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     if(metric_policy){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native policy");
       bind_policy(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native metric family source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
+    if(storage_policy){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native storage policy");
+      bind_storage(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"storage policy source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     auto catalog_root=RootExample(p);catalog_root.creator_transaction_uuid=Id(98);
     catalog_root.roots[0].page.page_number=30;
     leaf.body.rows.clear();
@@ -3201,7 +3218,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist catalog staging fixture bytes");};
     const auto persist=[&](){const bool extended=std::any_of(directory.records.begin(),directory.records.end(),[](const auto& row){return row.allocation_root.has_value();});
-      const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),cb=RootOracle(catalog_root);
+      const auto ib=InventoryStateOracle(inv),ab=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),cb=RootOracle(catalog_root);
       cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
       cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
       cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
@@ -3306,6 +3323,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
     request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
     if(metric_policy)bind_policy(request.metadata);
+    if(storage_policy)bind_storage(request.metadata);
     if(metric_series)bind_series(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
     namespace identity=scratchbird::core::uuid;
@@ -3403,10 +3421,118 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     }
     reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
     if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
+    if(storage_policy){const auto origin=catalog::DecodeCatalogStorageActionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted storage origin");bind_storage(request.metadata,&*origin.record);}
     if(metric_series){const auto origin=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(origin.ok(),"load persisted series origin");bind_series(request.metadata,&*origin.record);}
     result=stage(budget);verify(result,2,Id(170),false);
     reset();request.metadata.record.header.deleted=true;request.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;request.metadata.status=catalog::CatalogObjectStatus::retired;request.metadata.retired_transaction_uuid=owner.transaction_uuid;
     result=stage(budget);verify(result,2,Id(170),true);
+    if(storage_policy){
+      const auto original=catalog::DecodeCatalogStorageActionPolicy(decoded.record.record.payload);Check(original.ok(),"retained storage policy origin");
+      request.metadata=decoded.record;request.metadata.definition_version=2;bind_storage(request.metadata,&*original.record);
+      const auto replacement=request;
+      for(unsigned bad=0;bad<7;++bad){reset();request=replacement;
+        auto changed=catalog::DecodeCatalogStorageActionPolicy(request.metadata.record.payload);Check(changed.ok(),"replacement storage policy payload");
+        if(bad==0)changed.record->origin_transaction_uuid.value=Id(240);
+        if(bad==1)--changed.record->origin_local_transaction_id;
+        if(bad==2)changed.record->database_uuid=Id(240);
+        if(bad==3)changed.record->filespace_uuid=Id(240);
+        if(bad==4)changed.record->storage_profile_uuid=Id(240);
+        if(bad==5){changed.record->page_size_profile_uuid=Profile((profile+1)%5);changed.record->maximum_work_bytes=8*sizes[(profile+1)%5];}
+        if(bad==6){request.metadata.object_subtype="generic";request.metadata.record.payload="unrelated-policy";}
+        else {const auto payload=catalog::EncodeCatalogStorageActionPolicy(*changed.record);Check(payload.ok(),"changed storage policy individually well-formed");request.metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
+        Check(catalog::EncodeCatalogMetadataVersion(request.metadata).ok(),"storage rewrite attack has valid common envelope");
+        const auto refused=stage(budget);empty(refused);Check(refused.error==E::stale_version&&actual(target,21,sizes[profile])==blank,
+          "native writer rejects changed storage policy identity/target/origin before writes");unchanged();
+      }
+      request=replacement;
+      if(p==0&&role==1){for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;empty(stage(budget));Check(!stage_write_fault,"storage policy write fault consumed");unchanged();}
+        reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault,"storage policy sync fault consumed");unchanged();}
+      reset();auto updated=*original.record;updated.enabled=updated.growth_allowed=true;updated.maximum_total_pages=256;
+      bind_storage(request.metadata,&updated);result=stage(budget);verify(result,2,Id(170),false);
+      const auto final_bytes=actual(target,21,sizes[profile]);const auto retained=db::DecodeNativeCatalogLeaf(final_bytes);
+      const auto stored=catalog::DecodeCatalogStorageActionPolicy(retained.metadata.begin()->second.record.payload);
+      Check(stored.ok()&&stored.record->generation==2&&stored.record->enabled&&stored.record->growth_allowed&&stored.record->maximum_total_pages==256&&
+        stored.record->policy_uuid==original.record->policy_uuid&&stored.record->filespace_uuid==original.record->filespace_uuid&&
+        stored.record->origin_transaction_uuid.value==original.record->origin_transaction_uuid.value&&stored.record->origin_local_transaction_id==13,
+        "actual staged policy successor retains binary identity and typed bounds");
+      using PE=db::NativeStoragePolicyLookupError;
+      db::NativeStoragePolicyLookupBinding binding{original.record->policy_uuid,fs,Id(233),Profile(profile),{},std::nullopt};
+      const auto lookup=[&](const auto& reader,const auto& pin,const auto& selected,u64 limit){
+        return db::ReadNativeStorageActionPolicyFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,{Id(101),{}},reader,pin,selected,limit);};
+      const auto rejected=[&](const auto& value,PE error){Check(!value.ok()&&!value.policy&&value.version_uuid.is_nil()&&value.error==error,
+        "policy lookup refuses without returning usable authority error="+std::to_string(static_cast<unsigned>(error))+" actual="+std::to_string(static_cast<unsigned>(value.error)));};
+      rejected(lookup(owner,snapshot.pin,binding,budget),PE::provisional);
+      // Publish a committed origin in the actual inventory. The enabled successor
+      // remains only staged at page 21, outside the selected catalog root.
+      auto next_reader=inv.inventory.entries.front();next_reader.identity.local_id=mga::MakeLocalTransactionId(18);
+      next_reader.identity.transaction_uuid.value=Id(242);
+      inv.inventory.entries.front().state=mga::TransactionState::committed;inv.inventory.entries.front().commit_sequence=2;
+      inv.inventory.entries.push_back(next_reader);inv.inventory.next_local_transaction_id=19;inv.inventory.next_commit_sequence=3;
+      persist();CatalogTestPin committed_snapshot(inv.inventory,18);
+      auto selected=lookup(next_reader.identity,committed_snapshot.pin,binding,budget);
+      if(!selected.ok())std::cerr<<"policy lookup="<<static_cast<unsigned>(selected.error)<<" source="<<static_cast<unsigned>(selected.source.error)<<'\n';
+      Check(selected.ok()&&selected.policy->generation==1&&!selected.policy->enabled&&!selected.policy->growth_allowed&&selected.version_uuid==Id(170),
+        "pinned committed policy ignores physically staged enabled successor");
+      binding.expected_generation=1;binding.expected_version_uuid=Id(170);
+      Check(lookup(next_reader.identity,committed_snapshot.pin,binding,budget).ok(),"exact committed policy version guard");
+      for(unsigned bad=0;bad<8;++bad){auto changed=binding;auto limit=budget;
+        if(bad==0)changed.filespace_uuid=Id(240);
+        if(bad==1)changed.storage_profile_uuid=Id(240);
+        if(bad==2)changed.page_size_profile_uuid=Profile((profile+1)%5);
+        if(bad==3)changed.expected_generation=2;
+        if(bad==4)changed.expected_version_uuid=Id(240);
+        if(bad==5)changed.policy_uuid=Id(240);
+        if(bad==6)changed.expected_generation.reset();
+        if(bad==7)limit=0;
+        rejected(lookup(next_reader.identity,committed_snapshot.pin,changed,limit),bad<3?PE::target_mismatch:bad<5?PE::version_mismatch:bad==5?PE::missing:PE::invalid_request);
+      }
+      const auto committed_payload=source_leaf.body.rows[0].cells[0].value.payload;
+      for(unsigned kind=0;kind<3;++kind){auto metadata=decoded.record;
+        if(kind==0){metadata.record.header.deleted=true;metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;
+          metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=metadata.creator_transaction_uuid;}
+        if(kind==1){metadata.lifecycle=catalog::CatalogObjectLifecycle::creating;metadata.status=catalog::CatalogObjectStatus::proposed;}
+        if(kind==2){metadata.object_subtype="generic";metadata.record.payload="not a storage action definition";}
+        const auto bytes=catalog::EncodeCatalogMetadataVersion(metadata);Check(bytes.ok(),"valid negative policy catalog version");
+        source_leaf.body.rows[0].cells[0].value.payload=bytes.bytes;persist();
+        rejected(lookup(next_reader.identity,committed_snapshot.pin,binding,budget),kind==0?PE::retired:kind==1?PE::inactive:PE::family_mismatch);
+      }
+      source_leaf.body.rows[0].cells[0].value.payload=committed_payload;persist();
+      if(p==0&&role==1){
+        byte warm=0;for(unsigned n=0;n<4097;++n){Check(first.ReadAt(0,&warm,1).ok()&&second.ReadAt(0,&warm,1).ok(),"warm optional policy-reader telemetry");}
+        reads=0;track_reads=true;selected=lookup(next_reader.identity,committed_snapshot.pin,binding,budget);track_reads=false;
+        const auto read_count=reads;Check(selected.ok()&&read_count,"measure actual policy lookup reads");
+        for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;
+          selected=lookup(next_reader.identity,committed_snapshot.pin,binding,budget);track_reads=false;
+          Check(!read_fault,"policy lookup read fault consumed");rejected(selected,PE::source_failure);
+          Check(!selected.source.ok(),"lookup preserves original nested source failure");}
+        observed_allocations=0;count_allocations=true;selected=lookup(next_reader.identity,committed_snapshot.pin,binding,budget);count_allocations=false;
+        const auto allocations=observed_allocations;Check(selected.ok()&&allocations,"measure complete policy lookup allocations");
+        unsigned long telemetry_losses=0;
+        for(unsigned long fault=0;fault<=allocations;++fault){
+          const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
+          selected=lookup(next_reader.identity,committed_snapshot.pin,binding,budget);const auto remaining=allocation_budget;allocation_budget=-1;
+          if(fault<allocations)Check(remaining<0,"every measured policy allocation injection consumed");
+          else Check(remaining>=0&&selected.ok(),"policy allocation sweep reaches uninjected terminal success");
+          if(selected.ok()){
+            const auto payload=catalog::EncodeCatalogStorageActionPolicy(*selected.policy);
+            Check(payload.ok()&&std::string(payload.bytes.begin(),payload.bytes.end())==decoded.record.record.payload&&selected.version_uuid==Id(170)&&
+              selected.source.snapshot_uuid==committed_snapshot.published.descriptor.snapshot_uuid.value,"successful lookup preserves complete real policy despite optional telemetry loss");
+            if(remaining<0){++telemetry_losses;Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,
+              "only recorded nonauthoritative telemetry allocation loss permits successful lookup");}
+          }else Check(!selected.policy&&selected.version_uuid.is_nil()&&
+            (selected.error==PE::source_failure||selected.error==PE::resource_exhausted),"policy lookup allocation failure never authorizes defaults at="+std::to_string(fault)+" error="+std::to_string(static_cast<unsigned>(selected.error))+" source="+std::to_string(static_cast<unsigned>(selected.source.error)));
+        }
+        std::cout<<"storage policy lookup faults: reads="<<read_count<<" allocations="<<allocations<<" telemetry_loss="<<telemetry_losses<<'\n';
+        Check(lookup(next_reader.identity,committed_snapshot.pin,binding,budget).ok(),"policy lookup recovers after injected failures");
+      }
+      mga::RevokePublishedSnapshotVector(committed_snapshot.published.descriptor.snapshot_uuid);
+      rejected(lookup(next_reader.identity,committed_snapshot.pin,binding,budget),PE::source_failure);
+      Check(actual(target,21,sizes[profile])==final_bytes,"lookup leaves staged successor untouched");
+      Check(first.Close().ok()&&second.Close().ok(),"release storage policy fixture before independent reopen");
+      disk::FileDevice reopened;Check(reopened.Open(primary?path1:path2,disk::FileOpenMode::open_existing_read_only).ok(),"read-only storage policy reopen");
+      Check(actual(reopened,21,sizes[profile])==final_bytes,"all actual policy successor bytes survive reopen");
+      continue;
+    }
     if(metric_series){
       const auto original=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(original.ok(),"retained series origin");
       request.metadata=decoded.record;request.metadata.definition_version=2;bind_series(request.metadata,&*original.record);
@@ -4649,6 +4775,9 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-metric-series-stage-only"){
     try{CanonicalCatalogVersionStaging(2);std::cout<<"metric series native stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--catalog-storage-policy-stage-only"){
+    try{CanonicalCatalogVersionStaging(3);std::cout<<"storage policy native stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-metric-retention-stage-only"){
     try{CanonicalCatalogVersionStaging(1);std::cout<<"metric retention native stage checks="<<checks<<" failures=0\n";return 0;}
