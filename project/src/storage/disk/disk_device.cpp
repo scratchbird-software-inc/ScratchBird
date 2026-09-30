@@ -1741,7 +1741,11 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
   const auto checked_extent = CheckFileDeviceExtent(offset, static_cast<usize>(bytes));
   if (!checked_extent.ok()) {
     result.status = checked_extent.status;
-    result.diagnostic = checked_extent.diagnostic;
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           checked_extent.diagnostic.diagnostic_code,
+                                           checked_extent.diagnostic.message_key,
+                                           path_,
+                                           std::to_string(offset) + ":" + std::to_string(bytes));
     return result;
   }
 

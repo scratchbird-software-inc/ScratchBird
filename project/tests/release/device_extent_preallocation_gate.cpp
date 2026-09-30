@@ -251,6 +251,43 @@ void TestRetainedDeviceSerialization() {
   guarded_device = nullptr;
   Require(f.Bytes().back() == marker, "serialized writer bytes missing");
 }
+
+void TestDiagnosticVectors() {
+  Fixture f;
+  const auto check = [&](const disk::PreallocateExtentResult& result,
+                         const char* code, const char* key) {
+    Require(!result.ok() && !result.status.ok() && !result.diagnostic.status.ok(),
+            "diagnostic reported successful status");
+    const auto& d = result.diagnostic;
+    Require(d.diagnostic_code == code && d.message_key == key &&
+            d.source_component == "storage.disk", "diagnostic identity mismatch");
+    Require(d.arguments.size() == 2, "diagnostic path/detail vector shape mismatch");
+    Require(d.arguments[0].key == "path" && d.arguments[0].text() &&
+            *d.arguments[0].text() == f.path.string(), "diagnostic lost retained-device path");
+    Require(d.arguments[1].key == "detail" && d.arguments[1].text() &&
+            !d.arguments[1].text()->empty(), "diagnostic lost error/range detail");
+  };
+  const auto maximum = std::numeric_limits<disk::u64>::max();
+  check(f.device.PreallocateExtent(maximum, 0),
+        "SB-STORAGE-DISK-OFFSET-CONVERSION-OVERFLOW", "storage.disk.offset_conversion_overflow");
+  check(f.device.PreallocateExtent(0, maximum),
+        "SB-STORAGE-DISK-BYTE-COUNT-CONVERSION-OVERFLOW", "storage.disk.byte_count_conversion_overflow");
+  check(f.device.PreallocateExtent(maximum, 2),
+        "SB-STORAGE-DISK-PREALLOCATE-RANGE-OVERFLOW", "storage.disk.preallocate_range_overflow");
+  allocation_error = ENOSPC;
+  check(f.device.PreallocateExtent(0, 8192),
+        "SB-STORAGE-DISK-PREALLOCATE-FAILED", "storage.disk.preallocate_failed");
+  allocation_error = EOPNOTSUPP;
+  write_failure = true;
+  const auto write = f.device.PreallocateExtent(0, 8192);
+  write_failure = false;
+  check(write, "SB-STORAGE-DISK-WRITE-FAILED", "storage.disk.write_failed");
+  size_fail_after = 0;
+  const auto size = f.device.PreallocateExtent(0, 8192);
+  size_fail_after = -1;
+  check(size, "SB-STORAGE-DISK-SIZE-FAILED", "storage.disk.size_failed");
+  Require(f.Bytes() == f.original, "diagnostic failures damaged fixture");
+}
 }  // namespace
 
 // Link-time wrappers change only error outcomes. Every positive allocation/read/
@@ -290,5 +327,6 @@ int main() {
   run("applied-effect-on-error", TestAppliedNativeEffectOnObservationFailure);
   run("every-profile-byte-extent", TestEveryProfileExtent);
   run("retained-device-serialization", TestRetainedDeviceSerialization);
+  run("diagnostic-vectors", TestDiagnosticVectors);
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
