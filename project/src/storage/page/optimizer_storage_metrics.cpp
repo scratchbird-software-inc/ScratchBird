@@ -349,13 +349,13 @@ OptimizerStorageMetricPublishResult PublishOptimizerStorageMetrics(
                     sample.database_uuid, sample.filespace_uuid,
                     sample.page_family));
   Push(&result, metrics::PublishFilespaceCapacitySnapshot(
-                    static_cast<double>(sample.filespace_total_bytes),
-                    static_cast<double>(sample.filespace_used_bytes),
-                    static_cast<double>(sample.filespace_free_bytes),
+                    sample.filespace_total_bytes,
+                    sample.filespace_used_bytes,
+                    sample.filespace_free_bytes,
                     sample.database_uuid, sample.filespace_uuid,
                     sample.node_uuid, "primary", sample.device_profile));
   Push(&result, metrics::PublishFilespaceReservedBytes(
-                    static_cast<double>(sample.filespace_reserved_bytes),
+                    sample.filespace_reserved_bytes,
                     sample.database_uuid, sample.filespace_uuid,
                     sample.node_uuid, "primary", sample.device_profile,
                     "optimizer_costing"));

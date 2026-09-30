@@ -7,16 +7,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "filespace_growth.hpp"
+#include "filespace_metric_fixture.hpp"
 #include "filespace_header.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -72,13 +76,16 @@ struct PhysicalMemberFixture {
 };
 
 FixtureIds MakeIds(platform::u64 seed) {
-  return {MakeUuid(platform::UuidKind::object, 100 + seed),
-          MakeUuid(platform::UuidKind::database, 200 + seed),
+  auto& metrics = filespace_metric_test::Runtime();
+  FixtureIds ids{MakeUuid(platform::UuidKind::object, 100 + seed),
+          {platform::UuidKind::database, metrics.database},
           MakeUuid(platform::UuidKind::filespace, 300 + seed),
           MakeUuid(platform::UuidKind::object, 400 + seed),
           MakeUuid(platform::UuidKind::object, 500 + seed),
           MakeUuid(platform::UuidKind::object, 600 + seed),
           MakeUuid(platform::UuidKind::transaction, 700 + seed)};
+  metrics.RegisterFilespace(ids.filespace_uuid.value);
+  return ids;
 }
 
 filespace::FilespaceRegistry Registry(const FixtureIds& ids,
@@ -220,6 +227,12 @@ void TestFilespaceCapacityManagerSuccessMetadataEvidenceMetricsAndRecovery() {
   Require(result.durable_state_changed, "success did not report durable state change");
   Require(result.cache_invalidation_required, "success did not request cache invalidation");
   Require(result.metrics_emitted, "success did not emit metrics");
+  auto& metrics = filespace_metric_test::Runtime();
+  metrics.Expect("sb_filespace_total_bytes", ids.filespace_uuid.value, 80 * 16384);
+  metrics.Expect("sb_filespace_used_bytes", ids.filespace_uuid.value, 64 * 16384);
+  metrics.Expect("sb_filespace_free_bytes", ids.filespace_uuid.value, 16 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
+  Require(metrics.queue->Stats().queued == 0, "growth emitted unexpected observations");
   Require(!result.allocated_logical_pages, "growth allocated logical pages");
   Require(!result.page_allocation_authority_bypassed, "growth bypassed page allocation authority");
   Require(result.operation.metrics_emitted, "operation metrics flag was not set");
@@ -341,6 +354,12 @@ void TestDirectSysArchSuccessDoesNotReserveFreeExtent() {
 
   const auto result = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   Require(result.ok(), "direct SysArch growth failed: " + result.diagnostic.diagnostic_code);
+  auto& metrics = filespace_metric_test::Runtime();
+  Require(result.metrics_emitted, "direct SysArch growth omitted metrics");
+  metrics.Expect("sb_filespace_total_bytes", ids.filespace_uuid.value, 80 * 16384);
+  metrics.Expect("sb_filespace_used_bytes", ids.filespace_uuid.value, 64 * 16384);
+  metrics.Expect("sb_filespace_free_bytes", ids.filespace_uuid.value, 4 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
   Require(result.operation.caller_mode ==
               filespace::FilespacePhysicalGrowthCallerMode::direct_sysarch,
           "direct SysArch caller mode was not recorded");
@@ -371,6 +390,12 @@ void TestPreallocatedPagesCanExceedLogicalPages() {
   const auto result = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   Require(result.ok(), "growth rejected preallocated pages beyond logical pages: " +
                            result.diagnostic.diagnostic_code);
+  auto& metrics = filespace_metric_test::Runtime();
+  Require(result.metrics_emitted, "preallocated-heavy growth omitted metrics");
+  metrics.Expect("sb_filespace_total_bytes", ids.filespace_uuid.value, 40 * 16384);
+  metrics.Expect("sb_filespace_used_bytes", ids.filespace_uuid.value, 0);
+  metrics.Expect("sb_filespace_free_bytes", ids.filespace_uuid.value, 40 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
   Require(result.operation.growth_start_page_number == 1032,
           "growth start did not include existing preallocated pages");
   Require(result.operation.member_physical_page_count_before == 32,
@@ -392,11 +417,20 @@ void TestIdempotentDuplicateDoesNotGrowTwice() {
   PreparePhysicalMember(request);
   const auto first = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   Require(first.ok(), "first growth failed");
+  auto& metrics = filespace_metric_test::Runtime();
+  Require(first.metrics_emitted, "first growth omitted metrics");
+  metrics.Expect("sb_filespace_total_bytes", ids.filespace_uuid.value, 80 * 16384);
+  metrics.Expect("sb_filespace_used_bytes", ids.filespace_uuid.value, 64 * 16384);
+  metrics.Expect("sb_filespace_free_bytes", ids.filespace_uuid.value, 16 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
+  const auto admitted = metrics.queue->Stats().admitted;
   const auto before = Capture(ledger);
 
   const auto duplicate = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   Require(duplicate.ok(), "duplicate growth replay failed");
   Require(duplicate.duplicate_request, "duplicate request flag missing");
+  Require(metrics.queue->Stats().admitted == admitted && metrics.queue->Stats().queued == 0,
+          "duplicate growth emitted fresh metrics");
   Require(!duplicate.durable_state_changed, "duplicate reported durable mutation");
   Require(duplicate.operation.growth_operation_id.value == first.operation.growth_operation_id.value,
           "duplicate returned different operation id");
@@ -424,13 +458,34 @@ void RunRefusalCase(
   auto request = Request(ids, member.path);
   filespace::FilespaceGrowthLedger ledger;
   PreparePhysicalMember(request);
+  const auto read_bytes = [&] {
+    std::ifstream file(member.path, std::ios::binary);
+    Require(file.is_open(), "refusal oracle could not reopen physical member");
+    std::vector<char> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    Require(!file.bad(), "refusal oracle could not read physical member");
+    return bytes;
+  };
+  const auto physical_before = read_bytes();
   mutate(request, registry);
+  const auto admitted = filespace_metric_test::Runtime().queue->Stats().admitted;
   const auto before = Capture(ledger);
   const auto result = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   ExpectRefused(result, ledger, before, diagnostic_code, label);
+  Require(filespace_metric_test::Runtime().queue->Stats().admitted == admitted,
+          "refused growth emitted metrics");
+  Require(read_bytes() == physical_before, "refused growth changed physical member bytes");
 }
 
 void TestRefusalsDoNotPartiallyMutate() {
+  RunRefusalCase("total byte capacity overflow",
+                 "filespace_growth_capacity_overflow",
+                 [](auto& request, auto&) {
+                   request.requested_growth_pages = 1;
+                   request.member_capacity.current_page_count =
+                       std::numeric_limits<platform::u64>::max() / request.page_size_bytes;
+                   request.member_capacity.preallocated_page_count = 0;
+                   request.member_capacity.maximum_page_count = std::numeric_limits<platform::u64>::max();
+                 });
   RunRefusalCase("missing evidence store",
                  "filespace_growth_missing_evidence_store",
                  [](auto& request, auto&) { request.evidence_store_present = false; });
@@ -559,6 +614,23 @@ void TestRefusalsDoNotPartiallyMutate() {
                  [](auto&, auto& registry) { registry.filespaces.front().active = false; });
 }
 
+void TestForeignDatabaseDoesNotEmitIntoBoundNode() {
+  auto ids = MakeIds(401);
+  ids.database_uuid = MakeUuid(platform::UuidKind::database, 999);
+  PhysicalMemberFixture member("foreign_observation_owner", 401);
+  const auto registry = Registry(ids, member.path);
+  const auto request = Request(ids, member.path);
+  PreparePhysicalMember(request);
+  filespace::FilespaceGrowthLedger ledger;
+  auto& metrics = filespace_metric_test::Runtime();
+  const auto admitted = metrics.queue->Stats().admitted;
+  const auto result = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
+  Require(result.ok() && result.grown, "foreign observation owner changed physical growth outcome");
+  Require(!result.metrics_emitted && !result.operation.metrics_emitted,
+          "foreign database claimed metric emission");
+  Require(metrics.queue->Stats().admitted == admitted, "foreign database incremented local counter");
+}
+
 void TestMissingLedgerFailsClosed() {
   const auto ids = MakeIds(400);
   PhysicalMemberFixture member("missing_ledger", 400);
@@ -581,5 +653,6 @@ int main() {
   TestIdempotentDuplicateDoesNotGrowTwice();
   TestRefusalsDoNotPartiallyMutate();
   TestMissingLedgerFailsClosed();
+  TestForeignDatabaseDoesNotEmitIntoBoundNode();
   return EXIT_SUCCESS;
 }

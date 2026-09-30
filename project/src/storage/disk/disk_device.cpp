@@ -1631,6 +1631,7 @@ IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {
 }
 
 IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
+  const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
     return MakeIoError("SB-STORAGE-DISK-NOT-OPEN",
@@ -1692,6 +1693,7 @@ IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
 }
 
 PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
+  const auto operation_guard = AcquireOperationGuard();
   PreallocateExtentResult result;
   result.status = DiskOkStatus();
   result.offset = offset;
@@ -1717,10 +1719,6 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
                                            std::to_string(offset));
     return result;
   }
-  if (bytes == 0) {
-    result.strategy = "noop";
-    return result;
-  }
   if (AddWouldOverflow(offset, bytes)) {
     result.status = DiskErrorStatus();
     result.diagnostic = MakeDiskDiagnostic(result.status,
@@ -1731,10 +1729,34 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
                                                std::to_string(bytes));
     return result;
   }
-  const auto checked_extent = CheckFileDeviceExtent(offset, bytes);
+  // Do not narrow the public u64 count before validating the native count type.
+  if (bytes > std::numeric_limits<usize>::max()) {
+    result.status = DiskErrorStatus();
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           "SB-STORAGE-DISK-BYTE-COUNT-CONVERSION-OVERFLOW",
+                                           "storage.disk.byte_count_conversion_overflow",
+                                           path_, std::to_string(bytes));
+    return result;
+  }
+  const auto checked_extent = CheckFileDeviceExtent(offset, static_cast<usize>(bytes));
   if (!checked_extent.ok()) {
     result.status = checked_extent.status;
-    result.diagnostic = checked_extent.diagnostic;
+    result.diagnostic = MakeDiskDiagnostic(result.status,
+                                           checked_extent.diagnostic.diagnostic_code,
+                                           checked_extent.diagnostic.message_key,
+                                           path_,
+                                           std::to_string(offset) + ":" + std::to_string(bytes));
+    return result;
+  }
+
+  if (bytes == 0) {
+    result.strategy = "noop";
+    return result;
+  }
+  const auto size_before = Size();
+  if (!size_before.ok()) {
+    result.status = size_before.status;
+    result.diagnostic = size_before.diagnostic;
     return result;
   }
 
@@ -1757,32 +1779,10 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
                                                    &unsupported,
                                                    &preallocate_detail);
 #endif
-  if (platform_ok) {
-    const u64 expected_end = offset + bytes;
-    const auto size_after_preallocate = Size();
-    if (!size_after_preallocate.ok()) {
-      result.status = size_after_preallocate.status;
-      result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
-      result.diagnostic = size_after_preallocate.diagnostic;
-      return result;
-    }
-    if (size_after_preallocate.size_bytes < expected_end) {
-      const unsigned char zero = 0;
-      const auto extend = WriteAt(expected_end - 1, &zero, sizeof(zero));
-      if (!extend.ok()) {
-        result.status = extend.status;
-        result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
-        result.diagnostic = extend.diagnostic;
-        return result;
-      }
-    }
-    result.platform_preallocation_succeeded = true;
-    result.logical_size_extended = true;
-    result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
-    return result;
-  }
-
-  if (!unsupported) {
+  result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
+  // Preserve known effects on all subsequent failures; an error is not rollback.
+  result.platform_preallocation_succeeded = platform_ok;
+  if (!platform_ok && !unsupported) {
     result.status = DiskErrorStatus();
     result.strategy = strategy.empty() ? "platform_extent_preallocation" : strategy;
     result.diagnostic = MakeDiskDiagnostic(result.status,
@@ -1796,23 +1796,35 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
     return result;
   }
 
-  const unsigned char zero = 0;
-  const auto extend = WriteAt(offset + bytes - 1, &zero, sizeof(zero));
-  if (!extend.ok()) {
-    result.status = extend.status;
-    result.strategy = "last_byte_extend";
+  if (!platform_ok) {
     result.fallback_reason = preallocate_detail.empty()
                                  ? "platform extent preallocation unsupported"
                                  : preallocate_detail;
-    result.diagnostic = extend.diagnostic;
+    result.strategy = "existing_logical_extent";
+  }
+  const auto size_after = Size();
+  if (!size_after.ok()) {
+    result.status = size_after.status;
+    result.diagnostic = size_after.diagnostic;
     return result;
   }
-  result.strategy = "last_byte_extend";
-  result.fallback_reason = preallocate_detail.empty()
-                               ? "platform extent preallocation unsupported"
-                               : preallocate_detail;
-  result.fallback_extension_used = true;
-  result.logical_size_extended = true;
+  result.logical_size_extended = size_after.size_bytes > size_before.size_bytes;
+  const u64 expected_end = offset + bytes;
+  if (size_after.size_bytes < expected_end) {
+    // Only extend beyond EOF. Never zero a caller's existing byte on fallback
+    // or retry. WriteAt participates in the same retained-device guard.
+    if (!platform_ok) result.strategy = "last_byte_extend";
+    const unsigned char zero = 0;
+    const auto extend = WriteAt(expected_end - 1, &zero, sizeof(zero));
+    if (!extend.ok()) {
+      result.status = extend.status;
+      result.diagnostic = extend.diagnostic;
+      return result;
+    }
+    result.fallback_extension_used = !platform_ok;
+    result.logical_size_extended = expected_end > size_before.size_bytes;
+  }
+  result.logical_extent_available = true;
   return result;
 }
 
