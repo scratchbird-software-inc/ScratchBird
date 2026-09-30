@@ -362,6 +362,11 @@ target_compile_features(public_filespace_header_capacity_gate PRIVATE cxx_std_23
 target_link_libraries(public_filespace_header_capacity_gate PRIVATE
   sb_storage_filespace
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(public_filespace_header_capacity_gate PRIVATE
+    "LINKER:--wrap=pread" "LINKER:--wrap=fstat" "LINKER:--wrap=fsync"
+    "LINKER:--wrap=pwrite")
+endif()
 add_test(
   NAME public_filespace_header_capacity_gate
   COMMAND public_filespace_header_capacity_gate

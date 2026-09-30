@@ -38,7 +38,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1426 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1442 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -100,6 +100,44 @@ int main() {
          "only_after_context_authority_revalidation","reject_before_durable_mutation",
          "DATABASE_LIFECYCLE");
   Sample("STORAGE.PAGE_CHECKSUM_FAILED",S::corruption,true,"false","repair_required","STORAGE");
+  Sample("STORAGE.GROWTH.RETRY_CONFLICT",S::error,true,
+         "only_original_exact_intent_or_fresh_separately_admitted_operation",
+         "reject_without_mutation_preserve_original_growth_operation","STORAGE");
+  Sample("filespace_growth_quarantine",S::error,true,
+         "only_after_authoritative_physical_reconciliation_and_fresh_admission",
+         "refuse_capacity_mutation_preserve_prior_physical_effects","STORAGE");
+  for (const auto code : {"SB-FILESPACE-HEADER-DATABASE-UUID-MISMATCH",
+                         "SB-FILESPACE-HEADER-FILESPACE-UUID-MISMATCH"})
+    Sample(code,S::error,true,"only_after_corrected_owner_binding_and_fresh_admission",
+           "reject_before_mutation_preserve_actual_filespace","STORAGE");
+  Sample("SB-FILESPACE-HEADER-PAGE-SIZE-MISMATCH",S::error,true,
+         "only_after_corrected_profile_binding_and_fresh_admission",
+         "reject_before_mutation_preserve_actual_filespace","STORAGE");
+  Sample("SB-FILESPACE-HEADER-FILE-SIZE-CAPACITY-MISMATCH",S::error,true,
+         "only_after_authoritative_physical_reconciliation_and_fresh_admission",
+         "refuse_capacity_publication_preserve_actual_file_contents","STORAGE");
+  Sample("SB-STORAGE-DISK-WRITE-FAILED",S::error,true,
+         "only_after_reconciling_possible_mutation_and_fresh_admission",
+         "retain_transferred_bytes_and_prior_effects_without_completed_write_claim","STORAGE");
+  Sample("SB-STORAGE-DISK-SYNC-FAILED",S::error,true,
+         "only_after_reconciling_durability_and_fresh_admission",
+         "retain_prior_writes_without_failed_barrier_durability_claim","STORAGE");
+  Sample("SB-STORAGE-DISK-READ-SHORT",S::error,true,"only_after_retained_device_revalidation",
+         "reject_observation_preserve_transfer_and_prior_effect_facts","STORAGE");
+  for (const auto code : {"STORAGE.GROWTH.RETRY_CONFLICT", "filespace_growth_quarantine",
+                         "SB-FILESPACE-HEADER-DATABASE-UUID-MISMATCH",
+                         "SB-FILESPACE-HEADER-FILESPACE-UUID-MISMATCH",
+                         "SB-FILESPACE-HEADER-PAGE-SIZE-MISMATCH",
+                         "SB-FILESPACE-HEADER-FILE-SIZE-CAPACITY-MISMATCH",
+                         "SB-STORAGE-DISK-WRITE-FAILED", "SB-STORAGE-DISK-SYNC-FAILED",
+                         "SB-STORAGE-DISK-READ-SHORT"}) {
+    const auto* row = d::FindCanonicalDiagnosticCode(code);
+    const std::string_view name(code);
+    const auto expected_state = name == "STORAGE.GROWTH.RETRY_CONFLICT" ? "22023" :
+        name.starts_with("SB-STORAGE-DISK-") ? "58030" : "55000";
+    Check(row && row->sqlstate == expected_state && row->numeric_binding == "not_applicable",
+          "storage diagnostic SQLSTATE or native numeric binding drifted");
+  }
   Sample("NUMERIC.BACKEND.UNAVAILABLE",S::error,true,"retry_after_reference_backend_restored","reject_without_numeric_value","NUMERIC");
   Sample("NUMERIC.ENCODING.NONCANONICAL",S::error,true,"retry_only_with_corrected_encoding","reject_without_numeric_value","NUMERIC");
   Sample("NUMERIC.REAL128.DIVIDE_BY_ZERO",S::error,true,"retry_only_with_corrected_input","reject_without_numeric_value","NUMERIC");
@@ -213,7 +251,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0xcf,0x73,0xf4,0x22,0xb8,0x84,0x56,0xe1,0xef,0x41,0x08,0xb7,0xd6,0x9c,0xaf,0xae,0xd6,0xef,0xce,0x74,0x40,0x45,0xba,0x81,0x25,0xf2,0x64,0x36,0x42,0x63,0xa6,0xd9};
+    0x16,0x81,0x5c,0x24,0x47,0xaa,0x87,0xf3,0xe2,0x6e,0xdd,0x7e,0xfa,0xba,0xdd,0x2e,0xd1,0x1a,0x4d,0xe1,0x69,0xbc,0xf6,0x23,0xd2,0xd9,0xa5,0x85,0x65,0x91,0xd6,0xda};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

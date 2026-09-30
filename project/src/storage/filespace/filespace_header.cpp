@@ -369,7 +369,10 @@ u64 ToU64(const std::string& text) {
 PhysicalFilespaceWriteResult CreatePhysicalFilespaceFile(const std::string& path,
                                                          const PhysicalFilespaceHeader& header,
                                                          bool allow_overwrite) {
-  return WritePhysicalFilespaceHeader(path, header, allow_overwrite);
+  // Like node creation, filespace creation is exclusive and replay-refusing.
+  // The legacy flag is retained for source compatibility, never destruction.
+  (void)allow_overwrite;
+  return WritePhysicalFilespaceHeader(path, header, false);
 }
 
 PhysicalFilespaceWriteResult WritePhysicalFilespaceHeader(const std::string& path,
@@ -398,22 +401,40 @@ PhysicalFilespaceWriteResult WritePhysicalFilespaceHeader(const std::string& pat
   }
 
   FileDevice device;
-  const auto open = device.Open(path, allow_overwrite ? FileOpenMode::create_or_truncate : FileOpenMode::create_new);
+  // Header replacement is not authority to recreate/truncate a filespace.
+  // Keep existing payload pages and capacity intact during maintenance.
+  const auto open = device.Open(path, allow_overwrite ? FileOpenMode::open_existing : FileOpenMode::create_new);
   if (!open.ok()) {
     PhysicalFilespaceWriteResult result;
     result.status = open.status;
     result.diagnostic = open.diagnostic;
     return result;
   }
+  const auto guard = device.AcquireOperationGuard();
+  if (allow_overwrite) {
+    const auto size = device.Size();
+    if (!size.ok()) {
+      PhysicalFilespaceWriteResult result;
+      result.status = size.status;
+      result.diagnostic = size.diagnostic;
+      return result;
+    }
+    if (size.size_bytes != expected_capacity_bytes) {
+      return WriteError("SB-FILESPACE-HEADER-FILE-SIZE-CAPACITY-MISMATCH",
+                        "storage.filespace.header.file_size_capacity_mismatch",
+                        std::to_string(size.size_bytes) + ":" + std::to_string(expected_capacity_bytes));
+    }
+  }
   const auto payload = SerializeBinary(header);
-  const auto write = device.WriteAt(0, payload.data(), payload.size());
+  const auto write = device.WriteAt(0, payload.data(),
+                                    allow_overwrite ? kPhysicalHeaderBytes : payload.size());
   if (!write.ok()) {
     PhysicalFilespaceWriteResult result;
     result.status = write.status;
     result.diagnostic = write.diagnostic;
     return result;
   }
-  if (expected_capacity_bytes > payload.size()) {
+  if (!allow_overwrite && expected_capacity_bytes > payload.size()) {
     const unsigned char zero = 0;
     const auto extend = device.WriteAt(expected_capacity_bytes - 1, &zero, sizeof(zero));
     if (!extend.ok()) {
@@ -444,6 +465,9 @@ PhysicalFilespaceWriteResult WritePhysicalFilespaceHeader(const std::string& pat
 
 PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
     const std::string& path,
+    const TypedUuid& expected_database_uuid,
+    const TypedUuid& expected_filespace_uuid,
+    u32 expected_page_size,
     u64 expected_total_pages_before,
     u64 expected_preallocated_pages_before,
     u64 growth_pages,
@@ -459,12 +483,37 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
                                "expected_total_pages_before and growth_pages must be non-zero");
   }
 
-  const auto before = ReadPhysicalFilespaceHeader(path);
+  FileDevice device;
+  const auto open = device.Open(path, FileOpenMode::open_existing);
+  if (!open.ok()) {
+    PhysicalFilespaceCapacityGrowthResult result;
+    result.status = open.status;
+    result.diagnostic = open.diagnostic;
+    return result;
+  }
+  const auto guard = device.AcquireOperationGuard();
+  const auto before = ReadPhysicalFilespaceHeader(device);
   if (!before.ok()) {
     PhysicalFilespaceCapacityGrowthResult result;
     result.status = before.status;
     result.diagnostic = before.diagnostic;
     return result;
+  }
+  if (expected_database_uuid.kind != UuidKind::database ||
+      !IsEngineIdentityUuid(expected_database_uuid.value) ||
+      expected_database_uuid.value != before.header.database_uuid.value) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-DATABASE-UUID-MISMATCH",
+                               "storage.filespace.header.database_uuid_mismatch");
+  }
+  if (expected_filespace_uuid.kind != UuidKind::filespace ||
+      !IsEngineIdentityUuid(expected_filespace_uuid.value) ||
+      expected_filespace_uuid.value != before.header.filespace_uuid.value) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-FILESPACE-UUID-MISMATCH",
+                               "storage.filespace.header.filespace_uuid_mismatch");
+  }
+  if (expected_page_size != before.header.page_size) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-PAGE-SIZE-MISMATCH",
+                               "storage.filespace.header.page_size_mismatch");
   }
   if (before.header.total_pages != expected_total_pages_before) {
     return CapacityGrowthError("SB-FILESPACE-HEADER-GROWTH-BASE-MISMATCH",
@@ -518,14 +567,6 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
     return result;
   }
 
-  FileDevice device;
-  const auto open = device.Open(path, FileOpenMode::open_existing);
-  if (!open.ok()) {
-    PhysicalFilespaceCapacityGrowthResult result;
-    result.status = open.status;
-    result.diagnostic = open.diagnostic;
-    return result;
-  }
   const auto size_before = device.Size();
   if (!size_before.ok()) {
     PhysicalFilespaceCapacityGrowthResult result;
@@ -545,6 +586,13 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
   result.header_after = after;
   result.file_size_before_bytes = size_before.size_bytes;
   result.expected_capacity_after_bytes = expected_after_bytes;
+  const auto fail_with_effects = [&](std::string code, std::string key,
+                                     std::string detail = {}) {
+    const auto failure = CapacityGrowthError(std::move(code), std::move(key), std::move(detail));
+    result.status = failure.status;
+    result.diagnostic = failure.diagnostic;
+    return result;
+  };
 
   if (expected_after_bytes > size_before.size_bytes) {
     result.extent_preallocation_offset_bytes = size_before.size_bytes;
@@ -580,7 +628,7 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
   result.physical_extension_synced = true;
 
   const auto payload = SerializeBinary(after);
-  const auto header_write = device.WriteAt(0, payload.data(), payload.size());
+  const auto header_write = device.WriteAt(0, payload.data(), kPhysicalHeaderBytes);
   if (!header_write.ok()) {
     result.status = header_write.status;
     result.diagnostic = header_write.diagnostic;
@@ -602,20 +650,13 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
   }
   result.file_size_after_bytes = size_after.size_bytes;
   if (result.file_size_after_bytes != expected_after_bytes) {
-    return CapacityGrowthError("SB-FILESPACE-HEADER-GROWTH-SIZE-MISMATCH",
+    return fail_with_effects("SB-FILESPACE-HEADER-GROWTH-SIZE-MISMATCH",
                                "storage.filespace.header.growth_size_mismatch",
                                std::to_string(result.file_size_after_bytes) + ":" +
                                    std::to_string(expected_after_bytes));
   }
 
-  const auto close = device.Close();
-  if (!close.ok()) {
-    result.status = close.status;
-    result.diagnostic = close.diagnostic;
-    return result;
-  }
-
-  const auto verified = ReadPhysicalFilespaceHeader(path);
+  const auto verified = ReadPhysicalFilespaceHeader(device);
   if (!verified.ok()) {
     result.status = verified.status;
     result.diagnostic = verified.diagnostic;
@@ -626,8 +667,15 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
       verified.header.free_pages != after.free_pages ||
       verified.header.header_generation != after.header_generation ||
       verified.file_size_bytes != expected_after_bytes) {
-    return CapacityGrowthError("SB-FILESPACE-HEADER-GROWTH-VERIFY-MISMATCH",
+    return fail_with_effects("SB-FILESPACE-HEADER-GROWTH-VERIFY-MISMATCH",
                                "storage.filespace.header.growth_verify_mismatch");
+  }
+
+  const auto close = device.Close();
+  if (!close.ok()) {
+    result.status = close.status;
+    result.diagnostic = close.diagnostic;
+    return result;
   }
 
   result.status = HeaderOkStatus();
@@ -647,6 +695,7 @@ PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(const std::string& pat
 }
 
 PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(FileDevice& device) {
+  const auto guard = device.AcquireOperationGuard();
   const auto size = device.Size();
   if (!size.ok()) {
     PhysicalFilespaceHeaderResult result;

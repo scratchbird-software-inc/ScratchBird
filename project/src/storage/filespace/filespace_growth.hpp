@@ -14,6 +14,7 @@
 #include "uuid.hpp"
 
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::storage::filespace {
@@ -266,6 +267,9 @@ struct FilespacePreallocationEntry {
 };
 
 struct FilespacePhysicalGrowthEntry {
+  // Exact admitted intent, including binary typed identities. Absence never
+  // qualifies an existing operation for cached-success replay.
+  std::optional<FilespacePhysicalGrowthRequest> admitted_request;
   TypedUuid request_uuid;
   TypedUuid growth_operation_id;
   TypedUuid database_uuid;

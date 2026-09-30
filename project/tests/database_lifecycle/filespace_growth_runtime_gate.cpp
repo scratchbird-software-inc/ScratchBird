@@ -21,6 +21,42 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#if defined(__linux__)
+#include <cerrno>
+#include <unistd.h>
+
+namespace {
+unsigned growth_fault = 0, growth_sync_count = 0, growth_native_calls = 0;
+int growth_fd = -1;
+}
+extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
+extern "C" ssize_t __real_pwrite(int, const void*, size_t, off_t);
+extern "C" int __real_fsync(int);
+extern "C" ssize_t __wrap_pread(int fd, void* data, size_t bytes, off_t offset) {
+  if (growth_fault && offset == 0 && bytes == 256) {
+    growth_fd = fd;
+    ++growth_native_calls;
+    if (growth_fault == 4 && growth_sync_count == 2) { errno = EIO; return -1; }
+  }
+  return __real_pread(fd, data, bytes, offset);
+}
+extern "C" ssize_t __wrap_pwrite(int fd, const void* data, size_t bytes, off_t offset) {
+  if (growth_fault && fd == growth_fd) {
+    ++growth_native_calls;
+    if (growth_fault == 2 && offset == 0) { errno = EIO; return -1; }
+  }
+  return __real_pwrite(fd, data, bytes, offset);
+}
+extern "C" int __wrap_fsync(int fd) {
+  if (growth_fault && fd == growth_fd) {
+    ++growth_native_calls;
+    ++growth_sync_count;
+    if ((growth_fault == 1 && growth_sync_count == 1) ||
+        (growth_fault == 3 && growth_sync_count == 2)) { errno = EIO; return -1; }
+  }
+  return __real_fsync(fd);
+}
+#endif
 
 namespace {
 
@@ -429,6 +465,8 @@ void TestIdempotentDuplicateDoesNotGrowTwice() {
   const auto duplicate = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
   Require(duplicate.ok(), "duplicate growth replay failed");
   Require(duplicate.duplicate_request, "duplicate request flag missing");
+  Require(!duplicate.metrics_emitted && duplicate.operation.metrics_emitted,
+          "replay confused historical observations with fresh emission");
   Require(metrics.queue->Stats().admitted == admitted && metrics.queue->Stats().queued == 0,
           "duplicate growth emitted fresh metrics");
   Require(!duplicate.durable_state_changed, "duplicate reported durable mutation");
@@ -445,6 +483,79 @@ void TestIdempotentDuplicateDoesNotGrowTwice() {
           "duplicate appended another window");
   Require(ledger.physical_growth_evidence.size() == before.evidence + 1,
           "duplicate did not write replay evidence");
+}
+
+void TestConflictingRetryPreservesOriginalOperation() {
+  const auto ids = MakeIds(810);
+  PhysicalMemberFixture member("retry_binding", 810);
+  const auto registry = Registry(ids, member.path);
+  const auto request = Request(ids, member.path);
+  PreparePhysicalMember(request);
+  filespace::FilespaceGrowthLedger ledger;
+  const auto first = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
+  Require(first.ok(), "retry binding initial growth failed");
+  auto& metrics = filespace_metric_test::Runtime();
+  metrics.Expect("sb_filespace_total_bytes", ids.filespace_uuid.value, 80 * 16384);
+  metrics.Expect("sb_filespace_used_bytes", ids.filespace_uuid.value, 64 * 16384);
+  metrics.Expect("sb_filespace_free_bytes", ids.filespace_uuid.value, 16 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
+  const auto admitted = metrics.queue->Stats().admitted;
+  const auto snapshot = Capture(ledger);
+  std::ifstream in(member.path, std::ios::binary);
+  const std::string bytes((std::istreambuf_iterator<char>(in)), {});
+  in.close();
+  using RequestType = filespace::FilespacePhysicalGrowthRequest;
+  const std::vector<std::function<void(RequestType&)>> changes{
+      [](auto& r) { ++r.requested_growth_pages; },
+      [](auto& r) { r.policy_uuid = MakeUuid(platform::UuidKind::object, 811); },
+      [](auto& r) { r.storage_profile_uuid = MakeUuid(platform::UuidKind::object, 812); },
+      [](auto& r) { ++r.policy_generation; ++r.observed_policy_generation; },
+      [](auto& r) { ++r.catalog_generation; ++r.observed_catalog_generation; },
+      [](auto& r) { r.authorization.storage_filespace_control_right = true; },
+      [](auto& r) { r.caller_mode = filespace::FilespacePhysicalGrowthCallerMode::direct_sysarch;
+                   r.authorization.storage_filespace_control_right = true; },
+      [](auto& r) { r.member_capacity.file_member_uuid = MakeUuid(platform::UuidKind::object, 813); },
+      [](auto& r) { ++r.member_capacity.start_page_number; },
+      [](auto& r) { --r.member_capacity.current_page_count; },
+      [](auto& r) { ++r.member_capacity.preallocated_page_count; },
+      [](auto& r) { --r.member_capacity.maximum_page_count; },
+      [](auto& r) { r.member_capacity.physical_path += ".different"; },
+      [](auto& r) { r.transaction_context.transaction_uuid = MakeUuid(platform::UuidKind::transaction, 814); },
+      [](auto& r) { ++r.transaction_context.transaction_number; },
+      [](auto& r) { r.require_mga_transaction_context = false; },
+      [](auto& r) { r.reserve_growth_as_preallocated = false; },
+      [](auto& r) { r.reason += std::string("\0different", 10); }};
+  for (const auto& change : changes) {
+    auto altered = request;
+    change(altered);
+    const auto rejected = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, altered);
+    ExpectRefused(rejected, ledger, snapshot, "STORAGE.GROWTH.RETRY_CONFLICT", "changed retry intent");
+  }
+  // A new otherwise valid target cannot reuse the first target's success.
+  auto altered = request;
+  auto other_registry = registry;
+  altered.filespace_uuid = MakeUuid(platform::UuidKind::filespace, 815);
+  other_registry.filespaces.front().filespace_uuid = altered.filespace_uuid;
+  ExpectRefused(filespace::ExecuteFilespacePhysicalGrowth(&ledger, other_registry, altered),
+                ledger, snapshot, "STORAGE.GROWTH.RETRY_CONFLICT", "cross-target retry");
+  altered = request;
+  altered.database_uuid = MakeUuid(platform::UuidKind::database, 816);
+  other_registry = registry;
+  other_registry.filespaces.front().database_uuid = altered.database_uuid;
+  ExpectRefused(filespace::ExecuteFilespacePhysicalGrowth(&ledger, other_registry, altered),
+                ledger, snapshot, "STORAGE.GROWTH.RETRY_CONFLICT", "cross-database retry");
+  auto missing_binding = ledger;
+  missing_binding.physical_growth_operations.front().admitted_request.reset();
+  ExpectRefused(filespace::ExecuteFilespacePhysicalGrowth(&missing_binding, registry, request),
+                missing_binding, snapshot, "STORAGE.GROWTH.RETRY_CONFLICT", "missing retained intent");
+  Require(ledger.physical_growth_operations.front().growth_operation_id.value ==
+              first.operation.growth_operation_id.value, "conflicting retry replaced original operation");
+  std::ifstream after(member.path, std::ios::binary);
+  Require(std::string((std::istreambuf_iterator<char>(after)), {}) == bytes,
+          "conflicting retry mutated original file");
+  Require(!std::filesystem::exists(member.path.string() + ".different"),
+          "conflicting retry created another target");
+  Require(metrics.queue->Stats().admitted == admitted, "conflicting retry published metrics");
 }
 
 void RunRefusalCase(
@@ -644,6 +755,97 @@ void TestMissingLedgerFailsClosed() {
   Require(!result.durable_state_changed, "missing ledger reported durable mutation");
 }
 
+void TestAppliedFailureIsNotNoEffectRefusal() {
+#if defined(__linux__)
+  for (unsigned fault = 1; fault <= 4; ++fault) {
+    const auto ids = MakeIds(500 + fault);
+    PhysicalMemberFixture member("applied_failure", 500 + fault);
+    const auto registry = Registry(ids, member.path);
+    auto request = Request(ids, member.path);
+    PreparePhysicalMember(request);
+    filespace::FilespaceGrowthLedger ledger;
+    auto& metrics = filespace_metric_test::Runtime();
+    const auto admitted = metrics.queue->Stats().admitted;
+    growth_fault = fault; growth_fd = -1; growth_sync_count = growth_native_calls = 0;
+    const auto failed = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
+    growth_fault = 0;
+    Require(!failed.ok() && !failed.grown, "injected physical failure claimed success");
+    Require(failed.operation.state == filespace::FilespacePhysicalGrowthState::quarantine,
+            "applied physical growth was mislabeled as a no-effect refusal");
+    Require(failed.operation.request_uuid.value == request.request_uuid.value &&
+                failed.operation.growth_operation_id.valid(), "lost failed operation identity");
+    Require(failed.operation.physical_extension_completed &&
+                failed.operation.physical_extension_synced == (fault != 1) &&
+                failed.operation.physical_header_updated == (fault == 4),
+            "lost actual extension/sync/header effects");
+    Require(failed.cache_invalidation_required && !failed.metrics_emitted &&
+                !failed.operation.metadata_commit_after_physical_extension,
+            "partial failure claimed capacity admission");
+    Require(failed.diagnostic.diagnostic_code ==
+                (fault == 2 ? "SB-STORAGE-DISK-WRITE-FAILED" :
+                 fault == 4 ? "SB-STORAGE-DISK-READ-SHORT" : "SB-STORAGE-DISK-SYNC-FAILED"),
+            "physical failure diagnostic was lost");
+    Require(ledger.physical_growth_operations.size() == 1 &&
+                ledger.physical_growth_evidence.size() == 1 &&
+                ledger.preallocated_extents.empty() && ledger.member_capacity_windows.empty(),
+            "partial failure published usable capacity or lost quarantine evidence");
+    Require(filespace::ClassifyFilespacePhysicalGrowthForRecovery(failed.operation).fail_closed,
+            "failed physical growth classified as safe recovery");
+    Require(std::filesystem::file_size(member.path) == 80 * 16384,
+            "actual extended capacity missing");
+    std::ifstream in(member.path, std::ios::binary);
+    const std::string before((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    const auto snapshot = Capture(ledger);
+    for (unsigned retry = 0; retry != 2; ++retry) {
+      if (retry) request.request_uuid = MakeUuid(platform::UuidKind::object, 900 + fault);
+      growth_fault = fault; growth_native_calls = 0;
+      const auto blocked = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
+      growth_fault = 0;
+      Require(!blocked.ok() && blocked.diagnostic.diagnostic_code == "filespace_growth_quarantine",
+              "unreconciled member admitted another growth attempt");
+      Require(growth_native_calls == 0, "quarantined retry reached native I/O");
+      RequireUnchanged(ledger, snapshot, "quarantined retry");
+    }
+    std::ifstream after_file(member.path, std::ios::binary);
+    Require(std::string((std::istreambuf_iterator<char>(after_file)), {}) == before,
+            "quarantined retry changed member bytes");
+    Require(metrics.queue->Stats().admitted == admitted, "partial growth emitted completion metrics");
+  }
+#endif
+}
+
+void TestRetainedPhysicalBindingBeforeMutation() {
+  for (unsigned mismatch = 0; mismatch != 3; ++mismatch) {
+    const auto ids = MakeIds(600 + mismatch);
+    PhysicalMemberFixture member("foreign_physical_binding", 600 + mismatch);
+    const auto registry = Registry(ids, member.path);
+    const auto request = Request(ids, member.path);
+    auto actual = request;
+    if (mismatch == 0) actual.database_uuid = MakeUuid(platform::UuidKind::database, 980);
+    if (mismatch == 1) actual.filespace_uuid = MakeUuid(platform::UuidKind::filespace, 981);
+    if (mismatch == 2) actual.page_size_bytes = 32768;
+    PreparePhysicalMember(actual);
+    std::ifstream in(member.path, std::ios::binary);
+    const std::string before((std::istreambuf_iterator<char>(in)), {});
+    in.close();
+    filespace::FilespaceGrowthLedger ledger;
+    const auto snapshot = Capture(ledger);
+    const auto admitted = filespace_metric_test::Runtime().queue->Stats().admitted;
+    const auto result = filespace::ExecuteFilespacePhysicalGrowth(&ledger, registry, request);
+    ExpectRefused(result, ledger, snapshot,
+        mismatch == 0 ? "SB-FILESPACE-HEADER-DATABASE-UUID-MISMATCH" :
+        mismatch == 1 ? "SB-FILESPACE-HEADER-FILESPACE-UUID-MISMATCH" :
+                        "SB-FILESPACE-HEADER-PAGE-SIZE-MISMATCH",
+        "retained physical binding mismatch");
+    std::ifstream after(member.path, std::ios::binary);
+    Require(std::string((std::istreambuf_iterator<char>(after)), {}) == before,
+            "growth changed a foreign bound file");
+    Require(filespace_metric_test::Runtime().queue->Stats().admitted == admitted,
+            "foreign physical binding published metrics");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -651,8 +853,11 @@ int main() {
   TestDirectSysArchSuccessDoesNotReserveFreeExtent();
   TestPreallocatedPagesCanExceedLogicalPages();
   TestIdempotentDuplicateDoesNotGrowTwice();
+  TestConflictingRetryPreservesOriginalOperation();
   TestRefusalsDoNotPartiallyMutate();
   TestMissingLedgerFailsClosed();
   TestForeignDatabaseDoesNotEmitIntoBoundNode();
+  TestAppliedFailureIsNotNoEffectRefusal();
+  TestRetainedPhysicalBindingBeforeMutation();
   return EXIT_SUCCESS;
 }

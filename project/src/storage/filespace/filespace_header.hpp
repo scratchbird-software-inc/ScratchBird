@@ -93,6 +93,9 @@ PhysicalFilespaceWriteResult WritePhysicalFilespaceHeader(const std::string& pat
                                                           bool allow_overwrite = false);
 PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
     const std::string& path,
+    const TypedUuid& expected_database_uuid,
+    const TypedUuid& expected_filespace_uuid,
+    u32 expected_page_size,
     u64 expected_total_pages_before,
     u64 expected_preallocated_pages_before,
     u64 growth_pages,
