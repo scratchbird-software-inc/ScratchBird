@@ -78,7 +78,8 @@ std::string EncodePackageFields(const std::vector<std::string>& fields) {
   }
   return out;
 }
-std::vector<std::string> DecodePackageFields(const std::string& input) {
+std::vector<std::string> DecodePackageFields(const std::string& input, bool* trailing_content = nullptr) {
+  if (trailing_content) *trailing_content = false;
   if(input.size()<12 || input.size()>kPackageMaximumBytes || !input.starts_with(kPackageFileMagic)) return {};
   std::size_t cursor=8;
   const auto read=[&](u32* value) {
@@ -92,7 +93,10 @@ std::vector<std::string> DecodePackageFields(const std::string& input) {
     u32 size=0;if(!read(&size) || size>input.size()-cursor) return {};
     fields.emplace_back(input.data()+cursor,size);cursor+=size;
   }
-  if(cursor!=input.size()) return {};
+  if(cursor!=input.size()) {
+    if (trailing_content) *trailing_content = true;
+    return {};
+  }
   return fields;
 }
 scratchbird::core::uuid::TypedUuidResult ReadPackageUuid(UuidKind kind,const std::string& bytes) {
@@ -482,7 +486,13 @@ bool ParseState(const std::string& text, FilespaceState* state) {
 
 FilespacePackageFileResult ParsePackageManifestFileContent(const std::string& content,
                                                            u64 byte_count) {
-  const auto lines = DecodePackageFields(content);
+  bool trailing_content = false;
+  const auto lines = DecodePackageFields(content, &trailing_content);
+  if (trailing_content) {
+    return FileError("SB-FILESPACE-PACKAGE-FILE-TRAILING-CONTENT",
+                     "storage.filespace.package.file_trailing_content",
+                     {}, true, byte_count);
+  }
   if (lines.empty() || lines.front() != kPackageFileMagic) {
     return FileError("SB-FILESPACE-PACKAGE-FILE-MAGIC-MISMATCH",
                      "storage.filespace.package.file_magic_mismatch",

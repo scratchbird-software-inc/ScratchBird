@@ -10,6 +10,7 @@
 #include "foreign_filespace_quarantine.hpp"
 #include "filespace_discovery.hpp"
 #include "filespace_header.hpp"
+#include "filespace_lifecycle_metric_fixture.hpp"
 #include "filespace_lifecycle.hpp"
 #include "filespace_package.hpp"
 #include "index_page_family.hpp"
@@ -229,11 +230,18 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   create.role = filespace::FilespaceRole::active_primary;
   create.writer_identity_uuid = writer_uuid;
   create.reason = "p2-create-primary";
+  filespace::FilespaceRegistry unobserved_registry;
+  const auto unobserved = filespace::ApplyFilespaceOperation(&unobserved_registry, create);
+  Require(unobserved.ok() && !unobserved.metrics_emitted,
+          "unbound lifecycle reported fictitious metric emission");
+  filespace_lifecycle_metric_test::Fixture metric_fixture(
+      database_uuid.value, primary_uuid.value, secondary_uuid.value);
   const auto primary = filespace::ApplyFilespaceOperation(&registry, create);
   Require(primary.ok(), "active primary create failed");
   Require(primary.descriptor.first_filespace, "first filespace flag was not set");
   Require(primary.descriptor.startup_authority, "active primary missing startup authority");
   Require(primary.metrics_emitted, "filespace lifecycle metrics were not emitted");
+  metric_fixture.Success(primary_uuid.value, "create_filespace", 0, 1);
 
   filespace::PhysicalFilespaceHeader header;
   header.database_uuid = database_uuid;
@@ -248,7 +256,7 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   header.writer_identity_uuid = writer_uuid;
   header.creation_operation_uuid = "p2-create-secondary-header";
   const auto header_write =
-      filespace::WritePhysicalFilespaceHeader((dir / "secondary.sbfs").string(), header, true);
+      filespace::CreatePhysicalFilespaceFile((dir / "secondary.sbfs").string(), header);
   Require(header_write.ok(), "secondary physical filespace header write failed");
 
   filespace::FilespaceOperationRequest attach;
@@ -261,6 +269,8 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   attach.policy.require_physical_header_for_attach = true;
   const auto attached = filespace::ApplyFilespaceOperation(&registry, attach);
   Require(attached.ok(), "secondary attach with physical header failed");
+  Require(attached.metrics_emitted, "attach observations missing");
+  metric_fixture.Success(secondary_uuid.value, "attach_filespace", 0, 5);
   Require(attached.descriptor.role == filespace::FilespaceRole::secondary_data,
           "secondary filespace role mismatch");
 
@@ -270,6 +280,8 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   pin.pin_owner = "p2-open-transaction";
   const auto pinned = filespace::ApplyFilespaceOperation(&registry, pin);
   Require(pinned.ok(), "filespace pin failed");
+  Require(pinned.metrics_emitted, "pin observations missing");
+  metric_fixture.Success(secondary_uuid.value, "pin_filespace", 1, 5);
 
   filespace::FilespaceOperationRequest detach = attach;
   detach.operation = filespace::FilespaceOperation::detach_filespace;
@@ -278,13 +290,21 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   Require(detach_refused.diagnostic.diagnostic_code ==
               "SB-FILESPACE-LIFECYCLE-DETACH-PINNED",
           "pinned detach diagnostic mismatch");
+  Require(detach_refused.metrics_emitted, "refused detach observation missing");
+  metric_fixture.Expect("sb_storage_filespace_lifecycle_total", secondary_uuid.value,
+                        std::uint64_t{1}, "detach_filespace", "error");
 
   filespace::FilespaceOperationRequest unpin = pin;
   unpin.operation = filespace::FilespaceOperation::unpin_filespace;
   const auto unpinned = filespace::ApplyFilespaceOperation(&registry, unpin);
   Require(unpinned.ok(), "filespace unpin failed");
+  Require(unpinned.metrics_emitted, "unpin observations missing");
+  metric_fixture.Success(secondary_uuid.value, "unpin_filespace", 0, 5);
   const auto detached = filespace::ApplyFilespaceOperation(&registry, detach);
   Require(detached.ok(), "unpinned filespace detach failed");
+  Require(detached.metrics_emitted, "detach observations missing");
+  metric_fixture.Success(secondary_uuid.value, "detach_filespace", 0, 5);
+  metric_fixture.Empty();
 
   const auto values = metrics::DefaultMetricRegistry().SnapshotCurrent();
   bool lifecycle_metric = false;
@@ -297,6 +317,21 @@ void TestFilespaceLifecycleAndMetrics(const std::filesystem::path& dir,
   Require(lifecycle_metric, "filespace lifecycle metric was not published");
   Require(role_metric, "filespace role state metric was not published");
   Require(!registry.evidence.empty(), "filespace lifecycle evidence was not recorded");
+  // Partial queue admission must not be reported as complete emission or
+  // fabricate rollback of the already admitted sample.
+  Require(filespace::PublishFilespaceRoleObservation(primary.descriptor).ok &&
+              filespace::PublishFilespaceRoleObservation(primary.descriptor).ok,
+          "could not fill two slots of the three-slot observation queue");
+  filespace::FilespaceRegistry partial_registry;
+  const auto partial = filespace::ApplyFilespaceOperation(&partial_registry, create);
+  Require(partial.ok() && !partial.metrics_emitted, "full queue falsely reported complete metrics");
+  metric_fixture.Expect("sb_filespace_role_state", primary_uuid.value,
+                        metrics::MetricEnumValue{1});
+  metric_fixture.Expect("sb_filespace_role_state", primary_uuid.value,
+                        metrics::MetricEnumValue{1});
+  metric_fixture.Expect("sb_storage_filespace_lifecycle_total", primary_uuid.value,
+                        std::uint64_t{2}, "create_filespace");
+  metric_fixture.Empty();
 }
 
 void TestFilespaceQuarantineLifecycle(const std::filesystem::path& dir,
@@ -894,7 +929,9 @@ filespace::PhysicalFilespaceHeader ReplacementPhysicalHeader(const TypedUuid& da
 void WriteReplacementPhysicalHeader(const std::filesystem::path& path,
                                     const filespace::PhysicalFilespaceHeader& header,
                                     std::string_view label) {
-  const auto written = filespace::WritePhysicalFilespaceHeader(path.string(), header, true);
+  const auto written = std::filesystem::exists(path)
+      ? filespace::WritePhysicalFilespaceHeader(path.string(), header, true)
+      : filespace::CreatePhysicalFilespaceFile(path.string(), header);
   Require(written.ok(), std::string(label) + " physical header write failed");
 }
 
@@ -1012,6 +1049,25 @@ void TestFilespaceRepairRebuildSalvageLifecycle(const std::filesystem::path& dir
               "SB-FILESPACE-LIFECYCLE-REBUILD-SOURCE-UNVERIFIED",
           "filespace rebuild source diagnostic mismatch");
   rebuild.policy.rebuild_source_verified = true;
+  const auto truncated_rebuild = filespace::ApplyFilespaceOperation(&registry, rebuild);
+  Require(!truncated_rebuild.ok() &&
+              truncated_rebuild.diagnostic.diagnostic_code ==
+                  "SB-FILESPACE-LIFECYCLE-REBUILD-PHYSICAL-HEADER-WRITE-FAILED",
+          "header rebuild fabricated restoration of missing page contents");
+  Require(std::filesystem::file_size(rebuild_path) ==
+              std::string("damaged filespace header").size(),
+          "refused truncated rebuild changed physical capacity");
+  // The page reconstruction stage must supply the complete backing file before
+  // header publication. This fixture exercises header repair, not reconstruction.
+  const auto* rebuild_descriptor = DescriptorByUuid(registry, filespace_uuids.at(1));
+  Require(rebuild_descriptor != nullptr, "rebuild descriptor missing");
+  const auto rebuild_bytes = rebuild_descriptor->total_pages * rebuild_descriptor->page_size;
+  std::vector<char> reconstructed(static_cast<std::size_t>(rebuild_bytes), '\x5a');
+  {
+    std::ofstream restored(rebuild_path, std::ios::binary | std::ios::trunc);
+    restored.write(reconstructed.data(), reconstructed.size());
+    Require(restored.good(), "write complete reconstructed backing fixture");
+  }
   rebuild.reason = "p2-rebuild-success";
   const auto rebuilt = filespace::ApplyFilespaceOperation(&registry, rebuild);
   Require(rebuilt.ok(), "filespace rebuild failed");
@@ -1019,6 +1075,16 @@ void TestFilespaceRepairRebuildSalvageLifecycle(const std::filesystem::path& dir
   Require(rebuilt_header.ok(), "filespace rebuild did not create valid physical header");
   Require(rebuilt_header.header.state == filespace::FilespaceState::read_only,
           "filespace rebuild did not fence physical header read-only");
+  {
+    std::ifstream repaired_bytes(rebuild_path, std::ios::binary);
+    std::vector<char> observed(reconstructed.size());
+    repaired_bytes.read(observed.data(), observed.size());
+    Require(repaired_bytes.good() &&
+                std::equal(observed.begin() + 256, observed.end(), reconstructed.begin() + 256),
+            "header rebuild destroyed reconstructed page payload");
+    Require(std::filesystem::file_size(rebuild_path) == rebuild_bytes,
+            "header rebuild changed reconstructed capacity");
+  }
 
   const auto salvage_path = dir / "salvage-secondary.sbfs";
   auto salvage = create_secondary(filespace_uuids.at(2),
@@ -1544,7 +1610,7 @@ void TestForeignFilespaceQuarantine(const std::filesystem::path& dir,
   header.writer_identity_uuid = writer_uuid;
   header.creation_operation_uuid = "p2-foreign-header";
   const auto header_write =
-      filespace::WritePhysicalFilespaceHeader((dir / "foreign.sbfs").string(), header, true);
+      filespace::CreatePhysicalFilespaceFile((dir / "foreign.sbfs").string(), header);
   Require(header_write.ok(), "foreign filespace header write failed");
 
   filespace::ForeignFilespaceQuarantineRequest request;

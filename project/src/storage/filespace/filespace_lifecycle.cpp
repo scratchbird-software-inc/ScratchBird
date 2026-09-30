@@ -156,25 +156,42 @@ void ApplyRequestCapacityMetadata(FilespaceDescriptor* descriptor,
   descriptor->writer_identity_uuid = request.writer_identity_uuid;
 }
 
-void EmitLifecycleMetric(const char* operation, const char* result, const char* reason) {
-  (void)scratchbird::core::metrics::IncrementCounter(
+bool EmitLifecycleMetric(const FilespaceOperationRequest& request,
+                         const char* result, const char* reason) {
+  namespace metrics = scratchbird::core::metrics;
+  if (!IsTypedEngineIdentity(request.database_uuid, UuidKind::database) ||
+      !IsTypedEngineIdentity(request.filespace_uuid, UuidKind::filespace)) return false;
+  const auto node = metrics::DefaultMetricRegistry().ObservationNodeForDatabase(request.database_uuid.value);
+  if (!node) return false;
+  return metrics::IncrementCounter(
       "sb_storage_filespace_lifecycle_total",
-      scratchbird::core::metrics::Labels({{"component", "storage.filespace"},
-                                          {"operation", operation},
+      metrics::Labels({{"component", "storage.filespace"},
+                                          {"database_uuid", request.database_uuid.value},
+                                          {"filespace_uuid", request.filespace_uuid.value},
+                                          {"node_uuid", *node},
+                                          {"operation", FilespaceOperationName(request.operation)},
                                           {"result", result},
                                           {"reason", reason}}),
-      1.0,
-      "storage_filespace");
+      u64{1},
+      "storage_filespace").ok;
 }
 
-void EmitPinMetric(const FilespaceDescriptor& descriptor) {
-  (void)scratchbird::core::metrics::SetGauge(
+bool EmitPinMetric(const FilespaceDescriptor& descriptor) {
+  namespace metrics = scratchbird::core::metrics;
+  if (!IsTypedEngineIdentity(descriptor.database_uuid, UuidKind::database) ||
+      !IsTypedEngineIdentity(descriptor.filespace_uuid, UuidKind::filespace)) return false;
+  const auto node = metrics::DefaultMetricRegistry().ObservationNodeForDatabase(descriptor.database_uuid.value);
+  if (!node) return false;
+  return metrics::SetGauge(
       "sb_storage_filespace_active_pins",
-      scratchbird::core::metrics::Labels({{"component", "storage.filespace"},
+      metrics::Labels({{"component", "storage.filespace"},
+                                          {"database_uuid", descriptor.database_uuid.value},
+                                          {"filespace_uuid", descriptor.filespace_uuid.value},
+                                          {"node_uuid", *node},
                                           {"role", FilespaceRoleName(descriptor.role)},
                                           {"state", FilespaceStateName(descriptor.state)}}),
-      static_cast<double>(ActivePinCount(descriptor)),
-      "storage_filespace");
+      ActivePinCount(descriptor),
+      "storage_filespace").ok;
 }
 
 
@@ -182,9 +199,10 @@ FilespaceOperationResult ErrorResult(std::string diagnostic_code,
                                      std::string message_key,
                                      const FilespaceOperationRequest& request,
                                      std::string detail = {}) {
-  EmitLifecycleMetric(FilespaceOperationName(request.operation), "error", diagnostic_code.c_str());
+  const bool emitted = EmitLifecycleMetric(request, "error", diagnostic_code.c_str());
   FilespaceOperationResult result;
   result.status = FilespaceErrorStatus();
+  result.metrics_emitted = emitted;
   result.diagnostic = MakeFilespaceDiagnostic(result.status,
                                               std::move(diagnostic_code),
                                               std::move(message_key),
@@ -2329,10 +2347,11 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                                                     after,
                                                     "SB-FILESPACE-LIFECYCLE-OK",
                                                     durable_state_changed);
-  EmitLifecycleMetric(FilespaceOperationName(request.operation), "ok", "ok");
-  EmitPinMetric(after);
-  (void)PublishFilespaceRoleObservation(after);
-  return SuccessResult(after, evidence, durable_state_changed, true, physical_file_removed);
+  const bool lifecycle_emitted = EmitLifecycleMetric(request, "ok", "ok");
+  const bool pins_emitted = EmitPinMetric(after);
+  const bool role_emitted = PublishFilespaceRoleObservation(after).ok;
+  return SuccessResult(after, evidence, durable_state_changed,
+                       lifecycle_emitted && pins_emitted && role_emitted, physical_file_removed);
 }
 
 FilespaceSerializeResult SerializeFilespaceRegistry(const FilespaceRegistry& registry) {
