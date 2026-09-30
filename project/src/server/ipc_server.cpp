@@ -4823,6 +4823,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   ServerSessionRegistry session_registry;
   const ParserPackageRegistry parser_registry = LoadParserPackageRegistry(config);
   ServerAgentRuntime agent_runtime;
+  const auto stop_agents = [&] {
+    const auto stopped = agent_runtime.Stop();
+    result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(),
+                              stopped.diagnostics.end());
+    return stopped.ok();
+  };
   if (!agent_runtime.Start(config, engine_state, &result.diagnostics)) {
     result.exit_code = 2;
     CloseIpcSocket(server_fd);
@@ -4835,7 +4841,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   if (!listener_start.ok) {
     result.exit_code = 2;
     result.diagnostics = listener_start.diagnostics;
-    agent_runtime.Stop();
+    stop_agents();
     CloseIpcSocket(server_fd);
     RemoveEndpointPath(endpoint);
     return result;
@@ -4845,7 +4851,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   if (!daemon_lifecycle.diagnostics.empty()) {
     result.exit_code = 2;
     result.diagnostics = daemon_lifecycle.diagnostics;
-    agent_runtime.Stop();
+    stop_agents();
     CloseIpcSocket(server_fd);
     RemoveEndpointPath(endpoint);
     StopManagedServerListeners(&listener_orchestrator, "force");
@@ -5004,28 +5010,43 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   }
   CloseIpcSocket(server_fd);
   RemoveEndpointPath(endpoint);
-  agent_runtime.Stop();
+  const bool agents_stopped = stop_agents();
   const auto listener_stop = StopManagedServerListeners(&listener_orchestrator, "graceful");
   if (!listener_stop.diagnostics.empty()) {
     result.diagnostics.insert(result.diagnostics.end(),
                               listener_stop.diagnostics.begin(),
                               listener_stop.diagnostics.end());
   }
-  RecordServerAuditEvent(&observability, "server.shutdown", "completed", "parser-server IPC endpoint stopped");
-  RecordServerLog(&observability, {"server.shutdown", "info", "sb_server", {}, "parser-server IPC endpoint stopped", "clean"});
+  // SEARCH_KEY: SERVER_IPC_DURABLE_STOP_FAILURE_PROPAGATION
+  const bool cleanup_ok = agents_stopped && listener_stop.ok;
+  RecordServerAuditEvent(&observability, "server.shutdown",
+                        cleanup_ok ? "completed" : "failed",
+                        cleanup_ok ? "parser-server IPC endpoint stopped"
+                                   : "parser-server IPC endpoint stopped with incomplete cleanup");
+  RecordServerLog(&observability,
+                 {"server.shutdown", cleanup_ok ? "info" : "error", "sb_server", {},
+                  cleanup_ok ? "parser-server IPC endpoint stopped"
+                             : "parser-server IPC endpoint stopped with incomplete cleanup",
+                  "clean"});
   const auto flush = FlushServerObservability(&observability, "server_shutdown");
   if (!flush.flushed) {
     result.diagnostics.push_back(EndpointDiagnostic(
         flush.diagnostic_code.empty() ? "OPS.EVIDENCE.FLUSH_FAILED" : flush.diagnostic_code,
         "Server observability evidence did not flush cleanly during shutdown."));
   }
-  const auto stopped = WriteStoppedLifecycleArtifacts(config, artifacts);
-  if (!stopped.diagnostics.empty()) {
+  if (cleanup_ok && flush.flushed) {
+    const auto stopped = WriteStoppedLifecycleArtifacts(config, artifacts);
+    if (!stopped.diagnostics.empty()) {
+      result.diagnostics.insert(result.diagnostics.end(),
+                                stopped.diagnostics.begin(),
+                                stopped.diagnostics.end());
+    }
+  } else {
+    const auto failed = WriteFailedLifecycleArtifacts(config, artifacts);
     result.diagnostics.insert(result.diagnostics.end(),
-                              stopped.diagnostics.begin(),
-                              stopped.diagnostics.end());
+                              failed.diagnostics.begin(), failed.diagnostics.end());
   }
-  result.exit_code = result.diagnostics.empty() ? 0 : 2;
+  result.exit_code = cleanup_ok && result.diagnostics.empty() ? 0 : 2;
   return result;
 }
 

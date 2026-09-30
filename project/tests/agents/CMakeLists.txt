@@ -42,6 +42,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --sequential-restart)
   set_tests_properties(server_agent_sequential_thread_restart_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;restart;linux_proof")
+  add_executable(server_agent_durable_stop_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_durable_stop_gate.cpp")
+  target_compile_features(server_agent_durable_stop_gate PRIVATE cxx_std_23)
+  target_link_libraries(server_agent_durable_stop_gate PRIVATE sb_server_core)
+  target_link_options(server_agent_durable_stop_gate PRIVATE
+    -Wl,--wrap=fsync
+    -Wl,--wrap=_ZN11scratchbird6engine12internal_api22EngineBeginTransactionERKNS1_29EngineBeginTransactionRequestE
+    -Wl,--wrap=_ZN11scratchbird6engine12internal_api23EngineCommitTransactionERKNS1_30EngineCommitTransactionRequestE)
+  foreach(stop_mode success failure ipc-failure ipc-success
+      drain-persist-failure shutdown-persist-failure drain-commit-failure shutdown-commit-failure)
+    add_test(NAME server_agent_durable_stop_${stop_mode}_gate
+      COMMAND server_agent_durable_stop_gate ${stop_mode})
+    set_tests_properties(server_agent_durable_stop_${stop_mode}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;shutdown;durable_result;linux_proof")
+  endforeach()
 endif()
 
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")

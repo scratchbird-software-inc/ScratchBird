@@ -51,9 +51,20 @@ struct ServerAgentRuntimeWorkerSnapshot {
   std::uint64_t last_diagnostic_generation = 0;
 };
 
+// A service cleanup result, never the engine's final node-shutdown receipt.
+struct ServerAgentRuntimeStopResult {
+  bool attempted = false;
+  bool durable_cleanup_complete = false;
+  std::vector<ServerDiagnostic> diagnostics;
+  bool ok() const {
+    return diagnostics.empty() && (!attempted || durable_cleanup_complete);
+  }
+};
+
 struct ServerAgentRuntimeSnapshot {
   bool started = false;
   bool stopping = false;
+  ServerAgentRuntimeStopResult stop_result;
   std::string database_path;
   std::string database_uuid;
   std::string filespace_uuid;
@@ -109,7 +120,9 @@ class ServerAgentRuntime {
   // stop operation to finish. Start and destruction require external lifecycle
   // coordination; callers must keep this object alive until their calls return.
   // Return does not constitute a clean durable/node shutdown receipt.
-  void Stop();
+  // Repeated calls retain the same result. Failed durable cleanup requires
+  // owning-engine recovery; Start cannot silently discard that failure.
+  ServerAgentRuntimeStopResult Stop();
   ServerAgentRuntimeSnapshot Snapshot() const;
 
  private:
@@ -158,6 +171,7 @@ class ServerAgentRuntime {
   std::mutex schedule_mutex_;
   std::condition_variable schedule_cv_;
   bool started_ = false;
+  ServerAgentRuntimeStopResult last_stop_result_;
   std::atomic_bool stopping_{false};
   std::string database_path_;
   std::string database_uuid_;

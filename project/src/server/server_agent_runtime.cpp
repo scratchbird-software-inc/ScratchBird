@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -723,6 +724,14 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     if (started_) {
       return true;
     }
+    if (!last_stop_result_.ok()) {
+      if (diagnostics != nullptr) {
+        diagnostics->insert(diagnostics->end(), last_stop_result_.diagnostics.begin(),
+                            last_stop_result_.diagnostics.end());
+      }
+      return false;
+    }
+    last_stop_result_ = {};
     database_path_ = database->database_path;
     database_uuid_ = IdentityBytes(database->database_uuid);
     filespace_uuid_ = IdentityBytes(database->filespace_uuid);
@@ -1071,14 +1080,14 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   return true;
 }
 
-void ServerAgentRuntime::Stop() {
+ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
   // Serialize the complete operation, not just the stop request. A contending
   // caller must not return while another caller is still joining or cleaning up.
   std::lock_guard<std::mutex> stop_guard(stop_mutex_);
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (!started_ || stopping_.load()) {
-      return;
+      return last_stop_result_;
     }
     // Publish under the waiters' mutex so notification cannot fall between a
     // false stopping predicate and the condition variable's unlock-and-park.
@@ -1095,6 +1104,16 @@ void ServerAgentRuntime::Stop() {
     }
   }
   worker_threads_.clear();
+  // SEARCH_KEY: SERVER_AGENT_DURABLE_STOP_RESULT
+  ServerAgentRuntimeStopResult result;
+  result.attempted = true;
+  const auto record_failure = [&](const std::string& phase,
+                                  const std::string& code,
+                                  const std::string& detail) {
+    result.diagnostics.push_back(RuntimeDiagnostic(
+        code, "Server agent durable cleanup did not complete.",
+        {{"shutdown_phase", phase}, {"detail", detail}}));
+  };
   {
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
     const auto now = CurrentUnixMillis() * 1000;
@@ -1103,75 +1122,67 @@ void ServerAgentRuntime::Stop() {
         security_epoch_,
         resource_epoch_,
         name_resolution_epoch_};
-    agents::AgentRuntimeServiceResult drained;
-    auto drain_tx = BeginServerAgentTransaction(database_path_,
-                                                database_uuid_,
-                                                authority_epochs,
-                                                now,
-                                                "service-drain");
-    if (drain_tx.ok) {
-      runtime_service_.SetContext(drain_tx.context);
-      drained = runtime_service_.Drain(
-          ServerAgentRuntimeUuid(database_uuid_, "service_drain", 2000),
-          now,
-          true);
-      if (drained.status.ok) {
-        std::string ignored_code;
-        std::string ignored_detail;
-        if (!CommitServerAgentTransaction(drain_tx.context,
-                                          &ignored_code,
-                                          &ignored_detail)) {
-          drained.status =
-              agents::AgentError(ignored_code.empty()
-                                     ? "SERVER.AGENT_RUNTIME.MGA_COMMIT_FAILED"
-                                     : ignored_code,
-                                 ignored_detail);
+    const auto run_phase = [&](bool shutdown) {
+      const std::string phase = shutdown ? "service-shutdown" : "service-drain";
+      std::string operation = phase + ":begin";
+      try {
+        const auto timestamp = shutdown ? now + 1 : now;
+        auto tx = BeginServerAgentTransaction(database_path_, database_uuid_,
+                                              authority_epochs, timestamp, phase);
+        if (!tx.ok) {
+          record_failure(phase + ":begin", tx.diagnostic_code, tx.diagnostic_detail);
+          return false;
         }
-      } else {
-        RollbackServerAgentTransaction(drain_tx.context);
-      }
-    }
-    agents::AgentRuntimeServiceResult shutdown;
-    auto shutdown_tx = BeginServerAgentTransaction(database_path_,
-                                                   database_uuid_,
-                                                   authority_epochs,
-                                                   now + 1,
-                                                   "service-shutdown");
-    if (shutdown_tx.ok) {
-      runtime_service_.SetContext(shutdown_tx.context);
-      shutdown = runtime_service_.Shutdown(
-          ServerAgentRuntimeUuid(database_uuid_, "service_shutdown", 2100),
-          now + 1,
-          true);
-      if (shutdown.status.ok) {
-        std::string ignored_code;
-        std::string ignored_detail;
-        if (!CommitServerAgentTransaction(shutdown_tx.context,
-                                          &ignored_code,
-                                          &ignored_detail)) {
-          shutdown.status =
-              agents::AgentError(ignored_code.empty()
-                                     ? "SERVER.AGENT_RUNTIME.MGA_COMMIT_FAILED"
-                                     : ignored_code,
-                                 ignored_detail);
+        runtime_service_.SetContext(tx.context);
+        operation = phase;
+        const auto service = shutdown
+            ? runtime_service_.Shutdown(
+                  ServerAgentRuntimeUuid(database_uuid_, "service_shutdown", 2100), timestamp, true)
+            : runtime_service_.Drain(
+                  ServerAgentRuntimeUuid(database_uuid_, "service_drain", 2000), timestamp, true);
+        if (!service.status.ok) {
+          record_failure(phase, service.status.diagnostic_code, service.status.detail);
+          engine_api::EngineRollbackTransactionRequest rollback;
+          rollback.context = tx.context;
+          operation = phase + ":rollback";
+          const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+          if (!rolled_back.ok) {
+            record_failure(phase + ":rollback",
+                           FirstDiagnosticCode(rolled_back, "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN"),
+                           FirstDiagnosticDetail(rolled_back, "server_agent_transaction_rollback_failed"));
+          }
+          return false;
         }
-      } else {
-        RollbackServerAgentTransaction(shutdown_tx.context);
+        std::string code;
+        std::string detail;
+        operation = phase + ":commit";
+        if (!CommitServerAgentTransaction(tx.context, &code, &detail)) {
+          record_failure(phase + ":commit", code, detail);
+          // Finality may be unknown. Do not start another mutation or claim that
+          // rollback/retry erased it; preserve the result for engine recovery.
+          return false;
+        }
+        std::lock_guard<std::mutex> guard(state_mutex_);
+        UpdateRuntimeCatalogSnapshotLocked(service.catalog);
+        return true;
+      } catch (const std::exception& error) {
+        // Storage may throw after partial persistence. Native threads are already
+        // joined; retain the failure and leave finality/recovery with the engine.
+        record_failure(operation, "SB_DIAG_AGENT_COORDINATOR_SHUTDOWN_NOT_CLEAN",
+                       error.what());
+        return false;
       }
-    }
-    std::lock_guard<std::mutex> guard(state_mutex_);
-    if (shutdown.status.ok) {
-      UpdateRuntimeCatalogSnapshotLocked(shutdown.catalog);
-    } else if (drained.status.ok) {
-      UpdateRuntimeCatalogSnapshotLocked(drained.catalog);
-    }
+    };
+    result.durable_cleanup_complete = run_phase(false) && run_phase(true);
   }
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     started_ = false;
     stopping_.store(false);
+    last_stop_result_ = result;
   }
   WriteStatusSnapshot();
+  return result;
 }
 
 ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
@@ -1180,6 +1191,7 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   ServerAgentRuntimeSnapshot snapshot;
   snapshot.started = started_;
   snapshot.stopping = stopping_.load();
+  snapshot.stop_result = last_stop_result_;
   snapshot.database_path = database_path_;
   snapshot.database_uuid = database_uuid_;
   snapshot.filespace_uuid = filespace_uuid_;
@@ -1845,6 +1857,13 @@ std::string ServerAgentRuntime::StatusJson() const {
   out << "{\"server_agent_runtime\":{"
       << "\"started\":" << (started_ ? "true" : "false") << ','
       << "\"stopping\":" << (stopping_.load() ? "true" : "false") << ','
+      << "\"stop_attempted\":" << (last_stop_result_.attempted ? "true" : "false") << ','
+      << "\"durable_cleanup_complete\":"
+      << (last_stop_result_.durable_cleanup_complete ? "true" : "false") << ','
+      << "\"stop_failed\":" << (!last_stop_result_.ok() ? "true" : "false") << ','
+      << "\"stop_diagnostic_code\":\""
+      << JsonEscape(last_stop_result_.diagnostics.empty()
+                        ? "" : last_stop_result_.diagnostics.front().code) << "\","
       << "\"database_path\":\"" << JsonEscape(database_path_) << "\","
       << "\"database_uuid\":\"" << scratchbird::wire::binary_status::Identity(database_uuid_) << "\","
       << "\"filespace_uuid\":\"" << scratchbird::wire::binary_status::Identity(filespace_uuid_) << "\","
@@ -1927,7 +1946,9 @@ BuildIparAgentLifecycleProjectionSource(const ServerAgentRuntimeSnapshot& snapsh
   scratchbird::engine::internal_api::SysInformationIparAgentLifecycleSource source;
   source.runtime_id = "server_agent_runtime";
   source.source_kind = "server_agent_runtime_snapshot";
-  source.lifecycle_state = snapshot.stopping
+  source.lifecycle_state = !snapshot.stop_result.ok()
+                               ? "failed"
+                               : snapshot.stopping
                                ? "stopping"
                                : (snapshot.started ? "running" : "stopped");
   source.idle_state =

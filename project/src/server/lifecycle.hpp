@@ -66,6 +66,8 @@ ServerLifecycleResult WriteStartupLifecycleArtifacts(const ServerBootstrapConfig
                                                      const std::string& target_state);
 ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig& config,
                                                      const ServerLifecycleArtifacts& owner);
+ServerLifecycleResult WriteFailedLifecycleArtifacts(const ServerBootstrapConfig& config,
+                                                    const ServerLifecycleArtifacts& owner);
 ServerRuntimeArtifactValidation ValidateServerRuntimeArtifacts(const ServerBootstrapConfig& config,
                                                                const ServerLifecycleArtifacts& artifacts,
                                                                bool require_existing_files);

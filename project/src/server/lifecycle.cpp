@@ -455,12 +455,13 @@ ServerLifecycleResult WriteStartupLifecycleArtifacts(const ServerBootstrapConfig
   return result;
 }
 
-ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig& config,
-                                                     const ServerLifecycleArtifacts& owner) {
+static ServerLifecycleResult WriteTerminalLifecycleArtifacts(
+    const ServerBootstrapConfig& config, const ServerLifecycleArtifacts& owner,
+    const char* state) {
   ServerLifecycleResult result;
   result.artifacts = owner;
   result.artifacts.generation = owner.generation == 0 ? NowMicros() : owner.generation;
-  result.artifacts.state = "stopped";
+  result.artifacts.state = state;
   result.artifacts.pid_file = config.pid_file.string();
   result.artifacts.owner_token_file = OwnerFilePath(config).string();
   result.artifacts.lifecycle_state_file = config.lifecycle_state_file.string();
@@ -470,13 +471,23 @@ ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig
   result.artifacts.daemon_scope = config.database_daemon_scope;
   result.artifacts.sbps_endpoint = config.sbps_endpoint.string();
   WriteTextFile(config.lifecycle_state_file,
-                StateFileContents(config, "stopped", result.artifacts.generation),
+                StateFileContents(config, state, result.artifacts.generation),
                 &result.diagnostics,
                 "SERVER.RUNTIME.LIFECYCLE_STATE_INVALID");
   AppendTextFile(config.lifecycle_journal_file,
-                 JournalRecord("stopped", "stopped", result.artifacts.generation),
+                 JournalRecord(state, state, result.artifacts.generation),
                  &result.diagnostics);
   return result;
+}
+
+ServerLifecycleResult WriteStoppedLifecycleArtifacts(const ServerBootstrapConfig& config,
+                                                     const ServerLifecycleArtifacts& owner) {
+  return WriteTerminalLifecycleArtifacts(config, owner, "stopped");
+}
+
+ServerLifecycleResult WriteFailedLifecycleArtifacts(const ServerBootstrapConfig& config,
+                                                    const ServerLifecycleArtifacts& owner) {
+  return WriteTerminalLifecycleArtifacts(config, owner, "failed");
 }
 
 ServerRuntimeArtifactValidation ValidateServerRuntimeArtifacts(
