@@ -304,7 +304,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(device_extent_preallocation_gate PRIVATE cxx_std_23)
   target_link_libraries(device_extent_preallocation_gate PRIVATE sb_storage_disk)
   target_link_options(device_extent_preallocation_gate PRIVATE
-    "LINKER:--wrap=posix_fallocate" "LINKER:--wrap=fstat" "LINKER:--wrap=pwrite")
+    "LINKER:--wrap=posix_fallocate" "LINKER:--wrap=fstat" "LINKER:--wrap=pwrite"
+    "LINKER:--wrap=pread" "LINKER:--wrap=fsync")
   add_test(NAME device_extent_preallocation_gate COMMAND device_extent_preallocation_gate)
   set_tests_properties(device_extent_preallocation_gate PROPERTIES
     TIMEOUT 60 LABELS "storage;disk;preallocation;native_fault_injection;not_SQL_E2E")
