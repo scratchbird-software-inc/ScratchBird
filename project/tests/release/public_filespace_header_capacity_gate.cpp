@@ -222,7 +222,8 @@ void HeaderMaintenancePreservesBytes() {
       Require(FileBytes(path) == stable, "capacity refusal changed bytes");
     }
     const auto grown = filespace::ExtendPhysicalFilespaceCapacity(
-        path.string(), header.total_pages, header.preallocated_pages, 1, true);
+        path.string(), header.database_uuid, header.filespace_uuid, header.page_size,
+        header.total_pages, header.preallocated_pages, 1, true);
     Require(grown.ok() && grown.header_updated && grown.physical_extension_synced,
             "real filespace capacity growth failed");
     const auto extended = FileBytes(path);
@@ -260,7 +261,8 @@ void GrowthKeepsRetainedFileAndAppliedEffects() {
   native_data_fd = -1;
   native_faults_active = true;
   const auto grown = filespace::ExtendPhysicalFilespaceCapacity(
-      path.string(), header.total_pages, header.preallocated_pages, 1, true);
+      path.string(), header.database_uuid, header.filespace_uuid, header.page_size,
+      header.total_pages, header.preallocated_pages, 1, true);
   native_faults_active = false;
   Require(!replace_after_read, "replacement boundary was not exercised");
   Require(grown.ok() && grown.header_before.filespace_uuid.value == header.filespace_uuid.value,
@@ -281,7 +283,8 @@ void GrowthKeepsRetainedFileAndAppliedEffects() {
     fail_verification_read = !mismatch_size;
     native_faults_active = true;
     const auto failed = filespace::ExtendPhysicalFilespaceCapacity(
-        path.string(), header.total_pages, header.preallocated_pages, 1, true);
+        path.string(), header.database_uuid, header.filespace_uuid, header.page_size,
+        header.total_pages, header.preallocated_pages, 1, true);
     native_faults_active = false;
     mismatch_verification_size = fail_verification_read = false;
     Require(!failed.ok() && failed.physical_extension_completed &&

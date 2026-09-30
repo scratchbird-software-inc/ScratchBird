@@ -1414,6 +1414,25 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
                                 "resulting physical pages overflow byte accounting");
   }
 
+  for (const auto& unresolved : ledger->physical_growth_operations) {
+    if (unresolved.state == FilespacePhysicalGrowthState::quarantine &&
+        SameUuid(unresolved.database_uuid, request.database_uuid) &&
+        SameUuid(unresolved.filespace_uuid, request.filespace_uuid) &&
+        SameUuid(unresolved.file_member_uuid, member.file_member_uuid)) {
+      auto blocked = RefusePhysicalGrowth(request, descriptor,
+          "filespace_growth_quarantine", "storage.filespace.growth.quarantine",
+          "physical member has unresolved growth effects; reconciliation required");
+      // Keep the original failed operation, not a newly invented no-effect one.
+      blocked.operation = unresolved;
+      blocked.cache_invalidation_required = true;
+      blocked.evidence = BuildPhysicalGrowthEvidence(nullptr, unresolved,
+          "blocked_unreconciled_filespace_growth", FilespacePhysicalGrowthState::quarantine,
+          FilespacePhysicalGrowthState::quarantine, blocked.diagnostic.diagnostic_code,
+          "no additional physical mutation", false, false);
+      return blocked;
+    }
+  }
+
   if (auto* existing = FindMutablePhysicalGrowthByRequest(ledger, request.request_uuid);
       existing != nullptr && existing->state == FilespacePhysicalGrowthState::completed) {
     FilespacePhysicalGrowthResult result;
@@ -1519,21 +1538,13 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
 
   const auto physical_growth = ExtendPhysicalFilespaceCapacity(
       member.physical_path,
+      request.database_uuid,
+      request.filespace_uuid,
+      request.page_size_bytes,
       entry.member_physical_page_count_before,
       entry.member_preallocated_pages_before,
       entry.grown_page_count,
       entry.reserve_growth_as_preallocated);
-  if (!physical_growth.ok()) {
-    return RefusePhysicalGrowth(request,
-                                descriptor,
-                                physical_growth.diagnostic.diagnostic_code.empty()
-                                    ? "filespace_growth_physical_extension_failed"
-                                    : physical_growth.diagnostic.diagnostic_code,
-                                physical_growth.diagnostic.message_key.empty()
-                                    ? "storage.filespace.growth.physical_extension_failed"
-                                    : physical_growth.diagnostic.message_key,
-                                "physical filespace member extension failed before metadata commit");
-  }
   entry.physical_file_size_before_bytes = physical_growth.file_size_before_bytes;
   entry.physical_file_size_after_bytes = physical_growth.file_size_after_bytes;
   entry.physical_file_expected_size_after_bytes =
@@ -1555,6 +1566,43 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
   entry.physical_extension_completed = physical_growth.physical_extension_completed;
   entry.physical_extension_synced = physical_growth.physical_extension_synced;
   entry.physical_header_updated = physical_growth.header_updated;
+  if (!physical_growth.ok()) {
+    auto failed = RefusePhysicalGrowth(request, descriptor,
+        physical_growth.diagnostic.diagnostic_code.empty()
+            ? "filespace_growth_physical_extension_failed"
+            : physical_growth.diagnostic.diagnostic_code,
+        physical_growth.diagnostic.message_key.empty()
+            ? "storage.filespace.growth.physical_extension_failed"
+            : physical_growth.diagnostic.message_key,
+        "physical filespace member extension failed before capacity ledger publication");
+    // A native reservation attempt can have applied effects even when its
+    // subsequent size query fails. Never classify that as no-effect refusal.
+    if (!entry.extent_preallocation_attempted && !entry.physical_extension_completed &&
+        !entry.extent_preallocation_fallback_used) return failed;
+    entry.state = FilespacePhysicalGrowthState::quarantine;
+    entry.metadata_commit_after_physical_extension = false;
+    entry.durable_state_changed = entry.physical_extension_synced;
+    entry.cache_invalidation_required = true;
+    entry.metrics_emitted = false;
+    if (!entry.physical_extension_completed) {
+      entry.grown_page_count = entry.bytes_grown = 0;
+      entry.member_physical_page_count_after = entry.member_physical_page_count_before;
+    }
+    // No reserved pages are admitted on a failed operation, even if header
+    // bytes were written. Reconciliation must validate the actual device.
+    entry.member_preallocated_pages_after = entry.member_preallocated_pages_before;
+    failed.operation = entry;
+    failed.durable_state_changed = entry.durable_state_changed;
+    failed.cache_invalidation_required = true;
+    failed.evidence = BuildPhysicalGrowthEvidence(ledger, entry,
+        "quarantine_incomplete_filespace_growth", FilespacePhysicalGrowthState::absent,
+        FilespacePhysicalGrowthState::quarantine, failed.diagnostic.diagnostic_code,
+        "physical effects require reconciliation before capacity admission",
+        entry.durable_state_changed, false);
+    ledger->physical_growth_evidence.push_back(failed.evidence);
+    ledger->physical_growth_operations.push_back(entry);
+    return failed;
+  }
   entry.metadata_commit_after_physical_extension =
       entry.physical_extension_completed &&
       entry.physical_extension_synced &&

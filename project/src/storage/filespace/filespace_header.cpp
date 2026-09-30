@@ -465,6 +465,9 @@ PhysicalFilespaceWriteResult WritePhysicalFilespaceHeader(const std::string& pat
 
 PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
     const std::string& path,
+    const TypedUuid& expected_database_uuid,
+    const TypedUuid& expected_filespace_uuid,
+    u32 expected_page_size,
     u64 expected_total_pages_before,
     u64 expected_preallocated_pages_before,
     u64 growth_pages,
@@ -495,6 +498,22 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
     result.status = before.status;
     result.diagnostic = before.diagnostic;
     return result;
+  }
+  if (expected_database_uuid.kind != UuidKind::database ||
+      !IsEngineIdentityUuid(expected_database_uuid.value) ||
+      expected_database_uuid.value != before.header.database_uuid.value) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-DATABASE-UUID-MISMATCH",
+                               "storage.filespace.header.database_uuid_mismatch");
+  }
+  if (expected_filespace_uuid.kind != UuidKind::filespace ||
+      !IsEngineIdentityUuid(expected_filespace_uuid.value) ||
+      expected_filespace_uuid.value != before.header.filespace_uuid.value) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-FILESPACE-UUID-MISMATCH",
+                               "storage.filespace.header.filespace_uuid_mismatch");
+  }
+  if (expected_page_size != before.header.page_size) {
+    return CapacityGrowthError("SB-FILESPACE-HEADER-PAGE-SIZE-MISMATCH",
+                               "storage.filespace.header.page_size_mismatch");
   }
   if (before.header.total_pages != expected_total_pages_before) {
     return CapacityGrowthError("SB-FILESPACE-HEADER-GROWTH-BASE-MISMATCH",

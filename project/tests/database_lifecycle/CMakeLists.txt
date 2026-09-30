@@ -1510,6 +1510,10 @@ if(TARGET sb_storage_database)
       filespace_growth_runtime_gate.cpp
     )
     target_compile_features(filespace_growth_runtime_gate PRIVATE cxx_std_23)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_options(filespace_growth_runtime_gate PRIVATE
+        "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+    endif()
     target_link_libraries(filespace_growth_runtime_gate
       PRIVATE
         sb_core_metrics
