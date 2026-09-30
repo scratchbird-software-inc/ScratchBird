@@ -44,6 +44,23 @@ datatypes::CanonicalTypeId InferSblrSourceType(const SblrValue& value) {
 
 std::string EncodedCastInput(const SblrValue& value) {
   if (value.is_null) return {};
+  if (InferSblrSourceType(value) == datatypes::CanonicalTypeId::int8) {
+    if (!value.binary_value.empty()) {
+      if (!value.encoded_value.empty() || value.binary_value.size() != 1) {
+        return {};
+      }
+      return std::string(1, static_cast<char>(value.binary_value[0]));
+    }
+    std::string text = value.encoded_value;
+    if (text.empty() && value.has_int64_value) {
+      text = std::to_string(value.int64_value);
+    }
+    if (text.empty()) text = value.text_value;
+    std::string encoded;
+    return datatypes::EncodeCanonicalInt8Value(text, &encoded)
+        ? encoded
+        : std::string{};
+  }
   if (value.payload_kind == SblrValuePayloadKind::boolean) {
     if (!value.has_int64_value || value.int64_value < 0 ||
         value.int64_value > 1 || value.has_uint64_value ||
@@ -126,7 +143,18 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
       out.encoded_value = out.int64_value == 1 ? "true" : "false";
       out.text_value = out.int64_value == 1 ? "TRUE" : "FALSE";
       return out;
-    case datatypes::CanonicalTypeId::int8:
+    case datatypes::CanonicalTypeId::int8: {
+      out.payload_kind = SblrValuePayloadKind::signed_integer;
+      std::string text;
+      if (!datatypes::DecodeCanonicalInt8Value(value.encoded_value, &text) ||
+          !ParseSignedInt64(text, &out.int64_value)) {
+        return out;
+      }
+      out.has_int64_value = true;
+      out.encoded_value = std::move(text);
+      out.text_value = out.encoded_value;
+      return out;
+    }
     case datatypes::CanonicalTypeId::int16:
     case datatypes::CanonicalTypeId::int32:
     case datatypes::CanonicalTypeId::int64: {

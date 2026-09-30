@@ -749,10 +749,30 @@ void TestBinaryUuidOperations() {
 }
 
 void TestIntegerPhysicalSortKeyBytes() {
+  const auto int8_value = [](unsigned raw) {
+    return Value(dt::CanonicalTypeId::int8,
+                 std::string(1, static_cast<char>(raw)));
+  };
+  const auto int8_minimum = dt::MakeDatatypeSortKey({int8_value(0x80)});
+  const auto int8_zero = dt::MakeDatatypeSortKey({int8_value(0x00)});
+  const auto int8_maximum = dt::MakeDatatypeSortKey({int8_value(0x7f)});
+  Require(int8_minimum.ok() && int8_zero.ok() && int8_maximum.ok() &&
+              int8_minimum.sort_key == std::string({char(1), char(0x00)}) &&
+              int8_zero.sort_key == std::string({char(1), char(0x80)}) &&
+              int8_maximum.sort_key == std::string({char(1), char(0xff)}),
+          "int8 canonical-byte sort keys drifted");
+  Require(dt::CompareDatatypeValues({int8_value(0x80), int8_value(0x00)}).comparison < 0 &&
+              dt::CompareDatatypeValues({int8_value(0x00), int8_value(0x7f)}).comparison < 0,
+          "int8 canonical-byte signed comparison drifted");
+  Require(!dt::MakeDatatypeSortKey(
+               {Value(dt::CanonicalTypeId::int8, {})}).ok() &&
+              !dt::MakeDatatypeSortKey(
+               {Value(dt::CanonicalTypeId::int8, std::string(2, '\0'))}).ok(),
+          "int8 admitted a non-one-byte operation value");
+
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::int8, 1, true, "-128", "127", "128"},
       {dt::CanonicalTypeId::int16, 2, true, "-32768", "32767", "32768"},
       {dt::CanonicalTypeId::int32, 4, true, "-2147483648", "2147483647", "2147483648"},
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},

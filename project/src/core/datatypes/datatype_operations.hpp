@@ -15,6 +15,7 @@
 #include "../resources/unicode_collation.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::core::datatypes {
@@ -311,6 +312,12 @@ const char* DatatypeSetOperationKindName(DatatypeSetOperationKind operation);
 const char* DatatypeNumericOperationKindName(DatatypeNumericOperationKind operation);
 const char* DatatypeRoundingModeName(DatatypeRoundingMode rounding);
 const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering);
+// Canonical INT8 value boundary. Present values are exactly one native byte;
+// decimal text exists only at parser, SBLR, Engine, and display boundaries.
+bool EncodeCanonicalInt8Value(std::string_view decimal_text,
+                              std::string* canonical_bytes);
+bool DecodeCanonicalInt8Value(std::string_view canonical_bytes,
+                              std::string* decimal_text);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile = false);
