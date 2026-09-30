@@ -45,6 +45,10 @@ struct NativeManagementOperation {
   Uuid boundary_uuid,created_at,updated_at,terminal_at,resource_plan_uuid,lock_plan_uuid;
   Uuid result_uuid,diagnostic_uuid,evidence_uuid,metric_evidence_uuid,cluster_uuid;
   std::array<byte,32> normalized_request_sha256{};
+  // V2 exact canonical binary request. The owning descriptor validates its
+  // typed schema and identity bindings; these bytes grant no authority.
+  // Empty retains the V1 hash-only representation, not exact-intent proof.
+  std::vector<byte> normalized_request_bytes;
   // Catalog, configuration, security, cluster epoch. Present zero != absent.
   std::array<std::optional<u64>,4> generation_guards{};
   u64 revision=1;

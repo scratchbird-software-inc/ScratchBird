@@ -85,12 +85,13 @@ void Num(Bytes& b,std::size_t at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at
 void Put(Bytes& b,std::size_t at,const Uuid& u){std::copy(u.bytes.begin(),u.bytes.end(),b.begin()+at);}
 auto Sha(const Bytes& b){std::array<byte,32> h{};Check(SHA256(b.data(),b.size(),h.data()),"independent SHA256");return h;}
 void Seal(Bytes& b){std::fill(b.begin()+480,b.begin()+512,0);const auto h=Sha(b);std::copy(h.begin(),h.end(),b.begin()+480);}
-Bytes Oracle(const O& o){Bytes b(512);std::copy_n("SBMGO001",8,b.begin());Num(b,8,2,1);Num(b,10,2,512);
+Bytes Oracle(const O& o){Bytes b(512);const bool exact=!o.normalized_request_bytes.empty();std::copy_n(exact?"SBMGO002":"SBMGO001",8,b.begin());Num(b,8,2,exact?2:1);Num(b,10,2,512);Num(b,476,4,o.normalized_request_bytes.size());
  Put(b,16,o.database_uuid);Put(b,32,o.bootstrap_uuid);Put(b,48,o.uuid);Put(b,64,o.descriptor_uuid);Put(b,80,o.family_uuid);Put(b,96,o.target_type_uuid);Put(b,112,o.target_uuid);Put(b,128,o.initiator_uuid);Put(b,144,o.request_context_uuid);Put(b,160,o.policy_snapshot_uuid);Put(b,176,o.security_snapshot_uuid);Put(b,192,o.phase_uuid);Put(b,208,o.boundary_uuid);Put(b,224,o.created_at);Put(b,240,o.updated_at);Put(b,256,o.terminal_at);
  std::copy(o.normalized_request_sha256.begin(),o.normalized_request_sha256.end(),b.begin()+272);Put(b,304,o.resource_plan_uuid);Put(b,320,o.lock_plan_uuid);Put(b,336,o.result_uuid);Put(b,352,o.diagnostic_uuid);Put(b,368,o.evidence_uuid);Put(b,384,o.metric_evidence_uuid);Put(b,400,o.cluster_uuid);
  u32 flags=(o.evidence_required?16u:0u)|(o.metrics_required?32u:0u);for(unsigned i=0;i<4;++i)if(o.generation_guards[i]){flags|=1u<<i;Num(b,416+8*i,8,*o.generation_guards[i]);}
  Num(b,448,8,o.revision);Num(b,456,4,o.steps.size());Num(b,460,4,o.idempotency_key.size());Num(b,464,2,u16(o.state));Num(b,466,2,u16(o.scope));Num(b,468,2,o.initiator_kind);Num(b,470,2,u16(o.restart));Num(b,472,4,flags);
  b.insert(b.end(),o.idempotency_key.begin(),o.idempotency_key.end());
+ b.insert(b.end(),o.normalized_request_bytes.begin(),o.normalized_request_bytes.end());
  for(const auto& s:o.steps){const auto at=b.size();b.resize(at+256);Put(b,at,s.uuid);Put(b,at+16,s.operation_uuid);Put(b,at+32,s.family_uuid);Put(b,at+48,s.target_uuid);std::copy(s.precondition_sha256.begin(),s.precondition_sha256.end(),b.begin()+at+64);std::copy(s.postcondition_sha256.begin(),s.postcondition_sha256.end(),b.begin()+at+96);Put(b,at+128,s.started_at);Put(b,at+144,s.completed_at);Put(b,at+160,s.evidence_uuid);Put(b,at+176,s.metric_evidence_uuid);Put(b,at+192,s.diagnostic_uuid);Put(b,at+208,s.boundary_uuid);
   Num(b,at+224,4,s.ordinal);Num(b,at+228,4,s.idempotency_key.size());Num(b,at+232,2,u16(s.state));Num(b,at+234,2,u16(s.mutation));Num(b,at+236,2,u16(s.compensation));Num(b,at+238,2,u16(s.recovery));Num(b,at+240,4,(s.evidence_required?1u:0u)|(s.metrics_required?2u:0u)|(s.idempotent?4u:0u));b.insert(b.end(),s.idempotency_key.begin(),s.idempotency_key.end());}
  Num(b,12,4,b.size());Seal(b);return b;
@@ -143,7 +144,9 @@ struct Fixture {
  ~Fixture(){device.Close();std::error_code ec;std::filesystem::remove_all(path.parent_path(),ec);}
  void Write(const Pages& pages){for(std::size_t i=0;i<pages.size();++i){const auto r=device.WriteAt((64+i)*size,pages[i].data(),pages[i].size());Check(r.ok()&&r.bytes_transferred==pages[i].size(),"isolated unselected extent fixture write");}Check(device.Sync().ok(),"fixture sync");}
 };
-void Physical(unsigned profile){Fixture f(profile);auto o=Record(2*(f.size-384)+17);o.bootstrap_uuid=f.bootstrap;const auto headers=Headers(o,profile);const auto pages=ExtentOracle(o,headers);const auto encoded=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);Check(encoded.ok()&&encoded.pages==pages,"physical oracle");const auto root=*encoded.root;f.Write(pages);
+void Physical(unsigned profile,bool exact=false){Fixture f(profile);auto o=Record(2*(f.size-384)+17);o.bootstrap_uuid=f.bootstrap;
+ if(exact){o.normalized_request_bytes.resize(f.size+37);for(std::size_t n=0;n<o.normalized_request_bytes.size();++n)o.normalized_request_bytes[n]=static_cast<byte>(n);o.normalized_request_sha256=Sha(o.normalized_request_bytes);}
+ const auto headers=Headers(o,profile);const auto pages=ExtentOracle(o,headers);const auto encoded=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);Check(encoded.ok()&&encoded.pages==pages,"physical oracle");const auto root=*encoded.root;f.Write(pages);
  const auto call=[&](){return db::ReadNativeManagementExtentFromOpenDevice(f.file,root,o.database_uuid,o.bootstrap_uuid,budget);};
  io_counting=true;reads=writes=syncs=0;const auto read=call();io_counting=false;const auto sites=reads;Check(read.ok()&&*read.record==o&&writes==0&&syncs==0,"read complete actual extent without writes or syncs");
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok()&&call().ok(),"owned reopen");
@@ -162,8 +165,9 @@ void Physical(unsigned profile){Fixture f(profile);auto o=Record(2*(f.size-384)+
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only owned reopen");Check(call().ok(),"read-only physical inspection");
  Check(f.device.Close().ok(),"close reader fixture");Failed(call());
 }
-void Test(){for(unsigned profile=0;profile<5;++profile){const u64 cap=d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384;for(const u64 size:{u64{513},cap,cap+1,2*cap+17}){const auto o=Record(size);Good(o,Headers(o,profile));}Physical(profile);}
+void Test(){for(unsigned profile=0;profile<5;++profile){const u64 cap=d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384;for(const u64 size:{u64{513},cap,cap+1,2*cap+17}){const auto o=Record(size);Good(o,Headers(o,profile));}Physical(profile);Physical(profile,true);}
  const auto o=Record(2*(8192-384)+17);CodecFaults(o,Headers(o,0));
+ auto exact=o;exact.normalized_request_bytes.assign(8192+37,0xab);exact.normalized_request_sha256=Sha(exact.normalized_request_bytes);Good(exact,Headers(exact,0));CodecFaults(exact,Headers(exact,0));
  const auto tiny=Record(513);const auto image=db::EncodeNativeManagementExtent(tiny,Id(5000),Headers(tiny,0),budget);for(std::size_t at=0;at<image.pages[0].size();++at){auto bad=image.pages;bad[0][at]^=1;Failed(db::DecodeNativeManagementExtent(bad,*image.root,tiny.database_uuid,tiny.bootstrap_uuid,budget));}
  std::cout<<"PASS native management extent checks="<<checks<<" referenced_physical_bytes_only=true not_selected_authority_or_SQL_E2E=true\n";
 }
