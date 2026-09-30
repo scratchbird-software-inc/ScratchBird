@@ -55,7 +55,7 @@ inline bool Valid(const CatalogStorageActionPolicy& r){
     r.maximum_total_pages<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&
     r.target_free_pages<=r.maximum_total_pages&&r.growth_increment_pages<=r.maximum_pages_per_action&&
     r.maximum_pages_per_action<=r.maximum_total_pages&&r.maximum_pages_per_action<=r.maximum_work_bytes/profile->page_size_bytes&&
-    r.maximum_retained_image_bytes>=640&&r.cooldown_microseconds<=86400000000ULL&&
+    r.maximum_retained_image_bytes>=768&&r.cooldown_microseconds<=86400000000ULL&&
     r.maximum_runtime_microseconds&&r.maximum_runtime_microseconds<=86400000000ULL;
 }
 inline bool Family(const CatalogMetadataVersion& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}

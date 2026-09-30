@@ -3614,6 +3614,73 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
         Check(completions==16,"opposite member orders resolve under consistent complete device guards");
       }
+      // Match exact durable intent against fresh native definitions and capacity.
+      {
+        using IE=db::NativeStorageIntentPolicyError;
+        const auto observed=resolve(ceiling,devices);resolution_good(observed);
+        const auto& c=*observed.capacity.observation;db::NativeStorageActionIntent intent;
+        intent.request_uuid=Id(226);intent.operation_uuid=Id(227);intent.database_uuid=c.database_uuid;intent.filespace_uuid=c.filespace_uuid;
+        intent.locator_uuid=c.locator_uuid;intent.page_zero_uuid=c.page_zero_uuid;intent.page_size_profile_uuid=c.page_size_profile_uuid;
+        intent.policy_snapshot_uuid=policy_uuid;intent.storage_profile_uuid=attachment.storage_profile_uuid;
+        intent.initiator_uuid=Id(228);intent.request_context_uuid=Id(229);intent.checkpoint=c.checkpoint;intent.allocation_root=c.allocation_root;
+        intent.checkpoint_sha256=c.checkpoint_sha256;intent.allocation_sha256=c.allocation_sha256;
+        intent.checkpoint_generation=c.checkpoint_generation;intent.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
+        intent.directory_generation=c.directory_generation;intent.filespace_root_set_generation=c.filespace_root_set_generation;
+        intent.page_zero_generation=c.page_zero_generation;intent.map_generation=c.map_generation;intent.capacity_generation=c.capacity_generation;
+        intent.policy_uuid=original.record->policy_uuid;intent.policy_generation=original.record->generation;intent.policy_version_uuid=Id(170);
+        intent.attachment_uuid=attachment.attachment_uuid;intent.attachment_generation=1;intent.attachment_version_uuid=Id(243);
+        intent.storage_profile_generation=1;intent.storage_profile_version_uuid=Id(245);
+        intent.current_total_pages=intent.first_page=c.total_pages;intent.page_count=8;intent.page_size_bytes=c.page_size_bytes;
+        intent.maximum_total_pages=128;intent.maximum_work_bytes=8*c.page_size_bytes;intent.maximum_retained_image_bytes=ceiling;
+        const auto match=[&](const auto& i){return db::CheckNativeStorageIntentPolicyFromOpenDevices(i,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling);};
+        const auto refused=[&](const auto& i,IE error){const auto r=match(i);Check(!r.ok()&&r.error==error&&!r.resolution.selection&&!r.resolution.policy.policy,
+          "intent policy refusal has no matched selection");};
+        refused(intent,IE::policy_disabled);
+        auto enabled=*original.record;enabled.enabled=enabled.growth_allowed=enabled.preallocation_allowed=true;
+        const auto set_policy=[&](const auto& value){auto m=decoded.record;bind_storage(m,&value);
+          source_leaf.body.rows[0]=native_row(m,Id(170),1);persist();};
+        set_policy(enabled);stage_writes=stage_syncs=0;Check(match(intent).ok(),"fresh actual enabled policy and capacity match exact intent");
+        Check(!stage_writes&&!stage_syncs,"matching produces no storage effects or authorization");
+        if(p==0&&role==1){
+          reads=0;track_reads=true;auto matched=match(intent);track_reads=false;const auto count=reads;
+          Check(matched.ok(),"intent matching read-fault baseline");
+          for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;matched=match(intent);track_reads=false;
+            Check(!read_fault&&!matched.ok()&&matched.error==IE::resolution_failure&&!matched.resolution.selection&&!matched.resolution.policy.policy,
+              "every intent matching actual-read failure withholds result");}
+          observed_allocations=0;count_allocations=true;matched=match(intent);count_allocations=false;const auto sites=observed_allocations;
+          Check(matched.ok(),"intent matching allocation-fault baseline");unsigned long telemetry=0;
+          for(unsigned long fault=0;fault<=sites;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
+            matched=match(intent);const auto remaining=allocation_budget;allocation_budget=-1;
+            Check(fault==sites?remaining>=0:remaining<0,"intent matching consumes every measured allocation failure");
+            if(matched.ok()){Check(matched.resolution.policy.policy->enabled&&matched.resolution.policy.version_uuid==intent.policy_version_uuid&&
+              matched.resolution.selection->attachment_version_uuid==intent.attachment_version_uuid,"optional telemetry failure preserves exact matched definitions");
+              if(remaining<0){++telemetry;Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,"successful fault records one optional telemetry loss");}}
+            else Check(matched.error==IE::resolution_failure&&!matched.resolution.selection&&!matched.resolution.policy.policy,"required matching allocation failure returns no partial selection");
+          }
+          std::cout<<"storage intent matching faults: reads="<<count<<" allocations="<<sites<<" telemetry_loss="<<telemetry<<'\n';
+        }
+        for(const auto field:{&db::NativeStorageActionIntent::policy_uuid,&db::NativeStorageActionIntent::policy_version_uuid,
+            &db::NativeStorageActionIntent::attachment_uuid,&db::NativeStorageActionIntent::attachment_version_uuid,
+            &db::NativeStorageActionIntent::storage_profile_uuid,&db::NativeStorageActionIntent::storage_profile_version_uuid}){
+          auto changed=intent;changed.*field=Id(230);refused(changed,IE::selection_mismatch);}
+        for(const auto field:{&db::NativeStorageActionIntent::policy_generation,&db::NativeStorageActionIntent::attachment_generation,
+            &db::NativeStorageActionIntent::storage_profile_generation}){auto changed=intent;++(changed.*field);refused(changed,IE::selection_mismatch);}
+        auto changed=intent;++changed.capacity_generation;refused(changed,IE::capacity_mismatch);
+        changed=intent;changed.page_count=0;refused(changed,IE::invalid_intent);
+        changed=intent;changed.maximum_retained_image_bytes=768;refused(changed,IE::resource_exhausted);
+        for(unsigned field=0;field<4;++field){changed=intent;
+          if(field==0)++changed.maximum_total_pages;
+          if(field==1){++changed.page_count;changed.maximum_work_bytes+=c.page_size_bytes;}
+          if(field==2)++changed.maximum_work_bytes;
+          if(field==3)changed.maximum_retained_image_bytes=enabled.maximum_retained_image_bytes+1;
+          refused(changed,IE::limit_exceeded);}
+        auto restricted=enabled;restricted.growth_allowed=false;set_policy(restricted);refused(intent,IE::action_disallowed);
+        changed=intent;changed.action=db::NativeStorageAction::page_preallocation;changed.first_page=32;changed.intended_state=db::NativeStorageIntentState::preallocated;
+        Check(match(changed).ok(),"preallocation policy matching does not claim range is free or grant execution");
+        restricted.preallocation_allowed=false;set_policy(restricted);refused(changed,IE::action_disallowed);
+        set_policy(enabled);source_leaf.body.rows[2].version_uuid=Id(230);persist();refused(intent,IE::selection_mismatch);
+        source_leaf.body.rows=attached_rows;persist();refused(intent,IE::policy_disabled);resolution_good(resolve(ceiling,devices));
+      }
       // Use the real native version writer for attachment CRUD candidates.
       // Selected roots remain unchanged; physical staging is not activation.
       auto destination=leaf;destination.header.page_number=destination.body.page_number=22;destination.header.page_uuid=Id(221);

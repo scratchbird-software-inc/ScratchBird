@@ -96,7 +96,7 @@ void Boundaries(const P& p){auto x=p;
   x.minimum_free_pages=x.target_free_pages=x.growth_increment_pages=0x7fffffff;Good(x);
   --x.maximum_work_bytes;Invalid(x);
   x=p;x.maximum_pages_per_action=7;Invalid(x);x=p;--x.maximum_work_bytes;Invalid(x);
-  x=p;x.maximum_retained_image_bytes=639;Invalid(x);x=p;x.maximum_retained_image_bytes=640;Good(x);
+  x=p;x.maximum_retained_image_bytes=767;Invalid(x);x=p;x.maximum_retained_image_bytes=768;Good(x);
   x=p;x.cooldown_microseconds=86400000001ULL;Invalid(x);x=p;x.maximum_runtime_microseconds=86400000001ULL;Invalid(x);
   x=p;x.minimum_free_pages=x.target_free_pages=0;x.cooldown_microseconds=0;x.maximum_runtime_microseconds=1;Good(x);
   x=p;x.cooldown_microseconds=x.maximum_runtime_microseconds=86400000000ULL;Good(x);

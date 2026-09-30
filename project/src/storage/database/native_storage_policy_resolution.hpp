@@ -3,6 +3,7 @@
 #pragma once
 #include "native_storage_policy_lookup.hpp"
 #include "native_filespace_capacity.hpp"
+#include "native_storage_action_intent.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "disk_device.hpp"
 #include <algorithm>
@@ -89,5 +90,47 @@ inline NativeStoragePolicyResolution ResolveNativeStoragePolicyFromOpenDevices(
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}
    catch(const std::system_error&){return fail(E::io_failure);}
+}
+enum class NativeStorageIntentPolicyError {
+  none,invalid_intent,resource_exhausted,resolution_failure,capacity_mismatch,
+  selection_mismatch,policy_disabled,action_disallowed,limit_exceeded
+};
+struct NativeStorageIntentPolicyCheck {
+  NativeStorageIntentPolicyError error=NativeStorageIntentPolicyError::invalid_intent;
+  NativeStorageIntentError intent_error=NativeStorageIntentError::none;
+  NativeStorageCapacityCheckError capacity_error=NativeStorageCapacityCheckError::none;
+  NativeStoragePolicyResolution resolution;
+  bool ok() const noexcept {return error==NativeStorageIntentPolicyError::none&&resolution.ok();}
+};
+// Fresh capacity plus exact persisted selection matching under the resolver's
+// retained guards. Still NOT authentication, approval, resource admission or an
+// execution lease. In particular approval=none is not security authorization.
+inline NativeStorageIntentPolicyCheck CheckNativeStorageIntentPolicyFromOpenDevices(
+    const NativeStorageActionIntent& intent,const std::vector<disk::NativeFilespaceDevice>& devices,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
+    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget) noexcept {
+  using E=NativeStorageIntentPolicyError;
+  const auto fail=[](E e){NativeStorageIntentPolicyCheck r;r.error=e;return r;};
+  const auto valid=ValidateNativeStorageActionIntent(intent);
+  if(valid!=NativeStorageIntentError::none){auto r=fail(E::invalid_intent);r.intent_error=valid;return r;}
+  const auto allowance=std::min(budget,intent.maximum_retained_image_bytes);
+  if(allowance<=kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
+  auto resolved=ResolveNativeStoragePolicyFromOpenDevices(intent.database_uuid,devices,intent.checkpoint,
+    intent.filespace_uuid,selector,role,relation,reader,pin,allowance-kNativeStorageActionIntentBytes);
+  if(!resolved.ok()){auto r=fail(E::resolution_failure);r.resolution=std::move(resolved);return r;}
+  const auto matched=MatchNativeStorageIntentCapacityObservation(intent,*resolved.capacity.observation);
+  if(matched!=NativeStorageCapacityCheckError::none){auto r=fail(E::capacity_mismatch);r.capacity_error=matched;return r;}
+  const auto& s=*resolved.selection;const auto& p=*resolved.policy.policy;
+  if(intent.attachment_uuid!=s.attachment.attachment_uuid||intent.attachment_generation!=s.attachment.generation||
+      intent.attachment_version_uuid!=s.attachment_version_uuid||intent.policy_uuid!=p.policy_uuid||
+      intent.policy_generation!=p.generation||intent.policy_version_uuid!=resolved.policy.version_uuid||
+      intent.storage_profile_uuid!=s.profile.descriptor_uuid.value||intent.storage_profile_generation!=s.profile_generation||
+      intent.storage_profile_version_uuid!=s.profile_version_uuid)return fail(E::selection_mismatch);
+  if(!p.enabled)return fail(E::policy_disabled);
+  if(intent.action==NativeStorageAction::physical_growth?!p.growth_allowed:!p.preallocation_allowed)return fail(E::action_disallowed);
+  if(intent.maximum_total_pages>p.maximum_total_pages||intent.page_count>p.maximum_pages_per_action||
+      intent.maximum_work_bytes>p.maximum_work_bytes||intent.maximum_retained_image_bytes>p.maximum_retained_image_bytes)
+    return fail(E::limit_exceeded);
+  NativeStorageIntentPolicyCheck r;r.error=E::none;r.resolution=std::move(resolved);return r;
 }
 } // namespace scratchbird::storage::database
