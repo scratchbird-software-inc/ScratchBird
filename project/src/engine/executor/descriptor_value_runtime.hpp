@@ -58,6 +58,15 @@ struct DescriptorBatch {
   std::vector<DescriptorTuple> rows;
 };
 
+// Resolve a live bound scalar descriptor through the compiled datatype
+// catalog. Text attributes are metadata only; UUID identity and generation
+// remain binary catalog authority.
+bool BuildBoundExecutionTypeDescriptor(
+    const internal_api::EngineDescriptor& descriptor,
+    core::datatypes::CanonicalTypeId type_id,
+    engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* refusal_detail);
+
 struct DescriptorRuntimeDiagnostic {
   bool ok = true;
   std::string diagnostic_code = "SB_EXECUTOR_OK";

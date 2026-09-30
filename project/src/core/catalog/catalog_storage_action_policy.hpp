@@ -55,7 +55,7 @@ inline bool Valid(const CatalogStorageActionPolicy& r){
     r.maximum_total_pages<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&
     r.target_free_pages<=r.maximum_total_pages&&r.growth_increment_pages<=r.maximum_pages_per_action&&
     r.maximum_pages_per_action<=r.maximum_total_pages&&r.maximum_pages_per_action<=r.maximum_work_bytes/profile->page_size_bytes&&
-    r.maximum_retained_image_bytes>=640&&r.cooldown_microseconds<=86400000000ULL&&
+    r.maximum_retained_image_bytes>=768&&r.cooldown_microseconds<=86400000000ULL&&
     r.maximum_runtime_microseconds&&r.maximum_runtime_microseconds<=86400000000ULL;
 }
 inline bool Family(const CatalogMetadataVersion& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}
@@ -135,5 +135,85 @@ inline bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersi
     x.record->page_size_profile_uuid==y.record->page_size_profile_uuid&&
     x.record->origin_transaction_uuid.value==y.record->origin_transaction_uuid.value&&
     x.record->origin_local_transaction_id==y.record->origin_local_transaction_id;
+}
+
+// STORAGE-NATIVE-ACTION-ATTACHMENT-001. Persisted selection, not approval.
+struct CatalogStorageActionAttachment {
+  Uuid attachment_uuid, database_uuid, filespace_uuid, storage_profile_uuid, page_size_profile_uuid, policy_uuid;
+  u64 generation=0;
+  TypedUuid origin_transaction_uuid;
+  u64 origin_local_transaction_id=0;
+};
+struct CatalogStorageActionAttachmentResult {
+  CatalogValueError error=CatalogValueError::invalid_value;
+  std::optional<CatalogStorageActionAttachment> record;
+  bool ok() const {return error==CatalogValueError::none&&record.has_value();}
+};
+inline const CatalogValueSchema& CatalogStorageActionAttachmentSchema(){
+  using T=CatalogValueType;
+  static const CatalogValueSchema schema{65549,1,{
+    {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
+    {3,T::engine_identity,true,16,UuidKind::database},{4,T::engine_identity,true,16,UuidKind::filespace},
+    {5,T::engine_identity,true,16,UuidKind::object},{6,T::engine_identity,true,16,UuidKind::object},
+    {7,T::engine_identity,true,16,UuidKind::object},{8,T::engine_identity,true,16,UuidKind::transaction},
+    {9,T::unsigned_integer,true,8}}};
+  return schema;
+}
+inline bool ValidCatalogStorageActionAttachment(const CatalogStorageActionAttachment& r){
+  for(const auto* id:{&r.attachment_uuid,&r.database_uuid,&r.filespace_uuid,&r.storage_profile_uuid,&r.page_size_profile_uuid,&r.policy_uuid})
+    if(!uuid::IsEngineIdentityUuid(*id))return false;
+  const auto& profiles=storage::disk::kCanonicalFilespacePageProfiles;
+  return r.generation&&r.origin_local_transaction_id&&storage_action_policy_detail::Identity(r.origin_transaction_uuid,UuidKind::transaction)&&
+    std::any_of(profiles.begin(),profiles.end(),[&](const auto& p){return p.uuid==r.page_size_profile_uuid;});
+}
+inline CatalogValueEncodeResult EncodeCatalogStorageActionAttachment(const CatalogStorageActionAttachment& r){
+  if(!ValidCatalogStorageActionAttachment(r))return {CatalogValueError::invalid_value,{}};
+  return EncodeCatalogValueBlock(CatalogStorageActionAttachmentSchema(),{
+    {1,TypedUuid{UuidKind::object,r.attachment_uuid}},{2,r.generation},{3,TypedUuid{UuidKind::database,r.database_uuid}},
+    {4,TypedUuid{UuidKind::filespace,r.filespace_uuid}},{5,TypedUuid{UuidKind::object,r.storage_profile_uuid}},
+    {6,TypedUuid{UuidKind::object,r.page_size_profile_uuid}},{7,TypedUuid{UuidKind::object,r.policy_uuid}},
+    {8,r.origin_transaction_uuid},{9,r.origin_local_transaction_id}});
+}
+inline CatalogStorageActionAttachmentResult DecodeCatalogStorageActionAttachment(std::string_view bytes){
+  if(bytes.size()>kCatalogValueBlockMaxBytes)return {CatalogValueError::size_limit,{}};
+  const auto decoded=DecodeCatalogValueBlock(CatalogStorageActionAttachmentSchema(),std::vector<byte>(bytes.begin(),bytes.end()));
+  if(!decoded.ok())return {decoded.error,{}};
+  const auto& f=decoded.fields;CatalogStorageActionAttachment r;
+  r.attachment_uuid=std::get<TypedUuid>(f[0].value).value;r.generation=std::get<u64>(f[1].value);
+  r.database_uuid=std::get<TypedUuid>(f[2].value).value;r.filespace_uuid=std::get<TypedUuid>(f[3].value).value;
+  r.storage_profile_uuid=std::get<TypedUuid>(f[4].value).value;r.page_size_profile_uuid=std::get<TypedUuid>(f[5].value).value;
+  r.policy_uuid=std::get<TypedUuid>(f[6].value).value;r.origin_transaction_uuid=std::get<TypedUuid>(f[7].value);
+  r.origin_local_transaction_id=std::get<u64>(f[8].value);
+  if(!ValidCatalogStorageActionAttachment(r))return {CatalogValueError::invalid_value,{}};
+  return {CatalogValueError::none,std::move(r)};
+}
+inline bool IsCatalogStorageActionAttachmentPayload(std::string_view b){
+  return b.size()>=kCatalogValueBlockHeaderBytes&&b.substr(0,4)=="SBCV"&&
+    platform::LoadLittle32(reinterpret_cast<const byte*>(b.data())+16)==65549;
+}
+inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord& r){
+  if(r.header.kind!=CatalogRecordKind::config_profile||!storage_action_policy_detail::Identity(r.header.object_uuid,UuidKind::object))return false;
+  const auto decoded=DecodeCatalogStorageActionAttachment(r.payload);
+  return decoded.ok()&&decoded.record->attachment_uuid==r.header.object_uuid.value;
+}
+inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersion& m){
+  if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!="storage_action_attachment"||
+      m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
+      !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
+      !storage_action_policy_detail::Identity(m.default_name_uuid,UuidKind::object)||!storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
+      !storage_action_policy_detail::Identity(m.creator_transaction_uuid,UuidKind::transaction))return false;
+  const auto decoded=DecodeCatalogStorageActionAttachment(m.record.payload);const auto& r=*decoded.record;
+  return r.generation==m.definition_version&&
+    (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));
+}
+inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataVersion& a,const CatalogMetadataVersion& b){
+  const auto family=[](const auto& m){return m.object_subtype=="storage_action_attachment"||IsCatalogStorageActionAttachmentPayload(m.record.payload);};
+  if(!family(a)&&!family(b))return true;
+  if(!CatalogStorageActionAttachmentMatchesMetadata(a)||!CatalogStorageActionAttachmentMatchesMetadata(b))return false;
+  const auto x=DecodeCatalogStorageActionAttachment(a.record.payload),y=DecodeCatalogStorageActionAttachment(b.record.payload);
+  return x.record->attachment_uuid==y.record->attachment_uuid&&x.record->database_uuid==y.record->database_uuid&&
+    x.record->filespace_uuid==y.record->filespace_uuid&&x.record->storage_profile_uuid==y.record->storage_profile_uuid&&
+    x.record->page_size_profile_uuid==y.record->page_size_profile_uuid&&
+    x.record->origin_transaction_uuid.value==y.record->origin_transaction_uuid.value&&x.record->origin_local_transaction_id==y.record->origin_local_transaction_id;
 }
 } // namespace scratchbird::core::catalog

@@ -12,6 +12,7 @@
 #include "sblr_binary_value_carrier.hpp"
 
 #include "datatype_advanced_family.hpp"
+#include "canonical_utf8.hpp"
 #include "datatype_operations.hpp"
 
 #include <algorithm>

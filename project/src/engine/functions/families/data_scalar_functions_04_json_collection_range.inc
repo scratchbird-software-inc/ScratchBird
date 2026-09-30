@@ -1027,6 +1027,22 @@
       return CastNativeBinaryValue(request, target_descriptor, false);
     }
 
+    const auto& source_value = request.arguments[0].value;
+    if (IsSqlNull(source_value)) {
+      if (!scratchbird::engine::sblr::SblrNullPayloadEmpty(source_value)) {
+        return RefuseFunctionWithDiagnostic(
+            request,
+            scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+            "DATATYPE.NULL_STATE.INVALID",
+            "SQL NULL cast input carries a payload or conflicting value carrier");
+      }
+      return RefuseFunctionWithDiagnostic(
+          request,
+          scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "SBLR NULL cast input lacks an exact bound execution descriptor");
+    }
+
     const auto decimal_descriptor =
         ParseDecimalTargetDescriptor(target_descriptor);
     namespace dt = scratchbird::core::datatypes;
@@ -1064,9 +1080,6 @@
     }
 
     if (decimal_descriptor) {
-      if (IsSqlNull(request.arguments[0].value)) {
-        return MakeFunctionSuccess(request, {MakeNullValue("decimal")});
-      }
       dt::DatatypeNumericOperationRequest numeric_request;
       numeric_request.operation = dt::DatatypeNumericOperationKind::canonicalize;
       numeric_request.type_id = dt::CanonicalTypeId::decimal;
@@ -1110,7 +1123,6 @@
           request,
           "cast decimal target must use decimal(precision,scale) with precision 1 to 38 and scale not exceeding precision");
     }
-    if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue(target_descriptor)});
     const auto& value = request.arguments[0].value;
     if (target_descriptor == "character" || target_descriptor == "varchar" ||
         target_descriptor == "text" || target_descriptor == "string") {

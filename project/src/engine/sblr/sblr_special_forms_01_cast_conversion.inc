@@ -44,6 +44,14 @@ datatypes::CanonicalTypeId InferSblrSourceType(const SblrValue& value) {
 
 std::string EncodedCastInput(const SblrValue& value) {
   if (value.is_null) return {};
+  if (value.payload_kind == SblrValuePayloadKind::boolean) {
+    if (!value.has_int64_value || value.int64_value < 0 ||
+        value.int64_value > 1 || value.has_uint64_value ||
+        value.has_real64_value || !value.binary_value.empty()) {
+      return std::string(1, static_cast<char>(2));
+    }
+    return std::string(1, static_cast<char>(value.int64_value));
+  }
   if (value.payload_kind == SblrValuePayloadKind::uuid_binary) {
     return {reinterpret_cast<const char*>(value.uuid_value.bytes.data()),
             value.uuid_value.bytes.size()};
@@ -114,7 +122,8 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
     case datatypes::CanonicalTypeId::boolean:
       out.payload_kind = SblrValuePayloadKind::boolean;
       out.has_int64_value = true;
-      out.int64_value = (Lower(value.encoded_value) == "true" || value.encoded_value == "1") ? 1 : 0;
+      out.int64_value = static_cast<unsigned char>(value.encoded_value[0]);
+      out.encoded_value = out.int64_value == 1 ? "true" : "false";
       out.text_value = out.int64_value == 1 ? "TRUE" : "FALSE";
       return out;
     case datatypes::CanonicalTypeId::int8:

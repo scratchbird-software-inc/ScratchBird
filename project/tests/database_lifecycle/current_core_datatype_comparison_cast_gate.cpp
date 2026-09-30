@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_operations.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_document.hpp"
 #include "resource_seed_pack.hpp"
 #include "../support/binary_uuid_fixture.hpp"
@@ -35,9 +36,40 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
+scratchbird::engine::ExecutionTypeDescriptor Descriptor(
+    dt::CanonicalTypeId type_id) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "MDF-014 datatype catalog authority unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "MDF-014 datatype descriptor authority unavailable");
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto descriptor =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  Require(descriptor.ok(), "MDF-014 execution descriptor build failed");
+  return descriptor.descriptor;
+}
+
+dt::DatatypeOperationValue TypedNull(dt::CanonicalTypeId type_id) {
+  dt::DatatypeOperationValue value{type_id, {}, true};
+  value.descriptor = Descriptor(type_id);
+  return value;
+}
+
 dt::DatatypeOperationValue Value(dt::CanonicalTypeId type,
                                  std::string encoded) {
   return {type, std::move(encoded), false};
+}
+
+bool IsCanonicalBoolean(const dt::DatatypeOperationValue& value,
+                        bool expected) {
+  return value.type_id == dt::CanonicalTypeId::boolean && !value.is_null &&
+         value.encoded_value.size() == 1 &&
+         static_cast<unsigned char>(value.encoded_value[0]) ==
+             (expected ? 1u : 0u);
 }
 
 std::string Utf8Bytes(std::initializer_list<unsigned char> bytes) {
@@ -174,6 +206,7 @@ void TestOrderedKeysAndResourceBoundComparison() {
   dt::DatatypeOperationValue null_value;
   null_value.type_id = dt::CanonicalTypeId::int64;
   null_value.is_null = true;
+  null_value.descriptor = Descriptor(dt::CanonicalTypeId::int64);
   const auto nulls_first = dt::CompareDatatypeValues(
       {null_value, Value(dt::CanonicalTypeId::int64, "0"),
        dt::DatatypeNullOrdering::nulls_first});
@@ -345,7 +378,7 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
   cast.explicit_cast = true;
   const auto precision_loss = dt::CastDatatypeValue(cast);
   Require(!precision_loss.ok(), "MDF-014 accepted precision-losing int8 cast");
-  Require(precision_loss.diagnostic.diagnostic_code == "SB_DATATYPE_CAST_REJECTED",
+  Require(precision_loss.diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 precision-loss diagnostic mismatch");
 
   cast.value = Value(dt::CanonicalTypeId::real128, "1.25");
@@ -355,7 +388,7 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
   Require(!silent_downgrade.ok(),
           "MDF-014 accepted silent real128 downgrade");
   Require(silent_downgrade.diagnostic.diagnostic_code ==
-              "SB_DATATYPE_CAST_REJECTED",
+              "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 silent downgrade diagnostic mismatch");
 }
 
@@ -374,7 +407,7 @@ void TestNonScalarOperatorCastProof() {
   const auto bad_json_cast = dt::CastDatatypeValue(cast);
   Require(!bad_json_cast.ok() &&
               bad_json_cast.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_CAST_REJECTED",
+                  "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 invalid JSON document cast was accepted");
 
   cast.value = Value(dt::CanonicalTypeId::character, "<root/>");
@@ -394,7 +427,7 @@ void TestNonScalarOperatorCastProof() {
   const auto hstore_cast = dt::CastDatatypeValue(cast);
   Require(!hstore_cast.ok() &&
               hstore_cast.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_CAST_REJECTED",
+                  "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 hstore cast bypassed required domain/profile authority");
 
   dt::DocumentCanonicalizationRequest document;
@@ -469,27 +502,27 @@ void TestNonScalarOperatorCastProof() {
           "MDF-014 set cardinality drifted");
 
   set_operation.operation = dt::DatatypeSetOperationKind::membership;
-  set_operation.right_encoded_set_or_value = "1";
+  set_operation.right_value = Value(dt::CanonicalTypeId::int32, "1");
   set_result = dt::ApplySetOperation(set_operation);
-  Require(set_result.ok() && set_result.value.encoded_value == "true",
+  Require(set_result.ok() && IsCanonicalBoolean(set_result.value, true),
           "MDF-014 set membership failed");
-  set_operation.right_encoded_set_or_value = "3";
+  set_operation.right_value = Value(dt::CanonicalTypeId::int32, "3");
   set_result = dt::ApplySetOperation(set_operation);
-  Require(set_result.ok() && set_result.value.encoded_value == "false",
+  Require(set_result.ok() && IsCanonicalBoolean(set_result.value, false),
           "MDF-014 set non-membership failed");
 
   set_operation.operation = dt::DatatypeSetOperationKind::equals;
-  set_operation.right_encoded_set_or_value = encoded_right.encoded_set;
+  set_operation.right_encoded_set = encoded_right.encoded_set;
   set_result = dt::ApplySetOperation(set_operation);
-  Require(set_result.ok() && set_result.value.encoded_value == "true",
+  Require(set_result.ok() && IsCanonicalBoolean(set_result.value, true),
           "MDF-014 set equality failed");
   set_operation.operation = dt::DatatypeSetOperationKind::subset;
   set_result = dt::ApplySetOperation(set_operation);
-  Require(set_result.ok() && set_result.value.encoded_value == "true",
+  Require(set_result.ok() && IsCanonicalBoolean(set_result.value, true),
           "MDF-014 set subset failed");
   set_operation.operation = dt::DatatypeSetOperationKind::superset;
   set_result = dt::ApplySetOperation(set_operation);
-  Require(set_result.ok() && set_result.value.encoded_value == "true",
+  Require(set_result.ok() && IsCanonicalBoolean(set_result.value, true),
           "MDF-014 set superset failed");
 
   set_descriptor.element_type_id = dt::CanonicalTypeId::opaque_extension;
@@ -534,7 +567,7 @@ void TestStableHashAndDeserializationRefusals() {
                                     serialized.serialized_value});
   Require(!wrong_type.ok(), "MDF-014 accepted mismatched deserialization type");
   Require(wrong_type.diagnostic.diagnostic_code ==
-              "SB_DATATYPE_DESERIALIZATION_REJECTED",
+              "DATATYPE.DESCRIPTOR.INVALID",
           "MDF-014 mismatched deserialization diagnostic mismatch");
 }
 
@@ -542,6 +575,7 @@ void TestExplicitDisplayBoundaryRendering() {
   dt::DatatypeOperationValue null_value;
   null_value.type_id = dt::CanonicalTypeId::int64;
   null_value.is_null = true;
+  null_value.descriptor = Descriptor(dt::CanonicalTypeId::int64);
   const auto rendered_null = dt::RenderDatatypeValueForDisplay({null_value});
   Require(rendered_null.ok() && rendered_null.explicit_display_boundary &&
               rendered_null.display_value == "NULL",
@@ -625,7 +659,7 @@ void TestExplicitDisplayBoundaryRendering() {
       {Value(dt::CanonicalTypeId::unknown, "payload")});
   Require(!unknown.ok() &&
               unknown.diagnostic.diagnostic_code ==
-                  "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "MDF-014 unknown display boundary did not fail closed");
 }
 
@@ -649,10 +683,14 @@ void TestBinaryUuidOperations() {
             "noncanonical UUID frame admitted");
   Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::int64, expected}).ok(),
           "UUID frame decoded as another type");
-  const auto null_value = dt::DatatypeOperationValue{dt::CanonicalTypeId::uuid, {}, true};
+  const auto null_value = TypedNull(dt::CanonicalTypeId::uuid);
   const auto null_frame = dt::SerializeDatatypeValue({null_value});
+  dt::DatatypeDeserializationRequest decode_null;
+  decode_null.expected_type_id = dt::CanonicalTypeId::uuid;
+  decode_null.serialized_value = null_frame.serialized_value;
+  decode_null.expected_descriptor = null_value.descriptor;
   Require(null_frame.ok() && null_frame.serialized_value == std::string("SBDVUUID\0\0",10) &&
-      dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid,null_frame.serialized_value}).value.is_null,
+      dt::DeserializeDatatypeValue(decode_null).value.is_null,
       "UUID SQL NULL framing drifted");
   const auto nil = Value(dt::CanonicalTypeId::uuid, std::string(16,'\0'));
   Require(dt::SerializeDatatypeValue({nil}).ok(), "nil UUID value refused");
@@ -667,10 +705,12 @@ void TestBinaryUuidOperations() {
             !dt::MakeDatatypeSortKey({invalid}).ok() && !dt::CompareDatatypeValues({invalid,value}).ok(),
             "UUID operation accepted nonbinary16 value");
   }
-  const dt::DatatypeOperationValue dirty_null{dt::CanonicalTypeId::uuid, bytes, true};
+  auto dirty_null = TypedNull(dt::CanonicalTypeId::uuid);
+  dirty_null.encoded_value = bytes;
   dt::DatatypeCastRequest invalid_null_cast;
   invalid_null_cast.value = dirty_null;
   invalid_null_cast.target_type_id = dt::CanonicalTypeId::uuid;
+  invalid_null_cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
   Require(!dt::SerializeDatatypeValue({dirty_null}).ok() &&
           !dt::HashDatatypeValue({dirty_null}).ok() &&
           !dt::MakeDatatypeSortKey({dirty_null}).ok() &&
@@ -681,12 +721,14 @@ void TestBinaryUuidOperations() {
   cast.explicit_cast = true;
   for (auto target : {dt::CanonicalTypeId::uuid, dt::CanonicalTypeId::binary}) {
     cast.target_type_id = target;
+    cast.target_descriptor = Descriptor(target);
     const auto result = dt::CastDatatypeValue(cast);
     Require(result.ok() && result.value.encoded_value == bytes,
             "UUID identity/binary cast changed native bytes");
   }
   cast.value.type_id = dt::CanonicalTypeId::binary;
   cast.target_type_id = dt::CanonicalTypeId::uuid;
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
   Require(dt::CastDatatypeValue(cast).ok(), "binary16 UUID cast rejected");
   cast.value.encoded_value.pop_back();
   Require(!dt::CastDatatypeValue(cast).ok(), "truncated UUID accepted");
@@ -743,7 +785,7 @@ void TestIntegerPhysicalSortKeyBytes() {
               "integer sort key admitted invalid or out-of-range operand");
       dt::DatatypeComparisonRequest request;
       request.left = Value(item.type, invalid);
-      request.right = {item.type, {}, true};
+      request.right = TypedNull(item.type);
       Require(!dt::CompareDatatypeValues(request).ok(),
               "NULL counterpart bypassed integer operand validation");
       std::swap(request.left, request.right);
@@ -813,7 +855,7 @@ void TestIntegerPhysicalSortKeyBytes() {
       }
     }
     dt::DatatypeSortKeyRequest null_request;
-    null_request.value = {item.type, {}, true};
+    null_request.value = TypedNull(item.type);
     const auto first = dt::MakeDatatypeSortKey(null_request);
     null_request.null_ordering = dt::DatatypeNullOrdering::nulls_last;
     const auto last = dt::MakeDatatypeSortKey(null_request);

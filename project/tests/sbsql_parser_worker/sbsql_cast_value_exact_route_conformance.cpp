@@ -13,6 +13,7 @@
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "query/expression_api.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 #include "sblr_admission.hpp"
@@ -365,11 +366,18 @@ api::EngineDescriptor BoundDescriptor(std::string_view type) {
           "cast fixture datatype absent from catalog");
   auto descriptor = Descriptor(type);
   const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration,
+      datatype.descriptor_uuid.value, datatype.descriptor_epoch);
+  Require(identity.ok, "cast fixture datatype identity is not admitted");
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(
       2053, type == "uuid" ? 1 : 2);
-  descriptor.type_uuid = datatype.descriptor_uuid.value;
+  descriptor.type_uuid = identity.row.type_uuid;
   descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }
 
@@ -456,11 +464,22 @@ void RequireUuidBinaryCasts() {
       api::EngineTypedValue input;
       input.descriptor = descriptor(source);
       input.state = api::EngineValueState::sql_null;
-      // The enum is authoritative even if the legacy is_null flag is unset.
+      input.is_null = true;
       const auto null_cast = cast(input, "uuid");
-      Require(null_cast.ok && null_cast.value.state == api::EngineValueState::sql_null &&
-                  null_cast.value.is_null && null_cast.value.encoded_value.empty() &&
-                  null_cast.value.binary_value.empty(), "UUID NULL cast retained a payload");
+      if (bound) {
+        Require(null_cast.ok &&
+                    null_cast.value.state == api::EngineValueState::sql_null &&
+                    null_cast.value.is_null &&
+                    null_cast.value.encoded_value.empty() &&
+                    null_cast.value.binary_value.empty(),
+                "bound UUID NULL cast retained a payload");
+      } else {
+        Require(!null_cast.ok && !null_cast.diagnostics.empty(),
+                "unbound UUID NULL cast bypassed descriptor authority");
+      }
+      input.is_null = false;
+      require_refused(input, "uuid");
+      input.is_null = true;
       input.binary_value = values.front();
       require_refused(input, "uuid");
       input.state = api::EngineValueState::value;

@@ -10,6 +10,9 @@
 #include "sblr_engine_envelope.hpp"
 
 #include "datatype_operations.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "uuid.hpp"
 
 #include <iostream>
 #include <string>
@@ -21,10 +24,53 @@ using namespace scratchbird::engine::sblr;
 
 namespace {
 
+namespace dt = scratchbird::core::datatypes;
+
+scratchbird::engine::ExecutionTypeDescriptor ExecutionDescriptor(
+    dt::CanonicalTypeId type_id) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  return dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata).descriptor;
+}
+
+dt::DatatypeOperationValue TypedNull(dt::CanonicalTypeId type_id) {
+  dt::DatatypeOperationValue value{type_id, {}, true};
+  value.descriptor = ExecutionDescriptor(type_id);
+  return value;
+}
+
 EngineDescriptor Descriptor(std::string type_name, std::string kind = "scalar") {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = std::move(kind);
   descriptor.canonical_type_name = std::move(type_name);
+  return descriptor;
+}
+
+EngineDescriptor BoundScalarDescriptor(const dt::CanonicalTypeId type_id) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) return {};
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      kBootstrapDatatypeCatalogUuid,
+      kBootstrapDatatypeCatalogGeneration,
+      kBootstrapDatatypeRegistryGeneration,
+      datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch);
+  if (!identity.ok) return {};
+  auto descriptor = Descriptor(dt::CanonicalTypeName(type_id));
+  descriptor.descriptor_uuid = datatype.descriptor_uuid.value;
+  descriptor.type_uuid = identity.row.type_uuid;
+  descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }
 
@@ -81,16 +127,25 @@ EngineApiRequest SetRequest() {
   namespace dt = scratchbird::core::datatypes;
   dt::DatatypeSetDescriptor descriptor;
   descriptor.element_type_id = dt::CanonicalTypeId::character;
+  descriptor.element_descriptor =
+      ExecutionDescriptor(dt::CanonicalTypeId::character);
+  dt::DatatypeOperationValue alpha{
+      dt::CanonicalTypeId::character, "alpha", false};
+  alpha.descriptor = descriptor.element_descriptor;
+  dt::DatatypeOperationValue beta{
+      dt::CanonicalTypeId::character, "beta", false};
+  beta.descriptor = descriptor.element_descriptor;
   const auto encoded = dt::EncodeSetValue(descriptor,
-                                          {{dt::CanonicalTypeId::character, "alpha", false},
-                                           {dt::CanonicalTypeId::character, "beta", false}});
+                                          {alpha, beta});
   EngineApiRequest request;
-  request.descriptors.push_back(Descriptor("character"));
+  const auto character =
+      BoundScalarDescriptor(dt::CanonicalTypeId::character);
+  request.descriptors.push_back(character);
   EngineRowValue row;
   row.fields.push_back({"value", {Descriptor("set_value"), encoded.encoded_set, false}});
   request.rows.push_back(row);
   request.predicate.bound_values.push_back({Descriptor("set_value"), encoded.encoded_set, false});
-  request.predicate.bound_values.push_back({Descriptor("character"), "beta", false});
+  request.predicate.bound_values.push_back({character, "beta", false});
   request.option_envelopes.push_back("set_operation:membership");
   return request;
 }
@@ -169,7 +224,6 @@ bool HasDispatchDiagnostic(const SblrDispatchResult& result, const std::string& 
 }
 
 bool RuntimeClosureOk() {
-  namespace dt = scratchbird::core::datatypes;
   const dt::DatatypeOperationValue lower{dt::CanonicalTypeId::character, "alpha", false};
   const dt::DatatypeOperationValue upper{dt::CanonicalTypeId::character, "ALPHA", false};
   dt::DatatypeTextSeedAuthority text_seed;
@@ -184,7 +238,7 @@ bool RuntimeClosureOk() {
   const auto compare = dt::CompareDatatypeValues(compare_request);
   const auto missing_seed_compare = dt::CompareDatatypeValues(
       {lower, upper, dt::DatatypeNullOrdering::nulls_first, true});
-  const auto null_compare = dt::CompareDatatypeValues({{dt::CanonicalTypeId::int32, "", true},
+  const auto null_compare = dt::CompareDatatypeValues({TypedNull(dt::CanonicalTypeId::int32),
                                                        {dt::CanonicalTypeId::int32, "1", false},
                                                        dt::DatatypeNullOrdering::nulls_last,
                                                        false});
@@ -198,9 +252,16 @@ bool RuntimeClosureOk() {
   const auto sort_key = dt::MakeDatatypeSortKey(sort_key_request);
   const auto hash_a = dt::HashDatatypeValue({lower});
   const auto hash_b = dt::HashDatatypeValue({lower});
-  const auto serialized = dt::SerializeDatatypeValue({{dt::CanonicalTypeId::uuid,
-                                                       "018f7f8f-7c00-7000-8000-000000000001",
-                                                       false}});
+  const auto parsed_uuid = scratchbird::core::uuid::ParseUuid(
+      "018f7f8f-7c00-7000-8000-000000000001");
+  std::string uuid_bytes;
+  if (parsed_uuid.ok()) {
+    uuid_bytes.assign(
+        reinterpret_cast<const char*>(parsed_uuid.value.bytes.data()),
+        parsed_uuid.value.bytes.size());
+  }
+  const auto serialized = dt::SerializeDatatypeValue(
+      {{dt::CanonicalTypeId::uuid, uuid_bytes, false}});
   const auto deserialized = dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, serialized.serialized_value});
   const auto opaque_compare = dt::CompareDatatypeValues({{dt::CanonicalTypeId::opaque_extension, "opaque", false},
                                                          {dt::CanonicalTypeId::opaque_extension, "opaque", false},
@@ -212,8 +273,8 @@ bool RuntimeClosureOk() {
          int128_compare.ok() && int128_compare.comparison == 1 &&
          sort_key.ok() && !sort_key.sort_key.empty() &&
          hash_a.ok() && hash_b.ok() && hash_a.stable_hash_hex == hash_b.stable_hash_hex &&
-         serialized.ok() && deserialized.ok() &&
-         deserialized.value.encoded_value == "018f7f8f-7c00-7000-8000-000000000001" &&
+         parsed_uuid.ok() && serialized.ok() && deserialized.ok() &&
+         deserialized.value.encoded_value == uuid_bytes &&
          !opaque_compare.ok();
 }
 

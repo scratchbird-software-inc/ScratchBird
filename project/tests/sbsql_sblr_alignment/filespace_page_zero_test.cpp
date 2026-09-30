@@ -14,6 +14,7 @@
 #include "native_filespace_initialization.hpp"
 #include "native_filespace_capacity.hpp"
 #include "native_storage_policy_lookup.hpp"
+#include "native_storage_policy_resolution.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -3525,7 +3526,210 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         std::cout<<"storage policy lookup faults: reads="<<read_count<<" allocations="<<allocations<<" telemetry_loss="<<telemetry_losses<<'\n';
         Check(lookup(next_reader.identity,committed_snapshot.pin,binding,budget).ok(),"policy lookup recovers after injected failures");
       }
+      using RE=db::NativeStoragePolicyResolutionError;
+      catalog::CatalogStorageActionAttachment attachment{Id(240),Id(1),fs,Id(233),Profile(profile),original.record->policy_uuid,1,
+        decoded.record.creator_transaction_uuid,13};
+      const auto attachment_metadata=[&](const auto& value){auto m=decoded.record;m.record.header.kind=catalog::CatalogRecordKind::config_profile;
+        m.record.header.object_uuid.value=value.attachment_uuid;m.record.header.row_uuid.value=Id(241);m.object_subtype="storage_action_attachment";
+        m.definition_version=value.generation;m.default_name_uuid.value=Id(206);m.name_vector_uuid.value=Id(207);
+        const auto payload=catalog::EncodeCatalogStorageActionAttachment(value);Check(payload.ok(),"typed native attachment fixture");
+        m.record.payload.assign(payload.bytes.begin(),payload.bytes.end());return m;};
+      catalog::CatalogStorageRecord descriptor{{platform::UuidKind::object,Id(233)},{platform::UuidKind::filespace,fs},sizes[profile],13,"native storage profile"};
+      const auto descriptor_metadata=[&](const auto& value){auto m=decoded.record;m.record.header.kind=catalog::CatalogRecordKind::storage_descriptor;
+        m.record.header.object_uuid=value.descriptor_uuid;m.record.header.row_uuid.value=Id(244);m.object_subtype="storage_descriptor";
+        m.default_name_uuid.value=Id(208);m.name_vector_uuid.value=Id(209);
+        const auto payload=catalog::EncodeCatalogStorageRecord(value);Check(payload.ok(),"actual native storage descriptor fixture");
+        m.record.payload.assign(payload.bytes.begin(),payload.bytes.end());return m;};
+      const auto native_row=[&](const auto& m,const auto& version,unsigned ordinal){auto row=source_leaf.body.rows.front();row.row_uuid=m.record.header.row_uuid;
+        row.version_uuid=version;row.internal_row_ordinal=row.stable_slot_id=ordinal;
+        const auto value=catalog::EncodeCatalogMetadataVersion(m);Check(value.ok(),"encode native selection catalog row");row.cells[0].value.payload=value.bytes;return row;};
+      source_leaf.body.rows.push_back(native_row(attachment_metadata(attachment),Id(243),3));
+      source_leaf.body.rows.push_back(native_row(descriptor_metadata(descriptor),Id(245),4));
+      auto& member=directory.records[primary?0:1];
+      member.allocation_root=page::NativeFilespaceAllocationRoot{{fs,13,103,Profile(profile)},Id(43),WholeRootHash(AllocationOracle(map)),5,6};
+      persist();const auto attached_rows=source_leaf.body.rows;
+      const auto resolve=[&](u64 limit,const auto& members){return db::ResolveNativeStoragePolicyFromOpenDevices(Id(1),members,CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,limit);};
+      const auto ceiling=128*std::max(sizes[p],sizes[profile]);
+      const auto resolution_good=[&](const auto& r){if(!r.ok())std::cerr<<"resolution error="<<static_cast<unsigned>(r.error)<<" capacity="<<static_cast<unsigned>(r.capacity.error)<<" catalog="<<static_cast<unsigned>(r.policy.source.error)<<'\n';
+        Check(r.ok()&&r.selection->attachment.attachment_uuid==Id(240)&&r.selection->attachment_version_uuid==Id(243)&&r.selection->profile_version_uuid==Id(245)&&
+          r.selection->profile_generation==1&&r.selection->profile.filespace_uuid.value==fs&&r.selection->profile.page_size==sizes[profile]&&
+          r.policy.policy->policy_uuid==original.record->policy_uuid&&!r.policy.policy->enabled&&r.policy.version_uuid==Id(170)&&
+          r.capacity.observation->filespace_uuid==fs&&r.capacity.observation->total_pages==64,"actual attachment selects exact persisted policy/profile and native capacity");};
+      const auto resolution_bad=[&](const auto& r,RE error){Check(!r.ok()&&!r.selection&&!r.policy.policy&&r.error==error,
+        "invalid native selection has no partial result expected="+std::to_string(static_cast<unsigned>(error))+" actual="+std::to_string(static_cast<unsigned>(r.error)));};
+      stage_writes=stage_syncs=0;auto resolved=resolve(ceiling,devices);resolution_good(resolved);
+      Check(!stage_writes&&!stage_syncs,"resolution performs no physical effects");
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());resolution_good(resolve(ceiling,reversed));
+      resolution_bad(resolve(0,devices),RE::invalid_request);resolution_bad(resolve(1,devices),RE::capacity_failure);
+      auto duplicated=devices;duplicated.push_back(devices[0]);resolution_bad(resolve(ceiling,duplicated),RE::invalid_request);
+      for(unsigned fault=0;fault<14;++fault){source_leaf.body.rows=attached_rows;auto altered=attachment;auto changed_profile=descriptor;
+        if(fault==0)source_leaf.body.rows.erase(source_leaf.body.rows.begin()+2);
+        if(fault==1){auto m=attachment_metadata(attachment);m.record.header.row_uuid.value=Id(249);m.record.header.object_uuid.value=Id(248);
+          auto other=attachment;other.attachment_uuid=Id(248);const auto payload=catalog::EncodeCatalogStorageActionAttachment(other);m.record.payload.assign(payload.bytes.begin(),payload.bytes.end());source_leaf.body.rows.push_back(native_row(m,Id(247),5));}
+        if(fault==2){altered.database_uuid=Id(247);source_leaf.body.rows[2]=native_row(attachment_metadata(altered),Id(243),3);}
+        if(fault==3){altered.page_size_profile_uuid=Profile((profile+1)%5);source_leaf.body.rows[2]=native_row(attachment_metadata(altered),Id(243),3);}
+        if(fault==4)source_leaf.body.rows.pop_back();
+        if(fault==5){changed_profile.filespace_uuid.value=Id(247);source_leaf.body.rows[3]=native_row(descriptor_metadata(changed_profile),Id(245),4);}
+        if(fault==6){changed_profile.page_size=sizes[(profile+1)%5];source_leaf.body.rows[3]=native_row(descriptor_metadata(changed_profile),Id(245),4);}
+        if(fault==7){altered.policy_uuid=Id(247);source_leaf.body.rows[2]=native_row(attachment_metadata(altered),Id(243),3);}
+        if(fault==8||fault==9){auto m=attachment_metadata(attachment);m.lifecycle=fault==8?catalog::CatalogObjectLifecycle::creating:catalog::CatalogObjectLifecycle::dropped;
+          m.status=fault==8?catalog::CatalogObjectStatus::proposed:catalog::CatalogObjectStatus::retired;
+          if(fault==9){m.record.header.deleted=true;m.retired_transaction_uuid=m.creator_transaction_uuid;}
+          source_leaf.body.rows[2]=native_row(m,Id(243),3);}
+        if(fault==10||fault==11){const auto index=fault==10?2:3;
+          auto m=fault==10?attachment_metadata(attachment):descriptor_metadata(descriptor);
+          m.creator_transaction_uuid=next_reader.identity.transaction_uuid;m.creator_local_transaction_id=18;
+          if(fault==10){auto pending=attachment;pending.origin_transaction_uuid=m.creator_transaction_uuid;pending.origin_local_transaction_id=18;
+            const auto payload=catalog::EncodeCatalogStorageActionAttachment(pending);m.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
+          auto row=native_row(m,fault==10?Id(243):Id(245),index+1);row.transaction_uuid=m.creator_transaction_uuid;row.local_transaction_id=18;source_leaf.body.rows[index]=row;}
+        if(fault==12||fault==13){auto m=descriptor_metadata(descriptor);
+          if(fault==12)m.authority_scope=catalog::CatalogAuthorityScope::cluster;
+          else {m.record.header.deleted=true;m.lifecycle=catalog::CatalogObjectLifecycle::dropped;m.status=catalog::CatalogObjectStatus::retired;m.retired_transaction_uuid=m.creator_transaction_uuid;}
+          source_leaf.body.rows[3]=native_row(m,Id(245),4);}
+        persist();resolved=resolve(ceiling,devices);
+        resolution_bad(resolved,fault==0||fault==9?RE::missing_attachment:fault==1?RE::ambiguous_attachment:
+          fault==4?RE::missing_profile:fault==7?RE::policy_failure:fault==8?RE::inactive_attachment:
+          fault==10?RE::provisional_attachment:fault==11?RE::provisional_profile:fault==12?RE::catalog_failure:fault==13?RE::inactive_profile:RE::target_mismatch);
+        if(fault==12)Check(resolved.policy.source.source.error==db::NativeCheckpointCatalogRelationError::cluster_requires_authority,
+          "resolver preserves native catalog cluster-authority refusal");
+      }
+      source_leaf.body.rows=attached_rows;persist();resolution_good(resolve(ceiling,devices));
+      if(p==0&&role==1){
+        reads=0;track_reads=true;resolved=resolve(ceiling,devices);track_reads=false;const auto read_count=reads;resolution_good(resolved);
+        for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;resolved=resolve(ceiling,devices);track_reads=false;
+          Check(!read_fault&&!resolved.ok()&&!resolved.selection&&!resolved.policy.policy&&
+            (resolved.error==RE::capacity_failure||resolved.error==RE::catalog_failure),"every selection read failure retains failure without partial policy");}
+        observed_allocations=0;count_allocations=true;resolved=resolve(ceiling,devices);count_allocations=false;const auto allocations=observed_allocations;resolution_good(resolved);
+        unsigned long telemetry_losses=0;
+        for(unsigned long fault=0;fault<=allocations;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
+          resolved=resolve(ceiling,devices);const auto remaining=allocation_budget;allocation_budget=-1;
+          Check(fault==allocations?remaining>=0:remaining<0,"every measured resolver allocation position consumed");
+          if(resolved.ok()){resolution_good(resolved);if(remaining<0){++telemetry_losses;Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,"only recorded optional telemetry loss permits resolved policy");}}
+          else Check(!resolved.selection&&!resolved.policy.policy&&(resolved.error==RE::capacity_failure||resolved.error==RE::catalog_failure||resolved.error==RE::policy_failure||resolved.error==RE::resource_exhausted),"allocation failure withholds policy selection");
+        }
+        std::cout<<"storage policy resolution faults: reads="<<read_count<<" allocations="<<allocations<<" telemetry_loss="<<telemetry_losses<<'\n';
+        std::atomic<unsigned> completions=0;
+        const auto concurrent=[&](const auto& members){for(unsigned n=0;n<8;++n){const auto r=resolve(ceiling,members);
+          if(r.ok()&&r.selection->attachment.attachment_uuid==Id(240)&&r.policy.version_uuid==Id(170))++completions;}};
+        std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
+        Check(completions==16,"opposite member orders resolve under consistent complete device guards");
+      }
+      // Match exact durable intent against fresh native definitions and capacity.
+      {
+        using IE=db::NativeStorageIntentPolicyError;
+        const auto observed=resolve(ceiling,devices);resolution_good(observed);
+        const auto& c=*observed.capacity.observation;db::NativeStorageActionIntent intent;
+        intent.request_uuid=Id(226);intent.operation_uuid=Id(227);intent.database_uuid=c.database_uuid;intent.filespace_uuid=c.filespace_uuid;
+        intent.locator_uuid=c.locator_uuid;intent.page_zero_uuid=c.page_zero_uuid;intent.page_size_profile_uuid=c.page_size_profile_uuid;
+        intent.policy_snapshot_uuid=policy_uuid;intent.storage_profile_uuid=attachment.storage_profile_uuid;
+        intent.initiator_uuid=Id(228);intent.request_context_uuid=Id(229);intent.checkpoint=c.checkpoint;intent.allocation_root=c.allocation_root;
+        intent.checkpoint_sha256=c.checkpoint_sha256;intent.allocation_sha256=c.allocation_sha256;
+        intent.checkpoint_generation=c.checkpoint_generation;intent.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
+        intent.directory_generation=c.directory_generation;intent.filespace_root_set_generation=c.filespace_root_set_generation;
+        intent.page_zero_generation=c.page_zero_generation;intent.map_generation=c.map_generation;intent.capacity_generation=c.capacity_generation;
+        intent.policy_uuid=original.record->policy_uuid;intent.policy_generation=original.record->generation;intent.policy_version_uuid=Id(170);
+        intent.attachment_uuid=attachment.attachment_uuid;intent.attachment_generation=1;intent.attachment_version_uuid=Id(243);
+        intent.storage_profile_generation=1;intent.storage_profile_version_uuid=Id(245);
+        intent.current_total_pages=intent.first_page=c.total_pages;intent.page_count=8;intent.page_size_bytes=c.page_size_bytes;
+        intent.maximum_total_pages=128;intent.maximum_work_bytes=8*c.page_size_bytes;intent.maximum_retained_image_bytes=ceiling;
+        const auto match=[&](const auto& i){return db::CheckNativeStorageIntentPolicyFromOpenDevices(i,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling);};
+        const auto refused=[&](const auto& i,IE error){const auto r=match(i);Check(!r.ok()&&r.error==error&&!r.resolution.selection&&!r.resolution.policy.policy,
+          "intent policy refusal has no matched selection");};
+        refused(intent,IE::policy_disabled);
+        auto enabled=*original.record;enabled.enabled=enabled.growth_allowed=enabled.preallocation_allowed=true;
+        const auto set_policy=[&](const auto& value){auto m=decoded.record;bind_storage(m,&value);
+          source_leaf.body.rows[0]=native_row(m,Id(170),1);persist();};
+        set_policy(enabled);stage_writes=stage_syncs=0;Check(match(intent).ok(),"fresh actual enabled policy and capacity match exact intent");
+        Check(!stage_writes&&!stage_syncs,"matching produces no storage effects or authorization");
+        if(p==0&&role==1){
+          reads=0;track_reads=true;auto matched=match(intent);track_reads=false;const auto count=reads;
+          Check(matched.ok(),"intent matching read-fault baseline");
+          for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;matched=match(intent);track_reads=false;
+            Check(!read_fault&&!matched.ok()&&matched.error==IE::resolution_failure&&!matched.resolution.selection&&!matched.resolution.policy.policy,
+              "every intent matching actual-read failure withholds result");}
+          observed_allocations=0;count_allocations=true;matched=match(intent);count_allocations=false;const auto sites=observed_allocations;
+          Check(matched.ok(),"intent matching allocation-fault baseline");unsigned long telemetry=0;
+          for(unsigned long fault=0;fault<=sites;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
+            matched=match(intent);const auto remaining=allocation_budget;allocation_budget=-1;
+            Check(fault==sites?remaining>=0:remaining<0,"intent matching consumes every measured allocation failure");
+            if(matched.ok()){Check(matched.resolution.policy.policy->enabled&&matched.resolution.policy.version_uuid==intent.policy_version_uuid&&
+              matched.resolution.selection->attachment_version_uuid==intent.attachment_version_uuid,"optional telemetry failure preserves exact matched definitions");
+              if(remaining<0){++telemetry;Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,"successful fault records one optional telemetry loss");}}
+            else Check(matched.error==IE::resolution_failure&&!matched.resolution.selection&&!matched.resolution.policy.policy,"required matching allocation failure returns no partial selection");
+          }
+          std::cout<<"storage intent matching faults: reads="<<count<<" allocations="<<sites<<" telemetry_loss="<<telemetry<<'\n';
+        }
+        for(const auto field:{&db::NativeStorageActionIntent::policy_uuid,&db::NativeStorageActionIntent::policy_version_uuid,
+            &db::NativeStorageActionIntent::attachment_uuid,&db::NativeStorageActionIntent::attachment_version_uuid,
+            &db::NativeStorageActionIntent::storage_profile_uuid,&db::NativeStorageActionIntent::storage_profile_version_uuid}){
+          auto changed=intent;changed.*field=Id(230);refused(changed,IE::selection_mismatch);}
+        for(const auto field:{&db::NativeStorageActionIntent::policy_generation,&db::NativeStorageActionIntent::attachment_generation,
+            &db::NativeStorageActionIntent::storage_profile_generation}){auto changed=intent;++(changed.*field);refused(changed,IE::selection_mismatch);}
+        auto changed=intent;++changed.capacity_generation;refused(changed,IE::capacity_mismatch);
+        changed=intent;changed.page_count=0;refused(changed,IE::invalid_intent);
+        changed=intent;changed.maximum_retained_image_bytes=768;refused(changed,IE::resource_exhausted);
+        for(unsigned field=0;field<4;++field){changed=intent;
+          if(field==0)++changed.maximum_total_pages;
+          if(field==1){++changed.page_count;changed.maximum_work_bytes+=c.page_size_bytes;}
+          if(field==2)++changed.maximum_work_bytes;
+          if(field==3)changed.maximum_retained_image_bytes=enabled.maximum_retained_image_bytes+1;
+          refused(changed,IE::limit_exceeded);}
+        auto restricted=enabled;restricted.growth_allowed=false;set_policy(restricted);refused(intent,IE::action_disallowed);
+        changed=intent;changed.action=db::NativeStorageAction::page_preallocation;changed.first_page=32;changed.intended_state=db::NativeStorageIntentState::preallocated;
+        Check(match(changed).ok(),"preallocation policy matching does not claim range is free or grant execution");
+        restricted.preallocation_allowed=false;set_policy(restricted);refused(changed,IE::action_disallowed);
+        set_policy(enabled);source_leaf.body.rows[2].version_uuid=Id(230);persist();refused(intent,IE::selection_mismatch);
+        source_leaf.body.rows=attached_rows;persist();refused(intent,IE::policy_disabled);resolution_good(resolve(ceiling,devices));
+      }
+      // Use the real native version writer for attachment CRUD candidates.
+      // Selected roots remain unchanged; physical staging is not activation.
+      auto destination=leaf;destination.header.page_number=destination.body.page_number=22;destination.header.page_uuid=Id(221);
+      page::NativeAllocationRecord reservation;reservation.page_number=22;reservation.allocation_uuid=Id(222);
+      reservation.page_uuid=Id(221);reservation.page_generation=destination.header.page_generation;reservation.page_type=6;reservation.owner_uuid=Id(101);
+      reservation.creator_transaction_uuid=next_reader.identity.transaction_uuid.value;reservation.creator_local_transaction_id=18;
+      for(unsigned slot=22;slot<=24;++slot){auto r=reservation;r.page_number=slot;r.page_uuid=Id(221+2*(slot-22));r.allocation_uuid=Id(222+2*(slot-22));
+        map.states[slot]=S::reserved;map.records.push_back(r);}
+      member.allocation_root->sha256=WholeRootHash(AllocationOracle(map));persist();
+      auto mutation=request;mutation.page_number=22;mutation.transaction=next_reader.identity;mutation.expected_version_uuid=Id(243);
+      auto replacement_attachment=attachment;replacement_attachment.generation=2;
+      const auto for_writer=[&](const auto& a){auto m=attachment_metadata(a);m.creator_transaction_uuid=next_reader.identity.transaction_uuid;m.creator_local_transaction_id=18;return m;};
+      const auto stage_attachment=[&](){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},committed_snapshot.pin,mutation,destination,ceiling,policy_uuid,issuer);};
+      mutation.metadata=for_writer(replacement_attachment);
+      auto attachment_stage=stage_attachment();
+      if(!attachment_stage.ok())std::cerr<<"attachment stage="<<static_cast<unsigned>(attachment_stage.error)<<" source="<<static_cast<unsigned>(attachment_stage.source_error)<<" physical="<<static_cast<unsigned>(attachment_stage.stage.error)<<'\n';
+      Check(attachment_stage.ok()&&attachment_stage.row->previous_version_uuid==Id(243),"actual attachment update staged with complete predecessor");
+      const auto update_bytes=actual(target,22,sizes[profile]);const auto update_image=db::DecodeNativeCatalogLeaf(update_bytes);
+      Check(update_image.ok()&&catalog::DecodeCatalogStorageActionAttachment(update_image.metadata.begin()->second.record.payload).record->generation==2,
+        "actual attachment successor retains typed generation");resolution_good(resolve(ceiling,devices));
+      for(unsigned bad=0;bad<3;++bad){auto changed=replacement_attachment;if(bad==0)changed.filespace_uuid=Id(246);
+        if(bad==1)changed.origin_transaction_uuid.value=Id(246);if(bad==2)changed.storage_profile_uuid=Id(246);
+        mutation.metadata=for_writer(changed);const auto refused=stage_attachment();
+        Check(!refused.ok()&&refused.error==E::stale_version&&actual(target,22,sizes[profile])==update_bytes,"attachment native update refuses retargeting before writes");}
+      mutation.metadata=for_writer(replacement_attachment);mutation.metadata.record.header.deleted=true;
+      destination.header.page_number=destination.body.page_number=mutation.page_number=23;destination.header.page_uuid=Id(223);
+      mutation.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;mutation.metadata.status=catalog::CatalogObjectStatus::retired;
+      mutation.metadata.retired_transaction_uuid=next_reader.identity.transaction_uuid;
+      attachment_stage=stage_attachment();Check(attachment_stage.ok(),"actual attachment tombstone staging");
+      const auto retired_image=db::DecodeNativeCatalogLeaf(actual(target,23,sizes[profile]));
+      Check(retired_image.ok()&&retired_image.metadata.begin()->second.record.header.deleted,"actual attachment tombstone bytes");
+      auto provisional_retirement=retired_image.page->body.rows.front();provisional_retirement.internal_row_ordinal=provisional_retirement.stable_slot_id=5;
+      source_leaf.body.rows.push_back(provisional_retirement);persist();
+      resolution_bad(resolve(ceiling,devices),RE::provisional_attachment);
+      source_leaf.body.rows=attached_rows;persist();
+      auto creation=attachment;creation.attachment_uuid=Id(252);creation.origin_transaction_uuid=next_reader.identity.transaction_uuid;creation.origin_local_transaction_id=18;
+      destination.header.page_number=destination.body.page_number=mutation.page_number=24;destination.header.page_uuid=Id(225);
+      mutation.metadata=for_writer(creation);mutation.metadata.record.header.row_uuid.value=Id(253);
+      mutation.metadata.default_name_uuid.value=Id(254);mutation.metadata.name_vector_uuid.value=Id(255);mutation.expected_version_uuid={};
+      attachment_stage=stage_attachment();Check(attachment_stage.ok()&&attachment_stage.row->previous_version_uuid.is_nil(),"actual fresh attachment native create staging");
+      const auto created_bytes=actual(target,24,sizes[profile]);const auto created_image=db::DecodeNativeCatalogLeaf(created_bytes);
+      const auto created=catalog::DecodeCatalogStorageActionAttachment(created_image.metadata.begin()->second.record.payload);
+      Check(created.ok()&&created.record->attachment_uuid==Id(252)&&created.record->origin_local_transaction_id==18,"actual created attachment exact identity and origin");
+      resolution_good(resolve(ceiling,devices));
+      Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"reopen complete actual selection read-only");
+      stage_writes=stage_syncs=0;resolution_good(resolve(ceiling,devices));Check(!stage_writes&&!stage_syncs,"read-only reopened selection has zero effects");
+      Check(actual(target,24,sizes[profile])==created_bytes,"staged attachment create survives independent read-only reopen");
       mga::RevokePublishedSnapshotVector(committed_snapshot.published.descriptor.snapshot_uuid);
+      resolution_bad(resolve(ceiling,devices),RE::catalog_failure);
       rejected(lookup(next_reader.identity,committed_snapshot.pin,binding,budget),PE::source_failure);
       Check(actual(target,21,sizes[profile])==final_bytes,"lookup leaves staged successor untouched");
       Check(first.Close().ok()&&second.Close().ok(),"release storage policy fixture before independent reopen");

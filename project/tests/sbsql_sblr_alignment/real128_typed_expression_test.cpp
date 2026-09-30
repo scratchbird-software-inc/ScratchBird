@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "query/expression_api.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
 #include "sbl_numeric.hpp"
 #include <cstdlib>
@@ -47,10 +49,24 @@ Bytes Bits(unsigned exponent, unsigned low = 0) {
 api::EngineDescriptor Descriptor() {
   api::EngineDescriptor out;
   const auto identity = scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(1789310000000ULL);
-  const auto type = scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(1789310000000ULL);
-  if (!identity.ok() || !type.ok()) throw std::runtime_error("fixture UUID generation failed");
+  if (!identity.ok()) throw std::runtime_error("fixture UUID generation failed");
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeId::real128);
+  if (!manifest.ok() || !row.ok() || row.manifest.descriptor_rows.size() != 1) {
+    throw std::runtime_error("real128 fixture catalog identity unavailable");
+  }
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto type = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration,
+      datatype.descriptor_uuid.value, datatype.descriptor_epoch);
+  if (!type.ok) throw std::runtime_error("real128 fixture type identity unavailable");
   out.descriptor_uuid = identity.value;
-  out.type_uuid = type.value;
+  out.type_uuid = type.row.type_uuid;
+  out.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  out.datatype_descriptor_generation = datatype.descriptor_epoch;
   out.descriptor_kind = "scalar";
   out.canonical_type_name = "real128";
   out.encoded_descriptor = "width=128;nullability=nullable;fixture=typed-binary128";

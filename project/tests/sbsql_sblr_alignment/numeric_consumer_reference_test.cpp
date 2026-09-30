@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Links the production archive: no alternative operation implementation.
 #include "datatype_operations.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "sbl_numeric.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -32,8 +33,32 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 namespace {
 namespace dt = scratchbird::core::datatypes;
 namespace numeric = scratchbird::libraries::sbl_numeric;
+
+scratchbird::engine::ExecutionTypeDescriptor Descriptor(
+    dt::CanonicalTypeId type_id) {
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Check(manifest.ok(), "load datatype descriptor authority");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Check(row.ok() && row.manifest.descriptor_rows.size() == 1,
+        "lookup datatype descriptor authority");
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto descriptor =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  Check(descriptor.ok(), "build datatype execution descriptor");
+  return descriptor.descriptor;
+}
+
 dt::DatatypeOperationValue Real(std::string text, bool null = false) {
-  return {dt::CanonicalTypeId::real128, std::move(text), null};
+  dt::DatatypeOperationValue value{
+      dt::CanonicalTypeId::real128, null ? std::string{} : std::move(text), null};
+  if (null) {
+    value.descriptor = Descriptor(dt::CanonicalTypeId::real128);
+  }
+  return value;
 }
 dt::DatatypeNumericOperationRequest Request(
     dt::DatatypeNumericOperationKind op, std::string a, std::string b = "0") {
@@ -42,6 +67,7 @@ dt::DatatypeNumericOperationRequest Request(
   request.operation = op;
   request.left = Real(std::move(a));
   request.right = Real(std::move(b));
+  request.result_descriptor = Descriptor(dt::CanonicalTypeId::real128);
   return request;
 }
 bool SameFacts(const dt::DatatypeNumericFacts& got, const numeric::NumericResult& expected) {
@@ -172,6 +198,7 @@ void CastContext() {
   dt::DatatypeCastRequest request;
   request.value = {dt::CanonicalTypeId::character, "9007199254740993", false};
   request.target_type_id = dt::CanonicalTypeId::real128; request.explicit_cast = true;
+  request.target_descriptor = Descriptor(dt::CanonicalTypeId::real128);
   auto cast = dt::CastDatatypeValue(request);
   Check(cast.ok() && cast.value.encoded_value == "9007199254740993" && !cast.numeric_facts.inexact,
         "cast must not narrow through real64");
@@ -215,7 +242,11 @@ void CastContext() {
           "cast overflow is not a success or generic cast diagnostic");
   }
   for (bool null : {false, true}) {
-    request.value.is_null = null; request.value.encoded_value = "not_parsed_when_null";
+    request.value.is_null = null;
+    request.value.encoded_value = null ? "" : "not_parsed_when_null";
+    request.value.descriptor =
+        null ? Descriptor(dt::CanonicalTypeId::character)
+             : scratchbird::engine::ExecutionTypeDescriptor{};
     request.numeric_context.rounding = static_cast<dt::DatatypeRoundingMode>(99);
     cast = dt::CastDatatypeValue(request);
     Check(!cast.ok() && cast.numeric_facts.invalid && cast.diagnostic.diagnostic_code == "NUMERIC.REAL128.INVALID",
@@ -226,6 +257,7 @@ void CastContext() {
   Check(cast.ok() && cast.value.type_id == dt::CanonicalTypeId::real128 && cast.value.is_null &&
         cast.value.encoded_value.empty() && !cast.numeric_facts.invalid, "NULL cast must suppress parsing and retain target family");
   request.value.is_null = false; request.value.encoded_value = "1"; request.explicit_cast = false;
+  request.value.descriptor = {};
   cast = dt::CastDatatypeValue(request);
   Check(!cast.ok(), "numeric context bypassed explicit cast admission");
   request.explicit_cast = true; request.value.type_id = dt::CanonicalTypeId::real128;
@@ -242,6 +274,10 @@ void StructuralValidation() {
   for (bool null : {false, true}) {
     auto request = Request(dt::DatatypeNumericOperationKind::add, "1", "2");
     request.left.is_null = null;
+    if (null) {
+      request.left.encoded_value.clear();
+      request.left.descriptor = Descriptor(dt::CanonicalTypeId::real128);
+    }
     request.context.rounding = static_cast<dt::DatatypeRoundingMode>(99);
     auto result = dt::ApplyNumericOperation(request);
     Check(!result.ok() && result.numeric_facts.invalid &&
@@ -260,6 +296,8 @@ void StructuralValidation() {
   }
   auto null = Request(dt::DatatypeNumericOperationKind::add, "invalid", "invalid");
   null.left.is_null = true;
+  null.left.encoded_value.clear();
+  null.left.descriptor = Descriptor(dt::CanonicalTypeId::real128);
   const auto result = dt::ApplyNumericOperation(null);
   Check(result.ok() && result.value.is_null && !result.numeric_facts.invalid, "strict null suppresses parsing");
   Check(std::string(dt::DatatypeNumericOperationKindName(static_cast<dt::DatatypeNumericOperationKind>(99))) ==

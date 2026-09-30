@@ -392,8 +392,10 @@ void TestEngineApiAndSblrRoutes() {
   request.descriptors.clear();
   request.descriptors.push_back(Descriptor("int128"));
   result = api::EngineApplyNumericOperation(request);
-  Require(!result.ok &&
-              FirstDetail(result) == "query.apply_numeric_operation:numeric.int128_out_of_range",
+  Require(!result.ok && !result.diagnostics.empty() &&
+              result.diagnostics.front().code ==
+                  "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
+              FirstDetail(result) == "numeric.int128_out_of_range",
           "engine API int128 overflow diagnostic drifted");
 
   auto envelope = NumericEnvelope();

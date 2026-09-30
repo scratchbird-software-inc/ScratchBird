@@ -25,24 +25,20 @@ struct NativeStoragePolicyLookupResult {
   core::platform::Uuid version_uuid;
   bool ok() const noexcept {return error==NativeStoragePolicyLookupError::none&&source.ok()&&policy.has_value();}
 };
-// Read from the actual pinned catalog, not a supplied definition/template.
-// Caller selects the policy UUID via the owning attachment resolver separately.
-// This grants no security, current attachment, resource, admission or I/O lease.
-inline NativeStoragePolicyLookupResult ReadNativeStorageActionPolicyFromOpenDevices(
-    const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
-    const NativeCatalogRelationBinding& relation,
-    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
-    const NativeStoragePolicyLookupBinding& binding,u64 budget) noexcept {
+namespace native_storage_policy_detail {
+inline bool ValidBinding(const core::platform::Uuid& database,const NativeStoragePolicyLookupBinding& binding) noexcept {
+  for(const auto* id:{&database,&binding.policy_uuid,&binding.filespace_uuid,&binding.storage_profile_uuid,&binding.page_size_profile_uuid})
+    if(!core::uuid::IsEngineIdentityUuid(*id))return false;
+  return binding.expected_generation.has_value()==!binding.expected_version_uuid.is_nil()&&
+    (!binding.expected_generation||(*binding.expected_generation&&core::uuid::IsEngineIdentityUuid(binding.expected_version_uuid)));
+}
+// Pure binding of an already-read source. Not a public authority constructor.
+inline NativeStoragePolicyLookupResult Select(const core::platform::Uuid& database,
+    NativePinnedCatalogReadResult source,const NativeStoragePolicyLookupBinding& binding) noexcept {
   using E=NativeStoragePolicyLookupError;
   const auto fail=[](E error){NativeStoragePolicyLookupResult r;r.error=error;return r;};
   try {
-    for(const auto* id:{&database,&binding.policy_uuid,&binding.filespace_uuid,&binding.storage_profile_uuid,&binding.page_size_profile_uuid})
-      if(!core::uuid::IsEngineIdentityUuid(*id))return fail(E::invalid_request);
-    if(!budget||binding.expected_generation.has_value()!=!binding.expected_version_uuid.is_nil()||
-        (binding.expected_generation&&(!*binding.expected_generation||!core::uuid::IsEngineIdentityUuid(binding.expected_version_uuid))))
-      return fail(E::invalid_request);
-    auto source=ReadNativePinnedCatalogVersionsFromOpenDevices(database,devices,checkpoint,selector,role,relation,reader,pin,budget);
+    if(!ValidBinding(database,binding))return fail(E::invalid_request);
     if(!source.ok()){auto r=fail(E::source_failure);r.source=std::move(source);return r;}
     const NativeCatalogVersionRow* found=nullptr;
     for(const auto& row:source.rows)if(row.metadata.record.header.object_uuid.value==binding.policy_uuid){
@@ -68,5 +64,19 @@ inline NativeStoragePolicyLookupResult ReadNativeStorageActionPolicyFromOpenDevi
     result.policy=p;result.source=std::move(source);result.error=E::none;return result;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
   catch(const std::length_error&){return fail(E::resource_exhausted);}
+}
+} // namespace native_storage_policy_detail
+// Read from the actual pinned catalog, not a supplied definition/template.
+// Caller selects the policy UUID via the owning attachment resolver separately.
+// This grants no security, current attachment, resource, admission or I/O lease.
+inline NativeStoragePolicyLookupResult ReadNativeStorageActionPolicyFromOpenDevices(
+    const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
+    const NativeCatalogRelationBinding& relation,
+    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
+    const NativeStoragePolicyLookupBinding& binding,u64 budget) noexcept {
+  if(!budget||!native_storage_policy_detail::ValidBinding(database,binding))return {};
+  return native_storage_policy_detail::Select(database,
+    ReadNativePinnedCatalogVersionsFromOpenDevices(database,devices,checkpoint,selector,role,relation,reader,pin,budget),binding);
 }
 } // namespace scratchbird::storage::database

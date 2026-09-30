@@ -68,7 +68,7 @@ bool NativeBinaryCast(const scratchbird::engine::sblr::SblrValue& value,
 
 FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
                                          const std::string& target,
-                                         bool safe) {
+                                         bool try_conversion) {
   namespace s = scratchbird::engine::sblr;
   const auto& input = request.arguments[0].value;
   if (!s::SblrNativeCastCarrierValid(input))
@@ -76,9 +76,22 @@ FunctionCallResult CastNativeBinaryValue(const FunctionCallRequest& request,
   auto result = s::EvaluateSblrCastForm(request.context.function_id, input, target,
                                       request.context.sblr_context, true, false);
   if (!result.ok()) {
-    const bool unknown_target = std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
-        [](const auto& diagnostic) { return diagnostic.diagnostic_id == "SBLR.CAST_TARGET_UNKNOWN"; });
-    if (safe && !unknown_target) return MakeFunctionSuccess(request, {MakeNullValue(target)});
+    const bool suppressible_conversion_failure = std::any_of(
+        result.diagnostics.begin(), result.diagnostics.end(),
+        [](const auto& diagnostic) {
+          if (diagnostic.diagnostic_id != "DATATYPE.CAST_FORBIDDEN")
+            return false;
+          return std::any_of(
+              diagnostic.fields.begin(), diagnostic.fields.end(),
+              [](const auto& field) {
+                const auto* detail = std::get_if<std::string>(&field.value);
+                return field.key == "datatype_detail" && detail != nullptr &&
+                    (*detail == "uuid_binary_length_invalid" ||
+                     *detail == "binary_hex_invalid");
+              });
+        });
+    if (try_conversion && suppressible_conversion_failure)
+      return MakeFunctionSuccess(request, {MakeNullValue(target)});
     FunctionCallResult refused;
     refused.result = std::move(result);
     return refused;

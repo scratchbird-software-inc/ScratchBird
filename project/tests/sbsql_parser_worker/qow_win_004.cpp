@@ -73,7 +73,15 @@ api::EngineDescriptor WindowDescriptor(
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = canonical_type;
   descriptor.encoded_descriptor = encoded_descriptor;
-  descriptor.type_uuid = type_uuid;
+  const auto builtin = exec::MakeExecutorDescriptor(canonical_type);
+  descriptor.type_uuid = builtin.type_uuid.is_nil() ? type_uuid
+                                                    : builtin.type_uuid;
+  descriptor.datatype_descriptor_uuid = builtin.datatype_descriptor_uuid;
+  descriptor.datatype_descriptor_generation =
+      builtin.datatype_descriptor_generation;
+  if (!collation_uuid.is_nil()) {
+    descriptor.charset_uuid = WindowUuid(4200);
+  }
   descriptor.collation_uuid = collation_uuid;
   return descriptor;
 }

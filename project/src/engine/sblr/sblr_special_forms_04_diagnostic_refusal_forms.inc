@@ -78,7 +78,17 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
       detail += ": ";
       detail += result.diagnostic.remediation_hint;
     }
-    return SpecialFormFailure(operation_id, context, std::move(diagnostic_id), std::move(detail));
+    auto failure = SpecialFormFailure(
+        operation_id, context, std::move(diagnostic_id), std::move(detail));
+    if (!failure.diagnostics.empty()) {
+      for (const auto& argument : result.diagnostic.arguments) {
+        if (const auto* text = argument.text()) {
+          failure.diagnostics.front().fields.push_back(
+              {"datatype_" + argument.key, *text});
+        }
+      }
+    }
+    return failure;
   }
 
   return ScalarResult(operation_id, SblrValueFromDatatypeValue(result.value));

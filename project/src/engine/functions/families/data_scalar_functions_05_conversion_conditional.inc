@@ -47,6 +47,8 @@
 
   if (IdIs(id, {"data.scalar.safe_cast", "sb.scalar.safe_cast", "safe_cast",
                 "data.scalar.try_cast", "sb.scalar.try_cast", "try_cast"})) {
+    const bool try_conversion =
+        IdIs(id, {"data.scalar.try_cast", "sb.scalar.try_cast", "try_cast"});
     if (request.arguments.size() != 2) {
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast expects value and target descriptor text");
     }
@@ -60,14 +62,33 @@
       return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor is required");
     }
     const auto& value = request.arguments[0].value;
+    if (IsSqlNull(value)) {
+      if (!scratchbird::engine::sblr::SblrNullPayloadEmpty(value)) {
+        return RefuseFunctionWithDiagnostic(
+            request,
+            scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+            "DATATYPE.NULL_STATE.INVALID",
+            "SQL NULL cast input carries a payload or conflicting value carrier");
+      }
+      return RefuseFunctionWithDiagnostic(
+          request,
+          scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "SBLR NULL cast input lacks an exact bound execution descriptor");
+    }
     if (NativeBinaryCast(value, target_descriptor))
-      return CastNativeBinaryValue(request, target_descriptor, true);
+      return CastNativeBinaryValue(request, target_descriptor, try_conversion);
     auto null_result = [&](std::string descriptor) {
       return MakeFunctionSuccess(request, {MakeNullValue(std::move(descriptor))});
     };
+    auto conversion_failure = [&](std::string descriptor,
+                                  const char* detail) {
+      return try_conversion
+                 ? null_result(std::move(descriptor))
+                 : RefuseFunctionInvalidInput(request, detail);
+    };
     if (target_descriptor == "character" || target_descriptor == "varchar" ||
         target_descriptor == "text" || target_descriptor == "string") {
-      if (IsSqlNull(value)) return null_result(target_descriptor);
       return MakeFunctionSuccess(request, {MakeTextValue(target_descriptor, ValueAsText(value))});
     }
     if (target_descriptor == "int64" || target_descriptor == "integer" ||
@@ -76,23 +97,23 @@
       const std::string descriptor =
           (target_descriptor == "integer" || target_descriptor == "bigint") ? "int64"
                                                                             : target_descriptor;
-      if (IsSqlNull(value)) return null_result(descriptor);
       std::int64_t parsed = 0;
-      if (!ValueAsInt64Strict(value, &parsed)) return null_result(descriptor);
+      if (!ValueAsInt64Strict(value, &parsed))
+        return conversion_failure(descriptor, "safe_cast conversion to signed integer failed");
       if (target_descriptor == "int32" &&
           (parsed < std::numeric_limits<std::int32_t>::min() ||
            parsed > std::numeric_limits<std::int32_t>::max())) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the int32 range");
       }
       if (target_descriptor == "int16" &&
           (parsed < std::numeric_limits<std::int16_t>::min() ||
            parsed > std::numeric_limits<std::int16_t>::max())) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the int16 range");
       }
       if (target_descriptor == "int8" &&
           (parsed < std::numeric_limits<std::int8_t>::min() ||
            parsed > std::numeric_limits<std::int8_t>::max())) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the int8 range");
       }
       return MakeFunctionSuccess(request, {MakeInt64Value(descriptor, parsed)});
     }
@@ -101,41 +122,40 @@
         target_descriptor == "uint8") {
       const std::string descriptor =
           target_descriptor == "unsigned_bigint" ? "uint64" : target_descriptor;
-      if (IsSqlNull(value)) return null_result(descriptor);
       std::uint64_t parsed = 0;
-      if (!ValueAsUint64Strict(value, &parsed)) return null_result(descriptor);
+      if (!ValueAsUint64Strict(value, &parsed))
+        return conversion_failure(descriptor, "safe_cast conversion to unsigned integer failed");
       if (target_descriptor == "uint32" &&
           parsed > std::numeric_limits<std::uint32_t>::max()) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the uint32 range");
       }
       if (target_descriptor == "uint16" &&
           parsed > std::numeric_limits<std::uint16_t>::max()) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the uint16 range");
       }
       if (target_descriptor == "uint8" &&
           parsed > std::numeric_limits<std::uint8_t>::max()) {
-        return null_result(descriptor);
+        return conversion_failure(descriptor, "safe_cast conversion is outside the uint8 range");
       }
       return MakeFunctionSuccess(request, {MakeUint64Value(descriptor, parsed)});
     }
     if (target_descriptor == "real64" || target_descriptor == "double" ||
         target_descriptor == "float64") {
-      if (IsSqlNull(value)) return null_result("real64");
       double parsed = 0.0;
-      if (!ValueAsReal64(value, &parsed)) return null_result("real64");
+      if (!ValueAsReal64(value, &parsed))
+        return conversion_failure("real64", "safe_cast conversion to real64 failed");
       return MakeFunctionSuccess(request, {MakeReal64Value("real64", parsed)});
     }
     if (target_descriptor == "boolean" || target_descriptor == "bool") {
-      if (IsSqlNull(value)) return null_result("boolean");
       bool parsed = false;
-      if (!ParseBooleanText(value, &parsed)) return null_result("boolean");
+      if (!ParseBooleanText(value, &parsed))
+        return conversion_failure("boolean", "safe_cast conversion to boolean failed");
       return MakeFunctionSuccess(request, {MakeInt64Value("boolean", parsed ? 1 : 0)});
     }
     if (target_descriptor == "date" || target_descriptor == "time" ||
         target_descriptor == "timestamp" || target_descriptor == "timestamp_tz" ||
         target_descriptor == "interval" || target_descriptor == "json" ||
         target_descriptor == "json_document") {
-      if (IsSqlNull(value)) return null_result(target_descriptor);
       return MakeFunctionSuccess(request, {MakeTextValue(target_descriptor, ValueAsText(value))});
     }
     return RefuseFunctionInvalidInput(request, "safe_cast/try_cast target descriptor id is not supported by the scalar runtime");

@@ -92,12 +92,15 @@ void Number(Bytes& b,std::size_t at,unsigned width,u64 n){
 }
 void Identity(Bytes& b,std::size_t at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
 std::array<byte,32> Sha(const Bytes& b){std::array<byte,32> out{};Check(SHA256(b.data(),b.size(),out.data())!=nullptr,"independent SHA256");return out;}
-void Seal(Bytes& b){const Bytes prefix(b.begin(),b.begin()+608);const auto hash=Sha(prefix);std::copy(hash.begin(),hash.end(),b.begin()+608);}
+void Seal(Bytes& b){const Bytes prefix(b.begin(),b.begin()+736);const auto hash=Sha(prefix);std::copy(hash.begin(),hash.end(),b.begin()+736);}
 I Example(unsigned profile,unsigned action){
   I i;i.action=static_cast<db::NativeStorageAction>(action);
   i.request_uuid=Id(1);i.operation_uuid=Id(2);i.database_uuid=Id(3);i.filespace_uuid=Id(4);
   i.locator_uuid=Id(5);i.page_zero_uuid=Id(6);i.page_size_profile_uuid=disk::kCanonicalFilespacePageProfiles[profile].uuid;
   i.policy_snapshot_uuid=Id(7);i.storage_profile_uuid=Id(8);i.initiator_uuid=Id(9);i.request_context_uuid=Id(10);
+  i.policy_uuid=Id(50);i.policy_version_uuid=Id(51);i.attachment_uuid=Id(52);
+  i.attachment_version_uuid=Id(53);i.storage_profile_version_uuid=Id(54);
+  i.attachment_generation=55;i.storage_profile_generation=56;
   // Checkpoint is in a different, mixed-profile member; allocation is local.
   i.checkpoint={9,0x300,Id(11),12,13,disk::kCanonicalFilespacePageProfiles[(profile+1)%5].uuid,Id(14)};
   i.allocation_root={3,3,i.filespace_uuid,15,16,i.page_size_profile_uuid,Id(17)};
@@ -107,14 +110,14 @@ I Example(unsigned profile,unsigned action){
   i.catalog_generation=25;i.policy_generation=26;i.security_generation=27;i.configuration_generation=28;
   i.current_total_pages=64;i.first_page=action==1?64:32;i.page_count=8;i.maximum_total_pages=128;
   i.page_size_bytes=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
-  i.maximum_work_bytes=8*i.page_size_bytes;i.maximum_retained_image_bytes=640;
+  i.maximum_work_bytes=8*i.page_size_bytes;i.maximum_retained_image_bytes=768;
   i.intended_state=action==1?db::NativeStorageIntentState::free:db::NativeStorageIntentState::preallocated;
   return i;
 }
 // Literal format offsets and field list, independent of production serializer.
 Bytes Oracle(const I& i){
-  Bytes b(640,0);const std::string magic="SBSINT02";std::copy(magic.begin(),magic.end(),b.begin());
-  Number(b,8,2,2);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,640);
+  Bytes b(768,0);const std::string magic="SBSINT03";std::copy(magic.begin(),magic.end(),b.begin());
+  Number(b,8,2,3);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,768);
   std::size_t at=16;
   for(const auto id:{i.request_uuid,i.operation_uuid,i.database_uuid,i.filespace_uuid,i.locator_uuid,
       i.page_zero_uuid,i.page_size_profile_uuid,i.policy_snapshot_uuid,i.storage_profile_uuid,i.initiator_uuid,i.request_context_uuid}){
@@ -135,15 +138,18 @@ Bytes Oracle(const I& i){
     Number(b,at,8,n);at+=8;
   }
   Number(b,544,4,i.page_size_bytes);Number(b,548,2,static_cast<u16>(i.intended_state));
-  Number(b,552,8,i.configuration_generation);Seal(b);return b;
+  Number(b,552,8,i.configuration_generation);at=560;
+  for(const auto id:{i.policy_uuid,i.policy_version_uuid,i.attachment_uuid,i.attachment_version_uuid,i.storage_profile_version_uuid}){
+    Identity(b,at,id);at+=16;}
+  Number(b,640,8,i.attachment_generation);Number(b,648,8,i.storage_profile_generation);Seal(b);return b;
 }
 void Empty(const db::NativeStorageIntentImage& r,E expected){
   Check(r.error==expected&&!r.ok()&&!r.intent&&r.bytes.empty(),"exact failure and no partial intent/image");
 }
 void Good(const I& i){
   Check(db::ValidateNativeStorageActionIntent(i)==E::none,"valid intent shape");const auto raw=Oracle(i);
-  const auto encoded=db::EncodeNativeStorageActionIntent(i,640);Check(encoded.ok()&&encoded.bytes==raw,"exact oracle encode");
-  const auto decoded=db::DecodeNativeStorageActionIntent(raw,640);
+  const auto encoded=db::EncodeNativeStorageActionIntent(i,768);Check(encoded.ok()&&encoded.bytes==raw,"exact oracle encode");
+  const auto decoded=db::DecodeNativeStorageActionIntent(raw,768);
   Check(decoded.ok()&&decoded.bytes==raw&&Oracle(*decoded.intent)==raw,"all decoded fields match independent oracle");
 }
 O Operation(const I& i){
@@ -155,31 +161,43 @@ O Operation(const I& i){
 }
 void Malformed(const I& i){
   const auto raw=Oracle(i);
-  for(std::size_t size=0;size<640;++size){Bytes b(raw.begin(),raw.begin()+size);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);}
-  auto b=raw;b.push_back(0);Empty(db::DecodeNativeStorageActionIntent(b,641),E::invalid_header);
-  for(std::size_t n=0;n<16;++n){b=raw;b[n]^=0xff;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);}
-  for(std::size_t n=0;n<640;++n){
-    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<552)||(n>=560&&n<608);
-    if(reserved){b=raw;b[n]=1;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);}
+  for(std::size_t size=0;size<768;++size){Bytes b(raw.begin(),raw.begin()+size);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);}
+  auto b=raw;b.push_back(0);Empty(db::DecodeNativeStorageActionIntent(b,769),E::invalid_header);
+  for(std::size_t n=0;n<16;++n){b=raw;b[n]^=0xff;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);}
+  for(std::size_t n=0;n<768;++n){
+    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<552)||(n>=656&&n<736);
+    if(reserved){b=raw;b[n]=1;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);}
   }
   for(std::size_t n=16;n<192;n+=16)for(unsigned fault=0;fault<3;++fault){
     b=raw;if(fault==0)std::fill_n(b.begin()+n,16,0);else if(fault==1)b[n+6]=0x40;else b[n+8]=0;
-    Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_identity);
+    Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_identity);
   }
-  for(std::size_t n=352;n<416;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_integrity);}
-  for(std::size_t n=608;n<640;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_integrity);}
+  for(std::size_t n=560;n<640;n+=16)for(unsigned fault=0;fault<3;++fault){
+    b=raw;if(fault==0)std::fill_n(b.begin()+n,16,0);else if(fault==1)b[n+6]=0x40;else b[n+8]=0;
+    Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_identity);
+  }
+  for(std::size_t n=352;n<416;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_integrity);}
+  for(std::size_t n=736;n<768;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_integrity);}
   // Earlier component-only V1 conflated configuration and policy generations.
   // It never qualified action admission. Do not infer missing configuration.
   b=raw;b[7]='1';Number(b,8,2,1);Number(b,552,8,0);Seal(b);
-  Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);
+  Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
+  // V2 omitted exact selected policy/attachment/profile versions. Never fill
+  // these from whatever policy happens to be current on retry.
+  b=raw;b[7]='2';Number(b,8,2,2);Seal(b);
+  Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
+  b.resize(640);Number(b,12,4,640);
+  Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
   for(const u64 budget:{0u,1u,639u}){
     Empty(db::EncodeNativeStorageActionIntent(i,budget),E::resource_exhausted);
     Empty(db::DecodeNativeStorageActionIntent(raw,budget),E::resource_exhausted);
   }
 }
 void Bounds(I i){
-  const auto invalid=[&](I x,E error){Check(db::ValidateNativeStorageActionIntent(x)==error,"shape refusal");Empty(db::EncodeNativeStorageActionIntent(x,640),error);Empty(db::DecodeNativeStorageActionIntent(Oracle(x),640),error);};
+  const auto invalid=[&](I x,E error){Check(db::ValidateNativeStorageActionIntent(x)==error,"shape refusal");Empty(db::EncodeNativeStorageActionIntent(x,768),error);Empty(db::DecodeNativeStorageActionIntent(Oracle(x),768),error);};
   auto x=i;x.page_size_bytes=4096;invalid(x,E::invalid_profile);
+  x=i;x.attachment_generation=0;invalid(x,E::invalid_range);
+  x=i;x.storage_profile_generation=0;invalid(x,E::invalid_range);
   x=i;x.page_size_profile_uuid=Id(99);invalid(x,E::invalid_profile);
   for(unsigned root=0;root<2;++root)for(unsigned fault=0;fault<9;++fault){
     x=i;auto& r=root?x.allocation_root:x.checkpoint;
@@ -205,7 +223,7 @@ void Bounds(I i){
   }
   x=i;x.catalog_generation=x.policy_generation=x.security_generation=x.configuration_generation=0;Good(x);
   x=i;x.maximum_work_bytes--;invalid(x,E::invalid_range);
-  x=i;x.maximum_retained_image_bytes=639;invalid(x,E::invalid_range);
+  x=i;x.maximum_retained_image_bytes=767;invalid(x,E::invalid_range);
   x=i;x.intended_state=static_cast<db::NativeStorageIntentState>(1);invalid(x,E::invalid_range);
   x=i;x.first_page=std::numeric_limits<u64>::max();invalid(x,E::invalid_range);
   x=i;x.page_count=std::numeric_limits<u64>::max();invalid(x,E::invalid_range);
@@ -227,25 +245,25 @@ void Bounds(I i){
 }
 void Binding(const I& i){
   const auto o=Operation(i);
-  Check(db::ReadNativeStorageActionIntentFromOperation(o,640).ok(),"created intent binds without granting authorization");
+  Check(db::ReadNativeStorageActionIntentFromOperation(o,768).ok(),"created intent binds without granting authorization");
   for(const auto member:{&O::uuid,&O::database_uuid,&O::target_uuid,&O::initiator_uuid,&O::request_context_uuid,&O::policy_snapshot_uuid}){
-    auto changed=o;changed.*member=Id(88);Empty(db::ReadNativeStorageActionIntentFromOperation(changed,640),E::binding_mismatch);
+    auto changed=o;changed.*member=Id(88);Empty(db::ReadNativeStorageActionIntentFromOperation(changed,768),E::binding_mismatch);
   }
   auto authorized=o;authorized.state=db::NativeManagementState::authorized;authorized.security_snapshot_uuid=Id(55);
   authorized.generation_guards={i.catalog_generation,i.configuration_generation,i.security_generation,std::nullopt};
-  Check(db::ReadNativeStorageActionIntentFromOperation(authorized,640).ok(),"present matching guards");
+  Check(db::ReadNativeStorageActionIntentFromOperation(authorized,768).ok(),"present matching guards");
   auto conflated=authorized;conflated.generation_guards[1]=i.policy_generation;
-  Empty(db::ReadNativeStorageActionIntentFromOperation(conflated,640),E::binding_mismatch);
-  for(unsigned n=0;n<3;++n){auto bad=authorized;(*bad.generation_guards[n])++;Empty(db::ReadNativeStorageActionIntentFromOperation(bad,640),E::binding_mismatch);}
+  Empty(db::ReadNativeStorageActionIntentFromOperation(conflated,768),E::binding_mismatch);
+  for(unsigned n=0;n<3;++n){auto bad=authorized;(*bad.generation_guards[n])++;Empty(db::ReadNativeStorageActionIntentFromOperation(bad,768),E::binding_mismatch);}
   auto bad=authorized;bad.scope=db::NativeManagementScope::cluster;bad.cluster_uuid=Id(77);bad.generation_guards[3]=0;
-  Empty(db::ReadNativeStorageActionIntentFromOperation(bad,640),E::binding_mismatch);
-  bad=o;bad.normalized_request_sha256[0]^=1;const auto failure=db::ReadNativeStorageActionIntentFromOperation(bad,640);
+  Empty(db::ReadNativeStorageActionIntentFromOperation(bad,768),E::binding_mismatch);
+  bad=o;bad.normalized_request_sha256[0]^=1;const auto failure=db::ReadNativeStorageActionIntentFromOperation(bad,768);
   Empty(failure,E::operation_failure);Check(failure.operation_error==db::NativeManagementOperationError::invalid_integrity,"preserved nested digest failure");
-  bad=o;bad.normalized_request_bytes.clear();Empty(db::ReadNativeStorageActionIntentFromOperation(bad,640),E::invalid_header);
-  Empty(db::ReadNativeStorageActionIntentFromOperation(o,639),E::resource_exhausted);
+  bad=o;bad.normalized_request_bytes.clear();Empty(db::ReadNativeStorageActionIntentFromOperation(bad,768),E::invalid_header);
+  Empty(db::ReadNativeStorageActionIntentFromOperation(o,767),E::resource_exhausted);
   const auto stored=db::EncodeNativeManagementOperation(authorized,4096);Check(stored.ok(),"real operation codec accepts exact typed bytes");
   const auto reopened=db::DecodeNativeManagementOperation(stored.bytes,4096);Check(reopened.ok(),"real operation decode");
-  const auto bound=db::ReadNativeStorageActionIntentFromOperation(*reopened.record,640);
+  const auto bound=db::ReadNativeStorageActionIntentFromOperation(*reopened.record,768);
   Check(bound.ok()&&bound.bytes==Oracle(i),"binary typed intent survives retained operation encoding");
   auto retry=authorized;retry.revision++;retry.updated_at=Id(102);
   Check(db::ValidateNativeManagementOperationEvolution(authorized,retry)==db::NativeManagementOperationError::none,"unchanged intent retry");
@@ -255,8 +273,8 @@ void Binding(const I& i){
 void Faults(const I& i){
   const auto raw=Oracle(i);const auto operation=Operation(i);
   for(unsigned mode=0;mode<3;++mode){
-    const auto call=[&](){return mode==0?db::EncodeNativeStorageActionIntent(i,640):
-      mode==1?db::DecodeNativeStorageActionIntent(raw,640):db::ReadNativeStorageActionIntentFromOperation(operation,640);};
+    const auto call=[&](){return mode==0?db::EncodeNativeStorageActionIntent(i,768):
+      mode==1?db::DecodeNativeStorageActionIntent(raw,768):db::ReadNativeStorageActionIntentFromOperation(operation,768);};
     counting=true;allocations=0;const auto measured=call();counting=false;
     Check(measured.ok(),"allocation baseline succeeds");const auto sites=allocations;Check(sites>0,"fault sites measured");
     for(unsigned long n=0;n<sites;++n){allocation_budget=n;const auto r=call();const bool consumed=allocation_budget==-1;allocation_budget=-1;
@@ -293,23 +311,23 @@ void CurrentCapacity(const I& seed,disk::FileDevice& device,const disk::Filespac
   const auto good=call(i);Check(good.ok()&&good.capacity.observation->lifecycle_state==7&&
     good.capacity.observation->total_pages==128&&good.capacity.observation->state_counts==a.state_counts,
     "fresh capacity match preserves initializing state and actual page counts; not serving admission");
-  const u64 need=baseline.retained_image_bytes+640;
+  const u64 need=baseline.retained_image_bytes+768;
   Check(good.capacity.retained_image_bytes==need,"intent and actual reader images share one byte ceiling");
   Check(call(i,need).ok(),"exact capacity plus intent byte budget");
   const auto failed=[&](const db::NativeStorageCapacityCheck& r,C error){
     Check(!r.ok()&&r.error==error&&!r.capacity.observation,"failed match withholds capacity observation");
   };
-  for(const u64 limit:{u64{0},u64{640},need-1}){
+  for(const u64 limit:{u64{0},u64{768},need-1}){
     const auto shortfall=call(i,limit);failed(shortfall,C::capacity_failure);
-    if(limit<=640)Check(shortfall.capacity.error==db::NativeFilespaceCapacityError::resource_exhausted,"intent budget exhausted before native reads");
+    if(limit<=768)Check(shortfall.capacity.error==db::NativeFilespaceCapacityError::resource_exhausted,"intent budget exhausted before native reads");
     else{
-      const auto expected=db::ReadNativeFilespaceCapacityFromOpenDevices(i.database_uuid,files,i.checkpoint,i.filespace_uuid,limit-640);
+      const auto expected=db::ReadNativeFilespaceCapacityFromOpenDevices(i.database_uuid,files,i.checkpoint,i.filespace_uuid,limit-768);
       Check(!expected.ok()&&shortfall.capacity.error==expected.error&&shortfall.capacity.checkpoint_error==expected.checkpoint_error&&
         shortfall.capacity.inventory_error==expected.inventory_error&&shortfall.capacity.directory_error==expected.directory_error&&
         shortfall.capacity.allocation_error==expected.allocation_error&&shortfall.capacity.bootstrap_error==expected.bootstrap_error&&
         shortfall.capacity.management_error==expected.management_error,"exact original nested capacity failure retained");
     }
-    auto x=i;x.maximum_retained_image_bytes=std::max(u64{640},limit);
+    auto x=i;x.maximum_retained_image_bytes=std::max(u64{768},limit);
     failed(call(x),C::capacity_failure);
   }
   for(const auto member:{&I::locator_uuid,&I::page_zero_uuid}){auto x=i;x.*member=Id(300);failed(call(x),C::identity_mismatch);}
@@ -391,7 +409,7 @@ void Physical(const I& i){
     const auto retained=db::ReadNativeManagementExtentFromOpenDevice(
       {i.checkpoint.filespace_uuid,p.uuid,&reader},*extent.root,i.database_uuid,operation.bootstrap_uuid,1<<26);
     if(!retained.ok()||*retained.record!=operation)return false;
-    const auto intent=db::ReadNativeStorageActionIntentFromOperation(*retained.record,640);
+    const auto intent=db::ReadNativeStorageActionIntentFromOperation(*retained.record,768);
     return intent.ok()&&intent.bytes==Oracle(i)&&Oracle(*intent.intent)==Oracle(i);
   };
   Check(read(),"real-file read-only reopen preserves typed request and complete operation");

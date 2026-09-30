@@ -165,6 +165,7 @@ TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
   }
   // Manifest-admitted V4 identities are constants, never derived from spelling.
   switch (type_id) {
+    case CanonicalTypeId::boolean: return {UuidKind::object, platform::Uuid{{0x01,0x00,0x00,0x00,0x62,0x6f,0x7f,0x6c,0xa5,0x61,0x6e,0x00,0x00,0x00,0x00,0x00}}};
     case CanonicalTypeId::decimal_float: return {UuidKind::object, platform::Uuid{{0xa1,0,0,0,0x10,0x65,0x73,0x69,0xad,0x61,0x6c,0x5f,0x66,0x6c,0x6f,0x61}}};
     case CanonicalTypeId::int8: return {UuidKind::object, platform::Uuid{{0x64,0x00,0x00,0x00,0x69,0x6e,0x74,0x38,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}};
     case CanonicalTypeId::int16: return {UuidKind::object, platform::Uuid{{0x65,0x00,0x00,0x00,0x69,0x6e,0x74,0x31,0xb6,0x00,0x00,0x00,0x00,0x00,0x00,0x00}}};
@@ -193,6 +194,10 @@ TypedUuid AuthoritativeDatatypeDescriptorUuid(const CanonicalTypeId type_id,
 
 TypedUuid StableDatatypeDescriptorUuid(CanonicalTypeId type_id,
                                        const std::string& stable_name) {
+  if (type_id == CanonicalTypeId::null_type ||
+      type_id == CanonicalTypeId::unknown) {
+    return {};
+  }
   TypedUuid uuid;
   uuid.kind = UuidKind::object;
   const u32 value = static_cast<u32>(type_id);

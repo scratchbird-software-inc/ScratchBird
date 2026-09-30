@@ -503,8 +503,27 @@ bool CompareOrderValues(
   if (type_id == dt::CanonicalTypeId::unknown ||
       left.descriptor.canonical_type_name !=
           right.descriptor.canonical_type_name) {
-    *refusal_detail = "order operands do not share a supported scalar encoding";
+    *refusal_detail =
+        "DATATYPE.DESCRIPTOR.INVALID:order operands do not share a supported scalar encoding";
     return false;
+  }
+  engine::ExecutionTypeDescriptor left_bound_descriptor;
+  engine::ExecutionTypeDescriptor right_bound_descriptor;
+  const bool has_null = left.isSqlNull() || right.isSqlNull();
+  if (has_null) {
+    std::string descriptor_detail;
+    if (!BuildBoundExecutionTypeDescriptor(
+            left.descriptor, type_id, &left_bound_descriptor,
+            &descriptor_detail) ||
+        !BuildBoundExecutionTypeDescriptor(
+            right.descriptor, type_id, &right_bound_descriptor,
+            &descriptor_detail)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" +
+          (descriptor_detail.empty()
+               ? std::string("order operand descriptor authority is unresolved")
+               : std::move(descriptor_detail));
+      return false;
+    }
   }
   const auto canonical_state = [](const auto& value) {
     if (value.state ==
@@ -518,7 +537,7 @@ bool CompareOrderValues(
   };
   if (!canonical_state(left) || !canonical_state(right)) {
     *refusal_detail =
-        "order operand carries a malformed NULL or non-value sentinel";
+        "DATATYPE.NULL_STATE.INVALID:order operand carries a malformed NULL or non-value sentinel";
     return false;
   }
   const bool carries_binary_payload =
@@ -558,11 +577,6 @@ bool CompareOrderValues(
       term.null_placement == CanonicalDescriptorNullPlacement::first
           ? dt::DatatypeNullOrdering::nulls_first
           : dt::DatatypeNullOrdering::nulls_last;
-  const bool has_null =
-      left.state ==
-          scratchbird::engine::internal_api::EngineValueState::sql_null ||
-      right.state ==
-          scratchbird::engine::internal_api::EngineValueState::sql_null;
   std::string left_encoded = left.encoded_value;
   std::string right_encoded = right.encoded_value;
   if (type_id == dt::CanonicalTypeId::binary ||
@@ -629,10 +643,13 @@ bool CompareOrderValues(
     request.right.is_null =
         right.state ==
         scratchbird::engine::internal_api::EngineValueState::sql_null;
+    request.left.descriptor = left_bound_descriptor;
+    request.right.descriptor = right_bound_descriptor;
     request.null_ordering = null_ordering;
     const auto compared = dt::CompareDatatypeValues(request);
     if (!compared.ok()) {
-      *refusal_detail = compared.diagnostic.diagnostic_code;
+      *refusal_detail = compared.diagnostic.diagnostic_code + ":" +
+          compared.diagnostic.message_key;
       return false;
     }
     *comparison = compared.comparison;
@@ -1017,8 +1034,11 @@ CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
   std::string detail;
   if (!CompareOrderValues(left, right, term, &result.comparison, &detail)) {
     result = {};
-    result.diagnostic = Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
-                                std::move(detail));
+    const auto separator = detail.find(':');
+    const std::string code = detail.rfind("DATATYPE.", 0) == 0
+                                 ? detail.substr(0, separator)
+                                 : "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1";
+    result.diagnostic = Refusal(std::move(code), std::move(detail));
   }
   return result;
 }

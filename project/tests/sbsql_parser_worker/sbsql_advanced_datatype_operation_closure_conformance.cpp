@@ -10,6 +10,7 @@
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "crud_support/crud_store.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -159,6 +160,52 @@ api::EngineDescriptor Descriptor(std::string type) {
   return descriptor;
 }
 
+api::EngineDescriptor BoundScalarDescriptor(
+    const std::string_view type,
+    const unsigned ordinal,
+    std::string encoded_descriptor = "nullability=nullable") {
+  const auto type_id = dt::CanonicalTypeIdFromStableName(std::string(type));
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "bound consumer fixture datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "bound consumer fixture datatype absent from catalog");
+  const auto& datatype = row.manifest.descriptor_rows.front();
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration,
+      datatype.descriptor_uuid.value, datatype.descriptor_epoch);
+  Require(identity.ok,
+          "bound consumer fixture datatype identity is not admitted");
+  auto descriptor = Descriptor(std::string(type));
+  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(2086, ordinal);
+  descriptor.type_uuid = identity.row.type_uuid;
+  descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
+  descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
+  descriptor.encoded_descriptor = std::move(encoded_descriptor);
+  return descriptor;
+}
+
+scratchbird::engine::ExecutionTypeDescriptor CoreExecutionDescriptor(
+    const dt::CanonicalTypeId type_id,
+    const bool nullable) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "set fixture datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "set fixture datatype descriptor unavailable");
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch = row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto built =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  Require(built.ok(), "set fixture execution descriptor unavailable");
+  auto descriptor = built.descriptor;
+  descriptor.nullable_allowed = nullable;
+  return descriptor;
+}
+
 api::EngineTypedValue TypedValue(std::string type, std::string encoded) {
   api::EngineTypedValue value;
   value.descriptor = Descriptor(std::move(type));
@@ -273,7 +320,8 @@ void RequireNumericOperations(const api::EngineRequestContext& context) {
       request.scale = 2;
       request.left_value = TypedValue("decimal", "10");
       request.right_value = TypedValue("decimal", "2");
-      request.descriptors.push_back(Descriptor("decimal"));
+      request.descriptors.push_back(
+          Descriptor(operation == "cmp" ? "boolean" : "decimal"));
       const auto result = api::EngineApplyNumericOperation(request);
       if (!result.ok) { std::cerr << operation << '/' << rounding << ':' << FirstDetail(result) << '\n'; }
       Require(result.ok, "supported numeric operation or rounding mode refused");
@@ -304,6 +352,205 @@ void RequireNumericOperations(const api::EngineRequestContext& context) {
   rejected = api::EngineApplyNumericOperation(bad_rounding);
   Require(!rejected.ok && FirstDetail(rejected) == "query.apply_numeric_operation:numeric_rounding_mode_unsupported:stochastic",
           "unsupported numeric rounding diagnostic drifted");
+}
+
+void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
+  const auto decimal = BoundScalarDescriptor(
+      "decimal", 1, "precision=38;scale=2;nullability=nullable");
+  const auto boolean = BoundScalarDescriptor("boolean", 2);
+  api::EngineTypedValue null_decimal;
+  null_decimal.descriptor = decimal;
+  null_decimal.setState(api::EngineValueState::sql_null);
+  api::EngineTypedValue decimal_one;
+  decimal_one.descriptor = decimal;
+  decimal_one.encoded_value = "1.00";
+
+  api::EngineApplyNumericOperationRequest numeric;
+  numeric.context = context;
+  numeric.numeric_operation = "cmp";
+  numeric.precision = 38;
+  numeric.scale = 2;
+  numeric.left_value = null_decimal;
+  numeric.right_value = decimal_one;
+  numeric.descriptors.push_back(boolean);
+  const auto compared = api::EngineApplyNumericOperation(numeric);
+  Require(compared.ok &&
+              compared.value.state == api::EngineValueState::sql_null &&
+              compared.value.is_null && compared.value.encoded_value.empty() &&
+              compared.value.binary_value.empty() &&
+              compared.value.descriptor == boolean,
+          "NULL numeric comparison did not publish a bound Boolean NULL");
+
+  numeric.descriptors.front() = decimal;
+  Require(!api::EngineApplyNumericOperation(numeric).ok,
+          "numeric comparison accepted a non-Boolean result descriptor");
+  numeric.descriptors.front() = boolean;
+  numeric.left_value.is_null = false;
+  const auto malformed_comparison = api::EngineApplyNumericOperation(numeric);
+  Require(!malformed_comparison.ok &&
+              !malformed_comparison.diagnostics.empty() &&
+              malformed_comparison.diagnostics.front().code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "numeric comparison lost the canonical malformed NULL diagnostic");
+
+  const auto date = BoundScalarDescriptor("date", 3);
+  const auto int32 = BoundScalarDescriptor("int32", 4);
+  api::EngineExtractValueRequest extract;
+  extract.context = context;
+  extract.field = "year";
+  extract.input_value.descriptor = date;
+  extract.input_value.encoded_value = "2026-09-30";
+  extract.descriptors.push_back(int32);
+  const auto present_extract = api::EngineExtractValue(extract);
+  Require(present_extract.ok && present_extract.value.descriptor == int32 &&
+              present_extract.value.state == api::EngineValueState::value &&
+              present_extract.value.encoded_value == "2026",
+          "present extraction did not preserve its bound result descriptor");
+  extract.input_value.encoded_value.clear();
+  extract.input_value.setState(api::EngineValueState::sql_null);
+  const auto null_extract = api::EngineExtractValue(extract);
+  Require(null_extract.ok && null_extract.value.descriptor == int32 &&
+              null_extract.value.state == api::EngineValueState::sql_null &&
+              null_extract.value.is_null &&
+              null_extract.value.encoded_value.empty() &&
+              null_extract.value.binary_value.empty(),
+          "NULL extraction did not preserve its bound result descriptor");
+  extract.input_value.binary_value.push_back(0);
+  const auto dirty_extract = api::EngineExtractValue(extract);
+  Require(!dirty_extract.ok && !dirty_extract.diagnostics.empty() &&
+              dirty_extract.diagnostics.front().code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "NULL extraction accepted a substitute binary payload");
+
+  const auto character = BoundScalarDescriptor("character", 5);
+  const auto character_execution =
+      CoreExecutionDescriptor(dt::CanonicalTypeId::character, true);
+  dt::DatatypeSetDescriptor set_descriptor;
+  set_descriptor.element_type_id = dt::CanonicalTypeId::character;
+  set_descriptor.element_descriptor = character_execution;
+  set_descriptor.allow_null_elements = true;
+  dt::DatatypeOperationValue printable_null{
+      dt::CanonicalTypeId::character, "<NULL>", false};
+  printable_null.descriptor = character_execution;
+  dt::DatatypeOperationValue sql_null{
+      dt::CanonicalTypeId::character, {}, true};
+  sql_null.descriptor = character_execution;
+  const auto encoded_set =
+      dt::EncodeSetValue(set_descriptor, {printable_null, sql_null});
+  Require(encoded_set.ok(), "engine set fixture did not encode");
+
+  api::EngineSetOperationRequest membership;
+  membership.context = context;
+  membership.set_operation = "membership";
+  membership.descriptors.push_back(character);
+  membership.allow_null_elements = true;
+  membership.left_set = TypedValue("set_value", encoded_set.encoded_set);
+  membership.right_set_or_value.descriptor = character;
+  membership.right_set_or_value.setState(api::EngineValueState::sql_null);
+  const auto null_membership = api::EngineSetOperation(membership);
+  Require(null_membership.ok &&
+              null_membership.value.encoded_value == "true" &&
+              !null_membership.value.is_null,
+          "engine set membership lost descriptor-bound SQL NULL");
+
+  auto dirty_null_membership = membership;
+  dirty_null_membership.right_set_or_value.encoded_value = "payload";
+  const auto dirty_null_set_result =
+      api::EngineSetOperation(dirty_null_membership);
+  Require(!dirty_null_set_result.ok &&
+              !dirty_null_set_result.diagnostics.empty() &&
+              dirty_null_set_result.diagnostics.front().code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "engine set lost canonical dirty SQL NULL diagnostic precedence");
+  auto dirty_null_left = membership;
+  dirty_null_left.left_set.setState(api::EngineValueState::sql_null);
+  const auto dirty_null_left_result = api::EngineSetOperation(dirty_null_left);
+  Require(!dirty_null_left_result.ok &&
+              !dirty_null_left_result.diagnostics.empty() &&
+              dirty_null_left_result.diagnostics.front().code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "engine set lost dirty left SQL NULL diagnostic precedence");
+
+  membership.right_set_or_value = TypedValue("character", "<NULL>");
+  membership.right_set_or_value.descriptor = character;
+  const auto printable_membership = api::EngineSetOperation(membership);
+  Require(printable_membership.ok &&
+              printable_membership.value.encoded_value == "true",
+          "engine set membership collapsed present <NULL> payload");
+
+  auto wrong_left_type = membership;
+  wrong_left_type.left_set.descriptor = character;
+  const auto wrong_left_result = api::EngineSetOperation(wrong_left_type);
+  Require(!wrong_left_result.ok,
+          "engine set membership accepted SBSET2 bytes in a non-set carrier");
+
+  auto wrong_right_set_type = membership;
+  wrong_right_set_type.set_operation = "equals";
+  wrong_right_set_type.right_set_or_value = wrong_right_set_type.left_set;
+  wrong_right_set_type.right_set_or_value.descriptor = character;
+  const auto wrong_right_result =
+      api::EngineSetOperation(wrong_right_set_type);
+  Require(!wrong_right_result.ok,
+          "engine set equality accepted SBSET2 bytes in a non-set carrier");
+
+  auto equality_request = membership;
+  equality_request.set_operation = "equals";
+  equality_request.right_set_or_value = equality_request.left_set;
+  const auto equality_result = api::EngineSetOperation(equality_request);
+  Require(equality_result.ok && equality_result.value.encoded_value == "true",
+          "engine set equality did not populate the right encoded set");
+
+  const auto binary = BoundScalarDescriptor(
+      "binary", 7, "nullability=non_null");
+  const auto binary_execution =
+      CoreExecutionDescriptor(dt::CanonicalTypeId::binary, false);
+  dt::DatatypeSetDescriptor binary_set_descriptor;
+  binary_set_descriptor.element_type_id = dt::CanonicalTypeId::binary;
+  binary_set_descriptor.element_descriptor = binary_execution;
+  dt::DatatypeOperationValue binary_item{
+      dt::CanonicalTypeId::binary,
+      std::string{"\0\xff", 2},
+      false};
+  binary_item.descriptor = binary_execution;
+  const auto encoded_binary_set =
+      dt::EncodeSetValue(binary_set_descriptor, {binary_item});
+  Require(encoded_binary_set.ok(), "binary set fixture did not encode");
+  api::EngineSetOperationRequest binary_membership;
+  binary_membership.context = context;
+  binary_membership.set_operation = "membership";
+  binary_membership.descriptors.push_back(binary);
+  binary_membership.left_set =
+      TypedValue("set_value", encoded_binary_set.encoded_set);
+  binary_membership.right_set_or_value.descriptor = binary;
+  binary_membership.right_set_or_value.binary_value = {0x00, 0xff};
+  const auto binary_membership_result =
+      api::EngineSetOperation(binary_membership);
+  Require(binary_membership_result.ok &&
+              binary_membership_result.value.encoded_value == "true",
+          "engine set membership did not preserve native binary payload bytes");
+
+  api::EngineSetOperationRequest cardinality_request;
+  cardinality_request.context = context;
+  cardinality_request.set_operation = "cardinality";
+  cardinality_request.descriptors.push_back(character);
+  cardinality_request.allow_null_elements = true;
+  cardinality_request.left_set = membership.left_set;
+  const auto set_cardinality = api::EngineSetOperation(cardinality_request);
+  Require(set_cardinality.ok &&
+              set_cardinality.value.encoded_value == "2",
+          "engine unary set cardinality required a synthetic right operand");
+
+  const auto nonnull_character = BoundScalarDescriptor(
+      "character", 6, "nullability=non_null");
+  membership.descriptors.front() = nonnull_character;
+  membership.right_set_or_value.descriptor = nonnull_character;
+  membership.right_set_or_value.setState(api::EngineValueState::sql_null);
+  const auto forbidden_null_membership = api::EngineSetOperation(membership);
+  Require(!forbidden_null_membership.ok &&
+              !forbidden_null_membership.diagnostics.empty() &&
+              forbidden_null_membership.diagnostics.front().code ==
+                  "DATATYPE.NULL_NOT_ADMITTED",
+          "engine set accepted nullable profile under non-null descriptor");
 }
 
 struct AdvancedCase {
@@ -419,6 +666,16 @@ sblr::SblrValue SblrText(std::string descriptor, std::string text) {
   return value;
 }
 
+sblr::SblrValue SblrSet(std::string encoded) {
+  sblr::SblrValue value;
+  value.descriptor_id = "set_value";
+  value.payload_kind = sblr::SblrValuePayloadKind::descriptor_payload;
+  value.is_null = false;
+  value.encoded_value = std::move(encoded);
+  value.text_value = value.encoded_value;
+  return value;
+}
+
 sblr::SblrValue SblrInt(std::int64_t input) {
   sblr::SblrValue value;
   value.descriptor_id = "int64";
@@ -469,6 +726,200 @@ void RequireSblrCollectionVectorSpecializedOperators() {
   Require(cardinality.scalar_values.front().has_uint64_value &&
               cardinality.scalar_values.front().uint64_value == 3,
           "collection cardinality result drifted");
+
+  const auto present_null_set = SblrSet(
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V3c4e554c4c3e");
+  const auto present_null_membership = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.contains", present_null_set,
+      SblrText("character", "<NULL>"), context);
+  RequireOkScalar(present_null_membership,
+                  "canonical SBSET2 present <NULL> membership refused");
+  Require(present_null_membership.scalar_values.front().encoded_value == "TRUE",
+          "canonical SBSET2 present <NULL> membership was not preserved");
+
+  const auto empty_character_set = SblrSet(
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V");
+  const auto empty_character_membership =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.contains", empty_character_set,
+          SblrText("character", ""), context);
+  RequireOkScalar(empty_character_membership,
+                  "canonical empty character set element was refused");
+  Require(empty_character_membership.scalar_values.front().encoded_value ==
+              "TRUE",
+          "canonical V token did not preserve an empty character value");
+
+  const auto escaped_character_membership =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.contains",
+          SblrSet("SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V225c753030363122"),
+          SblrText("character", R"json("\u0061")json"), context);
+  RequireOkScalar(escaped_character_membership,
+                  "SBSET2 escaped character membership refused");
+  Require(escaped_character_membership.scalar_values.front().encoded_value ==
+              "TRUE",
+          "SBSET2 membership normalized character bytes through JSON");
+
+  sblr::SblrValue null_candidate;
+  null_candidate.descriptor_id = "character";
+  null_candidate.is_null = true;
+  const auto null_set_membership = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.contains", present_null_set, null_candidate, context);
+  Require(!null_set_membership.ok() &&
+              !null_set_membership.diagnostics.empty() &&
+              null_set_membership.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.CONTEXT_REQUIRED",
+          "SBLR set membership invented authority for SQL NULL");
+
+  auto dirty_null_candidate = null_candidate;
+  dirty_null_candidate.encoded_value = present_null_set.encoded_value;
+  const auto dirty_null_membership =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.contains", present_null_set,
+          dirty_null_candidate, context);
+  Require(!dirty_null_membership.ok() &&
+              !dirty_null_membership.diagnostics.empty() &&
+              dirty_null_membership.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.CONTEXT_REQUIRED",
+          "SBLR inspected dirty SQL NULL before resolving set authority");
+
+  sblr::SblrValue null_set;
+  null_set.descriptor_id = "set_value";
+  null_set.is_null = true;
+  const auto null_set_cardinality =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.cardinality", null_set, SblrInt(0), context);
+  Require(!null_set_cardinality.ok() &&
+              !null_set_cardinality.diagnostics.empty() &&
+              null_set_cardinality.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.CONTEXT_REQUIRED",
+          "SBLR propagated descriptor-free SQL NULL set state");
+  auto dirty_null_set = null_set;
+  dirty_null_set.encoded_value = present_null_set.encoded_value;
+  const auto dirty_null_set_cardinality =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.cardinality", dirty_null_set, SblrInt(0),
+          context);
+  Require(!dirty_null_set_cardinality.ok() &&
+              !dirty_null_set_cardinality.diagnostics.empty() &&
+              dirty_null_set_cardinality.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.CONTEXT_REQUIRED",
+          "SBLR inspected dirty SQL NULL set before resolving authority");
+
+  const auto integer_set_membership = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.contains",
+      SblrSet("SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V31"),
+      SblrInt(1), context);
+  Require(!integer_set_membership.ok() &&
+              !integer_set_membership.diagnostics.empty() &&
+              integer_set_membership.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.DESCRIPTOR.INVALID",
+          "SBLR matched a non-character scalar against a character set");
+
+  const auto invalid_utf8_membership =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.contains", present_null_set,
+          SblrText("character", std::string(1, static_cast<char>(0xff))),
+          context);
+  Require(!invalid_utf8_membership.ok() &&
+              !invalid_utf8_membership.diagnostics.empty() &&
+              invalid_utf8_membership.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.DESCRIPTOR.INVALID",
+          "SBLR character set membership accepted invalid UTF-8 bytes");
+
+  auto shadow_character = SblrText("character", "<NULL>");
+  shadow_character.uuid_value.bytes[0] = 1;
+  const auto shadow_character_membership =
+      sblr::EvaluateSblrCollectionOperator(
+          "operator.collection.contains", present_null_set,
+          shadow_character, context);
+  Require(!shadow_character_membership.ok() &&
+              !shadow_character_membership.diagnostics.empty() &&
+              shadow_character_membership.diagnostics.front().diagnostic_id ==
+                  "DATATYPE.DESCRIPTOR.INVALID",
+          "SBLR character membership accepted a UUID shadow carrier");
+
+  const auto disguised_set = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.cardinality",
+      SblrText("character", present_null_set.encoded_value), SblrInt(0),
+      context);
+  Require(!disguised_set.ok() && !disguised_set.diagnostics.empty() &&
+              disguised_set.diagnostics.front().diagnostic_id ==
+                  "SBLR.OPERAND_INVALID",
+          "SBLR reclassified SBSET2 bytes from an arbitrary descriptor");
+
+  const auto wrong_payload_set = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.cardinality",
+      SblrText("set_value", present_null_set.encoded_value), SblrInt(0),
+      context);
+  Require(!wrong_payload_set.ok() &&
+              !wrong_payload_set.diagnostics.empty() &&
+              wrong_payload_set.diagnostics.front().diagnostic_id ==
+                  "SBLR.OPERAND_INVALID",
+          "SBLR accepted a set frame through the text payload carrier");
+
+  auto shadow_set = present_null_set;
+  shadow_set.charset_name = "UTF8";
+  shadow_set.uuid_array_value.push_back({});
+  const auto shadow_set_result = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.cardinality", shadow_set, SblrInt(0), context);
+  Require(!shadow_set_result.ok() &&
+              !shadow_set_result.diagnostics.empty() &&
+              shadow_set_result.diagnostics.front().diagnostic_id ==
+                  "SBLR.OPERAND_INVALID",
+          "SBLR accepted set bytes with shadow carrier metadata");
+
+  const auto unordered_subscript = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.subscript", present_null_set, SblrInt(1), context);
+  Require(!unordered_subscript.ok() &&
+              !unordered_subscript.diagnostics.empty() &&
+              unordered_subscript.diagnostics.front().diagnostic_id ==
+                  "SBLR.OPERAND_INVALID",
+          "SBLR assigned an ordinal to an unordered SBSET2 value");
+
+  for (const auto operation : {"operator.collection.overlap",
+                               "operator.collection.concat"}) {
+    const auto mixed = sblr::EvaluateSblrCollectionOperator(
+        operation, present_null_set, array, context);
+    Require(!mixed.ok() && !mixed.diagnostics.empty() &&
+                mixed.diagnostics.front().diagnostic_id ==
+                    "SBLR.OPERAND_INVALID",
+            "SBLR implicitly converted a mixed set/array operation");
+  }
+
+  std::string invalid_utf8_frame =
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V";
+  invalid_utf8_frame += "ff";
+  const auto invalid_utf8_set = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.cardinality", SblrSet(invalid_utf8_frame),
+      SblrInt(0), context);
+  Require(!invalid_utf8_set.ok() && !invalid_utf8_set.diagnostics.empty() &&
+              invalid_utf8_set.diagnostics.front().diagnostic_id ==
+                  "SBLR.OPERAND_INVALID",
+          "SBLR character set accepted invalid UTF-8 bytes");
+
+  const std::vector<std::string> invalid_set_frames = {
+      "SBSET1;element=character;ordered=0;nulls=0;duplicates=0;items=3c4e554c4c3e",
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=1;duplicates=0;items=N",
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V3c4E554c4c3e",
+      "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V3c4e554c4c3e,",
+  };
+  for (const auto& frame : invalid_set_frames) {
+    const auto invalid_set = sblr::EvaluateSblrCollectionOperator(
+        "operator.collection.cardinality", SblrSet(frame),
+        SblrInt(0), context);
+    Require(!invalid_set.ok() && !invalid_set.diagnostics.empty() &&
+                invalid_set.diagnostics.front().diagnostic_id ==
+                    "SBLR.OPERAND_INVALID",
+            "SBLR accepted a legacy, nullable, or noncanonical set frame");
+  }
+
+  const auto concatenated_set = sblr::EvaluateSblrCollectionOperator(
+      "operator.collection.concat", present_null_set, present_null_set, context);
+  RequireOkScalar(concatenated_set, "canonical SBSET2 concat refused");
+  Require(concatenated_set.scalar_values.front().encoded_value ==
+              present_null_set.encoded_value,
+          "SBLR set emitter did not preserve canonical SBSET2 deduplication");
 
   const auto vector_left = SblrText("dense_vector", "[1,2,3]");
   const auto vector_right = SblrText("dense_vector", "[4,5,6]");
@@ -829,6 +1280,7 @@ int main(int argc, char** argv) {
   api_context.security_context_present = true;
 
   RequireNumericOperations(api_context);
+  RequireNullConsumerContracts(api_context);
   RequireAdvancedFamilies(api_context);
   RequireSblrDescriptorAuthorityBoundary(api_context);
   RequireSblrCollectionVectorSpecializedOperators();

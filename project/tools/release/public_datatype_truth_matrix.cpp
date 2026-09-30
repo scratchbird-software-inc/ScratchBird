@@ -191,7 +191,7 @@ dt::DatatypeOperationValue SampleValueFor(dt::CanonicalTypeId type_id) {
     case dt::CanonicalTypeId::null_type:
       return {type_id, {}, true};
     case dt::CanonicalTypeId::boolean:
-      return {type_id, "true", false};
+      return {type_id, std::string(1, static_cast<char>(1)), false};
     case dt::CanonicalTypeId::uuid:
       return {type_id, "018f7f8f-7c00-7000-8000-000000000001", false};
     case dt::CanonicalTypeId::date:
@@ -217,7 +217,7 @@ dt::DatatypeOperationValue SampleValueFor(dt::CanonicalTypeId type_id) {
     case dt::CanonicalTypeId::hstore_document:
       return {type_id, "SBHSTORE1;items=6b6579:76616c7565", false};
     case dt::CanonicalTypeId::set_value:
-      return {type_id, "SBSET1;element=character;ordered=0;nulls=0;duplicates=0;items=616c706861", false};
+      return {type_id, "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V616c706861", false};
     default:
       return {type_id, "1", false};
   }

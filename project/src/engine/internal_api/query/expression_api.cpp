@@ -8,7 +8,10 @@
 
 #include "query/expression_api.hpp"
 #include "catalog/column_metadata_codec.hpp"
+#include "catalog/datatype_bootstrap_identity.hpp"
 
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_descriptor.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
 #include "sbl_numeric.hpp"
@@ -31,7 +34,6 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
-#include "datatype_catalog_manifest.hpp"
 #include "datatype_advanced_family.hpp"
 #include "datatype_document.hpp"
 #include "domain_support/domain_store.hpp"
@@ -54,7 +56,14 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
   output->state = cast.is_null ? EngineValueState::sql_null
                                : EngineValueState::value;
   if (cast.is_null) return;
-  if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
+  if (cast.type_id == core::datatypes::CanonicalTypeId::boolean) {
+    if (cast.encoded_value.size() == 1) {
+      output->encoded_value =
+          static_cast<unsigned char>(cast.encoded_value[0]) == 1u
+              ? "true"
+              : "false";
+    }
+  } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
     output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
   } else {
@@ -69,6 +78,25 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
   if (input.isSqlNull())
     return input.encoded_value.empty() && input.binary_value.empty();
   if (input.state != EngineValueState::value) return false;
+  if (type == core::datatypes::CanonicalTypeId::boolean) {
+    if (!input.binary_value.empty()) {
+      if (!input.encoded_value.empty() || input.binary_value.size() != 1 ||
+          input.binary_value[0] > 1) {
+        return false;
+      }
+      bytes->assign(1, static_cast<char>(input.binary_value[0]));
+      return true;
+    }
+    if (input.encoded_value == "true" || input.encoded_value == "TRUE") {
+      bytes->assign(1, static_cast<char>(1));
+      return true;
+    }
+    if (input.encoded_value == "false" || input.encoded_value == "FALSE") {
+      bytes->assign(1, static_cast<char>(0));
+      return true;
+    }
+    return false;
+  }
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::binary;
   if (binary && (!input.encoded_value.empty() ||
@@ -82,6 +110,137 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
     *bytes = input.encoded_value;
   }
   return type != core::datatypes::CanonicalTypeId::uuid || bytes->size() == 16;
+}
+
+bool QowBoundExecutionTypeDescriptorV1(
+    const EngineDescriptor& descriptor,
+    const core::datatypes::CanonicalTypeId type_id,
+    engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  namespace platform = scratchbird::core::platform;
+  if (execution_descriptor == nullptr || refusal_detail == nullptr) return false;
+  *execution_descriptor = {};
+  refusal_detail->clear();
+  const auto refuse = [&](const char* detail) {
+    *refusal_detail = detail;
+    return false;
+  };
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(
+          descriptor.descriptor_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) ||
+      descriptor.descriptor_kind != "scalar" ||
+      descriptor.canonical_type_name.empty() ||
+      type_id == dt::CanonicalTypeId::unknown ||
+      type_id == dt::CanonicalTypeId::null_type ||
+      descriptor.datatype_descriptor_uuid.is_nil() ||
+      descriptor.datatype_descriptor_generation == 0) {
+    return refuse("bound scalar datatype descriptor identity is incomplete");
+  }
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      kBootstrapDatatypeCatalogUuid, kBootstrapDatatypeCatalogGeneration,
+      kBootstrapDatatypeRegistryGeneration,
+      descriptor.datatype_descriptor_uuid,
+      descriptor.datatype_descriptor_generation);
+  if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
+      identity.row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+      identity.row.descriptor_generation !=
+          descriptor.datatype_descriptor_generation ||
+      identity.row.canonical_binary_type_code !=
+          static_cast<std::uint32_t>(type_id)) {
+    return refuse("bound scalar datatype identity is not an exact admitted registry row");
+  }
+
+  CatalogColumnMetadata fields;
+  if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields)) {
+    return refuse("bound scalar descriptor metadata is not admitted column metadata");
+  }
+  if (fields.identities.contains("domain_uuid")) {
+    return refuse("bound domain descriptor lacks the complete ordered domain stack");
+  }
+  const auto nullable = fields.text.find("nullability");
+  const auto nullable_legacy = fields.text.find("nullable");
+  if ((nullable == fields.text.end()) ==
+      (nullable_legacy == fields.text.end())) {
+    return refuse("bound scalar descriptor has no unique nullability authority");
+  }
+  bool nullable_allowed = false;
+  if (nullable != fields.text.end()) {
+    if (nullable->second != "nullable" && nullable->second != "non_null") {
+      return refuse("bound scalar descriptor nullability is invalid");
+    }
+    nullable_allowed = nullable->second == "nullable";
+  } else {
+    if (nullable_legacy->second != "true" &&
+        nullable_legacy->second != "false") {
+      return refuse("bound scalar descriptor nullable flag is invalid");
+    }
+    nullable_allowed = nullable_legacy->second == "true";
+  }
+
+  const auto parse_u32 = [&](const char* key, std::uint32_t* target) {
+    const auto found = fields.text.find(key);
+    if (found == fields.text.end()) return true;
+    if (found->second.empty() ||
+        (found->second.size() > 1 && found->second.front() == '0')) {
+      return false;
+    }
+    std::uint64_t parsed = 0;
+    for (const char ch : found->second) {
+      if (ch < '0' || ch > '9') return false;
+      parsed = parsed * 10u + static_cast<unsigned>(ch - '0');
+      if (parsed > std::numeric_limits<std::uint32_t>::max()) return false;
+    }
+    *target = static_cast<std::uint32_t>(parsed);
+    return true;
+  };
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid =
+      {platform::UuidKind::object, descriptor.datatype_descriptor_uuid};
+  metadata.descriptor_epoch = descriptor.datatype_descriptor_generation;
+  if (!parse_u32("precision", &metadata.precision) ||
+      !parse_u32("scale", &metadata.scale) ||
+      !parse_u32("length", &metadata.length) ||
+      !parse_u32("vector_dimensions", &metadata.vector_dimensions) ||
+      !parse_u32("container_rank", &metadata.container_rank)) {
+    return refuse("bound scalar descriptor numeric modifiers are invalid");
+  }
+  const auto copy_identity = [&](const char* key,
+                                 platform::TypedUuid* target) {
+    const auto found = fields.identities.find(key);
+    if (found != fields.identities.end()) {
+      *target = {platform::UuidKind::object, found->second};
+    }
+  };
+  copy_identity("charset_uuid", &metadata.charset_uuid);
+  copy_identity("collation_uuid", &metadata.collation_uuid);
+  copy_identity("timezone_uuid", &metadata.timezone_uuid);
+  copy_identity("element_descriptor_uuid", &metadata.element_descriptor_uuid);
+  copy_identity("security_policy_uuid", &metadata.security_policy_uuid);
+  if (!descriptor.charset_uuid.is_nil()) {
+    if (metadata.charset_uuid.valid() &&
+        metadata.charset_uuid.value != descriptor.charset_uuid) {
+      return refuse("bound scalar charset identities disagree");
+    }
+    metadata.charset_uuid =
+        {platform::UuidKind::object, descriptor.charset_uuid};
+  }
+  if (!descriptor.collation_uuid.is_nil()) {
+    if (metadata.collation_uuid.valid() &&
+        metadata.collation_uuid.value != descriptor.collation_uuid) {
+      return refuse("bound scalar collation identities disagree");
+    }
+    metadata.collation_uuid =
+        {platform::UuidKind::object, descriptor.collation_uuid};
+  }
+  const auto built =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  if (!built.ok()) {
+    return refuse("bound scalar execution descriptor could not be built from catalog authority");
+  }
+  *execution_descriptor = built.descriptor;
+  execution_descriptor->nullable_allowed = nullable_allowed;
+  return true;
 }
 
 }  // namespace
@@ -99,6 +258,25 @@ bool QowCanonicalComparableEncodingV1(
   namespace dt = scratchbird::core::datatypes;
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
+  if (type_id == dt::CanonicalTypeId::boolean) {
+    if (!value.binary_value.empty()) {
+      if (!value.encoded_value.empty() || value.binary_value.size() != 1 ||
+          value.binary_value[0] > 1) {
+        return false;
+      }
+      encoded_value->assign(1, static_cast<char>(value.binary_value[0]));
+      return true;
+    }
+    if (value.encoded_value == "true" || value.encoded_value == "TRUE") {
+      encoded_value->assign(1, static_cast<char>(1));
+      return true;
+    }
+    if (value.encoded_value == "false" || value.encoded_value == "FALSE") {
+      encoded_value->assign(1, static_cast<char>(0));
+      return true;
+    }
+    return false;
+  }
   if (type_id == dt::CanonicalTypeId::uuid || type_id == dt::CanonicalTypeId::binary) {
     if (!value.encoded_value.empty()) return false;
     const auto size = value.binary_value.size();
@@ -402,6 +580,7 @@ EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
 // QOW-SOURCE-QRY-008-NULL-V1
 bool QowCanonicalSqlNullStateV1(const EngineTypedValue& value) {
   return value.state == EngineValueState::sql_null &&
+         value.is_null &&
          value.encoded_value.empty() &&
          value.binary_value.empty();
 }
@@ -410,6 +589,35 @@ EngineTypedValue QowPropagateSqlNullAfterScalarV1(
     const EngineDescriptor& result_descriptor,
     EngineTypedValue computed_value) {
   if (!computed_value.isSqlNull()) return computed_value;
+  namespace dt = scratchbird::core::datatypes;
+  const auto computed_type = dt::CanonicalTypeIdFromStableName(
+      computed_value.descriptor.canonical_type_name);
+  const auto result_type = dt::CanonicalTypeIdFromStableName(
+      result_descriptor.canonical_type_name);
+  engine::ExecutionTypeDescriptor computed_bound;
+  engine::ExecutionTypeDescriptor result_bound;
+  std::string refusal_detail;
+  if (computed_type == dt::CanonicalTypeId::unknown ||
+      computed_type != result_type ||
+      !QowBoundExecutionTypeDescriptorV1(
+          computed_value.descriptor, computed_type, &computed_bound,
+          &refusal_detail) ||
+      !QowBoundExecutionTypeDescriptorV1(
+          result_descriptor, result_type, &result_bound, &refusal_detail) ||
+      !computed_bound.nullable_allowed || !result_bound.nullable_allowed) {
+    computed_value.encoded_value.clear();
+    computed_value.binary_value.clear();
+    computed_value.is_null = false;
+    computed_value.state = EngineValueState::error;
+    return computed_value;
+  }
+  if (!QowCanonicalSqlNullStateV1(computed_value)) {
+    computed_value.encoded_value.clear();
+    computed_value.binary_value.clear();
+    computed_value.is_null = false;
+    computed_value.state = EngineValueState::error;
+    return computed_value;
+  }
   computed_value.descriptor = result_descriptor;
   computed_value.encoded_value.clear();
   computed_value.binary_value.clear();
@@ -438,10 +646,8 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   if (!QowCanonicalDescriptorIdentityV1(input_value.descriptor) ||
       !QowCanonicalDescriptorIdentityV1(target_descriptor) ||
       input_value.descriptor.descriptor_kind != "scalar" ||
-      target_descriptor.descriptor_kind != "scalar" ||
-      (input_value.isSqlNull() &&
-       !QowCanonicalSqlNullStateV1(input_value))) {
-    *refusal_detail = "canonical coercion descriptors or value state are invalid";
+      target_descriptor.descriptor_kind != "scalar") {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:canonical coercion descriptors are invalid";
     return false;
   }
   const auto source_type = dt::CanonicalTypeIdFromStableName(
@@ -450,24 +656,48 @@ bool QowApplyCanonicalDescriptorCoercionV1(
       target_descriptor.canonical_type_name);
   if (source_type == dt::CanonicalTypeId::unknown ||
       target_type == dt::CanonicalTypeId::unknown) {
-    *refusal_detail = "canonical coercion type is unknown";
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:canonical coercion type is unknown";
     return false;
   }
   dt::DatatypeCastRequest request;
   request.value.type_id = source_type;
+  request.value.is_null = input_value.isSqlNull();
+  request.target_type_id = target_type;
+  request.context = explicit_cast ? dt::DatatypeCastContext::explicit_cast
+                                  : dt::DatatypeCastContext::implicit;
+  request.explicit_cast = explicit_cast;
+  if (request.value.is_null) {
+    if (!QowBoundExecutionTypeDescriptorV1(
+            input_value.descriptor, source_type,
+            &request.value.descriptor, refusal_detail)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:source descriptor: " +
+          *refusal_detail;
+      return false;
+    }
+    if (!QowBoundExecutionTypeDescriptorV1(
+            target_descriptor, target_type,
+            &request.target_descriptor, refusal_detail)) {
+      *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:target descriptor: " +
+          *refusal_detail;
+      return false;
+    }
+  }
+  if (input_value.isSqlNull() &&
+      !QowCanonicalSqlNullStateV1(input_value)) {
+    *refusal_detail = "DATATYPE.NULL_STATE.INVALID:canonical coercion SQL NULL state is malformed";
+    return false;
+  }
   if (!ScalarCastInputEncoding(input_value, source_type,
                                 &request.value.encoded_value)) {
     *refusal_detail = "canonical coercion operand encoding is invalid";
     return false;
   }
-  request.value.is_null = input_value.isSqlNull();
-  request.target_type_id = target_type;
-  request.explicit_cast = explicit_cast;
   const auto cast = dt::CastDatatypeValue(request);
   if (!cast.ok()) {
     *refusal_detail = cast.diagnostic.diagnostic_code.empty()
                           ? "canonical descriptor coercion refused"
-                          : cast.diagnostic.diagnostic_code;
+                          : cast.diagnostic.diagnostic_code + ":" +
+                                cast.diagnostic.message_key;
     return false;
   }
   PublishScalarCastValue(cast.value, target_descriptor, output_value);
@@ -734,6 +964,74 @@ bool QowApplyCanonicalNumericScalarV1(
     scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts) {
   namespace dt = scratchbird::core::datatypes;
   if (output_value == nullptr || refusal_detail == nullptr) return false;
+  const bool binary_operation =
+      operation != dt::DatatypeNumericOperationKind::canonicalize;
+  refusal_detail->clear();
+  const auto left_type = dt::CanonicalTypeIdFromStableName(
+      left_value.descriptor.canonical_type_name);
+  const auto right_type = binary_operation
+      ? dt::CanonicalTypeIdFromStableName(
+            right_value.descriptor.canonical_type_name)
+      : left_type;
+  const auto result_type = dt::CanonicalTypeIdFromStableName(
+      result_descriptor.canonical_type_name);
+  engine::ExecutionTypeDescriptor left_descriptor;
+  engine::ExecutionTypeDescriptor right_descriptor;
+  engine::ExecutionTypeDescriptor output_descriptor;
+  const bool has_sql_null_state = left_value.isSqlNull() ||
+      (binary_operation && right_value.isSqlNull());
+  if (has_sql_null_state &&
+      (!QowBoundExecutionTypeDescriptorV1(
+           left_value.descriptor, left_type, &left_descriptor,
+           refusal_detail) ||
+       (binary_operation &&
+        !QowBoundExecutionTypeDescriptorV1(
+            right_value.descriptor, right_type, &right_descriptor,
+            refusal_detail)) ||
+       !QowBoundExecutionTypeDescriptorV1(
+           result_descriptor, result_type, &output_descriptor,
+           refusal_detail))) {
+    *output_value = {};
+    output_value->state = EngineValueState::error;
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + *refusal_detail;
+    if (numeric_facts) {
+      *numeric_facts = {};
+      numeric_facts->invalid = true;
+    }
+    return false;
+  }
+  const auto canonical_state = [](const EngineTypedValue& value) {
+    return (value.state == EngineValueState::value && !value.is_null) ||
+        (value.state == EngineValueState::sql_null && value.is_null &&
+         value.encoded_value.empty() && value.binary_value.empty());
+  };
+  if (!canonical_state(left_value) ||
+      (binary_operation && !canonical_state(right_value))) {
+    *output_value = {};
+    output_value->state = EngineValueState::error;
+    *refusal_detail = "DATATYPE.NULL_STATE.INVALID";
+    if (numeric_facts) {
+      *numeric_facts = {};
+      numeric_facts->invalid = true;
+    }
+    return false;
+  }
+  const bool left_is_null = left_value.isSqlNull();
+  const bool right_is_null = binary_operation && right_value.isSqlNull();
+  if (left_is_null || right_is_null) {
+    *output_value = {};
+    output_value->state = EngineValueState::error;
+    if (numeric_facts) {
+      *numeric_facts = {};
+      numeric_facts->invalid = true;
+    }
+    if ((left_is_null && !left_descriptor.nullable_allowed) ||
+        (right_is_null && !right_descriptor.nullable_allowed) ||
+        !output_descriptor.nullable_allowed) {
+      *refusal_detail = "DATATYPE.NULL_NOT_ADMITTED:SQL NULL is not admitted by a bound numeric descriptor";
+      return false;
+    }
+  }
   if (dt::CanonicalTypeIdFromStableName(result_descriptor.canonical_type_name) == dt::CanonicalTypeId::real128)
     return ApplyCanonicalBinary128Scalar(left_value, right_value, result_descriptor,
         operation, context, output_value, refusal_detail, numeric_facts);
@@ -744,12 +1042,6 @@ bool QowApplyCanonicalNumericScalarV1(
   std::uint32_t descriptor_precision = 0;
   std::uint32_t descriptor_scale = 0;
   std::uint32_t descriptor_width = 0;
-  const auto left_type = dt::CanonicalTypeIdFromStableName(
-      left_value.descriptor.canonical_type_name);
-  const auto right_type = dt::CanonicalTypeIdFromStableName(
-      right_value.descriptor.canonical_type_name);
-  const auto result_type = dt::CanonicalTypeIdFromStableName(
-      result_descriptor.canonical_type_name);
   const bool decimal_context =
       result_type == dt::CanonicalTypeId::decimal ||
       result_type == dt::CanonicalTypeId::decimal_float;
@@ -782,12 +1074,14 @@ bool QowApplyCanonicalNumericScalarV1(
       ((bounded_signed_context || bounded_real_context) &&
        context.scale == 0);
   if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
-      !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
+      (binary_operation &&
+       !QowCanonicalDescriptorIdentityV1(right_value.descriptor)) ||
       !QowCanonicalDescriptorIdentityV1(result_descriptor) ||
       left_value.descriptor.descriptor_kind != "scalar" ||
-      right_value.descriptor.descriptor_kind != "scalar" ||
+      (binary_operation && right_value.descriptor.descriptor_kind != "scalar") ||
       result_descriptor.descriptor_kind != "scalar" ||
-      left_type != result_type || right_type != result_type ||
+      left_type != result_type ||
+      (binary_operation && right_type != result_type) ||
       (!decimal_context && !fixed_128_context && !bounded_signed_context &&
        !bounded_real_context) ||
       operation == dt::DatatypeNumericOperationKind::compare ||
@@ -938,6 +1232,11 @@ bool QowApplyCanonicalNumericScalarV1(
   numeric_request.right.encoded_value = right_value.encoded_value;
   numeric_request.right.is_null = right_value.isSqlNull();
   numeric_request.context = context;
+  if (has_sql_null_state) {
+    numeric_request.left.descriptor = left_descriptor;
+    if (binary_operation) numeric_request.right.descriptor = right_descriptor;
+    numeric_request.result_descriptor = output_descriptor;
+  }
   const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
   if (numeric_facts) *numeric_facts = numeric_result.numeric_facts;
   if (!numeric_result.ok()) {
@@ -1050,6 +1349,18 @@ bool QowEvaluateCanonicalComparisonTruthV1(
     *refusal_detail = "comparison operand type is unknown";
     return false;
   }
+  engine::ExecutionTypeDescriptor left_descriptor;
+  engine::ExecutionTypeDescriptor right_descriptor;
+  std::string descriptor_refusal;
+  if (!QowBoundExecutionTypeDescriptorV1(
+          left_value.descriptor, comparison_type, &left_descriptor,
+          &descriptor_refusal) ||
+      !QowBoundExecutionTypeDescriptorV1(
+          right_value.descriptor, comparison_type, &right_descriptor,
+          &descriptor_refusal)) {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + descriptor_refusal;
+    return false;
+  }
   if (comparison_type ==
       scratchbird::core::datatypes::CanonicalTypeId::character) {
     const auto& left_collation = left_value.descriptor.collation_uuid;
@@ -1081,6 +1392,12 @@ bool QowEvaluateCanonicalComparisonTruthV1(
       return false;
   }
   if (left_value.isSqlNull() || right_value.isSqlNull()) {
+    if ((left_value.isSqlNull() && !left_descriptor.nullable_allowed) ||
+        (right_value.isSqlNull() && !right_descriptor.nullable_allowed)) {
+      *refusal_detail =
+          "DATATYPE.NULL_NOT_ADMITTED:comparison SQL NULL contradicts a bound descriptor";
+      return false;
+    }
     *truth_value = EngineSqlTruthValue::unknown;
     return true;
   }
@@ -1130,13 +1447,31 @@ bool QowEvaluateCanonicalNullPredicateV1(
   if (truth_value == nullptr || refusal_detail == nullptr) return false;
   *truth_value = EngineSqlTruthValue::unknown;
   refusal_detail->clear();
+  const auto type_id =
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+          value.descriptor.canonical_type_name);
   if (!QowCanonicalDescriptorIdentityV1(value.descriptor) ||
       value.descriptor.descriptor_kind != "scalar" ||
-      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-          value.descriptor.canonical_type_name) ==
-          scratchbird::core::datatypes::CanonicalTypeId::unknown ||
-      (value.isSqlNull() && !QowCanonicalSqlNullStateV1(value))) {
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::unknown) {
     *refusal_detail = "IS NULL operand is not a canonical scalar state";
+    return false;
+  }
+  engine::ExecutionTypeDescriptor bound_descriptor;
+  std::string descriptor_refusal;
+  if (!QowBoundExecutionTypeDescriptorV1(
+          value.descriptor, type_id, &bound_descriptor,
+          &descriptor_refusal)) {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + descriptor_refusal;
+    return false;
+  }
+  if (value.isSqlNull() && !QowCanonicalSqlNullStateV1(value)) {
+    *refusal_detail =
+        "DATATYPE.NULL_STATE.INVALID:IS NULL operand has malformed SQL NULL state";
+    return false;
+  }
+  if (value.isSqlNull() && !bound_descriptor.nullable_allowed) {
+    *refusal_detail =
+        "DATATYPE.NULL_NOT_ADMITTED:IS NULL operand contradicts its bound descriptor";
     return false;
   }
   if (!value.isSqlNull() &&
@@ -1326,14 +1661,18 @@ bool QowMaterializeCanonicalTruthValueV1(
     *refusal_detail = "predicate result descriptor is not canonical boolean";
     return false;
   }
-  const std::string nullability = QowCanonicalDescriptorFieldV1(
-      result_descriptor.encoded_descriptor, "nullability");
-  if ((nullability != "nullable" && nullability != "non_null" &&
-       nullability != "unknown") ||
-      (truth_value == EngineSqlTruthValue::unknown &&
-       nullability == "non_null")) {
+  engine::ExecutionTypeDescriptor bound_descriptor;
+  std::string descriptor_refusal;
+  if (!QowBoundExecutionTypeDescriptorV1(
+          result_descriptor, dt::CanonicalTypeId::boolean,
+          &bound_descriptor, &descriptor_refusal)) {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + descriptor_refusal;
+    return false;
+  }
+  if (truth_value == EngineSqlTruthValue::unknown &&
+      !bound_descriptor.nullable_allowed) {
     *refusal_detail =
-        "predicate truth state contradicts the bound result nullability";
+        "DATATYPE.NULL_NOT_ADMITTED:predicate truth state contradicts the bound result nullability";
     return false;
   }
   output_value->descriptor = result_descriptor;
@@ -1367,9 +1706,22 @@ bool QowCanonicalTruthFromTypedValueV1(
     *refusal_detail = "expression truth operand is not canonical boolean";
     return false;
   }
+  engine::ExecutionTypeDescriptor bound_descriptor;
+  std::string descriptor_refusal;
+  if (!QowBoundExecutionTypeDescriptorV1(
+          value.descriptor, dt::CanonicalTypeId::boolean,
+          &bound_descriptor, &descriptor_refusal)) {
+    *refusal_detail = "DATATYPE.DESCRIPTOR.INVALID:" + descriptor_refusal;
+    return false;
+  }
   if (value.isSqlNull()) {
     if (!QowCanonicalSqlNullStateV1(value)) {
       *refusal_detail = "SQL NULL boolean carries substitute payload";
+      return false;
+    }
+    if (!bound_descriptor.nullable_allowed) {
+      *refusal_detail =
+          "DATATYPE.NULL_NOT_ADMITTED:boolean SQL NULL contradicts its bound descriptor";
       return false;
     }
     *truth = EngineSqlTruthValue::unknown;
@@ -1834,7 +2186,8 @@ bool QowEvaluateCanonicalTypedExpressionV1(
             "bound function result or target descriptor is invalid";
         return false;
       }
-      if (source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary ||
+      if (function_value.isSqlNull() ||
+          source_type == dt::CanonicalTypeId::uuid || source_type == dt::CanonicalTypeId::binary ||
           result_type == dt::CanonicalTypeId::uuid || result_type == dt::CanonicalTypeId::binary) {
         std::string cast_category;
         return QowApplyCanonicalDescriptorCoercionV1(
@@ -2040,7 +2393,13 @@ EngineApiDiagnostic DatatypeDiagnosticToApi(const std::string& operation_id,
       break;
     }
   }
-  return MakeInvalidRequestDiagnostic(operation_id, detail.empty() ? diagnostic.diagnostic_code : detail);
+  return MakeEngineApiDiagnosticFromNative(
+      diagnostic,
+      diagnostic.diagnostic_code.empty() ? "SB_ENGINE_API_INVALID_REQUEST"
+                                         : diagnostic.diagnostic_code,
+      diagnostic.message_key.empty() ? "engine.api.invalid_request"
+                                     : diagnostic.message_key,
+      detail.empty() ? operation_id : std::move(detail));
 }
 
 EngineTypedValue RequestInputValue(const EngineApiRequest& request, const EngineTypedValue& typed_input) {
@@ -2444,6 +2803,16 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
       !domain_descriptor_route &&
       (!input.descriptor.descriptor_uuid.is_nil() ||
        !target.descriptor_uuid.is_nil());
+  if (input.isSqlNull() && !domain_descriptor_route &&
+      !canonical_descriptor_route) {
+    return ApiFailure<EngineCastValueResult>(
+        request.context,
+        "query.cast_value",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.DESCRIPTOR.INVALID",
+            "engine.query.invalid_descriptor_state_refused",
+            "SQL NULL cast requires exact source and target descriptors"));
+  }
   if (canonical_descriptor_route) {
     EngineTypedValue coerced;
     std::string category;
@@ -2451,12 +2820,19 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     if (!QowApplyCanonicalDescriptorCoercionV1(
             input, target, request.explicit_cast, &coerced, &category,
             &refusal_detail)) {
+      const auto separator = refusal_detail.find(':');
+      const std::string diagnostic_code =
+          refusal_detail.rfind("DATATYPE.", 0) == 0
+              ? refusal_detail.substr(0, separator)
+              : "QOW-DIAG-QRY-008-COERCE-REFUSAL-V1";
       return ApiFailure<EngineCastValueResult>(
           request.context,
           "query.cast_value",
           MakeEngineApiDiagnostic(
-              "QOW-DIAG-QRY-008-COERCE-REFUSAL-V1",
-              "engine.query.typed_scalar_coercion_refused",
+              diagnostic_code,
+              diagnostic_code.rfind("DATATYPE.", 0) == 0
+                  ? "datatype.cast.rejected"
+                  : "engine.query.typed_scalar_coercion_refused",
               std::move(refusal_detail)));
     }
     auto result =
@@ -2493,8 +2869,28 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   }
   cast_request.value.is_null = input.isSqlNull();
   cast_request.target_type_id = target_type;
+  cast_request.context = request.explicit_cast
+                             ? dt::DatatypeCastContext::explicit_cast
+                             : dt::DatatypeCastContext::implicit;
   cast_request.explicit_cast = request.explicit_cast;
   cast_request.reference_compatibility_profile = !request.compatibility_profile.names.empty();
+  if (cast_request.value.is_null) {
+    std::string refusal_detail;
+    if (!QowBoundExecutionTypeDescriptorV1(
+            input.descriptor, source_type,
+            &cast_request.value.descriptor, &refusal_detail) ||
+        !QowBoundExecutionTypeDescriptorV1(
+            target, target_type,
+            &cast_request.target_descriptor, &refusal_detail)) {
+      return ApiFailure<EngineCastValueResult>(
+          request.context,
+          "query.cast_value",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(refusal_detail)));
+    }
+  }
   const auto cast = dt::CastDatatypeValue(cast_request);
   if (!cast.ok()) {
     return ApiFailure<EngineCastValueResult>(
@@ -2887,8 +3283,46 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
   dt::DatatypeExtractRequest extract_request;
   extract_request.value.type_id = TypeFromDescriptor(input.descriptor);
   extract_request.value.encoded_value = input.encoded_value;
-  extract_request.value.is_null = input.is_null;
+  extract_request.value.is_null = input.isSqlNull();
   extract_request.field = field;
+  const EngineDescriptor* bound_result_descriptor =
+      request.descriptors.empty() ? nullptr : &request.descriptors.front();
+  if (extract_request.value.is_null) {
+    if (bound_result_descriptor == nullptr) {
+      return ApiFailure<EngineExtractValueResult>(
+          request.context,
+          "query.extract_value",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              "nullable extraction requires a bound result descriptor"));
+    }
+    const auto result_type = TypeFromDescriptor(*bound_result_descriptor);
+    std::string refusal_detail;
+    if (!QowBoundExecutionTypeDescriptorV1(
+            input.descriptor, extract_request.value.type_id,
+            &extract_request.value.descriptor, &refusal_detail) ||
+        !QowBoundExecutionTypeDescriptorV1(
+            *bound_result_descriptor, result_type,
+            &extract_request.result_descriptor, &refusal_detail)) {
+      return ApiFailure<EngineExtractValueResult>(
+          request.context,
+          "query.extract_value",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(refusal_detail)));
+    }
+    if (!QowCanonicalSqlNullStateV1(input)) {
+      return ApiFailure<EngineExtractValueResult>(
+          request.context,
+          "query.extract_value",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.NULL_STATE.INVALID",
+              "engine.query.invalid_null_state_refused",
+              "SQL NULL extraction input carries substitute payload bytes"));
+    }
+  }
   const auto extracted = dt::ExtractDatatypeField(extract_request);
   if (!extracted.ok()) {
     return ApiFailure<EngineExtractValueResult>(
@@ -2896,9 +3330,35 @@ EngineExtractValueResult EngineExtractValue(const EngineExtractValueRequest& req
         "query.extract_value",
         DatatypeDiagnosticToApi("query.extract_value", extracted.diagnostic));
   }
+  if (bound_result_descriptor != nullptr && !extract_request.value.is_null) {
+    const auto result_type = TypeFromDescriptor(*bound_result_descriptor);
+    engine::ExecutionTypeDescriptor admitted_result_descriptor;
+    std::string refusal_detail;
+    if (result_type != extracted.value.type_id ||
+        !QowBoundExecutionTypeDescriptorV1(
+            *bound_result_descriptor, result_type,
+            &admitted_result_descriptor, &refusal_detail)) {
+      if (refusal_detail.empty()) {
+        refusal_detail =
+            "extract result descriptor does not match the extracted field type";
+      }
+      return ApiFailure<EngineExtractValueResult>(
+          request.context,
+          "query.extract_value",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(refusal_detail)));
+    }
+  }
   auto result = ApiSuccess<EngineExtractValueResult>(request.context, "query.extract_value");
-  result.value.descriptor.canonical_type_name = dt::CanonicalTypeName(extracted.value.type_id);
-  result.value.descriptor.descriptor_kind = "scalar";
+  if (bound_result_descriptor != nullptr) {
+    result.value.descriptor = *bound_result_descriptor;
+  } else {
+    result.value.descriptor.canonical_type_name =
+        dt::CanonicalTypeName(extracted.value.type_id);
+    result.value.descriptor.descriptor_kind = "scalar";
+  }
   result.value.encoded_value = extracted.value.encoded_value;
   result.value.is_null = extracted.value.is_null;
   result.value.state = extracted.value.is_null ? EngineValueState::sql_null
@@ -2941,20 +3401,115 @@ EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& req
         MakeInvalidRequestDiagnostic("query.set_operation",
                                      "set_element_descriptor_unresolved"));
   }
-  if (left.descriptor.canonical_type_name.empty() ||
-      right.descriptor.canonical_type_name.empty() ||
-      (left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
-      (right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)) ||
+  std::string descriptor_refusal;
+  if (!QowBoundExecutionTypeDescriptorV1(
+          request.descriptors.front(),
+          set_request.descriptor.element_type_id,
+          &set_request.descriptor.element_descriptor,
+          &descriptor_refusal)) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.DESCRIPTOR.INVALID",
+            "engine.query.invalid_descriptor_state_refused",
+            std::move(descriptor_refusal)));
+  }
+  set_request.descriptor.ordered = request.ordered;
+  set_request.descriptor.allow_null_elements = request.allow_null_elements;
+  set_request.descriptor.allow_duplicates = request.allow_duplicates;
+  if (set_request.descriptor.allow_null_elements &&
+      !set_request.descriptor.element_descriptor.nullable_allowed) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.NULL_NOT_ADMITTED",
+            "engine.query.null_not_admitted",
+            "nullable set profile contradicts the bound element descriptor"));
+  }
+  const bool membership =
+      set_request.operation == dt::DatatypeSetOperationKind::membership;
+  const bool consumes_right =
+      set_request.operation != dt::DatatypeSetOperationKind::cardinality;
+  if ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
+      (consumes_right && right.isSqlNull() &&
+       !QowCanonicalSqlNullStateV1(right))) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.NULL_STATE.INVALID",
+            "engine.query.invalid_null_state_refused",
+            "SQL NULL set operands require canonical state and zero payload"));
+  }
+  if (TypeFromDescriptor(left.descriptor) != dt::CanonicalTypeId::set_value ||
+      (consumes_right && !membership &&
+       TypeFromDescriptor(right.descriptor) != dt::CanonicalTypeId::set_value) ||
+      (consumes_right && right.descriptor.canonical_type_name.empty()) ||
       (!left.isSqlNull() && left.state != EngineValueState::value) ||
-      (!right.isSqlNull() && right.state != EngineValueState::value)) {
+      (consumes_right && !right.isSqlNull() &&
+       right.state != EngineValueState::value) ||
+      !left.binary_value.empty() ||
+      (consumes_right && !membership && !right.binary_value.empty())) {
     return ApiFailure<EngineSetOperationResult>(
         request.context,
         "query.set_operation",
         MakeInvalidRequestDiagnostic("query.set_operation",
                                      "set_operand_descriptor_or_state_invalid"));
   }
+  if (left.isSqlNull() ||
+      (consumes_right && !membership && right.isSqlNull())) {
+    return ApiFailure<EngineSetOperationResult>(
+        request.context,
+        "query.set_operation",
+        MakeInvalidRequestDiagnostic(
+            "query.set_operation", "set_operand_must_be_present"));
+  }
   set_request.left_encoded_set = left.encoded_value;
-  set_request.right_encoded_set_or_value = right.encoded_value;
+  if (membership) {
+    set_request.right_value.type_id = TypeFromDescriptor(right.descriptor);
+    set_request.right_value.is_null = right.isSqlNull();
+    if (set_request.right_value.type_id !=
+        set_request.descriptor.element_type_id ||
+        !QowBoundExecutionTypeDescriptorV1(
+            right.descriptor, set_request.right_value.type_id,
+            &set_request.right_value.descriptor, &descriptor_refusal)) {
+      if (descriptor_refusal.empty()) {
+        descriptor_refusal =
+            "set membership value does not match the bound element type";
+      }
+      return ApiFailure<EngineSetOperationResult>(
+          request.context,
+          "query.set_operation",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(descriptor_refusal)));
+    }
+    if (!ScalarCastInputEncoding(
+            right, set_request.right_value.type_id,
+            &set_request.right_value.encoded_value)) {
+      return ApiFailure<EngineSetOperationResult>(
+          request.context,
+          "query.set_operation",
+          MakeInvalidRequestDiagnostic(
+              "query.set_operation",
+              "set_membership_value_encoding_invalid"));
+    }
+    if (set_request.right_value.is_null &&
+        !set_request.descriptor.allow_null_elements) {
+      return ApiFailure<EngineSetOperationResult>(
+          request.context,
+          "query.set_operation",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.NULL_NOT_ADMITTED",
+              "engine.query.null_not_admitted",
+              "SQL NULL membership requires a nullable set profile"));
+    }
+  } else if (consumes_right) {
+    set_request.right_encoded_set = right.encoded_value;
+  }
   const auto set_result = dt::ApplySetOperation(set_request);
   if (!set_result.ok()) {
     return ApiFailure<EngineSetOperationResult>(
@@ -2963,13 +3518,11 @@ EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& req
         DatatypeDiagnosticToApi("query.set_operation", set_result.diagnostic));
   }
   auto result = ApiSuccess<EngineSetOperationResult>(request.context, "query.set_operation");
-  result.value.descriptor.canonical_type_name = dt::CanonicalTypeName(set_result.value.type_id);
-  result.value.descriptor.descriptor_kind = "scalar";
-  result.value.encoded_value = set_result.value.encoded_value;
-  result.value.is_null = set_result.value.is_null;
-  result.value.state = set_result.value.is_null ? EngineValueState::sql_null
-                                                : EngineValueState::value;
-  if (result.value.is_null) result.value.encoded_value.clear();
+  EngineDescriptor result_descriptor;
+  result_descriptor.canonical_type_name =
+      dt::CanonicalTypeName(set_result.value.type_id);
+  result_descriptor.descriptor_kind = "scalar";
+  PublishScalarCastValue(set_result.value, result_descriptor, &result.value);
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
   result.evidence.push_back({"datatype_set_operation", LowerValue(operation)});
@@ -3004,20 +3557,9 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
         request.context,
         "query.apply_numeric_operation",
         MakeEngineApiDiagnostic(
-            "QOW-DIAG-QRY-008-DESC-REFUSAL-V1",
+            "DATATYPE.DESCRIPTOR.INVALID",
             "engine.query.typed_scalar_descriptor_refused",
             "canonical descriptor identity is missing or malformed"));
-  }
-  if (canonical_descriptor_route &&
-      ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
-       (binary_operation && right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)))) {
-    return ApiFailure<EngineApplyNumericOperationResult>(
-        request.context,
-        "query.apply_numeric_operation",
-        MakeEngineApiDiagnostic(
-            "QOW-DIAG-QRY-008-NULL-REFUSAL-V1",
-            "engine.query.typed_scalar_null_refused",
-            "SQL NULL scalar operands cannot carry substitute payload bytes"));
   }
   const auto value_state_valid = [](const EngineTypedValue& value) {
     return value.isSqlNull()
@@ -3026,30 +3568,17 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   };
   if (left.descriptor.canonical_type_name.empty() ||
       result_descriptor.canonical_type_name.empty() ||
-      !value_state_valid(left) ||
       (operation != dt::DatatypeNumericOperationKind::canonicalize &&
-       (right.descriptor.canonical_type_name.empty() ||
-        !value_state_valid(right)))) {
+       right.descriptor.canonical_type_name.empty())) {
     return ApiFailure<EngineApplyNumericOperationResult>(
         request.context,
         "query.apply_numeric_operation",
         MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
                                      "numeric_operand_descriptor_or_state_invalid"));
   }
-  dt::DatatypeRoundingMode rounding;
-  const std::string rounding_text = !request.rounding_mode.empty()
-      ? request.rounding_mode
-      : OptionValue(request, "rounding:");
-  if (!RoundingModeKind(rounding_text, &rounding)) {
-    return ApiFailure<EngineApplyNumericOperationResult>(
-        request.context,
-        "query.apply_numeric_operation",
-        MakeInvalidRequestDiagnostic("query.apply_numeric_operation", "numeric_rounding_mode_unsupported:" + rounding_text));
-  }
-
   dt::DatatypeNumericOperationRequest numeric_request;
   numeric_request.operation = operation;
-  numeric_request.type_id = request.descriptors.empty() ? TypeFromDescriptor(left.descriptor) : TypeFromDescriptor(request.descriptors.front());
+  numeric_request.type_id = TypeFromDescriptor(left.descriptor);
   numeric_request.left.type_id = TypeFromDescriptor(left.descriptor);
   numeric_request.left.encoded_value = left.encoded_value;
   numeric_request.left.is_null = left.isSqlNull();
@@ -3065,6 +3594,93 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
         "query.apply_numeric_operation",
         MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
                                      "numeric_operand_descriptor_unresolved"));
+  }
+  if (numeric_request.left.type_id != numeric_request.type_id ||
+      (binary_operation &&
+       numeric_request.right.type_id != numeric_request.type_id)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation",
+                                     "numeric_operand_type_mismatch"));
+  }
+  const auto declared_result_type =
+      operation == dt::DatatypeNumericOperationKind::compare
+          ? dt::CanonicalTypeId::boolean
+          : numeric_request.type_id;
+  if (TypeFromDescriptor(result_descriptor) != declared_result_type) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-028-DESC-REFUSAL-V1",
+            "engine.query.invalid_descriptor_state_refused",
+            "numeric result descriptor does not match the declared result type"));
+  }
+  engine::ExecutionTypeDescriptor bound_left_descriptor;
+  engine::ExecutionTypeDescriptor bound_right_descriptor;
+  engine::ExecutionTypeDescriptor bound_result_descriptor;
+  if (canonical_descriptor_route) {
+    std::string refusal_detail;
+    if (!QowBoundExecutionTypeDescriptorV1(
+            left.descriptor, numeric_request.left.type_id,
+            &bound_left_descriptor, &refusal_detail) ||
+        (binary_operation &&
+         !QowBoundExecutionTypeDescriptorV1(
+             right.descriptor, numeric_request.right.type_id,
+             &bound_right_descriptor, &refusal_detail)) ||
+        !QowBoundExecutionTypeDescriptorV1(
+            result_descriptor, declared_result_type,
+            &bound_result_descriptor, &refusal_detail)) {
+      return ApiFailure<EngineApplyNumericOperationResult>(
+          request.context,
+          "query.apply_numeric_operation",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(refusal_detail)));
+    }
+  }
+  if (!canonical_descriptor_route &&
+      (left.isSqlNull() || (binary_operation && right.isSqlNull()))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.DESCRIPTOR.INVALID",
+            "engine.query.invalid_descriptor_state_refused",
+            "SQL NULL numeric operands require exact bound descriptors"));
+  }
+  if (canonical_descriptor_route &&
+      ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
+       (binary_operation && right.isSqlNull() &&
+        !QowCanonicalSqlNullStateV1(right)))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeEngineApiDiagnostic(
+            "DATATYPE.NULL_STATE.INVALID",
+            "engine.query.typed_scalar_null_refused",
+            "SQL NULL scalar operands require canonical state, flag, and zero payload"));
+  }
+  if (!value_state_valid(left) ||
+      (binary_operation && !value_state_valid(right))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic(
+            "query.apply_numeric_operation",
+            "numeric_operand_state_invalid"));
+  }
+  dt::DatatypeRoundingMode rounding;
+  const std::string rounding_text = !request.rounding_mode.empty()
+      ? request.rounding_mode
+      : OptionValue(request, "rounding:");
+  if (!RoundingModeKind(rounding_text, &rounding)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation", "numeric_rounding_mode_unsupported:" + rounding_text));
   }
   numeric_request.context.precision = request.precision;
   const std::string precision_text = OptionValue(request, "precision:");
@@ -3121,6 +3737,20 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
                canonical_result_type == dt::CanonicalTypeId::real128) {
       numeric_request.context.precision = 38;
       numeric_request.context.scale = 0;
+    }
+    if (left.isSqlNull() || (binary_operation && right.isSqlNull())) {
+      if ((left.isSqlNull() && !bound_left_descriptor.nullable_allowed) ||
+          (binary_operation && right.isSqlNull() &&
+           !bound_right_descriptor.nullable_allowed) ||
+          !bound_result_descriptor.nullable_allowed) {
+        return ApiFailure<EngineApplyNumericOperationResult>(
+            request.context,
+            "query.apply_numeric_operation",
+            MakeEngineApiDiagnostic(
+                "DATATYPE.NULL_NOT_ADMITTED",
+                "engine.query.null_not_admitted",
+                "SQL NULL contradicts a bound numeric descriptor"));
+      }
     }
     if (operation == dt::DatatypeNumericOperationKind::compare) {
       int comparison = 0;
@@ -3195,13 +3825,20 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
       const bool overflow_refusal =
           refusal_detail.find("overflow") != std::string::npos ||
           refusal_detail.find("out_of_range") != std::string::npos;
+      const auto separator = refusal_detail.find(':');
+      const std::string diagnostic_code =
+          refusal_detail.rfind("DATATYPE.", 0) == 0
+              ? refusal_detail.substr(0, separator)
+              : refusal_detail.rfind("NUMERIC.", 0) == 0
+                    ? refusal_detail
+                    : overflow_refusal
+                          ? "QOW-DIAG-QRY-008-OVERFLOW-REFUSAL-V1"
+                          : "QOW-DIAG-QRY-008-NUMERIC-REFUSAL-V1";
       auto failure = ApiFailure<EngineApplyNumericOperationResult>(
           request.context,
           "query.apply_numeric_operation",
           MakeEngineApiDiagnostic(
-              refusal_detail.rfind("NUMERIC.", 0) == 0 ? refusal_detail : overflow_refusal
-                  ? "QOW-DIAG-QRY-008-OVERFLOW-REFUSAL-V1"
-                  : "QOW-DIAG-QRY-008-NUMERIC-REFUSAL-V1",
+              diagnostic_code,
               "engine.query.typed_scalar_numeric_refused",
               refusal_detail));
       failure.numeric_facts = numeric_facts;
@@ -3223,6 +3860,27 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
     return result;
   }
 
+  if (numeric_request.left.is_null || numeric_request.right.is_null) {
+    std::string refusal_detail;
+    if (!QowBoundExecutionTypeDescriptorV1(
+            left.descriptor, numeric_request.left.type_id,
+            &numeric_request.left.descriptor, &refusal_detail) ||
+        (binary_operation &&
+         !QowBoundExecutionTypeDescriptorV1(
+             right.descriptor, numeric_request.right.type_id,
+             &numeric_request.right.descriptor, &refusal_detail)) ||
+        !QowBoundExecutionTypeDescriptorV1(
+            result_descriptor, declared_result_type,
+            &numeric_request.result_descriptor, &refusal_detail)) {
+      return ApiFailure<EngineApplyNumericOperationResult>(
+          request.context,
+          "query.apply_numeric_operation",
+          MakeEngineApiDiagnostic(
+              "DATATYPE.DESCRIPTOR.INVALID",
+              "engine.query.invalid_descriptor_state_refused",
+              std::move(refusal_detail)));
+    }
+  }
   const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
   if (!numeric_result.ok()) {
     auto failure = ApiFailure<EngineApplyNumericOperationResult>(
@@ -3236,8 +3894,13 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
 
   auto result = ApiSuccess<EngineApplyNumericOperationResult>(request.context, "query.apply_numeric_operation");
   result.numeric_facts = numeric_result.numeric_facts;
-  result.value.descriptor.descriptor_kind = "scalar";
-  result.value.descriptor.canonical_type_name = dt::CanonicalTypeName(numeric_result.value.type_id);
+  if (numeric_result.value.is_null) {
+    result.value.descriptor = result_descriptor;
+  } else {
+    result.value.descriptor.descriptor_kind = "scalar";
+    result.value.descriptor.canonical_type_name =
+        dt::CanonicalTypeName(numeric_result.value.type_id);
+  }
   result.value.encoded_value = numeric_result.value.encoded_value;
   result.value.is_null = numeric_result.value.is_null;
   result.value.state = numeric_result.value.is_null

@@ -15,6 +15,9 @@ struct NativeStorageActionIntent {
   Uuid request_uuid, operation_uuid, database_uuid, filespace_uuid, locator_uuid;
   Uuid page_zero_uuid, page_size_profile_uuid, policy_snapshot_uuid;
   Uuid storage_profile_uuid, initiator_uuid, request_context_uuid;
+  Uuid policy_uuid, policy_version_uuid, attachment_uuid, attachment_version_uuid;
+  Uuid storage_profile_version_uuid;
+  u64 attachment_generation=0, storage_profile_generation=0;
   disk::FilespaceRootReference checkpoint, allocation_root;
   std::array<byte,32> checkpoint_sha256{}, allocation_sha256{};
   u64 checkpoint_generation=0, checkpoint_root_set_generation=0, directory_generation=0;
@@ -27,7 +30,7 @@ struct NativeStorageActionIntent {
   u32 page_size_bytes=0;
   NativeStorageIntentState intended_state=NativeStorageIntentState::free;
 };
-inline constexpr u64 kNativeStorageActionIntentBytes=640;
+inline constexpr u64 kNativeStorageActionIntentBytes=768;
 enum class NativeStorageIntentError {
   none, invalid_header, invalid_identity, invalid_profile, invalid_reference,
   invalid_range, invalid_integrity, operation_failure, binding_mismatch,
@@ -60,6 +63,10 @@ struct NativeStorageCapacityCheck {
   NativeFilespaceCapacityResult capacity;
   bool ok() const noexcept {return error==NativeStorageCapacityCheckError::none&&capacity.ok();}
 };
+// Pure comparison only; callers cannot turn a constructed observation into a
+// grant. Live consumers obtain the observation from the retained-device reader.
+NativeStorageCapacityCheckError MatchNativeStorageIntentCapacityObservation(
+    const NativeStorageActionIntent&,const NativeFilespaceCapacityObservation&) noexcept;
 // Fresh actual native read and complete capacity-field matching only. No path
 // opens, writes, policy/security checks, resource grant, free-range admission or
 // execution lease. The result is an observation, not authority to mutate later.

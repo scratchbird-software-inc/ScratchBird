@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
 #include "query/expression_api.hpp"
 
 #include <array>
@@ -28,37 +29,30 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 api::EngineDescriptor DecimalDescriptor(const std::string& uuid) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "decimal";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000901;"
-      "nullability=nullable;precision=12;scale=2";
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::decimal, "decimal",
+      scratchbird::tests::ParsedFixtureUuid(uuid),
+      "nullability=nullable;precision=12;scale=2");
 }
 
 api::EngineDescriptor BooleanDescriptor() {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000902");
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "boolean";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000903;"
-      "nullability=nullable";
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::boolean, "boolean",
+      scratchbird::tests::FixtureUuidLiteral(
+          "019f0000-0000-7200-8000-000000000902"),
+      "nullability=nullable");
 }
 
 api::EngineDescriptor TextDescriptor(const std::string& uuid,
                                      const std::string_view collation_uuid) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "text";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000910;"
-      "nullability=nullable;collation_uuid=" +
-      std::string(collation_uuid);
+  auto descriptor = scratchbird::tests::ExactScalarDescriptorFixture(
+      scratchbird::core::datatypes::CanonicalTypeId::character, "text",
+      scratchbird::tests::ParsedFixtureUuid(uuid),
+      "nullability=nullable");
+  descriptor.charset_uuid = scratchbird::tests::FixtureUuidLiteral(
+      "019f0000-0000-7400-8000-000000000916");
+  descriptor.collation_uuid =
+      scratchbird::tests::ParsedFixtureUuid(std::string(collation_uuid));
   return descriptor;
 }
 
@@ -193,6 +187,7 @@ bool ValidateNullSemantics() {
   null_text.descriptor = TextDescriptor(
       "019f0000-0000-7200-8000-000000000912", kCollation);
   null_text.state = api::EngineValueState::sql_null;
+  null_text.is_null = true;
   api::EngineTypedValue text_value;
   text_value.descriptor = TextDescriptor(
       "019f0000-0000-7200-8000-000000000913", kCollation);
@@ -235,6 +230,19 @@ bool ValidateNullSemantics() {
   passed &= Require(!api::QowEvaluateCanonicalNullPredicateV1(
                         missing, false, &truth, &refusal),
                     "missing runtime sentinel became SQL NULL");
+  auto unbound_null = null_value;
+  unbound_null.descriptor.datatype_descriptor_uuid = {};
+  refusal.clear();
+  passed &= Require(!api::QowEvaluateCanonicalComparisonTruthV1(
+                        unbound_null, value, 0, Operator::equal, &truth,
+                        &refusal) &&
+                        refusal.rfind("DATATYPE.DESCRIPTOR.INVALID", 0) == 0,
+                    "comparison accepted SQL NULL without exact datatype authority");
+  refusal.clear();
+  passed &= Require(!api::QowEvaluateCanonicalNullPredicateV1(
+                        unbound_null, false, &truth, &refusal) &&
+                        refusal.rfind("DATATYPE.DESCRIPTOR.INVALID", 0) == 0,
+                    "IS NULL accepted a value without exact datatype authority");
   return passed;
 }
 
@@ -249,8 +257,7 @@ bool ValidateTruthMaterializationAndConsumers() {
                           truth, descriptor, &value, &refusal),
                       "canonical truth materialization was refused");
     passed &= Require(
-        value.descriptor.descriptor_uuid.canonical ==
-            descriptor.descriptor_uuid.canonical,
+        value.descriptor.descriptor_uuid == descriptor.descriptor_uuid,
         "truth value lost its bound boolean descriptor");
     if (truth == Truth::unknown) {
       passed &= Require(value.state == api::EngineValueState::sql_null &&
@@ -297,9 +304,7 @@ bool ValidateTruthMaterializationAndConsumers() {
                         invalid_value.state == api::EngineValueState::error,
                     "unbound truth value was materialized as predicate data");
   auto non_null_descriptor = descriptor;
-  non_null_descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000903;"
-      "nullability=non_null";
+  non_null_descriptor.encoded_descriptor = "nullability=non_null";
   refusal.clear();
   passed &= Require(!api::QowMaterializeCanonicalTruthValueV1(
                         Truth::unknown, non_null_descriptor, &invalid_value,
@@ -333,7 +338,9 @@ bool ValidateCollationAndDescriptorRefusal() {
                         !refusal.empty(),
                     "malformed numeric comparison became zero data");
 
-  auto malformed = DecimalValue("not-a-uuid", "1.00");
+  auto malformed = DecimalValue(
+      "019f0000-0000-7200-8000-000000000918", "1.00");
+  malformed.descriptor.descriptor_uuid = {};
   Truth truth = Truth::true_value;
   refusal.clear();
   passed &= Require(!api::QowEvaluateCanonicalComparisonTruthV1(

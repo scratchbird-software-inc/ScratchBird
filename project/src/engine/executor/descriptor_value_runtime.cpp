@@ -253,6 +253,141 @@ std::optional<std::string> DescriptorField(
   return value;
 }
 
+bool BoundExecutionTypeDescriptor(
+    const EngineDescriptor& descriptor,
+    const CanonicalTypeId type_id,
+    scratchbird::engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* detail) {
+  namespace dt = scratchbird::core::datatypes;
+  namespace platform = scratchbird::core::platform;
+  namespace api = scratchbird::engine::internal_api;
+  if (execution_descriptor == nullptr || detail == nullptr) return false;
+  *execution_descriptor = {};
+  detail->clear();
+  const auto refuse = [&](const char* reason) {
+    *detail = reason;
+    return false;
+  };
+  if (descriptor.descriptor_kind != "scalar" &&
+      descriptor.descriptor_kind != "executor.scalar") {
+    return refuse("bound descriptor is not a scalar datatype descriptor");
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(
+          descriptor.descriptor_uuid) ||
+      type_id == CanonicalTypeId::unknown ||
+      type_id == CanonicalTypeId::null_type ||
+      descriptor.datatype_descriptor_uuid.is_nil() ||
+      descriptor.datatype_descriptor_generation == 0 ||
+      descriptor.type_uuid.is_nil()) {
+    return refuse("bound scalar datatype descriptor identity is incomplete");
+  }
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      api::kBootstrapDatatypeCatalogUuid,
+      api::kBootstrapDatatypeCatalogGeneration,
+      api::kBootstrapDatatypeRegistryGeneration,
+      descriptor.datatype_descriptor_uuid,
+      descriptor.datatype_descriptor_generation);
+  if (!identity.ok || identity.row.type_uuid != descriptor.type_uuid ||
+      identity.row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
+      identity.row.descriptor_generation !=
+          descriptor.datatype_descriptor_generation ||
+      identity.row.canonical_binary_type_code !=
+          static_cast<std::uint32_t>(type_id)) {
+    return refuse("bound scalar datatype identity is not an exact admitted registry row");
+  }
+  api::CatalogColumnMetadata fields;
+  if (!api::AdmitCatalogColumnMetadata(descriptor.encoded_descriptor,
+                                       &fields)) {
+    return refuse("bound scalar descriptor metadata is not admitted column metadata");
+  }
+  if (fields.identities.contains("domain_uuid")) {
+    return refuse("bound domain descriptor lacks the complete ordered domain stack");
+  }
+  const auto nullable = fields.text.find("nullability");
+  const auto nullable_legacy = fields.text.find("nullable");
+  if ((nullable == fields.text.end()) ==
+      (nullable_legacy == fields.text.end())) {
+    return refuse("bound scalar descriptor has no unique nullability authority");
+  }
+  bool nullable_allowed = false;
+  if (nullable != fields.text.end()) {
+    if (nullable->second != "nullable" && nullable->second != "non_null") {
+      return refuse("bound scalar descriptor nullability is invalid");
+    }
+    nullable_allowed = nullable->second == "nullable";
+  } else {
+    if (nullable_legacy->second != "true" &&
+        nullable_legacy->second != "false") {
+      return refuse("bound scalar descriptor nullable flag is invalid");
+    }
+    nullable_allowed = nullable_legacy->second == "true";
+  }
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid =
+      {platform::UuidKind::object, descriptor.datatype_descriptor_uuid};
+  metadata.descriptor_epoch = descriptor.datatype_descriptor_generation;
+  const auto copy_u32 = [&](const char* key, std::uint32_t* target) {
+    const auto found = fields.text.find(key);
+    if (found == fields.text.end()) return true;
+    const auto value = DescriptorField(descriptor.encoded_descriptor, key);
+    if (!value.has_value() || value->empty() ||
+        (value->size() > 1 && value->front() == '0')) {
+      return false;
+    }
+    std::uint64_t parsed = 0;
+    for (const char ch : *value) {
+      if (ch < '0' || ch > '9') return false;
+      parsed = parsed * 10u + static_cast<unsigned>(ch - '0');
+      if (parsed > std::numeric_limits<std::uint32_t>::max()) return false;
+    }
+    *target = static_cast<std::uint32_t>(parsed);
+    return true;
+  };
+  if (!copy_u32("precision", &metadata.precision) ||
+      !copy_u32("scale", &metadata.scale) ||
+      !copy_u32("length", &metadata.length) ||
+      !copy_u32("vector_dimensions", &metadata.vector_dimensions) ||
+      !copy_u32("container_rank", &metadata.container_rank)) {
+    return refuse("bound scalar descriptor numeric modifiers are invalid");
+  }
+  const auto copy_identity = [&](const char* key,
+                                 platform::TypedUuid* target) {
+    const auto found = fields.identities.find(key);
+    if (found != fields.identities.end()) {
+      *target = {platform::UuidKind::object, found->second};
+    }
+  };
+  copy_identity("charset_uuid", &metadata.charset_uuid);
+  copy_identity("collation_uuid", &metadata.collation_uuid);
+  copy_identity("timezone_uuid", &metadata.timezone_uuid);
+  copy_identity("element_descriptor_uuid", &metadata.element_descriptor_uuid);
+  copy_identity("security_policy_uuid", &metadata.security_policy_uuid);
+  if (!descriptor.charset_uuid.is_nil()) {
+    if (metadata.charset_uuid.valid() &&
+        metadata.charset_uuid.value != descriptor.charset_uuid) {
+      return refuse("bound scalar charset identities disagree");
+    }
+    metadata.charset_uuid =
+        {platform::UuidKind::object, descriptor.charset_uuid};
+  }
+  if (!descriptor.collation_uuid.is_nil()) {
+    if (metadata.collation_uuid.valid() &&
+        metadata.collation_uuid.value != descriptor.collation_uuid) {
+      return refuse("bound scalar collation identities disagree");
+    }
+    metadata.collation_uuid =
+        {platform::UuidKind::object, descriptor.collation_uuid};
+  }
+  const auto built =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  if (!built.ok()) {
+    return refuse("bound scalar execution descriptor could not be built from catalog authority");
+  }
+  *execution_descriptor = built.descriptor;
+  execution_descriptor->nullable_allowed = nullable_allowed;
+  return true;
+}
+
 bool DescriptorU32(const EngineDescriptor& descriptor,
                    const std::string_view key,
                    std::uint32_t* value) {
@@ -717,6 +852,15 @@ bool CanonicalDerivedDescriptorShapesMatch(
 }
 
 }  // namespace
+
+bool BuildBoundExecutionTypeDescriptor(
+    const internal_api::EngineDescriptor& descriptor,
+    const core::datatypes::CanonicalTypeId type_id,
+    engine::ExecutionTypeDescriptor* execution_descriptor,
+    std::string* refusal_detail) {
+  return BoundExecutionTypeDescriptor(
+      descriptor, type_id, execution_descriptor, refusal_detail);
+}
 
 bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
   constexpr scratchbird::engine::internal_api::EngineUuid kDescriptorUuid{
@@ -2293,14 +2437,50 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
                                      const EngineDescriptor& target_descriptor,
                                      DescriptorRuntimeDiagnostic* diagnostic) {
   if (!IsKnownScalarType(target_descriptor)) {
-    SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_TARGET_UNSUPPORTED", target_descriptor.canonical_type_name));
+    SetDiagnostic(diagnostic, ErrorDiagnostic(
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "cast target descriptor does not name an admitted scalar type"));
     return {};
   }
   if (!IsKnownScalarType(value.descriptor)) {
     SetDiagnostic(diagnostic, ErrorDiagnostic(
-        "SB_EXECUTOR_CAST_SOURCE_UNSUPPORTED",
-        value.descriptor.canonical_type_name));
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "cast source descriptor does not name an admitted scalar type"));
     return {};
+  }
+  namespace dt = scratchbird::core::datatypes;
+  dt::DatatypeCastRequest null_request;
+  if (value.isSqlNull()) {
+    null_request.value.type_id = CanonicalDescriptorTypeId(value.descriptor);
+    null_request.value.is_null = true;
+    null_request.target_type_id = CanonicalDescriptorTypeId(target_descriptor);
+    null_request.context = dt::DatatypeCastContext::explicit_cast;
+    null_request.explicit_cast = true;
+    std::string detail;
+    if (!BoundExecutionTypeDescriptor(
+            value.descriptor, null_request.value.type_id,
+            &null_request.value.descriptor, &detail)) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                    "source descriptor: " + detail));
+      return {};
+    }
+    if (!BoundExecutionTypeDescriptor(
+            target_descriptor, null_request.target_type_id,
+            &null_request.target_descriptor, &detail)) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic("DATATYPE.DESCRIPTOR.INVALID",
+                                    "target descriptor: " + detail));
+      return {};
+    }
+    if (value.state != EngineValueState::sql_null || !value.is_null ||
+        !value.encoded_value.empty() || !value.binary_value.empty()) {
+      SetDiagnostic(
+          diagnostic,
+          ErrorDiagnostic("DATATYPE.NULL_STATE.INVALID",
+                          "SQL NULL requires the canonical state, flag, and zero payload"));
+      return {};
+    }
   }
   DescriptorBatch source_batch;
   source_batch.columns = {{"cast_source", value.descriptor, true}};
@@ -2310,19 +2490,29 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     SetDiagnostic(diagnostic, source_validation);
     return {};
   }
+  if (value.isSqlNull()) {
+    const auto cast = dt::CastDatatypeValue(null_request);
+    if (!cast.ok()) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic(cast.diagnostic.diagnostic_code,
+                                    cast.diagnostic.message_key));
+      return {};
+    }
+    auto output = MakeExecutorValue(target_descriptor, {}, true);
+    SetDiagnostic(diagnostic, OkDiagnostic());
+    return output;
+  }
   if (IsUuidType(value.descriptor) || IsUuidType(target_descriptor)) {
     namespace dt = scratchbird::core::datatypes;
     dt::DatatypeCastRequest request;
     request.value.type_id = CanonicalDescriptorTypeId(value.descriptor);
-    request.value.is_null = value.state == EngineValueState::sql_null;
+    request.value.is_null = false;
     request.target_type_id = CanonicalDescriptorTypeId(target_descriptor);
     request.explicit_cast = true;
-    if (!request.value.is_null) {
-      if (IsUuidType(value.descriptor) || IsBinaryType(value.descriptor)) {
-        request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
-      } else {
-        request.value.encoded_value = value.encoded_value;
-      }
+    if (IsUuidType(value.descriptor) || IsBinaryType(value.descriptor)) {
+      request.value.encoded_value.assign(value.binary_value.begin(), value.binary_value.end());
+    } else {
+      request.value.encoded_value = value.encoded_value;
     }
     const auto cast = dt::CastDatatypeValue(request);
     if (!cast.ok()) {
@@ -2335,10 +2525,6 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       output.binary_value.assign(cast.value.encoded_value.begin(), cast.value.encoded_value.end());
     SetDiagnostic(diagnostic, OkDiagnostic());
     return output;
-  }
-  if (value.state == EngineValueState::sql_null) {
-    SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, {}, true);
   }
   if (DescriptorMatches(target_descriptor, value.descriptor)) {
     auto output = value;
