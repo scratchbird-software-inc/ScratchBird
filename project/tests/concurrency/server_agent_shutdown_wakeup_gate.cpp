@@ -540,18 +540,59 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
   return true;
 }
 
+// SEARCH_KEY: SERVER_AGENT_ACTIVE_DESTRUCTOR_JOINS
+bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
+                            const server::HostedEngineState& engine,
+                            std::vector<server::ServerDiagnostic>& diagnostics) {
+  bool active_valid = false;
+  std::thread release_worker;
+  {
+    server::ServerAgentRuntime owned;
+    startup_runtime = &owned;
+    capture_state_unlock = true;
+    (void)owned.Snapshot();
+    capture_state_unlock = false;
+    Require(runtime_state_mutex != nullptr, "could not observe destructor state mutex");
+    startup_probe = true;
+    Require(owned.Start(config, engine, &diagnostics), "destructor fixture Start failed");
+    track_native_creates = false;
+    Wait(waiter_at_park, "destructor fixture worker did not reach native park");
+    const auto active = owned.Snapshot();
+    active_valid = active.started && active.worker_thread_count == 2 &&
+        active.durable_lease_count >= 2 && HasBinarySnapshotIdentities(active, engine);
+    release_worker = std::thread([] {
+      Wait(stop_boundary, "destructor did not publish through the predicate mutex");
+      Signal(allow_park);
+    });
+    stop_thread = true;
+    // No explicit Stop: the actual destructor must wake and join this cohort
+    // before its owned condition variable, mutexes and worker records disappear.
+  }
+  stop_thread = false;
+  startup_probe = false;
+  startup_runtime = nullptr;
+  runtime_state_mutex = nullptr;
+  release_worker.join();
+  bool joined = launch_attempts == 3 && launched_threads == startup_threads.size();
+  for (unsigned i = 0; i < launched_threads; ++i) joined = joined && startup_joined[i];
+  std::cout << "destructor_native_creates=" << launched_threads
+            << " all_joined_before_scope_exit=" << joined << '\n';
+  return active_valid && joined && publication_serialized.load();
+}
+
 int main(int argc, char** argv) {
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
   const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
+  const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake || scheduler_timeout_mode,
+  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake || scheduler_timeout_mode || active_destruction,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
@@ -604,9 +645,12 @@ int main(int argc, char** argv) {
 
   bool startup_unwound = false;
   bool restarted = false;
+  bool destruction_joined = false;
   armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode,
               std::memory_order_release);
-  if (sequential_restart) {
+  if (active_destruction) {
+    destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
+  } else if (sequential_restart) {
     restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
   } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
@@ -617,9 +661,9 @@ int main(int argc, char** argv) {
     Fail("actual runtime Start failed");
   }
   const auto active = runtime.Snapshot();
-  Require(startup_failure || sequential_restart || (active.started && active.worker_thread_count == 2),
+  Require(active_destruction || startup_failure || sequential_restart || (active.started && active.worker_thread_count == 2),
           "real runtime did not start both workers");
-  Require(startup_failure || sequential_restart || active.durable_lease_count >= 2,
+  Require(active_destruction || startup_failure || sequential_restart || active.durable_lease_count >= 2,
           "real worker leases were not created");
   bool completion_serialized = false;
   bool spurious_rechecked = false;
@@ -630,7 +674,7 @@ int main(int argc, char** argv) {
     spurious_rechecked = CheckSpuriousWake(runtime);
   } else if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
-  } else if (!startup_failure && !sequential_restart) {
+  } else if (!startup_failure && !sequential_restart && !active_destruction) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
     std::thread stopper([&] {
@@ -661,7 +705,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (scheduler_timeout_mode) {
+  if (active_destruction) {
+    Require(destruction_joined, "active destruction did not join its native cohort");
+    std::cout << "server_agent_active_destruction_gate=passed\n";
+  } else if (scheduler_timeout_mode) {
     Require(scheduler_timeout_checked, "scheduler timeout or shutdown predicate was violated");
     std::cout << "server_agent_scheduler_timeout_gate=passed\n";
   } else if (spurious_wake) {
