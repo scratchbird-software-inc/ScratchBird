@@ -1,5 +1,7 @@
 #include "../../../support/binary_uuid_fixture.hpp"
 #include "../../../support/published_mga_table_fixture.hpp"
+#include "../../../support/engine_statement_fixture.hpp"
+#include "../../../support/sb_test_temp_compat.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -9,6 +11,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/projection_api.hpp"
@@ -19,11 +22,11 @@
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -40,38 +43,41 @@ using scratchbird::core::platform::UuidKind;
 using sblr::SblrValue;
 using sblr::SblrValuePayloadKind;
 
-constexpr const char* kSessionUuid = "019f4500-0000-7000-8000-000000000002";
-constexpr const char* kPrincipalUuid = "019f4500-0000-7000-8000-000000000003";
-constexpr const char* kSchemaUuid = "019f4500-0000-7000-8000-000000000004";
-constexpr const char* kStatementUuid = "019f4500-0000-7000-8000-000000000005";
-constexpr const char* kTableUuid = "019f4500-0000-7000-8000-000000000101";
-constexpr const char* kUnknownTableUuid = "019f4500-0000-7000-8000-000000000999";
-
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
-std::filesystem::path TempDatabasePath() {
-  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  return std::filesystem::temp_directory_path() /
-         ("sbsfc045_privilege_predicates_" + std::to_string(stamp) + ".sbdb");
-}
+class OwnedTempDirectory {
+ public:
+  OwnedTempDirectory() {
+    const auto pattern = (std::filesystem::temp_directory_path() / "sbsfc045_XXXXXX").string();
+    std::vector<char> name(pattern.begin(), pattern.end());
+    name.push_back('\0');
+    const auto* created = mkdtemp(name.data());
+    if (!created) throw std::runtime_error("SBSFC045 temporary directory creation failed");
+    path_ = created;
+  }
+  ~OwnedTempDirectory() {
+    if (path_.empty()) return;
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+    if (error) std::cerr << "SBSFC045 fixture cleanup failed: " << error.message() << '\n';
+  }
+  OwnedTempDirectory(const OwnedTempDirectory&) = delete;
+  OwnedTempDirectory& operator=(const OwnedTempDirectory&) = delete;
+  std::filesystem::path database_path() const { return path_ / "privileges.sbdb"; }
+  void Cleanup() {
+    std::filesystem::remove_all(path_);
+    path_.clear();
+  }
+ private:
+  std::filesystem::path path_;
+};
 
-void CleanupDatabase(const std::filesystem::path& path) {
-  std::filesystem::remove(path);
-  std::filesystem::remove(path.string() + ".sb.api_events");
-  std::filesystem::remove(path.string() + ".sb.mga_row_versions");
-  std::filesystem::remove(path.string() + ".sb.mga_relation_metadata");
-  std::filesystem::remove(path.string() + ".sb.mga_index_entries");
-  std::filesystem::remove(path.string() + ".sb.mga_relation_descriptors");
-  std::filesystem::remove(path.string() + ".sb.mga_large_values");
-  std::filesystem::remove(path.string() + ".sb.mga_savepoints");
-}
-
-db::DatabaseLifecycleState CreateMinimalDatabase(const std::filesystem::path& path) {
+api::EngineRequestContext CreateCredentialedDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid =
@@ -80,47 +86,34 @@ db::DatabaseLifecycleState CreateMinimalDatabase(const std::filesystem::path& pa
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1789810450001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1789810450002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = false;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
               << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "SBSFC045 database create failed");
-  return created.state;
-}
-
-api::EngineRequestContext BaseContext(const std::filesystem::path& path,
-                                      const scratchbird::core::platform::Uuid& database_uuid) {
-  api::EngineRequestContext context;
-  context.request_id = "sbsfc045-privilege-predicates";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  const auto request_uuid = uuid::IssueRuntimeIdentityV7();
+  Require(request_uuid.has_value(), "SBSFC045 request identity issuance failed");
+  context.request_id.assign(reinterpret_cast<const char*>(request_uuid->bytes.data()),
+                            request_uuid->bytes.size());
   context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000002");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003");
   context.current_schema_uuid = scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000004");
-  context.statement_uuid = scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000005");
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
-api::EngineRequestContext BeginTransaction(const std::filesystem::path& path,
-                                           const scratchbird::core::platform::Uuid& database_uuid) {
+api::EngineRequestContext BeginTransaction(const api::EngineRequestContext& owner) {
   api::EngineBeginTransactionRequest begin;
-  begin.context = BaseContext(path, database_uuid);
+  begin.context = owner;
   const auto begun = api::EngineBeginTransaction(begin);
   for (const auto& diagnostic : begun.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(begun.ok, "SBSFC045 transaction.begin failed");
   Require(begun.local_transaction_id != 0, "SBSFC045 transaction.begin returned no local id");
-  auto context = BaseContext(path, database_uuid);
+  auto context = owner;
   context.local_transaction_id = begun.local_transaction_id;
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
@@ -150,10 +143,8 @@ void SeedPrivilegeFixture(api::EngineRequestContext& context) {
 
 SblrValue TextValue(std::string descriptor, std::string text) {
   SblrValue value;
-  const bool is_uuid = descriptor == "uuid";
   value.descriptor_id = std::move(descriptor);
-  value.payload_kind = is_uuid ? SblrValuePayloadKind::uuid_text
-                               : SblrValuePayloadKind::text;
+  value.payload_kind = SblrValuePayloadKind::text;
   value.is_null = false;
   value.text_value = std::move(text);
   value.encoded_value = value.text_value;
@@ -200,6 +191,7 @@ sblr::SblrResult RunFunction(const functions::FunctionRegistry& registry,
   request.context.policy_allowed = true;
   request.context.dependency_available = true;
   request.context.sblr_context = SblrContextFromEngine(context);
+  request.context.engine_request_context = &context;
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(
         functions::FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});
@@ -298,17 +290,49 @@ bool ExpectProjectionBoolean(std::string_view case_id,
 
 }  // namespace
 
-int main() {
-  const auto database_path = TempDatabasePath();
-  CleanupDatabase(database_path);
-  const auto database = CreateMinimalDatabase(database_path);
-  auto context = BeginTransaction(database_path, database.database_uuid.value);
-  context.default_root_uuid = database.filespace_uuid.value;
+int RunFixture(const std::filesystem::path& database_path) {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "sbsfc045-credentialed-privilege-fixture");
+  Require(memory.ok() && memory.fixture_mode,
+          "SBSFC045 explicit fixture memory configuration failed");
+  const auto owner = CreateCredentialedDatabase(database_path);
+  scratchbird::tests::FixtureEngineSession session(owner);
+  auto context = BeginTransaction(owner);
   SeedPrivilegeFixture(context);
+  scratchbird::tests::FixtureEngineStatement statement(session, context);
+  context = statement.context;
+  Require(uuid::IsEngineIdentityUuid(context.statement_uuid),
+          "SBSFC045 retained statement has no engine-issued UUIDv7 identity");
 
   const auto package = functions::BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;
   bool ok = true;
+
+  // A UUID argument is data, not a replacement for the authenticated user.
+  // Keep it binary and distinct from the principal read from the real catalog.
+  const auto foreign_principal = scratchbird::tests::FixtureUuidLiteral(
+      "019f4500-0000-7000-8000-000000000003");
+  Require(foreign_principal != context.principal_uuid,
+          "SBSFC045 foreign-principal fixture unexpectedly matches the owner");
+  const auto foreign = sblr::MakeSblrUuidValue(foreign_principal);
+  const auto table_value = sblr::MakeSblrUuidValue(
+      scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101"));
+  ok = ExpectBoolean("SBSFC045-has-table-privilege-foreign-principal",
+      RunFunction(registry, context, "sb.scalar.has_table_privilege",
+          {foreign, table_value, TextValue("character", "SELECT")}), false) && ok;
+  ok = ExpectBoolean("SBSFC045-has-column-privilege-foreign-principal",
+      RunFunction(registry, context, "sb.scalar.has_column_privilege",
+          {foreign, table_value, TextValue("character", "id"),
+           TextValue("character", "SELECT")}), false) && ok;
+  ok = ExpectBoolean("SBSFC045-has-function-privilege-foreign-principal",
+      RunFunction(registry, context, "sb.scalar.has_function_privilege",
+          {foreign, TextValue("character", "has_function_privilege"),
+           TextValue("character", "EXECUTE")}), false) && ok;
+  ok = ExpectBoolean("SBSFC045-has-schema-privilege-foreign-principal",
+      RunFunction(registry, context, "sb.scalar.has_schema_privilege",
+          {foreign, TextValue("character", "current_schema"),
+           TextValue("character", "USAGE")}), false) && ok;
 
   ok = ExpectBoolean("SBSFC045-has-table-privilege-current-owner",
                      RunFunction(registry, context, "sb.scalar.has_table_privilege",
@@ -317,7 +341,7 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-table-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_table_privilege",
-                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(context.principal_uuid),
                                   scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "UPDATE")}),
                      true) && ok;
@@ -339,7 +363,7 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-column-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_column_privilege",
-                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(context.principal_uuid),
                                   scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000101")),
                                   TextValue("character", "note"),
                                   TextValue("character", "UPDATE")}),
@@ -364,7 +388,7 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-function-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_function_privilege",
-                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(context.principal_uuid),
                                   TextValue("character", "sb.scalar.has_table_privilege"),
                                   TextValue("character", "EXECUTE")}),
                      true) && ok;
@@ -385,7 +409,7 @@ int main() {
                      true) && ok;
   ok = ExpectBoolean("SBSFC045-has-schema-privilege-optional-user",
                      RunFunction(registry, context, "sb.scalar.has_schema_privilege",
-                                 {scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000003")),
+                                 {scratchbird::engine::sblr::MakeSblrUuidValue(context.principal_uuid),
                                   scratchbird::engine::sblr::MakeSblrUuidValue(scratchbird::tests::FixtureUuidLiteral("019f4500-0000-7000-8000-000000000004")),
                                   TextValue("character", "CREATE")}),
                      true) && ok;
@@ -441,8 +465,19 @@ int main() {
                                         api::EngineApiRequest{}}),
            true) && ok;
 
-  CleanupDatabase(database_path);
   if (!ok) return 1;
   std::cout << "sbsql_sbsfc_045_privilege_predicate_runtime_conformance=passed\n";
   return 0;
+}
+
+int main() {
+  try {
+    OwnedTempDirectory temporary;
+    const auto result = RunFixture(temporary.database_path());
+    temporary.Cleanup();
+    return result;
+  } catch (const std::exception& error) {
+    std::cerr << "SBSFC045 fixture failed: " << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

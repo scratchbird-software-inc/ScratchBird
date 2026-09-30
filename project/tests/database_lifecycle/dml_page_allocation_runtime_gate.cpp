@@ -148,7 +148,8 @@ api::EngineRequestContext BeginContext(const Fixture& fixture,
   return context;
 }
 
-void InitializeFixture(Fixture& fixture, std::string name, platform::u64 salt) {
+void InitializeFixture(Fixture& fixture, std::string name, platform::u64 salt,
+                       const std::string& text_type = "text") {
   const auto database_identity = NewUuid(platform::UuidKind::database, salt + 1);
   const auto directory = std::filesystem::temp_directory_path() /
                 ("scratchbird_pfar012_" + name + "_" +
@@ -183,7 +184,7 @@ void InitializeFixture(Fixture& fixture, std::string name, platform::u64 salt) {
                                  "pfar-012-" + name + "-metadata");
 
   const auto table = scratchbird::tests::PublishMgaTableFixture(
-      fixture.context, Table(fixture), {"int64", "text"}, {Index(fixture)});
+      fixture.context, Table(fixture), {"int64", text_type}, {Index(fixture)});
   Require(!table.error, "PFAR-012 table metadata append failed");
   const auto index = api::AppendMgaIndexMetadata(fixture.context, Index(fixture));
   Require(!index.error, "PFAR-012 index metadata append failed");
@@ -221,6 +222,19 @@ void InitializeFixture(Fixture& fixture, std::string name, platform::u64 salt) {
                 value.datatype_descriptor_generation == datatype.descriptor_epoch &&
                 value.type_uuid == codec.row.type_uuid,
             "PFAR-012 published native column/datatype binding mismatch");
+    if (types[i] == scratchbird::core::datatypes::CanonicalTypeId::character) {
+      const auto charset = api::LookupEngineResourceDescriptorByName(
+          fixture.context, "UTF8", "charset");
+      const auto collation = api::LookupEngineResourceDescriptorByName(
+          fixture.context, "SB_UTF8_BINARY", "collation");
+      Require(charset.ok && charset.resource_descriptor.present &&
+                  collation.ok && collation.resource_descriptor.present &&
+                  collation.resource_descriptor.parent_resource_uuid ==
+                      charset.resource_descriptor.resource_uuid &&
+                  value.charset_uuid == charset.resource_descriptor.resource_uuid &&
+                  value.collation_uuid == collation.resource_descriptor.resource_uuid,
+              "PFAR-012 text alias did not retain actual catalog charset/collation UUIDs");
+    }
   }
 }
 
@@ -417,6 +431,10 @@ void TestInsertAndUpdateRuntimeAllocationSuccess() {
                               "pfar-012-insert-success",
                               RuntimeOptions(4, 4));
   const auto inserted = api::EngineInsertRows(insert);
+  if (!inserted.ok) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(inserted.ok, "PFAR-012 insert with runtime allocation failed");
   Require(inserted.inserted_count == 1, "PFAR-012 insert count mismatch");
   Require(HasEvidence(inserted.evidence,
@@ -590,6 +608,24 @@ void TestBatchDmlUsesStatementSizedRuntimeReservations() {
   RequireIndexLookup(fixture, "batch_updated", 0);
 }
 
+void TestCanonicalCharacterAliasBindings() {
+  platform::u64 salt = 5000;
+  for (const auto* alias : {"character", "text", "string", "varchar", "char",
+                            "CHARACTER", "TeXt"}) {
+    Fixture fixture;
+    InitializeFixture(fixture, std::string("alias_") + alias, salt, alias);
+    salt += 100;
+    const auto inserted = api::EngineInsertRows(
+        InsertRequest(fixture, "pfar-012-alias-insert", RuntimeOptions(4, 4)));
+    Require(inserted.ok && inserted.inserted_count == 1,
+            "PFAR-012 character alias insert failed");
+    const auto state = LoadedState(fixture.context);
+    Require(state.row_versions.size() == 1 && state.index_entries.size() == 1,
+            "PFAR-012 character alias did not publish its row and index entry");
+    RequireIndexLookup(fixture, "alpha", 1);
+  }
+}
+
 }  // namespace
 
 int main() try {
@@ -599,6 +635,7 @@ int main() try {
   TestInsertAllocationRefusalLeavesNoMutation();
   TestUpdateAllocationRefusalLeavesNoMutation();
   TestBatchDmlUsesStatementSizedRuntimeReservations();
+  TestCanonicalCharacterAliasBindings();
   return EXIT_SUCCESS;
 } catch (const std::exception& error) {
   std::cerr << error.what() << '\n';

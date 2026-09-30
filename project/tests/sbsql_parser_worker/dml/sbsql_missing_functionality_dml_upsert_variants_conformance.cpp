@@ -9,6 +9,7 @@
 #include "../../support/binary_uuid_fixture.hpp"
 #include "../../support/engine_statement_fixture.hpp"
 #include "../../support/catalog_column_binding_fixture.hpp"
+#include "../../support/catalog_text_binding_fixture.hpp"
 #include <map>
 #include <memory>
 #include "api_types.hpp"
@@ -67,7 +68,8 @@ void ConfigureMemoryFixture() {
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_miss008_dml.XXXXXX";
+  std::string tmpl = (std::filesystem::temp_directory_path() /
+                      "sb_miss008_dml.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
@@ -112,6 +114,7 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context, std
   column.descriptor.canonical_type_name = "text";
   column.descriptor.encoded_descriptor = "type=text";
   scratchbird::tests::BindFixtureColumnDatatype(context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
   return column;
 }
 
@@ -247,6 +250,10 @@ void InsertRows(const api::EngineRequestContext& context,
   request.target_table.object_kind = "table";
   request.input_rows = std::move(rows);
   auto inserted = api::EngineInsertRows(request);
+  if (!inserted.ok) {
+    for (const auto& diagnostic : inserted.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(inserted.ok, "MISS-008 insert rows failed");
   Require(HasEvidence(inserted, "audit_event", "data.dml_change"),
           "MISS-008 insert audit evidence missing");

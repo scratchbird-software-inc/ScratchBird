@@ -45,8 +45,9 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
   if (!manifest.ok()) throw std::runtime_error("fixture datatype catalog unavailable");
   table.bound_columns.clear();
   for (std::size_t i = 0; i < canonical_types.size(); ++i) {
+    const auto canonical_type = dt::CanonicalTypeIdFromStableName(canonical_types[i]);
     const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest,
-        dt::CanonicalTypeIdFromStableName(canonical_types[i]));
+        canonical_type);
     if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
       throw std::invalid_argument("fixture datatype is not in the engine catalog");
     const auto& datatype = row.manifest.descriptor_rows.front();
@@ -72,7 +73,7 @@ inline engine::internal_api::EngineApiDiagnostic PublishMgaTableFixture(
     // These low-level fixtures select binary UTF8 semantics explicitly. Resolve
     // real catalog resources before publishing the descriptor; an engine index
     // writer must never infer collation from a bare character type label.
-    if (canonical_types[i] == "character" &&
+    if (canonical_type == dt::CanonicalTypeId::character &&
         attributes.identities.find("charset_uuid") == attributes.identities.end() &&
         attributes.identities.find("collation_uuid") == attributes.identities.end()) {
       const auto charset = api::LookupEngineResourceDescriptorByName(context, "UTF8", "charset");

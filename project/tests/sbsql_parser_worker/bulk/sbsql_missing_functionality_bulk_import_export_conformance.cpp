@@ -10,6 +10,7 @@
 #include "../../support/binary_uuid_fixture.hpp"
 #include "../../support/engine_statement_fixture.hpp"
 #include "../../support/catalog_column_binding_fixture.hpp"
+#include "../../support/catalog_text_binding_fixture.hpp"
 #include <memory>
 #include "api_types.hpp"
 #include "ast/ast.hpp"
@@ -90,7 +91,8 @@ void ConfigureMemoryFixture() {
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_miss009_bulk.XXXXXX";
+  std::string tmpl = (std::filesystem::temp_directory_path() /
+                      "sb_miss009_bulk.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
@@ -163,6 +165,7 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.encoded_descriptor = "type=text";
   scratchbird::tests::BindFixtureColumnDatatype(
       context, scratchbird::core::datatypes::CanonicalTypeId::character, column);
+  scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
   return column;
 }
 
@@ -567,6 +570,10 @@ void VerifyFailFastCopyExecution(const api::EngineRequestContext& context) {
   request.estimated_row_count = request.canonical_rows.size();
 
   auto executed = api::EngineExecuteImportRows(request);
+  if (!executed.ok) {
+    for (const auto& diagnostic : executed.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(executed.ok, "MISS-009 fail-fast import execution failed");
   Require(executed.accepted_rows == 2 && executed.inserted_rows == 2,
           "MISS-009 fail-fast import row counts mismatch");
