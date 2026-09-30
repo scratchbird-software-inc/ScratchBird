@@ -4,7 +4,6 @@
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
-#include <chrono>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -27,10 +26,14 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const std::vector<disk::NativeFilespaceDevice>& supplied,
     const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
     const NativeCatalogRelationBinding& binding,const mga::PublishedSnapshotPin& pin,
-    const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget) noexcept {
+    const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget,
+    const Uuid& policy_snapshot_uuid,uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   try {
     const auto& h=destination.header;const auto& owner=request.transaction;const auto& desired=request.metadata;
-    if(!budget||supplied.empty()||!owner.valid()||owner.scope!=mga::TransactionScope::local_node||
+    if(!uuid::IsEngineIdentityUuid(policy_snapshot_uuid)||
+        issuer.binding().database_uuid!=h.database_uuid||
+        issuer.binding().policy_snapshot_uuid!=policy_snapshot_uuid||
+        !budget||supplied.empty()||!owner.valid()||owner.scope!=mga::TransactionScope::local_node||
         owner.transaction_uuid.kind!=Kind::transaction||!uuid::IsEngineIdentityUuid(owner.transaction_uuid.value)||
         !destination.body.rows.empty()||destination.body.next_page_number||
         !Same(request.relation_uuid,destination.body.relation_uuid)||request.relation_uuid.value!=binding.relation_uuid||
@@ -87,11 +90,26 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const auto plan=mga::PlanLocalCopyOnWriteMutationForTransaction(actor.entry,identity,
         previous?mga::CopyOnWriteMutationKind::update:mga::CopyOnWriteMutationKind::insert,previous_sequence,maximum+1);
     if(!plan.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=plan.diagnostic;return r;}
-    const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto issued=uuid::GenerateDurableEngineIdentityV7(Kind::row,static_cast<u64>(now));
-    if(!issued.ok()){auto r=Fail(E::identity_failure);r.diagnostic=issued.diagnostic;return r;}
+    const auto issued=issuer.Issue(Kind::row);
+    if(!issued.ok()){
+      auto r=Fail(issued.error==uuid::StandaloneUuidV7Error::resource_exhausted?E::resource_exhausted:E::identity_failure);
+      r.identity_error=issued.error;return r;
+    }
+    const auto& version=issued.value->value;
+    for(const auto& id:{h.database_uuid,h.filespace_uuid,h.page_uuid,h.page_size_profile_uuid,
+        request.relation_uuid.value,owner.transaction_uuid.value,desired.record.header.row_uuid.value,
+        desired.record.header.object_uuid.value,policy_snapshot_uuid})
+      if(version==id)return Fail(E::identity_collision);
+    for(const auto& image:source.source.relation.catalogs){
+      if(version==image.page->header.page_uuid)return Fail(E::identity_collision);
+      for(const auto& retained:image.page->body.rows)
+        if(version==retained.version_uuid||version==retained.row_uuid.value||
+           version==retained.transaction_uuid.value||
+           version==image.metadata.at(retained.version_uuid).record.header.object_uuid.value)
+          return Fail(E::identity_collision);
+    }
     auto leaf=destination;page::RowDataRecord row;row.row_uuid=desired.record.header.row_uuid;row.transaction_uuid=owner.transaction_uuid;
-    row.local_transaction_id=owner.local_id.value;row.version_uuid=issued.value.value;row.row_version=maximum+1;
+    row.local_transaction_id=owner.local_id.value;row.version_uuid=issued.value->value;row.row_version=maximum+1;
     row.previous_version_uuid=previous?previous->version_uuid:Uuid{};row.previous_row_version=previous_sequence;
     row.internal_row_ordinal=1;row.stable_slot_id=1;row.storage_generation=h.page_generation;
     auto metadata=desired;
@@ -111,7 +129,8 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     auto staged=StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget);
     if(!staged.ok()){auto r=Fail(E::stage_failure);r.stage=std::move(staged);return r;}
     if(!valid_pin())return Fail(E::snapshot_failure);
-    NativeCatalogVersionStageResult result;result.error=E::none;result.stage=std::move(staged);result.row=receipt;return result;
+    NativeCatalogVersionStageResult result;result.error=E::none;result.stage=std::move(staged);result.row=receipt;
+    result.identity_observation=issued.observation;result.identity_clock_decision=issued.clock_decision;return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}

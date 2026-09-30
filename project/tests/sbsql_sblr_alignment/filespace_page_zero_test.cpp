@@ -44,6 +44,9 @@ unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
 unsigned stage_corrupt_read=0;
 unsigned initialization_entropy_fault=0,initialization_entropy_calls=0;
 bool initialization_repeat_entropy=false;
+unsigned char initialization_entropy_tag=5;
+std::int64_t initialization_clock_offset_millis=0;
+bool initialization_real_clock=false;
 bool initialization_clock_failure=false,initialization_clock_allocation_failure=false;
 constexpr std::uint64_t initialization_uuid_millis=0x010203040506ULL;
 const scratchbird::core::platform::TypedUuid* revoke_on_stage_sync=nullptr;
@@ -71,15 +74,18 @@ extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   ++initialization_entropy_calls;
   if(initialization_entropy_fault&&--initialization_entropy_fault==0)return 0;
   if(initialization_repeat_entropy){if(count!=16)return 0;
-    const unsigned char collision[16]={1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,5};
+    const unsigned char collision[16]={1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,initialization_entropy_tag};
     std::copy_n(collision,16,out);return 1;}
   return __real_RAND_bytes(out,count);
 }
+extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
 extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
+  if(initialization_real_clock)return __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
   if(initialization_clock_allocation_failure)throw std::bad_alloc();
   scratchbird::core::time::ClockSnapshotResult result;
   if(initialization_clock_failure){result.status={scratchbird::core::platform::StatusCode::time_source_unavailable,scratchbird::core::platform::Severity::error,scratchbird::core::platform::Subsystem::time};return result;}
-  result.value={{100},{static_cast<std::int64_t>(initialization_uuid_millis/1000),static_cast<std::uint32_t>((initialization_uuid_millis%1000)*1000000)}};
+  const auto millis=static_cast<std::int64_t>(initialization_uuid_millis)+initialization_clock_offset_millis;
+  result.value={{100},{millis/1000,static_cast<std::uint32_t>((millis%1000)*1000000)}};
   return result;
 }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
@@ -3167,12 +3173,22 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     if(metric_policy)bind_policy(request.metadata);
     if(metric_series)bind_series(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
-    const auto stage=[&](u64 limit){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit);};
+    namespace identity=scratchbird::core::uuid;
+    const auto policy_uuid=Id(250);
+    const identity::StandaloneUuidV7Policy identity_policy{{},0,1000};
+    identity::StandaloneUuidV7Issuer issuer({Id(1),policy_uuid},identity_policy);
+    const auto bound_stage=[&](u64 limit,const auto& policy,auto& allocation){
+      return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit,policy,allocation);};
+    const auto stage=[&](u64 limit){return bound_stage(limit,policy_uuid,issuer);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
     const auto unchanged=[&](){Check(actual(first,30,sizes[p])==source_bytes&&actual(first,12,sizes[p])==root_bytes&&actual(first,0,sizes[p])==zero_bytes,"staging preserves predecessor and current-root selection");};
     const auto verify=[&](const auto& result,u64 sequence,const auto& predecessor,bool retired){
       if(!result.ok())std::cerr<<"version stage error="<<static_cast<int>(result.error)<<" source="<<static_cast<int>(result.source_error)<<" physical="<<static_cast<int>(result.stage.error)<<std::endl;
       Check(result.ok(),"actual pinned native catalog version staging");
+      Check(result.identity_error==identity::StandaloneUuidV7Error::none&&result.identity_observation&&
+        result.identity_observation->wall_clock.unix_seconds==static_cast<std::int64_t>(initialization_uuid_millis/1000)&&
+        result.identity_clock_decision==scratchbird::core::time::LocalClockObservationDecision::accepted,
+        "native staging preserves exact accepted node clock evidence");
       const auto bytes=actual(target,21,sizes[profile]);const auto stored=db::DecodeNativeCatalogLeaf(bytes);
       Check(stored.ok()&&stored.page->body.rows.size()==1,"read actual staged successor");
       const auto& row=stored.page->body.rows[0];const auto& metadata=stored.metadata.at(row.version_uuid);
@@ -3183,7 +3199,73 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         result.row->filespace_uuid.value==fs&&result.row->page_number==21&&result.row->storage_generation==7&&result.stage.receipt->sha256==WholeRootHash(bytes),"generated identity and actual successor residency/metadata");
       Check(LeafOracle(*stored.page)==bytes,"independent successor image packing");unchanged();
     };
+    for(unsigned bad=0;bad<5;++bad){
+      reset();auto supplied_policy=policy_uuid;
+      identity::StandaloneUuidV7Binding binding{Id(1),policy_uuid};
+      if(bad==0)binding.database_uuid=Id(251);
+      if(bad==1)binding.policy_snapshot_uuid=Id(251);
+      if(bad==2)supplied_policy=Id(251);
+      if(bad==3)supplied_policy={};
+      if(bad==4){supplied_policy.bytes[6]=0x41;binding.policy_snapshot_uuid=supplied_policy;}
+      identity::StandaloneUuidV7Issuer mismatched(binding,identity_policy);
+      reads=stage_writes=stage_syncs=initialization_entropy_calls=0;track_reads=true;
+      const auto refused=bound_stage(budget,supplied_policy,mismatched);track_reads=false;
+      empty(refused);
+      Check(refused.error==E::invalid_request&&!reads&&!stage_writes&&!stage_syncs&&!initialization_entropy_calls,
+        "native catalog node/policy mismatch refuses before I/O or identity allocation");
+      Check(actual(target,21,sizes[profile])==blank,"mismatched identity authority preserves destination");unchanged();
+    }
+    reset();initialization_clock_failure=true;stage_writes=stage_syncs=0;
+    const auto refused_clock=stage(budget);initialization_clock_failure=false;
+    empty(refused_clock);
+    Check(refused_clock.error==E::identity_failure&&refused_clock.identity_error==identity::StandaloneUuidV7Error::clock_failure&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "native catalog identity source failure refuses before physical staging");unchanged();
+    reset();initialization_clock_allocation_failure=true;stage_writes=stage_syncs=0;
+    const auto exhausted_clock=stage(budget);initialization_clock_allocation_failure=false;
+    empty(exhausted_clock);
+    Check(exhausted_clock.error==E::resource_exhausted&&exhausted_clock.identity_error==identity::StandaloneUuidV7Error::resource_exhausted&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "identity resource failure retains its exact classification without writes");unchanged();
+    reset();initialization_entropy_fault=1;stage_writes=stage_syncs=0;
+    const auto refused_entropy=stage(budget);empty(refused_entropy);
+    Check(!initialization_entropy_fault&&refused_entropy.error==E::identity_failure&&
+      refused_entropy.identity_error==identity::StandaloneUuidV7Error::randomness_unavailable&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "native catalog entropy failure refuses before physical staging");unchanged();
+    for(const auto collision:{170u,171u,210u,211u}){
+      reset();identity::StandaloneUuidV7Issuer fresh({Id(1),policy_uuid},identity_policy);
+      initialization_repeat_entropy=true;initialization_entropy_tag=collision;
+      stage_writes=stage_syncs=0;const auto refused=bound_stage(budget,policy_uuid,fresh);
+      initialization_repeat_entropy=false;initialization_entropy_tag=5;
+      empty(refused);Check(refused.error==E::identity_collision&&!stage_writes&&!stage_syncs&&
+        actual(target,21,sizes[profile])==blank,"issued UUID collision with retained/request identities refuses before writes");unchanged();
+      const auto next=fresh.Issue(platform::UuidKind::row);
+      Check(next.ok()&&Id(collision)<next.value->value,"rejected collision never rolls back retained issuer state");
+    }
+    if(p==0&&role==1){
+      reset();auto warning_policy=identity_policy;warning_policy.clock.fail_closed_on_wall_clock_rollback=false;
+      warning_policy.max_uuid_regression_ms=1;
+      identity::StandaloneUuidV7Issuer warned({Id(1),policy_uuid},warning_policy);
+      Check(warned.Issue(platform::UuidKind::row).ok(),"establish retained clock before allowed regression");
+      initialization_clock_offset_millis=-1;const auto warning=bound_stage(budget,policy_uuid,warned);initialization_clock_offset_millis=0;
+      Check(warning.ok()&&warning.identity_observation&&
+        warning.identity_clock_decision==scratchbird::core::time::LocalClockObservationDecision::wall_clock_rollback_detected&&
+        warning.identity_observation->wall_clock.nanoseconds==((initialization_uuid_millis-1)%1000)*1000000&&
+        db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"permitted clock warning survives actual native staging");unchanged();
+      reset();identity::StandaloneUuidV7Issuer real({Id(1),policy_uuid},identity_policy);
+      initialization_real_clock=true;const auto live=bound_stage(budget,policy_uuid,real);initialization_real_clock=false;
+      Check(live.ok()&&live.identity_observation&&live.identity_observation->wall_clock.unix_seconds>0&&
+        db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"real clock and cryptographic entropy produce physically staged native version");unchanged();
+    }
     reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
+    auto previous_identity=result.row->version_uuid;
+    const auto entropy_calls=initialization_entropy_calls;
+    for(unsigned repeat=0;repeat<3;++repeat){reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
+      Check(previous_identity<result.row->version_uuid&&initialization_entropy_calls==entropy_calls,
+        "retained issuer advances binary version identity without reseeding in the same millisecond");
+      previous_identity=result.row->version_uuid;
+    }
     reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
     if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
     if(metric_series){const auto origin=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(origin.ok(),"load persisted series origin");bind_series(request.metadata,&*origin.record);}
