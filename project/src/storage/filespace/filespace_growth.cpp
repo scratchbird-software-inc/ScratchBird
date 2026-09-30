@@ -42,6 +42,47 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
 
+bool SamePhysicalGrowthRequest(const FilespacePhysicalGrowthRequest& a,
+                               const FilespacePhysicalGrowthRequest& b) {
+  const auto& x = a.member_capacity;
+  const auto& y = b.member_capacity;
+  const auto& t = a.transaction_context;
+  const auto& u = b.transaction_context;
+  return SameUuid(a.request_uuid, b.request_uuid) &&
+      SameUuid(a.database_uuid, b.database_uuid) &&
+      SameUuid(a.filespace_uuid, b.filespace_uuid) &&
+      SameUuid(a.policy_uuid, b.policy_uuid) &&
+      SameUuid(a.storage_profile_uuid, b.storage_profile_uuid) &&
+      a.requested_growth_pages == b.requested_growth_pages &&
+      a.page_size_bytes == b.page_size_bytes &&
+      a.policy_generation == b.policy_generation &&
+      a.observed_policy_generation == b.observed_policy_generation &&
+      a.catalog_generation == b.catalog_generation &&
+      a.observed_catalog_generation == b.observed_catalog_generation &&
+      a.caller_mode == b.caller_mode &&
+      a.authorization.obs_agent_control_right == b.authorization.obs_agent_control_right &&
+      a.authorization.filespace_lifecycle_right == b.authorization.filespace_lifecycle_right &&
+      a.authorization.storage_filespace_control_right == b.authorization.storage_filespace_control_right &&
+      a.authorization.action_approval == b.authorization.action_approval &&
+      x.present == y.present && x.explicit_capacity_context == y.explicit_capacity_context &&
+      SameUuid(x.file_member_uuid, y.file_member_uuid) &&
+      x.start_page_number == y.start_page_number &&
+      x.current_page_count == y.current_page_count &&
+      x.preallocated_page_count == y.preallocated_page_count &&
+      x.maximum_page_count == y.maximum_page_count && x.physical_path == y.physical_path &&
+      x.online == y.online && x.writable == y.writable &&
+      t.present == u.present && SameUuid(t.transaction_uuid, u.transaction_uuid) &&
+      t.transaction_number == u.transaction_number &&
+      t.durable_inventory_admitted == u.durable_inventory_admitted &&
+      t.write_intent == u.write_intent && t.durability_fence_satisfied == u.durability_fence_satisfied &&
+      a.evidence_store_present == b.evidence_store_present &&
+      a.evidence_before_success == b.evidence_before_success &&
+      a.policy_expand_allowed == b.policy_expand_allowed &&
+      a.engine_owned_authority == b.engine_owned_authority &&
+      a.require_mga_transaction_context == b.require_mga_transaction_context &&
+      a.reserve_growth_as_preallocated == b.reserve_growth_as_preallocated && a.reason == b.reason;
+}
+
 bool AddWouldOverflow(u64 left, u64 right) {
   return right > std::numeric_limits<u64>::max() - left;
 }
@@ -1414,6 +1455,14 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
                                 "resulting physical pages overflow byte accounting");
   }
 
+  if (const auto* existing = FindMutablePhysicalGrowthByRequest(ledger, request.request_uuid);
+      existing && (!existing->admitted_request ||
+                   !SamePhysicalGrowthRequest(*existing->admitted_request, request))) {
+    return RefusePhysicalGrowth(request, descriptor,
+        "STORAGE.GROWTH.RETRY_CONFLICT", "storage.filespace.growth.retry_conflict",
+        "request identity is already bound to a different or unavailable complete growth intent");
+  }
+
   for (const auto& unresolved : ledger->physical_growth_operations) {
     if (unresolved.state == FilespacePhysicalGrowthState::quarantine &&
         SameUuid(unresolved.database_uuid, request.database_uuid) &&
@@ -1442,7 +1491,7 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
     result.operation = *existing;
     result.durable_state_changed = false;
     result.cache_invalidation_required = false;
-    result.metrics_emitted = existing->metrics_emitted;
+    result.metrics_emitted = false;
     result.allocated_logical_pages = existing->allocated_logical_pages;
     result.page_allocation_authority_bypassed = existing->page_allocation_authority_bypassed;
     if (existing->reserve_growth_as_preallocated) {
@@ -1479,6 +1528,7 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
   FilespacePhysicalGrowthEntry entry;
   entry.request_uuid = request.request_uuid;
   entry.growth_operation_id = PhysicalGrowthOperationId(ledger);
+  entry.admitted_request = request;
   entry.database_uuid = request.database_uuid;
   entry.filespace_uuid = descriptor->filespace_uuid;
   entry.policy_uuid = request.policy_uuid;
