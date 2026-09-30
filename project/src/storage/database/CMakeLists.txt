@@ -30,6 +30,7 @@ add_library(sb_storage_database
   native_catalog_root_staging.cpp
   native_btree_page_staging.cpp
   native_catalog_version_staging.cpp
+  native_filespace_capacity.cpp
   native_checkpoint_selection.cpp
   native_publication_watermark.cpp
   native_publication_coordinator.cpp

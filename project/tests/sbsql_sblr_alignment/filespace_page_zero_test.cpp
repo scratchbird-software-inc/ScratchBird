@@ -11,6 +11,7 @@
 #include "native_checkpoint_selection.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
+#include "native_filespace_capacity.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -3152,7 +3153,8 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=5;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist catalog staging fixture bytes");};
-    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=DirectoryOracle(directory),cb=RootOracle(catalog_root);
+    const auto persist=[&](){const bool extended=std::any_of(directory.records.begin(),directory.records.end(),[](const auto& row){return row.allocation_root.has_value();});
+      const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),cb=RootOracle(catalog_root);
       cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
       cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
       cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
@@ -3166,7 +3168,90 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     const u64 budget=std::max(4*sizes[p],3*sizes[p]+3*sizes[profile]);const Bytes blank(sizes[profile],0);
     const auto reset=[&](){put(target,21,sizes[profile],blank);};
     const auto actual=[&](auto& file,u64 number,unsigned size){Bytes b(size);const auto io=file.ReadAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read actual version staging bytes");return b;};
-    persist();CatalogTestPin snapshot(inv.inventory,13);
+    persist();
+    if(!metric_family){
+      const auto capacity=[&](u64 limit,const auto& files,const auto& checkpoint,const auto& database,const auto& id){
+        return db::ReadNativeFilespaceCapacityFromOpenDevices(database,files,checkpoint,id,limit);};
+      const auto observe=[&](u64 limit){return capacity(limit,devices,CheckpointRef(cp),Id(1),fs);};
+      const auto verify_capacity=[&](const auto& result){
+        if(!result.ok())std::cerr<<"capacity error="<<static_cast<unsigned>(result.error)<<" checkpoint="<<static_cast<unsigned>(result.checkpoint_error)<<" allocation="<<static_cast<unsigned>(result.allocation_error)<<std::endl;
+        Check(result.ok(),"actual native member capacity observation");const auto& value=*result.observation;
+        Check(value.database_uuid==Id(1)&&value.filespace_uuid==fs&&value.locator_uuid==Id(primary?190:191)&&
+          value.page_zero_uuid==zero.page_uuid&&value.page_size_profile_uuid==Profile(profile)&&
+          value.page_size_bytes==sizes[profile]&&value.total_pages==64&&value.physical_bytes==64*u64{sizes[profile]}&&
+          value.map_generation==5&&value.capacity_generation==6&&value.directory_generation==5&&
+          value.filespace_role==zero.bootstrap.filespace_role&&value.lifecycle_state==zero.bootstrap.lifecycle_state&&
+          value.state_counts==std::array<u64,8>{0,1,2,0,0,0,61,0}&&
+          value.allocation_root.page_number==13&&value.allocation_root.page_generation==103&&
+          value.allocation_root.object_uuid==Id(43)&&value.allocation_sha256==WholeRootHash(AllocationOracle(map))&&
+          value.checkpoint_sha256==WholeRootHash(CheckpointOracle(cp)),"independent physical identity/generation/state count oracle");
+      };
+      stage_writes=stage_syncs=0;
+      auto observed=observe(128*sizes[profile]);verify_capacity(observed);
+      Check(!stage_writes&&!stage_syncs,"capacity observation does not mutate or synchronize files");
+      const auto used=observed.retained_image_bytes;
+      verify_capacity(observe(used));
+      const auto no_partial=[&](const auto& refused){Check(!refused.ok()&&!refused.observation&&!refused.retained_image_bytes,"capacity refusal publishes no partial counts");};
+      no_partial(observe(used-1));
+      no_partial(capacity(128*sizes[profile],devices,CheckpointRef(cp),Id(201),fs));
+      no_partial(capacity(128*sizes[profile],devices,CheckpointRef(cp),Id(1),Id(201)));
+      auto stale=CheckpointRef(cp);++stale.page_generation;
+      no_partial(capacity(128*sizes[profile],devices,stale,Id(1),fs));
+      auto duplicate=devices;duplicate.push_back(devices[0]);
+      no_partial(capacity(128*sizes[profile],duplicate,CheckpointRef(cp),Id(1),fs));
+      duplicate=devices;duplicate[1].device=duplicate[0].device;
+      no_partial(capacity(128*sizes[profile],duplicate,CheckpointRef(cp),Id(1),fs));
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());
+      verify_capacity(capacity(128*sizes[profile],reversed,CheckpointRef(cp),Id(1),fs));
+      auto& member=directory.records[primary?0:1];
+      member.allocation_root=page::NativeFilespaceAllocationRoot{{fs,13,103,Profile(profile)},Id(43),WholeRootHash(AllocationOracle(map)),5,6};
+      persist();verify_capacity(observe(128*sizes[profile]));
+      ++member.allocation_root->capacity_generation;persist();no_partial(observe(128*sizes[profile]));
+      --member.allocation_root->capacity_generation;member.allocation_root->sha256[0]^=1;
+      persist();no_partial(observe(128*sizes[profile]));
+      member.allocation_root.reset();persist();
+      const auto target_path=primary?path1:path2;
+      for(const auto bytes:{64*u64{sizes[profile]}-1,64*u64{sizes[profile]}+1}){
+        std::filesystem::resize_file(target_path,bytes);
+        const auto refused=observe(128*sizes[profile]);no_partial(refused);
+        Check(refused.error==db::NativeFilespaceCapacityError::bootstrap_failure&&
+          refused.bootstrap_error==disk::FilespacePageZeroError::invalid_capacity,"preserve exact native size refusal before traversing capacity graph");
+      }
+      std::filesystem::resize_file(target_path,64*u64{sizes[profile]});
+      Check(first.Close().ok()&&second.Close().ok(),"close capacity files before read-only reopen");
+      Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"reopen actual capacity files read-only");
+      stage_writes=stage_syncs=0;verify_capacity(observe(128*sizes[profile]));
+      Check(!stage_writes&&!stage_syncs,"reopened capacity observation remains read-only");
+      Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing).ok()&&second.Open(path2,disk::FileOpenMode::open_existing).ok(),"restore retained catalog staging handles");
+      if(p==0&&role==1){
+        track_reads=true;reads=0;observed=observe(128*sizes[profile]);track_reads=false;
+        verify_capacity(observed);const auto count=reads;
+        for(unsigned n=1;n<=count;++n){track_reads=true;reads=0;read_fault=n;const auto refused=observe(128*sizes[profile]);track_reads=false;
+          Check(!read_fault,"capacity physical read fault consumed");no_partial(refused);}
+        auto corrupt=AllocationOracle(map);corrupt.back()^=1;put(target,13,sizes[profile],corrupt);
+        no_partial(observe(128*sizes[profile]));persist();verify_capacity(observe(128*sizes[profile]));
+        observed_allocations=0;count_allocations=true;observed=observe(128*sizes[profile]);count_allocations=false;
+        verify_capacity(observed);const auto allocations=observed_allocations;bool complete=false;
+        for(unsigned long allowance=0;allowance<=allocations;++allowance){
+          allocation_budget=allowance;const auto refused=observe(128*sizes[profile]);allocation_budget=-1;
+          if(refused.ok()){complete=true;break;}
+          no_partial(refused);
+          Check(refused.error==db::NativeFilespaceCapacityError::resource_exhausted||
+            refused.bootstrap_error==disk::FilespacePageZeroError::resource_exhausted||
+            refused.checkpoint_error==db::NativeCheckpointError::resource_exhausted||
+            refused.inventory_error==page::NativeInventoryError::resource_exhausted||
+            refused.directory_error==page::NativeDirectoryError::resource_exhausted||
+            refused.allocation_error==page::NativeAllocationError::resource_exhausted,"capacity retains allocation exhaustion classification");
+        }
+        Check(complete,"capacity allocation faults through successful completion");
+        std::atomic<unsigned> completed=0;
+        const auto concurrent=[&](const auto& files){for(unsigned n=0;n<8;++n)
+          if(capacity(128*sizes[profile],files,CheckpointRef(cp),Id(1),fs).ok())++completed;};
+        std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
+        Check(completed==16,"capacity guards remain ordered through nested readers");
+      }
+    }
+    CatalogTestPin snapshot(inv.inventory,13);
     auto decoded=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(decoded.ok(),"decode source metadata fixture");
     db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
     request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
