@@ -30,6 +30,7 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/storage/database/native_publication_coordinator.cpp
   ../../src/storage/database/native_system_state.cpp
   ../../src/storage/database/native_filespace_initialization.cpp
+  ../../src/storage/database/native_filespace_capacity.cpp
   ../../src/storage/page/catalog_page.cpp
   ../../src/storage/page/row_data_page.cpp
   ../../src/storage/page/native_row_data_page.cpp

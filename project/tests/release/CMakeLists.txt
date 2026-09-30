@@ -292,6 +292,19 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
   LABELS "public_release_correctness;public_disk_file_device_gate;PCR-GATE-020;PCR-GATE-021;PCR-020;PCR-021;storage;disk;durable_sync;atomic_create"
 )
 
+add_executable(catalog_storage_action_policy_gate catalog_storage_action_policy_gate.cpp)
+target_compile_features(catalog_storage_action_policy_gate PRIVATE cxx_std_23)
+target_link_libraries(catalog_storage_action_policy_gate PRIVATE sb_core_catalog)
+add_test(NAME catalog_storage_action_policy_gate COMMAND catalog_storage_action_policy_gate)
+set_tests_properties(catalog_storage_action_policy_gate PROPERTIES
+  TIMEOUT 60 LABELS "storage;catalog;binary_uuid;policy_codec;not_runtime_acceptance")
+if(TARGET sbsql_sblr_alignment_filespace_page_zero)
+  add_test(NAME native_storage_policy_catalog_staging_gate
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-storage-policy-stage-only)
+  set_tests_properties(native_storage_policy_catalog_staging_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;catalog;binary_uuid;actual_files;not_runtime_acceptance")
+endif()
+
 add_executable(filespace_byte_observation_gate filespace_byte_observation_gate.cpp)
 target_compile_features(filespace_byte_observation_gate PRIVATE cxx_std_23)
 target_link_libraries(filespace_byte_observation_gate PRIVATE sb_core_metrics)
