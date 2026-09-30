@@ -9,6 +9,7 @@
 #include "uuid.hpp"
 #include <algorithm>
 #include <mutex>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -88,6 +89,7 @@ bool OldSelection(const NativeCheckpointSelection& old,const NativePublicationPl
 NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDevices(
   const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,
   const Uuid& attempt,const NativePublicationIntent& intent,u64 budget) noexcept {
+  NativePublicationEffects effects{true};
   try {
     Require(V7(database)&&V7(primary)&&V7(attempt)&&V7(intent.initiator_uuid)&&V7(intent.request_context_uuid)&&V7(intent.policy_snapshot_uuid)&&intent.initiator_kind>=1&&intent.initiator_kind<=8&&Nonzero(intent.normalized_request_sha256)&&!supplied.empty(),E::invalid_request);
     Recovery c;c.database=database;c.primary=primary;c.budget=budget;c.files=supplied;
@@ -121,6 +123,7 @@ NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDe
     const auto graph=ReadNativeManagementControlGraphFromOpenDevices(database,c.files,primary,graph_anchor,budget-c.used);
     if(!graph.ok()){using G=NativeManagementControlAuthorityError;throw graph.error==G::hash_failure?E::hash_failure:graph.error==G::resource_exhausted?E::resource_exhausted:graph.error==G::io_failure?E::io_failure:graph.error==G::encrypted_requires_authority?E::encrypted_requires_authority:graph.error==G::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;}
     c.Charge(graph.verified_image_bytes);Require(MatchesNativeManagementPublishedCheckpoint(graph,target.root,target.sha),E::binding_mismatch);
+    effects.installed_graph_verified=true;
     const auto before=c.Maps(base.root),after=c.Maps(target.root);const auto inventory=c.Inventory(target.root);
     std::array<disk::NativeCommonPageHeader,4> headers;
     for(unsigned i=0;i<4;++i){const auto& old=Allocated(before,roots[i]);const auto& record=Allocated(after,roots[i]);
@@ -154,12 +157,21 @@ NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDe
     Bytes scratch(c.size);
     const auto verify=[&](unsigned i,const Bytes& expected,E mismatch){const auto io=c.device->ReadAt(roots[i].page_number*c.size,scratch.data(),scratch.size());Require(io.ok()&&io.bytes_transferred==scratch.size(),E::io_failure);Require(scratch==expected,mismatch);};
     for(unsigned i=0;i<4;++i)verify(i,original[i],E::preimage_changed);
-    for(const auto& file:c.files)if(!file.device->read_only())Require(file.device->Sync().ok(),E::io_failure);
-    for(unsigned i=0;i<2;++i){if(images[i]!=original[i]){const auto io=c.device->WriteAt(roots[i].page_number*c.size,images[i].data(),images[i].size());Require(io.ok()&&io.bytes_transferred==images[i].size(),E::io_failure);}
-      Require(c.device->Sync().ok(),E::io_failure);verify(i,images[i],E::readback_mismatch);}
-    auto final=InspectNativePublicationGenerationOnOpenDevices(database,c.files,primary,budget-c.used+6*c.size);if(!final.ok())return final;
+    const auto sync=[&](disk::FileDevice& file){Require(effects.sync_attempts!=std::numeric_limits<u64>::max(),E::resource_exhausted);
+      ++effects.sync_attempts;Require(file.Sync().ok(),E::io_failure);++effects.successful_syncs;};
+    for(const auto& file:c.files)if(!file.device->read_only())sync(*file.device);
+    for(unsigned i=0;i<2;++i){if(images[i]!=original[i]){
+        Require(effects.write_attempts!=std::numeric_limits<u64>::max()&&images[i].size()<=std::numeric_limits<u64>::max()-effects.attempted_bytes,E::resource_exhausted);
+        ++effects.write_attempts;effects.attempted_bytes+=images[i].size();effects.selector_write_attempted=true;
+        effects.uncertain_write=true;
+        const auto io=c.device->WriteAt(roots[i].page_number*c.size,images[i].data(),images[i].size());
+        if(io.bytes_transferred<=images[i].size())effects.confirmed_bytes+=io.bytes_transferred;
+        Require(io.ok()&&io.bytes_transferred==images[i].size(),E::io_failure);effects.uncertain_write=false;}
+      sync(*c.device);verify(i,images[i],E::readback_mismatch);}
+    auto final=InspectNativePublicationGenerationOnOpenDevices(database,c.files,primary,budget-c.used+6*c.size);final.effects=effects;if(!final.ok())return final;
     Require(final.snapshot->state_sha256==watermark.state_sha256&&final.snapshot->watermark.publication_plan==w.publication_plan,E::binding_mismatch);
-    const auto selected=EncodeNativeCheckpointSelection(final.snapshot->selection);SelectionBackend(selected.error);Require(selected.ok()&&selected.bytes==images[0],E::binding_mismatch);return final;
-  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+    const auto selected=EncodeNativeCheckpointSelection(final.snapshot->selection);SelectionBackend(selected.error);Require(selected.ok()&&selected.bytes==images[0],E::binding_mismatch);
+    effects.selected_graph_verified=true;final.effects=effects;return final;
+  }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
 }
 } // namespace scratchbird::storage::database

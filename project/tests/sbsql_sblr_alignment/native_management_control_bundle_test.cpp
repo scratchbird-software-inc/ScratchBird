@@ -859,6 +859,11 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   if(!published.ok())std::cerr<<"owned publication profile="<<profile<<" phase="<<phase<<" error="<<int(published.error)<<'\n';
   Check(published.ok()&&published.snapshot->selection.selection_generation==before.snapshot->selection.selection_generation+1,
     "production constructor actually selects its generated graph");
+  Check(published.effects==held.lease->effects()&&published.effects.observed&&
+    published.effects.write_attempts&&published.effects.confirmed_bytes==published.effects.attempted_bytes&&
+    published.effects.successful_syncs==published.effects.sync_attempts&&!published.effects.uncertain_write&&
+    published.effects.installed_graph_verified&&published.effects.selector_write_attempted&&published.effects.selected_graph_verified,
+    "successful publication retains complete lease I/O and distinct graph verification outcomes");
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok()&&SameOwnedInventory(selected.checkpoint_inventory.inventory,inventory),
     "ordinary selected admission sees exact generated inventory");
@@ -872,6 +877,7 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   }
   const auto after=f.Read(0,256);
   const auto retry=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget,*f.issuer);
+  Check(retry.effects==published.effects,"rejected replay preserves original effects without claiming new writes");
   Check(retry.error==db::NativePublicationError::operation_pending&&!retry.snapshot&&f.Read(0,256)==after,
     "anchored constructor never substitutes a freshly generated graph");
   held.lease.reset();
@@ -990,9 +996,34 @@ void OwnedInventoryBudgetAndStale() {
    "constructor rereads actual state and refuses obsolete retained lease");
  std::cout<<"owned inventory exact construction allowance="<<allowance<<" stale-base PASS\n";
 }
-void OwnedInventoryFaults(unsigned route,unsigned shard) {
+void ReservationEffects(unsigned profile) {
+ Fixture f(profile);f.budget*=4;
+ const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+ Check(base.ok()&&base.effects.observed&&!base.effects.write_attempts&&!base.effects.sync_attempts,"inspection records known zero effects");
+ const auto before=f.Read(0,256);
+ db::NativePublicationIntent intent{Id(20101),Id(20102),Id(20103),{},4,2};intent.normalized_request_sha256.fill(7);
+ for(unsigned fault=0;fault<8;++fault){
+  const auto restored=f.device.WriteAt(0,before.data(),before.size());Check(restored.ok()&&f.device.Sync().ok(),"isolated reservation effect fixture restore");
+  reads=writes=syncs=0;write_fault=fault>=1&&fault<=4?1+(fault-1)%2:0;
+  torn_bytes=fault==3||fault==4?f.size/2:0;sync_fault=fault>=5?fault-4:0;
+  io_counting=true;auto result=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,Id(20100),f.budget,&intent);io_counting=false;
+  write_fault=sync_fault=0;torn_bytes=0;const auto& effect=result.effects;
+  Check(effect.observed&&effect.write_attempts==writes&&effect.attempted_bytes==u64{writes}*f.size&&
+    effect.sync_attempts==syncs&&effect.successful_syncs==syncs-(fault>=5?1:0)&&
+    effect.uncertain_write==(fault>=1&&fault<=4)&&!effect.selector_write_attempted&&!effect.selected_graph_verified,
+    "reservation result retains effects even when no lease can be returned");
+  if(!fault){Check(result.ok()&&result.lease->effects()==effect,"successful reservation copies exact cumulative interval");
+    const auto pending=result.lease->snapshot();result.lease.reset();
+    auto resumed=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),pending,Id(20100),intent,f.budget);
+    Check(resumed.ok()&&resumed.effects.observed&&!resumed.effects.write_attempts&&resumed.effects.sync_attempts&&
+      resumed.lease->effects()==resumed.effects,"resume starts a new interval without erasing the original durable pending request");
+  }else Check(result.error==db::NativePublicationError::io_failure&&!result.lease,"failed reservation returns no live lease");
+  if(fault==3||fault==4)Check(f.Read(0,256)!=before,"torn reservation retains real changed bytes");
+ }
+}
+void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0) {
  using PE=db::NativePublicationError;
- Fixture f(0);f.budget*=4;OwnedInventoryRequest request(f);
+ Fixture f(profile);f.budget*=4;OwnedInventoryRequest request(f);
  const auto before=f.Read(0,256);
  const auto reset=[&] {
   request.held.lease.reset();const auto write=f.device.WriteAt(0,before.data(),before.size());
@@ -1008,17 +1039,32 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
  // bound to its controlled clock, as every subsequent reset already does.
  f.ResetIssuer();
  reads=writes=syncs=entropy_calls=hash_seen=0;allocations=0;
+ const auto initial_effects=request.held.lease->effects();
  counting=hash_counting=io_counting=true;const auto good=call(f.budget);counting=hash_counting=io_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen,ne=entropy_calls;const auto na=allocations;
  Check(good.ok()&&nr&&nw&&ns&&nh&&ne&&na,"owned complete publication fault baseline");
+ Check(good.effects==request.held.lease->effects()&&good.effects.observed&&
+   good.effects.write_attempts==initial_effects.write_attempts+nw&&good.effects.sync_attempts==initial_effects.sync_attempts+ns&&
+   good.effects.confirmed_bytes==good.effects.attempted_bytes&&!good.effects.uncertain_write&&good.effects.selected_graph_verified,
+   "effect receipt counts actual primitive calls including retained reservation");
  std::cout<<"owned inventory fault baseline reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" identities="<<ne<<" allocations="<<na<<'\n';
- if(route==0) {
+ if(route==0||route==4) {
   unsigned skipped_dirty=0;
   for(unsigned kind=0;kind<5;++kind)for(unsigned at=1;at<=(kind==0||kind==3?nr:kind==2?ns:nw);++at) {
+   if(route==4&&(kind==0||kind==3))continue;
    reset();reads=writes=syncs=0;read_fault=kind==0?at:0;write_fault=kind==1||kind==4?at:0;
    sync_fault=kind==2?at:0;corrupt_read=kind==3?at:0;torn_bytes=kind==4?f.size/2:0;
+   const auto prior=request.held.lease->effects();
    io_counting=true;const auto result=call(f.budget);io_counting=false;
    const bool consumed=kind==0||kind==3?reads>=at:kind==2?syncs>=at:writes>=at;
+   const auto& effect=result.effects;
+   Check(effect==request.held.lease->effects()&&effect.observed&&
+     effect.write_attempts==prior.write_attempts+writes&&effect.sync_attempts==prior.sync_attempts+syncs&&
+     effect.successful_syncs==prior.successful_syncs+syncs-((kind==2&&consumed)?1:0)&&
+     effect.attempted_bytes==prior.attempted_bytes+u64{writes}*f.size&&effect.confirmed_bytes<=effect.attempted_bytes&&
+     effect.uncertain_write==((kind==1||kind==4)&&consumed),"error receipt retains exact attempts and uncertainty instead of false zero effects");
+   if(!result.ok())Check(!effect.selected_graph_verified,"failed selected admission never claims verified publication");
+   if(kind==4&&consumed)Check(f.Read(0,256)!=before,"torn write has real retained effects even when backend reports zero progress");
    read_fault=write_fault=sync_fault=corrupt_read=0;torn_bytes=0;
    if(kind==3&&consumed&&result.ok()) {
     Check(corrupt_was_zero&&corrupt_offset>=0&&u64(corrupt_offset)%f.size==0,
@@ -1046,7 +1092,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
    reset();entropy_fault=at;const auto result=call(f.budget);
    Check(!entropy_fault&&result.error==PE::identity_failure&&!result.snapshot&&f.Read(0,256)==before,"every generated identity entropy failure precedes graph mutation");
   }
-  Check(skipped_dirty>0,"read-corrupted free slots exercise truthful alternate placement");
+  if(route==0)Check(skipped_dirty>0,"read-corrupted free slots exercise truthful alternate placement");
   std::cout<<"owned inventory corrupted free probes skipped="<<skipped_dirty<<'\n';
  }else if(route==1) {
   for(unsigned at=1;at<=nh;++at) {
@@ -1095,6 +1141,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
      }
     }else result=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),files,Id(2),Id(20100),request.intent,f.budget);
     if(result.ok()) {
+     if(!result.effects.observed)_exit(89);
      const auto final=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),files,Id(2),f.budget);
      _exit(final.ok()&&final.selection->selection_generation==2&&final.checkpoint_inventory.inventory.entries.size()==2&&
        final.checkpoint_inventory.inventory.entries[1].state==mga::TransactionState::created?0:82);
@@ -1183,4 +1230,4 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
  Integration(f,profile);
 }
 }
-int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}

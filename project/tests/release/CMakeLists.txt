@@ -292,6 +292,13 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
   LABELS "public_release_correctness;public_disk_file_device_gate;PCR-GATE-020;PCR-GATE-021;PCR-020;PCR-021;storage;disk;durable_sync;atomic_create"
 )
 
+if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  add_test(NAME native_publication_effect_receipt_gate
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --publication-effects)
+  set_tests_properties(native_publication_effect_receipt_gate PROPERTIES
+    LABELS "storage;actual_files;partial_effects;binary_uuid;not_runtime_acceptance" TIMEOUT 600)
+endif()
+
 add_executable(catalog_storage_action_policy_gate catalog_storage_action_policy_gate.cpp)
 target_compile_features(catalog_storage_action_policy_gate PRIVATE cxx_std_23)
 target_link_libraries(catalog_storage_action_policy_gate PRIVATE sb_core_catalog)
