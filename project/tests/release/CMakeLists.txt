@@ -292,6 +292,17 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
   LABELS "public_release_correctness;public_disk_file_device_gate;PCR-GATE-020;PCR-GATE-021;PCR-020;PCR-021;storage;disk;durable_sync;atomic_create"
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(device_extent_preallocation_gate device_extent_preallocation_gate.cpp)
+  target_compile_features(device_extent_preallocation_gate PRIVATE cxx_std_23)
+  target_link_libraries(device_extent_preallocation_gate PRIVATE sb_storage_disk)
+  target_link_options(device_extent_preallocation_gate PRIVATE
+    "LINKER:--wrap=posix_fallocate" "LINKER:--wrap=fstat" "LINKER:--wrap=pwrite")
+  add_test(NAME device_extent_preallocation_gate COMMAND device_extent_preallocation_gate)
+  set_tests_properties(device_extent_preallocation_gate PROPERTIES
+    TIMEOUT 60 LABELS "storage;disk;preallocation;native_fault_injection;not_SQL_E2E")
+endif()
+
 add_executable(public_database_ownership_gate
   public_database_ownership_gate.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/database_ownership.cpp

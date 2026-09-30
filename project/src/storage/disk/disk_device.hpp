@@ -143,12 +143,15 @@ struct PreallocateExtentResult {
   bool platform_preallocation_attempted = false;
   bool platform_preallocation_succeeded = false;
   bool fallback_extension_used = false;
+  // Logical coverage is not evidence of reserved physical blocks or durability.
+  // Native effects remain visible even when a later observation fails.
+  bool logical_extent_available = false;
   bool logical_size_extended = false;
   DiagnosticRecord diagnostic;
 
   bool ok() const {
     return status.ok() &&
-           (platform_preallocation_succeeded || fallback_extension_used || bytes == 0);
+           (logical_extent_available || bytes == 0);
   }
 };
 
