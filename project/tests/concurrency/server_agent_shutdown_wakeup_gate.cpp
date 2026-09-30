@@ -11,6 +11,7 @@
 #include "time.hpp"
 #include "uuid.hpp"
 
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -20,13 +21,14 @@
 #include <semaphore.h>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
 // SEARCH_KEY: SERVER_AGENT_SHUTDOWN_PREDICATE_PARK_RACE
 // Link against the static C++ runtime so GNU --wrap also observes the native
-// calls made by std::condition_variable. No production state is fabricated:
+// calls made by std::condition_variable and std::thread. No production state is fabricated:
 // Start creates its actual service/leases and Stop joins its actual workers.
 namespace {
 namespace server = scratchbird::server;
@@ -54,6 +56,20 @@ unsigned expected_joins = 0;
 pthread_mutex_t* stop_entry_mutex = nullptr;
 std::atomic<bool> second_waiting{false};
 std::atomic<bool> second_returned_early{false};
+// Startup probe data is accessed only by the test's Start caller; other threads
+// bypass it through the thread-local flags. Native joins verify actual handles.
+thread_local bool startup_probe = false;
+thread_local bool capture_state_unlock = false;
+thread_local bool reading_startup_snapshot = false;
+pthread_mutex_t* runtime_state_mutex = nullptr;
+server::ServerAgentRuntime* startup_runtime = nullptr;
+bool runtime_threads_ready = false;
+bool startup_failure_injected = false;
+unsigned fail_launch = 0;
+unsigned launch_attempts = 0;
+unsigned launched_threads = 0;
+std::array<pthread_t, 3> startup_threads{};
+std::array<bool, 3> startup_joined{};
 
 [[noreturn]] void Fail(const char* message) {
   std::cerr << message << '\n';
@@ -89,7 +105,45 @@ platform::TypedUuid NewIdentity(platform::UuidKind kind, platform::u64 millis) {
 extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
 extern "C" int __real_pthread_cond_broadcast(pthread_cond_t*);
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t*);
 extern "C" int __real_pthread_join(pthread_t, void**);
+extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*,
+                                      void* (*)(void*), void*);
+
+extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
+                                      void* (*entry)(void*), void* argument) {
+  const bool track = startup_probe && runtime_threads_ready && !startup_failure_injected;
+  if (track && ++launch_attempts == fail_launch) {
+    startup_failure_injected = true;
+    return EAGAIN;
+  }
+  const int created = __real_pthread_create(thread, attributes, entry, argument);
+  if (track && created == 0) {
+    Require(launched_threads < startup_threads.size(), "unexpected startup thread count");
+    startup_threads[launched_threads++] = *thread;
+  }
+  return created;
+}
+
+extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
+  if (capture_state_unlock) {
+    // Snapshot's final guard release is its state mutex. Discover it from the
+    // real public operation, without exposing private production test hooks.
+    runtime_state_mutex = mutex;
+  }
+  const int unlocked = __real_pthread_mutex_unlock(mutex);
+  if (startup_probe && !reading_startup_snapshot && mutex == runtime_state_mutex &&
+      unlocked == 0) {
+    // Inspect only AFTER releasing the state mutex; never recurse on our own
+    // Snapshot's unlock. Service-initialization helper threads are not targets.
+    reading_startup_snapshot = true;
+    const auto snapshot = startup_runtime->Snapshot();
+    runtime_threads_ready = snapshot.started && snapshot.worker_thread_count == 2 &&
+                            snapshot.durable_lease_count >= 2;
+    reading_startup_snapshot = false;
+  }
+  return unlocked;
+}
 
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
                                          pthread_mutex_t* mutex) {
@@ -133,7 +187,19 @@ extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
 }
 
 extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
+  unsigned tracked = startup_threads.size();
+  if (startup_probe) {
+    for (unsigned i = 0; i < launched_threads; ++i) {
+      if (!startup_joined[i] && pthread_equal(thread, startup_threads[i])) {
+        tracked = i;
+        break;
+      }
+    }
+  }
   const int joined = __real_pthread_join(thread, result);
+  if (startup_probe && tracked < launched_threads && joined == 0) {
+    startup_joined[tracked] = true;
+  }
   if (stop_caller == 1 && joined == 0 && ++completed_joins == expected_joins) {
     Signal(final_join_reached);
     Wait(allow_cleanup, "controller did not release Stop cleanup");
@@ -184,9 +250,52 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   return second_waiting.load() && !second_returned_early.load();
 }
 
+// SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
+bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
+                         const server::ServerBootstrapConfig& config,
+                         const server::HostedEngineState& engine,
+                         std::vector<server::ServerDiagnostic>& diagnostics) {
+  bool expected_exception = false;
+  startup_runtime = &runtime;
+  capture_state_unlock = true;
+  (void)runtime.Snapshot();
+  capture_state_unlock = false;
+  Require(runtime_state_mutex != nullptr, "could not observe the runtime state mutex");
+  startup_probe = true;
+  try {
+    (void)runtime.Start(config, engine, &diagnostics);
+  } catch (const std::system_error& error) {
+    expected_exception = error.code() == std::errc::resource_unavailable_try_again;
+  } catch (...) {
+    // Wrong exception is a failure, but allow the real cleanup below first.
+  }
+  startup_probe = false;
+  const auto after_failure = runtime.Snapshot();
+  bool all_joined = true;
+  for (unsigned i = 0; i < launched_threads; ++i) {
+    all_joined = all_joined && startup_joined[i];
+  }
+  const bool unwound = expected_exception && launch_attempts == fail_launch &&
+                       launched_threads == fail_launch - 1 && all_joined &&
+                       !after_failure.started && !after_failure.stopping;
+  std::cout << "startup_failure=" << fail_launch
+            << " actual_launches=" << launched_threads
+            << " all_joined_before_catch=" << all_joined
+            << " started_after_catch=" << after_failure.started << '\n';
+  // Rescue only after recording the oracle. These joins cannot satisfy it.
+  runtime.Stop();
+  return unwound;
+}
+
 int main(int argc, char** argv) {
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
-  Require(argc == 1 || concurrent_stop, "unknown shutdown test mode");
+  const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
+  if (startup_failure) {
+    const std::string_view index(argv[2]);
+    Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
+    fail_launch = static_cast<unsigned>(index[0] - '0');
+  }
+  Require(argc == 1 || concurrent_stop || startup_failure, "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
                        &second_stop_finished};
@@ -234,21 +343,25 @@ int main(int argc, char** argv) {
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;
 
-  armed.store(!concurrent_stop, std::memory_order_release);
-  if (!runtime.Start(config, engine, &diagnostics)) {
+  bool startup_unwound = false;
+  armed.store(!concurrent_stop && !startup_failure, std::memory_order_release);
+  if (startup_failure) {
+    startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
+  } else if (!runtime.Start(config, engine, &diagnostics)) {
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }
     Fail("actual runtime Start failed");
   }
   const auto active = runtime.Snapshot();
-  Require(active.started && active.worker_thread_count == 2,
+  Require(startup_failure || (active.started && active.worker_thread_count == 2),
           "real runtime did not start both workers");
-  Require(active.durable_lease_count >= 2, "real worker leases were not created");
+  Require(startup_failure || active.durable_lease_count >= 2,
+          "real worker leases were not created");
   bool completion_serialized = false;
   if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
-  } else {
+  } else if (!startup_failure) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
     std::thread stopper([&] {
@@ -279,7 +392,11 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (concurrent_stop) {
+  if (startup_failure) {
+    Require(startup_unwound,
+            "native startup failure escaped before partial runtime cleanup completed");
+    std::cout << "server_agent_startup_failure_gate=passed\n";
+  } else if (concurrent_stop) {
     Require(completion_serialized,
             "concurrent Stop returned before the ongoing stop operation completed");
     std::cout << "server_agent_concurrent_stop_completion_gate=passed\n";

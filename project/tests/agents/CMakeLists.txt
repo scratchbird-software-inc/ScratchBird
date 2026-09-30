@@ -8,8 +8,8 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-# Exercise the real server worker predicate/park boundary on Linux. Static
-# libstdc++ keeps its condition-variable calls visible to GNU --wrap.
+# Exercise real server worker wait/join/create boundaries on Linux. Static
+# libstdc++ keeps its condition-variable and thread calls visible to GNU --wrap.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
    AND TARGET sb_server_core)
   add_executable(server_agent_shutdown_wakeup_gate
@@ -21,7 +21,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     -Wl,--wrap=pthread_cond_wait
     -Wl,--wrap=pthread_cond_broadcast
     -Wl,--wrap=pthread_mutex_lock
-    -Wl,--wrap=pthread_join)
+    -Wl,--wrap=pthread_mutex_unlock
+    -Wl,--wrap=pthread_join
+    -Wl,--wrap=pthread_create)
   add_test(NAME server_agent_shutdown_wakeup_gate
     COMMAND server_agent_shutdown_wakeup_gate)
   set_tests_properties(server_agent_shutdown_wakeup_gate PROPERTIES
@@ -30,6 +32,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --concurrent-stop)
   set_tests_properties(server_agent_concurrent_stop_completion_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;completion;linux_proof")
+  foreach(failed_launch RANGE 1 3)
+    add_test(NAME server_agent_startup_failure_${failed_launch}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --startup-failure ${failed_launch})
+    set_tests_properties(server_agent_startup_failure_${failed_launch}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;resource_exhaustion;linux_proof")
+  endforeach()
 endif()
 
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")

@@ -1056,9 +1056,16 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     UpdateRuntimeCatalogSnapshotLocked(service_started.catalog);
   }
 
-  scheduler_thread_ = std::thread(&ServerAgentRuntime::SchedulerLoop, this);
-  for (std::size_t i = 0; i < bounded_worker_count; ++i) {
-    worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
+  try {
+    scheduler_thread_ = std::thread(&ServerAgentRuntime::SchedulerLoop, this);
+    for (std::size_t i = 0; i < bounded_worker_count; ++i) {
+      worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
+    }
+  } catch (...) {
+    // Retain the native exception contract, but never leave a partially launched
+    // scheduler/worker set running when thread construction fails.
+    Stop();
+    throw;
   }
   WriteStatusSnapshot();
   return true;

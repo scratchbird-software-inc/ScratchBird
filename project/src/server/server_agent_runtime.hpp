@@ -100,6 +100,8 @@ class ServerAgentRuntime {
   ServerAgentRuntime& operator=(const ServerAgentRuntime&) = delete;
   ~ServerAgentRuntime();
 
+  // Thread-launch failures retain the exception channel, after stopping/joining
+  // the partially launched runtime. This does not certify durable cleanup.
   bool Start(const ServerBootstrapConfig& config,
              const HostedEngineState& engine_state,
              std::vector<ServerDiagnostic>* diagnostics);
