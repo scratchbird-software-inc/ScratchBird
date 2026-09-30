@@ -415,6 +415,11 @@ bool CheckSchedulerTimeout(server::ServerAgentRuntime& runtime) {
       !stopped.started && stopped.scheduler_ticks == 0 && stopped.total_worker_ticks == 0;
 }
 
+bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
+                            const server::ServerBootstrapConfig& config,
+                            const server::HostedEngineState& engine,
+                            std::vector<server::ServerDiagnostic>& diagnostics);
+
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
 bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
                          const server::ServerBootstrapConfig& config,
@@ -449,7 +454,13 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
             << " started_after_catch=" << after_failure.started << '\n';
   // Rescue only after recording the oracle. These joins cannot satisfy it.
   runtime.Stop();
-  return unwound;
+  // SEARCH_KEY: SERVER_AGENT_REUSE_AFTER_NATIVE_STARTUP_FAILURE
+  // Reuse this exact object and database after the injected launch failure.
+  // The replacement probe disables injection and independently accounts for
+  // every actual native create/join in three replacement cohorts. Never let a
+  // later successful start conceal a failed original unwind.
+  if (!unwound) return false;
+  return CheckSequentialRestart(runtime, config, engine, diagnostics);
 }
 
 // SEARCH_KEY: SERVER_AGENT_SEQUENTIAL_THREAD_RESTART
