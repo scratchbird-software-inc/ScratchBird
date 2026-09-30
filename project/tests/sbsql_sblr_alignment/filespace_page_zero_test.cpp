@@ -3231,10 +3231,13 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         auto corrupt=AllocationOracle(map);corrupt.back()^=1;put(target,13,sizes[profile],corrupt);
         no_partial(observe(128*sizes[profile]));persist();verify_capacity(observe(128*sizes[profile]));
         observed_allocations=0;count_allocations=true;observed=observe(128*sizes[profile]);count_allocations=false;
-        verify_capacity(observed);const auto allocations=observed_allocations;bool complete=false;
+        verify_capacity(observed);const auto allocations=observed_allocations;
+        Check(allocations>0,"capacity fault sweep observes actual allocation sites");
         for(unsigned long allowance=0;allowance<=allocations;++allowance){
           allocation_budget=allowance;const auto refused=observe(128*sizes[profile]);allocation_budget=-1;
-          if(refused.ok()){complete=true;break;}
+          // Optional diagnostic allocations can recover successfully. Do not
+          // stop there and leave later required allocation sites untested.
+          if(refused.ok()){verify_capacity(refused);continue;}
           no_partial(refused);
           Check(refused.error==db::NativeFilespaceCapacityError::resource_exhausted||
             refused.bootstrap_error==disk::FilespacePageZeroError::resource_exhausted||
@@ -3243,7 +3246,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
             refused.directory_error==page::NativeDirectoryError::resource_exhausted||
             refused.allocation_error==page::NativeAllocationError::resource_exhausted,"capacity retains allocation exhaustion classification");
         }
-        Check(complete,"capacity allocation faults through successful completion");
+        verify_capacity(observe(128*sizes[profile]));
         std::atomic<unsigned> completed=0;
         const auto concurrent=[&](const auto& files){for(unsigned n=0;n<8;++n)
           if(capacity(128*sizes[profile],files,CheckpointRef(cp),Id(1),fs).ok())++completed;};
