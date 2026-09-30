@@ -65,8 +65,9 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(std::uint64_t salt) const {
-    return uuid::UuidToString(Typed(UuidKind::object, salt).value);
+  std::string Bytes(std::uint64_t salt) const {
+    const auto identity = Typed(UuidKind::object, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -139,7 +140,7 @@ idx::PageExtentSummaryMetadata SummaryForPage(const UuidFactory& uuids,
 
   idx::PageExtentSummaryMetadata metadata;
   metadata.relation_uuid = std::move(relation_uuid);
-  metadata.summary_uuid = uuids.Text(1000 + page.page_id);
+  metadata.summary_uuid = uuids.Bytes(1000 + page.page_id);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = page.page_id;
   metadata.range.page_count = 1;
@@ -160,7 +161,7 @@ idx::PageExtentSummaryMetadata SummaryForPage(const UuidFactory& uuids,
 std::vector<idx::PageExtentSummaryMetadata> BuildSummaries(
     const UuidFactory& uuids,
     const std::vector<SyntheticPage>& pages) {
-  const std::string relation_uuid = uuids.Text(14);
+  const std::string relation_uuid = uuids.Bytes(14);
   std::vector<idx::PageExtentSummaryMetadata> summaries;
   summaries.reserve(pages.size());
   for (const auto& page : pages) {

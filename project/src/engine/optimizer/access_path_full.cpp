@@ -62,9 +62,15 @@ bool VectorContains(const std::vector<planner::CanonicalPlannerUuid>& values,
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-bool ValidIndexBinding(const IndexStats& index) {
+bool ValidIndexIdentity(const IndexStats& index) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(index.index_uuid) &&
       scratchbird::core::uuid::IsEngineIdentityUuid(index.relation_uuid) &&
+      index.identity.object_uuid == index.relation_uuid &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(index.identity.statistic_uuid);
+}
+
+bool ValidIndexBinding(const IndexStats& index) {
+  return ValidIndexIdentity(index) &&
       OptimizerStatsIdentityIsUsable(index.identity) && !index.rebuild_in_progress;
 }
 
@@ -91,7 +97,7 @@ std::vector<std::string> CoveringRefusalReasons(const IndexStats& index,
                                                 bool index_visibility_native,
                                                 const CoveringPayloadPlanningProof& payload) {
   std::vector<std::string> reasons;
-  if (!ValidIndexBinding(index)) reasons.push_back("covering_index_identity_invalid");
+  if (!ValidIndexIdentity(index)) reasons.push_back("covering_index_identity_invalid");
   if (!OptimizerStatsIdentityIsUsable(index.identity) || index.rebuild_in_progress) {
     reasons.push_back("covering_index_rebuild_or_stale");
   }
@@ -567,7 +573,7 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
     } else if (!candidate.index_uuid.is_nil()) {
       const auto bound = std::find_if(request.candidate_indexes.begin(), request.candidate_indexes.end(),
           [&](const IndexStats& index) { return index.index_uuid == candidate.index_uuid; });
-      if (bound == request.candidate_indexes.end() || !ValidIndexBinding(*bound) ||
+      if (bound == request.candidate_indexes.end() || !ValidIndexIdentity(*bound) ||
           bound->relation_uuid != request.relation_uuid) {
         candidate.refusal_reasons.push_back("index_relation_binding_invalid");
         candidate.cost = RejectedCost("index_relation_binding_invalid");

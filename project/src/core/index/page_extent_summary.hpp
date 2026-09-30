@@ -213,6 +213,8 @@ struct PageExtentSummaryMaintenanceResult {
 PageExtentSummaryFormatContract PageExtentSummaryPersistedFormatContract();
 std::string PageExtentSummaryMigrationPlanId(PageExtentSummaryFormatVersion from);
 
+// The historical name is retained for existing callers. The carrier is exactly
+// 16 binary bytes, never UUID text; only RFC-variant system UUIDv7 is admitted.
 bool PageExtentSummaryUuidTextValid(std::string_view value);
 bool PageExtentSummaryRangeValid(const PageExtentSummaryRange& range);
 bool PageExtentSummaryBoundaryValid(const PageExtentSummaryScalarBoundary& boundary,

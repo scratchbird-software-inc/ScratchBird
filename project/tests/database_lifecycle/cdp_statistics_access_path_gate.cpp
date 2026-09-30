@@ -283,7 +283,7 @@ opt::TableCardinalityStats CanonicalTableStats(const Fixture& fixture) {
 
 opt::IndexStats CanonicalIndexStats(const Fixture& fixture) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(fixture.index_uuid,
+  stats.identity = FreshIdentity(fixture.table_uuid,
                                  scratchbird::tests::FixtureUuid(1496, 2),
                                  fixture.context.local_transaction_id);
   stats.index_uuid = fixture.index_uuid;

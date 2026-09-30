@@ -418,9 +418,136 @@ void RequireBatchExtraction() {
 
 }  // namespace
 
+void RequireBinaryCacheIdentity() {
+  const auto request = BindRequest("value", Column("value"),
+                                   Descriptor("text", 0x21, false, true));
+  idx::ExpressionIndexDescriptorCache cache;
+  const auto baseline = idx::BindExpressionIndexExtractorDescriptor(&cache, request);
+  Require(baseline.ok(), "binary identity baseline refused");
+  const auto& signature = baseline.descriptor.result_type_descriptor_signature;
+  // Independent framing oracle: magic, LE64 length, text, LE64 length, text,
+  // two fixed-width raw UUIDs, case-fold byte. No delimiter or UUID rendering.
+  const std::string expected_prefix("SBEXDS01\x04\0\0\0\0\0\0\0text"
+                                    "\x09\0\0\0\0\0\0\0type=text", 37);
+  Require(signature.size() == 70 && signature.substr(0, 37) == expected_prefix,
+          "descriptor framing changed or is not binary length-delimited");
+  const auto raw_uuid = [](const platform::TypedUuid& identity) {
+    return std::string(reinterpret_cast<const char*>(identity.value.bytes.data()), 16);
+  };
+  Require(signature.substr(37, 16) == raw_uuid(request.result_descriptor.type_descriptor_uuid) &&
+              signature.substr(53, 16) == raw_uuid(request.result_descriptor.collation_uuid) &&
+              signature[69] == 0,
+          "descriptor signature did not preserve exact binary UUIDs");
+  Require(baseline.descriptor.cache_key.find(signature) != std::string::npos &&
+              baseline.descriptor.cache_key.find(baseline.descriptor.canonical_expression_envelope) !=
+                  std::string::npos,
+          "cache identity omitted full expression or binary result descriptor");
+  for (const auto& evidence : baseline.descriptor.evidence) {
+    Require(evidence.find(raw_uuid(request.result_descriptor.type_descriptor_uuid)) == std::string::npos,
+            "binary cache identity leaked into textual evidence");
+  }
+
+  for (bool collation : {false, true}) {
+    for (unsigned bit = 0; bit < 128; ++bit) {
+      auto changed = request;
+      auto& identity = collation ? changed.result_descriptor.collation_uuid
+                                 : changed.result_descriptor.type_descriptor_uuid;
+      identity.value.bytes[bit / 8] ^= static_cast<platform::byte>(1u << (bit % 8));
+      const bool reserved_bit = (bit / 8 == 6 && bit % 8 >= 4) ||
+                                (bit / 8 == 8 && bit % 8 >= 6);
+      const auto before = cache;
+      const auto result = idx::BindExpressionIndexExtractorDescriptor(&cache, changed);
+      if (reserved_bit) {
+        Require(!result.ok() && cache.hits == before.hits && cache.misses == before.misses &&
+                    cache.invalidations == before.invalidations &&
+                    cache.descriptors.size() == before.descriptors.size(),
+                "invalid system UUID mutated cache or was admitted");
+      } else {
+        Require(result.ok() && result.cache_miss &&
+                    result.descriptor.cache_key != baseline.descriptor.cache_key,
+                "cache identity lost a type/collation UUID bit");
+      }
+    }
+    for (unsigned bad = 0; bad < 3; ++bad) {
+      auto changed = request;
+      auto& identity = collation ? changed.result_descriptor.collation_uuid
+                                 : changed.result_descriptor.type_descriptor_uuid;
+      if (bad == 0) identity.kind = platform::UuidKind::row;
+      if (bad == 1) identity.kind = platform::UuidKind::unknown;
+      if (bad == 2) identity.value = platform::Uuid{};
+      Require(!idx::BindExpressionIndexExtractorDescriptor(&cache, changed).ok(),
+              "wrong UUID kind or partial/nil identity was accepted");
+      auto batch_descriptor = baseline.descriptor;
+      batch_descriptor.result_descriptor = changed.result_descriptor;
+      idx::ExpressionIndexBatchExtractionRequest batch;
+      batch.descriptor = batch_descriptor;
+      Require(!idx::ExtractExpressionIndexKeyBatch(batch).ok(),
+              "batch extraction admitted malformed result identity");
+    }
+  }
+  auto no_collation = request;
+  no_collation.result_descriptor.collation_uuid = {};
+  Require(idx::BindExpressionIndexExtractorDescriptor(&cache, no_collation).ok(),
+          "fully absent optional collation refused");
+
+  // These pairs had identical delimiter-concatenated signatures previously.
+  auto delimited_a = request;
+  auto delimited_b = request;
+  delimited_a.result_descriptor.canonical_type_name = "text;encoded=x";
+  delimited_a.result_descriptor.encoded_descriptor = std::string("y\0z", 3);
+  delimited_b.result_descriptor.canonical_type_name = "text";
+  delimited_b.result_descriptor.encoded_descriptor = std::string("x;encoded=y\0z", 13);
+  const auto a = idx::BindExpressionIndexExtractorDescriptor(&cache, delimited_a);
+  const auto b = idx::BindExpressionIndexExtractorDescriptor(&cache, delimited_b);
+  Require(a.ok() && b.ok() && a.descriptor.cache_key != b.descriptor.cache_key,
+          "delimiter or embedded NUL caused descriptor cache collision");
+
+  for (unsigned variant = 0; variant < 8; ++variant) {
+    idx::ExpressionIndexDescriptorCache isolated_cache;
+    const auto original = idx::BindExpressionIndexExtractorDescriptor(&isolated_cache, request);
+    auto changed = request;
+    switch (variant) {
+      case 0: changed.sort_direction = idx::IndexKeySortDirection::descending; break;
+      case 1: changed.null_placement = idx::IndexKeyNullPlacement::nulls_first; break;
+      case 2: changed.semantic_profile.profile_id += "_other"; break;
+      case 3: changed.semantic_profile.reference_visible_tiebreak = true; break;
+      case 4: changed.semantic_profile.requires_recheck = true; break;
+      case 5: ++changed.epochs.resource_epoch; break;
+      case 6: ++changed.epochs.function_resource_epoch; break;
+      case 7: changed.result_descriptor.case_folded = true; break;
+    }
+    const auto bound = idx::BindExpressionIndexExtractorDescriptor(&isolated_cache, changed);
+    const auto uncached = idx::BindExpressionIndexExtractorDescriptor(nullptr, changed);
+    Require(original.ok() && bound.ok() && bound.cache_miss &&
+                bound.descriptor.cache_key != original.descriptor.cache_key &&
+                bound.descriptor.cache_key == uncached.descriptor.cache_key &&
+                bound.descriptor.sort_direction == changed.sort_direction &&
+                bound.descriptor.null_placement == changed.null_placement &&
+                bound.descriptor.semantic_profile.profile_id == changed.semantic_profile.profile_id &&
+                bound.descriptor.semantic_profile.requires_recheck == changed.semantic_profile.requires_recheck &&
+                bound.descriptor.semantic_profile.reference_visible_tiebreak ==
+                    changed.semantic_profile.reference_visible_tiebreak,
+            "cache reused a descriptor with different ordering/profile/epochs");
+  }
+
+  // A digest annotation must never substitute for the full canonical expression.
+  auto other = request;
+  other.definition = Definition("other", Column("other"));
+  const auto other_bound = idx::BindExpressionIndexExtractorDescriptor(nullptr, other);
+  idx::ExpressionIndexDescriptorCache digest_cache;
+  auto forged_digest = baseline.descriptor;
+  forged_digest.expression_digest = other_bound.descriptor.expression_digest;
+  digest_cache.descriptors.push_back(forged_digest);
+  const auto distinct = idx::BindExpressionIndexExtractorDescriptor(&digest_cache, other);
+  Require(distinct.ok() && distinct.cache_miss && distinct.invalidated_entries == 0 &&
+              distinct.descriptor.cache_key != baseline.descriptor.cache_key,
+          "digest-only collision selected or evicted a different expression");
+}
+
 int main() {
   RequireCanonicalDigest();
   RequireDeterminismAndCache();
+  RequireBinaryCacheIdentity();
   RequireBatchExtraction();
   std::cout << "expression_index_extractor_gate=passed\n";
   return 0;

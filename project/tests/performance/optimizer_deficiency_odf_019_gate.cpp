@@ -98,10 +98,14 @@ opt::IndexStats IndexStats(const plan::CanonicalPlannerUuid& relation_uuid,
                            bool unique = false,
                            bool covering = true) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, scratchbird::tests::FixtureUuid(1542, 200 + index_uuid.bytes[15]));
+  stats.identity = FreshIdentity(relation_uuid, scratchbird::tests::FixtureUuid(1542, 200 + index_uuid.bytes[15]));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = family;
+  // This unit fixture explicitly models scalar btree/hash providers. A family
+  // label alone no longer grants access capabilities in the production planner.
+  stats.equality_lookup_supported = family == "btree" || family == "hash";
+  stats.ordered_range_supported = family == "btree";
   stats.key_column_uuids = std::move(keys);
   stats.covered_column_uuids = std::move(covered);
   stats.unique = unique;
@@ -276,7 +280,7 @@ bool CoveringCandidateReasonsAreExact() {
   }
 
   auto stale_request = accepted_request;
-  stale_request.candidate_indexes.front().identity = StaleIdentity(scratchbird::tests::FixtureUuid(1542, 7),
+  stale_request.candidate_indexes.front().identity = StaleIdentity(relation_uuid,
                                                                    scratchbird::tests::FixtureUuid(1542, 8));
   const auto stale_candidates = opt::GenerateFullAccessPathCandidates(stale_request);
   const auto* stale = FindCandidate(stale_candidates, "CAND-OPT-COVERING", scratchbird::tests::FixtureUuid(1542, 7));
@@ -424,9 +428,54 @@ bool SummaryCandidateReasonsAreExact() {
                  "summary security recheck refusal reason missing");
 }
 
+bool CapabilitiesAndIdentityFailClosed() {
+  const auto relation = scratchbird::tests::FixtureUuid(1542, 15);
+  const auto index_uuid = scratchbird::tests::FixtureUuid(1542, 10);
+  auto index = IndexStats(relation, index_uuid, "btree",
+                         {scratchbird::tests::FixtureUuid(1542, 2)},
+                         {scratchbird::tests::FixtureUuid(1542, 2)});
+  index.equality_lookup_supported = false;
+  index.ordered_range_supported = false;
+  for (const auto* predicate : {"scalar_eq", "unique_eq", "scalar_range", "ordered_limit"}) {
+    if (!Require(!opt::IndexCanSatisfyPredicate(index, predicate),
+                 "index family inferred absent access capability")) return false;
+  }
+  index.equality_lookup_supported = true;
+  if (!Require(opt::IndexCanSatisfyPredicate(index, "scalar_eq") &&
+               !opt::IndexCanSatisfyPredicate(index, "scalar_range"),
+               "equality capability granted unbound range access")) return false;
+  index.ordered_range_supported = true;
+  index.identity.object_uuid = scratchbird::tests::FixtureUuid(1542, 99);
+  auto request = BaseRequest(relation);
+  request.candidate_indexes = {index};
+  const auto mismatched = opt::GenerateFullAccessPathCandidates(request);
+  const auto* covering = FindCandidate(mismatched, "CAND-OPT-COVERING", index_uuid);
+  if (!covering || covering->cost.selectable ||
+      covering->cost.rejection_reason != "index_relation_binding_invalid") {
+    for (const auto& candidate : mismatched)
+      std::cerr << candidate.candidate_id << ':' << candidate.cost.selectable << ':'
+                << candidate.cost.rejection_reason << '\n';
+  }
+  if (!Require(!opt::IndexCanSatisfyPredicate(index, "scalar_eq") && covering &&
+               !covering->cost.selectable &&
+               covering->cost.rejection_reason == "index_relation_binding_invalid",
+               "statistics belonging to another object admitted index access")) return false;
+  index.identity.object_uuid = relation;
+  for (std::size_t byte = 0; byte < relation.bytes.size(); ++byte) {
+    auto foreign = index;
+    foreign.identity.object_uuid.bytes[byte] ^= 1;
+    if (!Require(!opt::IndexCanSatisfyPredicate(foreign, "scalar_eq"),
+                 "statistics owner comparison ignored a UUID byte")) return false;
+  }
+  index.identity.statistic_uuid.bytes[6] = 0x40;
+  return Require(!opt::IndexCanSatisfyPredicate(index, "scalar_eq"),
+                 "non-v7 statistic system identity admitted index access");
+}
+
 }  // namespace
 
 int main() {
+  if (!CapabilitiesAndIdentityFailClosed()) return 1;
   if (!OrderedLimitSelectsOrderedIndexPath()) return 1;
   if (!CoveringCandidateReasonsAreExact()) return 1;
   if (!BitmapCandidateReasonsAreExact()) return 1;

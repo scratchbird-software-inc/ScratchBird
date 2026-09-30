@@ -146,10 +146,12 @@ DiagnosticRecord Diagnostic(Status status,
   return diagnostic;
 }
 
-std::string GeneratedUuidText(platform::UuidKind kind, platform::u64 salt) {
+std::string GeneratedUuidBytes(platform::UuidKind kind, platform::u64 salt) {
   const auto generated =
       uuid::GenerateDurableEngineIdentityV7(kind, 1810008000000ull + salt);
-  return generated.ok() ? uuid::UuidToString(generated.value.value) : "";
+  if (!generated.ok()) return {};
+  const auto& identity = generated.value.value;
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
 }
 
 std::vector<WorkloadSpec> Workloads(bool include_fallback_disabled) {
@@ -912,9 +914,9 @@ OperationSample BitmapSample(const IndexFamilyDescriptor& descriptor,
 
 PhysicalBloomEncodedKeyEvidence BloomKey(std::int64_t value, u64 salt) {
   PhysicalBloomEncodedKeyEvidence key;
-  key.row_uuid = GeneratedUuidText(platform::UuidKind::row, salt + value);
+  key.row_uuid = GeneratedUuidBytes(platform::UuidKind::row, salt + value);
   key.version_uuid =
-      GeneratedUuidText(platform::UuidKind::row, salt + 1000 + value);
+      GeneratedUuidBytes(platform::UuidKind::row, salt + 1000 + value);
   key.encoded_key = EncodedString(EncodeBenchIntKey(value, salt + 800));
   return key;
 }
@@ -927,9 +929,9 @@ PhysicalBloomAbsentProbeEvidence BloomAbsent(std::int64_t value, u64 salt) {
 
 PhysicalBloomFilterBuildRequest BloomBuildRequest(u64 salt) {
   PhysicalBloomFilterBuildRequest request;
-  request.relation_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 1);
-  request.index_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 2);
-  request.segment_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 3);
+  request.relation_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 1);
+  request.index_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 2);
+  request.segment_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 3);
   request.base_generation = 7;
   request.filter_generation = 11;
   request.seed = 0x123456789abcdef0ull;
@@ -1046,8 +1048,8 @@ std::vector<PhysicalZoneRowEvidence> ZoneRows(u64 salt) {
 
 PhysicalZoneSummaryBuildRequest ZoneBuildRequest(u64 salt) {
   PhysicalZoneSummaryBuildRequest request;
-  request.relation_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 11);
-  request.summary_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 12);
+  request.relation_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 11);
+  request.summary_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 12);
   request.range_sizing.min_pages_per_range = 1;
   request.range_sizing.target_pages_per_range = 2;
   request.range_sizing.max_pages_per_range = 4;
@@ -1178,9 +1180,9 @@ std::vector<PhysicalColumnarZoneCompressionPolicy> ColumnarPolicies() {
 
 PhysicalColumnarZoneBuildRequest ColumnarBuildRequest(u64 salt) {
   PhysicalColumnarZoneBuildRequest request;
-  request.relation_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 21);
-  request.index_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 22);
-  request.segment_uuid = GeneratedUuidText(platform::UuidKind::object, salt + 23);
+  request.relation_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 21);
+  request.index_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 22);
+  request.segment_uuid = GeneratedUuidBytes(platform::UuidKind::object, salt + 23);
   request.base_generation = 7;
   request.summary_generation = 11;
   request.dictionary_limit = 3;
@@ -1262,17 +1264,25 @@ OperationSample ColumnarZoneSample(const IndexFamilyDescriptor& descriptor,
   return sample;
 }
 
-std::string UuidWithSuffix(const char* prefix, u64 suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
+std::string BenchmarkRowIdentity(std::string prefix, u64 suffix) {
+  if (!PageExtentSummaryUuidTextValid(prefix) || suffix > 999999999999ULL) return {};
+  // Preserve the fixed benchmark cohort's historical decimal-digit suffix
+  // directly in its low48 bits, without rendering/parsing a system identity.
+  for (unsigned byte = 0; byte < 6; ++byte) {
+    const auto low = suffix % 10;
+    suffix /= 10;
+    const auto high = suffix % 10;
+    suffix /= 10;
+    prefix[15 - byte] = static_cast<char>((high << 4) | low);
+  }
+  return prefix;
 }
 
 TextInvertedRowLocator Locator(u64 row) {
   TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("14141414-1414-7414-8414-", row);
-  locator.version_uuid = UuidWithSuffix("15151515-1515-7515-8515-", row);
+  locator.row_uuid = BenchmarkRowIdentity(std::string("\x14\x14\x14\x14\x14\x14\x74\x14\x84\x14\x00\x00\x00\x00\x00\x00", 16), row);
+  locator.version_uuid = BenchmarkRowIdentity(std::string("\x15\x15\x15\x15\x15\x15\x75\x15\x85\x15\x00\x00\x00\x00\x00\x00", 16), row);
   return locator;
 }
 
@@ -1305,9 +1315,9 @@ std::vector<TextInvertedDocumentInput> TextDocumentsForBench() {
 
 TextInvertedSegmentBuildRequest TextBuildRequest(u64 generation) {
   TextInvertedSegmentBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.segment_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.segment_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.segment_generation = generation;
   request.analyzer_epoch = 13;
@@ -1473,9 +1483,9 @@ std::vector<GinSourceRow> GinRowsForBench() {
 
 GinPhysicalBuildRequest GinBuildRequestForBench() {
   GinPhysicalBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.provider_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.opclass = GinOpclassForBench();
@@ -1592,9 +1602,9 @@ std::vector<NgramSourceRow> NgramRowsForBench() {
 
 NgramPhysicalBuildRequest NgramBuildRequestForBench() {
   NgramPhysicalBuildRequest request;
-  request.relation_uuid = "44444444-4444-7444-8444-444444444444";
-  request.index_uuid = "55555555-5555-7555-8555-555555555555";
-  request.provider_uuid = "66666666-6666-7666-8666-666666666666";
+  request.relation_uuid = std::string("\x44\x44\x44\x44\x44\x44\x74\x44\x84\x44\x44\x44\x44\x44\x44\x44", 16);
+  request.index_uuid = std::string("\x55\x55\x55\x55\x55\x55\x75\x55\x85\x55\x55\x55\x55\x55\x55\x55", 16);
+  request.provider_uuid = std::string("\x66\x66\x66\x66\x66\x66\x76\x66\x86\x66\x66\x66\x66\x66\x66\x66", 16);
   request.base_generation = 7;
   request.provider_generation = 12;
   request.tokenizer = NgramTokenizerForBench();
@@ -1751,7 +1761,7 @@ SpatialRTreeDescriptor SpatialDescriptorForBench(u64 epoch = 31) {
 
 SpatialRTreeSridResource SpatialSridForBench(u64 epoch = 37) {
   SpatialRTreeSridResource resource;
-  resource.resource_uuid = "39393939-3939-7939-8939-393939393939";
+  resource.resource_uuid = std::string("\x39\x39\x39\x39\x39\x39\x79\x39\x89\x39\x39\x39\x39\x39\x39\x39", 16);
   resource.srid = 4326;
   resource.resource_epoch = epoch;
   resource.coordinate_order = "xy";
@@ -1773,9 +1783,9 @@ std::vector<SpatialRTreeSourceRow> SpatialRowsForBench() {
 SpatialRTreeBuildRequest SpatialBuildRequestForBench(
     SpatialRTreeBuildMode mode = SpatialRTreeBuildMode::incremental_insert) {
   SpatialRTreeBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.provider_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = SpatialDescriptorForBench();
@@ -1910,9 +1920,9 @@ GistOpclassRuntime GistOpclassForBench() {
 GistBuildRequest GistBuildRequestForBench(
     SpatialRTreeBuildMode mode = SpatialRTreeBuildMode::incremental_insert) {
   GistBuildRequest request;
-  request.relation_uuid = "71717171-7171-7171-8171-717171717171";
-  request.index_uuid = "72727272-7272-7272-8272-727272727272";
-  request.provider_uuid = "73737373-7373-7373-8373-737373737373";
+  request.relation_uuid = std::string("\x71\x71\x71\x71\x71\x71\x71\x71\x81\x71\x71\x71\x71\x71\x71\x71", 16);
+  request.index_uuid = std::string("\x72\x72\x72\x72\x72\x72\x72\x72\x82\x72\x72\x72\x72\x72\x72\x72", 16);
+  request.provider_uuid = std::string("\x73\x73\x73\x73\x73\x73\x73\x73\x83\x73\x73\x73\x73\x73\x73\x73", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.spatial_descriptor = SpatialDescriptorForBench(41);
@@ -2020,9 +2030,9 @@ SpGistOpclassRuntime SpGistOpclassForBench() {
 
 SpGistBuildRequest SpGistBuildRequestForBench() {
   SpGistBuildRequest request;
-  request.relation_uuid = "b1b1b1b1-b1b1-71b1-81b1-b1b1b1b1b1b1";
-  request.index_uuid = "b2b2b2b2-b2b2-72b2-82b2-b2b2b2b2b2b2";
-  request.provider_uuid = "b3b3b3b3-b3b3-73b3-83b3-b3b3b3b3b3b3";
+  request.relation_uuid = std::string("\xb1\xb1\xb1\xb1\xb1\xb1\x71\xb1\x81\xb1\xb1\xb1\xb1\xb1\xb1\xb1", 16);
+  request.index_uuid = std::string("\xb2\xb2\xb2\xb2\xb2\xb2\x72\xb2\x82\xb2\xb2\xb2\xb2\xb2\xb2\xb2", 16);
+  request.provider_uuid = std::string("\xb3\xb3\xb3\xb3\xb3\xb3\x73\xb3\x83\xb3\xb3\xb3\xb3\xb3\xb3\xb3", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.spatial_descriptor = SpatialDescriptorForBench(61);
@@ -2126,7 +2136,7 @@ VectorExactMetricResource VectorMetricForBench(
     VectorExactMetricKind kind = VectorExactMetricKind::l2,
     u64 epoch = 37) {
   VectorExactMetricResource metric;
-  metric.metric_resource_uuid = "99999999-9999-7999-8999-999999999999";
+  metric.metric_resource_uuid = std::string("\x99\x99\x99\x99\x99\x99\x79\x99\x89\x99\x99\x99\x99\x99\x99\x99", 16);
   metric.metric_resource_epoch = epoch;
   metric.metric_kind = kind;
   metric.deterministic = true;
@@ -2155,9 +2165,9 @@ OperationSample VectorExactSample(const IndexFamilyDescriptor& descriptor,
   }
   OperationSample sample;
   VectorExactBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.provider_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = VectorDescriptorForBench();
@@ -2254,9 +2264,9 @@ OperationSample VectorHnswSample(const IndexFamilyDescriptor& descriptor,
   }
   OperationSample sample;
   VectorHnswBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.provider_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.training_generation = 13;
@@ -2363,9 +2373,9 @@ OperationSample VectorIvfSample(const IndexFamilyDescriptor& descriptor,
   }
   OperationSample sample;
   VectorIvfPqBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = std::string("\x11\x11\x11\x11\x11\x11\x71\x11\x81\x11\x11\x11\x11\x11\x11\x11", 16);
+  request.index_uuid = std::string("\x22\x22\x22\x22\x22\x22\x72\x22\x82\x22\x22\x22\x22\x22\x22\x22", 16);
+  request.provider_uuid = std::string("\x33\x33\x33\x33\x33\x33\x73\x33\x83\x33\x33\x33\x33\x33\x33\x33", 16);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.training_generation = 13;
@@ -2520,11 +2530,11 @@ GraphEdgeInput GraphEdge(std::string id,
 GraphBuildRequest GraphBuildRequestForBench() {
   GraphBuildRequest request;
   request.relation_uuid =
-      GeneratedUuidText(platform::UuidKind::object, 301);
+      GeneratedUuidBytes(platform::UuidKind::object, 301);
   request.index_uuid =
-      GeneratedUuidText(platform::UuidKind::object, 302);
+      GeneratedUuidBytes(platform::UuidKind::object, 302);
   request.provider_uuid =
-      GeneratedUuidText(platform::UuidKind::object, 303);
+      GeneratedUuidBytes(platform::UuidKind::object, 303);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = GraphDescriptorForBench();

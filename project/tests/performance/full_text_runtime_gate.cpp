@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "full_text_runtime.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "text_inverted_segment.hpp"
 
 #include <algorithm>
@@ -50,10 +51,8 @@ void RequireNoExecution_PlanEvidence(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
+std::string UuidWithSuffix(scratchbird::core::platform::Uuid prefix, std::uint64_t suffix) {
+  return scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, suffix);
 }
 
 idx::TextInvertedExactRecheckProof CandidateProof() {
@@ -79,9 +78,9 @@ idx::FullTextRuntimeExactRerankProof RerankProof() {
 
 idx::TextInvertedSegmentBuildRequest BuildRequest() {
   idx::TextInvertedSegmentBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.segment_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   request.base_generation = 7;
   request.segment_generation = 11;
   request.analyzer_epoch = 13;
@@ -98,9 +97,9 @@ idx::TextInvertedDocumentInput Doc(std::uint64_t row,
   idx::TextInvertedDocumentInput doc;
   doc.locator.row_ordinal = row;
   doc.locator.row_uuid =
-      UuidWithSuffix("aaaaaaaa-aaaa-7aaa-8aaa-", row);
+      UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-000000000000"), row);
   doc.locator.version_uuid =
-      UuidWithSuffix("bbbbbbbb-bbbb-7bbb-8bbb-", row);
+      UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-000000000000"), row);
   doc.normalized_terms = std::move(terms);
   doc.exact_source_recheck_evidence_ref =
       "base_row_recheck_evidence_" + std::to_string(row);

@@ -111,11 +111,13 @@ struct ExpressionIndexCanonicalizationResult {
 };
 
 struct ExpressionIndexExtractorDescriptor {
+  // Internal length-framed binary key; UUID fields retain all 16 bytes.
+  // The display digest is not cache identity and these bytes are not text.
   std::string cache_key;
   std::string expression_digest;
   std::string canonical_expression_text;
   std::string canonical_expression_envelope;
-  std::string result_type_descriptor_signature;
+  std::string result_type_descriptor_signature;  // SBEXDS01 binary descriptor.
   ExpressionIndexDefinition definition;
   ExpressionIndexValueDescriptor result_descriptor;
   ExpressionIndexEpochs epochs;

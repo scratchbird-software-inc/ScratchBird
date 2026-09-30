@@ -420,7 +420,7 @@ void OptimizerCarriesPayloadProofWithoutRuntimeAdmission() {
   table.average_row_bytes = 32;
   request.table_stats = table;
   opt::IndexStats index;
-  index.identity = FreshIdentity(scratchbird::tests::FixtureUuid(1527, 4), scratchbird::tests::FixtureUuid(1527, 5));
+  index.identity = FreshIdentity(request.relation_uuid, scratchbird::tests::FixtureUuid(1527, 5));
   index.index_uuid = scratchbird::tests::FixtureUuid(1274, 701);
   index.relation_uuid = request.relation_uuid;
   index.index_family = "btree";

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "index_key_encoding.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "physical_columnar_zone.hpp"
 #include "runtime_platform.hpp"
 
@@ -156,9 +157,9 @@ std::vector<idx::PhysicalColumnarZoneRowEvidence> BaseRows() {
 
 idx::PhysicalColumnarZoneBuildRequest BuildRequest() {
   idx::PhysicalColumnarZoneBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.segment_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   request.base_generation = 7;
   request.summary_generation = 11;
   request.dictionary_limit = 2;
@@ -453,7 +454,7 @@ void VerifyOpenRepairClassification(const idx::PhysicalColumnarZoneSegment& segm
   idx::PhysicalColumnarZoneOpenRequest identity_mismatch;
   identity_mismatch.bytes = serialized.bytes;
   identity_mismatch.expected_segment_uuid_present = true;
-  identity_mismatch.expected_segment_uuid = "99999999-9999-7999-8999-999999999999";
+  identity_mismatch.expected_segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("99999999-9999-7999-8999-999999999999"));
   const auto identity_open =
       idx::OpenPhysicalColumnarZoneSegment(identity_mismatch);
   Require(identity_open.open_class ==

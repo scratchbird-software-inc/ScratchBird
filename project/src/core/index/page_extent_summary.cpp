@@ -11,8 +11,9 @@
 // DPC_PAGE_EXTENT_SUMMARY_MAINTENANCE
 
 #include "index_key_encoding.hpp"
+#include "uuid.hpp"
 
-#include <cctype>
+#include <cstring>
 #include <utility>
 
 namespace scratchbird::core::index {
@@ -26,10 +27,6 @@ using scratchbird::core::platform::Subsystem;
 
 Status OkStatus() { return {StatusCode::ok, Severity::info, Subsystem::engine}; }
 Status WarnStatus() { return {StatusCode::ok, Severity::warning, Subsystem::engine}; }
-
-bool IsHex(char value) {
-  return std::isxdigit(static_cast<unsigned char>(value)) != 0;
-}
 
 bool SameFormatVersion(PageExtentSummaryFormatVersion left,
                        PageExtentSummaryFormatVersion right) {
@@ -402,21 +399,10 @@ std::string PageExtentSummaryMigrationPlanId(PageExtentSummaryFormatVersion from
 }
 
 bool PageExtentSummaryUuidTextValid(std::string_view value) {
-  if (value.size() != 36) {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    const bool dash_slot =
-        index == 8 || index == 13 || index == 18 || index == 23;
-    if (dash_slot) {
-      if (value[index] != '-') {
-        return false;
-      }
-    } else if (!IsHex(value[index])) {
-      return false;
-    }
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
+  platform::Uuid identity;
+  if (value.size() != identity.bytes.size()) return false;
+  std::memcpy(identity.bytes.data(), value.data(), identity.bytes.size());
+  return uuid::IsEngineIdentityUuid(identity);
 }
 
 bool PageExtentSummaryRangeValid(const PageExtentSummaryRange& range) {

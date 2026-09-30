@@ -55,8 +55,9 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(UuidKind kind, std::uint64_t salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  std::string Bytes(UuidKind kind, std::uint64_t salt) const {
+    const auto identity = Typed(kind, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -99,8 +100,8 @@ idx::PageExtentSummaryFormatCompatibility CurrentFormat() {
 idx::PageExtentSummaryMetadata CurrentSummary(const UuidFactory& uuids) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = uuids.Text(UuidKind::object, 10);
-  metadata.summary_uuid = uuids.Text(UuidKind::object, 11);
+  metadata.relation_uuid = uuids.Bytes(UuidKind::object, 10);
+  metadata.summary_uuid = uuids.Bytes(UuidKind::object, 11);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 128;
   metadata.range.page_count = 16;
@@ -148,8 +149,8 @@ void RequireFallback(const idx::PageExtentSummaryDecision& decision,
 
 void ValidateGeneratedUuidSafeIdentity() {
   const UuidFactory uuids;
-  const auto relation_uuid = uuids.Text(UuidKind::object, 1);
-  const auto summary_uuid = uuids.Text(UuidKind::object, 2);
+  const auto relation_uuid = uuids.Bytes(UuidKind::object, 1);
+  const auto summary_uuid = uuids.Bytes(UuidKind::object, 2);
 
   Require(idx::PageExtentSummaryUuidTextValid(relation_uuid),
           "DPC-011 generated relation UUID was rejected");
@@ -158,6 +159,8 @@ void ValidateGeneratedUuidSafeIdentity() {
   Require(!idx::PageExtentSummaryUuidTextValid(
               "00000000-0000-0000-0000-000000000000"),
           "DPC-011 nil UUID was accepted");
+  Require(!idx::PageExtentSummaryUuidTextValid(std::string(16, '\0')),
+          "DPC-011 binary nil UUID was accepted");
   Require(!idx::PageExtentSummaryUuidTextValid("catalog.page_extent_summary"),
           "DPC-011 non-UUID catalog key was accepted");
 

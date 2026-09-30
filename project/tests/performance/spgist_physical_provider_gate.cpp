@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "runtime_platform.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "spgist_physical_provider.hpp"
 
 #include <algorithm>
@@ -56,17 +57,15 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
+std::string UuidWithSuffix(scratchbird::core::platform::Uuid prefix, std::uint64_t suffix) {
+  return scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, suffix);
 }
 
 idx::TextInvertedRowLocator Locator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("81818181-8181-7181-8181-", row);
-  locator.version_uuid = UuidWithSuffix("91919191-9191-7191-8191-", row);
+  locator.row_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("81818181-8181-7181-8181-000000000000"), row);
+  locator.version_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("91919191-9191-7191-8191-000000000000"), row);
   return locator;
 }
 
@@ -107,7 +106,7 @@ idx::SpatialRTreeDescriptor SpatialDescriptor() {
 
 idx::SpatialRTreeSridResource SridResource() {
   idx::SpatialRTreeSridResource resource;
-  resource.resource_uuid = "a1a1a1a1-a1a1-71a1-81a1-a1a1a1a1a1a1";
+  resource.resource_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("a1a1a1a1-a1a1-71a1-81a1-a1a1a1a1a1a1"));
   resource.srid = 4326;
   resource.resource_epoch = 67;
   resource.coordinate_order = "xy";
@@ -134,9 +133,9 @@ std::vector<idx::SpGistSourceRow> BaseRows() {
 
 idx::SpGistBuildRequest BuildRequest() {
   idx::SpGistBuildRequest request;
-  request.relation_uuid = "b1b1b1b1-b1b1-71b1-81b1-b1b1b1b1b1b1";
-  request.index_uuid = "b2b2b2b2-b2b2-72b2-82b2-b2b2b2b2b2b2";
-  request.provider_uuid = "b3b3b3b3-b3b3-73b3-83b3-b3b3b3b3b3b3";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("b1b1b1b1-b1b1-71b1-81b1-b1b1b1b1b1b1"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("b2b2b2b2-b2b2-72b2-82b2-b2b2b2b2b2b2"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("b3b3b3b3-b3b3-73b3-83b3-b3b3b3b3b3b3"));
   request.base_generation = 7;
   request.provider_generation = 11;
   request.spatial_descriptor = SpatialDescriptor();

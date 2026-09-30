@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "graph_adjacency_physical_provider.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "runtime_platform.hpp"
 
 #include <algorithm>
@@ -56,17 +57,15 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
+std::string UuidWithSuffix(scratchbird::core::platform::Uuid prefix, std::uint64_t suffix) {
+  return scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, suffix);
 }
 
 idx::TextInvertedRowLocator Locator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("14141414-1414-7414-8414-", row);
-  locator.version_uuid = UuidWithSuffix("15151515-1515-7515-8515-", row);
+  locator.row_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("14141414-1414-7414-8414-000000000000"), row);
+  locator.version_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("15151515-1515-7515-8515-000000000000"), row);
   return locator;
 }
 
@@ -140,9 +139,9 @@ std::vector<idx::GraphEdgeInput> BaseEdges() {
 
 idx::GraphBuildRequest BuildRequest() {
   idx::GraphBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = Descriptor();

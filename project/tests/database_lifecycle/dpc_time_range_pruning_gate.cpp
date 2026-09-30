@@ -68,8 +68,9 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(std::uint64_t salt) const {
-    return uuid::UuidToString(Typed(UuidKind::object, salt).value);
+  std::string Bytes(std::uint64_t salt) const {
+    const auto identity = Typed(UuidKind::object, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -145,7 +146,7 @@ idx::TimeRangeSummaryDescriptor DescriptorForRange(
   descriptor.table_uuid = table_uuid;
   descriptor.index_uuid = index_uuid;
   descriptor.range_family_uuid = range_family_uuid;
-  descriptor.summary_uuid = uuids.Text(4000 + salt);
+  descriptor.summary_uuid = uuids.Bytes(4000 + salt);
   descriptor.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   descriptor.range.first_page_id = range.first_page_id;
   descriptor.range.page_count = range.page_count;
@@ -167,9 +168,9 @@ idx::TimeRangeSummaryDescriptor DescriptorForRange(
 std::vector<idx::TimeRangeSummaryDescriptor> BuildSummaries(
     const UuidFactory& uuids,
     const std::vector<SyntheticRange>& ranges) {
-  const auto table_uuid = uuids.Text(40);
-  const auto index_uuid = uuids.Text(41);
-  const auto range_family_uuid = uuids.Text(42);
+  const auto table_uuid = uuids.Bytes(40);
+  const auto index_uuid = uuids.Bytes(41);
+  const auto range_family_uuid = uuids.Bytes(42);
   std::vector<idx::TimeRangeSummaryDescriptor> summaries;
   summaries.reserve(ranges.size());
   for (std::size_t i = 0; i < ranges.size(); ++i) {

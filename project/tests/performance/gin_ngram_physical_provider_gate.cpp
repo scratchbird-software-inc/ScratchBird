@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "gin_physical_provider.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "ngram_physical_provider.hpp"
 #include "runtime_platform.hpp"
 
@@ -56,17 +57,15 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
   }
 }
 
-std::string UuidWithSuffix(std::string prefix, std::uint64_t suffix) {
-  std::ostringstream out;
-  out << prefix << std::setw(12) << std::setfill('0') << suffix;
-  return out.str();
+std::string UuidWithSuffix(scratchbird::core::platform::Uuid prefix, std::uint64_t suffix) {
+  return scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, suffix);
 }
 
 idx::TextInvertedRowLocator Locator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidWithSuffix("aaaaaaaa-aaaa-7aaa-8aaa-", row);
-  locator.version_uuid = UuidWithSuffix("bbbbbbbb-bbbb-7bbb-8bbb-", row);
+  locator.row_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-000000000000"), row);
+  locator.version_uuid = UuidWithSuffix(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-000000000000"), row);
   return locator;
 }
 
@@ -179,9 +178,9 @@ std::vector<idx::GinSourceRow> GinRowsFixture() {
 
 idx::GinPhysicalBuildRequest GinBuildRequest() {
   idx::GinPhysicalBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
-  request.provider_uuid = "33333333-3333-7333-8333-333333333333";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   request.base_generation = 7;
   request.provider_generation = 11;
   request.opclass = GinOpclass();
@@ -203,9 +202,9 @@ std::vector<idx::NgramSourceRow> NgramRowsFixture() {
 
 idx::NgramPhysicalBuildRequest NgramBuildRequest() {
   idx::NgramPhysicalBuildRequest request;
-  request.relation_uuid = "44444444-4444-7444-8444-444444444444";
-  request.index_uuid = "55555555-5555-7555-8555-555555555555";
-  request.provider_uuid = "66666666-6666-7666-8666-666666666666";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("44444444-4444-7444-8444-444444444444"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("55555555-5555-7555-8555-555555555555"));
+  request.provider_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("66666666-6666-7666-8666-666666666666"));
   request.base_generation = 7;
   request.provider_generation = 12;
   request.tokenizer = NgramTokenizer();

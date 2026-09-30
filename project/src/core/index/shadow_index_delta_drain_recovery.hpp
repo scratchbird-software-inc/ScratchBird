@@ -45,7 +45,7 @@ enum class ShadowIndexDeltaDrainRecoveryAction : u32 {
 
 struct ShadowIndexAppliedDeltaRecord {
   SecondaryIndexDeltaEntry delta;
-  std::string durable_delta_identity_ref;
+  platform::Uuid durable_delta_uuid;
   std::string engine_mga_inventory_evidence_ref;
   std::string engine_mga_horizon_evidence_ref;
 };

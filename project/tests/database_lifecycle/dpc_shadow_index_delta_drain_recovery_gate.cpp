@@ -390,6 +390,23 @@ void ProvePublishEligibilityRequiresAuthoritativeDrainEvidence() {
                     "shadow_delta_publish_eligible",
                     "DPC-041 publish-eligible diagnostic changed");
 
+  static_assert(sizeof(idx::ShadowIndexAppliedDeltaRecord{}.durable_delta_uuid) == 16);
+  Require(!drain_ledger.applied_deltas.empty(), "DPC-041 native applied identity fixture is empty");
+  for (const auto& applied : drain_ledger.applied_deltas)
+    Require(applied.durable_delta_uuid == applied.delta.delta_id.value,
+            "DPC-041 drain did not preserve exact durable binary identity");
+  for (unsigned bit = 0; bit <= 128; ++bit) {
+    auto mismatched = drain_ledger;
+    auto& identity = mismatched.applied_deltas.front().durable_delta_uuid;
+    if (bit == 128) identity = {};
+    else identity.bytes[bit / 8] ^= static_cast<platform::byte>(1U << (bit % 8));
+    const auto refused = idx::EvaluateShadowIndexDeltaDrainPublishEligibility(record, &mismatched);
+    Require(!refused.ok() && !refused.planner_visible && !refused.read_visible,
+            "DPC-041 foreign or nil durable delta identity became publish eligible");
+    RequireDiagnostic(refused, "shadow_delta_publish_drain_evidence_corrupt",
+                      "DPC-041 durable identity publication refusal changed");
+  }
+
   auto published = idx::PublishShadowIndexBuildWithDeltaDrainEvidence(
       &lifecycle_ledger,
       &record,
@@ -415,6 +432,19 @@ void ProveCrashReopenRecoveryReplaysOrRefuses() {
                                                source,
                                                request).ok(),
           "DPC-041 recovery drain setup failed");
+
+  for (unsigned bit = 0; bit <= 128; ++bit) {
+    auto mismatched = drain_ledger;
+    mismatched.shadow_entries.clear();
+    auto& identity = mismatched.applied_deltas.front().durable_delta_uuid;
+    if (bit == 128) identity = {};
+    else identity.bytes[bit / 8] ^= static_cast<platform::byte>(1U << (bit % 8));
+    const auto refused = idx::RecoverShadowIndexDeltaDrain(&mismatched, request);
+    Require(!refused.ok() && mismatched.shadow_entries.empty(),
+            "DPC-041 foreign or nil durable delta identity replayed rows");
+    RequireDiagnostic(refused, "shadow_delta_recovery_corrupt_delta_identity",
+                      "DPC-041 durable identity recovery refusal changed");
+  }
 
   idx::ShadowIndexDeltaDrainLedger reopened = drain_ledger;
   reopened.shadow_entries.clear();

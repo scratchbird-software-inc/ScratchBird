@@ -125,21 +125,37 @@ std::string EscapeCanonical(std::string_view value) {
   return out;
 }
 
-std::string UuidText(const TypedUuid& uuid) {
-  if (!uuid.valid()) {
-    return {};
+void AppendCacheU64(std::string& out, u64 value) {
+  for (unsigned i = 0; i < 8; ++i) {
+    out.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
   }
-  return scratchbird::core::uuid::UuidToString(uuid.value);
+}
+
+void AppendCacheField(std::string& out, std::string_view value) {
+  AppendCacheU64(out, value.size());
+  out.append(value);
+}
+
+bool ValidResultDescriptorIdentity(const ExpressionIndexValueDescriptor& descriptor) {
+  const auto& type = descriptor.type_descriptor_uuid;
+  const auto& collation = descriptor.collation_uuid;
+  const bool absent_collation = collation.kind == platform::UuidKind::unknown &&
+      collation.value == platform::Uuid{};
+  return type.kind == platform::UuidKind::object &&
+      uuid::IsEngineIdentityUuid(type.value) &&
+      (absent_collation || (collation.kind == platform::UuidKind::object &&
+                           uuid::IsEngineIdentityUuid(collation.value)));
 }
 
 std::string DescriptorSignature(const ExpressionIndexValueDescriptor& descriptor) {
-  std::ostringstream out;
-  out << "type=" << LowerAscii(descriptor.canonical_type_name)
-      << ";encoded=" << descriptor.encoded_descriptor
-      << ";type_uuid=" << UuidText(descriptor.type_descriptor_uuid)
-      << ";collation_uuid=" << UuidText(descriptor.collation_uuid)
-      << ";case_folded=" << (descriptor.case_folded ? "true" : "false");
-  return out.str();
+  std::string out = "SBEXDS01";
+  AppendCacheField(out, LowerAscii(descriptor.canonical_type_name));
+  AppendCacheField(out, descriptor.encoded_descriptor);
+  for (const auto* identity : {&descriptor.type_descriptor_uuid, &descriptor.collation_uuid}) {
+    out.append(reinterpret_cast<const char*>(identity->value.bytes.data()), 16);
+  }
+  out.push_back(descriptor.case_folded ? '\1' : '\0');
+  return out;
 }
 
 std::string NodeCanonical(const ExpressionIndexExpressionNode& node) {
@@ -336,22 +352,26 @@ bool ValidateDeterminism(
   return true;
 }
 
-std::string CacheKey(const std::string& expression_digest,
-                     const ExpressionIndexEpochs& epochs,
-                     const std::string& result_signature) {
-  std::ostringstream out;
-  out << expression_digest
-      << "|resource_epoch=" << epochs.resource_epoch
-      << "|collation_epoch=" << epochs.collation_epoch
-      << "|function_resource_epoch=" << epochs.function_resource_epoch
-      << "|result=" << result_signature;
-  return out.str();
+std::string CacheKey(const ExpressionIndexExtractorDescriptor& descriptor) {
+  std::string out = "SBEXCK01";
+  AppendCacheField(out, descriptor.canonical_expression_envelope);
+  AppendCacheU64(out, descriptor.epochs.resource_epoch);
+  AppendCacheU64(out, descriptor.epochs.collation_epoch);
+  AppendCacheU64(out, descriptor.epochs.function_resource_epoch);
+  AppendCacheField(out, descriptor.result_type_descriptor_signature);
+  AppendCacheField(out, descriptor.semantic_profile.profile_id);
+  out.push_back(descriptor.semantic_profile.reference_visible_tiebreak ? '\1' : '\0');
+  out.push_back(descriptor.semantic_profile.bytewise_stable ? '\1' : '\0');
+  out.push_back(descriptor.semantic_profile.requires_recheck ? '\1' : '\0');
+  AppendCacheU64(out, static_cast<u64>(descriptor.sort_direction));
+  AppendCacheU64(out, static_cast<u64>(descriptor.null_placement));
+  return out;
 }
 
 bool SameExpressionAndResult(const ExpressionIndexExtractorDescriptor& descriptor,
-                             const std::string& expression_digest,
+                             const std::string& canonical_envelope,
                              const std::string& result_signature) {
-  return descriptor.expression_digest == expression_digest &&
+  return descriptor.canonical_expression_envelope == canonical_envelope &&
          descriptor.result_type_descriptor_signature == result_signature;
 }
 
@@ -877,7 +897,7 @@ ExpressionIndexBindResult BindExpressionIndexExtractorDescriptor(
                       "index.expression.root_missing",
                       {});
   }
-  if (!request.result_descriptor.type_descriptor_uuid.valid()) {
+  if (!ValidResultDescriptorIdentity(request.result_descriptor)) {
     return RefuseBind("SB-INDEX-EXPR-RESULT-DESCRIPTOR-MISSING",
                       "index.expression.result_descriptor_missing",
                       request.result_descriptor.canonical_type_name);
@@ -916,9 +936,6 @@ ExpressionIndexBindResult BindExpressionIndexExtractorDescriptor(
   descriptor.canonical_expression_envelope = canonical.canonical_envelope;
   descriptor.result_type_descriptor_signature =
       DescriptorSignature(request.result_descriptor);
-  descriptor.cache_key = CacheKey(descriptor.expression_digest,
-                                  request.epochs,
-                                  descriptor.result_type_descriptor_signature);
   descriptor.definition = request.definition;
   descriptor.result_descriptor = request.result_descriptor;
   descriptor.epochs = request.epochs;
@@ -929,9 +946,12 @@ ExpressionIndexBindResult BindExpressionIndexExtractorDescriptor(
   descriptor.semantic_profile.bytewise_stable = true;
   descriptor.sort_direction = request.sort_direction;
   descriptor.null_placement = request.null_placement;
+  descriptor.cache_key = CacheKey(descriptor);
   descriptor.non_authority = NonAuthorityEvidence();
   descriptor.evidence.push_back("expression_digest=" + descriptor.expression_digest);
-  descriptor.evidence.push_back("descriptor_cache_key=" + descriptor.cache_key);
+  descriptor.evidence.push_back("descriptor_cache_key_encoding=SBEXCK01");
+  descriptor.evidence.push_back("descriptor_cache_key_bytes=" +
+                                std::to_string(descriptor.cache_key.size()));
   descriptor.evidence.push_back("expression_deterministic=true");
   descriptor.evidence.push_back("resource_epoch=" +
                                 std::to_string(request.epochs.resource_epoch));
@@ -959,7 +979,7 @@ ExpressionIndexBindResult BindExpressionIndexExtractorDescriptor(
                      [&](const ExpressionIndexExtractorDescriptor& cached) {
                        return SameExpressionAndResult(
                                   cached,
-                                  descriptor.expression_digest,
+                                  descriptor.canonical_expression_envelope,
                                   descriptor.result_type_descriptor_signature) &&
                               cached.cache_key != descriptor.cache_key;
                      }),
@@ -997,7 +1017,7 @@ ExpressionIndexBindResult BindExpressionIndexExtractorDescriptor(
 ExpressionIndexBatchExtractionResult ExtractExpressionIndexKeyBatch(
     const ExpressionIndexBatchExtractionRequest& request) {
   if (request.descriptor.expression_digest.empty() ||
-      !request.descriptor.result_descriptor.type_descriptor_uuid.valid()) {
+      !ValidResultDescriptorIdentity(request.descriptor.result_descriptor)) {
     return RefuseBatch("SB-INDEX-EXPR-DESCRIPTOR-INVALID",
                        "index.expression.descriptor_invalid",
                        {});

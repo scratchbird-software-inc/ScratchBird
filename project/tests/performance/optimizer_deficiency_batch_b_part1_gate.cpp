@@ -83,7 +83,7 @@ opt::IndexStats IndexStats(const scratchbird::core::platform::Uuid& relation_uui
                            bool unique,
                            bool covering) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, NextStatisticFixtureIdentity());
+  stats.identity = FreshIdentity(relation_uuid, NextStatisticFixtureIdentity());
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = family;

@@ -18,6 +18,11 @@
 #include "uuid.hpp"
 #include "vector_index_generation_publication.hpp"
 #include "vector_provider_maintenance.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../database_lifecycle/database_lifecycle_test_memory.hpp"
+#include "ddl/create_api.hpp"
+#include "catalog/binary_catalog_metadata.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -27,6 +32,7 @@
 #include <iterator>
 #include <iostream>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -166,8 +172,10 @@ platform::TypedUuid NewUuid(platform::UuidKind kind) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind) {
-  return uuid::UuidToString(NewUuid(kind).value);
+std::string NewUuidBytes(platform::UuidKind kind) {
+  const auto identity = NewUuid(kind);
+  return {reinterpret_cast<const char*>(identity.value.bytes.data()),
+          identity.value.bytes.size()};
 }
 
 std::filesystem::path UniqueTempDir() {
@@ -185,45 +193,53 @@ struct TempDir {
   }
 };
 
-api::EngineRequestContext Context(const TempDir& temp) {
-  api::EngineRequestContext context;
-  context.database_path = (temp.dir / "orh127.sbdb").string();
-  context.database_uuid = NewUuid(platform::UuidKind::database).value;
-  context.current_schema_uuid = NewUuid(platform::UuidKind::object).value;
-  context.security_context_present = true;
-  context.trust_mode = api::EngineTrustMode::server_isolated;
-  context.resource_epoch = 12701;
-  context.security_epoch = 12702;
-  context.catalog_generation_id = 12703;
-  context.trace_tags = {"optimizer_runtime_hot_path_orh_127_gate",
-                        "persisted_metadata",
-                        "upgrade_backfill_repair",
-                        "mga_transaction_regression"};
+struct OwnedContext : api::EngineRequestContext {
+  std::shared_ptr<scratchbird::tests::FixtureEngineSession> session;
+  std::shared_ptr<scratchbird::tests::FixtureEngineStatement> statement;
+};
+
+OwnedContext Context(const TempDir& temp) {
+  OwnedContext retained;
   scratchbird::storage::database::DatabaseCreateConfig create;
-  create.path = context.database_path;
-  const auto database_id = uuid::MakeTypedUuid(platform::UuidKind::database, context.database_uuid);
-  Require(database_id.ok(), "ORH-127 database identity invalid");
-  create.database_uuid = database_id.value;
+  create.path = (temp.dir / "orh127.sbdb").string();
+  create.database_uuid = NewUuid(platform::UuidKind::database);
   create.filespace_uuid = NewUuid(platform::UuidKind::filespace);
   create.page_size = 16384;
   create.creation_unix_epoch_millis = NextMillis();
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(),
           "ORH-127 database creation failed");
-  context.principal_uuid = NewUuid(platform::UuidKind::object).value;
-  context.session_uuid = NewUuid(platform::UuidKind::object).value;
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  context.current_schema_uuid = NewUuid(platform::UuidKind::schema).value;
+  context.trace_tags = {"optimizer_runtime_hot_path_orh_127_gate",
+                        "persisted_metadata", "upgrade_backfill_repair",
+                        "mga_transaction_regression"};
+  retained.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(context);
   api::EngineBeginTransactionRequest begin;
   begin.context = context;
   begin.isolation_level = "read_committed";
   begin.transaction_policy_profile.encoded_profiles = {
       "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
   const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok) {
+    for (const auto& diagnostic : begun.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
   Require(begun.ok && begun.local_transaction_id != 0, "ORH-127 engine begin failed");
   context.transaction_uuid = begun.transaction_uuid;
   context.local_transaction_id = begun.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
-  return context;
+  context.transaction_isolation_level = begun.isolation_level;
+  api::EngineCreateSchemaRequest schema;
+  schema.context = context;
+  schema.target_object.uuid = context.current_schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back({"en", "primary", "", "orh127_schema", true});
+  Require(api::EngineCreateSchema(schema).ok, "ORH-127 schema creation failed");
+  retained.statement = std::make_shared<scratchbird::tests::FixtureEngineStatement>(
+      *retained.session, context);
+  static_cast<api::EngineRequestContext&>(retained) = retained.statement->context;
+  return retained;
 }
 
 std::string Diagnostic(std::string_view family, std::string_view suffix) {
@@ -238,9 +254,9 @@ PersistedMetadataRecord Metadata(MetadataFamilyContract contract,
   record.contract = std::move(contract);
   record.persisted_schema = schema;
   record.generation = generation;
-  record.database_uuid = NewUuidText(platform::UuidKind::database);
-  record.base_table_uuid = NewUuidText(platform::UuidKind::object);
-  record.metadata_uuid = NewUuidText(platform::UuidKind::object);
+  record.database_uuid = NewUuidBytes(platform::UuidKind::database);
+  record.base_table_uuid = NewUuidBytes(platform::UuidKind::object);
+  record.metadata_uuid = NewUuidBytes(platform::UuidKind::object);
   record.sensitive_payload =
       "secret=raw-metadata-material;path=/tmp/private/orh127;token=cleartext";
   return record;
@@ -551,8 +567,8 @@ GateRecord ProveCompressionDictionaryFamily() {
 idx::TextInvertedRowLocator VectorLocator(std::uint64_t row) {
   idx::TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = NewUuidText(platform::UuidKind::row);
-  locator.version_uuid = NewUuidText(platform::UuidKind::row);
+  locator.row_uuid = NewUuidBytes(platform::UuidKind::row);
+  locator.version_uuid = NewUuidBytes(platform::UuidKind::row);
   return locator;
 }
 
@@ -591,7 +607,7 @@ idx::VectorExactDescriptor VectorDescriptor(std::uint64_t epoch) {
 
 idx::VectorExactMetricResource VectorMetric(std::uint64_t epoch) {
   idx::VectorExactMetricResource metric;
-  metric.metric_resource_uuid = NewUuidText(platform::UuidKind::object);
+  metric.metric_resource_uuid = NewUuidBytes(platform::UuidKind::object);
   metric.metric_resource_epoch = epoch;
   metric.metric_kind = idx::VectorExactMetricKind::l2;
   metric.deterministic = true;
@@ -601,9 +617,9 @@ idx::VectorExactMetricResource VectorMetric(std::uint64_t epoch) {
 
 idx::VectorExactBuildRequest VectorExactRequest() {
   idx::VectorExactBuildRequest request;
-  request.relation_uuid = NewUuidText(platform::UuidKind::object);
-  request.index_uuid = NewUuidText(platform::UuidKind::object);
-  request.provider_uuid = NewUuidText(platform::UuidKind::object);
+  request.relation_uuid = NewUuidBytes(platform::UuidKind::object);
+  request.index_uuid = NewUuidBytes(platform::UuidKind::object);
+  request.provider_uuid = NewUuidBytes(platform::UuidKind::object);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = VectorDescriptor(31);
@@ -900,14 +916,43 @@ GateRecord ProveDocumentPathIndexFamily() {
   const auto clean = ReadFile(artifact_path);
   const auto corrupt_path = temp.dir / "document_path_index_corrupt.sbidx";
   auto corrupt = clean;
-  const auto pos = corrupt.find("STATS");
-  Require(pos != std::string::npos, "document path fixture missing stats tag");
-  corrupt.replace(pos, 5, "STATE");
+  // Binary v2: magic[9], version:u32, length:u64, SHA-256[32], records.
+  // Corrupt the actual stats record tag, not a retired text serialization.
+  Require(clean.size() > 53 && clean.substr(0, 9) == "SBDOCPATH",
+          "document path fixture missing binary header");
+  const std::span<const std::uint8_t> bytes(
+      reinterpret_cast<const std::uint8_t*>(clean.data()), clean.size());
+  std::size_t cursor = 53;
+  unsigned stats_records = 0;
+  while (cursor < bytes.size()) {
+    const auto tag_position = cursor;
+    std::uint8_t tag = 0;
+    std::uint32_t size = 0;
+    Require(api::ReadBinaryU8(bytes, &cursor, &tag) &&
+                api::ReadBinaryU32(bytes, &cursor, &size) && size <= bytes.size() - cursor,
+            "document path fixture invalid binary record frame");
+    if (tag == 6) {
+      ++stats_records;
+      corrupt[tag_position] = static_cast<char>(0x7f);
+    }
+    cursor += size;
+  }
+  Require(stats_records == 1, "document path fixture missing unique stats tag");
+  // Keep the outer checksum valid: structural refusal must not borrow a
+  // checksum failure, and the repair must rebuild from authoritative rows.
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const platform::byte*>(corrupt.data() + 53), corrupt.size() - 53);
+  Require(digest.ok() && digest.digest_bytes == 32, "fixture checksum failed");
+  corrupt.replace(21, 32, reinterpret_cast<const char*>(digest.digest.data()), 32);
   WriteFile(corrupt_path, corrupt);
   api::DocumentPathProviderOpenRequest repair_no_source;
   repair_no_source.artifact_path = corrupt_path.string();
   repair_no_source.expected_identity = rebuilt.artifact.identity;
   repair_no_source.require_expected_identity = true;
+  const auto malformed = api::OpenDocumentPathPhysicalProvider(repair_no_source);
+  Require(!malformed.ok && DiagnosticContains(
+              malformed, api::kDocumentPathPhysicalProviderStaleFormat),
+          "malformed binary stats tag was not exactly refused");
   repair_no_source.repair_admitted = true;
   const auto no_source =
       api::OpenDocumentPathPhysicalProvider(repair_no_source);
@@ -923,6 +968,19 @@ GateRecord ProveDocumentPathIndexFamily() {
                   repaired.evidence,
                   "document_path_provider_repair_admitted=true"),
           "document path repair from authoritative rows failed");
+  auto repaired_probe = probe;
+  repaired_probe.artifact_path = corrupt_path.string();
+  repaired_probe.expected_identity = rebuilt.artifact.identity;
+  repaired_probe.path = "customer.id";
+  repaired_probe.wildcard_path = false;
+  repaired_probe.equals_value = {"string", "C-2", false};
+  const auto repaired_rows = api::ProbeDocumentPathPhysicalProvider(repaired_probe);
+  Require(repaired_rows.ok && repaired_rows.projection_plan.candidates.size() == 1,
+          "reopened repaired artifact lost authoritative replacement row");
+  repaired_probe.equals_value = {"string", "C-1", false};
+  const auto obsolete_rows = api::ProbeDocumentPathPhysicalProvider(repaired_probe);
+  Require(obsolete_rows.ok && obsolete_rows.projection_plan.candidates.empty(),
+          "repaired artifact retained obsolete source values");
 
   auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context,
@@ -1083,8 +1141,8 @@ idx::PageExtentSummaryFormatCompatibility CurrentPageSummaryFormat() {
 idx::PageExtentSummaryMetadata PageSummaryMetadata() {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = NewUuidText(platform::UuidKind::object);
-  metadata.summary_uuid = NewUuidText(platform::UuidKind::object);
+  metadata.relation_uuid = NewUuidBytes(platform::UuidKind::object);
+  metadata.summary_uuid = NewUuidBytes(platform::UuidKind::object);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 10;
   metadata.range.page_count = 3;
@@ -1234,6 +1292,8 @@ void ProveNoRuntimeExecution_PlanReads() {
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "orh127-native-owner-fixture");
   ProvePersistedMetadataFamilies();
   ProveGateCoverage();
   ProveNoRuntimeExecution_PlanReads();

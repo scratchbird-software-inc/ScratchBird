@@ -76,10 +76,12 @@ opt::TableCardinalityStats TableStats(const scratchbird::core::platform::Uuid& r
 opt::IndexStats BaseIndex(const scratchbird::core::platform::Uuid& relation_uuid,
                           const scratchbird::core::platform::Uuid& index_uuid) {
   opt::IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, StatisticIdentityFor(index_uuid));
+  stats.identity = FreshIdentity(relation_uuid, StatisticIdentityFor(index_uuid));
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
+  stats.equality_lookup_supported = true;
+  stats.ordered_range_supported = true;
   stats.descriptor_digest = "desc:customer:v1";
   stats.collation_identity = "unicode.casefold.det";
   stats.key_column_uuids = {scratchbird::tests::FixtureUuid(1482, 10)};

@@ -359,7 +359,7 @@ DiagnosticRecord ValidateAppliedDeltaEvidence(
         !applied.delta.committed ||
         applied.delta.local_transaction_id >
             request.authoritative_visible_through_local_transaction_id ||
-        applied.durable_delta_identity_ref.empty() ||
+        applied.durable_delta_uuid != applied.delta.delta_id.value ||
         applied.engine_mga_inventory_evidence_ref.empty() ||
         applied.engine_mga_horizon_evidence_ref.empty()) {
       return MakeShadowIndexDeltaDrainDiagnostic(
@@ -408,7 +408,7 @@ DiagnosticRecord ValidateLedgerAppliedDeltaEvidence(
         !applied.delta.committed ||
         applied.delta.local_transaction_id >
             ledger.authoritative_visible_through_local_transaction_id ||
-        applied.durable_delta_identity_ref.empty() ||
+        applied.durable_delta_uuid != applied.delta.delta_id.value ||
         applied.engine_mga_inventory_evidence_ref.empty() ||
         applied.engine_mga_horizon_evidence_ref.empty()) {
       return MakeShadowIndexDeltaDrainDiagnostic(
@@ -678,9 +678,7 @@ ShadowIndexDeltaDrainResult DrainShadowIndexCommittedDeltas(
     ApplyDeltaToShadowEntries(&drain_ledger->shadow_entries, delta);
     ShadowIndexAppliedDeltaRecord applied;
     applied.delta = delta;
-    applied.durable_delta_identity_ref =
-        "durable_delta_id:" +
-        scratchbird::core::uuid::UuidToString(delta.delta_id.value);
+    applied.durable_delta_uuid = delta.delta_id.value;
     applied.engine_mga_inventory_evidence_ref =
         request.engine_mga_inventory_evidence_ref;
     applied.engine_mga_horizon_evidence_ref =

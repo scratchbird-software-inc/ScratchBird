@@ -54,8 +54,9 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(UuidKind kind, std::uint64_t salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  std::string Bytes(UuidKind kind, std::uint64_t salt) const {
+    const auto identity = Typed(kind, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -73,8 +74,8 @@ idx::PageExtentSummaryFormatCompatibility CurrentFormat() {
 idx::PageExtentSummaryMetadata Summary(const UuidFactory& uuids) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = uuids.Text(UuidKind::object, 20);
-  metadata.summary_uuid = uuids.Text(UuidKind::object, 21);
+  metadata.relation_uuid = uuids.Bytes(UuidKind::object, 20);
+  metadata.summary_uuid = uuids.Bytes(UuidKind::object, 21);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 100;
   metadata.range.page_count = 4;

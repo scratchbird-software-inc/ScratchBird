@@ -86,9 +86,10 @@ TypedUuid GeneratedUuid(UuidKind kind, u64 salt) {
   return typed.ok() ? typed.value : TypedUuid{};
 }
 
-std::string UuidText(UuidKind kind, u64 salt) {
+std::string UuidBytes(UuidKind kind, u64 salt) {
   const auto typed = GeneratedUuid(kind, salt);
-  return typed.valid() ? uuid::UuidToString(typed.value) : "";
+  if (!typed.valid()) return {};
+  return {reinterpret_cast<const char*>(typed.value.bytes.data()), typed.value.bytes.size()};
 }
 
 void AddEvidence(IndexFaultInjectionMatrixRow* row,
@@ -307,8 +308,8 @@ page::IndexBtreePhysicalTreeImage ExportTree(
 TextInvertedRowLocator Locator(u64 row) {
   TextInvertedRowLocator locator;
   locator.row_ordinal = row;
-  locator.row_uuid = UuidText(UuidKind::row, row + 6000);
-  locator.version_uuid = UuidText(UuidKind::row, row + 7000);
+  locator.row_uuid = UuidBytes(UuidKind::row, row + 6000);
+  locator.version_uuid = UuidBytes(UuidKind::row, row + 7000);
   return locator;
 }
 
@@ -345,7 +346,7 @@ VectorExactDescriptor VectorDescriptor() {
 
 VectorExactMetricResource VectorMetric() {
   VectorExactMetricResource metric;
-  metric.metric_resource_uuid = UuidText(UuidKind::object, 331);
+  metric.metric_resource_uuid = UuidBytes(UuidKind::object, 331);
   metric.metric_resource_epoch = 43;
   metric.metric_kind = VectorExactMetricKind::l2;
   metric.deterministic = true;
@@ -1028,9 +1029,9 @@ IndexFaultInjectionMatrixRow TextSegmentPublishRow() {
                      "after segment seal before publish admission",
                      "open sealed segment but require family blocker before use");
   TextInvertedSegmentBuildRequest request;
-  request.relation_uuid = UuidText(UuidKind::object, 613);
-  request.index_uuid = UuidText(UuidKind::object, 614);
-  request.segment_uuid = UuidText(UuidKind::object, 615);
+  request.relation_uuid = UuidBytes(UuidKind::object, 613);
+  request.index_uuid = UuidBytes(UuidKind::object, 614);
+  request.segment_uuid = UuidBytes(UuidKind::object, 615);
   request.base_generation = 7;
   request.segment_generation = 11;
   request.analyzer_epoch = 13;
@@ -1091,9 +1092,9 @@ IndexFaultInjectionMatrixRow VectorExactPublishRow() {
                      "after exact vector provider write before publish admission",
                      "open exact provider but require family blocker before use");
   VectorExactBuildRequest request;
-  request.relation_uuid = UuidText(UuidKind::object, 672);
-  request.index_uuid = UuidText(UuidKind::object, 673);
-  request.provider_uuid = UuidText(UuidKind::object, 674);
+  request.relation_uuid = UuidBytes(UuidKind::object, 672);
+  request.index_uuid = UuidBytes(UuidKind::object, 673);
+  request.provider_uuid = UuidBytes(UuidKind::object, 674);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = VectorDescriptor();
@@ -1151,9 +1152,9 @@ IndexFaultInjectionMatrixRow VectorHnswPublishRow() {
                      "after HNSW provider write before publish admission",
                      "open HNSW provider but require family blocker before use");
   VectorHnswBuildRequest request;
-  request.relation_uuid = UuidText(UuidKind::object, 728);
-  request.index_uuid = UuidText(UuidKind::object, 729);
-  request.provider_uuid = UuidText(UuidKind::object, 730);
+  request.relation_uuid = UuidBytes(UuidKind::object, 728);
+  request.index_uuid = UuidBytes(UuidKind::object, 729);
+  request.provider_uuid = UuidBytes(UuidKind::object, 730);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.training_generation = 13;
@@ -1217,9 +1218,9 @@ IndexFaultInjectionMatrixRow VectorIvfPublishRow() {
                      "after IVF provider write before publish admission",
                      "open IVF provider but require family blocker before use");
   VectorIvfPqBuildRequest request;
-  request.relation_uuid = UuidText(UuidKind::object, 790);
-  request.index_uuid = UuidText(UuidKind::object, 791);
-  request.provider_uuid = UuidText(UuidKind::object, 792);
+  request.relation_uuid = UuidBytes(UuidKind::object, 790);
+  request.index_uuid = UuidBytes(UuidKind::object, 791);
+  request.provider_uuid = UuidBytes(UuidKind::object, 792);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.training_generation = 13;
@@ -1284,9 +1285,9 @@ IndexFaultInjectionMatrixRow GraphProviderPublishRow() {
                      "after graph provider write before reopen",
                      "open graph provider and expose candidate-only route");
   GraphBuildRequest request;
-  request.relation_uuid = UuidText(UuidKind::object, 853);
-  request.index_uuid = UuidText(UuidKind::object, 854);
-  request.provider_uuid = UuidText(UuidKind::object, 855);
+  request.relation_uuid = UuidBytes(UuidKind::object, 853);
+  request.index_uuid = UuidBytes(UuidKind::object, 854);
+  request.provider_uuid = UuidBytes(UuidKind::object, 855);
   request.base_generation = 7;
   request.provider_generation = 11;
   request.descriptor = GraphDescriptorFixture();

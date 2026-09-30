@@ -55,8 +55,9 @@ struct UuidFactory {
     return generated.value;
   }
 
-  std::string Text(platform::UuidKind kind, platform::u64 salt) const {
-    return uuid::UuidToString(Typed(kind, salt).value);
+  std::string Bytes(platform::UuidKind kind, platform::u64 salt) const {
+    const auto identity = Typed(kind, salt).value;
+    return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
   }
 };
 
@@ -154,8 +155,8 @@ idx::PageExtentSummaryMetadata PageSummary(const UuidFactory& uuids,
                                            platform::u64 salt) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::PageExtentSummaryMetadata metadata;
-  metadata.relation_uuid = uuids.Text(platform::UuidKind::object, salt + 1);
-  metadata.summary_uuid = uuids.Text(platform::UuidKind::object, salt + 2);
+  metadata.relation_uuid = uuids.Bytes(platform::UuidKind::object, salt + 1);
+  metadata.summary_uuid = uuids.Bytes(platform::UuidKind::object, salt + 2);
   metadata.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   metadata.range.first_page_id = 10;
   metadata.range.page_count = 8;
@@ -203,10 +204,10 @@ idx::TimeRangeSummaryDescriptor TimeDescriptor(
         idx::PageExtentSummaryStatus::current) {
   const auto contract = idx::PageExtentSummaryPersistedFormatContract();
   idx::TimeRangeSummaryDescriptor descriptor;
-  descriptor.table_uuid = uuids.Text(platform::UuidKind::object, salt + 1);
-  descriptor.index_uuid = uuids.Text(platform::UuidKind::object, salt + 2);
-  descriptor.range_family_uuid = uuids.Text(platform::UuidKind::object, salt + 3);
-  descriptor.summary_uuid = uuids.Text(platform::UuidKind::object, salt + 4);
+  descriptor.table_uuid = uuids.Bytes(platform::UuidKind::object, salt + 1);
+  descriptor.index_uuid = uuids.Bytes(platform::UuidKind::object, salt + 2);
+  descriptor.range_family_uuid = uuids.Bytes(platform::UuidKind::object, salt + 3);
+  descriptor.summary_uuid = uuids.Bytes(platform::UuidKind::object, salt + 4);
   descriptor.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   descriptor.range.first_page_id = 20;
   descriptor.range.page_count = 3;

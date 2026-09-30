@@ -62,8 +62,9 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 seed) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::u64 seed) {
-  return uuid::UuidToString(NewUuid(platform::UuidKind::object, seed).value);
+std::string NewUuidBytes(platform::u64 seed) {
+  const auto identity = NewUuid(platform::UuidKind::object, seed).value;
+  return {reinterpret_cast<const char*>(identity.bytes.data()), identity.bytes.size()};
 }
 
 bool SameUuid(const platform::TypedUuid& left,
@@ -72,7 +73,7 @@ bool SameUuid(const platform::TypedUuid& left,
 }
 
 std::string UuidKey(const platform::TypedUuid& value) {
-  return uuid::UuidToString(value.value);
+  return {reinterpret_cast<const char*>(value.value.bytes.data()), value.value.bytes.size()};
 }
 
 std::uint64_t MixFnv1a(std::uint64_t hash, std::string_view text) {
@@ -206,7 +207,7 @@ idx::TimeRangeSummaryDescriptor TimeDescriptorForRange(
   descriptor.table_uuid = table_uuid;
   descriptor.index_uuid = index_uuid;
   descriptor.range_family_uuid = family_uuid;
-  descriptor.summary_uuid = NewUuidText(4500000 + ordinal);
+  descriptor.summary_uuid = NewUuidBytes(4500000 + ordinal);
   descriptor.range.kind = idx::PageExtentSummaryRangeKind::page_range;
   descriptor.range.first_page_id = range.first_page_id;
   descriptor.range.page_count = range.page_count;
@@ -227,9 +228,9 @@ idx::TimeRangeSummaryDescriptor TimeDescriptorForRange(
 
 std::vector<idx::TimeRangeSummaryDescriptor> BuildTimeSummaries(
     const std::vector<TimeRange>& ranges) {
-  const auto table_uuid = NewUuidText(4500100);
-  const auto index_uuid = NewUuidText(4500101);
-  const auto family_uuid = NewUuidText(4500102);
+  const auto table_uuid = NewUuidBytes(4500100);
+  const auto index_uuid = NewUuidBytes(4500101);
+  const auto family_uuid = NewUuidBytes(4500102);
   std::vector<idx::TimeRangeSummaryDescriptor> summaries;
   summaries.reserve(ranges.size());
   for (std::size_t i = 0; i < ranges.size(); ++i) {

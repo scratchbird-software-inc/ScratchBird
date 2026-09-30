@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "index_key_encoding.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "physical_bloom_filter.hpp"
 #include "runtime_platform.hpp"
 
@@ -96,17 +97,17 @@ idx::PhysicalBloomAbsentProbeEvidence Absent(std::int64_t value) {
 std::vector<idx::PhysicalBloomEncodedKeyEvidence> BaseKeys() {
   return {
       Key(10,
-          "11111111-1111-7111-8111-111111111101",
-          "11111111-1111-7111-8111-111111111201"),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111101")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111201"))),
       Key(20,
-          "11111111-1111-7111-8111-111111111102",
-          "11111111-1111-7111-8111-111111111202"),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111102")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111202"))),
       Key(30,
-          "11111111-1111-7111-8111-111111111103",
-          "11111111-1111-7111-8111-111111111203"),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111103")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111203"))),
       Key(40,
-          "11111111-1111-7111-8111-111111111104",
-          "11111111-1111-7111-8111-111111111204"),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111104")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111204"))),
   };
 }
 
@@ -117,9 +118,9 @@ std::vector<idx::PhysicalBloomAbsentProbeEvidence> AbsentSample() {
 
 idx::PhysicalBloomFilterBuildRequest BuildRequest() {
   idx::PhysicalBloomFilterBuildRequest request;
-  request.relation_uuid = "22222222-2222-7222-8222-222222222222";
-  request.index_uuid = "33333333-3333-7333-8333-333333333333";
-  request.segment_uuid = "44444444-4444-7444-8444-444444444444";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
+  request.segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("44444444-4444-7444-8444-444444444444"));
   request.base_generation = 7;
   request.filter_generation = 11;
   request.seed = 0x123456789abcdef0ull;
@@ -268,8 +269,8 @@ void VerifyFprRefusals(const idx::PhysicalBloomFilterPage& page) {
   for (int value = 0; value < 80; ++value) {
     request.authoritative_keys.push_back(Key(
         value,
-        "55555555-5555-7555-8555-555555555555",
-        "66666666-6666-7666-8666-666666666666"));
+        scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("55555555-5555-7555-8555-555555555555")),
+        scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("66666666-6666-7666-8666-666666666666"))));
   }
   request.absent_probe_sample.clear();
   for (int value = 1000; value < 1040; ++value) {
@@ -288,8 +289,8 @@ void VerifyMutationAndRepair(const idx::PhysicalBloomFilterPage& page) {
   append_without_sample.kind = idx::PhysicalBloomMutationKind::append_key;
   append_without_sample.after_key_present = true;
   append_without_sample.after_key = Key(45,
-                                        "11111111-1111-7111-8111-111111111145",
-                                        "11111111-1111-7111-8111-111111111245");
+                                        scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111145")),
+                                        scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111245")));
   const auto appended_without_sample =
       idx::ApplyPhysicalBloomFilterMutation(page, append_without_sample);
   Require(appended_without_sample.ok() &&
@@ -301,8 +302,8 @@ void VerifyMutationAndRepair(const idx::PhysicalBloomFilterPage& page) {
   append.kind = idx::PhysicalBloomMutationKind::append_key;
   append.after_key_present = true;
   append.after_key = Key(50,
-                         "11111111-1111-7111-8111-111111111150",
-                         "11111111-1111-7111-8111-111111111250");
+                         scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111150")),
+                         scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111250")));
   append.absent_probe_sample = AbsentSample();
   const auto appended = idx::ApplyPhysicalBloomFilterMutation(page, append);
   Require(appended.ok() && !appended.rebuild_performed,
@@ -395,7 +396,7 @@ void VerifyCorruptStaleRepair(const idx::PhysicalBloomFilterPage& page) {
   idx::PhysicalBloomFilterOpenRequest wrong_identity;
   wrong_identity.bytes = serialized.bytes;
   wrong_identity.expected_segment_uuid_present = true;
-  wrong_identity.expected_segment_uuid = "77777777-7777-7777-8777-777777777777";
+  wrong_identity.expected_segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("77777777-7777-7777-8777-777777777777"));
   const auto identity = idx::OpenPhysicalBloomFilterPage(wrong_identity);
   Require(identity.open_class == idx::PhysicalBloomFilterOpenClass::identity_mismatch,
           "identity mismatch was not classified exactly");

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "runtime_platform.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 #include "text_inverted_segment.hpp"
 
 #include <algorithm>
@@ -51,11 +52,11 @@ idx::TextInvertedExactRecheckProof Proof() {
 idx::TextInvertedSegmentBuildRequest BuildRequest(std::uint64_t generation,
                                                   std::uint64_t sequence) {
   idx::TextInvertedSegmentBuildRequest request;
-  request.relation_uuid = "11111111-1111-7111-8111-111111111111";
-  request.index_uuid = "22222222-2222-7222-8222-222222222222";
+  request.relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
+  request.index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
   request.segment_uuid =
-      generation == 11 ? "33333333-3333-7333-8333-333333333333"
-                       : "44444444-4444-7444-8444-444444444444";
+      generation == 11 ? scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"))
+                       : scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("44444444-4444-7444-8444-444444444444"));
   request.base_generation = 7;
   request.segment_generation = generation;
   request.analyzer_epoch = 13;
@@ -84,24 +85,24 @@ idx::TextInvertedDocumentInput Doc(std::uint64_t row,
 std::vector<idx::TextInvertedDocumentInput> BaseDocs() {
   return {
       Doc(10,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa10",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb10",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa10")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb10")),
           {"alpha", "beta", "gamma"}),
       Doc(20,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa20",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb20",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa20")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb20")),
           {"alpha", "gamma", "delta"}),
       Doc(30,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa30",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb30",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa30")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb30")),
           {"beta", "gamma", "alpha"}),
       Doc(40,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa40",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb40",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa40")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb40")),
           {"alpha", "beta", "gamma"}),
       Doc(50,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa50",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb50",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa50")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb50")),
           {"alpha", "omega"}),
   };
 }
@@ -109,12 +110,12 @@ std::vector<idx::TextInvertedDocumentInput> BaseDocs() {
 std::vector<idx::TextInvertedDocumentInput> SecondDocs() {
   return {
       Doc(60,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa60",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb60",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa60")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb60")),
           {"alpha", "sigma"}),
       Doc(70,
-          "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa70",
-          "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb70",
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaa70")),
+          scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbb70")),
           {"beta", "sigma"}),
   };
 }
@@ -149,11 +150,11 @@ idx::TextInvertedSegment OpenSegment(
   idx::TextInvertedSegmentOpenRequest open;
   open.bytes = serialized.bytes;
   open.expected_relation_uuid_present = true;
-  open.expected_relation_uuid = "11111111-1111-7111-8111-111111111111";
+  open.expected_relation_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("11111111-1111-7111-8111-111111111111"));
   open.expected_index_uuid_present = true;
-  open.expected_index_uuid = "22222222-2222-7222-8222-222222222222";
+  open.expected_index_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("22222222-2222-7222-8222-222222222222"));
   open.expected_segment_uuid_present = true;
-  open.expected_segment_uuid = "33333333-3333-7333-8333-333333333333";
+  open.expected_segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("33333333-3333-7333-8333-333333333333"));
   open.expected_base_generation_present = true;
   open.expected_base_generation = 7;
   open.expected_segment_generation_present = true;
@@ -316,7 +317,7 @@ void VerifyFailClosed(const idx::TextInvertedSegment& segment) {
   idx::TextInvertedSegmentOpenRequest identity = corrupt_open;
   identity.bytes = serialized.bytes;
   identity.expected_segment_uuid_present = true;
-  identity.expected_segment_uuid = "99999999-9999-7999-8999-999999999999";
+  identity.expected_segment_uuid = scratchbird::tests::IndexFixtureUuidBytes(scratchbird::tests::FixtureUuidLiteral("99999999-9999-7999-8999-999999999999"));
   const auto identity_result = idx::OpenTextInvertedSegmentArtifact(identity);
   Require(identity_result.open_class ==
               idx::TextInvertedSegmentOpenClass::identity_mismatch &&

@@ -609,7 +609,7 @@ opt::AccessPathPlanningRequest DpcCanonicalAccessRequest(
   table.average_row_bytes = 96;
 
   opt::IndexStats index;
-  index.identity = DpcFreshIdentity(fixture.index_uuid,
+  index.identity = DpcFreshIdentity(fixture.table_uuid,
                                     scratchbird::tests::FixtureUuid(1570, 2),
                                     fixture.context.local_transaction_id);
   index.identity.freshness = freshness;

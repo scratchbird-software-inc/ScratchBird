@@ -2,6 +2,7 @@
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/binary_index_identity_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -36,9 +37,10 @@ bool Has(const std::vector<std::string>& values, const std::string& expected) {
 }
 
 const opt::PlanCandidate* FindCandidate(const std::vector<opt::PlanCandidate>& candidates,
-                                        const std::string& id) {
+                                        const std::string& id,
+                                        const plan::CanonicalPlannerUuid& index_uuid = {}) {
   const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const opt::PlanCandidate& candidate) {
-    return candidate.candidate_id == id;
+    return candidate.candidate_id == id && candidate.index_uuid == index_uuid;
   });
   return found == candidates.end() ? nullptr : &*found;
 }
@@ -68,10 +70,12 @@ opt::TableCardinalityStats TableStats(const std::string& relation_uuid) {
 
 opt::IndexStats IndexStats(const std::string& relation_uuid) {
   opt::IndexStats index;
-  index.identity = FreshIdentity(BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 1118483)));
+  index.identity = FreshIdentity(relation_uuid);
   index.index_uuid = scratchbird::tests::FixtureUuid(1274, 1001);
   index.relation_uuid = NativeFixtureIdentity(relation_uuid);
   index.index_family = "btree";
+  index.equality_lookup_supported = true;
+  index.ordered_range_supported = true;
   index.key_column_uuids = {scratchbird::tests::FixtureUuid(1632, 1)};
   index.height = 3;
   index.leaf_pages = 100;
@@ -216,7 +220,8 @@ bool AcceptedPartitionSegmentPlacementPruningIsBeforeCosting() {
 
   const auto candidates = opt::GenerateFullAccessPathCandidates(request);
   const auto* scan = FindCandidate(candidates, "CAND-OPT-FULL-SCAN");
-  const auto* index = FindCandidate(candidates, "CAND-OPT-INDEX:idx.odf023.amount");
+  const auto* index = FindCandidate(candidates, "CAND-OPT-INDEX",
+                                  scratchbird::tests::FixtureUuid(1274, 1001));
   return Require(scan != nullptr && index != nullptr, "expected scan and index candidates") &&
          Require(scan->partition_segment_prune_evidence.present,
                  "partition/segment evidence was not attached to scan candidate") &&
@@ -410,9 +415,62 @@ bool NoRuntimeDocsExecution_PlanDependencyLeaksIntoPlanEvidence() {
                  "dependency check inspected wrong candidate kind");
 }
 
+bool SummarySystemIdentitiesAreBinary() {
+  const auto prefix = scratchbird::tests::FixtureUuidLiteral("19191919-1919-7919-8919-000000000000");
+  const auto suffix_ten = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, 10);
+  const auto suffix_max = scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, 999999999999ULL);
+  if (!Require(suffix_ten == scratchbird::tests::IndexFixtureUuidBytes(
+                   scratchbird::tests::FixtureUuidLiteral("19191919-1919-7919-8919-000000000010")) &&
+               suffix_max == scratchbird::tests::IndexFixtureUuidBytes(
+                   scratchbird::tests::FixtureUuidLiteral("19191919-1919-7919-8919-999999999999")),
+               "binary fixture migration changed historical UUID bits")) return false;
+  bool oversized_refused = false;
+  try {
+    (void)scratchbird::tests::IndexFixtureUuidWithDecimalSuffix(prefix, 1000000000000ULL);
+  } catch (const std::invalid_argument&) { oversized_refused = true; }
+  if (!Require(oversized_refused, "oversized fixture identity suffix was truncated")) return false;
+  const auto identity = BinaryFixtureIdentity(scratchbird::tests::FixtureUuid(1632, 42));
+  if (!Require(identity.size() == 16 && idx::PageExtentSummaryUuidTextValid(identity),
+               "binary16 system UUID rejected by core index validator")) return false;
+  for (std::size_t length = 0; length <= 40; ++length) {
+    if (length == 16) continue;
+    auto wrong_length = identity;
+    wrong_length.resize(length, '\0');
+    if (!Require(!idx::PageExtentSummaryUuidTextValid(wrong_length),
+                 "non-16-byte system UUID admitted")) return false;
+  }
+  for (unsigned version = 0; version < 16; ++version) {
+    auto changed = identity;
+    changed[6] = static_cast<char>((version << 4) | (changed[6] & 0x0f));
+    if (!Require(idx::PageExtentSummaryUuidTextValid(changed) == (version == 7),
+                 "index system identity version admission is incorrect")) return false;
+  }
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    auto changed = identity;
+    changed[8] = static_cast<char>((variant << 6) | (changed[8] & 0x3f));
+    if (!Require(idx::PageExtentSummaryUuidTextValid(changed) == (variant == 2),
+                 "index system identity variant admission is incorrect")) return false;
+  }
+  const std::string text = "019d0000-0660-7000-8000-00000000002a";
+  if (!Require(!idx::PageExtentSummaryUuidTextValid(text) &&
+               !idx::PageExtentSummaryUuidTextValid(std::string(16, '\0')),
+               "text or nil system UUID was admitted")) return false;
+  auto page = PageSummary(identity, identity, "001", "010", 0, 8);
+  auto time = TimeSummary(identity, identity, "001", "010", 0, 8);
+  if (!Require(idx::PageExtentSummaryMetadataIdentityValid(page) &&
+               idx::TimeRangeSummaryDescriptorIdentityValid(time),
+               "page/time descriptor binary identities rejected")) return false;
+  page.summary_uuid = text;
+  time.index_uuid = text;
+  return Require(!idx::PageExtentSummaryMetadataIdentityValid(page) &&
+                 !idx::TimeRangeSummaryDescriptorIdentityValid(time),
+                 "text identity bypassed physical summary descriptor admission");
+}
+
 }  // namespace
 
 int main() {
+  if (!SummarySystemIdentitiesAreBinary()) return 1;
   if (!AcceptedPartitionSegmentPlacementPruningIsBeforeCosting()) return 1;
   if (!ConservativeFallbackReasonsAreExact()) return 1;
   if (!AccessPathTopLevelRecheckFlagsGatePartitionPruning()) return 1;
