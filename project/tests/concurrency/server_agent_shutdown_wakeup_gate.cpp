@@ -119,6 +119,30 @@ platform::TypedUuid NewIdentity(platform::UuidKind kind, platform::u64 millis) {
   Require(result.ok(), "fixture identity generation failed");
   return result.value;
 }
+
+// SEARCH_KEY: SERVER_AGENT_SNAPSHOT_BINARY_IDENTITIES
+bool HasBinarySnapshotIdentities(const server::ServerAgentRuntimeSnapshot& snapshot,
+                                 const server::HostedEngineState& engine) {
+  const auto equal_bytes = [](const std::string& bytes, const platform::Uuid& id) {
+    if (bytes.size() != id.bytes.size()) return false;
+    for (std::size_t i = 0; i < id.bytes.size(); ++i) {
+      if (static_cast<unsigned char>(bytes[i]) != id.bytes[i]) return false;
+    }
+    return true;
+  };
+  if (engine.databases.empty() ||
+      !equal_bytes(snapshot.database_uuid, engine.databases.front().database_uuid) ||
+      !equal_bytes(snapshot.filespace_uuid, engine.databases.front().filespace_uuid)) return false;
+  for (const auto& worker : snapshot.workers) {
+    platform::Uuid id;
+    if (worker.instance_uuid.size() != id.bytes.size()) return false;
+    for (std::size_t i = 0; i < id.bytes.size(); ++i) {
+      id.bytes[i] = static_cast<unsigned char>(worker.instance_uuid[i]);
+    }
+    if (!uuid::IsEngineIdentityUuid(id)) return false;
+  }
+  return snapshot.workers.size() == 2;
+}
 }  // namespace
 
 extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
@@ -506,7 +530,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
     }
-    if (!started || !active.started || active.worker_thread_count != 2 ||
+    if (!started || !active.started || !HasBinarySnapshotIdentities(active, engine) ||
+        active.worker_thread_count != 2 ||
         active.durable_lease_count < 2 || active.durable_catalog_root_digest.empty() ||
         launch_attempts != 3 || !joined || stopped.started || stopped.stopping) {
       return false;
