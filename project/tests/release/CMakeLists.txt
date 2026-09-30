@@ -300,6 +300,14 @@ set_tests_properties(filespace_byte_observation_gate PROPERTIES
   TIMEOUT 60 LABELS "storage;metrics;binary_uuid;component_regression;not_runtime_acceptance")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(filespace_retained_observation_gate filespace_retained_observation_gate.cpp)
+  target_compile_features(filespace_retained_observation_gate PRIVATE cxx_std_23)
+  target_link_libraries(filespace_retained_observation_gate PRIVATE sb_storage_disk)
+  target_link_options(filespace_retained_observation_gate PRIVATE
+    "LINKER:--wrap=pthread_mutex_unlock" "LINKER:--wrap=pread" "LINKER:--wrap=fstat")
+  add_test(NAME filespace_retained_observation_gate COMMAND filespace_retained_observation_gate)
+  set_tests_properties(filespace_retained_observation_gate PROPERTIES
+    TIMEOUT 60 LABELS "storage;disk;binary_uuid;native_fault_injection;not_runtime_acceptance")
   add_executable(device_extent_preallocation_gate device_extent_preallocation_gate.cpp)
   target_compile_features(device_extent_preallocation_gate PRIVATE cxx_std_23)
   target_link_libraries(device_extent_preallocation_gate PRIVATE sb_storage_disk)

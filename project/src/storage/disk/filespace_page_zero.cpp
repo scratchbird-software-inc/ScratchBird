@@ -223,6 +223,9 @@ FilespacePageZeroDecodeResult DecodeFilespacePageZero(
 FilespacePageZeroDecodeResult ReadFilespacePageZeroFromOpenDevice(
     FileDevice& device,const FilespaceBootstrapBinding* expected) noexcept {
   try {
+    // Primitive read/size locks alone leave gaps in this multi-read observation.
+    // Retain this exact device through probe, decode and final capacity check.
+    const auto guard=device.AcquireOperationGuard();
     const auto probe=ReadFilespaceBootstrapFromOpenDevice(device,expected);
     if(!probe.ok()) return Failure(BootstrapError(probe.error));
     const auto preamble=EncodeFilespaceBootstrap(*probe.preamble);
