@@ -1070,6 +1070,9 @@ void ServerAgentRuntime::Stop() {
     if (!started_ || stopping_.load()) {
       return;
     }
+    // Publish under the waiters' mutex so notification cannot fall between a
+    // false stopping predicate and the condition variable's unlock-and-park.
+    std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
     stopping_.store(true);
   }
   schedule_cv_.notify_all();

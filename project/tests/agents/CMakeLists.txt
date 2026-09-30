@@ -8,6 +8,25 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# Exercise the real server worker predicate/park boundary on Linux. Static
+# libstdc++ keeps its condition-variable calls visible to GNU --wrap.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND TARGET sb_server_core)
+  add_executable(server_agent_shutdown_wakeup_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_shutdown_wakeup_gate.cpp")
+  target_compile_features(server_agent_shutdown_wakeup_gate PRIVATE cxx_std_23)
+  target_link_libraries(server_agent_shutdown_wakeup_gate PRIVATE sb_server_core)
+  target_link_options(server_agent_shutdown_wakeup_gate PRIVATE
+    -static-libstdc++
+    -Wl,--wrap=pthread_cond_wait
+    -Wl,--wrap=pthread_cond_broadcast
+    -Wl,--wrap=pthread_mutex_lock)
+  add_test(NAME server_agent_shutdown_wakeup_gate
+    COMMAND server_agent_shutdown_wakeup_gate)
+  set_tests_properties(server_agent_shutdown_wakeup_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;shutdown;lost_wakeup;linux_proof")
+endif()
+
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")
 set(SB_AGENT_RUNTIME_STATIC_GATES
   "${CMAKE_CURRENT_SOURCE_DIR}/agent_runtime_static_gates.py"
