@@ -8,6 +8,7 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -23,7 +24,8 @@ long allocation_budget=-1;
 bool counting=false;
 unsigned long allocations=0;
 unsigned hash_fault=0,hash_target=1,hash_seen=0;
-bool hash_active=false;
+bool hash_active=false,hash_counting=false,io_counting=false;
+unsigned reads=0,read_fault=0,writes=0,syncs=0;
 }
 void* operator new(std::size_t n){
   if(counting)++allocations;
@@ -39,7 +41,7 @@ void operator delete(void* p,std::size_t) noexcept{std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){
-  hash_active=hash_fault&&++hash_seen==hash_target;
+  hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;
   if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}
   return __real_EVP_MD_CTX_new();
 }
@@ -58,10 +60,20 @@ extern "C" int __wrap_EVP_DigestFinal_ex(EVP_MD_CTX* c,unsigned char* b,unsigned
 }
 extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_Digest(const void* p,size_t n,unsigned char* out,unsigned int* size,const EVP_MD* md,ENGINE* e){
-  const bool hit=hash_fault&&++hash_seen==hash_target;const auto mode=hit?hash_fault:0;
+  const bool hit=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;const auto mode=hit?hash_fault:0;
   if(hit)hash_fault=0;if(mode&&mode!=5)return 0;
   const auto r=__real_EVP_Digest(p,n,out,size,md,e);if(mode==5)*size=31;return r;
 }
+extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
+extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
+  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}return __real_pread(fd,data,n,at);
+}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t at){
+  if(io_counting)++writes;return __real_pwrite(fd,data,n,at);
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd){if(io_counting)++syncs;return __real_fsync(fd);}
 namespace {
 using namespace scratchbird::core::platform;
 namespace db=scratchbird::storage::database;
@@ -92,7 +104,7 @@ I Example(unsigned profile,unsigned action){
   for(unsigned n=0;n<32;++n){i.checkpoint_sha256[n]=n;i.allocation_sha256[n]=255-n;}
   i.checkpoint_generation=18;i.checkpoint_root_set_generation=19;i.directory_generation=20;
   i.filespace_root_set_generation=21;i.page_zero_generation=22;i.map_generation=23;i.capacity_generation=24;
-  i.catalog_generation=25;i.policy_generation=26;i.security_generation=27;
+  i.catalog_generation=25;i.policy_generation=26;i.security_generation=27;i.configuration_generation=28;
   i.current_total_pages=64;i.first_page=action==1?64:32;i.page_count=8;i.maximum_total_pages=128;
   i.page_size_bytes=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
   i.maximum_work_bytes=8*i.page_size_bytes;i.maximum_retained_image_bytes=640;
@@ -101,8 +113,8 @@ I Example(unsigned profile,unsigned action){
 }
 // Literal format offsets and field list, independent of production serializer.
 Bytes Oracle(const I& i){
-  Bytes b(640,0);const std::string magic="SBSINT01";std::copy(magic.begin(),magic.end(),b.begin());
-  Number(b,8,2,1);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,640);
+  Bytes b(640,0);const std::string magic="SBSINT02";std::copy(magic.begin(),magic.end(),b.begin());
+  Number(b,8,2,2);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,640);
   std::size_t at=16;
   for(const auto id:{i.request_uuid,i.operation_uuid,i.database_uuid,i.filespace_uuid,i.locator_uuid,
       i.page_zero_uuid,i.page_size_profile_uuid,i.policy_snapshot_uuid,i.storage_profile_uuid,i.initiator_uuid,i.request_context_uuid}){
@@ -122,7 +134,8 @@ Bytes Oracle(const I& i){
       i.page_count,i.maximum_total_pages,i.maximum_work_bytes,i.maximum_retained_image_bytes}){
     Number(b,at,8,n);at+=8;
   }
-  Number(b,544,4,i.page_size_bytes);Number(b,548,2,static_cast<u16>(i.intended_state));Seal(b);return b;
+  Number(b,544,4,i.page_size_bytes);Number(b,548,2,static_cast<u16>(i.intended_state));
+  Number(b,552,8,i.configuration_generation);Seal(b);return b;
 }
 void Empty(const db::NativeStorageIntentImage& r,E expected){
   Check(r.error==expected&&!r.ok()&&!r.intent&&r.bytes.empty(),"exact failure and no partial intent/image");
@@ -146,7 +159,7 @@ void Malformed(const I& i){
   auto b=raw;b.push_back(0);Empty(db::DecodeNativeStorageActionIntent(b,641),E::invalid_header);
   for(std::size_t n=0;n<16;++n){b=raw;b[n]^=0xff;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);}
   for(std::size_t n=0;n<640;++n){
-    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<608);
+    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<552)||(n>=560&&n<608);
     if(reserved){b=raw;b[n]=1;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);}
   }
   for(std::size_t n=16;n<192;n+=16)for(unsigned fault=0;fault<3;++fault){
@@ -155,6 +168,10 @@ void Malformed(const I& i){
   }
   for(std::size_t n=352;n<416;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_integrity);}
   for(std::size_t n=608;n<640;++n){b=raw;b[n]^=1;Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_integrity);}
+  // Earlier component-only V1 conflated configuration and policy generations.
+  // It never qualified action admission. Do not infer missing configuration.
+  b=raw;b[7]='1';Number(b,8,2,1);Number(b,552,8,0);Seal(b);
+  Empty(db::DecodeNativeStorageActionIntent(b,640),E::invalid_header);
   for(const u64 budget:{0u,1u,639u}){
     Empty(db::EncodeNativeStorageActionIntent(i,budget),E::resource_exhausted);
     Empty(db::DecodeNativeStorageActionIntent(raw,budget),E::resource_exhausted);
@@ -186,7 +203,7 @@ void Bounds(I i){
   for(const auto member:{&I::page_count,&I::maximum_total_pages,&I::maximum_work_bytes,&I::maximum_retained_image_bytes}){
     x=i;x.*member=0;invalid(x,E::invalid_range);
   }
-  x=i;x.catalog_generation=x.policy_generation=x.security_generation=0;Good(x);
+  x=i;x.catalog_generation=x.policy_generation=x.security_generation=x.configuration_generation=0;Good(x);
   x=i;x.maximum_work_bytes--;invalid(x,E::invalid_range);
   x=i;x.maximum_retained_image_bytes=639;invalid(x,E::invalid_range);
   x=i;x.intended_state=static_cast<db::NativeStorageIntentState>(1);invalid(x,E::invalid_range);
@@ -215,8 +232,10 @@ void Binding(const I& i){
     auto changed=o;changed.*member=Id(88);Empty(db::ReadNativeStorageActionIntentFromOperation(changed,640),E::binding_mismatch);
   }
   auto authorized=o;authorized.state=db::NativeManagementState::authorized;authorized.security_snapshot_uuid=Id(55);
-  authorized.generation_guards={i.catalog_generation,i.policy_generation,i.security_generation,std::nullopt};
+  authorized.generation_guards={i.catalog_generation,i.configuration_generation,i.security_generation,std::nullopt};
   Check(db::ReadNativeStorageActionIntentFromOperation(authorized,640).ok(),"present matching guards");
+  auto conflated=authorized;conflated.generation_guards[1]=i.policy_generation;
+  Empty(db::ReadNativeStorageActionIntentFromOperation(conflated,640),E::binding_mismatch);
   for(unsigned n=0;n<3;++n){auto bad=authorized;(*bad.generation_guards[n])++;Empty(db::ReadNativeStorageActionIntentFromOperation(bad,640),E::binding_mismatch);}
   auto bad=authorized;bad.scope=db::NativeManagementScope::cluster;bad.cluster_uuid=Id(77);bad.generation_guards[3]=0;
   Empty(db::ReadNativeStorageActionIntentFromOperation(bad,640),E::binding_mismatch);
@@ -253,6 +272,94 @@ struct TemporaryDirectory {
   TemporaryDirectory(){char name[]="/tmp/sb-storage-intent.XXXXXX";Check(mkdtemp(name)!=nullptr,"unique real-file fixture");path=name;}
   ~TemporaryDirectory(){std::error_code ignored;std::filesystem::remove_all(path,ignored);}
 };
+void CurrentCapacity(const I& seed,disk::FileDevice& device,const disk::FilespacePageZero& zero){
+  using C=db::NativeStorageCapacityCheckError;
+  const auto checkpoint=std::find_if(zero.roots.begin(),zero.roots.end(),[](const auto& r){return r.kind==9;});
+  Check(checkpoint!=zero.roots.end(),"fixture's actual current checkpoint");
+  const std::vector<disk::NativeFilespaceDevice> files{{zero.bootstrap.filespace_uuid,zero.bootstrap.page_size_profile_uuid,&device}};
+  const auto baseline=db::ReadNativeFilespaceCapacityFromOpenDevices(seed.database_uuid,files,*checkpoint,zero.bootstrap.filespace_uuid,1<<26);
+  Check(baseline.ok(),"native current capacity prerequisite");const auto& a=*baseline.observation;
+  auto i=seed;i.database_uuid=a.database_uuid;i.filespace_uuid=a.filespace_uuid;i.locator_uuid=a.locator_uuid;
+  i.page_zero_uuid=a.page_zero_uuid;i.page_size_profile_uuid=a.page_size_profile_uuid;i.page_size_bytes=a.page_size_bytes;
+  i.checkpoint=a.checkpoint;i.allocation_root=a.allocation_root;i.checkpoint_sha256=a.checkpoint_sha256;i.allocation_sha256=a.allocation_sha256;
+  i.checkpoint_generation=a.checkpoint_generation;i.checkpoint_root_set_generation=a.checkpoint_root_set_generation;
+  i.directory_generation=a.directory_generation;i.filespace_root_set_generation=a.filespace_root_set_generation;
+  i.page_zero_generation=a.page_zero_generation;i.map_generation=a.map_generation;i.capacity_generation=a.capacity_generation;
+  i.current_total_pages=a.total_pages;i.maximum_total_pages=a.total_pages+8;
+  i.first_page=i.action==db::NativeStorageAction::physical_growth?a.total_pages:64;
+  i.maximum_work_bytes=8*u64{i.page_size_bytes};i.maximum_retained_image_bytes=1<<26;
+  const auto call=[&](const I& intent,u64 budget=1<<26){return db::CheckNativeStorageIntentCapacityFromOpenDevices(intent,files,budget);};
+  io_counting=true;reads=writes=syncs=read_fault=0;
+  const auto good=call(i);Check(good.ok()&&good.capacity.observation->lifecycle_state==7&&
+    good.capacity.observation->total_pages==128&&good.capacity.observation->state_counts==a.state_counts,
+    "fresh capacity match preserves initializing state and actual page counts; not serving admission");
+  const u64 need=baseline.retained_image_bytes+640;
+  Check(good.capacity.retained_image_bytes==need,"intent and actual reader images share one byte ceiling");
+  Check(call(i,need).ok(),"exact capacity plus intent byte budget");
+  const auto failed=[&](const db::NativeStorageCapacityCheck& r,C error){
+    Check(!r.ok()&&r.error==error&&!r.capacity.observation,"failed match withholds capacity observation");
+  };
+  for(const u64 limit:{u64{0},u64{640},need-1}){
+    const auto shortfall=call(i,limit);failed(shortfall,C::capacity_failure);
+    if(limit<=640)Check(shortfall.capacity.error==db::NativeFilespaceCapacityError::resource_exhausted,"intent budget exhausted before native reads");
+    else{
+      const auto expected=db::ReadNativeFilespaceCapacityFromOpenDevices(i.database_uuid,files,i.checkpoint,i.filespace_uuid,limit-640);
+      Check(!expected.ok()&&shortfall.capacity.error==expected.error&&shortfall.capacity.checkpoint_error==expected.checkpoint_error&&
+        shortfall.capacity.inventory_error==expected.inventory_error&&shortfall.capacity.directory_error==expected.directory_error&&
+        shortfall.capacity.allocation_error==expected.allocation_error&&shortfall.capacity.bootstrap_error==expected.bootstrap_error&&
+        shortfall.capacity.management_error==expected.management_error,"exact original nested capacity failure retained");
+    }
+    auto x=i;x.maximum_retained_image_bytes=std::max(u64{640},limit);
+    failed(call(x),C::capacity_failure);
+  }
+  for(const auto member:{&I::locator_uuid,&I::page_zero_uuid}){auto x=i;x.*member=Id(300);failed(call(x),C::identity_mismatch);}
+  for(const auto member:{&I::checkpoint_generation,&I::checkpoint_root_set_generation}){auto x=i;++(x.*member);failed(call(x),C::checkpoint_mismatch);}
+  for(const auto member:{&I::page_zero_generation,&I::filespace_root_set_generation,&I::directory_generation,&I::map_generation,&I::capacity_generation}){
+    auto x=i;++(x.*member);failed(call(x),C::generation_mismatch);
+  }
+  auto x=i;x.checkpoint_sha256[0]^=1;failed(call(x),C::checkpoint_mismatch);
+  x=i;x.allocation_sha256[0]^=1;failed(call(x),C::allocation_mismatch);
+  for(unsigned field=0;field<3;++field){x=i;if(field==0)x.allocation_root.page_generation++;
+    else if(field==1)x.allocation_root.page_number++;else x.allocation_root.object_uuid=Id(301);
+    failed(call(x),C::allocation_mismatch);}
+  x=i;++x.current_total_pages;++x.maximum_total_pages;if(x.action==db::NativeStorageAction::physical_growth)++x.first_page;failed(call(x),C::capacity_mismatch);
+  x=i;x.database_uuid=Id(302);failed(call(x),C::capacity_failure);
+  x=i;x.page_count=0;const auto invalid=call(x);failed(invalid,C::invalid_intent);
+  Check(invalid.intent_error==E::invalid_range,"nested shape refusal retained");
+  // A valid intent cannot substitute for an actual supplied device/owner.
+  const auto missing=db::CheckNativeStorageIntentCapacityFromOpenDevices(i,{},1<<26);failed(missing,C::capacity_failure);
+  auto wrong=files;wrong[0].filespace_uuid=Id(303);
+  failed(db::CheckNativeStorageIntentCapacityFromOpenDevices(i,wrong,1<<26),C::capacity_failure);
+  // Exhaust all physical read positions on each profile/action.
+  reads=0;Check(call(i).ok(),"current-read fault baseline");const auto read_sites=reads;
+  for(unsigned site=1;site<=read_sites;++site){reads=0;read_fault=site;const auto result=call(i);read_fault=0;
+    Check(reads==site,"read failure reached exact native read");failed(result,C::capacity_failure);}
+  if(seed.page_size_bytes==8192&&seed.action==db::NativeStorageAction::physical_growth){
+    counting=true;allocations=0;const auto measured=call(i);counting=false;
+    Check(measured.ok(),"capacity allocation baseline");const auto sites=allocations;
+    for(unsigned long n=0;n<sites;++n){
+      const auto lost=device.failed_io_latency_observations();allocation_budget=n;const auto result=call(i);
+      const bool consumed=allocation_budget==-1;allocation_budget=-1;Check(consumed,"capacity allocation fault consumed");
+      if(result.ok())Check(device.failed_io_latency_observations()==lost+1&&result.capacity.observation->total_pages==a.total_pages&&
+        result.capacity.observation->state_counts==a.state_counts&&result.capacity.retained_image_bytes==need,
+        "only recorded optional telemetry loss preserves exact capacity match");
+      else failed(result,C::capacity_failure);
+    }
+    hash_counting=true;hash_seen=0;const auto hash_baseline=call(i);hash_counting=false;
+    Check(hash_baseline.ok(),"capacity hash baseline");const auto hashes=hash_seen;
+    for(unsigned site=1;site<=hashes;++site)for(unsigned fault=1;fault<=5;++fault){
+      hash_seen=0;hash_target=site;hash_active=false;hash_fault=fault;const auto result=call(i);
+      const bool consumed=!hash_fault;hash_fault=0;Check(consumed,"capacity hash fault consumed");failed(result,C::capacity_failure);
+    }
+    std::cout<<"capacity fault sites: allocations="<<sites<<" hashes="<<hashes<<" reads="<<read_sites<<'\n';
+  }
+  Check(!writes&&!syncs,"all current-capacity matching and failure paths remain read-only");
+  // Closing this fixture's writable handle synchronizes it by FileDevice
+  // contract. That explicit test cleanup is not an I/O of the matching API.
+  io_counting=false;Check(device.Close().ok(),"close capacity source");io_counting=true;
+  failed(call(i),C::capacity_failure);
+  Check(!writes&&!syncs,"closed-device refusal is also nonmutating");io_counting=false;
+}
 void Physical(const I& i){
   TemporaryDirectory temporary;const auto path=(temporary.path/"node").string();
   disk::FileDevice device;Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"create owned native member");
@@ -269,6 +376,8 @@ void Physical(const I& i){
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({i.database_uuid,i.policy_snapshot_uuid},{{},0,1000});
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,1<<26,issuer).ok(),"actual native fixture bootstrap");
   const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"read actual fixture bootstrap");
+  CurrentCapacity(i,device,*zero.record);
+  Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen capacity fixture for extent test");
   auto operation=Operation(i);operation.bootstrap_uuid=zero.record->page_uuid;
   const std::vector<disk::NativeCommonPageHeader> headers{{p.page_size_bytes,0x500,i.database_uuid,
     i.checkpoint.filespace_uuid,Id(203),64,1,0,p.uuid}};

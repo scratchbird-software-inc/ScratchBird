@@ -12,7 +12,7 @@ namespace scratchbird::storage::database {
 namespace {
 using I=NativeStorageActionIntent;
 using E=NativeStorageIntentError;
-constexpr std::array<byte,8> magic{'S','B','S','I','N','T','0','1'};
+constexpr std::array<byte,8> magic{'S','B','S','I','N','T','0','2'};
 constexpr std::array<Uuid I::*,11> ids{{
   &I::request_uuid,&I::operation_uuid,&I::database_uuid,&I::filespace_uuid,
   &I::locator_uuid,&I::page_zero_uuid,&I::page_size_profile_uuid,&I::policy_snapshot_uuid,
@@ -78,13 +78,14 @@ NativeStorageIntentImage EncodeNativeStorageActionIntent(const I& i,u64 budget) 
     if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
     const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return Fail(error);
     std::vector<byte> b(kNativeStorageActionIntentBytes,0);std::copy(magic.begin(),magic.end(),b.begin());
-    Put(b.data()+8,1,2);Put(b.data()+10,static_cast<u16>(i.action),2);Put(b.data()+12,b.size(),4);
+    Put(b.data()+8,2,2);Put(b.data()+10,static_cast<u16>(i.action),2);Put(b.data()+12,b.size(),4);
     for(std::size_t n=0;n<ids.size();++n)PutId(b.data()+16+16*n,i.*ids[n]);
     PutRoot(b.data()+192,i.checkpoint);PutRoot(b.data()+272,i.allocation_root);
     std::copy(i.checkpoint_sha256.begin(),i.checkpoint_sha256.end(),b.begin()+352);
     std::copy(i.allocation_sha256.begin(),i.allocation_sha256.end(),b.begin()+384);
     for(std::size_t n=0;n<numbers.size();++n)Put(b.data()+416+8*n,i.*numbers[n],8);
     Put(b.data()+544,i.page_size_bytes,4);Put(b.data()+548,static_cast<u16>(i.intended_state),2);
+    Put(b.data()+552,i.configuration_generation,8);
     const auto hash=core::hash::ComputeSha256Digest(b.data(),608);
     if(!hash.ok())return Fail(E::hash_failure);
     std::copy(hash.digest.begin(),hash.digest.end(),b.begin()+608);
@@ -96,7 +97,7 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
   try {
     if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
     if(b.size()!=kNativeStorageActionIntentBytes||!std::equal(magic.begin(),magic.end(),b.begin())||
-        Get(b.data()+8,2)!=1||Get(b.data()+12,4)!=b.size()||!Zero(b.data()+550,58)||
+        Get(b.data()+8,2)!=2||Get(b.data()+12,4)!=b.size()||!Zero(b.data()+550,2)||!Zero(b.data()+560,48)||
         !Zero(b.data()+194,2)||!Zero(b.data()+264,8)||!Zero(b.data()+274,2)||!Zero(b.data()+344,8))
       return Fail(E::invalid_header);
     I i;i.action=static_cast<NativeStorageAction>(Get(b.data()+10,2));
@@ -105,6 +106,7 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
     std::copy_n(b.data()+352,32,i.checkpoint_sha256.begin());std::copy_n(b.data()+384,32,i.allocation_sha256.begin());
     for(std::size_t n=0;n<numbers.size();++n)i.*numbers[n]=Get(b.data()+416+8*n,8);
     i.page_size_bytes=static_cast<u32>(Get(b.data()+544,4));i.intended_state=static_cast<NativeStorageIntentState>(Get(b.data()+548,2));
+    i.configuration_generation=Get(b.data()+552,8);
     const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return Fail(error);
     const auto hash=core::hash::ComputeSha256Digest(b.data(),608);
     if(!hash.ok())return Fail(E::hash_failure);
@@ -129,8 +131,45 @@ NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(const Native
       o.target_uuid!=i.filespace_uuid||o.initiator_uuid!=i.initiator_uuid||
       o.request_context_uuid!=i.request_context_uuid||o.policy_snapshot_uuid!=i.policy_snapshot_uuid||
       (o.generation_guards[0]&&*o.generation_guards[0]!=i.catalog_generation)||
-      (o.generation_guards[1]&&*o.generation_guards[1]!=i.policy_generation)||
+      (o.generation_guards[1]&&*o.generation_guards[1]!=i.configuration_generation)||
       (o.generation_guards[2]&&*o.generation_guards[2]!=i.security_generation))return Fail(E::binding_mismatch);
   return r;
+}
+NativeStorageCapacityCheck CheckNativeStorageIntentCapacityFromOpenDevices(
+    const I& i,const std::vector<disk::NativeFilespaceDevice>& devices,u64 budget) noexcept {
+  using C=NativeStorageCapacityCheckError;
+  const auto fail=[](C error){NativeStorageCapacityCheck r;r.error=error;return r;};
+  const auto validation=ValidateNativeStorageActionIntent(i);
+  if(validation!=E::none){auto r=fail(C::invalid_intent);r.intent_error=validation;return r;}
+  // The call allowance and retained intent are ceilings, not actual grants.
+  const auto allowance=std::min(budget,i.maximum_retained_image_bytes);
+  if(allowance<=kNativeStorageActionIntentBytes){
+    auto r=fail(C::capacity_failure);r.capacity.error=NativeFilespaceCapacityError::resource_exhausted;return r;
+  }
+  auto observed=ReadNativeFilespaceCapacityFromOpenDevices(i.database_uuid,devices,i.checkpoint,
+    i.filespace_uuid,allowance-kNativeStorageActionIntentBytes);
+  if(!observed.ok()){auto r=fail(C::capacity_failure);r.capacity=std::move(observed);return r;}
+  const auto& a=*observed.observation;
+  if(a.database_uuid!=i.database_uuid||a.filespace_uuid!=i.filespace_uuid||
+      a.locator_uuid!=i.locator_uuid||a.page_zero_uuid!=i.page_zero_uuid)return fail(C::identity_mismatch);
+  if(a.page_size_profile_uuid!=i.page_size_profile_uuid||a.page_size_bytes!=i.page_size_bytes)
+    return fail(C::profile_mismatch);
+  const auto same=[](const disk::FilespaceRootReference& x,const disk::FilespaceRootReference& y){
+    return x.kind==y.kind&&x.page_type==y.page_type&&x.filespace_uuid==y.filespace_uuid&&
+      x.page_number==y.page_number&&x.page_generation==y.page_generation&&
+      x.page_size_profile_uuid==y.page_size_profile_uuid&&x.object_uuid==y.object_uuid;
+  };
+  if(!same(a.checkpoint,i.checkpoint)||a.checkpoint_sha256!=i.checkpoint_sha256||
+      a.checkpoint_generation!=i.checkpoint_generation||
+      a.checkpoint_root_set_generation!=i.checkpoint_root_set_generation)return fail(C::checkpoint_mismatch);
+  if(!same(a.allocation_root,i.allocation_root)||a.allocation_sha256!=i.allocation_sha256)
+    return fail(C::allocation_mismatch);
+  if(a.page_zero_generation!=i.page_zero_generation||a.filespace_root_set_generation!=i.filespace_root_set_generation||
+      a.directory_generation!=i.directory_generation||a.map_generation!=i.map_generation||
+      a.capacity_generation!=i.capacity_generation)return fail(C::generation_mismatch);
+  if(a.total_pages!=i.current_total_pages||a.physical_bytes!=i.current_total_pages*u64{i.page_size_bytes})
+    return fail(C::capacity_mismatch);
+  observed.retained_image_bytes+=kNativeStorageActionIntentBytes;
+  NativeStorageCapacityCheck r;r.error=C::none;r.capacity=std::move(observed);return r;
 }
 } // namespace scratchbird::storage::database

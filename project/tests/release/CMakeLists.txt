@@ -304,6 +304,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(native_storage_action_intent_gate PRIVATE cxx_std_23)
   target_link_libraries(native_storage_action_intent_gate PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(native_storage_action_intent_gate PRIVATE
+    "LINKER:--wrap=pread" "LINKER:--wrap=pwrite" "LINKER:--wrap=fsync"
     "LINKER:--wrap=EVP_MD_CTX_new" "LINKER:--wrap=EVP_DigestInit_ex"
     "LINKER:--wrap=EVP_DigestUpdate" "LINKER:--wrap=EVP_DigestFinal_ex" "LINKER:--wrap=EVP_Digest")
   add_test(NAME native_storage_action_intent_gate COMMAND native_storage_action_intent_gate)

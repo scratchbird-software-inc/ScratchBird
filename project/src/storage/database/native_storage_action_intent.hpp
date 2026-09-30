@@ -3,6 +3,7 @@
 #pragma once
 #include "filespace_page_zero.hpp"
 #include "native_management_operation.hpp"
+#include "native_filespace_capacity.hpp"
 
 namespace scratchbird::storage::database {
 enum class NativeStorageAction : u16 { physical_growth=1, page_preallocation=2 };
@@ -19,6 +20,8 @@ struct NativeStorageActionIntent {
   u64 checkpoint_generation=0, checkpoint_root_set_generation=0, directory_generation=0;
   u64 filespace_root_set_generation=0, page_zero_generation=0, map_generation=0;
   u64 capacity_generation=0, catalog_generation=0, policy_generation=0, security_generation=0;
+  // Configuration-root epoch is not the selected policy's own generation.
+  u64 configuration_generation=0;
   u64 current_total_pages=0, first_page=0, page_count=0, maximum_total_pages=0;
   u64 maximum_work_bytes=0, maximum_retained_image_bytes=0;
   u32 page_size_bytes=0;
@@ -44,4 +47,23 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
 // Does NOT select/admit its descriptor, policy, resources, security or effects.
 NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(
     const NativeManagementOperation&,u64 maximum_encoded_bytes) noexcept;
+
+enum class NativeStorageCapacityCheckError {
+  none, invalid_intent, capacity_failure, identity_mismatch, profile_mismatch,
+  checkpoint_mismatch, allocation_mismatch, generation_mismatch, capacity_mismatch
+};
+struct NativeStorageCapacityCheck {
+  NativeStorageCapacityCheckError error=NativeStorageCapacityCheckError::invalid_intent;
+  NativeStorageIntentError intent_error=NativeStorageIntentError::none;
+  // On failed current reads retain the original nested reader errors; on a
+  // mismatch do not expose a successful observation as a matched proposal.
+  NativeFilespaceCapacityResult capacity;
+  bool ok() const noexcept {return error==NativeStorageCapacityCheckError::none&&capacity.ok();}
+};
+// Fresh actual native read and complete capacity-field matching only. No path
+// opens, writes, policy/security checks, resource grant, free-range admission or
+// execution lease. The result is an observation, not authority to mutate later.
+NativeStorageCapacityCheck CheckNativeStorageIntentCapacityFromOpenDevices(
+    const NativeStorageActionIntent&,const std::vector<disk::NativeFilespaceDevice>&,
+    u64 maximum_retained_image_bytes) noexcept;
 } // namespace scratchbird::storage::database
