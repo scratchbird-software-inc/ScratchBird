@@ -300,6 +300,15 @@ set_tests_properties(filespace_byte_observation_gate PROPERTIES
   TIMEOUT 60 LABELS "storage;metrics;binary_uuid;component_regression;not_runtime_acceptance")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(native_storage_action_intent_gate native_storage_action_intent_gate.cpp)
+  target_compile_features(native_storage_action_intent_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_storage_action_intent_gate PRIVATE sb_storage_database OpenSSL::Crypto)
+  target_link_options(native_storage_action_intent_gate PRIVATE
+    "LINKER:--wrap=EVP_MD_CTX_new" "LINKER:--wrap=EVP_DigestInit_ex"
+    "LINKER:--wrap=EVP_DigestUpdate" "LINKER:--wrap=EVP_DigestFinal_ex" "LINKER:--wrap=EVP_Digest")
+  add_test(NAME native_storage_action_intent_gate COMMAND native_storage_action_intent_gate)
+  set_tests_properties(native_storage_action_intent_gate PROPERTIES
+    TIMEOUT 60 LABELS "storage;binary_uuid;intent_codec;fault_injection;not_runtime_acceptance")
   add_executable(filespace_retained_observation_gate filespace_retained_observation_gate.cpp)
   target_compile_features(filespace_retained_observation_gate PRIVATE cxx_std_23)
   target_link_libraries(filespace_retained_observation_gate PRIVATE sb_storage_disk)
