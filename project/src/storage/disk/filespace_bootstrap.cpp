@@ -121,6 +121,7 @@ FilespaceBootstrapDecodeResult DecodeFilespaceBootstrap(
 FilespaceBootstrapDecodeResult ReadFilespaceBootstrapFromOpenDevice(
     FileDevice& device, const FilespaceBootstrapBinding* expected) noexcept {
   try {
+    const auto guard = device.AcquireOperationGuard();
     if (!device.is_open()) return Failed(Error::device_not_open);
     SerializedFilespaceBootstrap bytes{};
     const auto read = device.ReadAt(0, bytes.data(), bytes.size());
