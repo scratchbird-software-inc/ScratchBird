@@ -11,6 +11,7 @@
 #include "native_checkpoint_selection.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
+#include "native_filespace_capacity.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -44,6 +45,9 @@ unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
 unsigned stage_corrupt_read=0;
 unsigned initialization_entropy_fault=0,initialization_entropy_calls=0;
 bool initialization_repeat_entropy=false;
+unsigned char initialization_entropy_tag=5;
+std::int64_t initialization_clock_offset_millis=0;
+bool initialization_real_clock=false;
 bool initialization_clock_failure=false,initialization_clock_allocation_failure=false;
 constexpr std::uint64_t initialization_uuid_millis=0x010203040506ULL;
 const scratchbird::core::platform::TypedUuid* revoke_on_stage_sync=nullptr;
@@ -53,6 +57,7 @@ std::size_t observed_read_bytes=0;
 bool track_reads=false;
 std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tree_read{false};
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
+bool extend_on_second_read=false;
 }
 void* operator new(std::size_t bytes) {
   if(count_allocations) ++observed_allocations;
@@ -71,15 +76,18 @@ extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   ++initialization_entropy_calls;
   if(initialization_entropy_fault&&--initialization_entropy_fault==0)return 0;
   if(initialization_repeat_entropy){if(count!=16)return 0;
-    const unsigned char collision[16]={1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,5};
+    const unsigned char collision[16]={1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,initialization_entropy_tag};
     std::copy_n(collision,16,out);return 1;}
   return __real_RAND_bytes(out,count);
 }
+extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
 extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
+  if(initialization_real_clock)return __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
   if(initialization_clock_allocation_failure)throw std::bad_alloc();
   scratchbird::core::time::ClockSnapshotResult result;
   if(initialization_clock_failure){result.status={scratchbird::core::platform::StatusCode::time_source_unavailable,scratchbird::core::platform::Severity::error,scratchbird::core::platform::Subsystem::time};return result;}
-  result.value={{100},{static_cast<std::int64_t>(initialization_uuid_millis/1000),static_cast<std::uint32_t>((initialization_uuid_millis%1000)*1000000)}};
+  const auto millis=static_cast<std::int64_t>(initialization_uuid_millis)+initialization_clock_offset_millis;
+  result.value={{100},{millis/1000,static_cast<std::uint32_t>((millis%1000)*1000000)}};
   return result;
 }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
@@ -127,6 +135,9 @@ extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
   if(pause_next_tree_read.exchange(false)) {tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
   if(track_reads) { ++reads; observed_read_bytes+=n; }
   if(read_fault&&reads==read_fault) { read_fault=0; errno=EIO; return -1; }
+  if(extend_on_second_read&&reads==2){extend_on_second_read=false;
+    const auto end=::lseek(fd,0,SEEK_END);const unsigned char zero=0;
+    if(end<0||__real_pwrite(fd,&zero,1,end)!=1){errno=EIO;return -1;}}
   if(replace_on_second_read&&reads==2) {
     const auto* image=replace_on_second_read; replace_on_second_read=nullptr;
     if(::pwrite(fd,image->data(),image->size(),0)!=static_cast<ssize_t>(image->size())||::fsync(fd)!=0) {
@@ -355,6 +366,49 @@ void Files() {
   auto r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"no fabricated remaining pages");
   const byte z=0; Check(d.WriteAt(v.total_pages*sizes[0],&z,1).ok(),"actual unaccounted appended byte");
   r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"partial trailing page refused");
+  using Relation=disk::FilespaceExtentRelation;
+  const auto empty=[](const auto& result){Check(!result.ok()&&!result.record&&!result.declared_bytes&&
+    !result.observed_bytes&&!result.complete_pages&&!result.trailing_bytes&&result.relation==Relation::unknown,"failed recovery observation exposes no partial facts");};
+  for(unsigned p=0;p<5;++p){const auto expected=Example(p);const auto image=Oracle(expected);const u64 size=sizes[p],declared=64*size;
+    const auto recovery_path=(fixture.root/("recovery-"+std::to_string(p))).string();disk::FileDevice file;
+    Check(file.Open(recovery_path,disk::FileOpenMode::create_new).ok(),"own recovery observation fixture");
+    const disk::FilespaceBootstrapBinding binding{expected.bootstrap.database_uuid,expected.bootstrap.filespace_uuid,expected.bootstrap.page_size_profile_uuid};
+    const auto observe=[&](){return disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,binding);};
+    const auto verify=[&](const auto& result,u64 physical){Check(result.ok()&&Oracle(*result.record)==image&&
+      result.declared_bytes==declared&&result.observed_bytes==physical&&result.complete_pages==physical/size&&
+      result.trailing_bytes==physical%size&&result.relation==(physical==declared?Relation::matching:physical<declared?Relation::shorter:Relation::longer),"exact declared versus physical recovery facts without rounding");};
+    for(const u64 physical:{size-1,size,declared-size,declared-1,declared,declared+1,declared+size}){
+      Check(file.WriteAt(0,image.data(),image.size()).ok(),"restore intact fixture metadata");std::filesystem::resize_file(recovery_path,physical);
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing_read_only).ok(),"independent readonly recovery reopen");
+      stage_writes=stage_syncs=0;const auto result=observe();
+      Check(!stage_writes&&!stage_syncs,"recovery observation never repairs writes or syncs");
+      if(physical<size){empty(result);Check(result.error==Error::invalid_capacity,"incomplete page-zero image is not recoverable metadata");}
+      else verify(result,physical);
+      const auto strict=disk::ReadFilespacePageZeroFromOpenDevice(file,&binding);
+      Check(physical==declared?strict.ok():(!strict.record&&strict.error==Error::invalid_capacity),"ordinary admission remains strict for every size discrepancy");
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing).ok(),"restore retained writable test handle");
+    }
+    auto foreign=binding;foreign.database_uuid=Id(77);const auto refused=disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,foreign);
+    empty(refused);Check(refused.error==Error::invalid_bootstrap,"recovery cannot bypass binary node binding");
+    if(p==0){
+      for(unsigned at=1;at<=2;++at){reads=0;read_fault=at;track_reads=true;const auto failed=observe();track_reads=false;
+        empty(failed);Check(!read_fault&&failed.error==Error::io_failure,"each native recovery read fault retained");}
+      for(unsigned at=1;at<=5;++at){hash_fault=at;const auto failed=observe();empty(failed);
+        Check(!hash_fault&&failed.error==Error::hash_provider_failure,"recovery hash provider failure is not capacity evidence");}
+      observed_allocations=0;count_allocations=true;const auto measured=observe();count_allocations=false;verify(measured,declared+size);const auto sites=observed_allocations;
+      for(unsigned long at=0;at<sites;++at){const auto lost=file.failed_io_latency_observations();allocation_budget=at;const auto result=observe();allocation_budget=-1;
+        if(result.ok()){verify(result,declared+size);Check(file.failed_io_latency_observations()==lost+1,"only nonauthoritative telemetry loss permits recovery observation");}
+        else{empty(result);Check(result.error==Error::resource_exhausted,"recovery allocation failure remains exact");}}
+      reads=0;track_reads=true;extend_on_second_read=true;const auto changed=observe();track_reads=false;
+      empty(changed);Check(!extend_on_second_read&&changed.error==Error::probe_changed,"intervening physical extent change withholds recovery facts");
+      verify(observe(),declared+size+1);
+      auto damaged=image;damaged.back()^=1;Check(file.WriteAt(0,damaged.data(),damaged.size()).ok(),"persist corrupt recovery fixture");
+      const auto padding=observe();empty(padding);Check(padding.error==Error::invalid_family,"recovery refuses malformed reserved padding before digest admission");
+      damaged=image;damaged[4448]^=1;Check(file.WriteAt(0,damaged.data(),damaged.size()).ok(),"persist corrupt recovery image seal");
+      const auto corrupt=observe();empty(corrupt);Check(corrupt.error==Error::integrity_mismatch,"recovery never bypasses full-image integrity");
+    }
+    Check(file.Close().ok(),"release recovery observation fixture");const auto closed=observe();empty(closed);Check(closed.error==Error::device_not_open,"closed recovery device refused");
+  }
 }
 namespace page=scratchbird::storage::page;
 using RootError=page::NativeCatalogRootError;
@@ -3146,7 +3200,8 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=5;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist catalog staging fixture bytes");};
-    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=DirectoryOracle(directory),cb=RootOracle(catalog_root);
+    const auto persist=[&](){const bool extended=std::any_of(directory.records.begin(),directory.records.end(),[](const auto& row){return row.allocation_root.has_value();});
+      const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),cb=RootOracle(catalog_root);
       cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
       cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
       cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
@@ -3160,19 +3215,115 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     const u64 budget=std::max(4*sizes[p],3*sizes[p]+3*sizes[profile]);const Bytes blank(sizes[profile],0);
     const auto reset=[&](){put(target,21,sizes[profile],blank);};
     const auto actual=[&](auto& file,u64 number,unsigned size){Bytes b(size);const auto io=file.ReadAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read actual version staging bytes");return b;};
-    persist();CatalogTestPin snapshot(inv.inventory,13);
+    persist();
+    if(!metric_family){
+      const auto capacity=[&](u64 limit,const auto& files,const auto& checkpoint,const auto& database,const auto& id){
+        return db::ReadNativeFilespaceCapacityFromOpenDevices(database,files,checkpoint,id,limit);};
+      const auto observe=[&](u64 limit){return capacity(limit,devices,CheckpointRef(cp),Id(1),fs);};
+      const auto verify_capacity=[&](const auto& result){
+        if(!result.ok())std::cerr<<"capacity error="<<static_cast<unsigned>(result.error)<<" checkpoint="<<static_cast<unsigned>(result.checkpoint_error)<<" allocation="<<static_cast<unsigned>(result.allocation_error)<<std::endl;
+        Check(result.ok(),"actual native member capacity observation");const auto& value=*result.observation;
+        Check(value.database_uuid==Id(1)&&value.filespace_uuid==fs&&value.locator_uuid==Id(primary?190:191)&&
+          value.page_zero_uuid==zero.page_uuid&&value.page_size_profile_uuid==Profile(profile)&&
+          value.page_size_bytes==sizes[profile]&&value.total_pages==64&&value.physical_bytes==64*u64{sizes[profile]}&&
+          value.map_generation==5&&value.capacity_generation==6&&value.directory_generation==5&&
+          value.filespace_role==zero.bootstrap.filespace_role&&value.lifecycle_state==zero.bootstrap.lifecycle_state&&
+          value.state_counts==std::array<u64,8>{0,1,2,0,0,0,61,0}&&
+          value.allocation_root.page_number==13&&value.allocation_root.page_generation==103&&
+          value.allocation_root.object_uuid==Id(43)&&value.allocation_sha256==WholeRootHash(AllocationOracle(map))&&
+          value.checkpoint_sha256==WholeRootHash(CheckpointOracle(cp)),"independent physical identity/generation/state count oracle");
+      };
+      stage_writes=stage_syncs=0;
+      auto observed=observe(128*sizes[profile]);verify_capacity(observed);
+      Check(!stage_writes&&!stage_syncs,"capacity observation does not mutate or synchronize files");
+      const auto used=observed.retained_image_bytes;
+      verify_capacity(observe(used));
+      const auto no_partial=[&](const auto& refused){Check(!refused.ok()&&!refused.observation&&!refused.retained_image_bytes,"capacity refusal publishes no partial counts");};
+      no_partial(observe(used-1));
+      no_partial(capacity(128*sizes[profile],devices,CheckpointRef(cp),Id(201),fs));
+      no_partial(capacity(128*sizes[profile],devices,CheckpointRef(cp),Id(1),Id(201)));
+      auto stale=CheckpointRef(cp);++stale.page_generation;
+      no_partial(capacity(128*sizes[profile],devices,stale,Id(1),fs));
+      auto duplicate=devices;duplicate.push_back(devices[0]);
+      no_partial(capacity(128*sizes[profile],duplicate,CheckpointRef(cp),Id(1),fs));
+      duplicate=devices;duplicate[1].device=duplicate[0].device;
+      no_partial(capacity(128*sizes[profile],duplicate,CheckpointRef(cp),Id(1),fs));
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());
+      verify_capacity(capacity(128*sizes[profile],reversed,CheckpointRef(cp),Id(1),fs));
+      auto& member=directory.records[primary?0:1];
+      member.allocation_root=page::NativeFilespaceAllocationRoot{{fs,13,103,Profile(profile)},Id(43),WholeRootHash(AllocationOracle(map)),5,6};
+      persist();verify_capacity(observe(128*sizes[profile]));
+      ++member.allocation_root->capacity_generation;persist();no_partial(observe(128*sizes[profile]));
+      --member.allocation_root->capacity_generation;member.allocation_root->sha256[0]^=1;
+      persist();no_partial(observe(128*sizes[profile]));
+      member.allocation_root.reset();persist();
+      const auto target_path=primary?path1:path2;
+      for(const auto bytes:{64*u64{sizes[profile]}-1,64*u64{sizes[profile]}+1}){
+        std::filesystem::resize_file(target_path,bytes);
+        const auto refused=observe(128*sizes[profile]);no_partial(refused);
+        Check(refused.error==db::NativeFilespaceCapacityError::bootstrap_failure&&
+          refused.bootstrap_error==disk::FilespacePageZeroError::invalid_capacity,"preserve exact native size refusal before traversing capacity graph");
+      }
+      std::filesystem::resize_file(target_path,64*u64{sizes[profile]});
+      Check(first.Close().ok()&&second.Close().ok(),"close capacity files before read-only reopen");
+      Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"reopen actual capacity files read-only");
+      stage_writes=stage_syncs=0;verify_capacity(observe(128*sizes[profile]));
+      Check(!stage_writes&&!stage_syncs,"reopened capacity observation remains read-only");
+      Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing).ok()&&second.Open(path2,disk::FileOpenMode::open_existing).ok(),"restore retained catalog staging handles");
+      if(p==0&&role==1){
+        track_reads=true;reads=0;observed=observe(128*sizes[profile]);track_reads=false;
+        verify_capacity(observed);const auto count=reads;
+        for(unsigned n=1;n<=count;++n){track_reads=true;reads=0;read_fault=n;const auto refused=observe(128*sizes[profile]);track_reads=false;
+          Check(!read_fault,"capacity physical read fault consumed");no_partial(refused);}
+        auto corrupt=AllocationOracle(map);corrupt.back()^=1;put(target,13,sizes[profile],corrupt);
+        no_partial(observe(128*sizes[profile]));persist();verify_capacity(observe(128*sizes[profile]));
+        observed_allocations=0;count_allocations=true;observed=observe(128*sizes[profile]);count_allocations=false;
+        verify_capacity(observed);const auto allocations=observed_allocations;
+        Check(allocations>0,"capacity fault sweep observes actual allocation sites");
+        for(unsigned long allowance=0;allowance<=allocations;++allowance){
+          allocation_budget=allowance;const auto refused=observe(128*sizes[profile]);allocation_budget=-1;
+          // Optional diagnostic allocations can recover successfully. Do not
+          // stop there and leave later required allocation sites untested.
+          if(refused.ok()){verify_capacity(refused);continue;}
+          no_partial(refused);
+          Check(refused.error==db::NativeFilespaceCapacityError::resource_exhausted||
+            refused.bootstrap_error==disk::FilespacePageZeroError::resource_exhausted||
+            refused.checkpoint_error==db::NativeCheckpointError::resource_exhausted||
+            refused.inventory_error==page::NativeInventoryError::resource_exhausted||
+            refused.directory_error==page::NativeDirectoryError::resource_exhausted||
+            refused.allocation_error==page::NativeAllocationError::resource_exhausted,"capacity retains allocation exhaustion classification");
+        }
+        verify_capacity(observe(128*sizes[profile]));
+        std::atomic<unsigned> completed=0;
+        const auto concurrent=[&](const auto& files){for(unsigned n=0;n<8;++n)
+          if(capacity(128*sizes[profile],files,CheckpointRef(cp),Id(1),fs).ok())++completed;};
+        std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
+        Check(completed==16,"capacity guards remain ordered through nested readers");
+      }
+    }
+    CatalogTestPin snapshot(inv.inventory,13);
     auto decoded=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(decoded.ok(),"decode source metadata fixture");
     db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
     request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
     if(metric_policy)bind_policy(request.metadata);
     if(metric_series)bind_series(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
-    const auto stage=[&](u64 limit){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit);};
+    namespace identity=scratchbird::core::uuid;
+    const auto policy_uuid=Id(250);
+    const identity::StandaloneUuidV7Policy identity_policy{{},0,1000};
+    identity::StandaloneUuidV7Issuer issuer({Id(1),policy_uuid},identity_policy);
+    const auto bound_stage=[&](u64 limit,const auto& policy,auto& allocation){
+      return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit,policy,allocation);};
+    const auto stage=[&](u64 limit){return bound_stage(limit,policy_uuid,issuer);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
     const auto unchanged=[&](){Check(actual(first,30,sizes[p])==source_bytes&&actual(first,12,sizes[p])==root_bytes&&actual(first,0,sizes[p])==zero_bytes,"staging preserves predecessor and current-root selection");};
     const auto verify=[&](const auto& result,u64 sequence,const auto& predecessor,bool retired){
       if(!result.ok())std::cerr<<"version stage error="<<static_cast<int>(result.error)<<" source="<<static_cast<int>(result.source_error)<<" physical="<<static_cast<int>(result.stage.error)<<std::endl;
       Check(result.ok(),"actual pinned native catalog version staging");
+      Check(result.identity_error==identity::StandaloneUuidV7Error::none&&result.identity_observation&&
+        result.identity_observation->wall_clock.unix_seconds==static_cast<std::int64_t>(initialization_uuid_millis/1000)&&
+        result.identity_clock_decision==scratchbird::core::time::LocalClockObservationDecision::accepted,
+        "native staging preserves exact accepted node clock evidence");
       const auto bytes=actual(target,21,sizes[profile]);const auto stored=db::DecodeNativeCatalogLeaf(bytes);
       Check(stored.ok()&&stored.page->body.rows.size()==1,"read actual staged successor");
       const auto& row=stored.page->body.rows[0];const auto& metadata=stored.metadata.at(row.version_uuid);
@@ -3183,7 +3334,73 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         result.row->filespace_uuid.value==fs&&result.row->page_number==21&&result.row->storage_generation==7&&result.stage.receipt->sha256==WholeRootHash(bytes),"generated identity and actual successor residency/metadata");
       Check(LeafOracle(*stored.page)==bytes,"independent successor image packing");unchanged();
     };
+    for(unsigned bad=0;bad<5;++bad){
+      reset();auto supplied_policy=policy_uuid;
+      identity::StandaloneUuidV7Binding binding{Id(1),policy_uuid};
+      if(bad==0)binding.database_uuid=Id(251);
+      if(bad==1)binding.policy_snapshot_uuid=Id(251);
+      if(bad==2)supplied_policy=Id(251);
+      if(bad==3)supplied_policy={};
+      if(bad==4){supplied_policy.bytes[6]=0x41;binding.policy_snapshot_uuid=supplied_policy;}
+      identity::StandaloneUuidV7Issuer mismatched(binding,identity_policy);
+      reads=stage_writes=stage_syncs=initialization_entropy_calls=0;track_reads=true;
+      const auto refused=bound_stage(budget,supplied_policy,mismatched);track_reads=false;
+      empty(refused);
+      Check(refused.error==E::invalid_request&&!reads&&!stage_writes&&!stage_syncs&&!initialization_entropy_calls,
+        "native catalog node/policy mismatch refuses before I/O or identity allocation");
+      Check(actual(target,21,sizes[profile])==blank,"mismatched identity authority preserves destination");unchanged();
+    }
+    reset();initialization_clock_failure=true;stage_writes=stage_syncs=0;
+    const auto refused_clock=stage(budget);initialization_clock_failure=false;
+    empty(refused_clock);
+    Check(refused_clock.error==E::identity_failure&&refused_clock.identity_error==identity::StandaloneUuidV7Error::clock_failure&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "native catalog identity source failure refuses before physical staging");unchanged();
+    reset();initialization_clock_allocation_failure=true;stage_writes=stage_syncs=0;
+    const auto exhausted_clock=stage(budget);initialization_clock_allocation_failure=false;
+    empty(exhausted_clock);
+    Check(exhausted_clock.error==E::resource_exhausted&&exhausted_clock.identity_error==identity::StandaloneUuidV7Error::resource_exhausted&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "identity resource failure retains its exact classification without writes");unchanged();
+    reset();initialization_entropy_fault=1;stage_writes=stage_syncs=0;
+    const auto refused_entropy=stage(budget);empty(refused_entropy);
+    Check(!initialization_entropy_fault&&refused_entropy.error==E::identity_failure&&
+      refused_entropy.identity_error==identity::StandaloneUuidV7Error::randomness_unavailable&&
+      !stage_writes&&!stage_syncs&&actual(target,21,sizes[profile])==blank,
+      "native catalog entropy failure refuses before physical staging");unchanged();
+    for(const auto collision:{170u,171u,210u,211u}){
+      reset();identity::StandaloneUuidV7Issuer fresh({Id(1),policy_uuid},identity_policy);
+      initialization_repeat_entropy=true;initialization_entropy_tag=collision;
+      stage_writes=stage_syncs=0;const auto refused=bound_stage(budget,policy_uuid,fresh);
+      initialization_repeat_entropy=false;initialization_entropy_tag=5;
+      empty(refused);Check(refused.error==E::identity_collision&&!stage_writes&&!stage_syncs&&
+        actual(target,21,sizes[profile])==blank,"issued UUID collision with retained/request identities refuses before writes");unchanged();
+      const auto next=fresh.Issue(platform::UuidKind::row);
+      Check(next.ok()&&Id(collision)<next.value->value,"rejected collision never rolls back retained issuer state");
+    }
+    if(p==0&&role==1){
+      reset();auto warning_policy=identity_policy;warning_policy.clock.fail_closed_on_wall_clock_rollback=false;
+      warning_policy.max_uuid_regression_ms=1;
+      identity::StandaloneUuidV7Issuer warned({Id(1),policy_uuid},warning_policy);
+      Check(warned.Issue(platform::UuidKind::row).ok(),"establish retained clock before allowed regression");
+      initialization_clock_offset_millis=-1;const auto warning=bound_stage(budget,policy_uuid,warned);initialization_clock_offset_millis=0;
+      Check(warning.ok()&&warning.identity_observation&&
+        warning.identity_clock_decision==scratchbird::core::time::LocalClockObservationDecision::wall_clock_rollback_detected&&
+        warning.identity_observation->wall_clock.nanoseconds==((initialization_uuid_millis-1)%1000)*1000000&&
+        db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"permitted clock warning survives actual native staging");unchanged();
+      reset();identity::StandaloneUuidV7Issuer real({Id(1),policy_uuid},identity_policy);
+      initialization_real_clock=true;const auto live=bound_stage(budget,policy_uuid,real);initialization_real_clock=false;
+      Check(live.ok()&&live.identity_observation&&live.identity_observation->wall_clock.unix_seconds>0&&
+        db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"real clock and cryptographic entropy produce physically staged native version");unchanged();
+    }
     reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
+    auto previous_identity=result.row->version_uuid;
+    const auto entropy_calls=initialization_entropy_calls;
+    for(unsigned repeat=0;repeat<3;++repeat){reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
+      Check(previous_identity<result.row->version_uuid&&initialization_entropy_calls==entropy_calls,
+        "retained issuer advances binary version identity without reseeding in the same millisecond");
+      previous_identity=result.row->version_uuid;
+    }
     reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
     if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
     if(metric_series){const auto origin=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(origin.ok(),"load persisted series origin");bind_series(request.metadata,&*origin.record);}

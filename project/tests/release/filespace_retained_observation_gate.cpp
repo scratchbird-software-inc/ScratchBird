@@ -125,6 +125,35 @@ void Profile(const disk::CanonicalFilespacePageProfile& profile) {
     Require(reads == 2 && sizes == 2, "full page-zero observation count");
   }
   // Every native read/size failure retains the guard to result construction.
+  {
+    Observation probe(f.device);
+    const auto result = disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(f.device, f.binding);
+    probe.Check();
+    Require(result.ok() && result.relation == disk::FilespaceExtentRelation::matching &&
+            result.observed_bytes == f.image.size() && result.declared_bytes == f.image.size() &&
+            result.complete_pages == 2 && result.trailing_bytes == 0 && reads == 2 && sizes == 2,
+            "recovery evidence retains compound observation guard");
+  }
+  for (unsigned position : {1u, 2u}) {
+    for (bool reading : {false, true}) {
+      Observation probe(f.device);
+      (reading ? fail_read : fail_size) = position;
+      const auto result = disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(f.device, f.binding);
+      probe.Check();
+      Require(!result.ok() && result.error == disk::FilespacePageZeroError::io_failure &&
+              !result.record && !result.observed_bytes && !result.declared_bytes &&
+              !result.complete_pages && !result.trailing_bytes &&
+              result.relation == disk::FilespaceExtentRelation::unknown,
+              "recovery I/O failure preserves guard and withholds partial facts");
+    }
+  }
+  {
+    auto outer = f.device.AcquireOperationGuard();
+    Observation probe(f.device);
+    const auto result = disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(f.device, f.binding);
+    probe.Check(0);
+    Require(result.ok(), "nested recovery observation preserves caller guard");
+  }
   for (unsigned position : {1u, 2u}) {
     for (bool reading : {false, true}) {
       Observation probe(f.device);
@@ -188,6 +217,14 @@ void Profile(const disk::CanonicalFilespacePageProfile& profile) {
     probe.Check();
     Require(!result.ok() && result.error == disk::FilespacePageZeroError::integrity_mismatch,
             "full-page corruption classification");
+  }
+  {
+    Observation probe(f.device);
+    const auto result = disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(f.device, f.binding);
+    probe.Check();
+    Require(!result.ok() && result.error == disk::FilespacePageZeroError::integrity_mismatch &&
+            !result.record && !result.observed_bytes,
+            "corrupt recovery observation holds guard without exposing capacity");
   }
   f.Unchanged();
   f.image[0] ^= 1;

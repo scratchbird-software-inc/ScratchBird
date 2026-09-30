@@ -23,6 +23,7 @@
 #include "runtime_platform.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_snapshot.hpp"
+#include "node_uuid_issuer.hpp"
 
 #include <string>
 #include <map>
@@ -548,10 +549,14 @@ struct PhysicalMgaCowMutationBatchResult {
 enum class NativeCatalogVersionStageError {
   none, invalid_request, invalid_metadata, source_failure, snapshot_failure,
   writer_not_writable, object_reserved, row_reserved, stale_version,
-  version_overflow, identity_failure, stage_failure, resource_exhausted, io_failure
+  version_overflow, identity_failure, stage_failure, resource_exhausted, io_failure,
+  identity_collision
 };
 struct NativeCatalogVersionStageResult {
   NativeCatalogVersionStageError error=NativeCatalogVersionStageError::invalid_request;
+  scratchbird::core::uuid::StandaloneUuidV7Error identity_error=scratchbird::core::uuid::StandaloneUuidV7Error::none;
+  std::optional<scratchbird::core::time::ClockSnapshot> identity_observation;
+  scratchbird::core::time::LocalClockObservationDecision identity_clock_decision=scratchbird::core::time::LocalClockObservationDecision::accepted;
   NativePinnedCatalogReadError source_error=NativePinnedCatalogReadError::none;
   NativeCatalogLeafStageResult stage;
   std::optional<PhysicalMgaCowRowReceipt> row;
@@ -560,13 +565,17 @@ struct NativeCatalogVersionStageResult {
 };
 // Actual pinned native source -> generated MGA successor -> reserved type6
 // write/readback. Not a multi-page batch, catalog-root publication or SQL result.
+// The kernel supplies its actual admitted policy and retained node-bound issuer;
+// these are checked before any I/O, not inferred from catalog display metadata.
 NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
     u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
     const NativeCatalogVersionMutation&,const NativeCatalogLeafPage& empty_destination,
-    u64 maximum_retained_image_bytes) noexcept;
+    u64 maximum_retained_image_bytes,
+    const scratchbird::core::platform::Uuid& policy_snapshot_uuid,
+    scratchbird::core::uuid::StandaloneUuidV7Issuer&) noexcept;
 
 struct PhysicalMgaCowFinalizeResult {
   Status status;

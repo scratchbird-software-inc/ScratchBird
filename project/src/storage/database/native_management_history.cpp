@@ -58,6 +58,7 @@ void Index(NativeManagementHistory& history){
     const auto old=history.latest.find(o.uuid);
     if(old==history.latest.end())Require(o.revision==1&&o.state==NativeManagementState::created,E::transition_failure);
     else{const auto e=ValidateNativeManagementOperationEvolution(history.entries[old->second].record,o);
+      if(e==NativeManagementOperationError::hash_failure)throw E::hash_failure;
       if(e==NativeManagementOperationError::resource_exhausted)throw E::resource_exhausted;
       Require(e==NativeManagementOperationError::none,E::transition_failure);}
     history.latest[o.uuid]=i;

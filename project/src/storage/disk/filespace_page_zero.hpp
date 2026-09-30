@@ -53,4 +53,18 @@ FilespacePageZeroDecodeResult DecodeFilespacePageZero(
 // admission. The caller must verify actual roots and MGA recovery authority.
 FilespacePageZeroDecodeResult ReadFilespacePageZeroFromOpenDevice(
     FileDevice&, const FilespaceBootstrapBinding* expected = nullptr) noexcept;
+
+enum class FilespaceExtentRelation { unknown, matching, shorter, longer };
+struct FilespacePageZeroRecoveryObservation {
+  FilespacePageZeroError error=FilespacePageZeroError::invalid_family;
+  std::optional<FilespacePageZero> record;
+  u64 declared_bytes=0, observed_bytes=0, complete_pages=0, trailing_bytes=0;
+  FilespaceExtentRelation relation=FilespaceExtentRelation::unknown;
+  bool ok() const noexcept {return error==FilespacePageZeroError::none&&record.has_value();}
+};
+// Read-only recovery evidence, NOT ordinary open/capacity or effect admission.
+// A successful observation can describe a short, excess or unaligned file.
+// Root references are declared metadata, not proof of their physical backing.
+FilespacePageZeroRecoveryObservation ObserveFilespacePageZeroForRecoveryFromOpenDevice(
+    FileDevice&, const FilespaceBootstrapBinding& expected) noexcept;
 }  // namespace scratchbird::storage::disk

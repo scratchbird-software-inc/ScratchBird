@@ -56,6 +56,12 @@ void Validate(const O& o){
    o.initiator_kind>=1&&o.initiator_kind<=8&&u16(o.restart)>=1&&u16(o.restart)<=6,E::invalid_record);
  Require(Utf8(o.idempotency_key),E::invalid_utf8);
  Require(!EmptyHash(o.normalized_request_sha256)&&!Before(o.updated_at,o.created_at),E::invalid_record);
+ if(!o.normalized_request_bytes.empty()){
+   Require(o.normalized_request_bytes.size()<=std::numeric_limits<u32>::max(),E::resource_exhausted);
+   const auto digest=core::hash::ComputeSha256Digest(o.normalized_request_bytes);
+   Require(digest.ok(),E::hash_failure);
+   Require(digest.digest==o.normalized_request_sha256,E::invalid_integrity);
+ }
  const bool cluster=o.scope==NativeManagementScope::cluster;
  Require(cluster?(!o.cluster_uuid.is_nil()&&o.generation_guards[3].has_value()):(o.cluster_uuid.is_nil()&&!o.generation_guards[3]),E::invalid_record);
  Require(o.steps.size()<=std::numeric_limits<u32>::max(),E::resource_exhausted);
@@ -115,7 +121,7 @@ void Evolution(const O& a,const O& b){
  for(auto member:{&O::database_uuid,&O::bootstrap_uuid,&O::uuid,&O::descriptor_uuid,&O::family_uuid,&O::target_type_uuid,
    &O::target_uuid,&O::initiator_uuid,&O::request_context_uuid,&O::policy_snapshot_uuid,&O::created_at,&O::cluster_uuid})Require(a.*member==b.*member,E::immutable_field);
  Require(a.scope==b.scope&&a.initiator_kind==b.initiator_kind&&a.restart==b.restart&&a.idempotency_key==b.idempotency_key&&
-   a.normalized_request_sha256==b.normalized_request_sha256&&a.generation_guards[3]==b.generation_guards[3]&&
+   a.normalized_request_sha256==b.normalized_request_sha256&&a.normalized_request_bytes==b.normalized_request_bytes&&a.generation_guards[3]==b.generation_guards[3]&&
    a.evidence_required==b.evidence_required&&a.metrics_required==b.metrics_required,E::immutable_field);
  if(!a.security_snapshot_uuid.is_nil())Require(a.security_snapshot_uuid==b.security_snapshot_uuid,E::immutable_field);
  for(unsigned i=0;i<3;++i)if(a.generation_guards[i])Require(a.generation_guards[i]==b.generation_guards[i],E::immutable_field);
@@ -138,7 +144,7 @@ void Put(byte* p,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),p);}
 Uuid Get(const byte* p){Uuid id;std::copy_n(p,16,id.bytes.begin());return id;}
 std::size_t Size(const O& o,u64 budget){u64 n=512;Require(budget>=n,E::resource_exhausted);
  const auto add=[&](u64 size){Require(size<=budget-n&&size<=std::numeric_limits<u32>::max()-n,E::resource_exhausted);n+=size;};
- add(o.idempotency_key.size());for(const auto& s:o.steps){add(256);add(s.idempotency_key.size());}return static_cast<std::size_t>(n);
+ add(o.idempotency_key.size());add(o.normalized_request_bytes.size());for(const auto& s:o.steps){add(256);add(s.idempotency_key.size());}return static_cast<std::size_t>(n);
 }
 } // namespace
 NativeManagementOperationError ValidateNativeManagementOperation(const O& o) noexcept {
@@ -148,12 +154,15 @@ NativeManagementOperationError ValidateNativeManagementOperationEvolution(const 
  try{Evolution(a,b);return E::none;}catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_record;}
 }
 NativeManagementOperationImage EncodeNativeManagementOperation(const O& o,u64 budget) noexcept {
- try{const auto size=Size(o,budget);Validate(o);std::vector<byte> b(size,0);std::copy_n("SBMGO001",8,b.begin());StoreLittle16(b.data()+8,1);StoreLittle16(b.data()+10,512);StoreLittle32(b.data()+12,size);
+ try{const auto size=Size(o,budget);Validate(o);const bool exact=!o.normalized_request_bytes.empty();
+  std::vector<byte> b(size,0);std::copy_n(exact?"SBMGO002":"SBMGO001",8,b.begin());StoreLittle16(b.data()+8,exact?2:1);StoreLittle16(b.data()+10,512);StoreLittle32(b.data()+12,size);
   for(const auto& [at,member]:operation_ids)Put(b.data()+at,o.*member);
   std::copy(o.normalized_request_sha256.begin(),o.normalized_request_sha256.end(),b.begin()+272);
   u32 flags=(o.evidence_required?16u:0u)|(o.metrics_required?32u:0u);for(unsigned i=0;i<4;++i)if(o.generation_guards[i]){flags|=1u<<i;StoreLittle64(b.data()+416+8*i,*o.generation_guards[i]);}
   StoreLittle64(b.data()+448,o.revision);StoreLittle32(b.data()+456,o.steps.size());StoreLittle32(b.data()+460,o.idempotency_key.size());StoreLittle16(b.data()+464,u16(o.state));StoreLittle16(b.data()+466,u16(o.scope));StoreLittle16(b.data()+468,o.initiator_kind);StoreLittle16(b.data()+470,u16(o.restart));StoreLittle32(b.data()+472,flags);
   std::size_t at=512;std::copy(o.idempotency_key.begin(),o.idempotency_key.end(),b.begin()+at);at+=o.idempotency_key.size();
+  StoreLittle32(b.data()+476,o.normalized_request_bytes.size());
+  std::copy(o.normalized_request_bytes.begin(),o.normalized_request_bytes.end(),b.begin()+at);at+=o.normalized_request_bytes.size();
   for(const auto& s:o.steps){auto* p=b.data()+at;for(const auto& [offset,member]:step_ids)Put(p+offset,s.*member);
    std::copy(s.precondition_sha256.begin(),s.precondition_sha256.end(),p+64);std::copy(s.postcondition_sha256.begin(),s.postcondition_sha256.end(),p+96);
    StoreLittle32(p+224,s.ordinal);StoreLittle32(p+228,s.idempotency_key.size());StoreLittle16(p+232,u16(s.state));StoreLittle16(p+234,u16(s.mutation));StoreLittle16(p+236,u16(s.compensation));StoreLittle16(p+238,u16(s.recovery));StoreLittle32(p+240,(s.evidence_required?1u:0u)|(s.metrics_required?2u:0u)|(s.idempotent?4u:0u));
@@ -165,14 +174,19 @@ NativeManagementOperationImage EncodeNativeManagementOperation(const O& o,u64 bu
 NativeManagementOperationImage DecodeNativeManagementOperation(const std::vector<byte>& b,u64 budget) noexcept {
  try{Require(b.size()<=budget&&b.size()<=std::numeric_limits<u32>::max(),E::resource_exhausted);
   Require(b.size()>=512,E::invalid_header);const auto* p=b.data();
-  Require(std::string_view(reinterpret_cast<const char*>(p),8)=="SBMGO001"&&LoadLittle16(p+8)==1&&LoadLittle16(p+10)==512&&LoadLittle32(p+12)==b.size()&&Zero(p+476,4),E::invalid_header);
+  const auto version=LoadLittle16(p+8);const auto request_bytes=LoadLittle32(p+476);
+  Require((version==1||version==2)&&std::string_view(reinterpret_cast<const char*>(p),8)==(version==2?"SBMGO002":"SBMGO001")&&
+    LoadLittle16(p+10)==512&&LoadLittle32(p+12)==b.size()&&(version==2?request_bytes!=0:request_bytes==0),E::invalid_header);
   const auto seal=Seal(b);Require(seal.ok(),E::hash_failure);Require(std::equal(seal.digest.begin(),seal.digest.end(),p+480),E::invalid_integrity);
   const auto flags=LoadLittle32(p+472);Require(!(flags&~63u),E::invalid_header);
   O o;for(const auto& [at,member]:operation_ids)o.*member=Get(p+at);std::copy_n(p+272,32,o.normalized_request_sha256.begin());
   for(unsigned i=0;i<4;++i){const auto value=LoadLittle64(p+416+8*i);if(flags&(1u<<i))o.generation_guards[i]=value;else Require(!value,E::invalid_header);}
   o.evidence_required=flags&16;o.metrics_required=flags&32;o.revision=LoadLittle64(p+448);o.state=OS(LoadLittle16(p+464));o.scope=NativeManagementScope(LoadLittle16(p+466));o.initiator_kind=LoadLittle16(p+468);o.restart=NativeManagementRestart(LoadLittle16(p+470));
   const auto count=LoadLittle32(p+456),key=LoadLittle32(p+460);Require(key>=1&&key<=512&&key<=b.size()-512,E::invalid_header);
-  std::size_t at=512+key;Require(count<=(b.size()-at)/257,E::invalid_header);o.idempotency_key.assign(reinterpret_cast<const char*>(p+512),key);o.steps.reserve(count);
+  std::size_t at=512+key;Require(request_bytes<=b.size()-at,E::invalid_header);
+  Require(count<=(b.size()-at-request_bytes)/257,E::invalid_header);
+  o.idempotency_key.assign(reinterpret_cast<const char*>(p+512),key);
+  o.normalized_request_bytes.assign(b.begin()+at,b.begin()+at+request_bytes);at+=request_bytes;o.steps.reserve(count);
   for(u32 i=0;i<count;++i){Require(b.size()-at>=256,E::invalid_header);p=b.data()+at;S s;for(const auto& [offset,member]:step_ids)s.*member=Get(p+offset);
    std::copy_n(p+64,32,s.precondition_sha256.begin());std::copy_n(p+96,32,s.postcondition_sha256.begin());s.ordinal=LoadLittle32(p+224);const auto length=LoadLittle32(p+228);
    s.state=SS(LoadLittle16(p+232));s.mutation=NativeManagementMutation(LoadLittle16(p+234));s.compensation=NativeManagementCompensation(LoadLittle16(p+236));s.recovery=NativeManagementRecovery(LoadLittle16(p+238));
