@@ -1125,16 +1125,20 @@ FilespacePreallocationResult PreallocateFilespace(FilespaceGrowthLedger* ledger,
   const auto database_uuid = entry.database_uuid.value;
   const auto filespace_uuid = entry.filespace_uuid.value;
   const std::string role = FilespaceRoleName(entry.filespace_role);
+  const auto node_uuid = scratchbird::core::metrics::DefaultMetricRegistry()
+                             .ObservationNodeForDatabase(database_uuid);
   const bool reserved_metric_ok =
+      node_uuid &&
       scratchbird::core::metrics::PublishFilespaceReservedBytes(
-          static_cast<double>(entry.bytes_preallocated),
+          entry.bytes_preallocated,
           database_uuid,
           filespace_uuid,
-          {},
+          *node_uuid,
           role,
           "file",
           "preallocated").ok;
   const bool request_metric_ok =
+      node_uuid &&
       scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(
           filespace_uuid,
           "preallocate",
@@ -1401,12 +1405,13 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
                                 "storage.filespace.growth.insufficient_capacity",
                                 "storage file/member extendable capacity cannot satisfy requested pages");
   }
-  if (MultiplyWouldOverflow(request.requested_growth_pages, request.page_size_bytes)) {
+  if (MultiplyWouldOverflow(physical_page_count_before + request.requested_growth_pages,
+                            request.page_size_bytes)) {
     return RefusePhysicalGrowth(request,
                                 descriptor,
                                 "filespace_growth_capacity_overflow",
                                 "storage.filespace.growth.capacity_overflow",
-                                "requested pages overflow byte accounting");
+                                "resulting physical pages overflow byte accounting");
   }
 
   if (auto* existing = FindMutablePhysicalGrowthByRequest(ledger, request.request_uuid);
@@ -1580,20 +1585,21 @@ FilespacePhysicalGrowthResult ExecuteFilespacePhysicalGrowth(
   const auto database_uuid = entry.database_uuid.value;
   const auto filespace_uuid = entry.filespace_uuid.value;
   const std::string role = FilespaceRoleName(entry.filespace_role);
+  const auto node_uuid = scratchbird::core::metrics::DefaultMetricRegistry()
+                             .ObservationNodeForDatabase(database_uuid);
   const bool capacity_metric_ok =
+      node_uuid &&
       scratchbird::core::metrics::PublishFilespaceCapacitySnapshot(
-          static_cast<double>(entry.member_physical_page_count_after) *
-              static_cast<double>(entry.page_size_bytes),
-          static_cast<double>(window.logical_page_count) *
-              static_cast<double>(entry.page_size_bytes),
-          static_cast<double>(entry.member_preallocated_pages_after) *
-              static_cast<double>(entry.page_size_bytes),
+          entry.member_physical_page_count_after * entry.page_size_bytes,
+          window.logical_page_count * entry.page_size_bytes,
+          entry.member_preallocated_pages_after * entry.page_size_bytes,
           database_uuid,
           filespace_uuid,
-          {},
+          *node_uuid,
           role,
           "file").ok;
   const bool request_metric_ok =
+      node_uuid &&
       scratchbird::core::metrics::RecordFilespaceAgentCapacityRequest(
           filespace_uuid,
           "physical_growth",

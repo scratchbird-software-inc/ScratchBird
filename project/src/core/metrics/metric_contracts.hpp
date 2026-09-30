@@ -186,15 +186,16 @@ MetricValidationResult RecordClusterInsertBadStatsSuppressed(MetricUuid database
                                                              std::string reason);
 
 // SEARCH_KEY: SB_FILESPACE_PAGE_METRIC_CONTRACTS
-MetricValidationResult PublishFilespaceCapacitySnapshot(double total_bytes,
-                                                        double used_bytes,
-                                                        double free_bytes,
+// Byte gauges carry exact unsigned counts, never floating-point approximations.
+MetricValidationResult PublishFilespaceCapacitySnapshot(u64 total_bytes,
+                                                        u64 used_bytes,
+                                                        u64 free_bytes,
                                                         MetricUuid database_uuid,
                                                         MetricUuid filespace_uuid,
                                                         MetricUuid node_uuid,
                                                         std::string filespace_role,
                                                         std::string device_class);
-MetricValidationResult PublishFilespaceReservedBytes(double reserved_bytes,
+MetricValidationResult PublishFilespaceReservedBytes(u64 reserved_bytes,
                                                      MetricUuid database_uuid,
                                                      MetricUuid filespace_uuid,
                                                      MetricUuid node_uuid,

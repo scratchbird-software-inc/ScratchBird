@@ -590,9 +590,9 @@ MetricValidationResult RequirePageIdentity(const MetricUuid& database_uuid,
 
 }  // namespace
 
-MetricValidationResult PublishFilespaceCapacitySnapshot(double total_bytes,
-                                                        double used_bytes,
-                                                        double free_bytes,
+MetricValidationResult PublishFilespaceCapacitySnapshot(u64 total_bytes,
+                                                        u64 used_bytes,
+                                                        u64 free_bytes,
                                                         MetricUuid database_uuid,
                                                         MetricUuid filespace_uuid,
                                                         MetricUuid node_uuid,
@@ -608,7 +608,7 @@ MetricValidationResult PublishFilespaceCapacitySnapshot(double total_bytes,
   return SetGauge("sb_filespace_free_bytes", std::move(labels), free_bytes, "storage_filespace");
 }
 
-MetricValidationResult PublishFilespaceReservedBytes(double reserved_bytes,
+MetricValidationResult PublishFilespaceReservedBytes(u64 reserved_bytes,
                                                      MetricUuid database_uuid,
                                                      MetricUuid filespace_uuid,
                                                      MetricUuid node_uuid,

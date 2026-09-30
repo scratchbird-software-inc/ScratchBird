@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "filespace_growth.hpp"
+#include "filespace_metric_fixture.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
@@ -49,13 +50,16 @@ struct FixtureIds {
 };
 
 FixtureIds MakeIds(platform::u64 seed) {
-  return {MakeUuid(platform::UuidKind::object, 100 + seed),
-          MakeUuid(platform::UuidKind::database, 200 + seed),
+  auto& metrics = filespace_metric_test::Runtime();
+  FixtureIds ids{MakeUuid(platform::UuidKind::object, 100 + seed),
+          {platform::UuidKind::database, metrics.database},
           MakeUuid(platform::UuidKind::filespace, 300 + seed),
           MakeUuid(platform::UuidKind::object, 400 + seed),
           MakeUuid(platform::UuidKind::object, 500 + seed),
           MakeUuid(platform::UuidKind::object, 600 + seed),
           MakeUuid(platform::UuidKind::transaction, 700 + seed)};
+  metrics.RegisterFilespace(ids.filespace_uuid.value);
+  return ids;
 }
 
 filespace::FilespaceRegistry Registry(const FixtureIds& ids) {
@@ -160,6 +164,10 @@ void TestSuccessMetadataEvidenceMetricsAndRecovery() {
   Require(result.durable_state_changed, "success did not report durable state change");
   Require(result.cache_invalidation_required, "success did not request cache invalidation");
   Require(result.metrics_emitted, "success did not emit metrics");
+  auto& metrics = filespace_metric_test::Runtime();
+  metrics.Expect("sb_filespace_reserved_bytes", ids.filespace_uuid.value, 12 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
+  Require(metrics.queue->Stats().queued == 0, "preallocation emitted unexpected observations");
   Require(result.operation.metrics_emitted, "operation metrics flag was not set");
   Require(result.operation.state == filespace::FilespacePreallocationState::completed,
           "operation state was not completed");
@@ -213,11 +221,18 @@ void TestIdempotentDuplicateDoesNotReserveTwice() {
   const auto request = Request(ids);
   const auto first = filespace::PreallocateFilespace(&ledger, registry, request);
   Require(first.ok(), "first preallocation failed");
+  auto& metrics = filespace_metric_test::Runtime();
+  Require(first.metrics_emitted, "first preallocation omitted metrics");
+  metrics.Expect("sb_filespace_reserved_bytes", ids.filespace_uuid.value, 12 * 16384);
+  metrics.Expect("sb_agent_filespace_capacity_requests_total", ids.filespace_uuid.value, 1);
+  const auto admitted = metrics.queue->Stats().admitted;
   const auto before = Capture(ledger);
 
   const auto duplicate = filespace::PreallocateFilespace(&ledger, registry, request);
   Require(duplicate.ok(), "duplicate preallocation replay failed");
   Require(duplicate.duplicate_request, "duplicate request flag missing");
+  Require(metrics.queue->Stats().admitted == admitted && metrics.queue->Stats().queued == 0,
+          "duplicate preallocation emitted fresh metrics");
   Require(!duplicate.durable_state_changed, "duplicate reported durable mutation");
   Require(duplicate.operation.preallocation_operation_id.value ==
               first.operation.preallocation_operation_id.value,
@@ -248,9 +263,12 @@ void RunRefusalCase(
   auto request = Request(ids);
   filespace::FilespaceGrowthLedger ledger;
   mutate(request, registry);
+  const auto admitted = filespace_metric_test::Runtime().queue->Stats().admitted;
   const auto before = Capture(ledger);
   const auto result = filespace::PreallocateFilespace(&ledger, registry, request);
   ExpectRefused(result, ledger, before, diagnostic_code, label);
+  Require(filespace_metric_test::Runtime().queue->Stats().admitted == admitted,
+          "refused preallocation emitted metrics");
 }
 
 void TestRefusalsDoNotPartiallyMutate() {
@@ -367,6 +385,21 @@ void TestRefusalsDoNotPartiallyMutate() {
                  });
 }
 
+void TestForeignDatabaseDoesNotEmitIntoBoundNode() {
+  auto ids = MakeIds(401);
+  ids.database_uuid = MakeUuid(platform::UuidKind::database, 999);
+  const auto registry = Registry(ids);
+  const auto request = Request(ids);
+  filespace::FilespaceGrowthLedger ledger;
+  auto& metrics = filespace_metric_test::Runtime();
+  const auto admitted = metrics.queue->Stats().admitted;
+  const auto result = filespace::PreallocateFilespace(&ledger, registry, request);
+  Require(result.ok() && result.preallocated, "foreign observation owner changed storage outcome");
+  Require(!result.metrics_emitted && !result.operation.metrics_emitted,
+          "foreign database claimed metric emission");
+  Require(metrics.queue->Stats().admitted == admitted, "foreign database incremented local counter");
+}
+
 void TestMissingLedgerFailsClosed() {
   const auto ids = MakeIds(400);
   const auto registry = Registry(ids);
@@ -385,5 +418,6 @@ int main() {
   TestIdempotentDuplicateDoesNotReserveTwice();
   TestRefusalsDoNotPartiallyMutate();
   TestMissingLedgerFailsClosed();
+  TestForeignDatabaseDoesNotEmitIntoBoundNode();
   return EXIT_SUCCESS;
 }
