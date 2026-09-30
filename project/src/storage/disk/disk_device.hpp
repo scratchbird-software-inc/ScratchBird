@@ -204,11 +204,13 @@ class FileDevice {
 
   bool is_open() const;
   bool read_only() const;
+  // Borrowed metadata: retain AcquireOperationGuard while using this reference
+  // if another thread may open/close the device. It is not a resource identity.
   const std::string& path() const;
 
   // Serializes compound operations on this retained device. Recursive so an
   // owning operation can call native readers/publishers under the same guard.
-  std::unique_lock<std::recursive_mutex> AcquireOperationGuard() {
+  std::unique_lock<std::recursive_mutex> AcquireOperationGuard() const {
     return std::unique_lock<std::recursive_mutex>(operation_mutex_);
   }
 
@@ -216,7 +218,7 @@ class FileDevice {
   enum class LatencyOperation { read, write, sync };
   void ObserveIoLatency(LatencyOperation, double micros, const char* result) noexcept;
   std::atomic<u64> rejected_io_latency_{0}, failed_io_latency_{0};
-  std::recursive_mutex operation_mutex_;
+  mutable std::recursive_mutex operation_mutex_;
   IoResult MakeIoError(std::string diagnostic_code,
                        std::string message_key,
                        std::string detail = {},

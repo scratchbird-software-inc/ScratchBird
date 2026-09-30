@@ -1578,6 +1578,7 @@ IoResult FileDevice::Close() {
 }
 
 IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {
+  const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
     return MakeIoError("SB-STORAGE-DISK-NOT-OPEN",
@@ -1829,6 +1830,7 @@ PreallocateExtentResult FileDevice::PreallocateExtent(u64 offset, u64 bytes) {
 }
 
 IoResult FileDevice::Sync() {
+  const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
     return MakeIoError("SB-STORAGE-DISK-NOT-OPEN",
@@ -1864,6 +1866,7 @@ void FileDevice::SetMetricContext(scratchbird::core::platform::Uuid database_uui
                                   scratchbird::core::platform::Uuid node_uuid,
                                   std::string filespace_role,
                                   std::string device_class) {
+  const auto operation_guard = AcquireOperationGuard();
   metric_database_uuid_ = std::move(database_uuid);
   metric_filespace_uuid_ = std::move(filespace_uuid);
   metric_node_uuid_ = std::move(node_uuid);
@@ -1872,6 +1875,7 @@ void FileDevice::SetMetricContext(scratchbird::core::platform::Uuid database_uui
 }
 
 SizeResult FileDevice::Size() const {
+  const auto operation_guard = AcquireOperationGuard();
   SizeResult result;
   result.status = DiskOkStatus();
 
@@ -1906,6 +1910,7 @@ SizeResult FileDevice::Size() const {
 }
 
 CapabilityResult FileDevice::Capabilities() const {
+  const auto operation_guard = AcquireOperationGuard();
   CapabilityResult result;
   result.status = DiskOkStatus();
   result.capabilities = capabilities_;
@@ -1913,6 +1918,7 @@ CapabilityResult FileDevice::Capabilities() const {
 }
 
 bool FileDevice::is_open() const {
+  const auto operation_guard = AcquireOperationGuard();
 #ifdef _WIN32
   return file_handle_ != nullptr;
 #else
@@ -1921,6 +1927,7 @@ bool FileDevice::is_open() const {
 }
 
 bool FileDevice::read_only() const {
+  const auto operation_guard = AcquireOperationGuard();
   return read_only_;
 }
 

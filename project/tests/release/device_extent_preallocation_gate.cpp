@@ -22,6 +22,8 @@ int allocation_error = 0;
 int allocation_calls = 0;
 int size_fail_after = -1;
 bool write_failure = false;
+bool read_failure = false;
+bool sync_failure = false;
 std::recursive_mutex* guarded_device = nullptr;
 int guard_checks = 0;
 int guard_failures = 0;
@@ -73,6 +75,8 @@ struct Fixture {
     allocation_error = 0;
     size_fail_after = -1;
     write_failure = false;
+    read_failure = false;
+    sync_failure = false;
     guarded_device = nullptr;
     if (device.is_open()) (void)device.Close();
     std::error_code ignored;
@@ -252,6 +256,90 @@ void TestRetainedDeviceSerialization() {
   Require(f.Bytes().back() == marker, "serialized writer bytes missing");
 }
 
+void TestRetainedReadGuard() {
+  Fixture f;
+  { auto guard = f.device.AcquireOperationGuard(); guarded_device = guard.mutex(); }
+  guard_checks = guard_failures = 0;
+  std::string bytes(f.original.size(), '\0');
+  const auto read = f.device.ReadAt(0, bytes.data(), bytes.size());
+  Require(read.ok() && read.bytes_transferred == bytes.size() && bytes == f.original,
+          "guarded read lost real file contents");
+  Require(guard_checks == 1 && guard_failures == 0, "read escaped retained-device guard");
+  read_failure = true;
+  const auto failed = f.device.ReadAt(0, bytes.data(), bytes.size());
+  read_failure = false;
+  Require(!failed.ok() && failed.diagnostic.diagnostic_code == "SB-STORAGE-DISK-READ-SHORT" &&
+          failed.diagnostic.message_key == "storage.disk.read_short" &&
+          failed.bytes_transferred == 0 && guard_checks == 2 && guard_failures == 0,
+          "failed read escaped guard or changed failure vector");
+  guarded_device = nullptr;
+  Require(f.Bytes() == f.original, "read failure changed file bytes");
+}
+
+void TestRetainedSizeGuard() {
+  Fixture f;
+  { auto guard = f.device.AcquireOperationGuard(); guarded_device = guard.mutex(); }
+  guard_checks = guard_failures = 0;
+  const disk::FileDevice& retained = f.device;
+  const auto size = retained.Size();
+  Require(size.ok() && size.size_bytes == f.original.size(), "guarded size lost physical extent");
+  Require(guard_checks == 1 && guard_failures == 0, "size escaped retained-device guard");
+  size_fail_after = 0;
+  const auto failed = retained.Size();
+  size_fail_after = -1;
+  Require(!failed.ok() && failed.diagnostic.diagnostic_code == "SB-STORAGE-DISK-SIZE-FAILED" &&
+          failed.diagnostic.message_key == "storage.disk.size_failed" &&
+          guard_checks == 2 && guard_failures == 0, "failed size escaped guard or changed failure vector");
+  guarded_device = nullptr;
+  Require(f.Bytes() == f.original, "size failure changed file bytes");
+}
+
+void TestRetainedSyncGuard() {
+  Fixture f;
+  { auto guard = f.device.AcquireOperationGuard(); guarded_device = guard.mutex(); }
+  guard_checks = guard_failures = 0;
+  Require(f.device.Sync().ok(), "real guarded sync failed");
+  Require(guard_checks == 1 && guard_failures == 0, "sync escaped retained-device guard");
+  sync_failure = true;
+  const auto failed = f.device.Sync();
+  sync_failure = false;
+  Require(!failed.ok() && failed.diagnostic.diagnostic_code == "SB-STORAGE-DISK-SYNC-FAILED" &&
+          failed.diagnostic.message_key == "storage.disk.sync_failed" &&
+          guard_checks == 2 && guard_failures == 0, "failed sync escaped guard or changed failure vector");
+  guarded_device = nullptr;
+  Require(f.Bytes() == f.original, "sync failure changed file bytes");
+}
+
+void TestRetainedCompoundIo() {
+  Fixture f;
+  const disk::FileDevice& retained = f.device;
+  const auto compound = retained.AcquireOperationGuard();
+  guarded_device = compound.mutex();
+  f.device.SetMetricContext({}, {}, {}, "secondary_data", "file");
+  Require(retained.is_open() && !retained.read_only() && retained.Capabilities().ok(),
+          "nested metadata queries failed");
+  std::string bytes(f.original.size(), '\0');
+  guard_checks = guard_failures = 0;
+  Require(f.device.ReadAt(0, bytes.data(), bytes.size()).ok() && bytes == f.original,
+          "compound read failed");
+  Require(retained.Size().ok() && f.device.Sync().ok(), "compound size/sync failed");
+  Require(guard_checks == 3 && guard_failures == 0, "compound native calls escaped guard");
+  Require(f.device.Close().ok(), "compound close failed");
+  const auto closed_checks = guard_checks;
+  Require(!f.device.ReadAt(0, bytes.data(), bytes.size()).ok() && !retained.Size().ok() &&
+          !f.device.Sync().ok() && guard_checks == closed_checks,
+          "closed compound device reached native I/O");
+  Require(f.device.Open(f.path.string(), disk::FileOpenMode::open_existing_read_only).ok(),
+          "compound read-only reopen failed");
+  guard_checks = guard_failures = 0;
+  Require(retained.read_only() && f.device.Sync().ok() && guard_checks == 0,
+          "read-only sync performed a native write fence");
+  Require(f.device.ReadAt(0, bytes.data(), bytes.size()).ok() && bytes == f.original &&
+          retained.Size().size_bytes == f.original.size() && guard_checks == 2 && guard_failures == 0,
+          "read-only native observations lost guard or content");
+  guarded_device = nullptr;
+}
+
 void TestDiagnosticVectors() {
   Fixture f;
   const auto check = [&](const disk::PreallocateExtentResult& result,
@@ -311,6 +399,18 @@ extern "C" ssize_t __wrap_pwrite(int fd, const void* data, size_t bytes, off_t o
   if (write_failure) { errno = ENOSPC; return -1; }
   return __real_pwrite(fd, data, bytes, offset);
 }
+extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
+extern "C" ssize_t __wrap_pread(int fd, void* data, size_t bytes, off_t offset) {
+  CheckDeviceGuard();
+  if (read_failure) { errno = EIO; return -1; }
+  return __real_pread(fd, data, bytes, offset);
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  CheckDeviceGuard();
+  if (sync_failure) { errno = EIO; return -1; }
+  return __real_fsync(fd);
+}
 
 int main() {
   int failures = 0;
@@ -327,6 +427,10 @@ int main() {
   run("applied-effect-on-error", TestAppliedNativeEffectOnObservationFailure);
   run("every-profile-byte-extent", TestEveryProfileExtent);
   run("retained-device-serialization", TestRetainedDeviceSerialization);
+  run("retained-read-serialization", TestRetainedReadGuard);
+  run("retained-size-serialization", TestRetainedSizeGuard);
+  run("retained-sync-serialization", TestRetainedSyncGuard);
+  run("retained-compound-io", TestRetainedCompoundIo);
   run("diagnostic-vectors", TestDiagnosticVectors);
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
