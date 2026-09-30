@@ -44,6 +44,17 @@ sem_t final_join_reached;
 sem_t allow_cleanup;
 sem_t second_stop_boundary;
 sem_t second_stop_finished;
+sem_t scheduler_at_entry;
+sem_t allow_scheduler;
+sem_t scheduler_after_tick;
+sem_t worker_repark;
+bool spurious_wake = false;
+thread_local bool observed_waiter = false;
+std::atomic<unsigned> native_wait_returns{0};
+std::atomic<unsigned> notifications_sent{0};
+thread_local unsigned observed_notifications = 0;
+thread_local bool scheduler_probe = false;
+thread_local unsigned scheduler_schedule_locks = 0;
 std::atomic<bool> armed{false};
 std::atomic<bool> observed_boundary{false};
 std::atomic<bool> publication_serialized{false};
@@ -110,6 +121,19 @@ extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t*);
 extern "C" int __real_pthread_join(pthread_t, void**);
 extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*,
                                       void* (*)(void*), void*);
+extern "C" int __real_pthread_setname_np(pthread_t, const char*);
+
+extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
+  const int result = __real_pthread_setname_np(thread, name);
+  if (spurious_wake && std::string_view(name) == "sb-agent-sch") {
+    // SchedulerLoop names itself before taking runtime locks or publishing a
+    // generation. Hold that actual thread; do not fake time or work results.
+    Signal(scheduler_at_entry);
+    Wait(allow_scheduler, "controller did not release scheduler entry");
+    scheduler_probe = true;
+  }
+  return result;
+}
 
 extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
                                       void* (*entry)(void*), void* argument) {
@@ -149,6 +173,16 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
 
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
                                          pthread_mutex_t* mutex) {
+  if (spurious_wake && observed_waiter &&
+      notifications_sent.load() > observed_notifications) {
+    // Reaching this call again means the production predicate rejected the
+    // preceding wake. The worker still owns the same native predicate mutex.
+    Require(condition == schedule_condition && mutex == schedule_mutex,
+            "worker changed its predicate/wait binding");
+    observed_notifications = notifications_sent.load();
+    Signal(worker_repark);
+    Wait(allow_park, "controller did not release repark boundary");
+  }
   if (armed.load(std::memory_order_acquire)) {
     char name[16]{};
     if (pthread_getname_np(pthread_self(), name, sizeof(name)) == 0 &&
@@ -157,14 +191,26 @@ extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
       // Freeze exactly before the atomic unlock-and-park operation.
       schedule_mutex = mutex;
       schedule_condition = condition;
+      observed_waiter = true;
       Signal(waiter_at_park);
       Wait(allow_park, "controller did not release the worker to park");
     }
   }
-  return __real_pthread_cond_wait(condition, mutex);
+  const int result = __real_pthread_cond_wait(condition, mutex);
+  if (spurious_wake && observed_waiter) {
+    Require(result == 0, "native worker wait failed");
+    native_wait_returns.fetch_add(1);
+  }
+  return result;
 }
 
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (scheduler_probe && mutex == schedule_mutex && ++scheduler_schedule_locks == 4) {
+    // Initial timed wait, first dispatch, completion barrier, then the next
+    // dispatch. Hold BEFORE the fourth lock; the real first tick has completed.
+    Signal(scheduler_after_tick);
+    Wait(allow_scheduler, "controller did not release scheduler after first tick");
+  }
   if (stop_caller == 1 && stop_entry_mutex == nullptr) {
     stop_entry_mutex = mutex;
   }
@@ -250,6 +296,50 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   first.join();
   second.join();
   return second_waiting.load() && !second_returned_early.load();
+}
+
+// SEARCH_KEY: SERVER_AGENT_SPURIOUS_WAKE_RECHECK
+bool CheckSpuriousWake(server::ServerAgentRuntime& runtime) {
+  Wait(scheduler_at_entry, "scheduler did not reach controlled entry");
+  Wait(waiter_at_park, "worker did not reach initial predicate/park boundary");
+  Signal(allow_park);
+  Signal(allow_scheduler);
+  Wait(scheduler_after_tick, "scheduler did not complete its first real tick");
+  const auto baseline = runtime.Snapshot();
+  constexpr unsigned wake_count = 8;
+  bool no_work = baseline.scheduler_ticks == 1 && baseline.total_worker_ticks == 1;
+  for (unsigned wake = 0; wake < wake_count; ++wake) {
+    if (wake != 0) Signal(allow_park);
+    // The worker owns this mutex until the REAL cond_wait atomically releases
+    // it. Acquiring it proves the notification cannot precede registration.
+    Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "wake probe lock failed");
+    notifications_sent.fetch_add(1);
+    Require(__real_pthread_cond_broadcast(schedule_condition) == 0, "wake probe broadcast failed");
+    Require(pthread_mutex_unlock(schedule_mutex) == 0, "wake probe unlock failed");
+    Wait(worker_repark, "notification escaped the false work predicate");
+    const auto snapshot = runtime.Snapshot();
+    no_work = no_work && snapshot.started && !snapshot.stopping &&
+              snapshot.scheduler_ticks == baseline.scheduler_ticks &&
+              snapshot.total_worker_ticks == baseline.total_worker_ticks &&
+              snapshot.total_actions_accepted == baseline.total_actions_accepted &&
+              snapshot.total_actions_refused == baseline.total_actions_refused &&
+              snapshot.total_actions_failed == baseline.total_actions_failed &&
+              native_wait_returns.load() >= wake + 2;
+  }
+  // Finish with a real Stop at the last false-predicate/park boundary. Release
+  // the scheduler only after stop publication has reached the predicate mutex.
+  std::thread stopper([&] {
+    stop_thread = true;
+    runtime.Stop();
+    stop_thread = false;
+    Signal(stop_finished);
+  });
+  Wait(stop_boundary, "Stop did not reach final predicate mutex");
+  Signal(allow_park);
+  Signal(allow_scheduler);
+  Wait(stop_finished, "Stop did not drain the woken worker cohort");
+  stopper.join();
+  return no_work && publication_serialized.load() && !runtime.Snapshot().started;
 }
 
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
@@ -342,6 +432,7 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
 }
 
 int main(int argc, char** argv) {
+  spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
   const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
@@ -350,11 +441,12 @@ int main(int argc, char** argv) {
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart,
+  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
-                       &second_stop_finished};
+                       &second_stop_finished, &scheduler_at_entry, &allow_scheduler,
+                       &worker_repark, &scheduler_after_tick};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
@@ -419,7 +511,10 @@ int main(int argc, char** argv) {
   Require(startup_failure || sequential_restart || active.durable_lease_count >= 2,
           "real worker leases were not created");
   bool completion_serialized = false;
-  if (concurrent_stop) {
+  bool spurious_rechecked = false;
+  if (spurious_wake) {
+    spurious_rechecked = CheckSpuriousWake(runtime);
+  } else if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
   } else if (!startup_failure && !sequential_restart) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
@@ -452,7 +547,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (sequential_restart) {
+  if (spurious_wake) {
+    Require(spurious_rechecked, "notification admitted work with a false predicate");
+    std::cout << "server_agent_spurious_wake_gate=passed notifications=8\n";
+  } else if (sequential_restart) {
     Require(restarted, "sequential runtime restart did not replace and join native cohorts");
     std::cout << "server_agent_sequential_thread_restart_gate=passed\n";
   } else if (startup_failure) {
