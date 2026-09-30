@@ -1065,6 +1065,9 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 }
 
 void ServerAgentRuntime::Stop() {
+  // Serialize the complete operation, not just the stop request. A contending
+  // caller must not return while another caller is still joining or cleaning up.
+  std::lock_guard<std::mutex> stop_guard(stop_mutex_);
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (!started_ || stopping_.load()) {

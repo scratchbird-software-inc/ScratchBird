@@ -103,6 +103,10 @@ class ServerAgentRuntime {
   bool Start(const ServerBootstrapConfig& config,
              const HostedEngineState& engine_state,
              std::vector<ServerDiagnostic>* diagnostics);
+  // Synchronous thread shutdown: concurrent Stop callers wait for the ongoing
+  // stop operation to finish. Start and destruction require external lifecycle
+  // coordination; callers must keep this object alive until their calls return.
+  // Return does not constitute a clean durable/node shutdown receipt.
   void Stop();
   ServerAgentRuntimeSnapshot Snapshot() const;
 
@@ -144,6 +148,9 @@ class ServerAgentRuntime {
   void WriteStatusSnapshot() const;
   std::string StatusJson() const;
 
+  // Acquired only by external Stop callers, before all other runtime locks.
+  // Workers must never acquire this mutex: Stop holds it while joining them.
+  std::mutex stop_mutex_;
   mutable std::mutex state_mutex_;
   mutable std::mutex file_mutex_;
   std::mutex schedule_mutex_;

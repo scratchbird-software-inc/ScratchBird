@@ -38,12 +38,22 @@ sem_t waiter_at_park;
 sem_t allow_park;
 sem_t stop_boundary;
 sem_t stop_finished;
+sem_t final_join_reached;
+sem_t allow_cleanup;
+sem_t second_stop_boundary;
+sem_t second_stop_finished;
 std::atomic<bool> armed{false};
 std::atomic<bool> observed_boundary{false};
 std::atomic<bool> publication_serialized{false};
 pthread_mutex_t* schedule_mutex = nullptr;
 pthread_cond_t* schedule_condition = nullptr;
 thread_local bool stop_thread = false;
+thread_local int stop_caller = 0;
+thread_local unsigned completed_joins = 0;
+unsigned expected_joins = 0;
+pthread_mutex_t* stop_entry_mutex = nullptr;
+std::atomic<bool> second_waiting{false};
+std::atomic<bool> second_returned_early{false};
 
 [[noreturn]] void Fail(const char* message) {
   std::cerr << message << '\n';
@@ -79,6 +89,7 @@ platform::TypedUuid NewIdentity(platform::UuidKind kind, platform::u64 millis) {
 extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
 extern "C" int __real_pthread_cond_broadcast(pthread_cond_t*);
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __real_pthread_join(pthread_t, void**);
 
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
                                          pthread_mutex_t* mutex) {
@@ -98,12 +109,36 @@ extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
 }
 
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (stop_caller == 1 && stop_entry_mutex == nullptr) {
+    stop_entry_mutex = mutex;
+  }
+  if (stop_caller == 2 && mutex == stop_entry_mutex && !second_waiting.load()) {
+    // One observation, not a retry loop. The first caller is paused after all
+    // native joins, so no worker can transiently hold the old state mutex.
+    const int observed = pthread_mutex_trylock(mutex);
+    if (observed == EBUSY) {
+      second_waiting.store(true);
+      Signal(second_stop_boundary);
+    } else {
+      Require(observed == 0, "stop entry mutex probe failed");
+      Require(pthread_mutex_unlock(mutex) == 0, "stop entry probe unlock failed");
+    }
+  }
   if (stop_thread && mutex == schedule_mutex &&
       !observed_boundary.exchange(true)) {
     publication_serialized.store(true);
     Signal(stop_boundary);
   }
   return __real_pthread_mutex_lock(mutex);
+}
+
+extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
+  const int joined = __real_pthread_join(thread, result);
+  if (stop_caller == 1 && joined == 0 && ++completed_joins == expected_joins) {
+    Signal(final_join_reached);
+    Wait(allow_cleanup, "controller did not release Stop cleanup");
+  }
+  return joined;
 }
 
 extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
@@ -117,8 +152,45 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
   return result;
 }
 
-int main() {
-  for (auto* event : {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished}) {
+// SEARCH_KEY: SERVER_AGENT_CONCURRENT_STOP_COMPLETION
+bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_count) {
+  expected_joins = worker_count + 1;  // Workers plus scheduler.
+  std::thread first([&] {
+    stop_caller = 1;
+    runtime.Stop();
+    stop_caller = 0;
+    Signal(stop_finished);
+  });
+  Wait(final_join_reached, "first Stop did not complete its native joins");
+  const auto stopping = runtime.Snapshot();
+  Require(stopping.started && stopping.stopping,
+          "first Stop was not paused before completion publication");
+  std::thread second([&] {
+    stop_caller = 2;
+    runtime.Stop();
+    stop_caller = 0;
+    second_returned_early.store(runtime.Snapshot().started);
+    if (!second_waiting.load()) {
+      Signal(second_stop_boundary);
+    }
+    Signal(second_stop_finished);
+  });
+  Wait(second_stop_boundary, "second Stop neither waited nor returned");
+  Signal(allow_cleanup);
+  Wait(stop_finished, "first Stop did not finish cleanup");
+  Wait(second_stop_finished, "second Stop did not finish");
+  first.join();
+  second.join();
+  return second_waiting.load() && !second_returned_early.load();
+}
+
+int main(int argc, char** argv) {
+  const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
+  Require(argc == 1 || concurrent_stop, "unknown shutdown test mode");
+  const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
+                       &final_join_reached, &allow_cleanup, &second_stop_boundary,
+                       &second_stop_finished};
+  for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
 
@@ -162,7 +234,7 @@ int main() {
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;
 
-  armed.store(true, std::memory_order_release);
+  armed.store(!concurrent_stop, std::memory_order_release);
   if (!runtime.Start(config, engine, &diagnostics)) {
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -173,36 +245,47 @@ int main() {
   Require(active.started && active.worker_thread_count == 2,
           "real runtime did not start both workers");
   Require(active.durable_lease_count >= 2, "real worker leases were not created");
-  Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
+  bool completion_serialized = false;
+  if (concurrent_stop) {
+    completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
+  } else {
+    Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
-  std::thread stopper([&] {
-    stop_thread = true;
-    runtime.Stop();
-    stop_thread = false;
-    Signal(stop_finished);
-  });
-  Wait(stop_boundary, "Stop reached neither the predicate mutex nor notification");
-  Signal(allow_park);
+    std::thread stopper([&] {
+      stop_thread = true;
+      runtime.Stop();
+      stop_thread = false;
+      Signal(stop_finished);
+    });
+    Wait(stop_boundary, "Stop reached neither the predicate mutex nor notification");
+    Signal(allow_park);
 
-  if (!publication_serialized.load()) {
-    // Rescue only a failing baseline so its real cleanup can finish. Acquiring
-    // the native mutex proves the paused worker has now entered its wait.
-    Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "rescue lock failed");
-    Require(pthread_mutex_unlock(schedule_mutex) == 0, "rescue unlock failed");
-    Require(__real_pthread_cond_broadcast(schedule_condition) == 0, "rescue wake failed");
+    if (!publication_serialized.load()) {
+      // Rescue only a failing baseline so its real cleanup can finish. Acquiring
+      // the native mutex proves the paused worker has now entered its wait.
+      Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "rescue lock failed");
+      Require(pthread_mutex_unlock(schedule_mutex) == 0, "rescue unlock failed");
+      Require(__real_pthread_cond_broadcast(schedule_condition) == 0, "rescue wake failed");
+    }
+    Wait(stop_finished, "Stop did not join workers and finish its lifecycle path");
+    stopper.join();
   }
-  Wait(stop_finished, "Stop did not join workers and finish its lifecycle path");
-  stopper.join();
   Require(!runtime.Snapshot().started, "Stop returned with a running runtime");
   runtime.Stop();  // Repeated stop after joins must remain harmless.
 
   std::error_code error;
   std::filesystem::remove_all(directory, error);
   Require(!error, "fixture cleanup failed");
-  for (auto* event : {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished}) {
+  for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  Require(publication_serialized.load(),
-          "lost wakeup: Stop notified before synchronizing with the wait predicate mutex");
-  std::cout << "server_agent_shutdown_wakeup_gate=passed\n";
+  if (concurrent_stop) {
+    Require(completion_serialized,
+            "concurrent Stop returned before the ongoing stop operation completed");
+    std::cout << "server_agent_concurrent_stop_completion_gate=passed\n";
+  } else {
+    Require(publication_serialized.load(),
+            "lost wakeup: Stop notified before synchronizing with the wait predicate mutex");
+    std::cout << "server_agent_shutdown_wakeup_gate=passed\n";
+  }
 }
