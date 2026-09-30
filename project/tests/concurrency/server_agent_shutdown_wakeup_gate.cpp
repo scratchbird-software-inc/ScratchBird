@@ -48,8 +48,15 @@ sem_t scheduler_at_entry;
 sem_t allow_scheduler;
 sem_t scheduler_after_tick;
 sem_t worker_repark;
+sem_t scheduler_timeout;
+sem_t scheduler_next_wait;
 bool spurious_wake = false;
+bool scheduler_timeout_mode = false;
 thread_local bool observed_waiter = false;
+thread_local bool timed_scheduler = false;
+unsigned scheduler_timed_waits = 0;
+bool scheduler_deadline_observed = false;
+bool scheduler_stop_woke_wait = false;
 std::atomic<unsigned> native_wait_returns{0};
 std::atomic<unsigned> notifications_sent{0};
 thread_local unsigned observed_notifications = 0;
@@ -122,9 +129,52 @@ extern "C" int __real_pthread_join(pthread_t, void**);
 extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*,
                                       void* (*)(void*), void*);
 extern "C" int __real_pthread_setname_np(pthread_t, const char*);
+extern "C" int __real_pthread_cond_clockwait(pthread_cond_t*, pthread_mutex_t*,
+                                             clockid_t, const timespec*);
+
+// SEARCH_KEY: SERVER_AGENT_SCHEDULER_NATIVE_TIMEOUT_AND_STOP
+extern "C" int __wrap_pthread_cond_clockwait(pthread_cond_t* condition,
+                                              pthread_mutex_t* mutex,
+                                              clockid_t clock,
+                                              const timespec* deadline) {
+  if (!timed_scheduler) {
+    return __real_pthread_cond_clockwait(condition, mutex, clock, deadline);
+  }
+  Require(clock == CLOCK_MONOTONIC, "scheduler wait did not use monotonic time");
+  if (scheduler_timed_waits == 0) {
+    schedule_mutex = mutex;
+    schedule_condition = condition;
+  } else {
+    Require(mutex == schedule_mutex && condition == schedule_condition,
+            "scheduler changed its predicate/wait binding");
+  }
+  // Count actual expired wait phases, not incidental spurious native returns.
+  if (scheduler_timed_waits == 1) {
+    Signal(scheduler_next_wait);
+    Wait(allow_scheduler, "controller did not release scheduler timed park");
+  }
+  const int result = __real_pthread_cond_clockwait(condition, mutex, clock, deadline);
+  Require(result == 0 || result == ETIMEDOUT, "native scheduler wait failed");
+  if (scheduler_timed_waits == 0 && result == ETIMEDOUT) {
+    timespec now{};
+    Require(clock_gettime(clock, &now) == 0, "monotonic observation failed");
+    scheduler_deadline_observed = now.tv_sec > deadline->tv_sec ||
+        (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec);
+    ++scheduler_timed_waits;
+    Signal(scheduler_timeout);
+    Wait(allow_scheduler, "controller did not release actual timeout");
+  } else if (scheduler_timed_waits == 1) {
+    scheduler_stop_woke_wait = result == 0;
+    ++scheduler_timed_waits;
+  }
+  return result;
+}
 
 extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
   const int result = __real_pthread_setname_np(thread, name);
+  if (scheduler_timeout_mode && std::string_view(name) == "sb-agent-sch") {
+    timed_scheduler = true;
+  }
   if (spurious_wake && std::string_view(name) == "sb-agent-sch") {
     // SchedulerLoop names itself before taking runtime locks or publishing a
     // generation. Hold that actual thread; do not fake time or work results.
@@ -342,6 +392,29 @@ bool CheckSpuriousWake(server::ServerAgentRuntime& runtime) {
   return no_work && publication_serialized.load() && !runtime.Snapshot().started;
 }
 
+bool CheckSchedulerTimeout(server::ServerAgentRuntime& runtime) {
+  Wait(scheduler_timeout, "scheduler initial delay did not actually expire");
+  const auto expired = runtime.Snapshot();
+  const bool no_early_dispatch = scheduler_deadline_observed &&
+      expired.scheduler_ticks == 0 && expired.total_worker_ticks == 0;
+  Signal(allow_scheduler);
+  Wait(scheduler_next_wait, "scheduler did not begin its next timed wait");
+  std::thread stopper([&] {
+    stop_thread = true;
+    runtime.Stop();
+    stop_thread = false;
+    Signal(stop_finished);
+  });
+  Wait(stop_boundary, "Stop did not serialize with scheduler timed park");
+  Signal(allow_scheduler);
+  Wait(stop_finished, "Stop did not join scheduler after timed notification");
+  stopper.join();
+  const auto stopped = runtime.Snapshot();
+  return no_early_dispatch && scheduler_stop_woke_wait &&
+      scheduler_timed_waits == 2 && publication_serialized.load() &&
+      !stopped.started && stopped.scheduler_ticks == 0 && stopped.total_worker_ticks == 0;
+}
+
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
 bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
                          const server::ServerBootstrapConfig& config,
@@ -433,6 +506,7 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
 
 int main(int argc, char** argv) {
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
+  scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
   const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
@@ -441,12 +515,13 @@ int main(int argc, char** argv) {
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake,
+  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake || scheduler_timeout_mode,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
                        &second_stop_finished, &scheduler_at_entry, &allow_scheduler,
-                       &worker_repark, &scheduler_after_tick};
+                       &worker_repark, &scheduler_after_tick, &scheduler_timeout,
+                       &scheduler_next_wait};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
@@ -493,7 +568,7 @@ int main(int argc, char** argv) {
 
   bool startup_unwound = false;
   bool restarted = false;
-  armed.store(!concurrent_stop && !startup_failure && !sequential_restart,
+  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode,
               std::memory_order_release);
   if (sequential_restart) {
     restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
@@ -512,7 +587,10 @@ int main(int argc, char** argv) {
           "real worker leases were not created");
   bool completion_serialized = false;
   bool spurious_rechecked = false;
-  if (spurious_wake) {
+  bool scheduler_timeout_checked = false;
+  if (scheduler_timeout_mode) {
+    scheduler_timeout_checked = CheckSchedulerTimeout(runtime);
+  } else if (spurious_wake) {
     spurious_rechecked = CheckSpuriousWake(runtime);
   } else if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
@@ -547,7 +625,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (spurious_wake) {
+  if (scheduler_timeout_mode) {
+    Require(scheduler_timeout_checked, "scheduler timeout or shutdown predicate was violated");
+    std::cout << "server_agent_scheduler_timeout_gate=passed\n";
+  } else if (spurious_wake) {
     Require(spurious_rechecked, "notification admitted work with a false predicate");
     std::cout << "server_agent_spurious_wake_gate=passed notifications=8\n";
   } else if (sequential_restart) {

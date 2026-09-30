@@ -19,6 +19,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   target_link_options(server_agent_shutdown_wakeup_gate PRIVATE
     -static-libstdc++
     -Wl,--wrap=pthread_cond_wait
+    -Wl,--wrap=pthread_cond_clockwait
     -Wl,--wrap=pthread_cond_broadcast
     -Wl,--wrap=pthread_mutex_lock
     -Wl,--wrap=pthread_mutex_unlock
@@ -29,6 +30,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --spurious-wake)
   set_tests_properties(server_agent_spurious_wake_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;spurious_wake;linux_proof")
+  add_test(NAME server_agent_scheduler_timeout_gate
+    COMMAND server_agent_shutdown_wakeup_gate --scheduler-timeout)
+  set_tests_properties(server_agent_scheduler_timeout_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;shutdown;timeout;linux_proof")
   add_test(NAME server_agent_shutdown_wakeup_gate
     COMMAND server_agent_shutdown_wakeup_gate)
   set_tests_properties(server_agent_shutdown_wakeup_gate PROPERTIES
