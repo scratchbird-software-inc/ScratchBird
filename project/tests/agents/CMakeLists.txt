@@ -38,6 +38,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     set_tests_properties(server_agent_startup_failure_${failed_launch}_gate PROPERTIES
       TIMEOUT 120 LABELS "agents;concurrency;startup;resource_exhaustion;linux_proof")
   endforeach()
+  add_test(NAME server_agent_sequential_thread_restart_gate
+    COMMAND server_agent_shutdown_wakeup_gate --sequential-restart)
+  set_tests_properties(server_agent_sequential_thread_restart_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;shutdown;restart;linux_proof")
 endif()
 
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")

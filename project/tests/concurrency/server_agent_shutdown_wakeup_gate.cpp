@@ -65,6 +65,7 @@ pthread_mutex_t* runtime_state_mutex = nullptr;
 server::ServerAgentRuntime* startup_runtime = nullptr;
 bool runtime_threads_ready = false;
 bool startup_failure_injected = false;
+bool track_native_creates = true;
 unsigned fail_launch = 0;
 unsigned launch_attempts = 0;
 unsigned launched_threads = 0;
@@ -112,7 +113,8 @@ extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*,
 
 extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
                                       void* (*entry)(void*), void* argument) {
-  const bool track = startup_probe && runtime_threads_ready && !startup_failure_injected;
+  const bool track = startup_probe && track_native_creates && runtime_threads_ready &&
+                     !startup_failure_injected;
   if (track && ++launch_attempts == fail_launch) {
     startup_failure_injected = true;
     return EAGAIN;
@@ -287,15 +289,69 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
   return unwound;
 }
 
+// SEARCH_KEY: SERVER_AGENT_SEQUENTIAL_THREAD_RESTART
+// Qualify native cohort replacement only, not durable generation/clean-node
+// receipts or concurrent Start. Every create/join below reaches the real OS.
+bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
+                            const server::ServerBootstrapConfig& config,
+                            const server::HostedEngineState& engine,
+                            std::vector<server::ServerDiagnostic>& diagnostics) {
+  startup_runtime = &runtime;
+  capture_state_unlock = true;
+  (void)runtime.Snapshot();
+  capture_state_unlock = false;
+  Require(runtime_state_mutex != nullptr, "could not observe restart state mutex");
+  for (unsigned cycle = 0; cycle < 3; ++cycle) {
+    launch_attempts = 0;
+    launched_threads = 0;
+    startup_joined.fill(false);
+    runtime_threads_ready = false;
+    startup_failure_injected = false;
+    fail_launch = 0;  // Observe native creates; inject no failures.
+    track_native_creates = true;
+    startup_probe = true;
+    diagnostics.clear();
+    bool started = false;
+    try {
+      started = runtime.Start(config, engine, &diagnostics);
+    } catch (const std::exception& error) {
+      std::cerr << "restart exception: " << error.what() << '\n';
+    }
+    track_native_creates = false;  // Stop's dependency helpers are not cohort threads.
+    const auto active = runtime.Snapshot();
+    runtime.Stop();
+    startup_probe = false;
+    bool joined = launched_threads == startup_threads.size();
+    for (unsigned i = 0; i < launched_threads; ++i) {
+      joined = joined && startup_joined[i];
+    }
+    const auto stopped = runtime.Snapshot();
+    std::cout << "restart_cycle=" << cycle << " started=" << started
+              << " native_creates=" << launched_threads << " all_joined=" << joined
+              << " stopped=" << (!stopped.started && !stopped.stopping) << '\n';
+    for (const auto& diagnostic : diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+    }
+    if (!started || !active.started || active.worker_thread_count != 2 ||
+        active.durable_lease_count < 2 || active.durable_catalog_root_digest.empty() ||
+        launch_attempts != 3 || !joined || stopped.started || stopped.stopping) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int main(int argc, char** argv) {
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
   const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
+  const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || startup_failure, "unknown shutdown test mode");
+  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart,
+          "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
                        &second_stop_finished};
@@ -344,8 +400,12 @@ int main(int argc, char** argv) {
   std::vector<server::ServerDiagnostic> diagnostics;
 
   bool startup_unwound = false;
-  armed.store(!concurrent_stop && !startup_failure, std::memory_order_release);
-  if (startup_failure) {
+  bool restarted = false;
+  armed.store(!concurrent_stop && !startup_failure && !sequential_restart,
+              std::memory_order_release);
+  if (sequential_restart) {
+    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
+  } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
   } else if (!runtime.Start(config, engine, &diagnostics)) {
     for (const auto& diagnostic : diagnostics) {
@@ -354,14 +414,14 @@ int main(int argc, char** argv) {
     Fail("actual runtime Start failed");
   }
   const auto active = runtime.Snapshot();
-  Require(startup_failure || (active.started && active.worker_thread_count == 2),
+  Require(startup_failure || sequential_restart || (active.started && active.worker_thread_count == 2),
           "real runtime did not start both workers");
-  Require(startup_failure || active.durable_lease_count >= 2,
+  Require(startup_failure || sequential_restart || active.durable_lease_count >= 2,
           "real worker leases were not created");
   bool completion_serialized = false;
   if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
-  } else if (!startup_failure) {
+  } else if (!startup_failure && !sequential_restart) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
     std::thread stopper([&] {
@@ -392,7 +452,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (startup_failure) {
+  if (sequential_restart) {
+    Require(restarted, "sequential runtime restart did not replace and join native cohorts");
+    std::cout << "server_agent_sequential_thread_restart_gate=passed\n";
+  } else if (startup_failure) {
     Require(startup_unwound,
             "native startup failure escaped before partial runtime cleanup completed");
     std::cout << "server_agent_startup_failure_gate=passed\n";
