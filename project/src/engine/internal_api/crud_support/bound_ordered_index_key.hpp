@@ -10,6 +10,8 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sbl_numeric.hpp"
 #include <algorithm>
+#include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,9 +37,33 @@ struct OrderedIndexColumn {
   core::platform::TypedUuid collation;
 };
 
-inline bool BindOrderedIndexColumns(const EngineRequestContext& context,
+struct PublicationBindingStatistics {
+  std::uint64_t resource_lookups = 0;
+  std::uint64_t resource_reuses = 0;
+};
+
+// This scope cannot be constructed or retained by callers. Each public helper
+// creates it on the stack for one fixed context and destroys it before return.
+// No binding survives an append call, transaction, node or resource epoch.
+class PublicationBindingScope {
+  explicit PublicationBindingScope(const EngineRequestContext& context) : context_(context) {}
+  PublicationBindingScope(const PublicationBindingScope&) = delete;
+  PublicationBindingScope& operator=(const PublicationBindingScope&) = delete;
+
+  friend bool BindOrderedIndexColumns(const EngineRequestContext&,
+      const CrudIndexRecord&, const EngineUuid&, std::vector<OrderedIndexColumn>*,
+      EngineApiDiagnostic*);
+  friend bool CanonicalizePublicationBatch(const EngineRequestContext&,
+      MgaExactIndexEntryAppendBatch*, EngineApiDiagnostic*);
+  friend bool CanonicalizePublicationBatches(const EngineRequestContext&,
+      std::vector<MgaExactIndexEntryAppendBatch>*, EngineApiDiagnostic*,
+      PublicationBindingStatistics*);
+
+  bool CanonicalizeBatch(MgaExactIndexEntryAppendBatch*, EngineApiDiagnostic*);
+  bool BindColumns(
     const CrudIndexRecord& index, const EngineUuid& table,
     std::vector<OrderedIndexColumn>* output, EngineApiDiagnostic* diagnostic) {
+  const auto& context = context_;
   const auto refuse = [&](std::string reason) {
     *diagnostic = MakeInvalidRequestDiagnostic("mga.index_store", std::move(reason));
     return false;
@@ -70,12 +96,23 @@ inline bool BindOrderedIndexColumns(const EngineRequestContext& context,
     if (!descriptor.ok()) return refuse("sorted_index_datatype_identity_invalid");
     column.descriptor = descriptor.value;
     if (column.datatype.type_id == core::datatypes::CanonicalTypeId::character) {
-      const auto resource = LookupEngineResourceDescriptorByUuid(context, found->collation_uuid, "collation");
+      EngineResourceDescriptorLookupResult resource;
+      const auto cached = collations_.find(found->collation_uuid);
+      if (cached != collations_.end()) {
+        ++statistics_.resource_reuses;
+        resource = cached->second;
+      } else {
+        ++statistics_.resource_lookups;
+        resource = LookupEngineResourceDescriptorByUuid(context, found->collation_uuid, "collation");
+        if (resource.ok) collations_.emplace(found->collation_uuid, resource);
+      }
       if (!resource.ok) { *diagnostic = resource.diagnostic; return false; }
       if (!resource.resource_descriptor.present ||
           resource.resource_descriptor.database_uuid != context.database_uuid ||
           resource.resource_descriptor.resource_uuid != found->collation_uuid ||
-          resource.resource_descriptor.parent_resource_uuid != found->charset_uuid)
+          resource.resource_descriptor.parent_resource_uuid != found->charset_uuid ||
+          resource.resource_descriptor.resource_epoch != context.resource_epoch ||
+          resource.resource_descriptor.family_epoch == 0)
         return refuse("sorted_index_collation_authority_mismatch");
       column.text_seed = TextSeedFromResource(resource.resource_descriptor);
       const auto collation = core::uuid::MakeTypedUuid(core::platform::UuidKind::object,
@@ -87,6 +124,18 @@ inline bool BindOrderedIndexColumns(const EngineRequestContext& context,
   }
   *output = std::move(staged);
   return true;
+}
+
+  const EngineRequestContext& context_;
+  std::map<EngineUuid, EngineResourceDescriptorLookupResult> collations_;
+  PublicationBindingStatistics statistics_;
+};
+
+inline bool BindOrderedIndexColumns(const EngineRequestContext& context,
+    const CrudIndexRecord& index, const EngineUuid& table,
+    std::vector<OrderedIndexColumn>* output, EngineApiDiagnostic* diagnostic) {
+  PublicationBindingScope scope(context);
+  return scope.BindColumns(index, table, output, diagnostic);
 }
 
 inline bool EncodeOrderedIndexKey(std::string_view logical_key,
@@ -185,7 +234,7 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
   return true;
 }
 
-inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
+inline bool PublicationBindingScope::CanonicalizeBatch(
     MgaExactIndexEntryAppendBatch* batch, EngineApiDiagnostic* diagnostic) {
   if (batch->entries.empty() || !UsesBoundOrderedProfile(batch->index)) return true;
   const auto table = batch->index.table_uuid.is_nil() ? batch->table_uuid : batch->index.table_uuid;
@@ -194,7 +243,7 @@ inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
     return false;
   }
   std::vector<OrderedIndexColumn> columns;
-  if (!BindOrderedIndexColumns(context, batch->index, table, &columns, diagnostic)) return false;
+  if (!BindColumns(batch->index, table, &columns, diagnostic)) return false;
   for (auto& entry : batch->entries) {
     // Physical keys are derived, never logical value authority. Native bulk
     // and DDL carry the same lossless logical tuple in the payload field.
@@ -206,6 +255,32 @@ inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
     entry.encoded_key = "SBKOBIN:" + physical;
     entry.payload_value = logical;
   }
+  return true;
+}
+
+inline bool CanonicalizePublicationBatch(const EngineRequestContext& context,
+    MgaExactIndexEntryAppendBatch* batch, EngineApiDiagnostic* diagnostic) {
+  PublicationBindingScope scope(context);
+  auto staged = *batch;
+  if (!scope.CanonicalizeBatch(&staged, diagnostic)) return false;
+  *batch = std::move(staged);
+  return true;
+}
+
+inline bool CanonicalizePublicationBatches(const EngineRequestContext& context,
+    std::vector<MgaExactIndexEntryAppendBatch>* batches, EngineApiDiagnostic* diagnostic,
+    PublicationBindingStatistics* statistics = nullptr) {
+  PublicationBindingScope scope(context);
+  // Preserve input as well as durable state if any later batch is invalid.
+  auto staged = *batches;
+  for (auto& batch : staged) {
+    if (!scope.CanonicalizeBatch(&batch, diagnostic)) {
+      if (statistics) *statistics = scope.statistics_;
+      return false;
+    }
+  }
+  *batches = std::move(staged);
+  if (statistics) *statistics = scope.statistics_;
   return true;
 }
 }  // namespace scratchbird::engine::internal_api::bound_index_key

@@ -690,6 +690,71 @@ void OrderedKeyAuthorityAndValueStates() {
   valid_batch.entries.push_back({api::EncodeStoredLogicalKey({"oslo"}), {},
       NewNativeUuid(platform::UuidKind::row, 44380),
       NewNativeUuid(platform::UuidKind::row, 44381)});
+  std::vector<api::MgaExactIndexEntryAppendBatch> cohort(8, valid_batch);
+  for (std::size_t ordinal = 0; ordinal < cohort.size(); ++ordinal) {
+    cohort[ordinal].index.index_uuid = NewNativeUuid(platform::UuidKind::object, 44400 + ordinal);
+    cohort[ordinal].entries.front().encoded_key = api::EncodeStoredLogicalKey(
+        {ordinal % 2 ? api::CrudStoredValue("oslo") : api::CrudStoredValue("berlin")});
+  }
+  auto individual = cohort;
+  for (auto& batch : individual)
+    Require(api::bound_index_key::CanonicalizePublicationBatch(context, &batch, &diagnostic),
+            "ODF-044 individually admitted publication binding failed");
+  auto grouped = cohort;
+  api::bound_index_key::PublicationBindingStatistics binding_statistics;
+  Require(api::bound_index_key::CanonicalizePublicationBatches(
+              context, &grouped, &diagnostic, &binding_statistics) &&
+              binding_statistics.resource_lookups == 1 && binding_statistics.resource_reuses == 7,
+          "ODF-044 publication cohort did not reuse its single admitted collation");
+  for (std::size_t ordinal = 0; ordinal < cohort.size(); ++ordinal) {
+    Require(grouped[ordinal].entries.front().encoded_key == individual[ordinal].entries.front().encoded_key &&
+                grouped[ordinal].entries.front().payload_value == individual[ordinal].entries.front().payload_value &&
+                grouped[ordinal].entries.front().row_uuid == cohort[ordinal].entries.front().row_uuid &&
+                grouped[ordinal].entries.front().version_uuid == cohort[ordinal].entries.front().version_uuid,
+            "ODF-044 grouped bindings changed key bytes or row/version identity");
+  }
+  const auto require_unmodified = [&](const auto& actual, const auto& expected) {
+    Require(actual.size() == expected.size(), "ODF-044 refused cohort changed extent");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+      Require(actual[i].entries.front().encoded_key == expected[i].entries.front().encoded_key &&
+                  actual[i].entries.front().payload_value == expected[i].entries.front().payload_value,
+              "ODF-044 refused cohort changed a valid prefix");
+  };
+  for (unsigned invalid = 0; invalid < 4; ++invalid) {
+    auto foreign = context;
+    if (invalid == 0) ++foreign.resource_epoch;
+    if (invalid == 1) foreign.database_uuid = NewNativeUuid(platform::UuidKind::database, 44420);
+    if (invalid == 2) foreign.transaction_uuid = NewNativeUuid(platform::UuidKind::transaction, 44421);
+    if (invalid == 3) ++foreign.local_transaction_id;
+    auto rejected = cohort;
+    Require(!api::bound_index_key::CanonicalizePublicationBatches(
+                foreign, &rejected, &diagnostic, &binding_statistics),
+            "ODF-044 publication reused a binding across stale/foreign authority");
+    require_unmodified(rejected, cohort);
+  }
+  auto malformed_cohort = cohort;
+  malformed_cohort.back().entries.front().encoded_key = "not-a-logical-tuple";
+  const auto malformed_before = malformed_cohort;
+  Require(!api::bound_index_key::CanonicalizePublicationBatches(
+              context, &malformed_cohort, &diagnostic, &binding_statistics) &&
+              binding_statistics.resource_lookups == 1 && binding_statistics.resource_reuses == 7,
+          "ODF-044 malformed later batch was accepted or lost bounded binding reuse");
+  require_unmodified(malformed_cohort, malformed_before);
+  auto malformed_single = cohort.front();
+  malformed_single.entries.push_back(malformed_single.entries.front());
+  malformed_single.entries.back().encoded_key = "not-a-logical-tuple";
+  const auto single_before = malformed_single;
+  Require(!api::bound_index_key::CanonicalizePublicationBatch(
+              context, &malformed_single, &diagnostic) &&
+              malformed_single.entries.front().encoded_key == single_before.entries.front().encoded_key &&
+              malformed_single.entries.front().payload_value == single_before.entries.front().payload_value &&
+              malformed_single.entries.back().encoded_key == single_before.entries.back().encoded_key,
+          "ODF-044 refused single publication batch changed a valid entry prefix");
+  auto fresh = cohort;
+  Require(api::bound_index_key::CanonicalizePublicationBatches(
+              context, &fresh, &diagnostic, &binding_statistics) &&
+              binding_statistics.resource_lookups == 1 && binding_statistics.resource_reuses == 7,
+          "ODF-044 next append borrowed bindings or failures from an earlier call");
   const auto before = api::LoadMgaRelationStoreState(context);
   Require(before.ok, "ODF-044 failure-atomic control snapshot unavailable");
   for (unsigned malformed = 0; malformed < 2; ++malformed) {
@@ -712,6 +777,11 @@ void OrderedKeyAuthorityAndValueStates() {
             "ODF-044 refused bound-key batch mutated durable memberships");
   }
   Commit(context);
+  auto completed_transaction = cohort;
+  Require(!api::bound_index_key::CanonicalizePublicationBatches(
+              context, &completed_transaction, &diagnostic, &binding_statistics),
+          "ODF-044 completed transaction borrowed an earlier active binding");
+  require_unmodified(completed_transaction, cohort);
 }
 
 }  // namespace

@@ -1758,11 +1758,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
         return !batch.entries.empty() && bound_index_key::UsesBoundOrderedProfile(batch.index);
       })) {
     canonical_batches = input_batches;
-    for (auto& batch : canonical_batches) {
-      EngineApiDiagnostic diagnostic;
-      if (!bound_index_key::CanonicalizePublicationBatch(impl_->context, &batch, &diagnostic))
-        return diagnostic;
-    }
+    EngineApiDiagnostic diagnostic;
+    if (!bound_index_key::CanonicalizePublicationBatches(
+            impl_->context, &canonical_batches, &diagnostic)) return diagnostic;
     admitted_batches = &canonical_batches;
   }
   const auto& batches = *admitted_batches;
