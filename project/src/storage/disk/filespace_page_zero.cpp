@@ -249,4 +249,35 @@ FilespacePageZeroDecodeResult ReadFilespacePageZeroFromOpenDevice(
     catch(const std::length_error&) { return Failure(Error::resource_exhausted); }
     catch(...) { return Failure(Error::io_failure); }
 }
+FilespacePageZeroRecoveryObservation ObserveFilespacePageZeroForRecoveryFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding& expected) noexcept {
+  const auto fail=[](Error error){FilespacePageZeroRecoveryObservation r;r.error=error;return r;};
+  try {
+    const auto guard=device.AcquireOperationGuard();
+    const auto probe=ReadFilespaceBootstrapFromOpenDevice(device,&expected);
+    if(!probe.ok())return fail(BootstrapError(probe.error));
+    const auto preamble=EncodeFilespaceBootstrap(*probe.preamble);
+    if(!preamble.ok())return fail(BootstrapError(preamble.error));
+    const auto before=device.Size();const auto size=probe.preamble->page_size_bytes;
+    if(!before.ok())return fail(Error::io_failure);
+    if(before.size_bytes<size)return fail(Error::invalid_capacity);
+    std::vector<byte> bytes(size);
+    const auto read=device.ReadAt(0,bytes.data(),bytes.size());
+    if(!read.ok()||read.bytes_transferred!=bytes.size())return fail(Error::io_failure);
+    if(!std::equal(preamble.bytes->begin(),preamble.bytes->end(),bytes.begin()))return fail(Error::probe_changed);
+    auto decoded=DecodeFilespacePageZero(bytes.data(),bytes.size(),&expected);
+    if(!decoded.ok())return fail(decoded.error);
+    const auto after=device.Size();if(!after.ok())return fail(Error::io_failure);
+    if(before.size_bytes!=after.size_bytes)return fail(Error::probe_changed);
+    FilespacePageZeroRecoveryObservation result;
+    result.declared_bytes=decoded.record->total_pages*size;
+    result.observed_bytes=after.size_bytes;result.complete_pages=after.size_bytes/size;
+    result.trailing_bytes=after.size_bytes%size;
+    result.relation=result.observed_bytes==result.declared_bytes?FilespaceExtentRelation::matching:
+      result.observed_bytes<result.declared_bytes?FilespaceExtentRelation::shorter:FilespaceExtentRelation::longer;
+    result.record=std::move(decoded.record);result.error=Error::none;return result;
+  }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}
+   catch(...){return fail(Error::io_failure);}
+}
 }  // namespace scratchbird::storage::disk

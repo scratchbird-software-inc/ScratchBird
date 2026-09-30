@@ -57,6 +57,7 @@ std::size_t observed_read_bytes=0;
 bool track_reads=false;
 std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tree_read{false};
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
+bool extend_on_second_read=false;
 }
 void* operator new(std::size_t bytes) {
   if(count_allocations) ++observed_allocations;
@@ -134,6 +135,9 @@ extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
   if(pause_next_tree_read.exchange(false)) {tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
   if(track_reads) { ++reads; observed_read_bytes+=n; }
   if(read_fault&&reads==read_fault) { read_fault=0; errno=EIO; return -1; }
+  if(extend_on_second_read&&reads==2){extend_on_second_read=false;
+    const auto end=::lseek(fd,0,SEEK_END);const unsigned char zero=0;
+    if(end<0||__real_pwrite(fd,&zero,1,end)!=1){errno=EIO;return -1;}}
   if(replace_on_second_read&&reads==2) {
     const auto* image=replace_on_second_read; replace_on_second_read=nullptr;
     if(::pwrite(fd,image->data(),image->size(),0)!=static_cast<ssize_t>(image->size())||::fsync(fd)!=0) {
@@ -362,6 +366,49 @@ void Files() {
   auto r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"no fabricated remaining pages");
   const byte z=0; Check(d.WriteAt(v.total_pages*sizes[0],&z,1).ok(),"actual unaccounted appended byte");
   r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"partial trailing page refused");
+  using Relation=disk::FilespaceExtentRelation;
+  const auto empty=[](const auto& result){Check(!result.ok()&&!result.record&&!result.declared_bytes&&
+    !result.observed_bytes&&!result.complete_pages&&!result.trailing_bytes&&result.relation==Relation::unknown,"failed recovery observation exposes no partial facts");};
+  for(unsigned p=0;p<5;++p){const auto expected=Example(p);const auto image=Oracle(expected);const u64 size=sizes[p],declared=64*size;
+    const auto recovery_path=(fixture.root/("recovery-"+std::to_string(p))).string();disk::FileDevice file;
+    Check(file.Open(recovery_path,disk::FileOpenMode::create_new).ok(),"own recovery observation fixture");
+    const disk::FilespaceBootstrapBinding binding{expected.bootstrap.database_uuid,expected.bootstrap.filespace_uuid,expected.bootstrap.page_size_profile_uuid};
+    const auto observe=[&](){return disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,binding);};
+    const auto verify=[&](const auto& result,u64 physical){Check(result.ok()&&Oracle(*result.record)==image&&
+      result.declared_bytes==declared&&result.observed_bytes==physical&&result.complete_pages==physical/size&&
+      result.trailing_bytes==physical%size&&result.relation==(physical==declared?Relation::matching:physical<declared?Relation::shorter:Relation::longer),"exact declared versus physical recovery facts without rounding");};
+    for(const u64 physical:{size-1,size,declared-size,declared-1,declared,declared+1,declared+size}){
+      Check(file.WriteAt(0,image.data(),image.size()).ok(),"restore intact fixture metadata");std::filesystem::resize_file(recovery_path,physical);
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing_read_only).ok(),"independent readonly recovery reopen");
+      stage_writes=stage_syncs=0;const auto result=observe();
+      Check(!stage_writes&&!stage_syncs,"recovery observation never repairs writes or syncs");
+      if(physical<size){empty(result);Check(result.error==Error::invalid_capacity,"incomplete page-zero image is not recoverable metadata");}
+      else verify(result,physical);
+      const auto strict=disk::ReadFilespacePageZeroFromOpenDevice(file,&binding);
+      Check(physical==declared?strict.ok():(!strict.record&&strict.error==Error::invalid_capacity),"ordinary admission remains strict for every size discrepancy");
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing).ok(),"restore retained writable test handle");
+    }
+    auto foreign=binding;foreign.database_uuid=Id(77);const auto refused=disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,foreign);
+    empty(refused);Check(refused.error==Error::invalid_bootstrap,"recovery cannot bypass binary node binding");
+    if(p==0){
+      for(unsigned at=1;at<=2;++at){reads=0;read_fault=at;track_reads=true;const auto failed=observe();track_reads=false;
+        empty(failed);Check(!read_fault&&failed.error==Error::io_failure,"each native recovery read fault retained");}
+      for(unsigned at=1;at<=5;++at){hash_fault=at;const auto failed=observe();empty(failed);
+        Check(!hash_fault&&failed.error==Error::hash_provider_failure,"recovery hash provider failure is not capacity evidence");}
+      observed_allocations=0;count_allocations=true;const auto measured=observe();count_allocations=false;verify(measured,declared+size);const auto sites=observed_allocations;
+      for(unsigned long at=0;at<sites;++at){const auto lost=file.failed_io_latency_observations();allocation_budget=at;const auto result=observe();allocation_budget=-1;
+        if(result.ok()){verify(result,declared+size);Check(file.failed_io_latency_observations()==lost+1,"only nonauthoritative telemetry loss permits recovery observation");}
+        else{empty(result);Check(result.error==Error::resource_exhausted,"recovery allocation failure remains exact");}}
+      reads=0;track_reads=true;extend_on_second_read=true;const auto changed=observe();track_reads=false;
+      empty(changed);Check(!extend_on_second_read&&changed.error==Error::probe_changed,"intervening physical extent change withholds recovery facts");
+      verify(observe(),declared+size+1);
+      auto damaged=image;damaged.back()^=1;Check(file.WriteAt(0,damaged.data(),damaged.size()).ok(),"persist corrupt recovery fixture");
+      const auto padding=observe();empty(padding);Check(padding.error==Error::invalid_family,"recovery refuses malformed reserved padding before digest admission");
+      damaged=image;damaged[4448]^=1;Check(file.WriteAt(0,damaged.data(),damaged.size()).ok(),"persist corrupt recovery image seal");
+      const auto corrupt=observe();empty(corrupt);Check(corrupt.error==Error::integrity_mismatch,"recovery never bypasses full-image integrity");
+    }
+    Check(file.Close().ok(),"release recovery observation fixture");const auto closed=observe();empty(closed);Check(closed.error==Error::device_not_open,"closed recovery device refused");
+  }
 }
 namespace page=scratchbird::storage::page;
 using RootError=page::NativeCatalogRootError;
