@@ -165,6 +165,10 @@ dt::DatatypeNumericContext NumericContext(const api::EngineDescriptor& descripto
 bool CastNumeric(const api::EngineTypedValue& source,
                  const dt::CanonicalTypeId target_type,
                  dt::DatatypeOperationValue* output) {
+  // A widened RANGE work type has no bound target ExecutionTypeDescriptor at
+  // this seam. SQL NULL is invalid for frame offsets/order values and must be
+  // refused here rather than sent through a descriptor-less nullable cast.
+  if (source.isSqlNull()) return false;
   dt::DatatypeCastRequest request;
   request.value.type_id = dt::CanonicalTypeIdFromStableName(
       source.descriptor.canonical_type_name);
@@ -581,7 +585,12 @@ bool TemporalThreshold(const api::EngineTypedValue& current,
   return true;
 }
 
-bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
+bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input,
+                         std::string* refusal_detail) {
+  const auto refuse = [&](std::string detail) {
+    if (refusal_detail != nullptr) *refusal_detail = std::move(detail);
+    return false;
+  };
   const auto row_count = input.ordered_batch.rows.size();
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* selected_input_node = nullptr;
@@ -626,12 +635,25 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       std::equal(selected_input_node->output_descriptor_ids.begin(),
                  selected_input_node->output_descriptor_ids.end(),
                  selected_node->output_descriptor_ids.begin());
-  if (selected_node == nullptr || selected_input_node == nullptr ||
-      selected_node->node_kind != PhysicalNodeKind::kWindow ||
-      (!direct_stage && !operator_local_stage) ||
-      selected_node->physical_node_id !=
-          input.physical_dag.root_physical_node_id) {
-    return false;
+  if (selected_node == nullptr) {
+    return refuse(
+        "executed physical window node " +
+        std::to_string(input.executed_physical_node_id) +
+        " is absent from the " +
+        std::to_string(input.physical_dag.nodes.size()) + "-node DAG");
+  }
+  if (selected_input_node == nullptr) {
+    return refuse("physical window input node is absent from the DAG");
+  }
+  if (selected_node->node_kind != PhysicalNodeKind::kWindow) {
+    return refuse("executed physical node is not a Window node");
+  }
+  if (!direct_stage && !operator_local_stage) {
+    return refuse("physical window implementation identity is inconsistent");
+  }
+  if (selected_node->physical_node_id !=
+      input.physical_dag.root_physical_node_id) {
+    return refuse("executed physical window node is not the DAG root");
   }
   const auto& stage_output_descriptor_ids =
       operator_local_stage ? selected_input_node->output_descriptor_ids
@@ -682,12 +704,14 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       comparison_batch.rows.size() != row_count ||
       (input.ordered_key_batch.has_value() &&
        input.partition_terms.empty() && input.order_terms.empty())) {
-    return false;
+    return refuse("window partition/order result evidence is incomplete");
   }
   std::vector<bool> comparison_columns_consumed(
       comparison_batch.columns.size(), !input.ordered_key_batch.has_value());
   for (const auto& term : input.partition_terms) {
-    if (term.column >= comparison_batch.columns.size()) return false;
+    if (term.column >= comparison_batch.columns.size()) {
+      return refuse("partition term is outside the comparison schema");
+    }
     CanonicalDescriptorOrderTerm comparable;
     comparable.column = term.column;
     comparable.expression_descriptor_id = term.expression_descriptor_id;
@@ -702,7 +726,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
     if (!ValidateCanonicalDescriptorOrderTerm(
              comparable, comparison_batch.columns[term.column])
              .ok) {
-      return false;
+      return refuse("partition term no longer matches its descriptor");
     }
     comparison_columns_consumed[term.column] = true;
   }
@@ -711,13 +735,13 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
         !ValidateCanonicalDescriptorOrderTerm(
              term, comparison_batch.columns[term.column])
              .ok) {
-      return false;
+      return refuse("order term no longer matches its descriptor");
     }
     comparison_columns_consumed[term.column] = true;
   }
   if (!std::ranges::all_of(comparison_columns_consumed,
                            [](const bool consumed) { return consumed; })) {
-    return false;
+    return refuse("comparison batch contains an unconsumed column");
   }
   std::vector<bool> source_rows_seen(row_count, false);
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -733,7 +757,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
         metadata.peer_begin > row || metadata.peer_end_exclusive <= row ||
         metadata.peer_begin < metadata.partition_begin ||
         metadata.peer_end_exclusive > metadata.partition_end_exclusive) {
-      return false;
+      return refuse("window row metadata bounds or source identity are invalid");
     }
     source_rows_seen[metadata.source_row_index] = true;
     for (std::size_t peer = metadata.peer_begin;
@@ -743,7 +767,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
           candidate.peer_group_id != metadata.peer_group_id ||
           candidate.peer_begin != metadata.peer_begin ||
           candidate.peer_end_exclusive != metadata.peer_end_exclusive) {
-        return false;
+        return refuse("peer metadata is inconsistent within a peer group");
       }
     }
     for (std::size_t member = metadata.partition_begin;
@@ -753,7 +777,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
           candidate.partition_begin != metadata.partition_begin ||
           candidate.partition_end_exclusive !=
               metadata.partition_end_exclusive) {
-        return false;
+        return refuse("partition metadata is inconsistent within a partition");
       }
     }
   }
@@ -762,14 +786,14 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   std::size_t row = 0;
   while (row < row_count) {
     if (input.row_metadata[row].partition_id != observed_partitions) {
-      return false;
+      return refuse("partition identifiers are not contiguous");
     }
     const auto partition_end = input.row_metadata[row].partition_end_exclusive;
     ++observed_partitions;
     std::size_t expected_peer_id = 0;
     while (row < partition_end) {
       if (input.row_metadata[row].peer_group_id != expected_peer_id++) {
-        return false;
+        return refuse("peer-group identifiers are not contiguous");
       }
       row = input.row_metadata[row].peer_end_exclusive;
       ++observed_peers;
@@ -777,7 +801,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
   }
   if (observed_partitions != input.partition_count ||
       observed_peers != input.peer_group_count) {
-    return false;
+    return refuse("partition or peer counts disagree with row metadata");
   }
   return true;
 }
@@ -1352,8 +1376,10 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
     result.diagnostic = Refusal(std::move(detail));
     return result;
   };
-  if (!MetadataIsCanonical(request.partition_order)) {
-    return refuse("window frame input is not canonical QOW-401 evidence");
+  std::string metadata_refusal;
+  if (!MetadataIsCanonical(request.partition_order, &metadata_refusal)) {
+    return refuse("window frame input is not canonical QOW-401 evidence: " +
+                  metadata_refusal);
   }
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.partition_order.physical_dag);

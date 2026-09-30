@@ -254,6 +254,20 @@ SblrResult EvaluateSblrCollectionOperator(std::string_view operator_id,
                                      "collection operator is not registered");
   }
   if (left.is_null) {
+    if (left.descriptor_id == "set_value") {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "DATATYPE.CONTEXT_REQUIRED",
+          "SQL NULL set operand requires exact element descriptor authority");
+    }
+    if (!SblrNullPayloadEmpty(left)) {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "DATATYPE.NULL_STATE.INVALID",
+          "SQL NULL collection operand carries substitute payload or shadow state");
+    }
     if (CollectionOperatorIs(operator_id, "op_collection_cardinality", "operator.collection.cardinality")) {
       return ScalarResult(operator_id, NullValue("uint64"));
     }
@@ -268,8 +282,8 @@ SblrResult EvaluateSblrCollectionOperator(std::string_view operator_id,
   if (!ParseCollectionOperand(left, &left_collection)) {
     return OperatorDiagnosticFailure(operator_id,
                                      context,
-                                     "SBLR.COLLECTION_INVALID",
-                                     "left operand is not a valid JSON array/list or SBSET1 set");
+                                     "SBLR.OPERAND_INVALID",
+                                     "left operand is not a valid JSON array/list or canonical present-only SBSET2 set");
   }
 
   if (CollectionOperatorIs(operator_id, "op_collection_cardinality", "operator.collection.cardinality")) {

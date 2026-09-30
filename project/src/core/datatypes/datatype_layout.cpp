@@ -120,7 +120,6 @@ const char* DatatypeBinaryEncodingName(DatatypeBinaryEncoding encoding) {
 
 const std::vector<DatatypeStorageLayout>& BuiltinDatatypeStorageLayouts() {
   static const std::vector<DatatypeStorageLayout> layouts = {
-      Layout(CanonicalTypeId::null_type, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::none, 0, 1, false, false, false, false, false, true),
       Layout(CanonicalTypeId::boolean, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::unsigned_little_endian, 1, 1, false, false, false, false, false, true),
       Layout(CanonicalTypeId::int8, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::twos_complement_little_endian, 1, 1, false, false, false, false, false, true),
       Layout(CanonicalTypeId::int16, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::twos_complement_little_endian, 2, 2, false, false, false, false, false, true),
@@ -235,7 +234,6 @@ DatatypeStorageLayoutResult ValidateDatatypeStorageLayout(const DatatypeStorageL
                        CanonicalTypeName(layout.type_id));
   }
   if (layout.storage_class == DatatypeStorageClass::inline_fixed &&
-      layout.type_id != CanonicalTypeId::null_type &&
       layout.inline_bytes == 0) {
     return LayoutError("SB-DATATYPE-LAYOUT-INLINE-BYTES-MISSING",
                        "datatype.layout.inline_bytes_missing",

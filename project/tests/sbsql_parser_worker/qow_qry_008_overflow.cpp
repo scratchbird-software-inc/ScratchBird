@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/expression_api.hpp"
+#include "../support/binary_uuid_fixture.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -26,15 +28,11 @@ bool Require(const bool condition, const std::string_view message) {
 api::EngineDescriptor DecimalDescriptor(const std::string& descriptor_uuid,
                                         const std::uint32_t precision,
                                         const std::uint32_t scale) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "decimal";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000871;"
-      "nullability=nullable;precision=" +
-      std::to_string(precision) + ";scale=" + std::to_string(scale);
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeId::decimal, "decimal",
+      scratchbird::tests::ParsedFixtureUuid(descriptor_uuid),
+      "nullability=nullable;precision=" + std::to_string(precision) +
+          ";scale=" + std::to_string(scale));
 }
 
 api::EngineTypedValue DecimalValue(const std::string& descriptor_uuid,
@@ -56,14 +54,10 @@ dt::DatatypeNumericContext NumericContext(const std::uint32_t precision) {
 }
 
 api::EngineDescriptor Int128Descriptor(const std::string& descriptor_uuid) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int128";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000881;"
-      "nullability=non_null;width=128";
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeId::int128, "int128",
+      scratchbird::tests::ParsedFixtureUuid(descriptor_uuid),
+      "nullability=non_null;width=128");
 }
 
 api::EngineTypedValue Int128Value(const std::string& descriptor_uuid,
@@ -85,14 +79,10 @@ dt::DatatypeNumericContext Fixed128Context() {
 }
 
 api::EngineDescriptor Int64Descriptor(const std::string& descriptor_uuid) {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "int64";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000885;"
-      "nullability=nullable";
-  return descriptor;
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeId::int64, "int64",
+      scratchbird::tests::ParsedFixtureUuid(descriptor_uuid),
+      "nullability=nullable");
 }
 
 api::EngineTypedValue Int64Value(const std::string& descriptor_uuid,
@@ -128,8 +118,8 @@ bool ValidateAcceptedBoundary() {
                     "in-range canonical decimal addition was refused");
   passed &= Require(
       output.encoded_value == "1000.00" &&
-          output.descriptor.descriptor_uuid.canonical ==
-              result_descriptor.descriptor_uuid.canonical &&
+          output.descriptor.descriptor_uuid ==
+              result_descriptor.descriptor_uuid &&
           output.state == api::EngineValueState::value,
       "in-range numeric result lost value or descriptor identity");
   return passed;
@@ -173,7 +163,7 @@ bool ValidateContextAndNull() {
 
   auto null_left = left;
   null_left.state = api::EngineValueState::sql_null;
-  null_left.is_null = false;
+  null_left.is_null = true;
   null_left.encoded_value.clear();
   refusal.clear();
   const bool null_accepted = api::QowApplyCanonicalNumericScalarV1(
@@ -186,8 +176,8 @@ bool ValidateContextAndNull() {
                     "precision context differing from descriptor was accepted");
   passed &= Require(null_accepted && output.isSqlNull() &&
                         output.encoded_value.empty() &&
-                        output.descriptor.descriptor_uuid.canonical ==
-                            result_descriptor.descriptor_uuid.canonical,
+                        output.descriptor.descriptor_uuid ==
+                            result_descriptor.descriptor_uuid,
                     "canonical numeric SQL NULL was not propagated");
   return passed;
 }
@@ -226,8 +216,8 @@ bool ValidateInt64ExactArithmetic() {
       &output, &refusal);
   bool passed = true;
   passed &= Require(accepted && refusal.empty() && output.encoded_value == "5" &&
-                        output.descriptor.descriptor_uuid.canonical ==
-                            result_descriptor.descriptor_uuid.canonical,
+                        output.descriptor.descriptor_uuid ==
+                            result_descriptor.descriptor_uuid,
                     "exact int64 arithmetic lost its bound descriptor or value");
 
   refusal.clear();

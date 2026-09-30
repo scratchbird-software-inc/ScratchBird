@@ -12,6 +12,17 @@
 
 using namespace scratchbird::core::datatypes;
 
+namespace {
+
+bool IsCanonicalBoolean(const DatatypeOperationValue& value, bool expected) {
+  return value.type_id == CanonicalTypeId::boolean && !value.is_null &&
+         value.encoded_value.size() == 1 &&
+         static_cast<unsigned char>(value.encoded_value[0]) ==
+             (expected ? 1u : 0u);
+}
+
+}  // namespace
+
 int main() {
   DatatypeSetDescriptor descriptor;
   descriptor.element_type_id = CanonicalTypeId::character;
@@ -23,7 +34,7 @@ int main() {
   membership.operation = DatatypeSetOperationKind::membership;
   membership.descriptor = descriptor;
   membership.left_encoded_set = encoded.encoded_set;
-  membership.right_encoded_set_or_value = "beta";
+  membership.right_value = {CanonicalTypeId::character, "beta", false};
   const auto has_beta = ApplySetOperation(membership);
 
   DatatypeSetOperationRequest cardinality = membership;
@@ -38,11 +49,13 @@ int main() {
   opaque.descriptor.element_type_id = CanonicalTypeId::opaque_extension;
   const auto opaque_result = ApplySetOperation(opaque);
 
-  const bool ok = encoded.ok() && has_beta.ok() && has_beta.value.encoded_value == "true" &&
+  const bool ok = encoded.ok() && has_beta.ok() && IsCanonicalBoolean(has_beta.value, true) &&
                   count.ok() && count.value.encoded_value == "2" && !bad_result.ok() && !opaque_result.ok();
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
-  std::cout << "  \"has_beta\": " << has_beta.value.encoded_value << ",\n";
+  std::cout << "  \"has_beta\": "
+            << (IsCanonicalBoolean(has_beta.value, true) ? "true" : "false")
+            << ",\n";
   std::cout << "  \"cardinality\": \"" << count.value.encoded_value << "\",\n";
   std::cout << "  \"bad_rejected\": " << (!bad_result.ok() ? "true" : "false") << ",\n";
   std::cout << "  \"opaque_set_rejected\": " << (!opaque_result.ok() ? "true" : "false") << "\n";

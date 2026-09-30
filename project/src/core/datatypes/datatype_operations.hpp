@@ -35,6 +35,12 @@ enum class DatatypeCastCategory : u16 {
   forbidden
 };
 
+enum class DatatypeCastContext : u16 {
+  implicit,
+  assignment,
+  explicit_cast
+};
+
 enum class DatatypeSetOperationKind : u16 {
   membership,
   equals,
@@ -67,6 +73,10 @@ struct DatatypeOperationValue {
   CanonicalTypeId type_id = CanonicalTypeId::unknown;
   std::string encoded_value;
   bool is_null = false;
+  // Required for every concrete typed SQL NULL. A default descriptor remains
+  // available only for the process-local null_type sentinel and legacy
+  // non-NULL callers while downstream owners migrate their bindings.
+  scratchbird::engine::ExecutionTypeDescriptor descriptor;
 };
 
 struct DatatypeTextSeedAuthority {
@@ -103,10 +113,13 @@ struct DatatypeNumericFacts {
 struct DatatypeCastRequest {
   DatatypeOperationValue value;
   CanonicalTypeId target_type_id = CanonicalTypeId::unknown;
+  DatatypeCastContext context = DatatypeCastContext::implicit;
+  // Compatibility input for existing callers. New callers use context.
   bool explicit_cast = false;
   bool reference_compatibility_profile = false;
   // Execution context supplied by the bound owner, not descriptor authority.
   DatatypeNumericContext numeric_context;
+  scratchbird::engine::ExecutionTypeDescriptor target_descriptor;
 };
 
 struct DatatypeCastResult {
@@ -124,6 +137,7 @@ struct DatatypeCastResult {
 struct DatatypeExtractRequest {
   DatatypeOperationValue value;
   std::string field;
+  scratchbird::engine::ExecutionTypeDescriptor result_descriptor;
 };
 
 struct DatatypeExtractResult {
@@ -138,6 +152,10 @@ struct DatatypeExtractResult {
 
 struct DatatypeSetDescriptor {
   CanonicalTypeId element_type_id = CanonicalTypeId::unknown;
+  // Required when NULL elements are admitted. This is the bound element
+  // descriptor; the set codec is not descriptor authority and must not
+  // reconstruct it from the canonical type name.
+  scratchbird::engine::ExecutionTypeDescriptor element_descriptor;
   bool ordered = false;
   bool allow_null_elements = false;
   bool allow_duplicates = false;
@@ -147,7 +165,8 @@ struct DatatypeSetOperationRequest {
   DatatypeSetOperationKind operation = DatatypeSetOperationKind::membership;
   DatatypeSetDescriptor descriptor;
   std::string left_encoded_set;
-  std::string right_encoded_set_or_value;
+  DatatypeOperationValue right_value;
+  std::string right_encoded_set;
 };
 
 struct DatatypeSetOperationResult {
@@ -167,6 +186,7 @@ struct DatatypeNumericOperationRequest {
   DatatypeOperationValue left;
   DatatypeOperationValue right;
   DatatypeNumericContext context;
+  scratchbird::engine::ExecutionTypeDescriptor result_descriptor;
 };
 
 struct DatatypeNumericOperationResult {
@@ -242,6 +262,8 @@ struct DatatypeSerializationResult {
   Status status;
   std::string serialized_value;
   DiagnosticRecord diagnostic;
+  // Descriptor authority remains separate from unchanged value framing.
+  scratchbird::engine::ExecutionTypeDescriptor descriptor;
 
   bool ok() const {
     return status.ok();
@@ -251,6 +273,7 @@ struct DatatypeSerializationResult {
 struct DatatypeDeserializationRequest {
   CanonicalTypeId expected_type_id = CanonicalTypeId::unknown;
   std::string serialized_value;
+  scratchbird::engine::ExecutionTypeDescriptor expected_descriptor;
 };
 
 struct DatatypeDeserializationResult {
@@ -283,6 +306,7 @@ struct DatatypeDisplayRenderResult {
 };
 
 const char* DatatypeCastCategoryName(DatatypeCastCategory category);
+const char* DatatypeCastContextName(DatatypeCastContext context);
 const char* DatatypeSetOperationKindName(DatatypeSetOperationKind operation);
 const char* DatatypeNumericOperationKindName(DatatypeNumericOperationKind operation);
 const char* DatatypeRoundingModeName(DatatypeRoundingMode rounding);

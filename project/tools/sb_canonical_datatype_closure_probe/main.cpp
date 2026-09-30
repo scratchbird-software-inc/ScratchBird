@@ -9,6 +9,7 @@
 #include "catalog/datatype_transport_api.hpp"
 #include "catalog/wire_driver_metadata_api.hpp"
 #include "datatype_operations.hpp"
+#include "uuid.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -181,7 +182,13 @@ bool PersistenceCaseOk(const EngineDescriptor& descriptor, const std::string& va
 std::string SampleValueFor(dt::CanonicalTypeId type_id) {
   switch (type_id) {
     case dt::CanonicalTypeId::boolean: return "true";
-    case dt::CanonicalTypeId::uuid: return "018f7f8f-7c00-7000-8000-000000000001";
+    case dt::CanonicalTypeId::uuid: {
+      const auto parsed = scratchbird::core::uuid::ParseUuid(
+          "018f7f8f-7c00-7000-8000-000000000001");
+      if (!parsed.ok()) return {};
+      return {reinterpret_cast<const char*>(parsed.value.bytes.data()),
+              parsed.value.bytes.size()};
+    }
     case dt::CanonicalTypeId::date: return "2026-05-01";
     case dt::CanonicalTypeId::time: return "12:34:56";
     case dt::CanonicalTypeId::timestamp: return "2026-05-01T12:34:56";
@@ -194,7 +201,8 @@ std::string SampleValueFor(dt::CanonicalTypeId type_id) {
     case dt::CanonicalTypeId::flattened_object_document:
       return "{\"ok\":true}";
     case dt::CanonicalTypeId::xml_document: return "<root/>";
-    case dt::CanonicalTypeId::set_value: return "SBSET1;values=1";
+    case dt::CanonicalTypeId::set_value:
+      return "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=V31";
     default: return "1";
   }
 }
@@ -202,7 +210,10 @@ std::string SampleValueFor(dt::CanonicalTypeId type_id) {
 bool CastCaseOk(dt::CanonicalTypeId type_id) {
   dt::DatatypeCastRequest request;
   request.value.type_id = type_id;
-  request.value.encoded_value = SampleValueFor(type_id);
+  request.value.encoded_value =
+      type_id == dt::CanonicalTypeId::boolean
+          ? std::string(1, static_cast<char>(1))
+          : SampleValueFor(type_id);
   request.value.is_null = false;
   request.target_type_id = type_id;
   request.explicit_cast = true;

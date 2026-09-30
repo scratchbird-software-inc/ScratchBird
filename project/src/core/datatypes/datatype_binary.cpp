@@ -108,9 +108,6 @@ DatatypeDescriptorEnvelopeResult DescriptorError(std::string diagnostic_code,
 }
 
 bool IsValidFixedPayloadSize(const DatatypeStorageLayout& layout, u32 payload_size) {
-  if (layout.type_id == CanonicalTypeId::null_type) {
-    return payload_size == 0;
-  }
   if (layout.storage_class == DatatypeStorageClass::inline_fixed) {
     return payload_size == layout.inline_bytes;
   }
@@ -567,6 +564,11 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
                                 kDatatypeBinaryEnvelopeHeaderBytes)
     return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
                            "datatype.binary.borrowed_payload_bounds_invalid");
+  if (value.type_id == CanonicalTypeId::null_type ||
+      value.type_id == CanonicalTypeId::unknown) {
+    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
+                           "datatype.binary.standalone_type_invalid");
+  }
   const auto layout = LookupDatatypeStorageLayout(value.type_id);
   if (!layout.ok()) {
     DatatypeBinaryViewResult result;
@@ -576,19 +578,14 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
   }
 
   if (value.is_null) {
-    if (value.payload_bytes != 0) {
-      return BinaryViewError("SB-DATATYPE-BINARY-NULL-HAS-PAYLOAD",
+    if (value.payload_bytes != 0 || value.payload_is_toast_reference) {
+      return BinaryViewError("DATATYPE.NULL_STATE.INVALID",
                          "datatype.binary.null_has_payload",
                          CanonicalTypeName(value.type_id));
     }
     DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
     return result;
-  }
-
-  if (value.type_id == CanonicalTypeId::null_type) {
-    return BinaryViewError("SB-DATATYPE-BINARY-NULL-TYPE-MUST-BE-NULL",
-                       "datatype.binary.null_type_must_be_null");
   }
 
   // The storage descriptor/TOAST locator is not the canonical decimal VALUE.

@@ -77,7 +77,8 @@ DatatypePhysicalEncodingResult Failure(std::string diagnostic_code,
 
 u32 Checksum(CanonicalTypeId type_id,
              DatatypePhysicalValueState state,
-             const std::vector<byte>& payload) {
+             const byte* payload,
+             u64 payload_size) {
   u32 value = 2166136261u;
   auto mix = [&value](u32 next) {
     value ^= next;
@@ -85,10 +86,16 @@ u32 Checksum(CanonicalTypeId type_id,
   };
   mix(static_cast<u32>(type_id));
   mix(static_cast<u32>(state));
-  for (byte item : payload) {
-    mix(item);
+  for (u64 index = 0; index < payload_size; ++index) {
+    mix(payload[index]);
   }
   return value;
+}
+
+u32 Checksum(CanonicalTypeId type_id,
+             DatatypePhysicalValueState state,
+             const std::vector<byte>& payload) {
+  return Checksum(type_id, state, payload.data(), payload.size());
 }
 
 std::vector<byte> FixedPayload(u32 size, byte seed) {
@@ -120,6 +127,13 @@ bool PayloadAllowedByLayout(const DatatypePhysicalValue& value,
       if (layout.storage_class == DatatypeStorageClass::inline_fixed &&
           layout.inline_bytes != value.payload.size()) {
         *detail = "inline_fixed_size_mismatch";
+        return false;
+      }
+      if (value.type_id == CanonicalTypeId::boolean &&
+          (value.payload.size() != 1 ||
+           (value.payload[0] != static_cast<byte>(0) &&
+            value.payload[0] != static_cast<byte>(1)))) {
+        *detail = "boolean_payload_invalid";
         return false;
       }
       return true;
@@ -190,8 +204,8 @@ DatatypePhysicalValue SampleDatatypePhysicalValueForLayout(
   DatatypePhysicalValue value;
   value.type_id = layout.type_id;
   value.state = DatatypePhysicalValueState::value;
-  if (layout.type_id == CanonicalTypeId::null_type) {
-    value.state = DatatypePhysicalValueState::sql_null;
+  if (layout.type_id == CanonicalTypeId::boolean) {
+    value.payload = {static_cast<byte>(0)};
     return value;
   }
   if (layout.storage_class == DatatypeStorageClass::inline_fixed) {
@@ -214,6 +228,11 @@ DatatypePhysicalValue SampleDatatypePhysicalValueForLayout(
 
 DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
     const DatatypePhysicalValue& value) {
+  if (value.type_id == CanonicalTypeId::null_type ||
+      value.type_id == CanonicalTypeId::unknown) {
+    return Failure("DATATYPE.DESCRIPTOR.INVALID",
+                   "datatype.physical.standalone_type_invalid");
+  }
   const auto layout = LookupDatatypeStorageLayout(value.type_id);
   if (!layout.ok()) {
     return Failure("SB-DATATYPE-PHYSICAL-UNKNOWN-TYPE",
@@ -222,7 +241,9 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
   }
   std::string detail;
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
-    return Failure("SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+    return Failure(value.state == DatatypePhysicalValueState::sql_null
+                       ? "DATATYPE.NULL_STATE.INVALID"
+                       : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
                    "datatype.physical.payload_refused",
                    detail);
   }
@@ -283,16 +304,28 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
                    "datatype.physical.length_mismatch",
                    CanonicalTypeName(type_id));
   }
-  DatatypePhysicalValue value;
-  value.type_id = type_id;
-  value.state = state;
-  value.payload.assign(data + kHeaderBytes, data + size);
-  if (Checksum(value.type_id, value.state, value.payload) !=
+  if (Checksum(type_id, state, data + kHeaderBytes, payload_size) !=
       LoadLittle32(data + kOffsetChecksum)) {
     return Failure("SB-DATATYPE-PHYSICAL-CHECKSUM-MISMATCH",
                    "datatype.physical.checksum_mismatch",
                    CanonicalTypeName(type_id));
   }
+  if (type_id == CanonicalTypeId::null_type ||
+      type_id == CanonicalTypeId::unknown) {
+    return Failure("DATATYPE.DESCRIPTOR.INVALID",
+                   "datatype.physical.standalone_type_invalid");
+  }
+  // SQL NULL has no physical payload. Reject its state/length contradiction
+  // before materializing caller-controlled bytes into an owned vector.
+  if (state == DatatypePhysicalValueState::sql_null && payload_size != 0) {
+    return Failure("DATATYPE.NULL_STATE.INVALID",
+                   "datatype.physical.payload_refused",
+                   "null_payload_present");
+  }
+  DatatypePhysicalValue value;
+  value.type_id = type_id;
+  value.state = state;
+  value.payload.assign(data + kHeaderBytes, data + size);
 
   const auto layout = LookupDatatypeStorageLayout(value.type_id);
   if (!layout.ok()) {
@@ -302,7 +335,9 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
   }
   std::string detail;
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
-    return Failure("SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+    return Failure(value.state == DatatypePhysicalValueState::sql_null
+                       ? "DATATYPE.NULL_STATE.INVALID"
+                       : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
                    "datatype.physical.payload_refused",
                    detail);
   }

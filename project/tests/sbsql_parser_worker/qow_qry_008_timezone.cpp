@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/exact_datatype_descriptor_fixture.hpp"
 #include "api_types.hpp"
 #include "datatype_temporal_wire.hpp"
 
@@ -39,15 +40,12 @@ bool Require(const bool condition, const std::string_view message) {
 }
 
 api::EngineDescriptor TimestampDescriptor() {
-  api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000000861");
-  descriptor.descriptor_kind = "scalar";
-  descriptor.canonical_type_name = "timestamp";
-  descriptor.encoded_descriptor =
-      "type_uuid=019f0000-0000-7300-8000-000000000862;"
+  return scratchbird::tests::ExactScalarDescriptorFixture(
+      dt::CanonicalTypeId::timestamp, "timestamp",
+      scratchbird::tests::FixtureUuidLiteral(
+          "019f0000-0000-7200-8000-000000000861"),
       "nullability=nullable;timezone_profile_id=timestamp_timezone_profile;"
-      "fractional_second_precision=6";
-  return descriptor;
+      "fractional_second_precision=6");
 }
 
 dt::TimezoneSeedAuthority TimezoneAuthority() {
@@ -98,8 +96,8 @@ bool ValidateAcceptedTimezoneNormalization() {
                     "catalog-known named timezone was refused");
   passed &= Require(
       used_seed && timezone_identifier == "America/Toronto" &&
-          output.descriptor.descriptor_uuid.canonical ==
-              TimestampDescriptor().descriptor_uuid.canonical &&
+          output.descriptor.descriptor_uuid ==
+              TimestampDescriptor().descriptor_uuid &&
           output.encoded_value.find("zone=America/Toronto") !=
               std::string::npos &&
           output.state == api::EngineValueState::value,
@@ -144,7 +142,7 @@ bool ValidateTimezoneRefusalAndNull() {
 
   auto null_value = TimestampValue({});
   null_value.state = api::EngineValueState::sql_null;
-  null_value.is_null = false;
+  null_value.is_null = true;
   refusal.clear();
   const bool null_accepted = Normalize(
       null_value, TimezoneAuthority(), &output, &timezone_identifier,
@@ -159,8 +157,8 @@ bool ValidateTimezoneRefusalAndNull() {
                     "incomplete timezone seed authority was accepted");
   passed &= Require(null_accepted && output.isSqlNull() &&
                         output.encoded_value.empty() &&
-                        output.descriptor.descriptor_uuid.canonical ==
-                            TimestampDescriptor().descriptor_uuid.canonical,
+                        output.descriptor.descriptor_uuid ==
+                            TimestampDescriptor().descriptor_uuid,
                     "canonical temporal SQL NULL was not propagated");
   return passed;
 }

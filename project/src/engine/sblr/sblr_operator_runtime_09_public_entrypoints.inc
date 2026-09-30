@@ -12,7 +12,34 @@
     return ScalarResult(operator_id, std::move(out));
   }
 
+  if (left_collection.kind == CollectionValue::Kind::set &&
+      CollectionOperatorIs(operator_id, "op_array_subscript", "operator.collection.subscript")) {
+    return OperatorDiagnosticFailure(
+        operator_id,
+        context,
+        "SBLR.OPERAND_INVALID",
+        "unordered SBSET2 values have no ordinal subscript authority");
+  }
+
   if (right.is_null) {
+    if ((left_collection.kind == CollectionValue::Kind::set ||
+         right.descriptor_id == "set_value") &&
+        (CollectionOperatorIs(operator_id, "op_collection_contains", "operator.collection.contains", "op_array_contains") ||
+         CollectionOperatorIs(operator_id, "op_collection_overlap", "operator.collection.overlap") ||
+         CollectionOperatorIs(operator_id, "op_collection_concat", "operator.collection.concat"))) {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "DATATYPE.CONTEXT_REQUIRED",
+          "SQL NULL set operand requires exact element descriptor authority");
+    }
+    if (!SblrNullPayloadEmpty(right)) {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "DATATYPE.NULL_STATE.INVALID",
+          "SQL NULL collection operand carries substitute payload or shadow state");
+    }
     if (CollectionOperatorIs(operator_id, "op_collection_contains", "operator.collection.contains", "op_array_contains") ||
         CollectionOperatorIs(operator_id, "op_collection_overlap", "operator.collection.overlap")) {
       return ScalarResult(operator_id, NullValue("boolean"));
@@ -40,13 +67,34 @@
   }
 
   if (CollectionOperatorIs(operator_id, "op_collection_contains", "operator.collection.contains", "op_array_contains")) {
-    JsonValue right_value;
-    bool parsed_json = ParseJsonOperand(right, &right_value);
+    if (left_collection.kind == CollectionValue::Kind::set &&
+        (right.descriptor_id != "character" ||
+         right.payload_kind != SblrValuePayloadKind::text ||
+         right.encoded_value != right.text_value ||
+         !right.binary_value.empty() || right.has_int64_value ||
+         right.has_uint64_value || right.has_real64_value ||
+         !right.uuid_value.is_nil() || !right.uuid_array_value.empty() ||
+         !right.charset_name.empty() || !right.collation_name.empty() ||
+         !datatypes::ValidateCanonicalUtf8(
+             reinterpret_cast<const std::uint8_t*>(right.encoded_value.data()),
+             right.encoded_value.size()))) {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "SBSET2 character membership requires a present character scalar");
+    }
     bool matched = false;
-    if (parsed_json) {
-      matched = CollectionContains(left_collection, right_value);
-    } else {
+    if (left_collection.kind == CollectionValue::Kind::set) {
       matched = CollectionContainsText(left_collection, TextPayload(right));
+    } else {
+      JsonValue right_value;
+      const bool parsed_json = ParseJsonOperand(right, &right_value);
+      if (parsed_json) {
+        matched = CollectionContains(left_collection, right_value);
+      } else {
+        matched = CollectionContainsText(left_collection, TextPayload(right));
+      }
     }
     return ScalarResult(operator_id, BoolValue(matched ? SblrTruthValue::true_value : SblrTruthValue::false_value));
   }
@@ -55,11 +103,18 @@
   if (!ParseCollectionOperand(right, &right_collection)) {
     return OperatorDiagnosticFailure(operator_id,
                                      context,
-                                     "SBLR.COLLECTION_INVALID",
-                                     "right operand is not a valid JSON array/list or SBSET1 set");
+                                     "SBLR.OPERAND_INVALID",
+                                     "right operand is not a valid JSON array/list or canonical present-only SBSET2 set");
   }
 
   if (CollectionOperatorIs(operator_id, "op_collection_overlap", "operator.collection.overlap")) {
+    if (left_collection.kind != right_collection.kind) {
+      return OperatorDiagnosticFailure(
+          operator_id,
+          context,
+          "SBLR.OPERAND_INVALID",
+          "collection overlap requires matching array/list or set operands");
+    }
     bool matched = false;
     if (left_collection.kind == CollectionValue::Kind::set && right_collection.kind == CollectionValue::Kind::set) {
       for (const auto& candidate : right_collection.set_values) {
@@ -98,7 +153,7 @@
     if (left_collection.kind != CollectionValue::Kind::array || right_collection.kind != CollectionValue::Kind::array) {
       return OperatorDiagnosticFailure(operator_id,
                                        context,
-                                       "SBLR.DESCRIPTOR_MISMATCH",
+                                       "SBLR.OPERAND_INVALID",
                                        "collection concat requires both operands to be arrays/lists or both operands to be sets");
     }
     auto values = left_collection.array_values;

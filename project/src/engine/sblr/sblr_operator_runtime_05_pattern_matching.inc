@@ -104,17 +104,42 @@ struct CollectionValue {
   std::vector<std::string> set_values;
 };
 
+constexpr std::string_view kCanonicalLocalSetPrefix =
+    "SBSET2;element=character;descriptor=none;ordered=0;nulls=0;duplicates=0;items=";
+
 bool ParseSbSet(std::string_view encoded, std::vector<std::string>* values) {
-  if (encoded.rfind("SBSET1;", 0) != 0) return false;
-  const auto marker = encoded.find(";items=");
-  if (marker == std::string_view::npos) return false;
-  const std::string_view item_list = encoded.substr(marker + 7);
-  if (item_list.empty()) return true;
-  for (const auto& hex : SplitComma(item_list)) {
-    std::string decoded;
-    if (!HexDecodeStrict(hex, &decoded)) return false;
-    values->push_back(std::move(decoded));
+  if (values == nullptr || encoded.rfind(kCanonicalLocalSetPrefix, 0) != 0) {
+    return false;
   }
+  const std::string_view item_list = encoded.substr(kCanonicalLocalSetPrefix.size());
+  std::vector<std::string> staged_values;
+  if (item_list.empty()) {
+    values->clear();
+    return true;
+  }
+  std::string previous_item;
+  for (const auto& item : SplitComma(item_list)) {
+    if (item.empty() || item.front() != 'V' ||
+        (!previous_item.empty() && item <= previous_item)) {
+      return false;
+    }
+    const std::string_view hex(item.data() + 1, item.size() - 1);
+    if (!std::all_of(hex.begin(), hex.end(), [](const char ch) {
+          return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        })) {
+      return false;
+    }
+    std::string decoded;
+    if (!HexDecodeStrict(hex, &decoded) ||
+        !datatypes::ValidateCanonicalUtf8(
+            reinterpret_cast<const std::uint8_t*>(decoded.data()),
+            decoded.size())) {
+      return false;
+    }
+    staged_values.push_back(std::move(decoded));
+    previous_item = item;
+  }
+  *values = std::move(staged_values);
   return true;
 }
 
@@ -123,25 +148,38 @@ std::string EncodeSbSet(const std::vector<std::string>& values) {
   std::sort(unique_values.begin(), unique_values.end());
   unique_values.erase(std::unique(unique_values.begin(), unique_values.end()), unique_values.end());
   std::ostringstream out;
-  out << "SBSET1;element=character;ordered=0;nulls=1;duplicates=0;items=";
+  out << kCanonicalLocalSetPrefix;
   for (std::size_t i = 0; i < unique_values.size(); ++i) {
     if (i != 0) out << ",";
-    out << HexEncodeLower(unique_values[i]);
+    out << "V" << HexEncodeLower(unique_values[i]);
   }
   return out.str();
 }
 
 bool ParseCollectionOperand(const SblrValue& value, CollectionValue* out) {
-  if (value.is_null) return false;
+  if (value.is_null || out == nullptr) return false;
   const std::string encoded = !value.encoded_value.empty() ? value.encoded_value : value.text_value;
-  if (value.descriptor_id == "set_value" || encoded.rfind("SBSET1;", 0) == 0) {
-    out->kind = CollectionValue::Kind::set;
-    return ParseSbSet(encoded, &out->set_values);
+  CollectionValue staged;
+  if (value.descriptor_id == "set_value") {
+    if (value.payload_kind != SblrValuePayloadKind::descriptor_payload ||
+        value.encoded_value.empty() || value.text_value != value.encoded_value ||
+        !value.binary_value.empty() || value.has_int64_value ||
+        value.has_uint64_value || value.has_real64_value ||
+        !value.uuid_value.is_nil() || !value.uuid_array_value.empty() ||
+        !value.charset_name.empty() || !value.collation_name.empty()) {
+      return false;
+    }
+    staged.kind = CollectionValue::Kind::set;
+    if (!ParseSbSet(value.encoded_value, &staged.set_values)) return false;
+    *out = std::move(staged);
+    return true;
   }
+  if (encoded.rfind("SBSET2;", 0) == 0) return false;
   JsonValue json;
   if (!JsonParser(encoded).Parse(&json) || json.kind != JsonValue::Kind::array) return false;
-  out->kind = CollectionValue::Kind::array;
-  out->array_values = std::move(json.array_values);
+  staged.kind = CollectionValue::Kind::array;
+  staged.array_values = std::move(json.array_values);
+  *out = std::move(staged);
   return true;
 }
 

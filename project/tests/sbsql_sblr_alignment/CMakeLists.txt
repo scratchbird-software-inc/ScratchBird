@@ -10179,6 +10179,27 @@ add_test(NAME sbsql_sblr_alignment_direct_bulk_uuid_payload COMMAND sbsql_sblr_a
 set_tests_properties(sbsql_sblr_alignment_direct_bulk_uuid_payload PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;component_regression;not_runtime_acceptance" TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_null_contextual_state
+  base_null_contextual_state_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_null_contextual_state PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_null_contextual_state PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_null_contextual_state
+  COMMAND sbsql_sblr_alignment_base_null_contextual_state)
+set_tests_properties(sbsql_sblr_alignment_base_null_contextual_state PROPERTIES
+  LABELS "sbsql_sblr_alignment;datatype;base_null;typed_null;component_regression;not_runtime_acceptance"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_base_boolean_canonical_value
+  base_boolean_canonical_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_boolean_canonical_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_boolean_canonical_value PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_boolean_canonical_value
+  COMMAND sbsql_sblr_alignment_base_boolean_canonical_value)
+set_tests_properties(sbsql_sblr_alignment_base_boolean_canonical_value PROPERTIES
+  LABELS "sbsql_sblr_alignment;datatype;base_boolean;representation_evidence;current_behavior_inventory;persistence;component_regression;not_runtime_acceptance"
+  TIMEOUT 60)
 
 # Binary parameter hashing and cursor framing are component regressions. The
 # existing process tests retain the independent live execution/publication checks.

@@ -356,6 +356,9 @@ struct EngineSetOperationRequest : EngineApiRequest {
   std::string set_operation;
   EngineTypedValue left_set;
   EngineTypedValue right_set_or_value;
+  bool ordered = false;
+  bool allow_null_elements = false;
+  bool allow_duplicates = false;
 };
 struct EngineSetOperationResult : EngineApiResult {
   EngineTypedValue value;

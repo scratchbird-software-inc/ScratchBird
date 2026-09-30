@@ -5,10 +5,12 @@
 #undef main
 #include "datatype_binary_view.hpp"
 #include "sbl_numeric.hpp"
+#include <atomic>
 #include <cstdlib>
 #include <new>
 #include <cstring>
 #include <limits>
+#include <thread>
 
 namespace borrowed_alloc {
 thread_local bool watch = false;
@@ -154,6 +156,113 @@ void DestinationAtomicityAndAlias() {
   }
 }
 
+void TypedNullBoundsAllocationAndConcurrency() {
+  const dt::DatatypeBinaryValueView typed_null{
+      dt::CanonicalTypeId::int64, true, false, nullptr, 0};
+  std::array<byte, dt::kDatatypeBinaryEnvelopeHeaderBytes> encoded{};
+
+  // The borrowed typed-NULL path needs framing storage only. It neither owns
+  // nor allocates a value payload on encode or decode.
+  borrowed_alloc::remaining = 0;
+  borrowed_alloc::fault = false;
+  borrowed_alloc::watch = true;
+  bool escaped = false;
+  dt::DatatypeBinaryViewResult encoded_result;
+  dt::DatatypeBinaryDecodedViewResult decoded_result;
+  try {
+    encoded_result = dt::EncodeDatatypeBinaryValueInto(
+        typed_null, encoded.data(), encoded.size());
+    decoded_result = dt::DecodeDatatypeBinaryValueView(
+        encoded.data(), encoded.size());
+  } catch (const std::bad_alloc&) {
+    escaped = true;
+  }
+  borrowed_alloc::watch = false;
+  borrowed_alloc::remaining = -1;
+  Check(!escaped && !borrowed_alloc::fault && encoded_result.ok() &&
+            encoded_result.bytes_written == encoded.size() &&
+            decoded_result.ok() &&
+            decoded_result.value.type_id == dt::CanonicalTypeId::int64 &&
+            decoded_result.value.is_null &&
+            decoded_result.value.payload_bytes == 0,
+        "typed NULL borrowed codec allocated or lost state");
+
+  for (std::size_t size = 0; size < encoded.size(); ++size) {
+    const auto truncated = dt::DecodeDatatypeBinaryValueView(
+        size == 0 ? nullptr : encoded.data(), size);
+    Check(!truncated.ok() &&
+              truncated.value.type_id == dt::CanonicalTypeId::unknown &&
+              truncated.value.payload_data == nullptr &&
+              truncated.value.payload_bytes == 0,
+          "truncated typed NULL exposed a decoded payload view");
+  }
+
+  auto impossible_length = encoded;
+  platform::StoreLittle32(impossible_length.data() + 16,
+                          std::numeric_limits<std::uint32_t>::max());
+  const auto oversized = dt::DecodeDatatypeBinaryValueView(
+      impossible_length.data(), impossible_length.size());
+  Check(!oversized.ok() && oversized.value.payload_data == nullptr,
+        "impossible typed NULL length exposed a value");
+
+  const auto one = Bytes("x");
+  std::array<byte, dt::kDatatypeBinaryEnvelopeHeaderBytes + 1> payload_null{};
+  Check(dt::EncodeDatatypeBinaryValueInto(
+            {dt::CanonicalTypeId::character, false, false, one.data(), one.size()},
+            payload_null.data(), payload_null.size()).ok(),
+        "payload-bearing NULL corruption fixture did not encode");
+  platform::StoreLittle16(payload_null.data() + 12, 1);
+  const auto invalid_null = dt::DecodeDatatypeBinaryValueView(
+      payload_null.data(), payload_null.size());
+  Check(!invalid_null.ok() &&
+            invalid_null.diagnostic.diagnostic_code == "DATATYPE.NULL_STATE.INVALID" &&
+            invalid_null.value.payload_data == nullptr,
+        "payload-bearing typed NULL was admitted or exposed");
+
+  const auto toast_null_encode = dt::ValidateDatatypeBinaryValueView(
+      {dt::CanonicalTypeId::int64, true, true, nullptr, 0});
+  Check(!toast_null_encode.ok() &&
+            toast_null_encode.diagnostic.diagnostic_code ==
+                "DATATYPE.NULL_STATE.INVALID",
+        "typed NULL with a TOAST-reference flag was admitted");
+
+  auto toast_null = encoded;
+  platform::StoreLittle16(toast_null.data() + 12, 3);
+  const auto toast_null_decode = dt::DecodeDatatypeBinaryValueView(
+      toast_null.data(), toast_null.size());
+  Check(!toast_null_decode.ok() &&
+            toast_null_decode.diagnostic.diagnostic_code ==
+                "DATATYPE.NULL_STATE.INVALID" &&
+            toast_null_decode.value.type_id == dt::CanonicalTypeId::unknown &&
+            toast_null_decode.value.payload_data == nullptr,
+        "decoded typed NULL retained an impossible TOAST-reference state");
+
+  constexpr unsigned kThreads = 8;
+  constexpr unsigned kIterations = 1000;
+  std::atomic<unsigned> thread_failures{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+  for (unsigned thread = 0; thread < kThreads; ++thread) {
+    threads.emplace_back([&] {
+      for (unsigned iteration = 0; iteration < kIterations; ++iteration) {
+        std::array<byte, dt::kDatatypeBinaryEnvelopeHeaderBytes> output{};
+        const auto write = dt::EncodeDatatypeBinaryValueInto(
+            typed_null, output.data(), output.size());
+        const auto read = dt::DecodeDatatypeBinaryValueView(
+            output.data(), output.size());
+        if (!write.ok() || write.bytes_written != output.size() || !read.ok() ||
+            read.value.type_id != dt::CanonicalTypeId::int64 ||
+            !read.value.is_null || read.value.payload_bytes != 0) {
+          ++thread_failures;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) thread.join();
+  Check(thread_failures.load() == 0,
+        "concurrent read-only typed NULL codec use was nondeterministic");
+}
+
 void ProportionalAllocationAndFaults() {
   std::vector<byte> payload(262144, 'x'), destination(payload.size() + 32, 0x5a);
   const dt::DatatypeBinaryValueView view{dt::CanonicalTypeId::character, false, false,
@@ -225,7 +334,8 @@ void ActualTypedCellCopies() {
 }
 }
 int main() {
-  SharedCodecParity(); DestinationAtomicityAndAlias(); ProportionalAllocationAndFaults(); ActualTypedCellCopies();
+  SharedCodecParity(); DestinationAtomicityAndAlias(); TypedNullBoundsAllocationAndConcurrency();
+  ProportionalAllocationAndFaults(); ActualTypedCellCopies();
   std::cout << "borrowed datatype checks=" << checks << " allocation_faults=" << allocation_faults
             << " failures=" << failures << '\n';
   return failures ? 1 : 0;

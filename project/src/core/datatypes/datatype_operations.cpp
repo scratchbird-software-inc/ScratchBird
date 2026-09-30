@@ -8,8 +8,10 @@
 
 #include "datatype_operations.hpp"
 #include "canonical_utf8.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
 
+#include "scratchbird/engine/value.hpp"
 #include "sbl_numeric.hpp"
 
 #include <algorithm>
@@ -33,6 +35,8 @@ using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
+using scratchbird::engine::ExecutionTypeDescriptor;
+using scratchbird::engine::ExecutionTypeModifierFlag;
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::datatypes};
@@ -42,12 +46,328 @@ Status ErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
 }
 
-bool CanonicalOperationValueValid(const DatatypeOperationValue& value) noexcept {
+bool EngineUuidIsNil(const scratchbird::engine::Uuid& uuid) noexcept {
+  for (const auto byte : uuid.bytes) {
+    if (byte != 0) return false;
+  }
+  return true;
+}
+
+bool EngineIdentityUuidValid(const scratchbird::engine::Uuid& uuid) noexcept {
+  return !EngineUuidIsNil(uuid) && (uuid.bytes[6] & 0xf0u) == 0x70u &&
+      (uuid.bytes[8] & 0xc0u) == 0x80u;
+}
+
+bool EngineUuidEquals(const scratchbird::engine::Uuid& left,
+                      const scratchbird::engine::Uuid& right) noexcept {
+  for (std::size_t index = 0; index < 16; ++index) {
+    if (left.bytes[index] != right.bytes[index]) return false;
+  }
+  return true;
+}
+
+bool ExecutionDescriptorMatchesCurrentBuiltinCatalog(
+    const ExecutionTypeDescriptor& descriptor,
+    CanonicalTypeId type_id) {
+  static const DatatypeCatalogManifestResult current =
+      LoadCurrentCoreDatatypeCatalogManifest();
+  if (!current.ok()) {
+    return false;
+  }
+  for (const auto& row : current.manifest.descriptor_rows) {
+    if (row.type_id != type_id) {
+      continue;
+    }
+    scratchbird::engine::Uuid row_uuid{};
+    std::copy(row.descriptor_uuid.value.bytes.begin(),
+              row.descriptor_uuid.value.bytes.end(), row_uuid.bytes);
+    return EngineUuidEquals(descriptor.descriptor_uuid, row_uuid) &&
+        descriptor.descriptor_epoch == row.descriptor_epoch;
+  }
+  return false;
+}
+
+bool DescriptorHasFlag(const ExecutionTypeDescriptor& descriptor,
+                       ExecutionTypeModifierFlag flag) noexcept {
+  return (descriptor.modifier_flags &
+          scratchbird::engine::ExecutionTypeModifierFlagBit(flag)) != 0;
+}
+
+bool OptionalDescriptorUuidValid(
+    const scratchbird::engine::Uuid& uuid,
+    const ExecutionTypeDescriptor& descriptor,
+    ExecutionTypeModifierFlag flag) noexcept {
+  const bool present = !EngineUuidIsNil(uuid);
+  return present == DescriptorHasFlag(descriptor, flag) &&
+      (!present || EngineIdentityUuidValid(uuid));
+}
+
+bool ExecutionDescriptorValidForType(
+    const ExecutionTypeDescriptor& descriptor,
+    CanonicalTypeId type_id) {
+  const auto canonical = LookupDatatypeDescriptor(type_id);
+  if (!canonical.ok() || type_id == CanonicalTypeId::null_type ||
+      type_id == CanonicalTypeId::unknown ||
+      !EngineIdentityUuidValid(descriptor.descriptor_uuid) ||
+      descriptor.descriptor_epoch == 0 ||
+      descriptor.canonical_type_id != static_cast<std::uint32_t>(type_id) ||
+      descriptor.family != static_cast<scratchbird::engine::ExecutionTypeFamily>(
+                               canonical.descriptor.family) ||
+      descriptor.width_class !=
+          static_cast<scratchbird::engine::ExecutionTypeWidthClass>(
+              canonical.descriptor.width_class) ||
+      descriptor.stable_name != canonical.descriptor.stable_name ||
+      descriptor.bit_width != canonical.descriptor.bit_width ||
+      !descriptor.descriptor_authoritative || !descriptor.parser_independent) {
+    return false;
+  }
+  if (EngineUuidIsNil(descriptor.domain_uuid) &&
+      descriptor.domain_stack.empty() &&
+      !ExecutionDescriptorMatchesCurrentBuiltinCatalog(descriptor, type_id)) {
+    return false;
+  }
+
+  const bool precision_parameterized =
+      type_id == CanonicalTypeId::decimal ||
+      type_id == CanonicalTypeId::decimal_float;
+  const bool length_allowed =
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::character ||
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::binary ||
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::bit_string ||
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::blob;
+  const bool container_rank_allowed =
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::structured ||
+      descriptor.family == scratchbird::engine::ExecutionTypeFamily::document;
+  if ((!precision_parameterized &&
+       (descriptor.precision != canonical.descriptor.default_precision ||
+        descriptor.scale != canonical.descriptor.default_scale)) ||
+      (precision_parameterized &&
+       (descriptor.precision == 0 || descriptor.scale > descriptor.precision)) ||
+      (!length_allowed && descriptor.length != 0) ||
+      (descriptor.family != scratchbird::engine::ExecutionTypeFamily::vector &&
+       descriptor.vector_dimensions != 0) ||
+      (!container_rank_allowed && descriptor.container_rank != 0) ||
+      (!EngineUuidIsNil(descriptor.charset_uuid) &&
+       descriptor.family != scratchbird::engine::ExecutionTypeFamily::character) ||
+      (!EngineUuidIsNil(descriptor.collation_uuid) &&
+       (descriptor.family != scratchbird::engine::ExecutionTypeFamily::character ||
+        EngineUuidIsNil(descriptor.charset_uuid))) ||
+      (!EngineUuidIsNil(descriptor.timezone_uuid) &&
+       descriptor.family != scratchbird::engine::ExecutionTypeFamily::temporal)) {
+    return false;
+  }
+
+  constexpr std::uint64_t kKnownModifierFlags =
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::precision) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::scale) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::length) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::charset_uuid) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::collation_uuid) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::timezone_uuid) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::domain_uuid) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::domain_stack) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::element_descriptor_uuid) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::vector_dimensions) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::container_rank) |
+      scratchbird::engine::ExecutionTypeModifierFlagBit(
+          ExecutionTypeModifierFlag::security_policy_uuid);
+  if ((descriptor.modifier_flags & ~kKnownModifierFlags) != 0 ||
+      ((descriptor.precision != 0) !=
+       DescriptorHasFlag(descriptor, ExecutionTypeModifierFlag::precision)) ||
+      ((descriptor.scale != 0 || type_id == CanonicalTypeId::decimal ||
+        type_id == CanonicalTypeId::decimal_float) !=
+       DescriptorHasFlag(descriptor, ExecutionTypeModifierFlag::scale)) ||
+      ((descriptor.length != 0) !=
+       DescriptorHasFlag(descriptor, ExecutionTypeModifierFlag::length)) ||
+      ((descriptor.vector_dimensions != 0) !=
+       DescriptorHasFlag(descriptor,
+                          ExecutionTypeModifierFlag::vector_dimensions)) ||
+      ((descriptor.container_rank != 0) !=
+       DescriptorHasFlag(descriptor,
+                          ExecutionTypeModifierFlag::container_rank)) ||
+      descriptor.domain_stack.empty() ==
+          DescriptorHasFlag(descriptor, ExecutionTypeModifierFlag::domain_stack)) {
+    return false;
+  }
+  if (EngineUuidIsNil(descriptor.domain_uuid) !=
+          descriptor.domain_stack.empty() ||
+      descriptor.domain_stack.size() >
+          scratchbird::engine::kExecutionDomainStackMaxDepth) {
+    return false;
+  }
+  for (std::size_t index = 0; index < descriptor.domain_stack.size(); ++index) {
+    if (!EngineIdentityUuidValid(descriptor.domain_stack[index]) ||
+        (index == 0 &&
+         !EngineUuidEquals(descriptor.domain_stack[index],
+                           descriptor.domain_uuid))) {
+      return false;
+    }
+    for (std::size_t earlier = 0; earlier < index; ++earlier) {
+      if (EngineUuidEquals(descriptor.domain_stack[index],
+                           descriptor.domain_stack[earlier])) {
+        return false;
+      }
+    }
+  }
+  return OptionalDescriptorUuidValid(
+             descriptor.domain_uuid, descriptor,
+             ExecutionTypeModifierFlag::domain_uuid) &&
+      OptionalDescriptorUuidValid(
+             descriptor.charset_uuid, descriptor,
+             ExecutionTypeModifierFlag::charset_uuid) &&
+      OptionalDescriptorUuidValid(
+             descriptor.collation_uuid, descriptor,
+             ExecutionTypeModifierFlag::collation_uuid) &&
+      OptionalDescriptorUuidValid(
+             descriptor.timezone_uuid, descriptor,
+             ExecutionTypeModifierFlag::timezone_uuid) &&
+      OptionalDescriptorUuidValid(
+             descriptor.element_descriptor_uuid, descriptor,
+             ExecutionTypeModifierFlag::element_descriptor_uuid) &&
+      OptionalDescriptorUuidValid(
+             descriptor.security_policy_uuid, descriptor,
+             ExecutionTypeModifierFlag::security_policy_uuid);
+}
+
+bool ExecutionDescriptorPresent(
+    const ExecutionTypeDescriptor& descriptor) noexcept {
+  return !EngineUuidIsNil(descriptor.descriptor_uuid) ||
+      descriptor.descriptor_epoch != 0 || descriptor.canonical_type_id != 0 ||
+      descriptor.family != scratchbird::engine::ExecutionTypeFamily::unknown ||
+      descriptor.width_class !=
+          scratchbird::engine::ExecutionTypeWidthClass::unknown ||
+      !descriptor.stable_name.empty() || descriptor.bit_width != 0 ||
+      descriptor.precision != 0 || descriptor.scale != 0 ||
+      descriptor.length != 0 || descriptor.vector_dimensions != 0 ||
+      descriptor.container_rank != 0 || descriptor.modifier_flags != 0 ||
+      !EngineUuidIsNil(descriptor.domain_uuid) ||
+      !descriptor.domain_stack.empty() ||
+      !EngineUuidIsNil(descriptor.charset_uuid) ||
+      !EngineUuidIsNil(descriptor.collation_uuid) ||
+      !EngineUuidIsNil(descriptor.timezone_uuid) ||
+      !EngineUuidIsNil(descriptor.element_descriptor_uuid) ||
+      !EngineUuidIsNil(descriptor.security_policy_uuid) ||
+      !descriptor.nullable_allowed || !descriptor.descriptor_authoritative ||
+      !descriptor.parser_independent;
+}
+
+bool DomainBindingEquals(const ExecutionTypeDescriptor& left,
+                         const ExecutionTypeDescriptor& right) noexcept {
+  if (!EngineUuidEquals(left.domain_uuid, right.domain_uuid) ||
+      left.domain_stack.size() != right.domain_stack.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.domain_stack.size(); ++index) {
+    if (!EngineUuidEquals(left.domain_stack[index], right.domain_stack[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ExecutionDescriptorEquals(const ExecutionTypeDescriptor& left,
+                               const ExecutionTypeDescriptor& right) noexcept {
+  return EngineUuidEquals(left.descriptor_uuid, right.descriptor_uuid) &&
+      left.descriptor_epoch == right.descriptor_epoch &&
+      left.canonical_type_id == right.canonical_type_id &&
+      left.family == right.family && left.width_class == right.width_class &&
+      left.stable_name == right.stable_name &&
+      left.bit_width == right.bit_width && left.precision == right.precision &&
+      left.scale == right.scale && left.length == right.length &&
+      left.vector_dimensions == right.vector_dimensions &&
+      left.container_rank == right.container_rank &&
+      left.modifier_flags == right.modifier_flags &&
+      DomainBindingEquals(left, right) &&
+      EngineUuidEquals(left.charset_uuid, right.charset_uuid) &&
+      EngineUuidEquals(left.collation_uuid, right.collation_uuid) &&
+      EngineUuidEquals(left.timezone_uuid, right.timezone_uuid) &&
+      EngineUuidEquals(left.element_descriptor_uuid,
+                       right.element_descriptor_uuid) &&
+      EngineUuidEquals(left.security_policy_uuid,
+                       right.security_policy_uuid) &&
+      left.nullable_allowed == right.nullable_allowed &&
+      left.descriptor_authoritative == right.descriptor_authoritative &&
+      left.parser_independent == right.parser_independent;
+}
+
+bool DescriptorHasDomainBinding(
+    const ExecutionTypeDescriptor& descriptor) noexcept {
+  return !EngineUuidIsNil(descriptor.domain_uuid) ||
+      !descriptor.domain_stack.empty();
+}
+
+bool ValidCastContext(DatatypeCastContext context) noexcept {
+  switch (context) {
+    case DatatypeCastContext::implicit:
+    case DatatypeCastContext::assignment:
+    case DatatypeCastContext::explicit_cast:
+      return true;
+  }
+  return false;
+}
+
+bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
+  if (value.type_id == CanonicalTypeId::unknown ||
+      value.type_id == CanonicalTypeId::null_type) {
+    return false;
+  }
+  if (!LookupDatatypeDescriptor(value.type_id).ok()) {
+    return false;
+  }
+  if (value.is_null) {
+    return value.encoded_value.empty() &&
+        ExecutionDescriptorValidForType(value.descriptor, value.type_id) &&
+        value.descriptor.nullable_allowed;
+  }
+  if (ExecutionDescriptorPresent(value.descriptor) &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id)) {
+    return false;
+  }
   if (value.type_id == CanonicalTypeId::uuid)
-    return value.is_null ? value.encoded_value.empty() : value.encoded_value.size() == 16;
-  return value.is_null || value.type_id != CanonicalTypeId::character ||
+    return value.encoded_value.size() == 16;
+  if (value.type_id == CanonicalTypeId::boolean) {
+    return value.encoded_value.size() == 1 &&
+        (static_cast<unsigned char>(value.encoded_value[0]) == 0u ||
+         static_cast<unsigned char>(value.encoded_value[0]) == 1u);
+  }
+  return value.type_id != CanonicalTypeId::character ||
       ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
                             value.encoded_value.size());
+}
+
+const char* CanonicalOperationValueDiagnosticCode(
+    const DatatypeOperationValue& value,
+    const char* owning_operation_code = "DATATYPE.DESCRIPTOR.INVALID") {
+  if (value.type_id == CanonicalTypeId::unknown ||
+      value.type_id == CanonicalTypeId::null_type) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.is_null &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.is_null && !value.encoded_value.empty()) {
+    return "DATATYPE.NULL_STATE.INVALID";
+  }
+  if (value.is_null && !value.descriptor.nullable_allowed) {
+    return "DATATYPE.NULL_NOT_ADMITTED";
+  }
+  if (ExecutionDescriptorPresent(value.descriptor) &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  return owning_operation_code;
 }
 
 std::string LowerAscii(std::string value) {
@@ -127,19 +447,6 @@ int HexValue(char c) {
   if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
   if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
   return -1;
-}
-
-std::string HexDecode(const std::string& value) {
-  if ((value.size() % 2) != 0) { return {}; }
-  std::string out;
-  out.reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int hi = HexValue(value[i]);
-    const int lo = HexValue(value[i + 1]);
-    if (hi < 0 || lo < 0) { return {}; }
-    out.push_back(static_cast<char>((hi << 4) | lo));
-  }
-  return out;
 }
 
 bool IsSignedInteger(CanonicalTypeId type_id) {
@@ -1172,56 +1479,365 @@ bool XmlText(const std::string& input) {
 }
 
 DatatypeOperationValue BoolValue(bool value) {
-  return {CanonicalTypeId::boolean, value ? "true" : "false", false};
+  return {CanonicalTypeId::boolean,
+          std::string(1, static_cast<char>(value ? 1 : 0)), false};
 }
 
 DatatypeOperationValue UInt64Value(std::uint64_t value) {
   return {CanonicalTypeId::uint64, std::to_string(value), false};
 }
 
-DatatypeCastResult CastFailure(std::string detail, DatatypeCastCategory category = DatatypeCastCategory::forbidden) {
+DatatypeCastResult CastFailure(
+    std::string detail,
+    DatatypeCastCategory category = DatatypeCastCategory::forbidden,
+    std::string diagnostic_code = "DATATYPE.CAST_FORBIDDEN") {
   DatatypeCastResult result;
   result.status = ErrorStatus();
   result.category = category;
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                      "SB_DATATYPE_CAST_REJECTED",
+                                                      std::move(diagnostic_code),
                                                       "datatype.cast.rejected",
                                                       std::move(detail));
   return result;
 }
 
-DatatypeExtractResult ExtractFailure(std::string detail) {
+DatatypeExtractResult ExtractFailure(
+    std::string detail,
+    std::string diagnostic_code = "SB_DATATYPE_EXTRACT_REJECTED") {
   DatatypeExtractResult result;
   result.status = ErrorStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                      "SB_DATATYPE_EXTRACT_REJECTED",
+                                                      std::move(diagnostic_code),
                                                       "datatype.extract.rejected",
                                                       std::move(detail));
   return result;
 }
 
-DatatypeSetOperationResult SetFailure(std::string detail) {
+DatatypeSetOperationResult SetFailure(
+    std::string detail,
+    std::string diagnostic_code = "SB_DATATYPE_SET_OPERATION_REJECTED") {
   DatatypeSetOperationResult result;
   result.status = ErrorStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                      "SB_DATATYPE_SET_OPERATION_REJECTED",
+                                                      std::move(diagnostic_code),
                                                       "datatype.set_operation.rejected",
                                                       std::move(detail));
   return result;
 }
 
-bool ParseEncodedSet(const std::string& encoded, std::vector<std::string>* values) {
-  if (!StartsWith(encoded, "SBSET1;")) { return false; }
-  const auto marker = encoded.find(";items=");
-  if (marker == std::string::npos) { return false; }
-  const std::string item_list = encoded.substr(marker + 7);
-  if (item_list.empty()) { return true; }
-  for (const auto& hex : Split(item_list, ',')) {
-    const std::string decoded = HexDecode(hex);
-    if (decoded.empty() && !hex.empty()) { return false; }
-    values->push_back(decoded);
+struct EncodedSetFrame {
+  CanonicalTypeId element_type_id = CanonicalTypeId::unknown;
+  bool descriptor_present = false;
+  ExecutionTypeDescriptor element_descriptor;
+  bool ordered = false;
+  bool allow_null_elements = false;
+  bool allow_duplicates = false;
+  // Canonical item tokens keep element state disjoint from its payload:
+  // N is SQL NULL and V<hex payload> is a present value.
+  std::vector<std::string> items;
+};
+
+void AppendSetU16(std::string* bytes, std::uint16_t value) {
+  bytes->push_back(static_cast<char>((value >> 8) & 0xffu));
+  bytes->push_back(static_cast<char>(value & 0xffu));
+}
+
+void AppendSetU32(std::string* bytes, std::uint32_t value) {
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    bytes->push_back(static_cast<char>((value >> shift) & 0xffu));
+  }
+}
+
+void AppendSetU64(std::string* bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    bytes->push_back(static_cast<char>((value >> shift) & 0xffu));
+  }
+}
+
+void AppendSetUuid(std::string* bytes, const scratchbird::engine::Uuid& uuid) {
+  for (const auto byte : uuid.bytes) {
+    bytes->push_back(static_cast<char>(byte));
+  }
+}
+
+void AppendSetString(std::string* bytes, std::string_view value) {
+  AppendSetU32(bytes, static_cast<std::uint32_t>(value.size()));
+  bytes->append(value);
+}
+
+std::string ExecutionDescriptorFingerprint(
+    const ExecutionTypeDescriptor& descriptor) {
+  std::string bytes = "SBTD1";
+  AppendSetUuid(&bytes, descriptor.descriptor_uuid);
+  AppendSetU64(&bytes, descriptor.descriptor_epoch);
+  AppendSetU32(&bytes, descriptor.canonical_type_id);
+  AppendSetU16(&bytes, static_cast<std::uint16_t>(descriptor.family));
+  AppendSetU16(&bytes, static_cast<std::uint16_t>(descriptor.width_class));
+  AppendSetString(&bytes, descriptor.stable_name);
+  AppendSetU32(&bytes, descriptor.bit_width);
+  AppendSetU32(&bytes, descriptor.precision);
+  AppendSetU32(&bytes, descriptor.scale);
+  AppendSetU32(&bytes, descriptor.length);
+  AppendSetU32(&bytes, descriptor.vector_dimensions);
+  AppendSetU32(&bytes, descriptor.container_rank);
+  AppendSetU64(&bytes, descriptor.modifier_flags);
+  AppendSetUuid(&bytes, descriptor.domain_uuid);
+  AppendSetU32(&bytes,
+               static_cast<std::uint32_t>(descriptor.domain_stack.size()));
+  for (const auto& domain : descriptor.domain_stack) {
+    AppendSetUuid(&bytes, domain);
+  }
+  AppendSetUuid(&bytes, descriptor.charset_uuid);
+  AppendSetUuid(&bytes, descriptor.collation_uuid);
+  AppendSetUuid(&bytes, descriptor.timezone_uuid);
+  AppendSetUuid(&bytes, descriptor.element_descriptor_uuid);
+  AppendSetUuid(&bytes, descriptor.security_policy_uuid);
+  bytes.push_back(descriptor.nullable_allowed ? '\x01' : '\x00');
+  bytes.push_back(descriptor.descriptor_authoritative ? '\x01' : '\x00');
+  bytes.push_back(descriptor.parser_independent ? '\x01' : '\x00');
+  return HexEncode(bytes);
+}
+
+bool IsCanonicalLowerHex(std::string_view value) {
+  if ((value.size() % 2) != 0) { return false; }
+  for (const char c : value) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+      return false;
+    }
   }
   return true;
+}
+
+bool DecodeCanonicalLowerHex(std::string_view value, std::string* bytes) {
+  if (bytes == nullptr || !IsCanonicalLowerHex(value)) { return false; }
+  bytes->clear();
+  bytes->reserve(value.size() / 2);
+  for (std::size_t index = 0; index < value.size(); index += 2) {
+    bytes->push_back(static_cast<char>(
+        (HexValue(value[index]) << 4) | HexValue(value[index + 1])));
+  }
+  return true;
+}
+
+struct SetDescriptorReader {
+  std::string_view bytes;
+  std::size_t offset = 0;
+
+  bool Take(std::size_t size, std::string_view* value) {
+    if (value == nullptr || size > bytes.size() - offset) { return false; }
+    *value = bytes.substr(offset, size);
+    offset += size;
+    return true;
+  }
+
+  bool U16(std::uint16_t* value) {
+    std::string_view raw;
+    if (value == nullptr || !Take(2, &raw)) { return false; }
+    *value = (static_cast<std::uint16_t>(
+                  static_cast<unsigned char>(raw[0])) << 8) |
+        static_cast<unsigned char>(raw[1]);
+    return true;
+  }
+
+  bool U32(std::uint32_t* value) {
+    std::string_view raw;
+    if (value == nullptr || !Take(4, &raw)) { return false; }
+    *value = 0;
+    for (const char byte : raw) {
+      *value = (*value << 8) | static_cast<unsigned char>(byte);
+    }
+    return true;
+  }
+
+  bool U64(std::uint64_t* value) {
+    std::string_view raw;
+    if (value == nullptr || !Take(8, &raw)) { return false; }
+    *value = 0;
+    for (const char byte : raw) {
+      *value = (*value << 8) | static_cast<unsigned char>(byte);
+    }
+    return true;
+  }
+
+  bool Uuid(scratchbird::engine::Uuid* value) {
+    std::string_view raw;
+    if (value == nullptr || !Take(16, &raw)) { return false; }
+    for (std::size_t index = 0; index < 16; ++index) {
+      value->bytes[index] = static_cast<unsigned char>(raw[index]);
+    }
+    return true;
+  }
+
+  bool String(std::string* value) {
+    std::uint32_t size = 0;
+    std::string_view raw;
+    if (value == nullptr || !U32(&size) || !Take(size, &raw)) { return false; }
+    value->assign(raw);
+    return true;
+  }
+
+  bool Boolean(bool* value) {
+    std::string_view raw;
+    if (value == nullptr || !Take(1, &raw) ||
+        (raw[0] != '\x00' && raw[0] != '\x01')) {
+      return false;
+    }
+    *value = raw[0] == '\x01';
+    return true;
+  }
+};
+
+bool ParseExecutionDescriptorFingerprint(
+    std::string_view fingerprint,
+    ExecutionTypeDescriptor* descriptor) {
+  std::string bytes;
+  if (descriptor == nullptr ||
+      !DecodeCanonicalLowerHex(fingerprint, &bytes)) {
+    return false;
+  }
+  SetDescriptorReader reader{bytes};
+  std::string_view magic;
+  std::uint16_t family = 0;
+  std::uint16_t width_class = 0;
+  std::uint32_t domain_count = 0;
+  if (!reader.Take(5, &magic) || magic != "SBTD1" ||
+      !reader.Uuid(&descriptor->descriptor_uuid) ||
+      !reader.U64(&descriptor->descriptor_epoch) ||
+      !reader.U32(&descriptor->canonical_type_id) ||
+      !reader.U16(&family) || !reader.U16(&width_class) ||
+      !reader.String(&descriptor->stable_name) ||
+      !reader.U32(&descriptor->bit_width) ||
+      !reader.U32(&descriptor->precision) ||
+      !reader.U32(&descriptor->scale) ||
+      !reader.U32(&descriptor->length) ||
+      !reader.U32(&descriptor->vector_dimensions) ||
+      !reader.U32(&descriptor->container_rank) ||
+      !reader.U64(&descriptor->modifier_flags) ||
+      !reader.Uuid(&descriptor->domain_uuid) ||
+      !reader.U32(&domain_count) ||
+      domain_count > scratchbird::engine::kExecutionDomainStackMaxDepth) {
+    return false;
+  }
+  descriptor->family = static_cast<scratchbird::engine::ExecutionTypeFamily>(family);
+  descriptor->width_class =
+      static_cast<scratchbird::engine::ExecutionTypeWidthClass>(width_class);
+  descriptor->domain_stack.resize(domain_count);
+  for (auto& domain : descriptor->domain_stack) {
+    if (!reader.Uuid(&domain)) { return false; }
+  }
+  return reader.Uuid(&descriptor->charset_uuid) &&
+      reader.Uuid(&descriptor->collation_uuid) &&
+      reader.Uuid(&descriptor->timezone_uuid) &&
+      reader.Uuid(&descriptor->element_descriptor_uuid) &&
+      reader.Uuid(&descriptor->security_policy_uuid) &&
+      reader.Boolean(&descriptor->nullable_allowed) &&
+      reader.Boolean(&descriptor->descriptor_authoritative) &&
+      reader.Boolean(&descriptor->parser_independent) &&
+      reader.offset == reader.bytes.size();
+}
+
+bool ParseSetBooleanField(std::string_view field,
+                          std::string_view name,
+                          bool* value) {
+  const std::string prefix = std::string(name) + "=";
+  if (!StartsWith(field, prefix) || field.size() != prefix.size() + 1) {
+    return false;
+  }
+  if (field.back() == '0') {
+    *value = false;
+    return true;
+  }
+  if (field.back() == '1') {
+    *value = true;
+    return true;
+  }
+  return false;
+}
+
+bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
+  if (frame == nullptr || !StartsWith(encoded, "SBSET2;")) { return false; }
+  const auto marker = encoded.find(";items=");
+  if (marker == std::string::npos) { return false; }
+  const auto fields = Split(encoded.substr(7, marker - 7), ';');
+  if (fields.size() != 5 || !StartsWith(fields[0], "element=") ||
+      !StartsWith(fields[1], "descriptor=") ||
+      !ParseSetBooleanField(fields[2], "ordered", &frame->ordered) ||
+      !ParseSetBooleanField(fields[3], "nulls", &frame->allow_null_elements) ||
+      !ParseSetBooleanField(fields[4], "duplicates", &frame->allow_duplicates)) {
+    return false;
+  }
+  const std::string element_name = fields[0].substr(8);
+  frame->element_type_id =
+      CanonicalTypeIdFromStableName(element_name);
+  if (frame->element_type_id == CanonicalTypeId::unknown ||
+      frame->element_type_id == CanonicalTypeId::null_type ||
+      element_name != CanonicalTypeName(frame->element_type_id)) {
+    return false;
+  }
+  const std::string descriptor_fingerprint = fields[1].substr(11);
+  frame->descriptor_present = descriptor_fingerprint != "none";
+  if (frame->descriptor_present &&
+      (!ParseExecutionDescriptorFingerprint(
+           descriptor_fingerprint, &frame->element_descriptor) ||
+       !ExecutionDescriptorValidForType(frame->element_descriptor,
+                                        frame->element_type_id))) {
+    return false;
+  }
+  if (frame->allow_null_elements &&
+      (!frame->descriptor_present ||
+       !frame->element_descriptor.nullable_allowed)) {
+    return false;
+  }
+
+  const std::string item_list = encoded.substr(marker + 7);
+  if (item_list.empty()) { return true; }
+  if (item_list.front() == ',' || item_list.back() == ',') { return false; }
+  std::set<std::string> unique_items;
+  std::string previous_item;
+  for (const auto& item : Split(item_list, ',')) {
+    if (item == "N") {
+      if (!frame->allow_null_elements || !frame->descriptor_present ||
+          !frame->element_descriptor.nullable_allowed) {
+        return false;
+      }
+    } else if (!item.empty() && item.front() == 'V') {
+      const std::string_view hex(item.data() + 1, item.size() - 1);
+      if (!IsCanonicalLowerHex(hex)) { return false; }
+    } else {
+      return false;
+    }
+    if (!frame->allow_duplicates && !unique_items.insert(item).second) {
+      return false;
+    }
+    if (!frame->ordered && !previous_item.empty() && item < previous_item) {
+      return false;
+    }
+    previous_item = item;
+    frame->items.push_back(item);
+  }
+  return true;
+}
+
+bool EncodedSetFrameMatchesDescriptor(
+    const EncodedSetFrame& frame,
+    const DatatypeSetDescriptor& descriptor) {
+  if (frame.element_type_id != descriptor.element_type_id ||
+      frame.ordered != descriptor.ordered ||
+      frame.allow_null_elements != descriptor.allow_null_elements ||
+      frame.allow_duplicates != descriptor.allow_duplicates) {
+    return false;
+  }
+  const bool descriptor_present =
+      ExecutionDescriptorPresent(descriptor.element_descriptor);
+  if (frame.allow_null_elements || descriptor_present) {
+    return descriptor_present == frame.descriptor_present &&
+        descriptor_present &&
+        ExecutionDescriptorValidForType(descriptor.element_descriptor,
+                                        descriptor.element_type_id) &&
+        ExecutionDescriptorEquals(frame.element_descriptor,
+                                  descriptor.element_descriptor);
+  }
+  return !frame.descriptor_present;
 }
 
 std::string ExtractTemporalComponent(const std::string& value, const std::string& field) {
@@ -1262,6 +1878,15 @@ const char* DatatypeCastCategoryName(DatatypeCastCategory category) {
     case DatatypeCastCategory::forbidden: return "forbidden";
   }
   return "forbidden";
+}
+
+const char* DatatypeCastContextName(DatatypeCastContext context) {
+  switch (context) {
+    case DatatypeCastContext::implicit: return "implicit";
+    case DatatypeCastContext::assignment: return "assignment";
+    case DatatypeCastContext::explicit_cast: return "explicit";
+  }
+  return "unknown";
 }
 
 const char* DatatypeSetOperationKindName(DatatypeSetOperationKind operation) {
@@ -1307,8 +1932,19 @@ const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering) {
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile) {
-  if (source_type_id == target_type_id) { return DatatypeCastCategory::identity; }
+  if (target_type_id == CanonicalTypeId::null_type ||
+      target_type_id == CanonicalTypeId::unknown) {
+    return DatatypeCastCategory::forbidden;
+  }
+  if (!LookupDatatypeDescriptor(target_type_id).ok()) {
+    return DatatypeCastCategory::forbidden;
+  }
   if (source_type_id == CanonicalTypeId::null_type) { return DatatypeCastCategory::lossless_implicit; }
+  if (source_type_id == CanonicalTypeId::unknown) { return DatatypeCastCategory::forbidden; }
+  if (!LookupDatatypeDescriptor(source_type_id).ok()) {
+    return DatatypeCastCategory::forbidden;
+  }
+  if (source_type_id == target_type_id) { return DatatypeCastCategory::identity; }
   if (source_type_id == CanonicalTypeId::uuid || target_type_id == CanonicalTypeId::uuid) {
     return (source_type_id == CanonicalTypeId::binary || target_type_id == CanonicalTypeId::binary)
         ? DatatypeCastCategory::lossless_explicit : DatatypeCastCategory::forbidden;
@@ -1356,27 +1992,142 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
-  if ((request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) &&
-      request.value.is_null && !request.value.encoded_value.empty())
-    return CastFailure("uuid_null_payload_invalid");
+  const bool source_is_contextual_null =
+      request.value.type_id == CanonicalTypeId::null_type;
+  if (source_is_contextual_null &&
+      ExecutionDescriptorPresent(request.value.descriptor)) {
+    return CastFailure("contextual_null_carries_descriptor",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (!source_is_contextual_null &&
+      (request.value.type_id == CanonicalTypeId::unknown ||
+       !LookupDatatypeDescriptor(request.value.type_id).ok() ||
+       (request.value.is_null &&
+        !ExecutionDescriptorValidForType(request.value.descriptor,
+                                         request.value.type_id)) ||
+       (!request.value.is_null &&
+        ExecutionDescriptorPresent(request.value.descriptor) &&
+        !ExecutionDescriptorValidForType(request.value.descriptor,
+                                         request.value.type_id)))) {
+    return CastFailure("source_descriptor_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  const bool target_is_unresolved =
+      request.target_type_id == CanonicalTypeId::null_type ||
+      request.target_type_id == CanonicalTypeId::unknown;
+  const bool result_is_null = source_is_contextual_null || request.value.is_null;
+  if (target_is_unresolved &&
+      (request.target_type_id == CanonicalTypeId::unknown ||
+       ExecutionDescriptorPresent(request.target_descriptor))) {
+    return CastFailure("unresolved_target_descriptor_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (!target_is_unresolved &&
+      (!LookupDatatypeDescriptor(request.target_type_id).ok() ||
+       (result_is_null &&
+        !ExecutionDescriptorValidForType(request.target_descriptor,
+                                         request.target_type_id)) ||
+       (!result_is_null &&
+        ExecutionDescriptorPresent(request.target_descriptor) &&
+        !ExecutionDescriptorValidForType(request.target_descriptor,
+                                         request.target_type_id)))) {
+    return CastFailure("target_descriptor_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (source_is_contextual_null &&
+      (!request.value.is_null || !request.value.encoded_value.empty())) {
+    return CastFailure("contextual_null_state_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.NULL_STATE.INVALID");
+  }
+  if (!source_is_contextual_null &&
+      !CanonicalOperationValueValid(request.value)) {
+    return CastFailure(request.value.is_null ? "null_or_descriptor_state_invalid"
+                                             : "source_value_invalid",
+                       DatatypeCastCategory::forbidden,
+                       CanonicalOperationValueDiagnosticCode(
+                           request.value, "DATATYPE.CAST_FORBIDDEN"));
+  }
+  if (target_is_unresolved) {
+    const bool unresolved_null =
+        source_is_contextual_null;
+    return CastFailure(
+        request.target_type_id == CanonicalTypeId::null_type
+            ? (unresolved_null ? "contextual_null_unresolved"
+                               : "standalone_null_target_forbidden")
+            : "unknown_target_forbidden",
+        DatatypeCastCategory::forbidden,
+        unresolved_null ? "DATATYPE.CONTEXT_REQUIRED"
+                        : (request.target_type_id == CanonicalTypeId::null_type
+                               ? "DATATYPE.CAST_FORBIDDEN"
+                               : "DATATYPE.DESCRIPTOR.INVALID"));
+  }
+  if (result_is_null && !request.target_descriptor.nullable_allowed) {
+    return CastFailure("target_descriptor_does_not_admit_null",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.NULL_NOT_ADMITTED");
+  }
+  if (!ValidCastContext(request.context)) {
+    return CastFailure("cast_context_not_admitted",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.CAST_FORBIDDEN");
+  }
+  if (source_is_contextual_null) {
+    DatatypeCastResult result;
+    result.status = OkStatus();
+    result.category = DatatypeCastCategory::lossless_implicit;
+    result.value = {request.target_type_id, {}, true};
+    result.value.descriptor = request.target_descriptor;
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_OK", "datatype.ok");
+    return result;
+  }
   DatatypeCastResult result;
   result.category = ClassifyDatatypeCast(request.value.type_id, request.target_type_id, request.reference_compatibility_profile);
   if (result.category == DatatypeCastCategory::forbidden) {
     return CastFailure(std::string(CanonicalTypeName(request.value.type_id)) + "->" + CanonicalTypeName(request.target_type_id));
   }
-  if (!request.explicit_cast && result.category != DatatypeCastCategory::identity &&
+  const bool explicit_request = request.explicit_cast ||
+      request.context == DatatypeCastContext::explicit_cast;
+  if (!explicit_request && result.category != DatatypeCastCategory::identity &&
       result.category != DatatypeCastCategory::lossless_implicit) {
     return CastFailure("explicit_cast_required", result.category);
   }
+  if (request.value.is_null &&
+      request.value.type_id == request.target_type_id &&
+      !ExecutionDescriptorEquals(request.value.descriptor,
+                                 request.target_descriptor)) {
+    return CastFailure("typed_null_identity_descriptor_mismatch",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.CAST_FORBIDDEN");
+  }
+  if (request.value.is_null &&
+      request.value.type_id != request.target_type_id &&
+      (DescriptorHasDomainBinding(request.value.descriptor) ||
+       DescriptorHasDomainBinding(request.target_descriptor))) {
+    return CastFailure("domain_binding_cast_policy_unavailable",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.CAST_FORBIDDEN");
+  }
   if (request.target_type_id == CanonicalTypeId::real128) {
     // Cast admission above establishes source-family conversion permission.
-    // The reference canonicalizes that value directly in the target format;
-    // its ordinary adapter validates the context before NULL propagation.
+    // Validate the target numeric context even for SQL NULL, then let the
+    // numeric adapter propagate NULL without parsing source payload bytes.
     DatatypeNumericOperationRequest numeric;
     numeric.type_id = CanonicalTypeId::real128;
     numeric.operation = DatatypeNumericOperationKind::canonicalize;
-    numeric.left = {CanonicalTypeId::real128, request.value.encoded_value, request.value.is_null};
+    numeric.left = {CanonicalTypeId::real128,
+                    request.value.encoded_value,
+                    request.value.is_null};
+    if (request.value.is_null) {
+      numeric.left.descriptor = request.target_descriptor;
+    }
     numeric.context = request.numeric_context;
+    numeric.result_descriptor = request.target_descriptor;
     auto canonical = ApplyNumericOperation(numeric);
     result.status = canonical.status;
     result.diagnostic = std::move(canonical.diagnostic);
@@ -1387,12 +2138,23 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     }
     return result;
   }
+  if (request.value.is_null) {
+    result.status = OkStatus();
+    result.value.type_id = request.target_type_id;
+    result.value.is_null = true;
+    result.value.descriptor = request.target_descriptor;
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_OK", "datatype.ok");
+    return result;
+  }
   result.status = OkStatus();
   result.value.type_id = request.target_type_id;
   result.value.is_null = request.value.is_null;
   result.value.encoded_value = request.value.encoded_value;
+  if (ExecutionDescriptorPresent(request.target_descriptor)) {
+    result.value.descriptor = request.target_descriptor;
+  }
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
-  if (request.value.is_null) { return result; }
 
   const std::string value = request.value.encoded_value;
   if (request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) {
@@ -1409,7 +2171,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (!ok) { return CastFailure("binary_hex_invalid", result.category); }
     return result;
   }
-  if (request.target_type_id == CanonicalTypeId::character) { return result; }
+  if (request.target_type_id == CanonicalTypeId::character) {
+    if (request.value.type_id == CanonicalTypeId::boolean) {
+      result.value.encoded_value =
+          static_cast<unsigned char>(value[0]) == 1u ? "TRUE" : "FALSE";
+    }
+    return result;
+  }
   if (request.target_type_id == CanonicalTypeId::decimal) {
     DatatypeNumericContext context;
     context.precision = 38;
@@ -1464,13 +2232,16 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     return result;
   }
   if (request.target_type_id == CanonicalTypeId::boolean) {
+    if (request.value.type_id == CanonicalTypeId::boolean) {
+      return result;
+    }
     const std::string lower = LowerAscii(value);
     if (lower == "true" || lower == "1") {
-      result.value.encoded_value = "true";
+      result.value.encoded_value.assign(1, static_cast<char>(1));
       return result;
     }
     if (lower == "false" || lower == "0") {
-      result.value.encoded_value = "false";
+      result.value.encoded_value.assign(1, static_cast<char>(0));
       return result;
     }
     return CastFailure("boolean_invalid", result.category);
@@ -1492,8 +2263,11 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (!StartsWith(value, "P") && !DecimalIntegerText(value, true)) { return CastFailure("interval_invalid", result.category); }
     return result;
   }
-  if (request.target_type_id == CanonicalTypeId::set_value && !StartsWith(value, "SBSET1;")) {
-    return CastFailure("set_encoding_invalid", result.category);
+  if (request.target_type_id == CanonicalTypeId::set_value) {
+    EncodedSetFrame frame;
+    if (!ParseEncodedSet(value, &frame)) {
+      return CastFailure("set_encoding_invalid", result.category);
+    }
   }
   if (request.target_type_id == CanonicalTypeId::json_document ||
       request.target_type_id == CanonicalTypeId::binary_json_document ||
@@ -1515,19 +2289,65 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
-  if (request.value.type_id == CanonicalTypeId::uuid && !CanonicalOperationValueValid(request.value))
-    return ExtractFailure("uuid_binary_length_invalid");
+  if (!CanonicalOperationValueValid(request.value)) {
+    const bool descriptor_or_null_state_failure =
+        request.value.type_id == CanonicalTypeId::unknown ||
+        request.value.type_id == CanonicalTypeId::null_type ||
+        request.value.is_null;
+    return ExtractFailure(
+        request.value.is_null ? "null_or_descriptor_state_invalid"
+                              : "canonical_value_invalid",
+        descriptor_or_null_state_failure
+            ? CanonicalOperationValueDiagnosticCode(
+                  request.value, "SB_DATATYPE_EXTRACT_REJECTED")
+            : "SB_DATATYPE_EXTRACT_REJECTED");
+  }
   DatatypeExtractResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
-  if (request.value.is_null) {
-    result.value = {CanonicalTypeId::null_type, {}, true};
-    return result;
-  }
   if (IsOpaqueRenderOnly(request.value.type_id)) {
     return ExtractFailure("opaque_extract_rejected");
   }
   const std::string field = LowerAscii(request.field);
+  if (request.value.is_null) {
+    CanonicalTypeId result_type = CanonicalTypeId::unknown;
+    if (IsTemporal(request.value.type_id) &&
+        (field == "year" || field == "yyyy" || field == "month" || field == "mm" ||
+         field == "day" || field == "dd" || field == "hour" ||
+         field == "minute" || field == "second")) {
+      result_type = CanonicalTypeId::int32;
+    } else if (request.value.type_id == CanonicalTypeId::interval &&
+               (field == "seconds" || field == "total_seconds")) {
+      result_type = CanonicalTypeId::int64;
+    } else if (request.value.type_id == CanonicalTypeId::uuid && field == "version") {
+      result_type = CanonicalTypeId::uint8;
+    } else if (request.value.type_id == CanonicalTypeId::uuid &&
+               field == "uuidv7_unix_millis") {
+      result_type = CanonicalTypeId::uint64;
+    } else if (request.value.type_id == CanonicalTypeId::character &&
+               (field == "character_length" || field == "octet_length" || field == "length")) {
+      result_type = CanonicalTypeId::uint64;
+    } else if ((request.value.type_id == CanonicalTypeId::binary ||
+                request.value.type_id == CanonicalTypeId::blob) &&
+               (field == "octet_length" || field == "length")) {
+      result_type = CanonicalTypeId::uint64;
+    }
+    if (result_type == CanonicalTypeId::unknown) {
+      return ExtractFailure("unsupported_null_extract_field:" + field);
+    }
+    if (!ExecutionDescriptorValidForType(request.result_descriptor,
+                                         result_type)) {
+      return ExtractFailure("null_extract_result_descriptor_invalid",
+                            "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (!request.result_descriptor.nullable_allowed) {
+      return ExtractFailure("null_extract_result_not_nullable",
+                            "DATATYPE.NULL_NOT_ADMITTED");
+    }
+    result.value = {result_type, {}, true};
+    result.value.descriptor = request.result_descriptor;
+    return result;
+  }
   const std::string value = request.value.encoded_value;
   if (IsTemporal(request.value.type_id)) {
     const std::string component = ExtractTemporalComponent(value, field);
@@ -1578,9 +2398,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     return ExtractFailure("unsupported_binary_field:" + field);
   }
   if (request.value.type_id == CanonicalTypeId::set_value && field == "cardinality") {
-    std::vector<std::string> values;
-    if (!ParseEncodedSet(value, &values)) { return ExtractFailure("set_encoding_invalid"); }
-    result.value = UInt64Value(values.size());
+    EncodedSetFrame frame;
+    if (!ParseEncodedSet(value, &frame)) { return ExtractFailure("set_encoding_invalid"); }
+    result.value = UInt64Value(frame.items.size());
     return result;
   }
   return ExtractFailure("unsupported_extract_type:" + std::string(CanonicalTypeName(request.value.type_id)));
@@ -1588,13 +2408,48 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
 
 DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descriptor,
                                           const std::vector<DatatypeOperationValue>& values) {
-  if (descriptor.element_type_id == CanonicalTypeId::unknown) { return SetFailure("set_element_descriptor_required"); }
+  if (descriptor.element_type_id == CanonicalTypeId::unknown ||
+      descriptor.element_type_id == CanonicalTypeId::null_type) {
+    return SetFailure("set_element_descriptor_required",
+                      "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  const bool element_descriptor_present =
+      ExecutionDescriptorPresent(descriptor.element_descriptor);
+  if ((descriptor.allow_null_elements || element_descriptor_present) &&
+      !ExecutionDescriptorValidForType(descriptor.element_descriptor,
+                                       descriptor.element_type_id)) {
+    return SetFailure("set_element_descriptor_invalid",
+                      "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (descriptor.allow_null_elements &&
+      !descriptor.element_descriptor.nullable_allowed) {
+    return SetFailure("set_element_descriptor_not_nullable",
+                      "DATATYPE.NULL_NOT_ADMITTED");
+  }
   std::vector<std::string> encoded_items;
   std::set<std::string> unique_items;
   for (const auto& value : values) {
-    if (value.is_null && !descriptor.allow_null_elements) { return SetFailure("set_null_element_forbidden"); }
-    if (!value.is_null && value.type_id != descriptor.element_type_id) { return SetFailure("set_element_type_mismatch"); }
-    const std::string encoded = value.is_null ? "<NULL>" : value.encoded_value;
+    if (!CanonicalOperationValueValid(value)) {
+      return SetFailure("set_element_value_invalid",
+                        CanonicalOperationValueDiagnosticCode(
+                            value, "SB_DATATYPE_SET_OPERATION_REJECTED"));
+    }
+    if (value.is_null && !descriptor.allow_null_elements) {
+      return SetFailure("set_null_element_forbidden",
+                        "DATATYPE.NULL_NOT_ADMITTED");
+    }
+    if (value.type_id != descriptor.element_type_id) { return SetFailure("set_element_type_mismatch"); }
+    const bool value_descriptor_present =
+        ExecutionDescriptorPresent(value.descriptor);
+    if (element_descriptor_present != value_descriptor_present ||
+        (element_descriptor_present &&
+         !ExecutionDescriptorEquals(value.descriptor,
+                                    descriptor.element_descriptor))) {
+      return SetFailure("set_element_descriptor_mismatch",
+                        "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    const std::string encoded =
+        value.is_null ? "N" : "V" + HexEncode(value.encoded_value);
     if (!descriptor.allow_duplicates) {
       if (!unique_items.insert(encoded).second) { continue; }
     }
@@ -1602,14 +2457,18 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   }
   if (!descriptor.ordered) { std::sort(encoded_items.begin(), encoded_items.end()); }
   std::ostringstream out;
-  out << "SBSET1;element=" << CanonicalTypeName(descriptor.element_type_id)
+  out << "SBSET2;element=" << CanonicalTypeName(descriptor.element_type_id)
+      << ";descriptor="
+      << (element_descriptor_present
+              ? ExecutionDescriptorFingerprint(descriptor.element_descriptor)
+              : "none")
       << ";ordered=" << (descriptor.ordered ? "1" : "0")
       << ";nulls=" << (descriptor.allow_null_elements ? "1" : "0")
       << ";duplicates=" << (descriptor.allow_duplicates ? "1" : "0")
       << ";items=";
   for (std::size_t i = 0; i < encoded_items.size(); ++i) {
     if (i != 0) { out << ","; }
-    out << HexEncode(encoded_items[i]);
+    out << encoded_items[i];
   }
   DatatypeSetOperationResult result;
   result.status = OkStatus();
@@ -1620,36 +2479,80 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
 }
 
 DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& request) {
+  if (request.descriptor.element_type_id == CanonicalTypeId::unknown ||
+      request.descriptor.element_type_id == CanonicalTypeId::null_type) {
+    return SetFailure("set_element_descriptor_required",
+                      "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (IsOpaqueRenderOnly(request.descriptor.element_type_id)) {
     return SetFailure("opaque_set_operation_rejected");
   }
-  std::vector<std::string> left;
+  EncodedSetFrame left;
   if (!ParseEncodedSet(request.left_encoded_set, &left)) { return SetFailure("left_set_encoding_invalid"); }
+  if (!EncodedSetFrameMatchesDescriptor(left, request.descriptor)) {
+    return SetFailure("left_set_descriptor_mismatch",
+                      "DATATYPE.DESCRIPTOR.INVALID");
+  }
   DatatypeSetOperationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   if (request.operation == DatatypeSetOperationKind::cardinality) {
-    result.value = UInt64Value(left.size());
+    result.value = UInt64Value(left.items.size());
     return result;
   }
-  std::vector<std::string> right;
   if (request.operation == DatatypeSetOperationKind::membership) {
-    result.value = BoolValue(std::find(left.begin(), left.end(), request.right_encoded_set_or_value) != left.end());
+    if (!CanonicalOperationValueValid(request.right_value)) {
+      return SetFailure(
+          "set_membership_value_invalid",
+          CanonicalOperationValueDiagnosticCode(
+              request.right_value, "SB_DATATYPE_SET_OPERATION_REJECTED"));
+    }
+    if (request.right_value.type_id != request.descriptor.element_type_id) {
+      return SetFailure("set_membership_type_mismatch");
+    }
+    if (request.right_value.is_null &&
+        !request.descriptor.allow_null_elements) {
+      return SetFailure("set_membership_null_forbidden",
+                        "DATATYPE.NULL_NOT_ADMITTED");
+    }
+    const bool element_descriptor_present =
+        ExecutionDescriptorPresent(request.descriptor.element_descriptor);
+    const bool value_descriptor_present =
+        ExecutionDescriptorPresent(request.right_value.descriptor);
+    if (element_descriptor_present != value_descriptor_present ||
+        (element_descriptor_present &&
+         !ExecutionDescriptorEquals(request.descriptor.element_descriptor,
+                                    request.right_value.descriptor))) {
+      return SetFailure("set_membership_descriptor_mismatch",
+                        "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    const std::string item = request.right_value.is_null
+        ? "N"
+        : "V" + HexEncode(request.right_value.encoded_value);
+    result.value = BoolValue(std::find(left.items.begin(), left.items.end(),
+                                       item) != left.items.end());
     return result;
   }
-  if (!ParseEncodedSet(request.right_encoded_set_or_value, &right)) { return SetFailure("right_set_encoding_invalid"); }
-  std::sort(left.begin(), left.end());
-  std::sort(right.begin(), right.end());
+  EncodedSetFrame right;
+  if (!ParseEncodedSet(request.right_encoded_set, &right)) { return SetFailure("right_set_encoding_invalid"); }
+  if (!EncodedSetFrameMatchesDescriptor(right, request.descriptor)) {
+    return SetFailure("right_set_descriptor_mismatch",
+                      "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  std::sort(left.items.begin(), left.items.end());
+  std::sort(right.items.begin(), right.items.end());
   if (request.operation == DatatypeSetOperationKind::equals) {
-    result.value = BoolValue(left == right);
+    result.value = BoolValue(left.items == right.items);
     return result;
   }
   if (request.operation == DatatypeSetOperationKind::subset) {
-    result.value = BoolValue(std::includes(right.begin(), right.end(), left.begin(), left.end()));
+    result.value = BoolValue(std::includes(right.items.begin(), right.items.end(),
+                                            left.items.begin(), left.items.end()));
     return result;
   }
   if (request.operation == DatatypeSetOperationKind::superset) {
-    result.value = BoolValue(std::includes(left.begin(), left.end(), right.begin(), right.end()));
+    result.value = BoolValue(std::includes(left.items.begin(), left.items.end(),
+                                            right.items.begin(), right.items.end()));
     return result;
   }
   return SetFailure("unknown_set_operation");
@@ -1658,10 +2561,12 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
 DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperationRequest& request) {
   namespace numeric = scratchbird::libraries::sbl_numeric;
 
-  const auto invalid_request = [&](std::string detail) {
+  const auto invalid_request = [&](std::string detail,
+                                   const char* diagnostic_code = nullptr) {
     auto failed = NumericFailure(std::move(detail),
-        request.type_id == CanonicalTypeId::real128 ? "NUMERIC.REAL128.INVALID" :
-        "SB_DATATYPE_NUMERIC_OPERATION_REJECTED");
+        diagnostic_code != nullptr ? diagnostic_code :
+        (request.type_id == CanonicalTypeId::real128 ? "NUMERIC.REAL128.INVALID" :
+         "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
     failed.numeric_facts.invalid = true;
     return failed;
   };
@@ -1669,6 +2574,39 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   result.status = OkStatus();
   result.value = {request.type_id, {}, false};
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+
+  if (!CanonicalOperationValueValid(request.left) ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       !CanonicalOperationValueValid(request.right))) {
+    const DatatypeOperationValue& invalid_value =
+        !CanonicalOperationValueValid(request.left) ? request.left : request.right;
+    const bool descriptor_or_null_state_failure =
+        invalid_value.type_id == CanonicalTypeId::unknown ||
+        invalid_value.type_id == CanonicalTypeId::null_type ||
+        invalid_value.is_null;
+    return invalid_request(
+        "numeric_argument_value_invalid",
+        descriptor_or_null_state_failure
+            ? CanonicalOperationValueDiagnosticCode(invalid_value)
+            : nullptr);
+  }
+  const CanonicalTypeId declared_result_type =
+      request.operation == DatatypeNumericOperationKind::compare
+          ? CanonicalTypeId::boolean
+          : request.type_id;
+  const bool null_result_possible = request.left.is_null ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       request.right.is_null);
+  if (null_result_possible &&
+      !ExecutionDescriptorValidForType(request.result_descriptor,
+                                       declared_result_type)) {
+    return invalid_request("numeric_result_descriptor_invalid",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (null_result_possible && !request.result_descriptor.nullable_allowed) {
+    return invalid_request("numeric_result_descriptor_not_nullable",
+                           "DATATYPE.NULL_NOT_ADMITTED");
+  }
 
   numeric::NumericRequest backend_request;
   backend_request.left.is_null = request.left.is_null;
@@ -1723,7 +2661,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   const numeric::NumericResult backend_result = numeric::ApplyNumericOperation(backend_request);
   result.numeric_facts = NumericFacts(backend_result);
   if (backend_result.status == numeric::NumericStatusCode::null_result) {
-    result.value = {CanonicalTypeId::null_type, {}, true};
+    result.value = {declared_result_type, {}, true};
+    result.value.descriptor = request.result_descriptor;
     return result;
   }
   if (backend_result.status != numeric::NumericStatusCode::ok) {
@@ -1737,6 +2676,14 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   result.comparison = backend_result.comparison;
   if (request.operation == DatatypeNumericOperationKind::compare) {
     result.value = BoolValue(result.comparison == 0);
+    if (ExecutionDescriptorPresent(request.result_descriptor)) {
+      if (!ExecutionDescriptorValidForType(request.result_descriptor,
+                                           CanonicalTypeId::boolean)) {
+        return invalid_request("numeric_compare_result_descriptor_invalid",
+                               "DATATYPE.DESCRIPTOR.INVALID");
+      }
+      result.value.descriptor = request.result_descriptor;
+    }
     return result;
   }
   result.value.encoded_value = backend_result.value.encoded;
@@ -1747,6 +2694,17 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (!CanonicalOperationValueValid(request.left) || !CanonicalOperationValueValid(request.right)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        !CanonicalOperationValueValid(request.left)
+            ? CanonicalOperationValueDiagnosticCode(
+                  request.left, "SB_DATATYPE_COMPARISON_REJECTED")
+            : CanonicalOperationValueDiagnosticCode(
+                  request.right, "SB_DATATYPE_COMPARISON_REJECTED"),
+        "datatype.comparison.rejected", "canonical_value_encoding_invalid");
+    return result;
+  }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
       request.null_ordering != DatatypeNullOrdering::nulls_last) {
     result.status = ErrorStatus();
@@ -1754,11 +2712,12 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "invalid_null_ordering");
     return result;
   }
-
-  if (!CanonicalOperationValueValid(request.left) || !CanonicalOperationValueValid(request.right)) {
+  if (request.left.type_id != request.right.type_id) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "canonical_value_encoding_invalid");
+                                                        "SB_DATATYPE_COMPARISON_REJECTED",
+                                                        "datatype.comparison.rejected",
+                                                        "type_mismatch");
     return result;
   }
   if ((!request.left.is_null && IsInteger(request.left.type_id) &&
@@ -1778,14 +2737,6 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
       const int null_compare = request.null_ordering == DatatypeNullOrdering::nulls_first ? -1 : 1;
       result.comparison = request.left.is_null ? null_compare : -null_compare;
     }
-    return result;
-  }
-  if (request.left.type_id != request.right.type_id) {
-    result.status = ErrorStatus();
-    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                        "SB_DATATYPE_COMPARISON_REJECTED",
-                                                        "datatype.comparison.rejected",
-                                                        "type_mismatch");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::real128 ||
@@ -2060,17 +3011,19 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (!CanonicalOperationValueValid(request.value)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        CanonicalOperationValueDiagnosticCode(
+            request.value, "SB_DATATYPE_SORT_KEY_REJECTED"),
+        "datatype.sort_key.rejected", "canonical_value_encoding_invalid");
+    return result;
+  }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
       request.null_ordering != DatatypeNullOrdering::nulls_last) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
         "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "invalid_null_ordering");
-    return result;
-  }
-  if (!CanonicalOperationValueValid(request.value)) {
-    result.status = ErrorStatus();
-    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::uuid) {
@@ -2190,7 +3143,8 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status,
-        "SB_DATATYPE_HASH_REJECTED",
+        CanonicalOperationValueDiagnosticCode(
+            request.value, "SB_DATATYPE_HASH_REJECTED"),
         "datatype.hash.rejected",
         failure_detail);
     return result;
@@ -2224,7 +3178,9 @@ DatatypeSerializationResult SerializeDatatypeValue(
   if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_SERIALIZATION_REJECTED", "datatype.serialization.rejected", "canonical_value_encoding_invalid");
+        CanonicalOperationValueDiagnosticCode(
+            request.value, "SB_DATATYPE_SERIALIZATION_REJECTED"),
+        "datatype.serialization.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::unknown) {
@@ -2235,6 +3191,16 @@ DatatypeSerializationResult SerializeDatatypeValue(
                                                         "unknown_type");
     return result;
   }
+  if (request.value.type_id == CanonicalTypeId::null_type) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.serialization.rejected",
+        "standalone_null_type");
+    return result;
+  }
+  result.descriptor = request.value.descriptor;
   if (request.value.type_id == CanonicalTypeId::uuid) {
     // UUID-OPERATION-VALUE-BINARY-001: exact state/length framing, raw value bits.
     result.serialized_value.assign("SBDVUUID", 8);
@@ -2257,21 +3223,72 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   if (StartsWith(request.serialized_value, "SBDVUUID")) {
     const auto& bytes = request.serialized_value;
-    const bool valid = bytes.size() >= 10 &&
-        ((bytes[8] == '\0' && bytes[9] == '\0' && bytes.size() == 10) ||
-         (bytes[8] == '\1' && bytes[9] == '\20' && bytes.size() == 26)) &&
-        (request.expected_type_id == CanonicalTypeId::unknown ||
-         request.expected_type_id == CanonicalTypeId::uuid);
-    if (!valid) {
+    if (bytes.size() < 10) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
           "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected",
           "uuid_binary_frame_invalid");
       return result;
     }
+    const auto declared_payload_size =
+        static_cast<std::size_t>(static_cast<unsigned char>(bytes[9]));
+    if (bytes.size() != 10 + declared_payload_size) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+          "datatype.deserialization.rejected", "uuid_binary_frame_invalid");
+      return result;
+    }
+    if (request.expected_type_id != CanonicalTypeId::unknown &&
+        request.expected_type_id != CanonicalTypeId::uuid) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.deserialization.rejected", "type_mismatch");
+      return result;
+    }
+    const bool decoded_is_null = bytes[8] == '\0';
+    if ((decoded_is_null || ExecutionDescriptorPresent(request.expected_descriptor)) &&
+        !ExecutionDescriptorValidForType(request.expected_descriptor,
+                                         CanonicalTypeId::uuid)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.deserialization.rejected", "expected_descriptor_invalid");
+      return result;
+    }
+    if (bytes[8] != '\0' && bytes[8] != '\1') {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DTYPE.VALUE.STATE_UNHANDLED",
+          "datatype.deserialization.rejected", "value_state_invalid");
+      return result;
+    }
+    if (decoded_is_null && (bytes[9] != '\0' || bytes.size() != 10)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.NULL_STATE.INVALID",
+          "datatype.deserialization.rejected", "null_payload_present");
+      return result;
+    }
+    if (bytes[8] == '\1' && (bytes[9] != '\20' || bytes.size() != 26)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+          "datatype.deserialization.rejected", "uuid_binary_frame_invalid");
+      return result;
+    }
+    if (decoded_is_null && !request.expected_descriptor.nullable_allowed) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.NULL_NOT_ADMITTED",
+          "datatype.deserialization.rejected", "expected_descriptor_not_nullable");
+      return result;
+    }
     result.value.type_id = CanonicalTypeId::uuid;
-    result.value.is_null = bytes[8] == '\0';
+    result.value.is_null = decoded_is_null;
     result.value.encoded_value = bytes.substr(10);
+    result.value.descriptor = request.expected_descriptor;
     return result;
   }
   if (!StartsWith(request.serialized_value, "SBDV1;")) {
@@ -2283,26 +3300,100 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
     return result;
   }
   std::map<std::string, std::string> fields;
-  for (const auto& part : Split(request.serialized_value.substr(6), ';')) {
-    const auto equals = part.find('=');
-    if (equals == std::string::npos) { continue; }
-    fields[part.substr(0, equals)] = part.substr(equals + 1);
+  bool malformed_fields = false;
+  const auto parts = Split(request.serialized_value.substr(6), ';');
+  if (parts.size() != 3 ||
+      (!request.serialized_value.empty() &&
+       request.serialized_value.back() == ';')) {
+    malformed_fields = true;
   }
-  const CanonicalTypeId type_id = CanonicalTypeIdFromStableName(fields["type"]);
-  if (type_id == CanonicalTypeId::unknown || type_id == CanonicalTypeId::uuid ||
+  for (const auto& part : parts) {
+    const auto equals = part.find('=');
+    if (equals == std::string::npos || equals == 0) {
+      malformed_fields = true;
+      continue;
+    }
+    const auto key = part.substr(0, equals);
+    if ((key != "type" && key != "state" && key != "payload") ||
+        !fields.emplace(key, part.substr(equals + 1)).second) {
+      malformed_fields = true;
+    }
+  }
+  if (malformed_fields || fields.size() != 3 || !fields.contains("type") ||
+      !fields.contains("state") || !fields.contains("payload")) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected", "field_frame_invalid");
+    return result;
+  }
+  const std::string stable_type_name = LowerAscii(fields.at("type"));
+  if (stable_type_name == "null" || stable_type_name == "null_type") {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "standalone_null_type");
+    return result;
+  }
+  const CanonicalTypeId type_id =
+      CanonicalTypeIdFromStableName(stable_type_name);
+  if (type_id == CanonicalTypeId::unknown ||
       (request.expected_type_id != CanonicalTypeId::unknown &&
        request.expected_type_id != type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "type_mismatch");
+    return result;
+  }
+  if (type_id == CanonicalTypeId::uuid) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
                                                         "SB_DATATYPE_DESERIALIZATION_REJECTED",
                                                         "datatype.deserialization.rejected",
-                                                        "type_mismatch");
+                                                        "uuid_codec_mismatch");
     return result;
   }
   bool ok = false;
   DatatypeOperationValue staged;
   staged.type_id = type_id;
-  staged.is_null = fields["state"] == "null";
+  const auto& state = fields.at("state");
+  if (ExecutionDescriptorPresent(request.expected_descriptor) &&
+      !ExecutionDescriptorValidForType(request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
+  if (state != "null" && state != "value") {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DTYPE.VALUE.STATE_UNHANDLED",
+        "datatype.deserialization.rejected", "value_state_invalid");
+    return result;
+  }
+  staged.is_null = state == "null";
+  if (staged.is_null &&
+      !ExecutionDescriptorValidForType(request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
+  staged.descriptor = request.expected_descriptor;
+  if (staged.is_null) {
+    const auto& payload = fields.at("payload");
+    if (!payload.empty()) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.NULL_STATE.INVALID",
+          "datatype.deserialization.rejected", "null_payload_present");
+      return result;
+    }
+    ok = true;
+  }
   if (!staged.is_null) {
     // Empty TEXT is a value, not NULL or a missing payload field.
     if (type_id == CanonicalTypeId::character && fields.contains("payload") &&
@@ -2320,10 +3411,19 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
                                                         "payload_hex_invalid");
     return result;
   }
+  if (staged.is_null && !request.expected_descriptor.nullable_allowed) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.NULL_NOT_ADMITTED",
+        "datatype.deserialization.rejected", "expected_descriptor_not_nullable");
+    return result;
+  }
   if (!CanonicalOperationValueValid(staged)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-        "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected", "canonical_value_encoding_invalid");
+        CanonicalOperationValueDiagnosticCode(
+            staged, "SB_DATATYPE_DESERIALIZATION_REJECTED"),
+        "datatype.deserialization.rejected", "canonical_value_encoding_invalid");
     return result;
   }
   result.value = std::move(staged);
@@ -2337,13 +3437,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
-  if (request.value.type_id == CanonicalTypeId::unknown) {
+  if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status,
-        "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        CanonicalOperationValueDiagnosticCode(
+            request.value, "SB_DATATYPE_DISPLAY_RENDER_REJECTED"),
         "datatype.display_render.rejected",
-        "unknown_type");
+        request.value.type_id == CanonicalTypeId::null_type
+            ? "standalone_null_type"
+            : "canonical_value_encoding_invalid");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);
@@ -2354,6 +3457,13 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   if (request.value.type_id == CanonicalTypeId::binary ||
       request.value.type_id == CanonicalTypeId::bit_string) {
     result.display_value = "0x" + HexEncodeLower(request.value.encoded_value);
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::boolean) {
+    result.display_value =
+        static_cast<unsigned char>(request.value.encoded_value[0]) == 1u
+            ? "TRUE"
+            : "FALSE";
     return result;
   }
   if (DisplayAsMetadataSummary(request.value.type_id) &&

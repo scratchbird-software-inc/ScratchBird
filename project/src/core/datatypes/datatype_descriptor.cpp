@@ -300,7 +300,6 @@ const char* TypeWidthClassName(TypeWidthClass width_class) {
 
 const std::vector<DatatypeDescriptor>& BuiltinDatatypeDescriptors() {
   static const std::vector<DatatypeDescriptor> descriptors = {
-      Descriptor(CanonicalTypeId::null_type, TypeFamily::null_type, TypeWidthClass::fixed, "null", 0),
       Descriptor(CanonicalTypeId::boolean, TypeFamily::boolean, TypeWidthClass::fixed, "boolean", 1),
       Descriptor(CanonicalTypeId::int8, TypeFamily::signed_integer, TypeWidthClass::fixed, "int8", 8),
       Descriptor(CanonicalTypeId::int16, TypeFamily::signed_integer, TypeWidthClass::fixed, "int16", 16),
@@ -459,7 +458,9 @@ DatatypeDescriptorResult ValidateDatatypeDescriptor(const DatatypeDescriptor& de
   result.status = DatatypeOkStatus();
   result.descriptor = descriptor;
 
-  if (descriptor.type_id == CanonicalTypeId::unknown || descriptor.family == TypeFamily::unknown ||
+  if (descriptor.type_id == CanonicalTypeId::null_type ||
+      descriptor.type_id == CanonicalTypeId::unknown ||
+      descriptor.family == TypeFamily::null_type || descriptor.family == TypeFamily::unknown ||
       descriptor.width_class == TypeWidthClass::unknown || descriptor.stable_name.empty()) {
     result.status = DatatypeErrorStatus();
     result.diagnostic = MakeDatatypeDiagnostic(result.status,
@@ -487,8 +488,7 @@ DatatypeDescriptorResult ValidateDatatypeDescriptor(const DatatypeDescriptor& de
     return result;
   }
 
-  if (descriptor.width_class == TypeWidthClass::fixed && descriptor.type_id != CanonicalTypeId::null_type &&
-      descriptor.bit_width == 0) {
+  if (descriptor.width_class == TypeWidthClass::fixed && descriptor.bit_width == 0) {
     result.status = DatatypeErrorStatus();
     result.diagnostic = MakeDatatypeDiagnostic(result.status,
                                                "SB-DATATYPE-FIXED-WIDTH-MISSING",
@@ -640,7 +640,7 @@ ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
     SetModifier(&result.descriptor.modifier_flags,
                 scratchbird::engine::ExecutionTypeModifierFlag::domain_stack);
     if (IsNilEngineUuid(result.descriptor.domain_uuid)) {
-      result.descriptor.domain_uuid = result.descriptor.domain_stack.back();
+      result.descriptor.domain_uuid = result.descriptor.domain_stack.front();
       SetModifier(&result.descriptor.modifier_flags,
                   scratchbird::engine::ExecutionTypeModifierFlag::domain_uuid);
     }
