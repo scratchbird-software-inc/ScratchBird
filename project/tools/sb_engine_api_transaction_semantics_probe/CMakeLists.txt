@@ -7,9 +7,8 @@
 # SPDX-License-Identifier: MPL-2.0
 
 add_executable(sb_engine_api_transaction_semantics_probe main.cpp)
-target_link_libraries(sb_engine_api_transaction_semantics_probe PRIVATE sb_engine_internal_api sb_storage_database sb_core_uuid)
-target_compile_features(sb_engine_api_transaction_semantics_probe PRIVATE cxx_std_20)
+target_link_libraries(sb_engine_api_transaction_semantics_probe PRIVATE sb_engine sb_engine_internal_api sb_storage_database sb_core_uuid)
+target_compile_features(sb_engine_api_transaction_semantics_probe PRIVATE cxx_std_23)
 add_test(NAME sb_engine_api_transaction_semantics_probe COMMAND sb_engine_api_transaction_semantics_probe
-  --path /tmp/sb_engine_api_transaction_semantics_probe.sbdb
-  --creation-ms 1777936201035
-  --overwrite)
+  --isolated-run
+  --creation-ms 1777936201035)

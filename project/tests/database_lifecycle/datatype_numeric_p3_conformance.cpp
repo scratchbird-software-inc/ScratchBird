@@ -1,4 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -29,6 +31,7 @@
 #include <filesystem>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -45,8 +48,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -54,11 +56,7 @@ void Require(bool condition, std::string_view message) {
 }
 
 dt::WireUuidBytes WireUuid(std::uint8_t seed) {
-  dt::WireUuidBytes value{};
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    value[index] = static_cast<std::uint8_t>(seed + index);
-  }
-  return value;
+  return scratchbird::tests::FixtureUuid(1326, 1000 + seed).bytes;
 }
 
 dt::NullableText PresentText(std::string text) {
@@ -108,9 +106,13 @@ std::uint64_t CurrentUnixMillis() {
           .count());
 }
 
-std::filesystem::path TempDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_p3_datatype_numeric_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+std::filesystem::path CreateFixtureDirectory() {
+  const auto generated = uuid::GenerateEngineIdentityV7(platform::UuidKind::object, CurrentUnixMillis());
+  Require(generated.ok(), "numeric fixture UUID allocation failed");
+  const auto path = std::filesystem::temp_directory_path() /
+      ("sb_p3_datatype_numeric_" + uuid::UuidToString(generated.value.value));
+  Require(std::filesystem::create_directory(path), "numeric fixture directory is not fresh");
+  return path;
 }
 
 dt::DatatypeOperationValue Value(dt::CanonicalTypeId type, std::string encoded) {
@@ -216,7 +218,7 @@ void TestNumericBackend() {
   Require(result.value.encoded.find("3.75") == 0, "real128 add result mismatch");
 }
 
-void TestDatatypeOperations() {
+void TestDatatypeOperations(const api::EngineRequestContext& context) {
   dt::DatatypeNumericOperationRequest numeric_request;
   numeric_request.operation = dt::DatatypeNumericOperationKind::multiply;
   numeric_request.type_id = dt::CanonicalTypeId::decimal;
@@ -254,15 +256,22 @@ void TestDatatypeOperations() {
   compare.left = Value(dt::CanonicalTypeId::character, "Alpha");
   compare.right = Value(dt::CanonicalTypeId::character, "alpha");
   compare.case_insensitive_character_compare = true;
-  compare.text_seed.active = true;
-  compare.text_seed.seed_pack_name = "initial-resource-pack";
-  compare.text_seed.seed_pack_version = "1";
-  compare.text_seed.charset_name = "UTF-8";
-  compare.text_seed.collation_name = "unicode_ci";
-  compare.text_seed.collation_case_insensitive = true;
+  const auto collation = api::LookupEngineResourceDescriptorByName(context, "SB_UCA_17_SECONDARY", "collation");
+  if (!collation.ok) std::cerr << collation.diagnostic.code << ':' << collation.diagnostic.detail << '\n';
+  Require(collation.ok && collation.resource_descriptor.present,
+          "persisted case-insensitive collation missing");
+  compare.text_seed = api::TextSeedFromResource(collation.resource_descriptor);
   auto comparison = dt::CompareDatatypeValues(compare);
   Require(comparison.ok(), "case-insensitive comparison with seed authority failed");
   Require(comparison.comparison == 0, "case-insensitive comparison result mismatch");
+
+  const auto bound_seed = compare.text_seed;
+  compare.text_seed.collation_uuid = {};
+  Require(!dt::CompareDatatypeValues(compare).ok(), "names substituted for binary collation authority");
+  compare.text_seed = bound_seed;
+  compare.text_seed.collation_epoch = 0;
+  Require(!dt::CompareDatatypeValues(compare).ok(), "absent collation epoch was accepted");
+  compare.text_seed = bound_seed;
 
   compare.text_seed.active = false;
   comparison = dt::CompareDatatypeValues(compare);
@@ -497,45 +506,31 @@ void TestDsr023DriverAndSysInformationMetadata() {
   }
 }
 
-api::EngineUuid CreateDatabase(const std::filesystem::path& path) {
+db::DatabaseCreateConfig CreateDatabase(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
   create.path = path.string();
   create.database_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::database, 1779810301000).value;
   create.filespace_uuid = uuid::GenerateEngineIdentityV7(platform::UuidKind::filespace, 1779810301001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810301002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ":" << created.diagnostic.message_key << '\n';
   }
   Require(created.ok(), "datatype/domain database create failed");
-  return create.database_uuid.value;
+  return create;
 }
 
-api::EngineRequestContext BaseDomainContext(const std::filesystem::path& path,
-                                            const api::EngineUuid& database_uuid) {
-  api::EngineRequestContext context;
+api::EngineRequestContext BaseDomainContext(const db::DatabaseCreateConfig& create) {
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "p3-domain-method";
-  context.database_path = path.string();
-  context.database_uuid = database_uuid;
-  context.principal_uuid = scratchbird::tests::FixtureUuid(1208, 1101);
-  context.session_uuid = scratchbird::tests::FixtureUuid(1208, 1102);
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("role:ROOT");
   return context;
 }
 
-api::EngineRequestContext BeginDomainContext(const std::filesystem::path& path,
-                                             const api::EngineUuid& database_uuid) {
+api::EngineRequestContext BeginDomainContext(const api::EngineRequestContext& owner) {
   api::EngineBeginTransactionRequest request;
-  request.context = BaseDomainContext(path, database_uuid);
+  request.context = owner;
   request.isolation_level = "read_committed";
   const auto begun = api::EngineBeginTransaction(request);
   if (!begun.ok) {
@@ -573,8 +568,8 @@ api::DomainRecord Domain(std::uint64_t creator_tx,
   return record;
 }
 
-void TestDomainMethodBinding(const std::filesystem::path& path, const api::EngineUuid& database_uuid) {
-  const auto context = BeginDomainContext(path, database_uuid);
+void TestDomainMethodBinding(const api::EngineRequestContext& owner) {
+  const auto context = BeginDomainContext(owner);
 
   const auto no_method_domain = Domain(context.local_transaction_id, scratchbird::tests::FixtureUuid(1326, 4), scratchbird::tests::FixtureUuid(1326, 5), "no_method_domain", {});
   auto diagnostic = api::AppendDomainEvent(context, api::MakeDomainCreateEvent(no_method_domain));
@@ -602,6 +597,9 @@ void TestDomainMethodBinding(const std::filesystem::path& path, const api::Engin
 
   RequireMetricOk(metrics::RecordDomainMethodInvocation(upper_domain.domain_uuid, "upper", "ok", "none"),
                   "domain method metric failed");
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = context;
+  Require(api::EngineRollbackTransaction(rollback).ok, "domain fixture transaction rollback failed");
 }
 
 void TestDatatypeMetrics() {
@@ -637,27 +635,39 @@ void TestDatatypeMetrics() {
 
 }  // namespace
 
-int main() {
-  const auto path = TempDatabasePath();
-  const auto database_uuid = CreateDatabase(path);
+int Run() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("datatype-numeric-p3");
   struct Cleanup {
     std::filesystem::path path;
     ~Cleanup() {
       std::error_code ignored;
-      std::filesystem::remove(path, ignored);
-      std::filesystem::remove(path.string() + ".sb.crud_events", ignored);
-      std::filesystem::remove(path.string() + ".sb.domain_events", ignored);
+      std::filesystem::remove_all(path, ignored);
     }
-  } cleanup{path};
+  } cleanup{CreateFixtureDirectory()};
+  const auto create = CreateDatabase(cleanup.path / "numeric.sbdb");
+  const auto owner = BaseDomainContext(create);
 
   TestMandatoryDatatypeCapabilities();
   TestNumericBackend();
-  TestDatatypeOperations();
+  const auto resource_context = BeginDomainContext(owner);
+  TestDatatypeOperations(resource_context);
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = resource_context;
+  Require(api::EngineRollbackTransaction(rollback).ok, "numeric resource fixture rollback failed");
   TestDsr023WireTypeAndMetadataRoundTrip();
   TestDsr023ParameterValueStates();
   TestDsr023RowDescriptionDiscriminators();
   TestDsr023DriverAndSysInformationMetadata();
-  TestDomainMethodBinding(path, database_uuid);
+  TestDomainMethodBinding(owner);
   TestDatatypeMetrics();
   return EXIT_SUCCESS;
+}
+
+int main() {
+  try {
+    return Run();
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
 }

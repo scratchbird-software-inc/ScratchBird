@@ -82,6 +82,14 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 api::EngineUuid NewUuid(UuidKind kind) {
+  if (kind == UuidKind::session) {
+    // A session owns a live runtime identity, never a durable catalog identity.
+    const auto issued = uuid::IssueRuntimeIdentityV7();
+    Require(issued.has_value(), "test session UUID generation failed");
+    const auto session = uuid::MakeTypedUuid(kind, *issued);
+    Require(session.ok(), "test session UUID admission failed");
+    return session.value.value;
+  }
   static std::uint64_t sequence = 0;
   const auto seed = CurrentUnixMillis() + (++sequence);
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);

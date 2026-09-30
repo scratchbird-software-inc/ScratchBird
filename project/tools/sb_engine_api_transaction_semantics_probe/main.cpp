@@ -16,11 +16,18 @@
 #include "transaction/transaction_inspect_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
+#include "../../tests/support/sb_test_temp_compat.hpp"
+#include "../../tests/support/engine_statement_fixture.hpp"
+#include "../../tests/support/catalog_column_binding_fixture.hpp"
+#include "../../tests/support/catalog_text_binding_fixture.hpp"
+#include "memory.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,15 +35,39 @@ using namespace scratchbird::engine::internal_api;
 
 namespace {
 
+EngineRequestContext fixture_owner;
+std::map<EngineUuid, std::unique_ptr<scratchbird::tests::FixtureEngineSession>> fixture_sessions;
+std::vector<std::unique_ptr<scratchbird::tests::FixtureEngineStatement>> fixture_statements;
+struct ProbeAuthorityLifetime {
+  ~ProbeAuthorityLifetime() {
+    fixture_statements.clear();
+    fixture_sessions.clear();
+  }
+};
+
+template<class Result>
+Result Diagnosed(Result result) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  return result;
+}
+
 struct Args {
   std::string path;
   std::uint64_t creation_millis = 0;
   bool overwrite = false;
+  bool isolated_run = false;
 };
 
 bool ParseArgs(int argc, char** argv, Args* args) {
   for (int i = 1; i < argc; ++i) {
     const std::string key = argv[i];
+    if (key == "--isolated-run") {
+      args->isolated_run = true;
+      continue;
+    }
     if (key == "--overwrite") {
       args->overwrite = true;
       continue;
@@ -47,8 +78,42 @@ bool ParseArgs(int argc, char** argv, Args* args) {
     else if (key == "--creation-ms") { args->creation_millis = static_cast<std::uint64_t>(std::stoull(value)); }
     else { return false; }
   }
-  return !args->path.empty() && args->creation_millis != 0;
+  return (args->isolated_run ? args->path.empty() && !args->overwrite
+                             : !args->path.empty()) && args->creation_millis != 0;
 }
+
+// CTest owns a fresh directory, never a shared fixed /tmp filename. Keep the
+// explicit --path mode for manual probes; it is not used by regression runs.
+class OwnedProbeDirectory {
+ public:
+  explicit OwnedProbeDirectory(bool enabled) {
+    if (!enabled) return;
+    auto pattern = (std::filesystem::temp_directory_path() /
+                    "sb_transaction_probe.XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const auto made = ::mkdtemp(writable.data());
+    if (!made) throw std::runtime_error("cannot create isolated transaction probe directory");
+    path_ = made;
+  }
+  ~OwnedProbeDirectory() { Cleanup(); }
+  OwnedProbeDirectory(const OwnedProbeDirectory&) = delete;
+  OwnedProbeDirectory& operator=(const OwnedProbeDirectory&) = delete;
+  const std::filesystem::path& path() const { return path_; }
+  bool Cleanup() noexcept {
+    if (path_.empty()) return true;
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+    if (error) {
+      std::cerr << "transaction probe cleanup failed: " << error.message() << '\n';
+      return false;
+    }
+    path_.clear();
+    return true;
+  }
+ private:
+  std::filesystem::path path_;
+};
 
 bool HasDiagnostic(const EngineApiResult& result, const std::string& code) {
   for (const auto& diagnostic : result.diagnostics) {
@@ -58,28 +123,10 @@ bool HasDiagnostic(const EngineApiResult& result, const std::string& code) {
 }
 
 EngineRequestContext BaseContext(const Args& args, const EngineUuid& database_identity) {
-  EngineRequestContext context;
-  context.trust_mode = EngineTrustMode::embedded_in_process;
-  context.security_context_present = true;
+  auto context = fixture_owner;
   context.request_id = "engine-api-transaction-semantics-probe";
   context.database_path = args.path;
-  const auto principal_uuid =
-      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::principal,
-                                                        args.creation_millis + 12);
   context.database_uuid = database_identity;
-  if (principal_uuid.ok()) {
-    context.principal_uuid = principal_uuid.value.value;
-  }
-  context.session_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
-      scratchbird::core::platform::UuidKind::object, args.creation_millis + 13).value.value;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.datatype_catalog_snapshot_uuid.bytes =
-      {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01};
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -119,8 +166,7 @@ bool CreateProbeDatabase(const Args& args, EngineUuid* database_identity) {
   create.filespace_uuid = filespace_uuid.value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = args.creation_millis;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.allow_overwrite = args.overwrite;
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
   if (!created.ok()) {
@@ -128,6 +174,7 @@ bool CreateProbeDatabase(const Args& args, EngineUuid* database_identity) {
     return false;
   }
   *database_identity = create.database_uuid.value;
+  fixture_owner = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   return true;
 }
 
@@ -136,14 +183,19 @@ EngineRequestContext TxContext(EngineRequestContext base, const EngineBeginTrans
   base.transaction_uuid = tx.transaction_uuid;
   base.transaction_isolation_level = tx.isolation_level;
   base.snapshot_visible_through_local_transaction_id = tx.snapshot_visible_through_local_transaction_id;
-  return base;
+  if (!tx.ok) throw std::runtime_error("transaction probe begin failed");
+  auto& session = fixture_sessions[base.session_uuid];
+  if (!session) session = std::make_unique<scratchbird::tests::FixtureEngineSession>(base);
+  fixture_statements.push_back(
+      std::make_unique<scratchbird::tests::FixtureEngineStatement>(*session, base));
+  return fixture_statements.back()->context;
 }
 
 EngineBeginTransactionResult Begin(const EngineRequestContext& base, std::string isolation = "read_committed") {
   EngineBeginTransactionRequest request;
   request.context = base;
   request.isolation_level = std::move(isolation);
-  return EngineBeginTransaction(request);
+  return Diagnosed(EngineBeginTransaction(request));
 }
 
 EngineCreateSchemaResult CreateProbeSchema(const EngineRequestContext& tx_context) {
@@ -173,12 +225,17 @@ bool Rollback(const EngineRequestContext& tx_context) {
   return RollbackResult(tx_context).ok;
 }
 
-EngineColumnDefinition Column(std::string name, std::string type, std::uint32_t ordinal) {
+EngineColumnDefinition Column(const EngineRequestContext& context, std::string name,
+                              std::string type, std::uint32_t ordinal) {
   EngineColumnDefinition column;
   column.ordinal = ordinal;
   column.names.push_back({"en", "default", name, name, true});
   column.descriptor.canonical_type_name = type;
   column.descriptor.encoded_descriptor = "type=" + type;
+  const auto canonical_type = scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type);
+  scratchbird::tests::BindFixtureColumnDatatype(context, canonical_type, column);
+  if (canonical_type == scratchbird::core::datatypes::CanonicalTypeId::character)
+    scratchbird::tests::BindFixtureUtf8BinaryTextResources(context, column);
   return column;
 }
 
@@ -244,7 +301,7 @@ EngineInsertRowsResult InsertPerson(const EngineRequestContext& tx_context,
   request.context = tx_context;
   request.target_table = table;
   request.input_rows.push_back(PersonRow(std::move(id), std::move(name), std::move(age)));
-  return EngineInsertRows(request);
+  return Diagnosed(EngineInsertRows(request));
 }
 
 EngineUpdateRowsResult UpdateName(const EngineRequestContext& tx_context,
@@ -257,7 +314,7 @@ EngineUpdateRowsResult UpdateName(const EngineRequestContext& tx_context,
   request.update_predicate.predicate_kind = "row_uuid_match";
   request.update_predicate.row_uuid = row_uuid;
   request.assignments.push_back({"name", Value(std::move(name))});
-  return EngineUpdateRows(request);
+  return Diagnosed(EngineUpdateRows(request));
 }
 
 EngineDeleteRowsResult DeleteRow(const EngineRequestContext& tx_context,
@@ -275,10 +332,10 @@ EngineCreateTableResult CreatePersonTable(const EngineRequestContext& tx_context
   EngineCreateTableRequest request;
   request.context = tx_context;
   request.table_names.push_back({"en", "default", "person", "person", true});
-  request.table_columns.push_back(Column("id", "text", 1));
-  request.table_columns.push_back(Column("name", "text", 2));
-  request.table_columns.push_back(Column("age", "int32", 3));
-  return EngineCreateTable(request);
+  request.table_columns.push_back(Column(tx_context, "id", "text", 0));
+  request.table_columns.push_back(Column(tx_context, "name", "text", 1));
+  request.table_columns.push_back(Column(tx_context, "age", "int32", 2));
+  return Diagnosed(EngineCreateTable(request));
 }
 
 EngineCreateTableResult CreateTemporaryPersonTable(const EngineRequestContext& tx_context,
@@ -287,18 +344,23 @@ EngineCreateTableResult CreateTemporaryPersonTable(const EngineRequestContext& t
   EngineCreateTableRequest request;
   request.context = tx_context;
   request.table_names.push_back({"en", "default", name, name, true});
-  request.table_columns.push_back(Column("id", "text", 1));
-  request.table_columns.push_back(Column("name", "text", 2));
-  request.table_columns.push_back(Column("age", "int32", 3));
+  request.table_columns.push_back(Column(tx_context, "id", "text", 0));
+  request.table_columns.push_back(Column(tx_context, "name", "text", 1));
+  request.table_columns.push_back(Column(tx_context, "age", "int32", 2));
   request.option_envelopes.push_back("temporary:true");
   request.option_envelopes.push_back(std::move(on_commit));
-  return EngineCreateTable(request);
+  return Diagnosed(EngineCreateTable(request));
 }
 
 bool InvalidCrudWithoutTransaction(const EngineRequestContext& base, const EngineObjectReference& table) {
   EngineCreateTableRequest create;
   create.context = base;
-  create.table_columns.push_back(Column("id", "text", 1));
+  EngineColumnDefinition invalid_column;
+  invalid_column.ordinal = 1;
+  invalid_column.names.push_back({"en", "default", "id", "id", true});
+  invalid_column.descriptor.canonical_type_name = "text";
+  invalid_column.descriptor.encoded_descriptor = "type=text";
+  create.table_columns.push_back(invalid_column);
 
   EngineInsertRowsRequest insert;
   insert.context = base;
@@ -338,21 +400,53 @@ bool InvalidCommitRollbackWithoutTransaction(const EngineRequestContext& base) {
          HasDiagnostic(EngineRollbackTransaction(rollback), "SB_ENGINE_API_INVALID_REQUEST");
 }
 
-bool FileContainsText(const std::string& path, const std::string& needle) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) { return false; }
-  const std::string body((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-  return body.find(needle) != std::string::npos;
+bool NativeRowVersionChain(const EngineRequestContext& context,
+                           const EngineUuid& table_uuid,
+                           const EngineUuid& row_uuid,
+                           const EngineBeginTransactionResult& inserted,
+                           const EngineBeginTransactionResult& updated) {
+  // Native record chains, not an obsolete textual sidecar marker, establish
+  // row history. Check the actual committed insert and both same-TX updates.
+  const auto loaded = LoadMgaRelationStoreStateForMutationTarget(context, table_uuid);
+  if (!loaded.ok) {
+    std::cerr << loaded.diagnostic.code << ':' << loaded.diagnostic.detail << '\n';
+    return false;
+  }
+  std::vector<const CrudRowVersionRecord*> versions;
+  for (const auto& row : loaded.state.row_versions) {
+    if (row.table_uuid != table_uuid || row.row_uuid != row_uuid) continue;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.creator_transaction_uuid) ||
+        !row.creator_tx || !row.sequence) return false;
+    if (row.creator_tx == inserted.local_transaction_id ||
+        row.creator_tx == updated.local_transaction_id) versions.push_back(&row);
+  }
+  if (versions.size() != 3) return false;
+  std::sort(versions.begin(), versions.end(), [](const auto* a, const auto* b) {
+    return a->sequence < b->sequence;
+  });
+  const auto& first = *versions[0];
+  const auto& second = *versions[1];
+  const auto& third = *versions[2];
+  return !first.deleted && !second.deleted && !third.deleted &&
+         first.creator_transaction_uuid == inserted.transaction_uuid &&
+         second.creator_transaction_uuid == updated.transaction_uuid &&
+         third.creator_transaction_uuid == updated.transaction_uuid &&
+         second.previous_version_uuid == first.version_uuid &&
+         third.previous_version_uuid == second.version_uuid &&
+         second.previous_sequence == first.sequence &&
+         third.previous_sequence == second.sequence;
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  Args args;
-  if (!ParseArgs(argc, argv, &args)) {
-    std::cerr << "usage: sb_engine_api_transaction_semantics_probe --path PATH --creation-ms MILLIS [--overwrite]\n";
-    return 2;
-  }
+int RunProbe(const Args& args) {
+  const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+      "transaction_semantics_probe");
+  if (!memory.ok() || !memory.fixture_mode)
+    throw std::runtime_error("transaction probe memory fixture initialization failed");
+  ProbeAuthorityLifetime authority;
   EngineUuid database_identity;
   if (!CreateProbeDatabase(args, &database_identity)) {
     return 1;
@@ -475,23 +569,16 @@ int main(int argc, char** argv) {
   const bool transaction_evidence = setup_commit_result.ok && !setup_commit_result.evidence.empty() &&
                                     RollbackResult(TxContext(base, Begin(base))).ok;
 
-  auto inspect_base = base;
-  inspect_base.trace_tags.push_back("security.fixture_trace_authority");
-  inspect_base.trace_tags.push_back("group:DBA");
-  inspect_base.trace_tags.push_back("right:MGA_LINEAGE_INSPECT");
-  inspect_base.trace_tags.push_back("right:MGA_RECOVERY_INSPECT");
-  inspect_base.trace_tags.push_back("right:MGA_METRICS_READ");
-  inspect_base.trace_tags.push_back("right:OBS_METRICS_READ_FAMILY");
-  inspect_base.catalog_generation_id = 42;
+  const auto inspect_base = TxContext(base, Begin(base));
 
   EngineInspectTransactionLineageRequest lineage_request;
   lineage_request.context = inspect_base;
-  const auto lineage_result = EngineInspectTransactionLineage(lineage_request);
+  const auto lineage_result = Diagnosed(EngineInspectTransactionLineage(lineage_request));
   const bool lineage_evidence_visible = lineage_result.ok && !lineage_result.result_shape.rows.empty();
 
   EngineClassifyTransactionRestoreRequest restore_request;
   restore_request.context = inspect_base;
-  const auto restore_result = EngineClassifyTransactionRestore(restore_request);
+  const auto restore_result = Diagnosed(EngineClassifyTransactionRestore(restore_request));
   const bool restore_classification_visible = restore_result.ok && restore_result.restore_allowed &&
                                               !restore_result.wal_required &&
                                               !restore_result.result_shape.rows.empty();
@@ -503,16 +590,19 @@ int main(int argc, char** argv) {
 
   EngineInspectTransactionLineageRequest unauthorized_lineage_request;
   unauthorized_lineage_request.context = base;
+  unauthorized_lineage_request.context.principal_uuid = GenerateCrudEngineUuid("principal");
+  unauthorized_lineage_request.context.authorization_context = {};
   const bool lineage_right_enforced = HasDiagnostic(EngineInspectTransactionLineage(unauthorized_lineage_request),
                                                    "SECURITY.AUTHORIZATION.DENIED");
 
   EngineSysMetricsRegistryRequest metrics_registry_request;
   metrics_registry_request.context = inspect_base;
   metrics_registry_request.option_envelopes.push_back("family:sb_mga_row_versions_reclaimed_total");
-  const auto metrics_registry_result = EngineSysMetricsRegistry(metrics_registry_request);
+  const auto metrics_registry_result = Diagnosed(EngineSysMetricsRegistry(metrics_registry_request));
   const bool mga_metrics_registered = metrics_registry_result.ok && !metrics_registry_result.result_shape.rows.empty();
   const bool row_version_chain_events_present =
-      FileContainsText(args.path + ".sb.mga_row_versions", "SBMGA1\tROW_VERSION\t");
+      NativeRowVersionChain(inspect_base, table.uuid, ada_row_uuid, setup_tx, multi_update_tx);
+  const bool inspect_commit = Commit(inspect_base);
 
   const auto temp_delete_tx = Begin(base);
   const auto temp_delete_context = TxContext(base, temp_delete_tx);
@@ -596,7 +686,8 @@ int main(int argc, char** argv) {
                   isolation_delete_a_rollback && temp_delete_rows_removed_on_commit && temp_delete_read_commit &&
                   temp_preserve_rows_kept_on_commit && temp_preserve_read_commit && temp_hidden_from_other_session &&
                   other_session_commit && lineage_evidence_visible && restore_classification_visible &&
-                  wal_restore_refused && lineage_right_enforced && mga_metrics_registered && final_read_commit;
+                  wal_restore_refused && lineage_right_enforced && mga_metrics_registered && final_read_commit &&
+                  inspect_commit;
 
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
@@ -633,7 +724,27 @@ int main(int argc, char** argv) {
   std::cout << "  \"restore_classification_visible\": " << (restore_classification_visible ? "true" : "false") << ",\n";
   std::cout << "  \"wal_restore_refused\": " << (wal_restore_refused ? "true" : "false") << ",\n";
   std::cout << "  \"lineage_right_enforced\": " << (lineage_right_enforced ? "true" : "false") << ",\n";
+  std::cout << "  \"inspection_transaction_committed\": " << (inspect_commit ? "true" : "false") << ",\n";
   std::cout << "  \"mga_metrics_registered\": " << (mga_metrics_registered ? "true" : "false") << "\n";
   std::cout << "}\n";
   return ok ? 0 : 1;
+}
+
+int main(int argc, char** argv) try {
+  Args args;
+  if (!ParseArgs(argc, argv, &args)) {
+    std::cerr << "usage: sb_engine_api_transaction_semantics_probe "
+                 "(--path PATH | --isolated-run) --creation-ms MILLIS [--overwrite]\n";
+    return 2;
+  }
+  OwnedProbeDirectory owned(args.isolated_run);
+  if (args.isolated_run) {
+    args.path = (owned.path() / "probe.sbdb").string();
+    args.overwrite = false;
+  }
+  const auto result = RunProbe(args);
+  return owned.Cleanup() ? result : 1;
+} catch (const std::exception& error) {
+  std::cerr << "transaction probe failed: " << error.what() << '\n';
+  return 1;
 }
