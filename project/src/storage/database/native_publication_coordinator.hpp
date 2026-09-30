@@ -20,9 +20,23 @@ struct NativePublicationSnapshot {
   NativePublicationWatermark watermark;
   std::array<byte,32> state_sha256{};
 };
+// Actual I/O observations, not authorization or a management-operation outcome.
+// Lease receipts are cumulative for that lease (including its reservation or
+// resume call), not durable history or unique bytes. A resumed lease begins a
+// new observation interval; prior/crash effects require native reconciliation.
+struct NativePublicationEffects {
+  bool observed=false;
+  u64 write_attempts=0, attempted_bytes=0, confirmed_bytes=0;
+  u64 sync_attempts=0, successful_syncs=0;
+  bool uncertain_write=false;
+  bool selector_write_attempted=false;
+  bool installed_graph_verified=false, selected_graph_verified=false;
+  bool operator==(const NativePublicationEffects&) const=default;
+};
 struct NativePublicationInspection {
   NativePublicationError error=NativePublicationError::invalid_request;
   std::optional<NativePublicationSnapshot> snapshot;
+  NativePublicationEffects effects;
   bool ok() const noexcept {return error==NativePublicationError::none&&snapshot.has_value();}
 };
 struct NativePublicationReservation;
@@ -34,6 +48,7 @@ class NativePublicationLease {
   NativePublicationLease(const NativePublicationLease&)=delete;
   NativePublicationLease& operator=(const NativePublicationLease&)=delete;
   const NativePublicationSnapshot& snapshot() const noexcept;
+  const NativePublicationEffects& effects() const noexcept;
  private:
   struct Impl;
   explicit NativePublicationLease(std::unique_ptr<Impl>) noexcept;
@@ -64,6 +79,7 @@ class NativePublicationLease {
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
   std::unique_ptr<NativePublicationLease> lease;
+  NativePublicationEffects effects;
   bool ok() const noexcept {return error==NativePublicationError::none&&lease!=nullptr;}
 };
 // Resolves only an explicitly profiled, unselected metadata publication.

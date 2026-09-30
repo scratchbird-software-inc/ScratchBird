@@ -39,6 +39,8 @@ struct Context {
   std::array<NativePublicationWatermarkImage,2> decoded;
   NativePublicationSnapshot snapshot;
   bool stable=false;
+  NativePublicationEffects local_effects{true};
+  NativePublicationEffects* effects=&local_effects;
   Uuid watermark_object;
 };
 bool SameBase(const NativePublicationSnapshot& a,const NativePublicationSnapshot& b){
@@ -173,6 +175,23 @@ std::array<std::vector<byte>,2> EncodePair(const Context& c,const NativePublicat
     Backend(image.error);Require(image.ok(),E::image_failure);images[i]=std::move(image.bytes);}
   return images;
 }
+void EffectWrite(Context& c,disk::FileDevice& device,u64 offset,const std::vector<byte>& bytes,bool selector=false){
+  auto& e=*c.effects;
+  Require(e.write_attempts!=std::numeric_limits<u64>::max()&&
+    bytes.size()<=std::numeric_limits<u64>::max()-e.attempted_bytes,E::resource_exhausted);
+  ++e.write_attempts;e.attempted_bytes+=bytes.size();e.selector_write_attempted|=selector;
+  // Set before entering I/O: even an exceptional backend cannot imply no effect.
+  const bool prior_uncertainty=e.uncertain_write;e.uncertain_write=true;
+  const auto io=device.WriteAt(offset,bytes.data(),bytes.size());
+  if(io.bytes_transferred<=bytes.size())e.confirmed_bytes+=io.bytes_transferred;
+  Require(io.ok()&&io.bytes_transferred==bytes.size(),E::io_failure);
+  e.uncertain_write=prior_uncertainty;
+}
+void EffectSync(Context& c,disk::FileDevice& device){
+  auto& e=*c.effects;
+  Require(e.sync_attempts!=std::numeric_limits<u64>::max(),E::resource_exhausted);
+  ++e.sync_attempts;Require(device.Sync().ok(),E::io_failure);++e.successful_syncs;
+}
 void Publish(Context& c,std::array<std::vector<byte>,2>& images,std::vector<byte>& scratch){
   const u64 size=c.zero.bootstrap.page_size_bytes;
   const auto read=[&](unsigned i,const auto& expected,E mismatch){
@@ -180,27 +199,28 @@ void Publish(Context& c,std::array<std::vector<byte>,2>& images,std::vector<byte
     Require(io.ok()&&io.bytes_transferred==scratch.size(),E::io_failure);Require(scratch==expected,mismatch);
   };
   for(unsigned i=0;i<2;++i)read(i,c.bytes[i],E::preimage_changed);
-  for(const auto& file:c.devices)if(!file.device->read_only())Require(file.device->Sync().ok(),E::io_failure);
+  for(const auto& file:c.devices)if(!file.device->read_only())EffectSync(c,*file.device);
   for(unsigned i=0;i<2;++i){if(images[i]!=c.bytes[i]){
-      const auto io=c.primary->WriteAt(c.headers[i].page_number*size,images[i].data(),images[i].size());
-      Require(io.ok()&&io.bytes_transferred==images[i].size(),E::io_failure);
+      EffectWrite(c,*c.primary,c.headers[i].page_number*size,images[i]);
     }
-    Require(c.primary->Sync().ok(),E::io_failure);read(i,images[i],E::readback_mismatch);
+    EffectSync(c,*c.primary);read(i,images[i],E::readback_mismatch);
   }
 }
 NativePublicationInspection InspectOrRecover(const Uuid& db,const std::vector<disk::NativeFilespaceDevice>& devices,
     const Uuid& primary,u64 budget,bool recover) noexcept {
+  NativePublicationEffects effects{true};
   try {auto c=Prepare(db,devices,primary,budget,recover,recover);
-    if(recover){auto images=EncodePair(*c,c->snapshot.watermark);std::vector<byte> scratch(c->zero.bootstrap.page_size_bytes);Publish(*c,images,scratch);}
-    return {E::none,c->snapshot};
-  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
-   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+    if(recover){auto images=EncodePair(*c,c->snapshot.watermark);std::vector<byte> scratch(c->zero.bootstrap.page_size_bytes);c->effects=&effects;Publish(*c,images,scratch);}
+    return {E::none,c->snapshot,effects};
+  }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}
+   catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
 }
 } // namespace
-struct NativePublicationLease::Impl {std::unique_ptr<Context> context;NativePublicationSnapshot snapshot;bool installation_ambiguous=false;};
+struct NativePublicationLease::Impl {NativePublicationEffects effects{true};std::unique_ptr<Context> context;NativePublicationSnapshot snapshot;bool installation_ambiguous=false;};
 NativePublicationLease::NativePublicationLease(std::unique_ptr<Impl> p) noexcept:impl_(std::move(p)){}
 NativePublicationLease::~NativePublicationLease()=default;
 const NativePublicationSnapshot& NativePublicationLease::snapshot() const noexcept{return impl_->snapshot;}
+const NativePublicationEffects& NativePublicationLease::effects() const noexcept{return impl_->effects;}
 NativePublicationInspection InspectNativePublicationGenerationOnOpenDevices(const Uuid& db,
     const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,u64 budget) noexcept {
   return InspectOrRecover(db,devices,primary,budget,false);
@@ -212,6 +232,7 @@ NativePublicationInspection RecoverNativePublicationGenerationOnOpenDevices(cons
 NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(const Uuid& db,
     const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
     const NativePublicationSnapshot& expected,const Uuid& operation,u64 budget,const NativePublicationIntent* intent) noexcept {
+  NativePublicationEffects effects{true};
   try {
     Require(V7(operation),E::invalid_request);auto c=Prepare(db,devices,primary,budget,true,false);
     Require(SameBase(expected,c->snapshot),E::stale_base);
@@ -229,14 +250,17 @@ NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(con
     auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot={s,*encoded.state,encoded.state_sha256};impl->context=std::move(c);
     auto lease=std::unique_ptr<NativePublicationLease>(new NativePublicationLease(std::move(impl)));
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
+    lease->impl_->context->effects=&effects;
     Publish(*lease->impl_->context,images,scratch);
-    return {E::none,std::move(lease)};
-  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
-   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+    lease->impl_->effects=effects;lease->impl_->context->effects=&lease->impl_->effects;
+    return {E::none,std::move(lease),effects};
+  }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}
+   catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
 }
 NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(const Uuid& db,
     const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
     const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,u64 budget) noexcept {
+  NativePublicationEffects effects{true};
   try {
     auto c=Prepare(db,devices,primary,budget,true,false);
     Require(SameBase(expected,c->snapshot),E::stale_base);
@@ -247,15 +271,18 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
     auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot=c->snapshot;impl->context=std::move(c);
     auto lease=std::unique_ptr<NativePublicationLease>(new NativePublicationLease(std::move(impl)));
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
+    lease->impl_->context->effects=&effects;
     Publish(*lease->impl_->context,images,scratch);
-    return {E::none,std::move(lease)};
-  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
-   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+    lease->impl_->effects=effects;lease->impl_->context->effects=&lease->impl_->effects;
+    return {E::none,std::move(lease),effects};
+  }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}
+   catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
 }
 static NativePublicationInspection AbandonNativeControlPublicationOnOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
     const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,
     const Uuid& resolution,u16 profile,u64 budget) noexcept {
+  NativePublicationEffects effects{true};
   try {
     Require(V7(operation)&&V7(resolution)&&resolution!=operation&&intent.recovery_profile==profile&&
       !expected.watermark.abandonment&&expected.watermark.operation_uuid==operation&&
@@ -281,12 +308,12 @@ static NativePublicationInspection AbandonNativeControlPublicationOnOpenDevices(
     }
     auto images=EncodePair(*c,next);const auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
     NativePublicationSnapshot planned{c->snapshot.selection,*decoded.state,decoded.state_sha256};std::vector<byte> scratch(size);
-    Publish(*c,images,scratch);
+    c->effects=&effects;Publish(*c,images,scratch);
     auto final=Prepare(database,devices,primary,budget-used+6*size,true,false);charge(final->bound.retained_image_bytes);
     Require(SameBase(planned,final->snapshot)&&final->bytes==images,E::binding_mismatch);
-    return {E::none,std::move(final->snapshot)};
-  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
-   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+    return {E::none,std::move(final->snapshot),effects};
+  }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}
+   catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
 }
 NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
@@ -303,6 +330,7 @@ NativePublicationInspection AbandonNativeInventoryPublicationOnOpenDevices(
 NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePublicationLease& lease,
     const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,
     const std::vector<std::vector<byte>>& supplied_extent,u64 budget) noexcept {
+  const auto action=[&]() -> NativePublicationInspection {
   if(plan.control_bundle)return {E::invalid_request,{}};
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);
@@ -362,14 +390,14 @@ NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePubl
     c->snapshot=snapshot;c->stable=true;
     // The durable anchor owns the intended free page before its first byte
     // changes. Recovery of metadata alone is not plan-installation success.
-    lease.impl_->installation_ambiguous=true;
+    c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
     Publish(*c,images,scratch);
     read_plan(scratch);Require(scratch==preimage,E::preimage_changed);
-    if(preimage!=image.bytes){const auto r=c->primary->WriteAt(plan.header.page_number*size,image.bytes.data(),image.bytes.size());Require(r.ok()&&r.bytes_transferred==image.bytes.size(),E::io_failure);}
-    Require(c->primary->Sync().ok(),E::io_failure);read_plan(scratch);Require(scratch==image.bytes,E::readback_mismatch);
+    if(preimage!=image.bytes){EffectWrite(*c,*c->primary,plan.header.page_number*size,image.bytes);}
+    EffectSync(*c,*c->primary);read_plan(scratch);Require(scratch==image.bytes,E::readback_mismatch);
     for(std::size_t left=extent.size();left;--left){const auto i=left-1;read_extent(i,scratch);Require(scratch==extent_preimages[i],E::preimage_changed);
-      if(scratch!=extent[i]){const auto r=c->primary->WriteAt((plan.management_extent->first.page_number+i)*size,extent[i].data(),extent[i].size());Require(r.ok()&&r.bytes_transferred==extent[i].size(),E::io_failure);}}
-    if(!extent.empty()){Require(c->primary->Sync().ok(),E::io_failure);
+      if(scratch!=extent[i]){EffectWrite(*c,*c->primary,(plan.management_extent->first.page_number+i)*size,extent[i]);}}
+    if(!extent.empty()){EffectSync(*c,*c->primary);
       for(std::size_t i=0;i<extent.size();++i){read_extent(i,scratch);Require(scratch==extent[i],E::readback_mismatch);}}
     c->bytes=std::move(images);
     lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);
@@ -377,6 +405,9 @@ NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePubl
     return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+
+  };
+  auto result=action();result.effects=lease.effects();return result;
 }
 NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicationLease& lease,
     const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,u64 budget) noexcept {
@@ -411,6 +442,7 @@ u64 ExtentAllowance(const NativeManagementExtentRoot& r,u64 size,u64 budget){
 NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePublicationLease& lease,
     const NativePublicationPlan& supplied_plan,const Bytes& supplied_checkpoint,
     const Pages& supplied_extent,const Pages& supplied_bundle,u64 budget) noexcept {
+  const auto action=[&]() -> NativePublicationInspection {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);const auto plan=supplied_plan;
     Require(plan.control_bundle&&plan.management_extent,E::invalid_request);
@@ -468,14 +500,19 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     for(unsigned i=0;i<2;++i){auto& slot=c->decoded[i];slot.error=NativePublicationWatermarkError::none;slot.state=next;slot.state->header=c->headers[i];slot.state_sha256=snapshot.state_sha256;}
     c->snapshot=snapshot;c->stable=true;
     const auto install=[&](std::size_t first,std::size_t end){for(std::size_t n=end;n>first;--n){auto& target=artifacts[n-1];read(target.page,scratch);Require(scratch==target.before,E::preimage_changed);
-        if(scratch!=target.bytes){const auto io=c->primary->WriteAt(target.page*size,target.bytes.data(),target.bytes.size());Require(io.ok()&&io.bytes_transferred==target.bytes.size(),E::io_failure);}}
-      Require(c->primary->Sync().ok(),E::io_failure);for(std::size_t n=first;n<end;++n){read(artifacts[n].page,scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}};
-    lease.impl_->installation_ambiguous=true;Publish(*c,images,scratch);
+        if(scratch!=target.bytes){EffectWrite(*c,*c->primary,target.page*size,target.bytes);}}
+      EffectSync(*c,*c->primary);for(std::size_t n=first;n<end;++n){read(artifacts[n].page,scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}};
+    c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;Publish(*c,images,scratch);
     install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);if(inventory_start!=map_start)install(inventory_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
+    lease.impl_->effects.installed_graph_verified=true;
     c->bytes=std::move(images);lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);lease.impl_->installation_ambiguous=false;return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+
+  };
+  auto result=action();result.effects=lease.effects();return result;
 }
 NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePublicationLease& lease,u64 budget) noexcept {
+  const auto action=[&]() -> NativePublicationInspection {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);const auto& context=*lease.impl_->context;const auto& held=lease.impl_->snapshot;const auto& anchor=held.watermark.publication_plan;
     Require(anchor&&held.watermark.intent&&!held.watermark.abandonment&&held.watermark.watermark>held.selection.checkpoint_generation,E::invalid_request);
@@ -509,8 +546,12 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePubl
     const auto target=EncodeNativeCheckpointRoot(cp);ControlCheckpointError(target.error);ControlPlanError(BindNativePublicationPlanToLease(plan,lease,target.bytes));
     return InstallNativeManagementControlGraphOnLease(lease,plan,target.bytes,extent.pages,bundle.pages,budget-allowance);
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+
+  };
+  auto result=action();result.effects=lease.effects();return result;
 }
 NativePublicationInspection PublishNativeManagementControlGraphOnLease(NativePublicationLease& lease,u64 budget) noexcept {
+  const auto action=[&]() -> NativePublicationInspection {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);
     const auto& held=lease.impl_->snapshot;const auto& owned=*lease.impl_->context;
@@ -537,7 +578,7 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(NativePub
     const NativeManagementCheckpointAnchor graph_anchor{target,plan.target_checkpoint_object_uuid,target_sha,plan.reserved_generation,plan.target_root_set_generation,plan.timeline_uuid};
     const auto proof=ReadNativeManagementControlGraphFromOpenDevices(database,c->devices,primary,graph_anchor,budget-used);
     if(!proof.ok()){using G=NativeManagementControlAuthorityError;throw proof.error==G::resource_exhausted?E::resource_exhausted:proof.error==G::hash_failure?E::hash_failure:proof.error==G::io_failure?E::io_failure:proof.error==G::encrypted_requires_authority?E::encrypted_requires_authority:proof.error==G::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;}
-    charge(proof.verified_image_bytes);
+    charge(proof.verified_image_bytes);lease.impl_->effects.installed_graph_verified=true;
     std::array<Bytes,2> images;std::array<u64,2> pages{};NativePublicationSnapshot expected=c->snapshot;
     for(unsigned i=0;i<2;++i){auto old=DecodeNativeCheckpointSelection(c->bound.slots[i]);
       if(!old.ok())throw old.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:old.error==NativeCheckpointSelectionError::hash_failure?E::hash_failure:E::binding_mismatch;
@@ -550,15 +591,19 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(NativePub
     Bytes scratch(size);
     const auto verify=[&](unsigned i,const Bytes& bytes,E mismatch){const auto io=c->primary->ReadAt(pages[i]*size,scratch.data(),scratch.size());Require(io.ok()&&io.bytes_transferred==scratch.size(),E::io_failure);Require(scratch==bytes,mismatch);};
     for(unsigned i=0;i<2;++i)verify(i,c->bound.slots[i],E::preimage_changed);
-    lease.impl_->installation_ambiguous=true;
-    for(const auto& file:c->devices)if(!file.device->read_only())Require(file.device->Sync().ok(),E::io_failure);
-    for(unsigned i=0;i<2;++i){const auto io=c->primary->WriteAt(pages[i]*size,images[i].data(),images[i].size());Require(io.ok()&&io.bytes_transferred==images[i].size(),E::io_failure);
-      Require(c->primary->Sync().ok(),E::io_failure);verify(i,images[i],E::readback_mismatch);}
+    c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
+    for(const auto& file:c->devices)if(!file.device->read_only())EffectSync(*c,*file.device);
+    for(unsigned i=0;i<2;++i){EffectWrite(*c,*c->primary,pages[i]*size,images[i],true);
+      EffectSync(*c,*c->primary);verify(i,images[i],E::readback_mismatch);}
     auto final=Prepare(database,c->devices,primary,budget-used+6*size,true,false);charge(final->bound.retained_image_bytes);
     Require(SameBase(expected,final->snapshot)&&final->bound.slots==images,E::binding_mismatch);
+    lease.impl_->effects.selected_graph_verified=true;final->effects=&lease.impl_->effects;
     const auto snapshot=final->snapshot;lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(final);lease.impl_->installation_ambiguous=false;
     return {E::none,snapshot};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+
+  };
+  auto result=action();result.effects=lease.effects();return result;
 }
 namespace {
 struct OwnedInventoryGraph {
@@ -773,6 +818,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
 NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease& lease,
     const NativeManagementOperation& record,const mga::LocalTransactionInventory& inventory,u64 budget,
     core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  const auto action=[&]() -> NativePublicationInspection {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);
     const auto& old=*lease.impl_->context;
@@ -784,5 +830,8 @@ NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease
     return PublishNativeManagementControlGraphOnLease(lease,budget);
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+
+  };
+  auto result=action();result.effects=lease.effects();return result;
 }
 } // namespace scratchbird::storage::database

@@ -690,14 +690,22 @@ void ResolutionInterruptedInstallation(){
   const auto result=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),expected,g.plan.operation_uuid,forged,Id(32500),f.budget);io_counting=false;Check(result.error==P::request_mismatch&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"caller cannot promote an actual legacy pending intent into abandonable profile");
  }
 }
+void CheckObservedEffects(const db::NativePublicationInspection& result,unsigned written,unsigned synchronized,u64 size){
+ const auto& e=result.effects;
+ Check(e.observed&&e.write_attempts==written&&e.attempted_bytes==u64{written}*size&&
+   e.confirmed_bytes<=e.attempted_bytes&&e.sync_attempts==synchronized&&e.successful_syncs<=synchronized,
+   "actual result retains independent primitive counts including failed recovery");
+ Check(result.ok()||!e.selected_graph_verified,"failed recovery cannot claim verified selected graph");
+}
 void ResolutionFaults(unsigned route,int shard=-1,bool retry=false){
  using P=db::NativePublicationError;ResolutionCase c;auto& f=c.f;
  if(retry)Check(c.Resolve().ok(),"actual completed resolution before retry fault sweep");
  byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"resolution optional metric capacity stabilized");}
  Reset();hash_seen=0;hash_counting=counting=io_counting=true;allocations=0;const auto baseline=c.Resolve();io_counting=counting=hash_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto sites=allocations;Check(baseline.ok()&&nw==(retry?0u:2u)&&ns==3,"measured actual resolution");
+ CheckObservedEffects(baseline,nw,ns,f.size);
  const auto reset_pair=[&]{c.Pair(retry?2:1,retry?2:1);};
- const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){Check(!result.ok()&&!result.snapshot,"failed resolution exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==(retry?c.final:c.original),"resolution preflight failure leaves full node unchanged");c.Nonwatermarks();};
+ const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){CheckObservedEffects(result,written,synchronized,f.size);Check(!result.ok()&&!result.snapshot,"failed resolution exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==(retry?c.final:c.original),"resolution preflight failure leaves full node unchanged");c.Nonwatermarks();};
  if(route==0){for(unsigned mode=0;mode<5;++mode){const auto count=mode<2?nr:mode<4?nw:ns;for(unsigned at=1;at<=count;++at){reset_pair();Reset();if(mode==0)read_fault=at;if(mode==1)corrupt_read=at;if(mode==2||mode==3){write_fault=at;if(mode==3)torn_bytes=680;}if(mode==4)sync_fault=at;
     io_counting=true;const auto result=c.Resolve();io_counting=false;const auto written=writes,synchronized=syncs;Reset();Check(mode==1||result.error==P::io_failure,"resolution I/O failures preserve cause");failed(result,written,synchronized);
     c.Reopen();Check(c.Repair().ok()&&c.Resolve().ok()&&f.Read(0,256)==c.final,"explicit recovery and retry after each actual resolution I/O failure");
@@ -717,10 +725,18 @@ void RecoveryFaults(unsigned route,int shard=-1){
  byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"recovery optional metric capacity stabilized");}
  Reset();hash_seen=0;hash_counting=counting=io_counting=true;allocations=0;const auto baseline=Recover(f,g);io_counting=counting=hash_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto sites=allocations;Check(baseline.ok()&&nw==2&&ns==3,"measured actual cold recovery");
- const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){Check(!result.ok()&&!result.snapshot,"failed cold recovery exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==images.original,"recovery preflight failure leaves whole file unchanged");images.Nonselectors(f);};
+ CheckObservedEffects(baseline,nw,ns,f.size);
+ Check(baseline.effects.installed_graph_verified&&baseline.effects.selected_graph_verified&&
+   baseline.effects.selector_write_attempted&&!baseline.effects.uncertain_write&&
+   baseline.effects.confirmed_bytes==2*f.size&&baseline.effects.successful_syncs==3,
+   "actual forward recovery confirms exact selector bytes and both verification stages");
+ const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){CheckObservedEffects(result,written,synchronized,f.size);Check(!result.ok()&&!result.snapshot,"failed cold recovery exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==images.original,"recovery preflight failure leaves whole file unchanged");images.Nonselectors(f);};
  if(route==0){for(unsigned mode=0;mode<5;++mode){const auto count=mode<2?nr:mode<4?nw:ns;for(unsigned at=1;at<=count;++at){images.Pair(f,1,1);Reset();if(mode==0)read_fault=at;if(mode==1)corrupt_read=at;if(mode==2||mode==3){write_fault=at;if(mode==3)torn_bytes=201;}if(mode==4)sync_fault=at;
     io_counting=true;const auto result=Recover(f,g);io_counting=false;const auto written=writes,synchronized=syncs;Reset();if(result.ok())std::cerr<<"unexpected recovery success mode="<<mode<<" at="<<at<<"\n";
     Check(mode==1||result.error==P::io_failure,"recovery I/O failures preserve cause");failed(result,written,synchronized);
+    Check(result.effects.uncertain_write==(mode==2||mode==3)&&
+      result.effects.successful_syncs==synchronized-(mode==4?1:0)&&
+      result.effects.selector_write_attempted==(written!=0),"failed forward recovery preserves exact uncertainty sync and selector attempt dimensions");
     Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen after each actual recovery I/O failure");const auto retry=Recover(f,g);Check(retry.ok()&&f.Read(0,256)==images.expected,"actual recovery retries finish forward after every I/O failure");
    }}
  }else if(route==1){for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){images.Pair(f,1,1);Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const auto result=Recover(f,g);io_counting=false;const bool consumed=!hash_fault;const auto written=writes,synchronized=syncs;Reset();
