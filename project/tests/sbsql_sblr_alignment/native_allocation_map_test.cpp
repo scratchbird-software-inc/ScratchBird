@@ -131,6 +131,13 @@ void Codecs() {
     Check(decoded.ok() && decoded.map->states==m.states && decoded.map->records==m.records,
           "all allocation states and exact binary ownership records");
     Check(p::EncodeNativeAllocationMap(*decoded.map).bytes==expected,"decoded metadata exact re-encoding");
+    for(const u64 number:{u64{1},m.creator_local_transaction_id,m.creator_local_transaction_id+1,std::numeric_limits<u64>::max()}){
+      auto overlapping=m;overlapping.records.front().creator_local_transaction_id=number;
+      const auto image=Oracle(overlapping);const auto encoded_overlap=p::EncodeNativeAllocationMap(overlapping);
+      const auto decoded_overlap=p::DecodeNativeAllocationMap(image);
+      Check(encoded_overlap.ok()&&encoded_overlap.bytes==image&&decoded_overlap.ok()&&
+        decoded_overlap.map->records==overlapping.records,"creator start numbers do not impose publication order");
+    }
   }
   const auto good=Example(); const auto bytes=Oracle(good);
   for (unsigned mutation=0;mutation<25;++mutation) {
@@ -141,7 +148,7 @@ void Codecs() {
     if(mutation==6)m.states[2]=static_cast<S>(8); if(mutation==7)m.records[0].allocation_uuid={};
     if(mutation==8)m.records[0].owner_uuid={}; if(mutation==9)m.records[0].creator_transaction_uuid={};
     if(mutation==10)m.records[0].page_uuid={}; if(mutation==11)m.records[0].page_generation=0;
-    if(mutation==12)m.records[0].creator_local_transaction_id=11; if(mutation==13)m.records[0].page_type=0xdead;
+    if(mutation==12)m.records[0].page_type=0; if(mutation==13)m.records[0].page_type=0xdead;
     if(mutation==14)m.records[0].page_number=1; if(mutation==15)m.records[0].page_number=11;
     if(mutation==16)m.records.erase(m.records.begin()); if(mutation==17)m.states[0]=S::free;
     if(mutation==18)m.records[4].reuse_horizon=0; if(mutation==19)m.records[0].reuse_horizon=1;
@@ -215,11 +222,15 @@ void OperationCodecs() {
       if(mutation==4){bad=Oracle(original);bad[135]='2';Num(bad,136,2,2);}
       Seal(bad);Empty(p::DecodeNativeAllocationMap(bad));
     }
-    // An operation-owned record does not waive numeric ordering for the
-    // remaining transaction-owned records of a transaction-owned map.
-    auto ordered=original;OperationOwned(ordered.records.back());
-    ordered.records.front().creator_local_transaction_id=11;
-    Empty(p::EncodeNativeAllocationMap(ordered));Empty(p::DecodeNativeAllocationMap(Oracle(ordered)));
+    // Mixed operation/transaction lineage does not invent commit ordering.
+    auto overlapping=original;OperationOwned(overlapping.records.back());
+    for(const u64 number:{u64{1},overlapping.creator_local_transaction_id,overlapping.creator_local_transaction_id+1,std::numeric_limits<u64>::max()}){
+      overlapping.records.front().creator_local_transaction_id=number;
+      const auto image=Oracle(overlapping);const auto encoded_overlap=p::EncodeNativeAllocationMap(overlapping);
+      const auto decoded_overlap=p::DecodeNativeAllocationMap(image);
+      Check(encoded_overlap.ok()&&encoded_overlap.bytes==image&&decoded_overlap.ok()&&
+        decoded_overlap.map->records==overlapping.records,"mixed lineage retains exact independent creator numbers");
+    }
     for(unsigned mode=0;mode<2;++mode){
       fail_hash=true;const auto r=mode?p::DecodeNativeAllocationMap(bytes):p::EncodeNativeAllocationMap(m);
       Check(!fail_hash&&r.error==E::hash_failure,"operation image hash failure");Empty(r);

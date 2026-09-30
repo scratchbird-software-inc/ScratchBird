@@ -92,9 +92,10 @@ E Validate(const NativeAllocationMap& map) {
     if (!V7(r.allocation_uuid) || !V7(r.owner_uuid) ||
         !CreatorIdentityValid(r.creator_transaction_uuid, r.creator_operation_uuid) ||
         (!r.page_uuid.is_nil() && !V7(r.page_uuid))) return E::invalid_identity;
+    // Transaction numbers identify starts, not commit/publication order. A
+    // map creator may start before the transaction owning a retained record.
+    // The checkpoint reader separately binds both creators to actual inventory.
     if (!CreatorNumberValid(r.creator_local_transaction_id, r.creator_operation_uuid) ||
-        (r.creator_operation_uuid.is_nil() && map.creator_operation_uuid.is_nil() &&
-         r.creator_local_transaction_id > map.creator_local_transaction_id) ||
         !r.page_type || !disk::IsRegisteredNativePageType(r.page_type)) return E::invalid_record;
     if (r.page_uuid.is_nil() != (r.page_generation == 0)) return E::invalid_record;
     if (r.page_uuid.is_nil() && state != S::reserved && state != S::preallocated && state != S::quarantined)

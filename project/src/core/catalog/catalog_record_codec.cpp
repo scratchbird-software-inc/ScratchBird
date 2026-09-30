@@ -158,6 +158,10 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
                       "policy_binary_payload_or_header_invalid");
   }
+  if (IsCatalogStorageActionAttachmentPayload(record.payload) &&
+      !CatalogStorageActionAttachmentMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
+                      "storage_action_attachment_binary_payload_or_header_invalid");
   if (IsCatalogStorageActionPolicyPayload(record.payload) &&
       !CatalogStorageActionPolicyMatchesHeader(record))
     return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
@@ -315,6 +319,10 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
        value.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
       !CatalogMetricDescriptorMatchesMetadata(value))
     return MetadataError("metric_descriptor_definition_binding_invalid");
+  if ((value.object_subtype == "storage_action_attachment" ||
+       IsCatalogStorageActionAttachmentPayload(value.record.payload)) &&
+      !CatalogStorageActionAttachmentMatchesMetadata(value))
+    return MetadataError("storage_action_attachment_binding_invalid");
   if ((value.object_subtype == "storage_action" ||
        IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
       !CatalogStorageActionPolicyMatchesMetadata(value))
@@ -465,6 +473,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
   return CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
       CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
+      CatalogStorageActionAttachmentPreservesOrigin(previous,successor) &&
       CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricVisibilityPolicyPreservesOrigin(previous,successor) &&
       CatalogMetricDescriptorPreservesOrigin(previous,successor) &&

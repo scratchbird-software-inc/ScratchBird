@@ -150,7 +150,56 @@ void Allocations(const P& p){const auto bytes=Oracle(p);const auto metadata=Meta
       const bool consumed=allocation_budget==-1;allocation_budget=-1;Check(consumed&&(threw||!accepted),"allocator failure never becomes successful family admission");}
   }
 }
+void Attachment(const P& p){using A=c::CatalogStorageActionAttachment;
+  const A a{Id(UuidKind::object,30).value,p.database_uuid,p.filespace_uuid,p.storage_profile_uuid,p.page_size_profile_uuid,
+    p.policy_uuid,1,p.origin_transaction_uuid,p.origin_local_transaction_id};
+  const auto oracle=[](const A& v){std::string b(24,0);b.replace(0,4,"SBCV");Put(b,4,1,2);Put(b,6,24,2);Put(b,12,9,4);Put(b,16,65549,4);Put(b,20,1,2);
+    Field(b,1,5,Identity(v.attachment_uuid));Field(b,2,1,Number(v.generation));Field(b,3,5,Identity(v.database_uuid));
+    Field(b,4,5,Identity(v.filespace_uuid));Field(b,5,5,Identity(v.storage_profile_uuid));Field(b,6,5,Identity(v.page_size_profile_uuid));
+    Field(b,7,5,Identity(v.policy_uuid));Field(b,8,5,Identity(v.origin_transaction_uuid.value));Field(b,9,1,Number(v.origin_local_transaction_id));Put(b,8,b.size(),4);return b;};
+  const auto metadata=[&](const A& v){auto m=Metadata(p);m.record.header.kind=c::CatalogRecordKind::config_profile;
+    m.record.header.object_uuid.value=v.attachment_uuid;m.object_subtype="storage_action_attachment";
+    m.definition_version=v.generation;m.record.payload=oracle(v);return m;};
+  const auto bytes=oracle(a);const auto encoded=c::EncodeCatalogStorageActionAttachment(a);
+  Check(encoded.ok()&&std::string(encoded.bytes.begin(),encoded.bytes.end())==bytes,"independent attachment byte oracle");
+  const auto decoded=c::DecodeCatalogStorageActionAttachment(bytes);Check(decoded.ok()&&oracle(*decoded.record)==bytes,"all attachment fields round trip");
+  const auto m=metadata(a);const auto native=c::EncodeCatalogMetadataVersion(m);Check(native.ok()&&c::DecodeCatalogMetadataVersion(native.bytes).ok(),"actual attachment common metadata round trip");
+  const auto bad=[](std::string_view b){const auto r=c::DecodeCatalogStorageActionAttachment(b);Check(!r.ok()&&!r.record,"invalid attachment returns no prefix");};
+  for(std::size_t n=0;n<bytes.size();++n)bad(std::string_view(bytes).substr(0,n));bad(bytes+"x");
+  for(unsigned field=1;field<=9;++field){const auto at=Offset(bytes,field),length=Get(bytes,at+4,4);auto b=bytes;
+    b.erase(at,8+length);Put(b,8,b.size(),4);Put(b,12,8,4);bad(b);
+    b=bytes;Put(b,at,99,2);bad(b);b=bytes;Put(b,at+2,4,1);bad(b);b=bytes;Put(b,at+3,1,1);bad(b);
+    b=bytes;Put(b,at+4,length+1,4);bad(b);
+  }
+  for(unsigned field:{1u,3u,4u,5u,6u,7u,8u})for(unsigned mode=0;mode<3;++mode){auto b=bytes;const auto at=Offset(b,field)+8;
+    if(mode==0)std::fill_n(b.begin()+at,16,0);else if(mode==1)b[at+6]=0x40;else b[at+8]=0;bad(b);}
+  for(unsigned field:{2u,9u}){auto b=bytes;Put(b,Offset(b,field)+8,0,8);bad(b);}
+  auto successor=a;successor.generation=2;successor.policy_uuid=Id(UuidKind::object,31).value;
+  const auto next=metadata(successor);Check(c::EncodeCatalogMetadataVersion(next).ok()&&c::CatalogMetadataPreservesFamilyOrigin(m,next),"attachment may select another policy through native version evolution");
+  for(auto member:{&A::attachment_uuid,&A::database_uuid,&A::filespace_uuid,&A::storage_profile_uuid,&A::page_size_profile_uuid}){
+    auto changed=successor;changed.*member=member==&A::page_size_profile_uuid?d::kCanonicalFilespacePageProfiles[(a.page_size_profile_uuid==d::kCanonicalFilespacePageProfiles[0].uuid)?1:0].uuid:Id(UuidKind::object,32).value;
+    Check(!c::CatalogMetadataPreservesFamilyOrigin(m,metadata(changed)),"attachment cannot retarget immutable identity/profile");}
+  auto changed_origin=successor;changed_origin.origin_transaction_uuid=Id(UuidKind::transaction,32);
+  Check(!c::CatalogMetadataPreservesFamilyOrigin(m,metadata(changed_origin)),"attachment origin UUID is immutable");
+  changed_origin=successor;++changed_origin.origin_local_transaction_id;
+  Check(!c::CatalogMetadataPreservesFamilyOrigin(m,metadata(changed_origin)),"attachment origin transaction number is immutable");
+  for(unsigned mode=0;mode<9;++mode){auto changed=next;
+    if(mode==0)changed.object_subtype="generic";if(mode==1)changed.record.header.kind=c::CatalogRecordKind::policy;
+    if(mode==2)changed.record.header.object_uuid=Id(UuidKind::object,33);if(mode==3)changed.definition_version++;
+    if(mode==4)changed.authority_scope=c::CatalogAuthorityScope::cluster;if(mode==5)changed.owning_schema_uuid=Id(UuidKind::schema,33);
+    if(mode==6)changed.default_name_uuid={};if(mode==7)changed.name_vector_uuid={};if(mode==8)changed.record.payload="text attachment";
+    Check(!c::EncodeCatalogMetadataVersion(changed).ok()&&!c::CatalogMetadataPreservesFamilyOrigin(m,changed),"native dispatcher refuses forged attachment bindings");}
+  auto retired=next;retired.record.header.deleted=true;retired.lifecycle=c::CatalogObjectLifecycle::dropped;
+  retired.status=c::CatalogObjectStatus::retired;retired.retired_transaction_uuid=retired.creator_transaction_uuid;
+  Check(c::EncodeCatalogMetadataVersion(retired).ok()&&c::CatalogMetadataPreservesFamilyOrigin(m,retired),"attachment tombstone retains definition");
+  for(unsigned mode=0;mode<4;++mode){const auto call=[&](){if(mode==0)return c::EncodeCatalogStorageActionAttachment(a).ok();
+    if(mode==1)return c::DecodeCatalogStorageActionAttachment(bytes).ok();if(mode==2)return c::EncodeCatalogMetadataVersion(m).ok();return c::CatalogMetadataPreservesFamilyOrigin(m,next);};
+    counting=true;allocations=0;const bool good=call();counting=false;const auto count=allocations;Check(good,"attachment allocation baseline");
+    for(unsigned long n=0;n<count;++n){allocation_budget=n;bool threw=false,accepted=false;try{accepted=call();}catch(const std::bad_alloc&){threw=true;}
+      const bool consumed=allocation_budget==-1;allocation_budget=-1;Check(consumed&&(threw||!accepted),"attachment allocation failure refuses complete admission");}
+  }
 }
-int main(){try{for(unsigned profile=0;profile<5;++profile){const auto p=Example(profile);Good(p);Malformed(p);Boundaries(p);Evolution(p);Allocations(p);}
+}
+int main(){try{for(unsigned profile=0;profile<5;++profile){const auto p=Example(profile);Good(p);Malformed(p);Boundaries(p);Evolution(p);Allocations(p);Attachment(p);}
   std::cout<<"PASS native storage policy checks="<<checks<<'\n';return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}
