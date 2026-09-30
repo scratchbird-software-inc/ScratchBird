@@ -83,6 +83,9 @@ pthread_mutex_t* runtime_state_mutex = nullptr;
 server::ServerAgentRuntime* startup_runtime = nullptr;
 bool runtime_threads_ready = false;
 bool startup_failure_injected = false;
+bool cleanup_failure_mode = false;
+unsigned cleanup_sync_failures = 0;
+bool cleanup_after_joins = false;
 bool track_native_creates = true;
 unsigned fail_launch = 0;
 unsigned launch_attempts = 0;
@@ -153,6 +156,20 @@ extern "C" int __real_pthread_join(pthread_t, void**);
 extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*,
                                       void* (*)(void*), void*);
 extern "C" int __real_pthread_setname_np(pthread_t, const char*);
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) {
+  if (startup_probe && cleanup_failure_mode && startup_failure_injected &&
+      cleanup_sync_failures == 0) {
+    cleanup_after_joins = true;
+    for (unsigned i = 0; i < launched_threads; ++i) {
+      cleanup_after_joins = cleanup_after_joins && startup_joined[i];
+    }
+    ++cleanup_sync_failures;
+    errno = EIO;
+    return -1;
+  }
+  return __real_fsync(fd);
+}
 extern "C" int __real_pthread_cond_clockwait(pthread_cond_t*, pthread_mutex_t*,
                                              clockid_t, const timespec*);
 
@@ -478,6 +495,35 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
             << " started_after_catch=" << after_failure.started << '\n';
   // Rescue only after recording the oracle. These joins cannot satisfy it.
   runtime.Stop();
+  // SEARCH_KEY: SERVER_AGENT_STARTUP_AND_CLEANUP_FAILURE
+  if (cleanup_failure_mode) {
+    const auto failed = runtime.Snapshot().stop_result;
+    diagnostics.clear();
+    const bool restarted = runtime.Start(config, engine, &diagnostics);
+    const auto repeated = runtime.Stop();
+    bool retained = failed.attempted && !failed.ok() && !failed.durable_cleanup_complete &&
+        !failed.diagnostics.empty() && repeated.attempted && !repeated.ok() &&
+        !repeated.durable_cleanup_complete &&
+        repeated.diagnostics.size() == failed.diagnostics.size() &&
+        diagnostics.size() == failed.diagnostics.size();
+    for (std::size_t i = 0; retained && i < failed.diagnostics.size(); ++i) {
+      retained = repeated.diagnostics[i].code == failed.diagnostics[i].code &&
+          repeated.diagnostics[i].occurrence_uuid == failed.diagnostics[i].occurrence_uuid &&
+          diagnostics[i].occurrence_uuid == failed.diagnostics[i].occurrence_uuid;
+    }
+    for (const auto& diagnostic : failed.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+      for (const auto& field : diagnostic.fields) {
+        if (field.key == "shutdown_phase") std::cerr << field.key << '=' << field.value << '\n';
+      }
+    }
+    const auto stopped = runtime.Snapshot();
+    std::cout << "cleanup_sync_failures=" << cleanup_sync_failures
+              << " cleanup_after_joins=" << cleanup_after_joins
+              << " retained_occurrences=" << retained << " restarted=" << restarted << '\n';
+    return unwound && cleanup_sync_failures == 1 && cleanup_after_joins &&
+        retained && !restarted && !stopped.started && !stopped.stopping;
+  }
   // SEARCH_KEY: SERVER_AGENT_REUSE_AFTER_NATIVE_STARTUP_FAILURE
   // Reuse this exact object and database after the injected launch failure.
   // The replacement probe disables injection and independently accounts for
@@ -584,7 +630,9 @@ int main(int argc, char** argv) {
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
-  const bool startup_failure = argc == 3 && std::string_view(argv[1]) == "--startup-failure";
+  cleanup_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure";
+  const bool startup_failure = cleanup_failure_mode ||
+      (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
   if (startup_failure) {

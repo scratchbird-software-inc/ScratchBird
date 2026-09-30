@@ -25,6 +25,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     -Wl,--wrap=pthread_mutex_unlock
     -Wl,--wrap=pthread_join
     -Wl,--wrap=pthread_create
+    -Wl,--wrap=fsync
     -Wl,--wrap=pthread_setname_np)
   add_test(NAME server_agent_spurious_wake_gate
     COMMAND server_agent_shutdown_wakeup_gate --spurious-wake)
@@ -47,6 +48,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
       COMMAND server_agent_shutdown_wakeup_gate --startup-failure ${failed_launch})
     set_tests_properties(server_agent_startup_failure_${failed_launch}_gate PROPERTIES
       TIMEOUT 120 LABELS "agents;concurrency;startup;resource_exhaustion;linux_proof")
+    add_test(NAME server_agent_startup_cleanup_failure_${failed_launch}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --startup-cleanup-failure ${failed_launch})
+    set_tests_properties(server_agent_startup_cleanup_failure_${failed_launch}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;partial_failure;linux_proof")
   endforeach()
   add_test(NAME server_agent_sequential_thread_restart_gate
     COMMAND server_agent_shutdown_wakeup_gate --sequential-restart)
