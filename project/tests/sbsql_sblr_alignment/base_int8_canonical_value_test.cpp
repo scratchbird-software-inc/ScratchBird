@@ -215,8 +215,11 @@ void OperationsAndSerialization() {
                             dt::DatatypeCastContext::implicit);
   const auto rendered = Cast(Int8(0x80), dt::CanonicalTypeId::character,
                              dt::DatatypeCastContext::explicit_cast);
-  Check(widened.ok() && widened.value.encoded_value == "-128",
-        "int8 widening boundary emits signed decimal text");
+  Check(!widened.ok() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int8,
+                                     dt::CanonicalTypeId::int16) ==
+                dt::DatatypeCastCategory::forbidden,
+        "unregistered int8-to-int16 cast remains fail-closed");
   Check(rendered.ok() && rendered.value.encoded_value == "-128",
         "int8 character boundary emits signed decimal text");
   const auto exact_numeric = Cast(Int8(0x80), dt::CanonicalTypeId::decimal,
@@ -228,24 +231,18 @@ void OperationsAndSerialization() {
             approximate_numeric.ok() &&
             approximate_numeric.value.encoded_value == "-128",
         "int8 numeric output casts decode the canonical byte");
-  const auto narrowed = Cast({dt::CanonicalTypeId::int16, "127", false},
+  const auto narrowed = Cast(
+      {dt::CanonicalTypeId::int16, std::string{'\x7f', '\0'}, false},
                              dt::CanonicalTypeId::int8,
                              dt::DatatypeCastContext::explicit_cast);
-  Check(narrowed.ok() && IsInt8(narrowed.value, 0x7f),
-        "narrowing cast emits one canonical byte");
-  const auto assigned = Cast({dt::CanonicalTypeId::int16, "-128", false},
+  Check(!narrowed.ok(),
+        "unregistered int16-to-int8 explicit cast remains fail-closed");
+  const auto assigned = Cast(
+      {dt::CanonicalTypeId::int16, std::string{'\x80', '\xff'}, false},
                              dt::CanonicalTypeId::int8,
                              dt::DatatypeCastContext::assignment);
-  Check(assigned.ok() && IsInt8(assigned.value, 0x80),
-        "checked assignment cast emits one canonical byte");
-  Check(!Cast({dt::CanonicalTypeId::int16, "128", false},
-              dt::CanonicalTypeId::int8,
-              dt::DatatypeCastContext::explicit_cast).ok(),
-        "narrowing overflow fails closed");
-  Check(!Cast({dt::CanonicalTypeId::int16, "128", false},
-              dt::CanonicalTypeId::int8,
-              dt::DatatypeCastContext::assignment).ok(),
-        "assignment overflow fails closed");
+  Check(!assigned.ok(),
+        "unregistered int16-to-int8 assignment remains fail-closed");
   for (const auto& source :
        {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.0", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "-12e0", false},

@@ -347,6 +347,10 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
     // Text is accepted only at cast and display boundaries.
     return value.encoded_value.size() == 1;
   }
+  if (value.type_id == CanonicalTypeId::int16) {
+    // Every two-byte pattern is one canonical little-endian INT16 value.
+    return value.encoded_value.size() == 2;
+  }
   return value.type_id != CanonicalTypeId::character ||
       ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
                             value.encoded_value.size());
@@ -768,6 +772,7 @@ bool IntegerOperationValueValid(CanonicalTypeId type_id,
       type_id == CanonicalTypeId::uint8) {
     return value.size() == 1;
   }
+  if (type_id == CanonicalTypeId::int16) return value.size() == 2;
   return IntegerFits(type_id, std::string(value));
 }
 
@@ -2003,6 +2008,31 @@ bool DecodeCanonicalUint8Value(std::string_view canonical_bytes,
   return true;
 }
 
+bool EncodeCanonicalInt16Value(std::int64_t value,
+                               std::string* canonical_bytes) {
+  if (canonical_bytes == nullptr ||
+      value < std::numeric_limits<std::int16_t>::min() ||
+      value > std::numeric_limits<std::int16_t>::max()) {
+    return false;
+  }
+  const auto raw = static_cast<std::uint16_t>(value);
+  canonical_bytes->resize(2);
+  (*canonical_bytes)[0] = static_cast<char>(raw & 0xffu);
+  (*canonical_bytes)[1] = static_cast<char>((raw >> 8u) & 0xffu);
+  return true;
+}
+
+bool DecodeCanonicalInt16Value(std::string_view canonical_bytes,
+                               std::int64_t* value) {
+  if (value == nullptr || canonical_bytes.size() != 2) return false;
+  const auto low = static_cast<unsigned char>(canonical_bytes[0]);
+  const auto high = static_cast<unsigned char>(canonical_bytes[1]);
+  const unsigned raw = low | (high << 8u);
+  *value = raw < 0x8000u ? static_cast<std::int64_t>(raw)
+                         : static_cast<std::int64_t>(raw) - 0x10000;
+  return true;
+}
+
 const char* DatatypeCastCategoryName(DatatypeCastCategory category) {
   switch (category) {
     case DatatypeCastCategory::identity: return "identity";
@@ -2079,6 +2109,13 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (source_type_id == CanonicalTypeId::null_type) { return DatatypeCastCategory::lossless_implicit; }
   if (source_type_id == CanonicalTypeId::unknown) { return DatatypeCastCategory::forbidden; }
   if (!LookupDatatypeDescriptor(source_type_id).ok()) {
+    return DatatypeCastCategory::forbidden;
+  }
+  // Core defines INT16's value bytes but has not registered any complete
+  // non-NULL cast pair, including identity. Contextual base.null binding is
+  // admitted above; all other INT16 cast routes remain fail-closed.
+  if (source_type_id == CanonicalTypeId::int16 ||
+      target_type_id == CanonicalTypeId::int16) {
     return DatatypeCastCategory::forbidden;
   }
   if (source_type_id == target_type_id) { return DatatypeCastCategory::identity; }
@@ -2239,6 +2276,26 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "SB_DATATYPE_OK", "datatype.ok");
     return result;
+  }
+  // Typed NULL identity is a state/descriptor validation, not a non-NULL
+  // value-conversion policy. Preserve it even when a datatype's present-value
+  // cast table remains unresolved.
+  if (request.value.is_null &&
+      request.value.type_id == CanonicalTypeId::int16 &&
+      request.value.type_id == request.target_type_id) {
+    if (!ExecutionDescriptorEquals(request.value.descriptor,
+                                   request.target_descriptor)) {
+      return CastFailure("typed_null_identity_descriptor_mismatch",
+                         DatatypeCastCategory::forbidden,
+                         "DATATYPE.CAST_FORBIDDEN");
+    }
+    DatatypeCastResult null_identity;
+    null_identity.status = OkStatus();
+    null_identity.category = DatatypeCastCategory::identity;
+    null_identity.value = request.value;
+    null_identity.diagnostic = MakeDatatypeOperationDiagnostic(
+        null_identity.status, "SB_DATATYPE_OK", "datatype.ok");
+    return null_identity;
   }
   DatatypeCastResult result;
   result.category = ClassifyDatatypeCast(request.value.type_id, request.target_type_id, request.reference_compatibility_profile);
@@ -2972,6 +3029,21 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   }
   std::string left = request.left.encoded_value;
   std::string right = request.right.encoded_value;
+  if (request.left.type_id == CanonicalTypeId::int16) {
+    std::int64_t left_value = 0;
+    std::int64_t right_value = 0;
+    if (!DecodeCanonicalInt16Value(left, &left_value) ||
+        !DecodeCanonicalInt16Value(right, &right_value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected", "int16_payload_invalid");
+      return result;
+    }
+    result.comparison = left_value < right_value ? -1 :
+        (left_value > right_value ? 1 : 0);
+    return result;
+  }
   if (request.left.type_id == CanonicalTypeId::int8 ||
       request.left.type_id == CanonicalTypeId::uint8) {
     left = IntegerOperationText(request.left.type_id, left);
@@ -3173,6 +3245,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
     *failure_detail = "canonical_value_encoding_invalid";
     return false;
   }
+  if (value.type_id == CanonicalTypeId::int16) {
+    *failure_detail = "int16_hash_profile_unresolved";
+    return false;
+  }
   if (value.is_null) {
     payload->clear();
     return true;
@@ -3259,9 +3335,15 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     result.sort_key.assign(1, request.value.is_null
         ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
     if (!request.value.is_null) {
-      const std::string value = IntegerOperationText(
-          request.value.type_id, request.value.encoded_value);
-      result.sort_key.append(OrderedIntegerKey(request.value.type_id, value));
+      if (request.value.type_id == CanonicalTypeId::int16) {
+        result.sort_key.push_back(static_cast<char>(
+            static_cast<unsigned char>(request.value.encoded_value[1]) ^ 0x80u));
+        result.sort_key.push_back(request.value.encoded_value[0]);
+      } else {
+        const std::string value = IntegerOperationText(
+            request.value.type_id, request.value.encoded_value);
+        result.sort_key.append(OrderedIntegerKey(request.value.type_id, value));
+      }
     }
     return result;
   }
@@ -3672,6 +3754,13 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);
   if (request.value.is_null) {
     result.display_value = "NULL";
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::int16) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected", "int16_render_profile_unresolved");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::binary ||

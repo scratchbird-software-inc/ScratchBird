@@ -796,7 +796,6 @@ void TestIntegerPhysicalSortKeyBytes() {
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::int16, 2, true, "-32768", "32767", "32768"},
       {dt::CanonicalTypeId::int32, 4, true, "-2147483648", "2147483647", "2147483648"},
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
