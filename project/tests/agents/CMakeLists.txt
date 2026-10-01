@@ -49,6 +49,11 @@ target_compile_features(memory_safe_retirement_gate PRIVATE cxx_std_23)
 target_compile_definitions(memory_safe_retirement_gate PRIVATE
   SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD)
 target_link_libraries(memory_safe_retirement_gate PRIVATE sb_core_memory)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(memory_safe_retirement_gate PRIVATE SB_RETIRE_NATIVE_FAULT_GATE)
+  target_link_options(memory_safe_retirement_gate PRIVATE
+    "-Wl,--wrap=pthread_cond_clockwait" "-Wl,--wrap=pthread_cond_timedwait")
+endif()
 add_test(NAME memory_safe_retirement_gate COMMAND memory_safe_retirement_gate)
 set_tests_properties(memory_safe_retirement_gate PROPERTIES
   TIMEOUT 120 LABELS "memory;concurrency;safe_retirement")

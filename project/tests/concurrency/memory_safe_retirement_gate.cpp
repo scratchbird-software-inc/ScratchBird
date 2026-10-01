@@ -10,6 +10,27 @@
 #include <stdexcept>
 #include <thread>
 
+#if defined(SB_RETIRE_NATIVE_FAULT_GATE)
+#include <cerrno>
+#include <pthread.h>
+thread_local bool fail_retirement_wait = false;
+thread_local unsigned retirement_wait_calls = 0;
+extern "C" int __real_pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const timespec*);
+extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t* m, const timespec* t) {
+  ++retirement_wait_calls;
+  if (std::exchange(fail_retirement_wait, false)) return EINVAL;
+  return __real_pthread_cond_timedwait(c, m, t);
+}
+#if defined(_GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT)
+extern "C" int __real_pthread_cond_clockwait(pthread_cond_t*, pthread_mutex_t*, clockid_t, const timespec*);
+extern "C" int __wrap_pthread_cond_clockwait(pthread_cond_t* c, pthread_mutex_t* m, clockid_t clock, const timespec* t) {
+  ++retirement_wait_calls;
+  if (std::exchange(fail_retirement_wait, false)) return EINVAL;
+  return __real_pthread_cond_clockwait(c, m, clock, t);
+}
+#endif
+#endif
+
 namespace {
 namespace m = scratchbird::core::memory;
 using S = m::SafeRetirementStatus;
@@ -250,7 +271,7 @@ void FailedReleaseRetainsCharge() {
     const auto created = domain.Emplace<Payload>(Id(71), kind, 13, destroyed, domain);
     Check(created.ok() && domain.Retire(created.handle) == S::ok, "release failure retire");
     const auto charged = f.manager.Snapshot().current_bytes;
-    m::MemoryFailureInjectionConfiguration config{m::MakeMemoryFailureInjectionTestGuard()};
+    m::MemoryFailureInjectionConfiguration config{m::MakeMemoryFailureInjectionTestGuard(), false, {}, {}, {}};
     config.fixture_enabled = true;
     config.fixture_name = "safe retirement physical release failure";
     config.evidence_note = "real allocator pre-release failure retains physical allocation";
@@ -535,6 +556,36 @@ void ReclamationGaugesByKind() {
   }
   f.Empty();
 }
+void NativeDrainFailure() {
+#if defined(SB_RETIRE_NATIVE_FAULT_GATE)
+  Fixture f;
+  std::atomic<unsigned> destroyed{0};
+  {
+    m::MemorySafeRetirement domain(*f.resource, Id(10), 2, 2);
+    Check(domain.Initialize() == S::ok, "native failure domain");
+    const auto made = domain.Emplace<Payload>(Id(11), kind, 42, destroyed, domain);
+    Check(made.ok(), "native failure actual payload");
+    m::SafeRetirementGuard guard;
+    Check(domain.Protect(made.handle, Hazard(12), guard) == S::ok, "native failure actual reader");
+    const auto charged = f.manager.Snapshot().current_bytes;
+    retirement_wait_calls = 0; fail_retirement_wait = true;
+    const auto result = domain.Drain(std::chrono::steady_clock::now() + std::chrono::milliseconds(20));
+    const bool injected = !fail_retirement_wait;
+    fail_retirement_wait = false;
+    const auto calls = retirement_wait_calls;
+    Check(result != S::ok && destroyed == 0 && domain.Snapshot().readers == 1 &&
+          f.manager.Snapshot().current_bytes == charged &&
+          static_cast<Payload*>(guard.get())->value == 42,
+          "native failure preserves live payload and charge");
+    guard.Reset();
+    Check(domain.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(1)) == S::ok &&
+          destroyed == 1, "real last-reader release permits retry and exact destruction");
+    Check(injected && calls == 1 && result == S::wait_failed,
+          "retirement native error is not timeout or another park");
+  }
+  f.Empty();
+#endif
+}
 }  // namespace
 
 int main() {
@@ -546,7 +597,7 @@ int main() {
     InvalidAdmissionAndPayloadCapacity();
     BoundedReaderInspection();
     ConcurrentReaderInspection();
-    ReclamationGaugesByKind();
+    ReclamationGaugesByKind(); NativeDrainFailure();
     std::cout << "PASS safe retirement checks=" << checks << "\n";
     return 0;
   } catch (const std::exception& error) {

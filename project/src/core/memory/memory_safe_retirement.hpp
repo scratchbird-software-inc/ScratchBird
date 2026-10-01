@@ -3,6 +3,7 @@
 #pragma once
 
 #include "reservation_backed_memory_resource.hpp"
+#include "checked_condition.hpp"
 
 #include <chrono>
 #include <array>
@@ -22,7 +23,8 @@ namespace scratchbird::core::memory {
 // visibility/finality. Payload mutation needs its own synchronization.
 enum class SafeRetirementStatus {
   ok, invalid_request, not_initialized, closed, exhausted, stale_handle,
-  allocation_failed, construction_failed, release_failed, timed_out, cancelled
+  allocation_failed, construction_failed, release_failed, timed_out, cancelled,
+  wait_failed
 };
 
 struct SafeRetirementHandle {
@@ -170,6 +172,8 @@ class MemorySafeRetirement {
   SafeRetirementStatus Collect();
   // Deadline/cancellation bound the quiescence wait, not client destruction.
   // Object destructors must be bounded and must not block on this domain.
+  // wait_failed is a native wait failure, not timeout, physical release failure
+  // or a drain receipt. Outstanding payloads/charges remain owned for retry.
   SafeRetirementStatus Drain(std::chrono::steady_clock::time_point deadline,
                              std::stop_token cancellation = {});
   SafeRetirementSnapshot Snapshot() const;
@@ -229,7 +233,7 @@ class MemorySafeRetirement {
   mutable std::mutex mutex_;
   // Unlike condition_variable_any, this carries no hidden shared-mutex heap
   // allocation. Cancellation notification takes the same predicate mutex.
-  std::condition_variable changed_;
+  platform::CheckedCondition changed_;
   Object* objects_ = nullptr;
   Reader* readers_ = nullptr;
   u64 generation_ = 0;

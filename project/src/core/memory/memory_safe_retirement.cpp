@@ -90,7 +90,7 @@ SafeRetirementCreateResult MemorySafeRetirement::BeginCreate(MemoryBinaryUuid id
     closed_ = true;
     for (usize i = 0; i < object_limit_; ++i)
       if (objects_[i].state == State::published) objects_[i].state = State::retired;
-    changed_.notify_all();
+    if (!changed_.NotifyAll()) std::terminate();
     result.status = SafeRetirementStatus::exhausted;
     return result;
   }
@@ -117,7 +117,7 @@ SafeRetirementStatus MemorySafeRetirement::FinishCreate(const SafeRetirementHand
   auto& object = objects_[handle.slot];  // private construction token cannot be stale
   object.destroy = destroy;
   object.state = constructed && !closed_ ? State::published : State::retired;
-  changed_.notify_all();
+  if (!changed_.NotifyAll()) std::terminate();
   return closed_ ? SafeRetirementStatus::closed : SafeRetirementStatus::ok;
 }
 
@@ -152,7 +152,7 @@ void MemorySafeRetirement::ReleaseReader(usize slot) noexcept {
   auto& reader = readers_[slot];
   --objects_[reader.object.slot].readers;
   reader = Reader{};
-  changed_.notify_all();
+  if (!changed_.NotifyAll()) std::terminate();
 }
 
 SafeRetirementStatus MemorySafeRetirement::Retire(const SafeRetirementHandle& handle) {
@@ -162,7 +162,7 @@ SafeRetirementStatus MemorySafeRetirement::Retire(const SafeRetirementHandle& ha
   if (object.state == State::published) object.state = State::retired;
   else if (object.state != State::retired && object.state != State::reclaiming)
     return SafeRetirementStatus::stale_handle;
-  changed_.notify_all();
+  if (!changed_.NotifyAll()) std::terminate();
   return SafeRetirementStatus::ok;
 }
 
@@ -171,7 +171,7 @@ void MemorySafeRetirement::Close() {
   closed_ = true;
   if (objects_) for (usize i = 0; i < object_limit_; ++i)
     if (objects_[i].state == State::published) objects_[i].state = State::retired;
-  changed_.notify_all();
+  if (!changed_.NotifyAll()) std::terminate();
 }
 
 SafeRetirementStatus MemorySafeRetirement::Collect() {
@@ -198,7 +198,7 @@ SafeRetirementStatus MemorySafeRetirement::CollectImpl(bool allocation_free) {
     lock.lock();
     if (released.ok()) object = Object{};
     else { object.state = State::retired; result = SafeRetirementStatus::release_failed; }
-    changed_.notify_all();
+    if (!changed_.NotifyAll()) std::terminate();
   }
   return result;
 }
@@ -222,7 +222,7 @@ SafeRetirementStatus MemorySafeRetirement::Drain(std::chrono::steady_clock::time
   // all inner locks are destroyed before it, including on return.
   std::stop_callback wake(cancellation, [this] {
     std::lock_guard lock(mutex_);
-    changed_.notify_all();
+    if (!changed_.NotifyAll()) std::terminate();
   });
   for (;;) {
     if (cancellation.stop_requested()) return SafeRetirementStatus::cancelled;
@@ -230,9 +230,16 @@ SafeRetirementStatus MemorySafeRetirement::Drain(std::chrono::steady_clock::time
     if (collected != SafeRetirementStatus::ok) return collected;
     std::unique_lock lock(mutex_);
     if (Empty()) return SafeRetirementStatus::ok;
-    if (!changed_.wait_until(lock, deadline, [this, &cancellation] {
-          return cancellation.stop_requested() || Empty() || Collectable();
-        })) return SafeRetirementStatus::timed_out;
+    try {
+      while (!cancellation.stop_requested() && !Empty() && !Collectable()) {
+        if (std::chrono::steady_clock::now() >= deadline)
+          return SafeRetirementStatus::timed_out;
+        if (!changed_.Wait(lock, deadline)) return SafeRetirementStatus::wait_failed;
+      }
+    } catch (...) {
+      if (!lock.owns_lock()) std::terminate();
+      return SafeRetirementStatus::wait_failed;
+    }
   }
 }
 
