@@ -3667,6 +3667,56 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
             !stage_writes&&!stage_syncs,"native free range and actual zero pages qualify observation only");
           const auto exact_budget=range.retained_image_bytes;
           Check(inspect(pre,exact_budget,devices).ok(),"exact cumulative range image allowance");
+          {
+            namespace mem=scratchbird::core::memory;
+            auto policy=mem::DefaultLocalEngineMemoryPolicy();policy.hard_limit_bytes=2*pre.page_size_bytes;
+            policy.per_context_limit_bytes=policy.hard_limit_bytes;mem::MemoryManager manager(policy);
+            mem::HierarchicalMemoryBudgetLedger ledger(3,5);
+            mem::ReservationBackedMemoryResourceRequest request;
+            request.memory_manager=&manager;request.reservation_ledger=&ledger;
+            request.consumer_kind=mem::ReservationBackedMemoryConsumerKind::background_maintenance;
+            request.category=mem::MemoryCategory::page_buffer;request.memory_class="page_buffer";
+            request.requested_bytes=pre.page_size_bytes;request.route_label="native storage range conformance";
+            request.purpose="actual reusable probe";request.binary_operation_uuid=pre.operation_uuid.bytes;
+            request.binary_ownership[mem::MemoryBinaryScopeKind::database]=pre.database_uuid.bytes;
+            request.binary_ownership[mem::MemoryBinaryScopeKind::owner]=pre.initiator_uuid.bytes;
+            request.binary_ownership[mem::MemoryBinaryScopeKind::context]=pre.request_context_uuid.bytes;
+            request.scope_chain={{mem::HierarchicalMemoryScopeKind::process,{},Id(253).bytes},
+              {mem::HierarchicalMemoryScopeKind::database,{},pre.database_uuid.bytes}};
+            request.provenance.source=mem::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+            request.provenance.source_label="actual storage fixture";
+            for(const auto& scope:request.scope_chain){mem::HierarchicalMemoryBudget budget;
+              budget.scope=scope;budget.hard_limit_bytes=pre.page_size_bytes;budget.provenance=request.provenance;
+              Check(ledger.SetBudget(budget).ok(),"configure shared page-buffer parent");}
+            const auto acquire=[&]{auto grant=mem::AcquireReservationBackedMemoryResource(request);
+              Check(grant.ok(),"admit actual page-buffer memory grant");auto owned=db::AdoptNativeStorageMemory(
+                {pre.database_uuid,pre.operation_uuid,pre.initiator_uuid,pre.request_context_uuid},std::move(grant.resource));
+              Check(owned.ok(),"adopt exact binary storage memory binding");return std::move(owned.memory);};
+            auto memory=acquire();
+            const auto governed=[&](const auto& candidate){return db::InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
+              candidate,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling,memory);};
+            reads=0;track_reads=true;auto actual=governed(pre);track_reads=false;const auto probe_reads=reads;
+            Check(actual.ok()&&actual.inspected_pages==8&&memory.Snapshot().peak_allocated_bytes==pre.page_size_bytes&&
+              !memory.Snapshot().allocated_bytes&&!manager.Snapshot().current_bytes&&ledger.Snapshot().current_bytes==pre.page_size_bytes,
+              "actual range reuses one governed page and releases payload while retaining grant");
+            reads=0;read_fault=probe_reads;track_reads=true;actual=governed(pre);track_reads=false;
+            failed(actual,R::io_failure);Check(!read_fault&&actual.inspected_pages==7&&actual.blocked_page==39&&
+              !manager.Snapshot().current_bytes,"last physical probe failure releases governed payload and preserves precise position");
+            auto wrong=pre;wrong.operation_uuid=Id(252);reads=0;track_reads=true;actual=governed(wrong);track_reads=false;
+            failed(actual,R::memory_binding_failure);Check(!reads&&actual.memory_error==db::NativeStorageMemoryError::invalid_binding,"wrong operation grant refuses before device reads");
+            wrong=pre;wrong.database_uuid=Id(252);reads=0;track_reads=true;actual=governed(wrong);track_reads=false;
+            failed(actual,R::memory_binding_failure);Check(!reads&&actual.memory_error==db::NativeStorageMemoryError::invalid_binding,"wrong database grant refuses before device reads");
+            memory={};Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"complete page grant cleanup");
+            --request.requested_bytes;memory=acquire();actual=governed(pre);failed(actual,R::resource_exhausted);
+            Check(actual.memory_error==db::NativeStorageMemoryError::resource_exhausted&&
+              actual.memory_diagnostic.diagnostic_code=="SB_CEIC_012_MEMORY_RESOURCE.RESERVATION_EXCEEDED"&&
+              !actual.inspected_pages&&!manager.Snapshot().current_bytes,"short actual grant preserves typed memory failure before page probing");
+            memory={};++request.requested_bytes;memory=acquire();
+            const auto revoked=ledger.CleanupOwner(pre.initiator_uuid.bytes);Check(revoked.retained_bytes==pre.page_size_bytes,"revocation retains owning workspace");
+            reads=0;track_reads=true;actual=governed(pre);track_reads=false;failed(actual,R::memory_binding_failure);
+            Check(!reads&&!manager.Snapshot().current_bytes&&actual.memory_error==db::NativeStorageMemoryError::invalid_grant,"revoked grant cannot begin range inspection");memory={};
+            Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"revoked grant released by owner");
+          }
           failed(inspect(pre,exact_budget-1,devices),R::allocation_failure);
           auto invalid=pre;invalid.page_count=0;failed(inspect(invalid,ceiling,devices),R::policy_failure);
           invalid=pre;invalid.first_page=0;failed(inspect(invalid,ceiling,devices),R::policy_failure);
