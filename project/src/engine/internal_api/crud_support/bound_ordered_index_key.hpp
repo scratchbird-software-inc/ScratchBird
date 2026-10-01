@@ -151,6 +151,12 @@ inline bool EncodeOrderedIndexKey(std::string_view logical_key,
   for (std::size_t ordinal = 0; ordinal < columns.size(); ++ordinal) {
     const auto& binding = columns[ordinal];
     const auto& value = (*values)[ordinal];
+    if (binding.datatype.type_id ==
+        core::datatypes::CanonicalTypeId::uint16) {
+      *diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.index_store", "sorted_index_uint16_carrier_provenance_unbound");
+      return false;
+    }
     core::datatypes::DatatypeSortKeyRequest request;
     request.value = {binding.datatype.type_id, value.bytes, value.isSqlNull()};
     request.text_seed = binding.text_seed;

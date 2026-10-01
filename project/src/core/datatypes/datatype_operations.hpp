@@ -14,6 +14,7 @@
 #include "../resources/collation_profile.hpp"
 #include "../resources/unicode_collation.hpp"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -324,6 +325,20 @@ bool EncodeCanonicalUint8Value(std::string_view decimal_text,
                                std::string* canonical_bytes);
 bool DecodeCanonicalUint8Value(std::string_view canonical_bytes,
                                std::string* decimal_text);
+// Canonical INT16 value boundary. Present values are exactly two
+// little-endian two's-complement bytes. This bridge is mathematical and does
+// not define a text, parser, display, or cast policy.
+bool EncodeCanonicalInt16Value(std::int64_t value,
+                               std::string* canonical_bytes);
+bool DecodeCanonicalInt16Value(std::string_view canonical_bytes,
+                               std::int64_t* value);
+// Canonical UINT16 value boundary. Present values are exactly two
+// little-endian unsigned bytes. This bridge is mathematical and does not
+// define a text, parser, display, or cast policy.
+bool EncodeCanonicalUint16Value(std::int64_t value,
+                                std::string* canonical_bytes);
+bool DecodeCanonicalUint16Value(std::string_view canonical_bytes,
+                                std::uint64_t* value);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile = false);

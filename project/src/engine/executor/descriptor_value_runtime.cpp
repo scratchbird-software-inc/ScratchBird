@@ -428,6 +428,10 @@ bool ValidateExpandedScalarEncoding(const EngineTypedValue& value,
         !normalized.is_null && normalized.binary_value.empty() &&
         !normalized.encoded_value.empty();
   }
+  if (type_id == CanonicalTypeId::uint16) {
+    *detail = "uint16 execution carrier profile is unresolved";
+    return false;
+  }
   const bool extended_numeric =
       type_id == CanonicalTypeId::decimal ||
       type_id == CanonicalTypeId::decimal_float ||
@@ -1614,7 +1618,9 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
             "canonical UUID/binary value requires its exclusive native payload", row, column);
       }
       if (CanonicalDescriptorTypeId(bound_column.descriptor) ==
-              CanonicalTypeId::uint8) {
+              CanonicalTypeId::uint8 ||
+          CanonicalDescriptorTypeId(bound_column.descriptor) ==
+              CanonicalTypeId::uint16) {
         std::string detail;
         if (!ValidateExpandedScalarEncoding(value, &detail)) {
           return ErrorDiagnostic(
@@ -1797,6 +1803,14 @@ DescriptorBatch SortDescriptorBatchByColumn(const DescriptorBatch& input,
   }
   if (column >= input.columns.size()) {
     SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_COLUMN_OUT_OF_RANGE", "sort column out of range", 0, column));
+    return {};
+  }
+  if (CanonicalDescriptorTypeId(input.columns[column].descriptor) ==
+      CanonicalTypeId::uint16) {
+    SetDiagnostic(diagnostic, ErrorDiagnostic(
+        "QOW-DIAG-QRY-008-RUNTIME-BREADTH-REFUSAL-V1",
+        "uint16 sort carrier and NULL-ordering profiles are unresolved", 0,
+        column));
     return {};
   }
   DescriptorBatch output = input;

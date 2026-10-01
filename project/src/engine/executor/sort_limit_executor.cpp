@@ -540,6 +540,16 @@ bool CompareOrderValues(
         "DATATYPE.NULL_STATE.INVALID:order operand carries a malformed NULL or non-value sentinel";
     return false;
   }
+  if (type_id == dt::CanonicalTypeId::int16 && has_null &&
+      !(left.isSqlNull() && right.isSqlNull())) {
+    // Executor INT16 values still use a decimal-text carrier. A two-character
+    // spelling is indistinguishable by width from canonical INT16 bytes, so a
+    // mixed present/NULL comparison must refuse until this boundary has an
+    // admitted canonical carrier adapter.
+    *refusal_detail =
+        "int16 mixed NULL order comparison carrier is unresolved";
+    return false;
+  }
   const bool carries_binary_payload =
       !left.binary_value.empty() || !right.binary_value.empty();
   if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary &&

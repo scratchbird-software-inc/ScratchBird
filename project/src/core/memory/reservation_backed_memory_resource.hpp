@@ -70,6 +70,9 @@ struct ReservationBackedMemoryResourceRequest {
   // Context/owner plus the exact binary database/session/transaction/statement/
   // query scope tuple. Diagnostic route labels are never allocator identities.
   MemoryBinaryOwnership binary_ownership;
+  // Native operation identity is never rendered into the legacy label field.
+  // Exactly one operation alternative; binary operations require binary owners.
+  MemoryBinaryUuid binary_operation_uuid{};
 };
 
 struct ReservationBackedMemoryAllocationRequest {
@@ -89,6 +92,7 @@ struct ReservationBackedMemoryResourceSnapshot {
   u64 allocation_count = 0;
   u64 release_count = 0;
   bool active = false;
+  MemoryBinaryUuid binary_operation_uuid{};
 };
 
 struct ReservationBackedMemoryResourceReleaseResult {
@@ -204,6 +208,7 @@ struct ReservationBackedMemoryResourceAcquireResult {
   std::unique_ptr<ReservationBackedMemoryResource> resource;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
+  MemoryBinaryUuid binary_operation_uuid{};
 
   bool ok() const { return status.ok() && !fail_closed && resource != nullptr; }
 };

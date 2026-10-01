@@ -124,8 +124,10 @@ void AppendBaseEvidence(std::vector<std::string>* evidence,
                           request.consumer_kind)));
   evidence->push_back("reservation_backed_memory.route_label=" +
                       request.route_label);
-  evidence->push_back("reservation_backed_memory.operation_id=" +
-                      request.operation_id);
+  if (MemoryUuidPresent(request.binary_operation_uuid))
+    evidence->push_back("reservation_backed_memory.operation_identity=binary");
+  else
+    evidence->push_back("reservation_backed_memory.operation_id=" + request.operation_id);
   evidence->push_back("reservation_backed_memory.owner_id=" +
                       request.owner_id);
   evidence->push_back("reservation_backed_memory.requested_bytes=" +
@@ -170,6 +172,7 @@ ReservationBackedMemoryResourceAcquireResult RefuseAcquire(
     Severity severity = Severity::error) {
   ReservationBackedMemoryResourceAcquireResult result;
   result.status = ErrorStatus(code);
+  result.binary_operation_uuid = request.binary_operation_uuid;
   result.status.severity = severity;
   result.fail_closed = true;
   result.diagnostic = MakeResourceDiagnostic(
@@ -511,6 +514,7 @@ ReservationBackedMemoryResource::SnapshotLocked() const {
   snapshot.consumer_kind = request_.consumer_kind;
   snapshot.route_label = request_.route_label;
   snapshot.operation_id = request_.operation_id;
+  snapshot.binary_operation_uuid = request_.binary_operation_uuid;
   snapshot.reserved_bytes = released_ ? 0 : request_.requested_bytes;
   snapshot.allocated_bytes = allocated_bytes_;
   snapshot.peak_allocated_bytes = peak_allocated_bytes_;
@@ -629,8 +633,13 @@ AcquireReservationBackedMemoryResource(
         "memory.ceic_012.resource.scope_chain_required",
         "scope_chain_required");
   }
+  const bool binary_operation = MemoryUuidPresent(request.binary_operation_uuid);
+  const bool valid_operation = binary_operation
+      ? MemorySystemUuidValid(request.binary_operation_uuid) && request.operation_id.empty() &&
+            !request.binary_ownership.empty()
+      : !Blank(request.operation_id);
   if ((request.binary_ownership.empty() && Blank(request.owner_id)) || Blank(request.route_label) ||
-      Blank(request.operation_id)) {
+      !valid_operation) {
     return RefuseAcquire(
         std::move(request),
         "SB_CEIC_012_MEMORY_RESOURCE.IDENTITY_REQUIRED",
@@ -754,6 +763,7 @@ AcquireReservationBackedMemoryResource(
         "memory.ceic_012.resource.retain_refused", "revoked_before_publication");
   }
   result.status = OkStatus();
+  result.binary_operation_uuid = request.binary_operation_uuid;
   result.resource.reset(
       new ReservationBackedMemoryResource(std::move(request), reserved.token, std::move(retained.lease)));
   auto& owner = *result.resource;
@@ -784,6 +794,7 @@ AcquireReservationBackedMemoryResource(
   return result;
 } catch (const std::bad_alloc&) {
   ReservationBackedMemoryResourceAcquireResult result;
+  result.binary_operation_uuid = request.binary_operation_uuid;
   result.status = ErrorStatus(StatusCode::memory_allocation_failed);
   result.fail_closed = true;
   return result;

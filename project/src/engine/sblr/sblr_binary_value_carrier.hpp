@@ -30,6 +30,7 @@ inline bool SblrNullPayloadEmpty(const SblrValue& value) noexcept {
       value.charset_name.empty() && value.collation_name.empty();
 }
 inline bool SblrNativeCastCarrierValid(const SblrValue& value) noexcept {
+  if (value.descriptor_id == "uint16") return false;
   if (value.is_null) return SblrNullPayloadEmpty(value);
   if (value.descriptor_id == "uuid" || value.payload_kind == SblrValuePayloadKind::uuid_binary ||
       value.payload_kind == SblrValuePayloadKind::uuid_text) return SblrUuidPayloadValid(value);
@@ -38,7 +39,8 @@ inline bool SblrNativeCastCarrierValid(const SblrValue& value) noexcept {
   return value.uuid_value.is_nil() && value.uuid_array_value.empty() && value.binary_value.empty();
 }
 inline bool SblrHasNativeBinaryCarrier(const SblrValue& value) noexcept {
-  return value.descriptor_id == "uuid" || value.descriptor_id == "binary" ||
+  return value.descriptor_id == "uint16" || value.descriptor_id == "uuid" ||
+      value.descriptor_id == "binary" ||
       value.descriptor_id == "varbinary" || value.payload_kind == SblrValuePayloadKind::uuid_binary ||
       value.payload_kind == SblrValuePayloadKind::uuid_text || value.payload_kind == SblrValuePayloadKind::binary;
 }

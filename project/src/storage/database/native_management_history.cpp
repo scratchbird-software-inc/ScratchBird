@@ -96,23 +96,25 @@ struct Context {
     Require(std::equal(image.begin(),image.begin()+4096,actual.begin())&&std::equal(image.begin()+4480,image.end(),actual.begin()+4480),E::history_mismatch);
   }
 };
-void Index(NativeManagementHistory& history){
+void Index(const std::vector<NativeManagementHistoryEntry>& entries,
+    std::map<Uuid,std::size_t>& latest,std::map<std::pair<u16,std::string>,Uuid>& idempotency,
+    const NativeManagementOperation* append=nullptr){
   using Semantic=std::tuple<Uuid,u16,Uuid,Uuid,Uuid,Uuid,Uuid,std::optional<u64>,std::array<byte,32>>;
   std::map<Semantic,Uuid> semantics;std::map<Uuid,Uuid> steps;
-  for(std::size_t i=0;i<history.entries.size();++i){const auto& o=history.entries[i].record;
-    const auto old=history.latest.find(o.uuid);
-    if(old==history.latest.end())Require(o.revision==1&&o.state==NativeManagementState::created,E::transition_failure);
-    else{const auto e=ValidateNativeManagementOperationEvolution(history.entries[old->second].record,o);
+  for(std::size_t i=0;i<entries.size()+(append?1:0);++i){const auto& o=i==entries.size()?*append:entries[i].record;
+    const auto old=latest.find(o.uuid);
+    if(old==latest.end())Require(o.revision==1&&o.state==NativeManagementState::created,E::transition_failure);
+    else{const auto e=ValidateNativeManagementOperationEvolution(entries[old->second].record,o);
       if(e==NativeManagementOperationError::hash_failure)throw E::hash_failure;
       if(e==NativeManagementOperationError::resource_exhausted)throw E::resource_exhausted;
       Require(e==NativeManagementOperationError::none,E::transition_failure);}
-    history.latest[o.uuid]=i;
-    const auto key=std::make_pair(u16(o.scope),o.idempotency_key);const auto [k,added]=history.idempotency.emplace(key,o.uuid);(void)added;Require(k->second==o.uuid,E::idempotency_conflict);
+    latest[o.uuid]=i;
+    const auto key=std::make_pair(u16(o.scope),o.idempotency_key);const auto [k,added]=idempotency.emplace(key,o.uuid);(void)added;Require(k->second==o.uuid,E::idempotency_conflict);
     const Semantic semantic{o.descriptor_uuid,u16(o.scope),o.target_type_uuid,o.target_uuid,o.initiator_uuid,o.request_context_uuid,o.policy_snapshot_uuid,o.generation_guards[3],o.normalized_request_sha256};
     const auto [s,inserted]=semantics.emplace(semantic,o.uuid);(void)inserted;Require(s->second==o.uuid,E::idempotency_conflict);
     for(const auto& step:o.steps){const auto [entry,fresh]=steps.emplace(step.uuid,o.uuid);(void)fresh;Require(entry->second==o.uuid,E::history_mismatch);}
   }
-  for(const auto& [step,owner]:steps){(void)owner;Require(!history.latest.contains(step),E::history_mismatch);}
+  for(const auto& [step,owner]:steps){(void)owner;Require(!latest.contains(step),E::history_mismatch);}
 }
 NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,u64 budget,const NativeManagementCheckpointAnchor* requested,
     const std::map<Uuid,std::vector<byte>>* historical_context=nullptr) noexcept {
@@ -221,12 +223,28 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
       }
       result.entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images),std::move(inventory_images),std::move(directory_images),std::move(growth_images)});current=std::move(base);
     }
-    std::reverse(result.entries.begin(),result.entries.end());Index(result);
+    std::reverse(result.entries.begin(),result.entries.end());Index(result.entries,result.latest,result.idempotency);
     if(c.historical)for(const auto& file:c.devices)c.ObserveHistorical(file,c.zero_images.at(file.filespace_uuid),true);
     result.anchor=anchor;result.selection=actual_selection;result.verified_image_bytes=c.used;result.error=E::none;return result;
   }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
 }
 } // namespace
+NativeManagementHistoryError ValidateNativeManagementHistoryAppend(const NativeManagementGraphHistory& history,
+    const NativeManagementOperation& record,u64 budget) noexcept {
+  try{
+    Require(history.ok(),E::invalid_request);
+    // Bound index nodes, retained strings and steps before constructing indexes.
+    u64 used=0;const auto charge=[&](u64 bytes){Require(bytes<=budget-used,E::resource_exhausted);used+=bytes;};
+    const auto account=[&](const NativeManagementOperation& o){charge(1024);charge(o.idempotency_key.size());
+      Require(o.steps.size()<=(budget-used)/768,E::resource_exhausted);charge(o.steps.size()*768);
+      for(const auto& step:o.steps)charge(step.idempotency_key.size());};
+    for(const auto& entry:history.entries)account(entry.record);account(record);
+    const auto valid=ValidateNativeManagementOperation(record);
+    if(valid!=NativeManagementOperationError::none)throw valid==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:valid==NativeManagementOperationError::hash_failure?E::hash_failure:E::transition_failure;
+    std::map<Uuid,std::size_t> latest;std::map<std::pair<u16,std::string>,Uuid> idempotency;
+    Index(history.entries,latest,idempotency,&record);return E::none;
+  }catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::history_mismatch;}
+}
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,u64 budget) noexcept {
   return ReadHistory(database,devices,primary,budget,nullptr);
 }
