@@ -126,7 +126,7 @@ void TestMalformedPhysicalPayloadsAreRefused() {
   encoded = dt::EncodeDatatypePhysicalValue(bad_null);
   Require(!encoded.ok(), "MDF-013 accepted SQL null payload bytes");
   Require(encoded.diagnostic.diagnostic_code ==
-              "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+              "DATATYPE.NULL_STATE.INVALID",
           "MDF-013 null payload diagnostic mismatch");
 
   auto bad_inline = PhysicalValue(dt::CanonicalTypeId::int64,
