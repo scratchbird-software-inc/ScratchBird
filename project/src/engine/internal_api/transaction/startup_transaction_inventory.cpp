@@ -65,7 +65,8 @@ StartupTransactionInventoryBatchObservation InspectStartupTransactionInventories
     std::span<StartupTransactionInventoryEntryObservation> output) {
   using BatchOutcome = StartupTransactionInventoryBatchOutcome;
   StartupTransactionInventoryBatchObservation result;
-  if (database_path.empty() || !uuid::IsEngineIdentityUuid(database_uuid) ||
+  if (database_path.empty() || database_path.find('\0') != std::string::npos ||
+      !uuid::IsEngineIdentityUuid(database_uuid) ||
       identities.empty() || output.size() < identities.size()) return result;
   // Validate the complete set before writing anything or opening the database.
   for (const auto& identity : identities) {
