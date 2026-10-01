@@ -797,13 +797,73 @@ void TestIntegerPhysicalSortKeyBytes() {
                {Value(dt::CanonicalTypeId::uint8, std::string(2, '\0'))}).ok(),
           "uint8 admitted a non-one-byte operation value");
 
+  const auto uint32_value = [](std::uint64_t raw) {
+    std::string encoded;
+    Require(dt::EncodeCanonicalUint32Value(raw, &encoded),
+            "uint32 canonical fixture encoding failed");
+    return Value(dt::CanonicalTypeId::uint32, std::move(encoded));
+  };
+  const auto uint32_key = [&](std::uint64_t raw) {
+    const auto encoded = dt::MakeDatatypeSortKey({uint32_value(raw)});
+    Require(encoded.ok(), "uint32 canonical comparison key refused");
+    return encoded.sort_key;
+  };
+  Require(uint32_key(0) == std::string({char(1), char(0), char(0), char(0), char(0)}) &&
+              uint32_key(1) == std::string({char(1), char(0), char(0), char(0), char(1)}) &&
+              uint32_key(2147483648ULL) ==
+                  std::string({char(1), char(0x80), char(0), char(0), char(0)}) &&
+              uint32_key(4294967295ULL) ==
+                  std::string({char(1), char(0xff), char(0xff), char(0xff), char(0xff)}),
+          "uint32 key is not state plus unsigned big-endian bytes");
+  const std::array<std::uint64_t, 5> uint32_ordered{
+      0, 1, 2147483647ULL, 2147483648ULL, 4294967295ULL};
+  for (std::size_t left = 0; left < uint32_ordered.size(); ++left) {
+    for (std::size_t right = 0; right < uint32_ordered.size(); ++right) {
+      const int expected = left < right ? -1 : (left > right ? 1 : 0);
+      const auto compared = dt::CompareDatatypeValues(
+          {uint32_value(uint32_ordered[left]), uint32_value(uint32_ordered[right])});
+      const auto left_key = uint32_key(uint32_ordered[left]);
+      const auto right_key = uint32_key(uint32_ordered[right]);
+      const int key_comparison =
+          left_key < right_key ? -1 : (left_key > right_key ? 1 : 0);
+      Require(compared.ok() && compared.comparison == expected &&
+                  key_comparison == expected,
+              "uint32 comparison and physical key disagree with unsigned order");
+    }
+  }
+  for (const auto width : {0U, 1U, 2U, 3U, 5U}) {
+    const auto malformed = Value(dt::CanonicalTypeId::uint32,
+                                 std::string(width, '\0'));
+    Require(!dt::CompareDatatypeValues({malformed, uint32_value(0)}).ok() &&
+                !dt::CompareDatatypeValues({uint32_value(0), malformed}).ok() &&
+                !dt::HashDatatypeValue({malformed}).ok() &&
+                !dt::MakeDatatypeSortKey({malformed}).ok(),
+            "uint32 operation admitted a malformed canonical width");
+  }
+  const auto uint32_null = TypedNull(dt::CanonicalTypeId::uint32);
+  auto uint32_described_zero = uint32_value(0);
+  uint32_described_zero.descriptor = uint32_null.descriptor;
+  const auto uint32_null_first = dt::MakeDatatypeSortKey({uint32_null});
+  dt::DatatypeSortKeyRequest uint32_null_last_request;
+  uint32_null_last_request.value = uint32_null;
+  uint32_null_last_request.null_ordering = dt::DatatypeNullOrdering::nulls_last;
+  const auto uint32_null_last = dt::MakeDatatypeSortKey(uint32_null_last_request);
+  Require(uint32_null_first.ok() && uint32_null_last.ok() &&
+              uint32_null_first.sort_key == std::string(1, '\0') &&
+              uint32_null_last.sort_key == std::string(1, '\2') &&
+              !dt::CompareDatatypeValues(
+                  {uint32_null, uint32_described_zero}).ok() &&
+              !dt::HashDatatypeValue({uint32_value(0)}).ok() &&
+              !dt::HashDatatypeValue({uint32_null}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({uint32_value(0)}).ok(),
+          "uint32 unresolved NULL comparison, hash, or display policy did not fail closed");
+
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
        "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
-      {dt::CanonicalTypeId::uint32, 4, false, "0", "4294967295", "4294967296"},
       {dt::CanonicalTypeId::uint64, 8, false, "0", "18446744073709551615", "18446744073709551616"},
       {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
        "340282366920938463463374607431768211456"}};

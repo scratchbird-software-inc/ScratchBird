@@ -8,6 +8,24 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(NOT TARGET sb_core_concurrency)
+  add_subdirectory("${PROJECT_SOURCE_DIR}/src/core/concurrency" "${CMAKE_CURRENT_BINARY_DIR}/core_concurrency")
+endif()
+add_executable(retained_condition_wait_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_condition_wait_gate.cpp")
+target_compile_features(retained_condition_wait_gate PRIVATE cxx_std_23)
+target_link_libraries(retained_condition_wait_gate PRIVATE sb_core_concurrency)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(retained_condition_wait_gate PRIVATE SB_WAIT_NATIVE_FAULT_GATE)
+  target_link_options(retained_condition_wait_gate PRIVATE
+    "-Wl,--wrap=pthread_cond_clockwait"
+    "-Wl,--wrap=pthread_cond_wait" "-Wl,--wrap=pthread_cond_timedwait"
+    "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock")
+endif()
+add_test(NAME retained_condition_wait_gate COMMAND retained_condition_wait_gate)
+set_tests_properties(retained_condition_wait_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;condition_wait;safe_retirement")
+
 add_executable(concurrency_metric_definitions_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/concurrency_metric_definitions_gate.cpp")
 target_link_libraries(concurrency_metric_definitions_gate PRIVATE sb_core_metrics)
