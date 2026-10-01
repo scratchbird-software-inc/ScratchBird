@@ -407,13 +407,27 @@ bool DescriptorU32(const EngineDescriptor& descriptor,
   return true;
 }
 
-bool ValidateExpandedScalarEncoding(const EngineDescriptor& descriptor,
-                                    const std::string& encoded_value,
+bool ValidateExpandedScalarEncoding(const EngineTypedValue& value,
                                     std::string* detail) {
   namespace dt = scratchbird::core::datatypes;
   if (detail == nullptr) return false;
   detail->clear();
+  const auto& descriptor = value.descriptor;
   const auto type_id = CanonicalDescriptorTypeId(descriptor);
+  if (type_id == CanonicalTypeId::uint8) {
+    EngineTypedValue normalized;
+    std::string cast_category;
+    if (!scratchbird::engine::internal_api::
+            QowApplyCanonicalDescriptorCoercionV1(
+                value, descriptor, false, &normalized, &cast_category,
+                detail)) {
+      if (detail->empty()) *detail = "uint8 carrier encoding is invalid";
+      return false;
+    }
+    return normalized.state == EngineValueState::value &&
+        !normalized.is_null && normalized.binary_value.empty() &&
+        !normalized.encoded_value.empty();
+  }
   const bool extended_numeric =
       type_id == CanonicalTypeId::decimal ||
       type_id == CanonicalTypeId::decimal_float ||
@@ -424,7 +438,7 @@ bool ValidateExpandedScalarEncoding(const EngineDescriptor& descriptor,
     request.operation = dt::DatatypeNumericOperationKind::canonicalize;
     request.type_id = type_id;
     request.left.type_id = type_id;
-    request.left.encoded_value = encoded_value;
+    request.left.encoded_value = value.encoded_value;
     if (type_id == CanonicalTypeId::decimal ||
         type_id == CanonicalTypeId::decimal_float) {
       if (!DescriptorU32(descriptor, "precision", &request.context.precision) ||
@@ -450,7 +464,7 @@ bool ValidateExpandedScalarEncoding(const EngineDescriptor& descriptor,
   }
   dt::DatatypeCastRequest request;
   request.value.type_id = type_id;
-  request.value.encoded_value = encoded_value;
+  request.value.encoded_value = value.encoded_value;
   request.target_type_id = type_id;
   request.explicit_cast = true;
   const auto canonical = dt::CastDatatypeValue(request);
@@ -1205,8 +1219,7 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         }
       } else if (RequiresExpandedScalarValidation(expected.descriptor)) {
         std::string detail;
-        if (!ValidateExpandedScalarEncoding(expected.descriptor,
-                                            value.encoded_value, &detail)) {
+        if (!ValidateExpandedScalarEncoding(value, &detail)) {
           return ErrorDiagnostic(
               "QOW-DIAG-QRY-008-RUNTIME-BREADTH-REFUSAL-V1",
               detail.empty() ? value.encoded_value : std::move(detail), row,
@@ -1599,6 +1612,17 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
         return ErrorDiagnostic(
             "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
             "canonical UUID/binary value requires its exclusive native payload", row, column);
+      }
+      if (CanonicalDescriptorTypeId(bound_column.descriptor) ==
+              CanonicalTypeId::uint8) {
+        std::string detail;
+        if (!ValidateExpandedScalarEncoding(value, &detail)) {
+          return ErrorDiagnostic(
+              "QOW-DIAG-QRY-008-RUNTIME-BREADTH-REFUSAL-V1",
+              detail.empty() ? "uint8 carrier encoding is invalid"
+                             : std::move(detail),
+              row, column);
+        }
       }
     }
   }

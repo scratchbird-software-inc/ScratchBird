@@ -318,6 +318,12 @@ bool EncodeCanonicalInt8Value(std::string_view decimal_text,
                               std::string* canonical_bytes);
 bool DecodeCanonicalInt8Value(std::string_view canonical_bytes,
                               std::string* decimal_text);
+// Canonical UINT8 value boundary. Present values are exactly one unsigned byte;
+// decimal text exists only at parser, SBLR, Engine, and display boundaries.
+bool EncodeCanonicalUint8Value(std::string_view decimal_text,
+                               std::string* canonical_bytes);
+bool DecodeCanonicalUint8Value(std::string_view canonical_bytes,
+                               std::string* decimal_text);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile = false);

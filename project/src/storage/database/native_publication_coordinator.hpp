@@ -136,7 +136,8 @@ NativePublicationInspection InstallNativePublicationPlanOnLease(
 NativePublicationInspection InstallNativeManagementPublicationOnLease(
   NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,
   const std::vector<std::vector<byte>>& extent_pages,u64 maximum_retained_image_bytes) noexcept;
-// Installs and verifies the complete version3 plan/extent/bundle/maps/checkpoint.
+// Installs and verifies the complete plan/extent/bundle/maps/checkpoint and any
+// directory-bearing nongrowth control pages in their actual owned filespaces.
 // Does not change checkpoint selectors or confer kernel/client authority.
 NativePublicationInspection InstallNativeManagementControlGraphOnLease(
   NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,

@@ -449,6 +449,7 @@ auto ControlRef(const disk::NativeCommonPageHeader& h){return disk::NativePageRe
 u64 BundleAllowance(const NativeManagementControlBundleRoot& r,u64 size,u64 budget){
   Require(budget>=2*size,E::resource_exhausted);u64 total=2*size;
   Require(r.page_count<=(budget-total)/size,E::resource_exhausted);total+=r.page_count*size;
+  if(r.directory_count){Require(r.payload_bytes<=(budget-total)/4,E::resource_exhausted);return total+4*r.payload_bytes;}
   Require(r.map_count<=(budget-total)/(4*size),E::resource_exhausted);total+=4*r.map_count*size;
   Require(r.inventory_count<=(budget-total)/(4*size),E::resource_exhausted);return total+4*r.inventory_count*size;
 }
@@ -468,8 +469,9 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     const auto* profile=disk::FindCanonicalFilespacePageProfile(plan.header.page_size_profile_uuid);
     Require(profile&&profile->page_size_bytes==plan.header.page_size_bytes,E::invalid_request);const u64 size=profile->page_size_bytes;
     u64 allowance=0;const auto charge=[&](u64 count,u64 unit){Require(count<=(budget-allowance)/unit,E::resource_exhausted);allowance+=count*unit;};
-    charge(20,size);charge(plan.management_extent->page_count,4*size);charge(plan.management_extent->aggregate_bytes,4);charge(plan.control_bundle->page_count,4*size);charge(plan.control_bundle->map_count,10*size);
-    charge(plan.control_bundle->inventory_count,14*size);
+    charge(20,size);charge(plan.management_extent->page_count,4*size);charge(plan.management_extent->aggregate_bytes,4);charge(plan.control_bundle->page_count,4*size);
+    if(plan.control_bundle->directory_count)charge(plan.control_bundle->payload_bytes,14);
+    else{charge(plan.control_bundle->map_count,10*size);charge(plan.control_bundle->inventory_count,14*size);}
     // Reject inconsistent caller lengths before copying caller-owned images.
     Require(supplied_checkpoint.size()==size&&supplied_extent.size()==plan.management_extent->page_count&&supplied_bundle.size()==plan.control_bundle->page_count,E::invalid_request);
     for(const auto& bytes:supplied_extent)Require(bytes.size()==size,E::invalid_request);
@@ -485,6 +487,54 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     Require(plan.header.filespace_uuid==c->zero.bootstrap.filespace_uuid&&plan.header.page_size_profile_uuid==c->zero.bootstrap.page_size_profile_uuid,E::invalid_request);
     const auto base=EncodeNativeCheckpointRoot(*c->bound.checkpoint_inventory.checkpoint);ControlCheckpointError(base.error);Require(ControlHash(base.bytes)==c->bound.checkpoint_inventory.checkpoint_sha256,E::binding_mismatch);
     Pages before_maps;before_maps.reserve(c->bound.allocation.pages.size());for(const auto& p:c->bound.allocation.pages)before_maps.push_back(p.bytes);
+    NativeManagementDirectoryBase directory_base;
+    std::map<Uuid,page::NativeAllocationChainResult> secondary_maps;
+    std::map<Uuid,disk::FilespacePageZero> member_zeros;
+    const auto device=[&](const Uuid& id)->const disk::NativeFilespaceDevice& {const auto it=std::lower_bound(c->devices.begin(),c->devices.end(),id,[](const auto& f,const auto& v){return f.filespace_uuid<v;});Require(it!=c->devices.end()&&it->filespace_uuid==id,E::invalid_device);return *it;};
+    if(plan.control_bundle->directory_count){
+      // Growth requires its own retained physical-operation protocol. A metadata
+      // installer cannot extend a file or publish its after body implicitly.
+      Require(reconstruction.growth_images.empty()&&plan.intent.recovery_profile!=4,E::invalid_request);
+      const auto& cp=*c->bound.checkpoint_inventory.checkpoint;const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==3;});Require(root!=cp.roots.end(),E::binding_mismatch);
+      const disk::FilespaceRootReference ref{5,root->page_type,root->page.filespace_uuid,root->page.page_number,root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
+      auto directory=page::ReadNativeFilespaceDirectoryFromOpenDevices(plan.header.database_uuid,c->devices,ref,budget-allowance);
+      if(!directory.ok()){using D=page::NativeDirectoryError;throw directory.error==D::resource_exhausted?E::resource_exhausted:directory.error==D::hash_failure?E::hash_failure:directory.error==D::io_failure?E::io_failure:E::binding_mismatch;}
+      charge(directory.retained_image_bytes,2);Require(ControlHash(directory.pages.front().bytes)==root->sha256,E::binding_mismatch);
+      for(const auto& image:directory.pages)directory_base.directory_images.push_back(image.bytes);
+      std::set<Uuid> changed;for(const auto& raw:reconstruction.allocation_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::binding_mismatch);changed.insert(h.header->filespace_uuid);}
+      before_maps.clear();
+      for(const auto& fs:changed){const auto& file=device(fs);Require(!file.device->read_only(),E::invalid_device);const disk::FilespaceBootstrapBinding binding{plan.header.database_uuid,fs,file.page_size_profile_uuid};
+        const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*file.device,&binding);
+        if(!zero.ok())throw zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:zero.error==disk::FilespacePageZeroError::io_failure?E::io_failure:E::bootstrap_failure;
+        Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted),E::encrypted_requires_authority);
+        Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required),E::cluster_requires_authority);
+        const auto encoded=disk::EncodeFilespacePageZero(*zero.record);if(!encoded.ok())throw encoded.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:encoded.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::bootstrap_failure;
+        charge(encoded.bytes->size(),3);directory_base.page_zero_images.push_back(*encoded.bytes);member_zeros.emplace(fs,*zero.record);
+        const page::NativeAllocationChainResult* maps=&c->bound.allocation;
+        if(fs!=c->zero.bootstrap.filespace_uuid){const page::NativeFilespaceDirectoryRecord* member=nullptr;
+          for(const auto& image:directory.pages)for(const auto& r:image.directory->records)if(r.bootstrap.filespace_uuid==fs)member=&r;Require(member,E::binding_mismatch);
+          page::NativeAllocationChainResult actual;
+          if(member->allocation_root){const auto& r=*member->allocation_root;const disk::FilespaceRootReference head{3,3,fs,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
+            actual=page::ReadNativeAllocationChainAtRootFromOpenDevice(*file.device,binding,head,budget-allowance);
+            if(actual.ok())Require(ControlHash(actual.pages.front().bytes)==r.sha256,E::binding_mismatch);
+          }else actual=page::ReadNativeAllocationChainFromOpenDevice(*file.device,binding,budget-allowance);
+          if(!actual.ok()){using A=page::NativeAllocationError;throw actual.error==A::resource_exhausted?E::resource_exhausted:actual.error==A::hash_failure?E::hash_failure:actual.error==A::io_failure?E::io_failure:actual.error==A::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;}
+          charge(actual.retained_image_bytes,2);maps=&secondary_maps.emplace(fs,std::move(actual)).first->second;
+        }
+        for(const auto& image:maps->pages)before_maps.push_back(image.bytes);
+      }
+      const auto provenance=ReadNativeManagementControlAuthorityFromOpenDevices(plan.header.database_uuid,c->devices,c->zero.bootstrap.filespace_uuid,budget-allowance);
+      if(!provenance.ok()){using G=NativeManagementControlAuthorityError;throw provenance.error==G::resource_exhausted?E::resource_exhausted:provenance.error==G::hash_failure?E::hash_failure:provenance.error==G::io_failure?E::io_failure:provenance.error==G::cluster_requires_authority?E::cluster_requires_authority:provenance.error==G::encrypted_requires_authority?E::encrypted_requires_authority:E::allocation_mismatch;}
+      charge(provenance.verified_image_bytes,1);
+      const auto transaction=[&](const Uuid& id,u64 local,bool committed){const auto tx=mga::LookupLocalTransaction(c->bound.checkpoint_inventory.inventory,mga::MakeLocalTransactionId(local));
+        Require(tx.ok()&&tx.entry.identity.transaction_uuid.value==id&&tx.entry.identity.scope==mga::TransactionScope::local_node&&(!committed||mga::HasCommittedInventoryOutcome(tx.entry)),E::allocation_mismatch);};
+      const auto creators=[&](const page::NativeAllocationChainResult& chain){for(const auto& raw:chain.pages){const auto& map=*raw.map;
+        if(map.creator_operation_uuid.is_nil())transaction(map.creator_transaction_uuid,map.creator_local_transaction_id,true);
+        else Require(MatchesNativeManagementControlMap(provenance,map),E::allocation_mismatch);
+        for(const auto& r:map.records){if(r.creator_operation_uuid.is_nil())transaction(r.creator_transaction_uuid,r.creator_local_transaction_id,false);
+          else Require(MatchesNativeManagementControlAllocation(provenance,map.header.filespace_uuid,r,map.states[r.page_number-map.first_page]),E::allocation_mismatch);}}};
+      creators(c->bound.allocation);for(const auto& [fs,chain]:secondary_maps)creators(chain);
+    }
     Pages before_inventory;
     if(plan.intent.recovery_profile==2){charge(c->bound.retained_image_bytes,1);const auto& cp=*c->bound.checkpoint_inventory.checkpoint;
       const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});Require(root!=cp.roots.end(),E::binding_mismatch);
@@ -493,33 +543,44 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
       if(!actual.ok())throw actual.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:actual.error==page::NativeInventoryError::hash_failure?E::hash_failure:actual.error==page::NativeInventoryError::io_failure?E::io_failure:actual.error==page::NativeInventoryError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::allocation_mismatch;
       charge(actual.retained_image_bytes,1);for(const auto& raw:actual.pages)charge(raw.bytes.size(),4);before_inventory.reserve(actual.pages.size());for(auto& raw:actual.pages)before_inventory.push_back(std::move(raw.bytes));
     }
-    const auto delta=ValidateNativeManagementControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,budget,bundle,before_inventory);
+    const auto delta=plan.control_bundle->directory_count?
+      ValidateNativeManagementDirectoryControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,directory_base,budget,bundle,before_inventory):
+      ValidateNativeManagementControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,budget,bundle,before_inventory);
     if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::allocation_mismatch;
-    struct Artifact {u64 page=0;Bytes bytes,before;};std::vector<Artifact> artifacts;artifacts.reserve(2+extent.size()+bundle.size()+reconstruction.allocation_images.size()+reconstruction.inventory_images.size());
-    artifacts.push_back({plan.header.page_number,std::move(image.bytes),{}});const std::size_t extent_start=artifacts.size();
-    for(std::size_t i=0;i<extent.size();++i)artifacts.push_back({plan.management_extent->first.page_number+i,std::move(extent[i]),{}});
+    struct Artifact {Uuid filespace;u64 page=0;Bytes bytes,before;};std::vector<Artifact> artifacts;artifacts.reserve(2+extent.size()+bundle.size()+reconstruction.allocation_images.size()+reconstruction.inventory_images.size()+reconstruction.directory_images.size());
+    const auto append=[&](Bytes raw){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);const auto& f=device(h.header->filespace_uuid);
+      Require(h.header->database_uuid==plan.header.database_uuid&&h.header->page_size_profile_uuid==f.page_size_profile_uuid&&raw.size()==disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)->page_size_bytes,E::binding_mismatch);
+      const auto& zero=f.filespace_uuid==c->zero.bootstrap.filespace_uuid?c->zero:member_zeros.at(f.filespace_uuid);
+      Require(h.header->page_type==3||zero.bootstrap.filespace_role<=4,E::allocation_mismatch);
+      artifacts.push_back({h.header->filespace_uuid,h.header->page_number,std::move(raw),{}});};
+    append(std::move(image.bytes));const std::size_t extent_start=artifacts.size();
+    for(auto& raw:extent)append(std::move(raw));
     const std::size_t bundle_start=artifacts.size();
-    for(std::size_t i=0;i<bundle.size();++i)artifacts.push_back({plan.control_bundle->first.page_number+i,std::move(bundle[i]),{}});
+    for(auto& raw:bundle)append(std::move(raw));
     const std::size_t inventory_start=artifacts.size();
-    for(auto& raw:reconstruction.inventory_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);artifacts.push_back({h.header->page_number,std::move(raw),{}});}
+    for(auto& raw:reconstruction.inventory_images)append(std::move(raw));
+    for(auto& raw:reconstruction.directory_images)append(std::move(raw));
     const std::size_t map_start=artifacts.size();
-    for(auto& raw:reconstruction.allocation_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);artifacts.push_back({h.header->page_number,std::move(raw),{}});}const std::size_t checkpoint_start=artifacts.size();
-    artifacts.push_back({plan.target_checkpoint.page_number,std::move(checkpoint),{}});Bytes scratch(size);
-    const auto read=[&](u64 page,Bytes& into){const auto io=c->primary->ReadAt(page*size,into.data(),into.size());Require(io.ok()&&io.bytes_transferred==into.size(),E::io_failure);};
-    for(auto& target:artifacts){for(const auto& root:c->zero.roots)if(root.filespace_uuid==c->zero.bootstrap.filespace_uuid)Require(root.page_number!=target.page,E::allocation_mismatch);
-      auto map=std::upper_bound(c->bound.allocation.pages.begin(),c->bound.allocation.pages.end(),target.page,[](u64 n,const auto& p){return n<p.map->first_page;});Require(map!=c->bound.allocation.pages.begin(),E::allocation_mismatch);--map;
+    for(auto& raw:reconstruction.allocation_images)append(std::move(raw));const std::size_t checkpoint_start=artifacts.size();
+    append(std::move(checkpoint));Bytes scratch;for(const auto& target:artifacts)if(target.bytes.size()>scratch.capacity())scratch.reserve(target.bytes.size());scratch.resize(size);
+    const auto read=[&](const Artifact& target,Bytes& into){into.resize(target.bytes.size());const auto io=device(target.filespace).device->ReadAt(target.page*u64{into.size()},into.data(),into.size());Require(io.ok()&&io.bytes_transferred==into.size(),E::io_failure);};
+    for(auto& target:artifacts){const auto& zero=target.filespace==c->zero.bootstrap.filespace_uuid?c->zero:member_zeros.at(target.filespace);
+      for(const auto& root:zero.roots)if(root.filespace_uuid==target.filespace)Require(root.page_number!=target.page,E::allocation_mismatch);
+      const auto& chain=target.filespace==c->zero.bootstrap.filespace_uuid?c->bound.allocation:secondary_maps.at(target.filespace);
+      auto map=std::upper_bound(chain.pages.begin(),chain.pages.end(),target.page,[](u64 n,const auto& p){return n<p.map->first_page;});Require(map!=chain.pages.begin(),E::allocation_mismatch);--map;
       const auto& m=*map->map;Require(target.page-m.first_page<m.states.size()&&m.states[target.page-m.first_page]==page::NativeAllocationState::free,E::allocation_mismatch);
       const auto record=std::lower_bound(m.records.begin(),m.records.end(),target.page,[](const auto& r,u64 n){return r.page_number<n;});Require(record==m.records.end()||record->page_number!=target.page,E::allocation_mismatch);
-      target.before.resize(size);read(target.page,target.before);if(!original.publication_plan)Require(std::all_of(target.before.begin(),target.before.end(),[](byte b){return !b;}),E::preimage_changed);
+      read(target,target.before);if(!original.publication_plan)Require(std::all_of(target.before.begin(),target.before.end(),[](byte b){return !b;}),E::preimage_changed);
     }
     auto next=original;next.publication_plan=NativePublicationWatermark::PlanAnchor{ControlRef(plan.header),plan.object_uuid,image.sha256,plan.reservation_state_sha256};
     auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
     NativePublicationSnapshot snapshot{c->snapshot.selection,*decoded.state,decoded.state_sha256};Bytes().swap(decoded.bytes);
     for(unsigned i=0;i<2;++i){auto& slot=c->decoded[i];slot.error=NativePublicationWatermarkError::none;slot.state=next;slot.state->header=c->headers[i];slot.state_sha256=snapshot.state_sha256;}
     c->snapshot=snapshot;c->stable=true;
-    const auto install=[&](std::size_t first,std::size_t end){for(std::size_t n=end;n>first;--n){auto& target=artifacts[n-1];read(target.page,scratch);Require(scratch==target.before,E::preimage_changed);
-        if(scratch!=target.bytes){EffectWrite(*c,*c->primary,target.page*size,target.bytes);}}
-      EffectSync(*c,*c->primary);for(std::size_t n=first;n<end;++n){read(artifacts[n].page,scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}};
+    const auto install=[&](std::size_t first,std::size_t end){for(std::size_t n=end;n>first;--n){auto& target=artifacts[n-1];read(target,scratch);Require(scratch==target.before,E::preimage_changed);
+        if(scratch!=target.bytes){EffectWrite(*c,*device(target.filespace).device,target.page*u64{target.bytes.size()},target.bytes);}}
+      for(const auto& file:c->devices)if(std::any_of(artifacts.begin()+first,artifacts.begin()+end,[&](const auto& target){return target.filespace==file.filespace_uuid;}))EffectSync(*c,*file.device);
+      for(std::size_t n=first;n<end;++n){read(artifacts[n],scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}scratch.resize(size);};
     c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
     // Storage work has no metadata-only abandonment. An anchor may not escape
     // until its immutable reconstruction inputs are durable and verified.
@@ -552,15 +613,22 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePubl
     ControlExtentError(extent.error);
     Require(extent.root==plan.management_extent,E::binding_mismatch);
     auto contents=ReadNativeManagementControlBundleFromOpenDevice(file,*plan.control_bundle,plan.header.database_uuid,plan.bootstrap_uuid,bundle_allowance);ControlBundleError(contents.error);
-    auto bundle=EncodeNativeManagementControlBundle(contents.allocation_images,plan.header.database_uuid,plan.bootstrap_uuid,plan.control_bundle->object_uuid,plan.operation_uuid,contents.page_headers,bundle_allowance,contents.inventory_images);ControlBundleError(bundle.error);Require(bundle.root==plan.control_bundle,E::binding_mismatch);
+    auto bundle=EncodeNativeManagementControlBundle(contents.allocation_images,plan.header.database_uuid,plan.bootstrap_uuid,plan.control_bundle->object_uuid,plan.operation_uuid,contents.page_headers,bundle_allowance,contents.inventory_images,contents.directory_images,contents.growth_images);ControlBundleError(bundle.error);Require(bundle.root==plan.control_bundle,E::binding_mismatch);
     std::optional<page::NativeAllocationMap> first;std::optional<page::NativeAllocationRecord> target_record;
+    const Bytes* primary_map_image=nullptr;
     for(const auto& b:contents.allocation_images){auto map=page::DecodeNativeAllocationMap(b);if(!map.ok())throw map.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:map.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::allocation_mismatch;
-      const auto& m=*map.map;const u64 n=plan.target_checkpoint.page_number;if(n>=m.first_page&&n-m.first_page<m.states.size()){const auto r=std::lower_bound(m.records.begin(),m.records.end(),n,[](const auto& r,u64 v){return r.page_number<v;});Require(m.states[n-m.first_page]==page::NativeAllocationState::allocated&&r!=m.records.end()&&r->page_number==n,E::allocation_mismatch);target_record=*r;}
-      if(!first)first=std::move(map.map);
+      const auto& m=*map.map;if(m.header.filespace_uuid!=plan.target_checkpoint.filespace_uuid)continue;
+      const u64 n=plan.target_checkpoint.page_number;if(n>=m.first_page&&n-m.first_page<m.states.size()){const auto r=std::lower_bound(m.records.begin(),m.records.end(),n,[](const auto& r,u64 v){return r.page_number<v;});Require(m.states[n-m.first_page]==page::NativeAllocationState::allocated&&r!=m.records.end()&&r->page_number==n,E::allocation_mismatch);target_record=*r;}
+      if(!first){first=std::move(map.map);primary_map_image=&b;}
     }
     Require(first&&target_record&&target_record->page_type==0x300&&target_record->owner_uuid==plan.target_checkpoint_object_uuid&&target_record->creator_operation_uuid==plan.operation_uuid&&target_record->creator_transaction_uuid.is_nil()&&!target_record->creator_local_transaction_id&&target_record->page_generation==plan.reserved_generation,E::allocation_mismatch);
     auto cp=*context.bound.checkpoint_inventory.checkpoint;cp.header=plan.header;cp.header.page_type=0x300;cp.header.page_number=plan.target_checkpoint.page_number;cp.header.page_generation=plan.target_checkpoint.page_generation;cp.header.page_uuid=target_record->page_uuid;cp.object_uuid=plan.target_checkpoint_object_uuid;cp.creator_transaction_uuid={};cp.creator_local_transaction_id=0;cp.creator_operation_uuid=plan.operation_uuid;cp.checkpoint_generation=plan.reserved_generation;cp.root_set_generation=plan.target_root_set_generation;cp.predecessor=plan.base_checkpoint;cp.predecessor_sha256=plan.base_checkpoint_sha256;
-    auto allocation=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});Require(allocation!=cp.roots.end(),E::allocation_mismatch);*allocation={4,3,ControlRef(first->header),first->object_uuid,ControlHash(contents.allocation_images.front())};
+    auto allocation=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});Require(allocation!=cp.roots.end(),E::allocation_mismatch);*allocation={4,3,ControlRef(first->header),first->object_uuid,ControlHash(*primary_map_image)};
+    if(!contents.directory_images.empty()){const auto directory=page::DecodeNativeFilespaceDirectory(contents.directory_images.front());
+      if(!directory.ok()){using D=page::NativeDirectoryError;throw directory.error==D::resource_exhausted?E::resource_exhausted:directory.error==D::hash_failure?E::hash_failure:E::binding_mismatch;}
+      auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==3;});Require(root!=cp.roots.end(),E::binding_mismatch);const auto& d=*directory.directory;
+      *root={3,9,ControlRef(d.header),d.object_uuid,ControlHash(contents.directory_images.front())};
+    }
     if(plan.intent.recovery_profile==2){Require(!contents.inventory_images.empty(),E::binding_mismatch);const auto decoded=page::DecodeNativeTransactionInventoryPage(contents.inventory_images.front());
       if(!decoded.ok())throw decoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::allocation_mismatch;
       const auto& candidate=*decoded.page;auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});Require(root!=cp.roots.end(),E::binding_mismatch);*root={1,0x301,ControlRef(candidate.header),candidate.object_uuid,ControlHash(contents.inventory_images.front())};cp.selected_local_transaction_id=candidate.inventory.next_local_transaction_id-1;

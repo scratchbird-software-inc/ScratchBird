@@ -262,6 +262,10 @@ void OperationsAndSerialization() {
         "checked exact-numeric assignment emits one canonical int8 byte");
   for (const auto& source :
        {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.5", false},
+        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
+                                   "12.000000000000000000001", false},
+        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
+                                   "126.999999999999999999999", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "NaN", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::real64, "128", false}}) {
     Check(!Cast(source, dt::CanonicalTypeId::int8,
@@ -357,6 +361,13 @@ void SblrBoundaryAdapters() {
   Check(!sblr::EvaluateSblrCastForm(
              "int8_invalid", signed_value(128), "int8", {}, false, false).ok(),
         "SBLR int8 adapter rejects an out-of-range source");
+  auto missing_encoded_conflict = signed_value(0);
+  missing_encoded_conflict.encoded_value.clear();
+  missing_encoded_conflict.text_value = "1";
+  Check(!sblr::EvaluateSblrCastForm(
+             "int8_missing_encoded_conflict", missing_encoded_conflict,
+             "int8", {}, false, false).ok(),
+        "SBLR int8 adapter reconciles text and native fields without encoded text");
 
   sblr::SblrValue text;
   text.descriptor_id = "character";

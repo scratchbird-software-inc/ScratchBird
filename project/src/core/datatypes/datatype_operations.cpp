@@ -341,8 +341,9 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
         (static_cast<unsigned char>(value.encoded_value[0]) == 0u ||
          static_cast<unsigned char>(value.encoded_value[0]) == 1u);
   }
-  if (value.type_id == CanonicalTypeId::int8) {
-    // Every one-byte pattern is one canonical two's-complement INT8 value.
+  if (value.type_id == CanonicalTypeId::int8 ||
+      value.type_id == CanonicalTypeId::uint8) {
+    // Every one-byte pattern is one canonical INT8 or UINT8 value.
     // Text is accepted only at cast and display boundaries.
     return value.encoded_value.size() == 1;
   }
@@ -708,6 +709,11 @@ std::string Int8DecimalText(std::string_view value) {
   return std::to_string(decoded);
 }
 
+std::string Uint8DecimalText(std::string_view value) {
+  if (value.size() != 1) return {};
+  return std::to_string(static_cast<unsigned char>(value[0]));
+}
+
 bool EncodeInt8DecimalText(std::string_view value, std::string* encoded) {
   if (encoded == nullptr ||
       !IntegerFits(CanonicalTypeId::int8, std::string(value))) {
@@ -724,39 +730,44 @@ bool EncodeInt8DecimalText(std::string_view value, std::string* encoded) {
   }
 }
 
+bool EncodeUint8DecimalText(std::string_view value, std::string* encoded) {
+  if (encoded == nullptr ||
+      !IntegerFits(CanonicalTypeId::uint8, std::string(value))) {
+    return false;
+  }
+  try {
+    std::size_t consumed = 0;
+    const unsigned long parsed = std::stoul(std::string(value), &consumed, 10);
+    if (consumed != value.size()) return false;
+    encoded->assign(1, static_cast<char>(static_cast<unsigned char>(parsed)));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool EncodeExactIntegralNumericTextAsByte(std::string_view value,
+                                          bool signed_target,
+                                          std::string* encoded);
+
 bool EncodeIntegralNumericTextAsInt8(std::string_view value,
                                      std::string* encoded) {
-  if (encoded == nullptr || value.empty() ||
-      std::any_of(value.begin(), value.end(), [](unsigned char ch) {
-        return std::isspace(ch) != 0;
-      })) {
-    return false;
-  }
-  std::string text(value);
-  char* end = nullptr;
-  errno = 0;
-  const long double parsed = std::strtold(text.c_str(), &end);
-  if (errno == ERANGE || end != text.c_str() + text.size() ||
-      !std::isfinite(parsed) || std::trunc(parsed) != parsed ||
-      parsed < std::numeric_limits<std::int8_t>::min() ||
-      parsed > std::numeric_limits<std::int8_t>::max()) {
-    return false;
-  }
-  encoded->assign(
-      1, static_cast<char>(static_cast<unsigned char>(static_cast<int>(parsed))));
-  return true;
+  return EncodeExactIntegralNumericTextAsByte(value, true, encoded);
 }
 
 std::string IntegerOperationText(CanonicalTypeId type_id,
                                  std::string_view value) {
-  return type_id == CanonicalTypeId::int8
-      ? Int8DecimalText(value)
-      : std::string(value);
+  if (type_id == CanonicalTypeId::int8) return Int8DecimalText(value);
+  if (type_id == CanonicalTypeId::uint8) return Uint8DecimalText(value);
+  return std::string(value);
 }
 
 bool IntegerOperationValueValid(CanonicalTypeId type_id,
                                 std::string_view value) {
-  if (type_id == CanonicalTypeId::int8) return value.size() == 1;
+  if (type_id == CanonicalTypeId::int8 ||
+      type_id == CanonicalTypeId::uint8) {
+    return value.size() == 1;
+  }
   return IntegerFits(type_id, std::string(value));
 }
 
@@ -900,6 +911,43 @@ bool ParseDecimalFiniteText(const std::string& input, ParsedDecimal* out) {
   parsed.scale = static_cast<std::uint32_t>(final_scale);
   parsed.negative_zero = parsed.negative && parsed.coefficient == 0;
   *out = parsed;
+  return true;
+}
+
+bool EncodeExactIntegralNumericTextAsByte(std::string_view value,
+                                          bool signed_target,
+                                          std::string* encoded) {
+  if (encoded == nullptr || value.empty() ||
+      std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+      })) {
+    return false;
+  }
+  ParsedDecimal parsed;
+  if (!ParseDecimalFiniteText(std::string(value), &parsed) ||
+      (!signed_target && parsed.negative)) {
+    return false;
+  }
+  U128 magnitude = parsed.coefficient;
+  if (parsed.scale != 0) {
+    if (parsed.scale > 38) return false;
+    const U128 divisor = Pow10U128(parsed.scale);
+    if (magnitude % divisor != 0) return false;
+    magnitude /= divisor;
+  }
+  if (signed_target) {
+    const U128 limit = parsed.negative ? U128{128} : U128{127};
+    if (magnitude > limit) return false;
+    const int signed_value = parsed.negative
+        ? -static_cast<int>(magnitude)
+        : static_cast<int>(magnitude);
+    encoded->assign(
+        1, static_cast<char>(static_cast<unsigned char>(signed_value)));
+    return true;
+  }
+  if (magnitude > U128{255}) return false;
+  encoded->assign(
+      1, static_cast<char>(static_cast<unsigned char>(magnitude)));
   return true;
 }
 
@@ -1943,6 +1991,18 @@ bool DecodeCanonicalInt8Value(std::string_view canonical_bytes,
   return true;
 }
 
+bool EncodeCanonicalUint8Value(std::string_view decimal_text,
+                               std::string* canonical_bytes) {
+  return EncodeUint8DecimalText(decimal_text, canonical_bytes);
+}
+
+bool DecodeCanonicalUint8Value(std::string_view canonical_bytes,
+                               std::string* decimal_text) {
+  if (decimal_text == nullptr || canonical_bytes.size() != 1) return false;
+  *decimal_text = Uint8DecimalText(canonical_bytes);
+  return true;
+}
+
 const char* DatatypeCastCategoryName(DatatypeCastCategory category) {
   switch (category) {
     case DatatypeCastCategory::identity: return "identity";
@@ -2033,12 +2093,29 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
     return DatatypeCastCategory::forbidden;
   }
   if (IsInteger(source_type_id) && IsInteger(target_type_id)) {
+    if ((source_type_id == CanonicalTypeId::int8 &&
+         target_type_id == CanonicalTypeId::uint8) ||
+        (source_type_id == CanonicalTypeId::uint8 &&
+         target_type_id == CanonicalTypeId::int8)) {
+      return DatatypeCastCategory::lossy_explicit;
+    }
+    if (source_type_id == CanonicalTypeId::uint8 &&
+        IsSignedInteger(target_type_id) &&
+        IntegerBits(target_type_id) > IntegerBits(source_type_id)) {
+      return DatatypeCastCategory::lossless_implicit;
+    }
     if (IsSignedInteger(source_type_id) == IsSignedInteger(target_type_id) &&
         IntegerBits(target_type_id) >= IntegerBits(source_type_id)) {
       return DatatypeCastCategory::lossless_implicit;
     }
     if (IntegerBits(target_type_id) >= IntegerBits(source_type_id)) { return DatatypeCastCategory::lossless_explicit; }
     return DatatypeCastCategory::lossy_explicit;
+  }
+  // Core has not admitted any non-integer UINT8 cast pair yet. Keep those
+  // routes fail-closed while retaining the direct decimal-text value bridge.
+  if (source_type_id == CanonicalTypeId::uint8 ||
+      target_type_id == CanonicalTypeId::uint8) {
+    return DatatypeCastCategory::forbidden;
   }
   if (IsNumeric(source_type_id) && IsNumeric(target_type_id)) { return DatatypeCastCategory::lossy_explicit; }
   if (IsInteger(source_type_id) && target_type_id == CanonicalTypeId::boolean) {
@@ -2169,8 +2246,10 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     return CastFailure(std::string(CanonicalTypeName(request.value.type_id)) + "->" + CanonicalTypeName(request.target_type_id));
   }
   const bool checked_assignment =
-      request.target_type_id == CanonicalTypeId::int8 &&
-      IsNumeric(request.value.type_id) &&
+      ((request.target_type_id == CanonicalTypeId::int8 &&
+        IsNumeric(request.value.type_id)) ||
+       (request.target_type_id == CanonicalTypeId::uint8 &&
+        IsInteger(request.value.type_id))) &&
       request.context == DatatypeCastContext::assignment &&
       (result.category == DatatypeCastCategory::lossless_explicit ||
        result.category == DatatypeCastCategory::lossy_explicit);
@@ -2240,9 +2319,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   }
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
 
-  const std::string value = request.value.type_id == CanonicalTypeId::int8
-      ? Int8DecimalText(request.value.encoded_value)
-      : request.value.encoded_value;
+  const std::string value = IntegerOperationText(
+      request.value.type_id, request.value.encoded_value);
   if (request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) {
     if (value.size() != 16) return CastFailure("uuid_binary_length_invalid", result.category);
     return result;  // UUID identity and UUID/binary casts retain all 128 bits.
@@ -2261,7 +2339,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (request.value.type_id == CanonicalTypeId::boolean) {
       result.value.encoded_value =
           static_cast<unsigned char>(value[0]) == 1u ? "TRUE" : "FALSE";
-    } else if (request.value.type_id == CanonicalTypeId::int8) {
+    } else if (request.value.type_id == CanonicalTypeId::int8 ||
+               request.value.type_id == CanonicalTypeId::uint8) {
       result.value.encoded_value = value;
     }
     return result;
@@ -2321,8 +2400,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (IsInteger(request.value.type_id) || IsCharacter(request.value.type_id)) {
       if (!IntegerFits(request.target_type_id, value)) { return CastFailure("integer_out_of_range_or_invalid", result.category); }
       const std::string normalized = TrimLeadingZeros(value);
-      if (request.target_type_id == CanonicalTypeId::int8) {
-        if (!EncodeInt8DecimalText(normalized, &result.value.encoded_value)) {
+      if (request.target_type_id == CanonicalTypeId::int8 ||
+          request.target_type_id == CanonicalTypeId::uint8) {
+        const bool encoded = request.target_type_id == CanonicalTypeId::int8
+            ? EncodeInt8DecimalText(normalized, &result.value.encoded_value)
+            : EncodeUint8DecimalText(normalized, &result.value.encoded_value);
+        if (!encoded) {
           return CastFailure("integer_out_of_range_or_invalid", result.category);
         }
       } else {
@@ -2334,7 +2417,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   }
   if (IsReal(request.target_type_id)) {
     if (!FloatingText(value)) { return CastFailure("real_or_decimal_invalid", result.category); }
-    if (request.value.type_id == CanonicalTypeId::int8) {
+    if (request.value.type_id == CanonicalTypeId::int8 ||
+        request.value.type_id == CanonicalTypeId::uint8) {
       result.value.encoded_value = value;
     }
     return result;
@@ -2474,7 +2558,20 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     if (value.size() != 16) return ExtractFailure("uuid_binary_length_invalid");
     const auto version = static_cast<unsigned char>(value[6]) >> 4;
     if (field == "version") {
-      result.value = {CanonicalTypeId::uint8, std::to_string(version), false};
+      if (ExecutionDescriptorPresent(request.result_descriptor) &&
+          !ExecutionDescriptorValidForType(request.result_descriptor,
+                                           CanonicalTypeId::uint8)) {
+        return ExtractFailure("uuid_version_result_descriptor_invalid",
+                              "DATATYPE.DESCRIPTOR.INVALID");
+      }
+      std::string encoded;
+      if (!EncodeUint8DecimalText(std::to_string(version), &encoded)) {
+        return ExtractFailure("uuid_version_encoding_invalid");
+      }
+      result.value = {CanonicalTypeId::uint8, std::move(encoded), false};
+      if (ExecutionDescriptorPresent(request.result_descriptor)) {
+        result.value.descriptor = request.result_descriptor;
+      }
       return result;
     }
     if (field == "uuidv7_unix_millis") {
@@ -2875,9 +2972,10 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   }
   std::string left = request.left.encoded_value;
   std::string right = request.right.encoded_value;
-  if (request.left.type_id == CanonicalTypeId::int8) {
-    left = Int8DecimalText(left);
-    right = Int8DecimalText(right);
+  if (request.left.type_id == CanonicalTypeId::int8 ||
+      request.left.type_id == CanonicalTypeId::uint8) {
+    left = IntegerOperationText(request.left.type_id, left);
+    right = IntegerOperationText(request.right.type_id, right);
   }
   if (request.left.type_id == CanonicalTypeId::character) {
     if (!TextSeedReady(request.text_seed)) {
@@ -3084,7 +3182,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
       *failure_detail = "integer_hash_value_invalid";
       return false;
     }
-    *payload = value.type_id == CanonicalTypeId::int8
+    *payload = (value.type_id == CanonicalTypeId::int8 ||
+                value.type_id == CanonicalTypeId::uint8)
         ? value.encoded_value
         : TrimLeadingZeros(value.encoded_value);
     return true;
@@ -3587,8 +3686,10 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
             : "FALSE";
     return result;
   }
-  if (request.value.type_id == CanonicalTypeId::int8) {
-    result.display_value = Int8DecimalText(request.value.encoded_value);
+  if (request.value.type_id == CanonicalTypeId::int8 ||
+      request.value.type_id == CanonicalTypeId::uint8) {
+    result.display_value = IntegerOperationText(
+        request.value.type_id, request.value.encoded_value);
     return result;
   }
   if (DisplayAsMetadataSummary(request.value.type_id) &&

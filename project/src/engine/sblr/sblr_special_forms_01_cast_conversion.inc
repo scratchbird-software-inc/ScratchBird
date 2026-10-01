@@ -44,20 +44,52 @@ datatypes::CanonicalTypeId InferSblrSourceType(const SblrValue& value) {
 
 std::string EncodedCastInput(const SblrValue& value) {
   if (value.is_null) return {};
-  if (InferSblrSourceType(value) == datatypes::CanonicalTypeId::int8) {
+  const auto source_type = InferSblrSourceType(value);
+  if (source_type == datatypes::CanonicalTypeId::int8 ||
+      source_type == datatypes::CanonicalTypeId::uint8) {
+    if ((source_type == datatypes::CanonicalTypeId::int8 &&
+         value.payload_kind != SblrValuePayloadKind::signed_integer) ||
+        (source_type == datatypes::CanonicalTypeId::uint8 &&
+         value.payload_kind != SblrValuePayloadKind::unsigned_integer)) {
+      return {};
+    }
     if (!value.binary_value.empty()) {
-      if (!value.encoded_value.empty() || value.binary_value.size() != 1) {
+      if (!value.encoded_value.empty() || !value.text_value.empty() ||
+          value.has_int64_value || value.has_uint64_value ||
+          value.has_real64_value || value.binary_value.size() != 1) {
         return {};
       }
       return std::string(1, static_cast<char>(value.binary_value[0]));
     }
-    std::string text = value.encoded_value;
-    if (text.empty() && value.has_int64_value) {
-      text = std::to_string(value.int64_value);
+    if ((source_type == datatypes::CanonicalTypeId::int8 &&
+         (value.has_uint64_value || value.has_real64_value)) ||
+        (source_type == datatypes::CanonicalTypeId::uint8 &&
+         (value.has_int64_value || value.has_real64_value))) {
+      return {};
     }
-    if (text.empty()) text = value.text_value;
+    std::string text;
+    const auto reconcile = [&text](const std::string& candidate) {
+      if (candidate.empty()) return true;
+      if (text.empty()) {
+        text = candidate;
+        return true;
+      }
+      return text == candidate;
+    };
+    if (!reconcile(value.encoded_value) || !reconcile(value.text_value) ||
+        (source_type == datatypes::CanonicalTypeId::int8 &&
+         value.has_int64_value &&
+         !reconcile(std::to_string(value.int64_value))) ||
+        (source_type == datatypes::CanonicalTypeId::uint8 &&
+         value.has_uint64_value &&
+         !reconcile(std::to_string(value.uint64_value)))) {
+      return {};
+    }
     std::string encoded;
-    return datatypes::EncodeCanonicalInt8Value(text, &encoded)
+    const bool ok = source_type == datatypes::CanonicalTypeId::int8
+        ? datatypes::EncodeCanonicalInt8Value(text, &encoded)
+        : datatypes::EncodeCanonicalUint8Value(text, &encoded);
+    return ok
         ? encoded
         : std::string{};
   }
@@ -151,6 +183,18 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
         return out;
       }
       out.has_int64_value = true;
+      out.encoded_value = std::move(text);
+      out.text_value = out.encoded_value;
+      return out;
+    }
+    case datatypes::CanonicalTypeId::uint8: {
+      out.payload_kind = SblrValuePayloadKind::unsigned_integer;
+      std::string text;
+      if (!datatypes::DecodeCanonicalUint8Value(value.encoded_value, &text) ||
+          !ParseUnsignedInt64(text, &out.uint64_value)) {
+        return out;
+      }
+      out.has_uint64_value = true;
       out.encoded_value = std::move(text);
       out.text_value = out.encoded_value;
       return out;
