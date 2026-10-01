@@ -183,4 +183,26 @@ struct NativePreallocationPublicationResult {
 NativePreallocationPublicationResult PublishNativePreallocationOnLease(
   NativePublicationLease&,const NativeManagementOperation&,
   u64 maximum_verification_image_bytes,core::uuid::StandaloneUuidV7Issuer&) noexcept;
+
+enum class NativePreallocationDisposition {
+  absent, pending_unanchored, pending_anchored, other_operation_pending, selected
+};
+struct NativePreallocationObservation {
+  NativePreallocationDisposition disposition=NativePreallocationDisposition::absent;
+  Uuid request_uuid, operation_uuid, publication_attempt_uuid;
+  u64 publication_generation=0, root_set_generation=0;
+  NativePublicationSnapshot snapshot;
+};
+struct NativePreallocationReconciliation {
+  NativePublicationError error=NativePublicationError::invalid_request;
+  std::optional<NativePreallocationObservation> observation;
+  bool ok() const noexcept {return error==NativePublicationError::none&&observation.has_value();}
+};
+// Read-only exact original-request lookup in verified selected history and
+// pending intent, including after later publications. No repaired state, new
+// request/operation identity, physical reservation result or execution grant.
+NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativeManagementOperation& original_request,
+  u64 maximum_verification_image_bytes) noexcept;
 } // namespace scratchbird::storage::database

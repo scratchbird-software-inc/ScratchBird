@@ -897,6 +897,16 @@ NativePreallocationPublicationResult PublishNativePreallocationOnLease(NativePub
       issuer.binding().policy_snapshot_uuid==intent.policy_snapshot_uuid,E::request_mismatch);
     const u64 allowance=std::min(budget,intent.maximum_retained_image_bytes);
     Require(allowance>kNativeStorageActionIntentBytes+intent.page_size_bytes,E::resource_exhausted);
+    {
+      const auto prior=ReconcileNativePreallocationFromOpenDevices(intent.database_uuid,old.devices,
+        intent.filespace_uuid,record,allowance-kNativeStorageActionIntentBytes);
+      if(!prior.ok())throw prior.error;
+      const auto& observed=*prior.observation;
+      Require((observed.disposition==NativePreallocationDisposition::pending_unanchored||
+        observed.disposition==NativePreallocationDisposition::pending_anchored)&&
+        observed.publication_attempt_uuid==lease.snapshot().watermark.operation_uuid,E::request_mismatch);
+      Require(SameBase(observed.snapshot,lease.snapshot()),E::stale_base);
+    }
     // A retained proposal is never authority for stale selected capacity.
     const auto matched=CheckNativeStorageIntentCapacityFromOpenDevices(intent,old.devices,allowance);
     if(!matched.ok())throw CapacityFailure(matched.capacity);
@@ -944,5 +954,87 @@ NativePreallocationPublicationResult PublishNativePreallocationOnLease(NativePub
    catch(const std::length_error&){result.publication.error=E::resource_exhausted;result.publication.snapshot.reset();}
    catch(...){result.publication.error=E::io_failure;result.publication.snapshot.reset();}
   result.publication.effects=lease.effects();return result;
+}
+NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const Uuid& primary,const NativeManagementOperation& record,u64 budget) noexcept {
+  try {
+    const auto original=ReadNativeStorageActionIntentFromOperation(record,budget);
+    if(!original.ok())throw original.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+      original.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::invalid_request;
+    const auto& request=*original.intent;
+    Require(request.action==NativeStorageAction::page_preallocation&&request.database_uuid==database&&
+      request.filespace_uuid==primary,E::invalid_request);
+    Require(budget>kNativeStorageActionIntentBytes,E::resource_exhausted);
+    auto current=Prepare(database,devices,primary,budget-kNativeStorageActionIntentBytes,false,false);
+    const u64 retained=current->bound.retained_image_bytes+6*u64{current->zero.bootstrap.page_size_bytes};
+    Require(retained<budget-kNativeStorageActionIntentBytes,E::resource_exhausted);
+    const auto history=ReadNativeManagementHistoryFromOpenDevices(database,current->devices,primary,
+      budget-kNativeStorageActionIntentBytes-retained);
+    if(!history.ok()){using H=NativeManagementHistoryError;
+      throw history.error==H::resource_exhausted?E::resource_exhausted:history.error==H::hash_failure?E::hash_failure:
+        history.error==H::io_failure?E::io_failure:history.error==H::encrypted_requires_authority?E::encrypted_requires_authority:
+        history.error==H::cluster_requires_authority?E::cluster_requires_authority:E::binding_mismatch;
+    }
+    Require(history.selection->checkpoint==current->snapshot.selection.checkpoint&&
+      history.selection->checkpoint_sha256==current->snapshot.selection.checkpoint_sha256,E::stale_base);
+    NativePreallocationObservation observed;
+    observed.request_uuid=request.request_uuid;observed.operation_uuid=request.operation_uuid;
+    observed.snapshot=current->snapshot;
+    for(const auto& entry:history.entries){
+      if(entry.plan.intent.recovery_profile!=3)continue;
+      const auto retained_request=ReadNativeStorageActionIntentFromOperation(entry.record,budget);
+      if(!retained_request.ok())throw retained_request.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+        retained_request.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
+      const auto& actual=*retained_request.intent;
+      if(actual.request_uuid!=request.request_uuid&&actual.operation_uuid!=request.operation_uuid)continue;
+      Require(actual.request_uuid==request.request_uuid&&actual.operation_uuid==request.operation_uuid&&
+        entry.record.normalized_request_bytes==record.normalized_request_bytes,E::request_mismatch);
+      Require(observed.disposition!=NativePreallocationDisposition::selected,E::binding_mismatch);
+      observed.disposition=NativePreallocationDisposition::selected;
+      observed.publication_attempt_uuid=entry.plan.operation_uuid;
+      observed.publication_generation=entry.plan.reserved_generation;
+      observed.root_set_generation=entry.plan.target_root_set_generation;
+    }
+    const auto& pending=current->snapshot.watermark;
+    if(observed.disposition!=NativePreallocationDisposition::selected&&
+        pending.watermark>current->snapshot.selection.checkpoint_generation&&!pending.abandonment){
+      const NativePublicationIntent expected{record.initiator_uuid,record.request_context_uuid,
+        record.policy_snapshot_uuid,record.normalized_request_sha256,record.initiator_kind,3};
+      if(pending.intent&&pending.intent->recovery_profile==3&&pending.publication_plan){
+        const auto& anchor=*pending.publication_plan;const u64 size=current->zero.bootstrap.page_size_bytes;
+        Require(history.verified_image_bytes<=budget-kNativeStorageActionIntentBytes-retained,E::resource_exhausted);
+        const u64 remaining=budget-kNativeStorageActionIntentBytes-retained-history.verified_image_bytes;
+        Require(size<=remaining/2,E::resource_exhausted);Bytes raw(size);
+        Require(anchor.page.filespace_uuid==primary&&anchor.page.page_size_profile_uuid==current->zero.bootstrap.page_size_profile_uuid&&
+          anchor.page.page_number<current->zero.total_pages,E::binding_mismatch);
+        const auto io=current->primary->ReadAt(anchor.page.page_number*size,raw.data(),raw.size());
+        Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);
+        const auto image=DecodeNativePublicationPlan(raw);ControlPlanError(image.error);const auto& plan=*image.plan;
+        Require(ControlRef(plan.header)==anchor.page&&plan.object_uuid==anchor.object_uuid&&image.sha256==anchor.sha256&&
+          plan.intent==*pending.intent&&plan.operation_uuid==pending.operation_uuid&&plan.reserved_generation==pending.watermark&&
+          plan.base_checkpoint==pending.base_checkpoint&&plan.base_checkpoint_sha256==pending.base_checkpoint_sha256&&
+          plan.management_extent.has_value(),E::binding_mismatch);
+        const auto allowance=ExtentAllowance(*plan.management_extent,size,remaining-2*size);
+        const disk::NativeFilespaceDevice file{primary,current->zero.bootstrap.page_size_profile_uuid,current->primary};
+        const auto extent=ReadNativeManagementExtentFromOpenDevice(file,*plan.management_extent,database,plan.bootstrap_uuid,allowance);
+        ControlExtentError(extent.error);ControlPlanError(BindNativePublicationPlanToManagementRecord(plan,*extent.record));
+        const auto actual=ReadNativeStorageActionIntentFromOperation(*extent.record,remaining);
+        if(!actual.ok())throw actual.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+          actual.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
+        if(actual.intent->request_uuid==request.request_uuid||actual.intent->operation_uuid==request.operation_uuid)
+          Require(actual.intent->request_uuid==request.request_uuid&&actual.intent->operation_uuid==request.operation_uuid&&
+            extent.record->normalized_request_bytes==record.normalized_request_bytes,E::request_mismatch);
+      }
+      if(pending.intent&&*pending.intent==expected){
+        observed.disposition=pending.publication_plan?NativePreallocationDisposition::pending_anchored:
+          NativePreallocationDisposition::pending_unanchored;
+        observed.publication_attempt_uuid=pending.operation_uuid;
+        observed.publication_generation=pending.watermark;
+      }else observed.disposition=NativePreallocationDisposition::other_operation_pending;
+    }
+    return {E::none,std::move(observed)};
+  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
 } // namespace scratchbird::storage::database

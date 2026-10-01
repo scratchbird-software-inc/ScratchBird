@@ -293,12 +293,33 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
 )
 
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  add_test(NAME native_preallocation_repeat_gate
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-repeat)
+  set_tests_properties(native_preallocation_repeat_gate PROPERTIES TIMEOUT 120
+    LABELS "storage;binary_uuid;real_files;native_publication;not_runtime_acceptance")
   add_test(NAME native_preallocation_publication_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation)
   set_tests_properties(native_preallocation_publication_gate PROPERTIES
     TIMEOUT 120 LABELS "storage;binary_uuid;real_files;native_publication;not_runtime_acceptance")
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE -Wl,--wrap=posix_fallocate)
+    foreach(stage RANGE 0 2)
+      foreach(route RANGE 0 2)
+        if(route EQUAL 0)
+          set(reconcile_last_shard 0)
+        elseif(route EQUAL 1)
+          set(reconcile_last_shard 4)
+        else()
+          set(reconcile_last_shard 7)
+        endif()
+        foreach(shard RANGE 0 ${reconcile_last_shard})
+          add_test(NAME native_preallocation_reconcile_${stage}_${route}_${shard}
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-reconcile-faults ${stage} ${route} ${shard})
+          set_tests_properties(native_preallocation_reconcile_${stage}_${route}_${shard} PROPERTIES TIMEOUT 180
+            LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+    endforeach()
     add_test(NAME native_preallocation_publication_fault_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-faults)
     set_tests_properties(native_preallocation_publication_fault_gate PROPERTIES

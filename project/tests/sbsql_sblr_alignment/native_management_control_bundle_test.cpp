@@ -949,13 +949,14 @@ struct OwnedPreallocationRequest {
  db::NativeManagementOperation record;
  db::NativePublicationIntent intent;
  db::NativePublicationReservation held;
- explicit OwnedPreallocationRequest(Fixture& f) {
+ explicit OwnedPreallocationRequest(Fixture& f,unsigned ordinal=0,unsigned reused=0) {
   const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(before.ok(),"preallocation actual base");const auto& s=before.snapshot->selection;
   const d::FilespaceRootReference root{9,0x300,Id(2),s.checkpoint.page_number,s.checkpoint.page_generation,s.checkpoint.page_size_profile_uuid,s.checkpoint_object_uuid};
   const auto capacity=db::ReadNativeFilespaceCapacityFromOpenDevices(Id(1),f.devices,root,Id(2),f.budget);
   Check(capacity.ok(),"preallocation actual capacity");const auto& c=*capacity.observation;
-  storage.request_uuid=Id(21000);storage.operation_uuid=Id(21001);storage.database_uuid=c.database_uuid;
+  storage.request_uuid=Id(21000+(reused==2?0:ordinal*1000));
+  storage.operation_uuid=Id(21001+(reused==1?0:ordinal*1000));storage.database_uuid=c.database_uuid;
   storage.filespace_uuid=c.filespace_uuid;storage.locator_uuid=c.locator_uuid;storage.page_zero_uuid=c.page_zero_uuid;
   storage.page_size_profile_uuid=c.page_size_profile_uuid;storage.page_size_bytes=c.page_size_bytes;
   storage.policy_snapshot_uuid=Id(10);storage.storage_profile_uuid=Id(21002);storage.initiator_uuid=Id(8);storage.request_context_uuid=Id(9);
@@ -967,16 +968,17 @@ struct OwnedPreallocationRequest {
   storage.checkpoint_generation=c.checkpoint_generation;storage.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
   storage.directory_generation=c.directory_generation;storage.filespace_root_set_generation=c.filespace_root_set_generation;
   storage.page_zero_generation=c.page_zero_generation;storage.map_generation=c.map_generation;storage.capacity_generation=c.capacity_generation;
-  storage.current_total_pages=storage.maximum_total_pages=c.total_pages;storage.first_page=200;storage.page_count=4;
+  storage.current_total_pages=storage.maximum_total_pages=c.total_pages;storage.first_page=200+8*ordinal;storage.page_count=4;
   storage.maximum_work_bytes=4*f.size;storage.maximum_retained_image_bytes=f.budget;
   storage.action=db::NativeStorageAction::page_preallocation;storage.intended_state=db::NativeStorageIntentState::preallocated;
-  storage.allocation_owner_uuid=Id(21008);storage.allocation_page_type=1;
+  storage.allocation_owner_uuid=Id(21008+ordinal*1000);storage.allocation_page_type=1;
   const auto encoded=db::EncodeNativeStorageActionIntent(storage,f.budget);Check(encoded.ok(),"complete preallocation request");
   record=records::Example(1);record.uuid=storage.operation_uuid;record.bootstrap_uuid=storage.page_zero_uuid;
+  if(ordinal)record.idempotency_key+="-distinct-request";
   record.target_uuid=storage.filespace_uuid;record.security_snapshot_uuid={};record.generation_guards={};
   record.normalized_request_bytes=encoded.bytes;record.normalized_request_sha256=Sha(encoded.bytes);
   intent={record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,record.normalized_request_sha256,record.initiator_kind,3};
-  held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(21100),f.budget,&intent);
+  held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(21100+ordinal*1000),f.budget,&intent);
   Check(held.ok(),"durable preallocation generation");
  }
 };
@@ -1019,6 +1021,16 @@ void PreallocationDeltaNegatives(Fixture& f) {
 }
 void OwnedPreallocationPublication(unsigned profile) {
  Fixture f(profile);f.budget*=8;OwnedPreallocationRequest request(f);
+ const auto pending=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);
+ Check(pending.ok()&&pending.observation->disposition==db::NativePreallocationDisposition::pending_unanchored&&
+   pending.observation->publication_attempt_uuid==Id(21100),"original pending preallocation lookup without manufactured identity");
+ {auto changed=request.storage;changed.request_uuid=Id(25201);changed.operation_uuid=Id(25202);
+  auto other=request.record;other.uuid=changed.operation_uuid;
+  other.normalized_request_bytes=db::EncodeNativeStorageActionIntent(changed,f.budget).bytes;
+  other.normalized_request_sha256=Sha(other.normalized_request_bytes);
+  const auto blocked=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),other,f.budget);
+  Check(blocked.ok()&&blocked.observation->disposition==db::NativePreallocationDisposition::other_operation_pending&&
+    blocked.observation->publication_attempt_uuid.is_nil(),"another pending request cannot look absent or inherit original attempt");}
  const auto before=f.Read(0,256);
  const auto published=db::PublishNativePreallocationOnLease(*request.held.lease,request.record,f.budget,*f.issuer);
  if(!published.ok())std::cerr<<"preallocation publication error="<<unsigned(published.publication.error)<<" attempted="<<published.physical_attempted<<'\n';
@@ -1029,6 +1041,13 @@ void OwnedPreallocationPublication(unsigned profile) {
  request.held.lease.reset();
  std::size_t expected_history=1;
  const auto verify=[&]{
+  reads=writes=syncs=0;io_counting=true;
+  const auto receipt=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);
+  io_counting=false;
+  Check(receipt.ok()&&!writes&&!syncs&&receipt.observation->disposition==db::NativePreallocationDisposition::selected&&
+    receipt.observation->request_uuid==request.storage.request_uuid&&receipt.observation->operation_uuid==request.storage.operation_uuid&&
+    receipt.observation->publication_attempt_uuid==Id(21100)&&receipt.observation->publication_generation==2&&
+    receipt.observation->root_set_generation==2,"exact historical preallocation receipt after reopen or later publication");
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok(),"selected preallocation graph admission");
   Check(selected.allocation.state_counts[7]==4,"exact preallocation count");
@@ -1049,7 +1068,23 @@ void OwnedPreallocationPublication(unsigned profile) {
   Check(std::equal(before.begin()+200*f.size,before.begin()+204*f.size,after.begin()+200*f.size),"reserved pages remain uninitialized and unchanged");
  };
  verify();PreallocationDeltaNegatives(f);
+ for(unsigned mode=0;mode<4;++mode){
+  auto changed=request.storage;if(mode==0)changed.allocation_owner_uuid=Id(25200);
+  if(mode==1||mode==3)changed.request_uuid=Id(25201);
+  if(mode>=2)changed.operation_uuid=Id(25202);
+  auto record=request.record;record.uuid=changed.operation_uuid;
+  record.normalized_request_bytes=db::EncodeNativeStorageActionIntent(changed,f.budget).bytes;
+  record.normalized_request_sha256=Sha(record.normalized_request_bytes);
+  const auto receipt=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),record,f.budget);
+  Check(mode==3?(receipt.ok()&&receipt.observation->disposition==db::NativePreallocationDisposition::absent):
+    (!receipt.ok()&&!receipt.observation&&receipt.error==db::NativePublicationError::request_mismatch),
+    "conflicting reuse of either original identity cannot look absent or completed");
+ }
  {OwnedInventoryRequest next(f);
+  const auto earlier=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);
+  Check(earlier.ok()&&earlier.observation->disposition==db::NativePreallocationDisposition::selected&&
+    earlier.observation->publication_generation==2&&earlier.observation->snapshot.watermark.watermark==3,
+    "later pending work does not erase original selected receipt");
   const auto successor=db::PublishNativeInventoryOnLease(*next.held.lease,next.record,next.inventory,f.budget,*f.issuer);
   Check(successor.ok(),"later inventory publication preserves earlier preallocation lineage");}
  ++expected_history;verify();
@@ -1085,16 +1120,24 @@ void OwnedPreallocationFaults(unsigned profile) {
     "failed lease cannot execute another physical request");
   request.held.lease.reset();
   if(mode==6){
+   const auto unresolved=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);
+   Check(!unresolved.ok()&&!unresolved.observation,"torn selector state requires recovery and cannot return false absence");
    const auto recovered=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),f.devices,Id(2),Id(21100),request.intent,f.budget);
    Check(recovered.ok()&&recovered.effects.selected_graph_verified,"partial selector publication recovers exact installed preallocation");
   }else{
    const auto pending=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
    Check(pending.ok(),"failed preallocation retains pending generation");
+   const auto observed=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);
+   Check(observed.ok()&&observed.observation->disposition==db::NativePreallocationDisposition::pending_anchored&&
+     observed.observation->publication_attempt_uuid==Id(21100),"failed physical call reconciles original anchored attempt");
    auto resumed=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*pending.snapshot,Id(21100),request.intent,f.budget);
    Check(resumed.ok(),"original preallocation resume lease");
    auto conflict=request.record;auto changed=request.storage;changed.allocation_owner_uuid=Id(22000);
    conflict.normalized_request_bytes=db::EncodeNativeStorageActionIntent(changed,f.budget).bytes;
    conflict.normalized_request_sha256=Sha(conflict.normalized_request_bytes);
+   const auto conflict_receipt=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),conflict,f.budget);
+   Check(!conflict_receipt.ok()&&conflict_receipt.error==db::NativePublicationError::request_mismatch&&!conflict_receipt.observation,
+     "anchored same-identity conflict refuses rather than appearing to be another operation");
    const auto retained=f.Read(0,256);reads=writes=syncs=0;io_counting=true;
    const auto refused=db::PublishNativePreallocationOnLease(*resumed.lease,conflict,f.budget,*f.issuer);
    io_counting=false;Check(!refused.ok()&&!refused.physical_attempted&&!writes&&!syncs&&f.Read(0,256)==retained,
@@ -1108,6 +1151,71 @@ void OwnedPreallocationFaults(unsigned profile) {
     "recovery preserves exact native preallocation and uninitialized page bytes");
  }
  std::cout<<"native preallocation faults profile="<<profile<<" PASS\n";
+}
+void OwnedPreallocationRepeat(unsigned profile) {
+ for(unsigned reused=0;reused<3;++reused){
+  Fixture f(profile);f.budget*=8;OwnedPreallocationRequest first(f);
+  Check(db::PublishNativePreallocationOnLease(*first.held.lease,first.record,f.budget,*f.issuer).ok(),"first actual allocation for replay test");
+  first.held.lease.reset();OwnedPreallocationRequest next(f,1,reused);const auto before=f.Read(0,256);
+  reads=writes=syncs=0;io_counting=true;
+  const auto result=db::PublishNativePreallocationOnLease(*next.held.lease,next.record,f.budget,*f.issuer);
+  io_counting=false;
+  if(reused){
+   Check(!result.ok()&&result.publication.error==db::NativePublicationError::request_mismatch&&
+     !result.physical_attempted&&!writes&&!syncs&&f.Read(0,256)==before,
+     "fresh-capacity request with reused request or operation identity refuses before storage effects");
+  }else{
+   if(!result.ok())std::cerr<<"repeat preallocation profile="<<profile<<" error="<<unsigned(result.publication.error)<<'\n';
+   Check(result.ok(),"distinct admitted requests can allocate separate ranges");next.held.lease.reset();
+   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+   Check(selected.ok()&&selected.allocation.state_counts[7]==8,"separate requests preserve both exact preallocated ranges");
+   const auto a=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),first.record,f.budget);
+   const auto b=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),next.record,f.budget);
+   Check(a.ok()&&b.ok()&&a.observation->disposition==db::NativePreallocationDisposition::selected&&
+     b.observation->disposition==db::NativePreallocationDisposition::selected&&
+     a.observation->publication_generation==2&&b.observation->publication_generation==3&&
+     a.observation->publication_attempt_uuid!=b.observation->publication_attempt_uuid,
+     "lookup retains each original publication rather than substituting newest receipt");
+  }
+ }
+ std::cout<<"native preallocation repeat profile="<<profile<<" PASS\n";
+}
+void OwnedPreallocationReconciliationFaults(unsigned stage,unsigned route,unsigned shard) {
+ Fixture f(0);f.budget*=8;OwnedPreallocationRequest request(f);
+ if(stage){
+  if(stage==1)preallocation_fault=1;
+  const auto effect=db::PublishNativePreallocationOnLease(*request.held.lease,request.record,f.budget,*f.issuer);
+  preallocation_fault=0;
+  Check(stage==1?(!effect.ok()&&effect.physical_attempted):effect.ok(),"reconciliation actual pending or selected fixture");
+  request.held.lease.reset();
+  if(stage==2){OwnedInventoryRequest next(f);Check(db::PublishNativeInventoryOnLease(*next.held.lease,next.record,next.inventory,f.budget,*f.issuer).ok(),
+    "reconciliation after actual later publication");}
+ }
+ byte scratch=0;for(unsigned n=0;n<4097;++n)Check(f.device.ReadAt(0,&scratch,1).ok(),"stable read observation capacity");
+ const auto original=f.Read(0,256);
+ const auto call=[&]{return db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),request.record,f.budget);};
+ reads=writes=syncs=hash_seen=allocations=0;io_counting=hash_counting=counting=true;
+ const auto baseline=call();io_counting=hash_counting=counting=false;
+ Check(baseline.ok()&&!writes&&!syncs,"reconciliation baseline reads only");
+ const auto sites=route==0?reads:route==1?hash_seen:allocations;Check(sites>0,"reconciliation fault sites exist");
+ for(unsigned long at=route==2?shard:0;at<sites;at+=route==2?8:1){
+  const auto loss=f.device.failed_io_latency_observations();reads=writes=syncs=hash_seen=0;io_counting=true;
+  if(route==0)read_fault=at+1;
+  if(route==1){hash_fault=shard+1;hash_target=at+1;hash_active=false;}
+  if(route==2)allocation_budget=at;
+  const auto result=call();const bool consumed=route==0?reads>=at+1:route==1?!hash_fault:allocation_budget==-1;
+  io_counting=hash_counting=counting=false;read_fault=hash_fault=0;hash_active=false;allocation_budget=-1;
+  Check(consumed&&!writes&&!syncs,"every reconciliation fault consumed without mutation");
+  if(result.ok())Check(route==2&&f.device.failed_io_latency_observations()==loss+1&&
+    result.observation->disposition==baseline.observation->disposition,"only recorded optional latency loss can return observation");
+  else{
+   const auto expected=route==0?db::NativePublicationError::io_failure:route==1?db::NativePublicationError::hash_failure:db::NativePublicationError::resource_exhausted;
+   if(result.error!=expected)std::cerr<<"reconcile stage="<<stage<<" route="<<route<<" at="<<at<<" error="<<unsigned(result.error)<<'\n';
+   Check(result.error==expected&&!result.observation,"reconciliation failure preserves cause without false absence or completion");
+  }
+ }
+ Check(f.Read(0,256)==original,"reconciliation sweep preserves complete physical file");
+ std::cout<<"native preallocation reconcile stage="<<stage<<" route="<<route<<" shard="<<shard<<" sites="<<sites<<" PASS\n";
 }
 void OwnedPreallocationCrashes(unsigned profile) {
  Fixture f(profile);f.budget*=8;OwnedPreallocationRequest request(f);
@@ -1509,4 +1617,4 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
  Integration(f,profile);
 }
 }
-int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==2&&std::string_view(argv[1])=="--native-preallocation-repeat"){for(unsigned p=0;p<5;++p)OwnedPreallocationRepeat(p);}else if(argc==5&&std::string_view(argv[1])=="--native-preallocation-reconcile-faults"){const auto stage=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);Check(stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==0?1:route==1?5:8),"reconciliation fault arguments");OwnedPreallocationReconciliationFaults(stage,route,shard);}else if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}
