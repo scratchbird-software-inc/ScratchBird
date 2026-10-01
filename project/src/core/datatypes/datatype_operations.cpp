@@ -2096,6 +2096,34 @@ bool DecodeCanonicalInt32Value(std::string_view canonical_bytes,
   return true;
 }
 
+bool EncodeCanonicalInt32BulkImportTextV1(
+    std::string_view decimal_text,
+    std::string* canonical_bytes) {
+  if (canonical_bytes == nullptr || decimal_text.empty() ||
+      decimal_text.front() == '+' || decimal_text.front() == ' ' ||
+      decimal_text.back() == ' ' || decimal_text == "-0" ||
+      (decimal_text.size() > 1 && decimal_text.front() == '0') ||
+      (decimal_text.size() > 2 && decimal_text.front() == '-' &&
+       decimal_text[1] == '0')) {
+    return false;
+  }
+
+  std::int32_t parsed_value = 0;
+  const auto parsed = std::from_chars(
+      decimal_text.data(), decimal_text.data() + decimal_text.size(),
+      parsed_value, 10);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != decimal_text.data() + decimal_text.size() ||
+      std::to_string(parsed_value) != decimal_text) {
+    return false;
+  }
+
+  std::string encoded;
+  if (!EncodeCanonicalInt32Value(parsed_value, &encoded)) return false;
+  *canonical_bytes = std::move(encoded);
+  return true;
+}
+
 const char* DatatypeCastCategoryName(DatatypeCastCategory category) {
   switch (category) {
     case DatatypeCastCategory::identity: return "identity";
