@@ -904,7 +904,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
                             std::vector<server::ServerDiagnostic>& diagnostics,
-                            bool repeat_active_start = false);
+                            bool repeat_active_start = false,
+                            bool reject_active_conflict = false);
 
 // SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
 bool CheckStartStop(server::ServerAgentRuntime& runtime,
@@ -1044,7 +1045,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
                             std::vector<server::ServerDiagnostic>& diagnostics,
-                            bool repeat_active_start) {
+                            bool repeat_active_start,
+                            bool reject_active_conflict) {
   startup_runtime = &runtime;
   capture_state_unlock = true;
   (void)runtime.Snapshot();
@@ -1074,6 +1076,42 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     // Sequential same-input case; overlapping calls are qualified separately.
     // Native observation remains armed to catch new threads.
     bool active_start_preserved = true;
+    if (reject_active_conflict && started) {
+      track_native_creates = true;
+      for (unsigned field = 0; field < 3; ++field) {
+        auto conflicting = engine;
+        auto& target = conflicting.databases.front();
+        if (field == 0) {
+          target.database_uuid = NewIdentity(platform::UuidKind::database, 0x100ULL).value;
+        } else if (field == 1) {
+          target.filespace_uuid = NewIdentity(platform::UuidKind::filespace, 0x100ULL).value;
+        } else {
+          target.database_path += ".conflicting-owner";
+        }
+        for (bool with_diagnostics : {true, false}) {
+          std::vector<server::ServerDiagnostic> conflict_diagnostics;
+          const bool accepted = runtime.Start(config, conflicting,
+              with_diagnostics ? &conflict_diagnostics : nullptr);
+          const auto retained = runtime.Snapshot();
+          std::vector<std::string> retained_identities;
+          const bool diagnosed = !with_diagnostics ||
+              (conflict_diagnostics.size() == 1 &&
+               conflict_diagnostics.front().code == "AGENT.INVALID_STATE");
+          active_start_preserved = active_start_preserved && !accepted && diagnosed &&
+              retained.started && !retained.stopping &&
+              retained.worker_thread_count == active.worker_thread_count &&
+              retained.durable_lease_count == active.durable_lease_count &&
+              HasBinarySnapshotIdentities(retained, engine) &&
+              ReadStatusIdentities(retained, &retained_identities) &&
+              retained_identities == active_identities && launch_attempts == 3;
+        }
+        if (field == 2) {
+          active_start_preserved = active_start_preserved &&
+              !std::filesystem::exists(target.database_path);
+        }
+      }
+      track_native_creates = false;
+    }
     if (repeat_active_start && started) {
       track_native_creates = true;
       for (unsigned repeat = 0; repeat < 3; ++repeat) {
@@ -1312,8 +1350,10 @@ int main(int argc, char** argv) {
     Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
             "unknown missing identity target");
   }
-  const bool active_start_repeat = argc == 2 &&
-      std::string_view(argv[1]) == "--active-start-repeat";
+  const bool active_start_conflict = argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-conflict";
+  const bool active_start_repeat = active_start_conflict || (argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-repeat");
   const bool sequential_restart = binary_boundary || active_start_repeat ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
@@ -1423,7 +1463,8 @@ int main(int argc, char** argv) {
   } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
-    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics, active_start_repeat);
+    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics,
+                                       active_start_repeat, active_start_conflict);
   } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
   } else if (!runtime.Start(config, engine, &diagnostics)) {
