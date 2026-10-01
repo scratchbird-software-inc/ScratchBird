@@ -662,6 +662,10 @@ ServerAgentRuntime::~ServerAgentRuntime() {
 bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
                                const HostedEngineState& engine_state,
                                std::vector<ServerDiagnostic>* diagnostics) {
+  // SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
+  // Retain ownership through durable setup, publication and native launch.
+  // started_ alone is not proof that the thread handles are fully installed.
+  std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
   const auto database = FirstOpenDatabase(engine_state);
   if (!database.has_value()) {
     return true;
@@ -694,6 +698,27 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
            {"uuid_message_key", invalid.diagnostic.message_key}}));
     }
     return false;
+  }
+  {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    if (started_) {
+      // SEARCH_KEY: SERVER_AGENT_ACTIVE_START_OWNER_CONFLICT
+      // An active Start is idempotent, not an ownership-transfer operation.
+      // Compare the original binary roots and exact admitted path before any
+      // other admission shortcut or durable/native effect.
+      const char* conflict = database_uuid_ != IdentityBytes(database->database_uuid)
+          ? "database_uuid"
+          : filespace_uuid_ != IdentityBytes(database->filespace_uuid)
+              ? "filespace_uuid"
+              : database_path_ != database->database_path ? "database_path" : nullptr;
+      if (conflict != nullptr && diagnostics != nullptr) {
+        diagnostics->push_back(RuntimeDiagnostic(
+            "AGENT.INVALID_STATE",
+            "An active server agent runtime cannot change its owning database or filespace.",
+            {{"identity_field", conflict}}));
+      }
+      return conflict == nullptr;
+    }
   }
   if (auto blocked = ServerAgentRuntimeBlocker(*database)) {
     if (diagnostics != nullptr) {
@@ -738,9 +763,6 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
-    if (started_) {
-      return true;
-    }
     if (!last_stop_result_.ok()) {
       if (diagnostics != nullptr) {
         diagnostics->insert(diagnostics->end(), last_stop_result_.diagnostics.begin(),
@@ -1090,7 +1112,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   } catch (...) {
     // Retain the native exception contract, but never leave a partially launched
     // scheduler/worker set running when thread construction fails.
-    Stop();
+    StopWithLifecycleLock();
     throw;
   }
   WriteStatusSnapshot();
@@ -1100,7 +1122,11 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
   // Serialize the complete operation, not just the stop request. A contending
   // caller must not return while another caller is still joining or cleaning up.
-  std::lock_guard<std::mutex> stop_guard(stop_mutex_);
+  std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+  return StopWithLifecycleLock();
+}
+
+ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (!started_ || stopping_.load()) {

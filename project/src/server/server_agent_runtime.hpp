@@ -116,9 +116,11 @@ class ServerAgentRuntime {
   bool Start(const ServerBootstrapConfig& config,
              const HostedEngineState& engine_state,
              std::vector<ServerDiagnostic>* diagnostics);
-  // Synchronous thread shutdown: concurrent Stop callers wait for the ongoing
-  // stop operation to finish. Start and destruction require external lifecycle
-  // coordination; callers must keep this object alive until their calls return.
+  // Start and Stop serialize their complete lifecycle operations. A Stop racing
+  // with Start waits through native cohort creation or failure cleanup before
+  // it examines/join-cleans that cohort. This does not cancel an in-flight Start.
+  // Destruction still requires external lifetime coordination: callers must
+  // keep this object alive until all calls return.
   // Return does not constitute a clean durable/node shutdown receipt.
   // Repeated calls retain the same result. Failed durable cleanup requires
   // owning-engine recovery; Start cannot silently discard that failure.
@@ -126,6 +128,8 @@ class ServerAgentRuntime {
   ServerAgentRuntimeSnapshot Snapshot() const;
 
  private:
+  // Caller holds lifecycle_mutex_; used by Start's native-failure unwind too.
+  ServerAgentRuntimeStopResult StopWithLifecycleLock();
   struct WorkerEvidence {
     std::string name;
     std::string role;
@@ -163,9 +167,9 @@ class ServerAgentRuntime {
   void WriteStatusSnapshot() const;
   std::string StatusJson() const;
 
-  // Acquired only by external Stop callers, before all other runtime locks.
-  // Workers must never acquire this mutex: Stop holds it while joining them.
-  std::mutex stop_mutex_;
+  // Acquired by external Start/Stop callers before all other runtime locks.
+  // Workers never acquire it: the lifecycle owner holds it while joining them.
+  std::mutex lifecycle_mutex_;
   mutable std::mutex state_mutex_;
   mutable std::mutex file_mutex_;
   std::mutex schedule_mutex_;

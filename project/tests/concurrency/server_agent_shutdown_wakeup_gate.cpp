@@ -101,12 +101,20 @@ bool startup_failure_injected = false;
 bool cleanup_failure_mode = false;
 unsigned cleanup_sync_failures = 0;
 bool cleanup_after_joins = false;
-bool track_native_creates = true;
+thread_local bool track_native_creates = true;
 unsigned fail_launch = 0;
 unsigned launch_attempts = 0;
 unsigned launched_threads = 0;
 std::array<pthread_t, 3> startup_threads{};
 std::array<bool, 3> startup_joined{};
+bool start_stop_mode = false;
+bool start_start_mode = false;
+unsigned pause_launch = 0;
+thread_local bool lifecycle_contender = false;
+bool lifecycle_boundary_observed = false;
+sem_t startup_launch_paused;
+sem_t release_startup_launch;
+sem_t lifecycle_contended;
 
 [[noreturn]] void Fail(const char* message) {
   std::cerr << message << '\n';
@@ -329,6 +337,10 @@ extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* at
     startup_failure_injected = true;
     return EAGAIN;
   }
+  if (track && start_stop_mode && launch_attempts == pause_launch) {
+    Signal(startup_launch_paused);
+    Wait(release_startup_launch, "controller did not release native startup launch");
+  }
   const int created = __real_pthread_create(thread, attributes, entry, argument);
   if (track && created == 0) {
     Require(launched_threads < startup_threads.size(), "unexpected startup thread count");
@@ -407,6 +419,15 @@ extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
 }
 
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (lifecycle_contender && mutex == stop_entry_mutex && !lifecycle_boundary_observed) {
+    // Probe once while the actual Start caller is held at pthread_create.
+    // No timing oracle and no Stop mutation on an unprotected baseline.
+    const int observed = pthread_mutex_trylock(mutex);
+    if (observed == 0) pthread_mutex_unlock(mutex);
+    Require(observed == EBUSY, "Start did not retain exclusive lifecycle ownership through native launch");
+    lifecycle_boundary_observed = true;
+    Signal(lifecycle_contended);
+  }
   if (scheduler_probe && mutex == schedule_mutex && ++scheduler_schedule_locks == 4) {
     // Initial timed wait, first dispatch, completion barrier, then the next
     // dispatch. Hold BEFORE the fourth lock; the real first tick has completed.
@@ -627,6 +648,87 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
       status_matches && rejects_false_claims && !snapshot.started && !snapshot.stopping;
 }
 
+// SEARCH_KEY: SERVER_AGENT_START_DURING_STOP
+bool CheckStartDuringStop(server::ServerAgentRuntime& runtime,
+                          const server::ServerBootstrapConfig& config,
+                          const server::HostedEngineState& engine,
+                          bool fail_cleanup) {
+  const auto original = runtime.Snapshot();
+  expected_joins = original.worker_thread_count + 1;
+  server::ServerAgentRuntimeStopResult stopped;
+  std::thread stopper([&] {
+    stop_caller = 1;
+    stopped = runtime.Stop();
+    stop_caller = 0;
+    Signal(stop_finished);
+  });
+  Wait(final_join_reached, "Stop did not join original cohort");
+  const auto stopping = runtime.Snapshot();
+  Require(stopping.started && stopping.stopping, "Stop not held before cleanup");
+  const std::filesystem::path path(stopping.database_path);
+  const auto held = path.string() + ".held";
+  if (fail_cleanup) std::filesystem::rename(path, held);
+  startup_runtime = &runtime;
+  capture_state_unlock = true;
+  (void)runtime.Snapshot();
+  capture_state_unlock = false;
+  bool restarted = false;
+  std::vector<server::ServerDiagnostic> diagnostics;
+  std::thread starter([&] {
+    stop_caller = 2;
+    startup_probe = true;
+    failed_restart_probe = fail_cleanup;
+    restarted = runtime.Start(config, engine, &diagnostics);
+    failed_restart_probe = false;
+    startup_probe = false;
+    stop_caller = 0;
+    if (!second_waiting.load()) Signal(second_stop_boundary);
+    Signal(second_stop_finished);
+  });
+  Wait(second_stop_boundary, "Start neither waited for Stop nor returned");
+  Signal(allow_cleanup);
+  Wait(stop_finished, "Stop cleanup did not finish");
+  Wait(second_stop_finished, "waiting Start did not finish");
+  stopper.join();
+  starter.join();
+  if (fail_cleanup) {
+    Require(!std::filesystem::exists(path), "failed cleanup recreated database");
+    std::filesystem::rename(held, path);
+  }
+  Require(second_waiting.load(), "Start bypassed pending Stop completion");
+  const auto after = runtime.Snapshot();
+  bool valid = stopped.attempted;
+  if (fail_cleanup) {
+    valid = valid && !stopped.ok() && !restarted && !after.started &&
+        failed_restart_creates == 0 && launch_attempts == 0 &&
+        diagnostics.size() == stopped.diagnostics.size() && !diagnostics.empty();
+    for (std::size_t i = 0; valid && i < diagnostics.size(); ++i) {
+      const auto& a = diagnostics[i];
+      const auto& b = stopped.diagnostics[i];
+      valid = a.code == b.code && a.message_key == b.message_key &&
+          a.occurrence_uuid == b.occurrence_uuid && a.severity == b.severity &&
+          a.safe_message == b.safe_message && a.fields.size() == b.fields.size();
+      for (std::size_t f = 0; valid && f < a.fields.size(); ++f)
+        valid = a.fields[f].key == b.fields[f].key && a.fields[f].value == b.fields[f].value;
+    }
+  } else {
+    valid = valid && stopped.ok() && stopped.durable_cleanup_complete && restarted &&
+        diagnostics.empty() && after.started && !after.stopping &&
+        launch_attempts == 3 && launched_threads == 3 &&
+        after.workers.size() == original.workers.size();
+    for (std::size_t i = 0; valid && i < after.workers.size(); ++i)
+      valid = after.workers[i].instance_uuid != original.workers[i].instance_uuid;
+    startup_probe = true;
+    track_native_creates = false;
+    valid = runtime.Stop().ok() && valid;
+    startup_probe = false;
+    for (unsigned i = 0; i < launched_threads; ++i) valid = startup_joined[i] && valid;
+  }
+  startup_runtime = nullptr;
+  runtime_state_mutex = nullptr;
+  return valid && !runtime.Snapshot().started;
+}
+
 // SEARCH_KEY: SERVER_AGENT_FAILED_SNAPSHOT_VALUE_LIFETIME
 bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
                                  const server::HostedEngineState& engine) {
@@ -802,7 +904,67 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
                             std::vector<server::ServerDiagnostic>& diagnostics,
-                            bool repeat_active_start = false);
+                            bool repeat_active_start = false,
+                            bool reject_active_conflict = false);
+
+// SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
+bool CheckStartStop(server::ServerAgentRuntime& runtime,
+                    const server::ServerBootstrapConfig& config,
+                    const server::HostedEngineState& engine) {
+  stop_caller = 1;
+  Require(runtime.Stop().ok(), "initial inactive Stop failed");
+  stop_caller = 0;
+  Require(stop_entry_mutex != nullptr, "Stop lifecycle mutex not observed");
+  startup_runtime = &runtime;
+  capture_state_unlock = true;
+  (void)runtime.Snapshot();
+  capture_state_unlock = false;
+  bool started = false;
+  bool repeated_start = false;
+  server::ServerAgentRuntimeStopResult stopped;
+  std::vector<server::ServerDiagnostic> start_diagnostics;
+  std::vector<server::ServerDiagnostic> repeat_diagnostics;
+  std::thread starter([&] {
+    startup_probe = true;
+    started = runtime.Start(config, engine, &start_diagnostics);
+    startup_probe = false;
+  });
+  Wait(startup_launch_paused, "Start did not reach selected native launch");
+  std::thread stopper([&] {
+    lifecycle_contender = true;
+    startup_probe = true;
+    if (start_start_mode) {
+      repeated_start = runtime.Start(config, engine, &repeat_diagnostics);
+      Require(lifecycle_boundary_observed, "second Start bypassed lifecycle ownership");
+    } else {
+      track_native_creates = false;  // Cleanup helpers are not cohort threads.
+      stopped = runtime.Stop();
+    }
+    startup_probe = false;
+    lifecycle_contender = false;
+  });
+  Wait(lifecycle_contended, "Stop did not contend on Start lifecycle ownership");
+  Signal(release_startup_launch);
+  starter.join();
+  stopper.join();
+  if (start_start_mode) {
+    Require(repeated_start && repeat_diagnostics.empty(), "serialized second Start failed");
+    startup_probe = true;
+    track_native_creates = false;
+    stopped = runtime.Stop();
+    startup_probe = false;
+  }
+  bool joined = launched_threads == 3 && launch_attempts == 3;
+  for (unsigned i = 0; i < launched_threads; ++i) joined = joined && startup_joined[i];
+  const auto snapshot = runtime.Snapshot();
+  startup_runtime = nullptr;
+  runtime_state_mutex = nullptr;
+  // durable_lease_count counts retained catalog rows, not live lease grants.
+  // Shutdown preserves those rows; its typed result reports cleanup completion.
+  return started && start_diagnostics.empty() && stopped.attempted && stopped.ok() &&
+      stopped.durable_cleanup_complete && joined && !snapshot.started &&
+      snapshot.stop_result.durable_cleanup_complete;
+}
 
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
 bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
@@ -883,7 +1045,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
                             std::vector<server::ServerDiagnostic>& diagnostics,
-                            bool repeat_active_start) {
+                            bool repeat_active_start,
+                            bool reject_active_conflict) {
   startup_runtime = &runtime;
   capture_state_unlock = true;
   (void)runtime.Snapshot();
@@ -910,9 +1073,45 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     std::vector<std::string> active_identities;
     const bool active_status_valid = ReadStatusIdentities(active, &active_identities);
     // SEARCH_KEY: SERVER_AGENT_ACTIVE_START_RETAINS_COHORT
-    // Sequential same-input calls only: Start/destruction still require external
-    // lifecycle ownership. Native observation remains armed to catch new threads.
+    // Sequential same-input case; overlapping calls are qualified separately.
+    // Native observation remains armed to catch new threads.
     bool active_start_preserved = true;
+    if (reject_active_conflict && started) {
+      track_native_creates = true;
+      for (unsigned field = 0; field < 3; ++field) {
+        auto conflicting = engine;
+        auto& target = conflicting.databases.front();
+        if (field == 0) {
+          target.database_uuid = NewIdentity(platform::UuidKind::database, 0x100ULL).value;
+        } else if (field == 1) {
+          target.filespace_uuid = NewIdentity(platform::UuidKind::filespace, 0x100ULL).value;
+        } else {
+          target.database_path += ".conflicting-owner";
+        }
+        for (bool with_diagnostics : {true, false}) {
+          std::vector<server::ServerDiagnostic> conflict_diagnostics;
+          const bool accepted = runtime.Start(config, conflicting,
+              with_diagnostics ? &conflict_diagnostics : nullptr);
+          const auto retained = runtime.Snapshot();
+          std::vector<std::string> retained_identities;
+          const bool diagnosed = !with_diagnostics ||
+              (conflict_diagnostics.size() == 1 &&
+               conflict_diagnostics.front().code == "AGENT.INVALID_STATE");
+          active_start_preserved = active_start_preserved && !accepted && diagnosed &&
+              retained.started && !retained.stopping &&
+              retained.worker_thread_count == active.worker_thread_count &&
+              retained.durable_lease_count == active.durable_lease_count &&
+              HasBinarySnapshotIdentities(retained, engine) &&
+              ReadStatusIdentities(retained, &retained_identities) &&
+              retained_identities == active_identities && launch_attempts == 3;
+        }
+        if (field == 2) {
+          active_start_preserved = active_start_preserved &&
+              !std::filesystem::exists(target.database_path);
+        }
+      }
+      track_native_creates = false;
+    }
     if (repeat_active_start && started) {
       track_native_creates = true;
       for (unsigned repeat = 0; repeat < 3; ++repeat) {
@@ -1114,6 +1313,14 @@ bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
 }
 
 int main(int argc, char** argv) {
+  start_start_mode = argc == 3 && std::string_view(argv[1]) == "--start-start";
+  start_stop_mode = start_start_mode ||
+      (argc == 3 && std::string_view(argv[1]) == "--start-stop");
+  if (start_stop_mode) {
+    const std::string_view index(argv[2]);
+    Require(index == "1" || index == "2" || index == "3", "invalid paused launch index");
+    pause_launch = static_cast<unsigned>(index[0] - '0');
+  }
   partial_completion_mode = argc == 2 &&
       std::string_view(argv[1]) == "--scheduler-partial-completion";
   completion_wait_mode = partial_completion_mode || (argc == 2 &&
@@ -1122,6 +1329,10 @@ int main(int argc, char** argv) {
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop_failure = argc == 2 &&
       std::string_view(argv[1]) == "--concurrent-stop-failure";
+  const bool start_during_stop_failure = argc == 2 &&
+      std::string_view(argv[1]) == "--start-during-stop-failure";
+  const bool start_during_stop = start_during_stop_failure ||
+      (argc == 2 && std::string_view(argv[1]) == "--start-during-stop");
   const bool concurrent_stop = concurrent_stop_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--concurrent-stop");
   cleanup_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure";
@@ -1139,8 +1350,10 @@ int main(int argc, char** argv) {
     Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
             "unknown missing identity target");
   }
-  const bool active_start_repeat = argc == 2 &&
-      std::string_view(argv[1]) == "--active-start-repeat";
+  const bool active_start_conflict = argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-conflict";
+  const bool active_start_repeat = active_start_conflict || (argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-repeat");
   const bool sequential_restart = binary_boundary || active_start_repeat ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
@@ -1149,14 +1362,14 @@ int main(int argc, char** argv) {
   const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
   const bool setup_path_failure = setup_database_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
-  const bool lifecycle_case = active_destruction || failed_snapshot_lifetime || startup_failure ||
+  const bool lifecycle_case = start_stop_mode || active_destruction || failed_snapshot_lifetime || startup_failure ||
       sequential_restart || setup_path_failure || missing_identity;
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode || completion_wait_mode,
+  Require(argc == 1 || start_during_stop || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode || completion_wait_mode,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
@@ -1164,7 +1377,8 @@ int main(int argc, char** argv) {
                        &worker_repark, &scheduler_after_tick, &scheduler_timeout,
                        &scheduler_next_wait, &completion_park, &release_completion,
                        &worker_entry, &release_worker_entry, &release_acknowledging_worker,
-                       &worker_acknowledged, &completion_stop_published};
+                       &worker_acknowledged, &completion_stop_published,
+                       &startup_launch_paused, &release_startup_launch, &lifecycle_contended};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
@@ -1234,9 +1448,11 @@ int main(int argc, char** argv) {
   bool destruction_joined = false;
   bool setup_recovered = false;
   bool snapshot_retained = false;
-  armed.store(!completion_wait_mode && !failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
+  armed.store(!start_during_stop && !start_stop_mode && !completion_wait_mode && !failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
-  if (failed_snapshot_lifetime) {
+  if (start_stop_mode) {
+    Require(CheckStartStop(runtime, config, engine), "Start/Stop lifetime or durable cleanup failed");
+  } else if (failed_snapshot_lifetime) {
     snapshot_retained = CheckFailedSnapshotLifetime(config, engine);
   } else if (missing_identity) {
     setup_recovered = CheckIdentityAdmission(runtime, config, engine, diagnostics, argv[2],
@@ -1247,7 +1463,8 @@ int main(int argc, char** argv) {
   } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
-    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics, active_start_repeat);
+    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics,
+                                       active_start_repeat, active_start_conflict);
   } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
   } else if (!runtime.Start(config, engine, &diagnostics)) {
@@ -1265,7 +1482,10 @@ int main(int argc, char** argv) {
   bool spurious_rechecked = false;
   bool scheduler_timeout_checked = false;
   bool completion_wait_checked = false;
-  if (completion_wait_mode) {
+  if (start_during_stop) {
+    Require(CheckStartDuringStop(runtime, config, engine, start_during_stop_failure),
+            "Start during Stop violated completion or failure retention");
+  } else if (completion_wait_mode) {
     completion_wait_checked = CheckSchedulerCompletionWait(runtime);
   } else if (scheduler_timeout_mode) {
     scheduler_timeout_checked = CheckSchedulerTimeout(runtime);
@@ -1305,7 +1525,13 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (completion_wait_mode) {
+  if (start_during_stop) {
+    std::cout << "server_agent_start_during_stop_gate=passed failure="
+              << start_during_stop_failure << '\n';
+  } else if (start_stop_mode) {
+    std::cout << (start_start_mode ? "server_agent_start_start_gate=passed\n"
+                                 : "server_agent_start_stop_gate=passed\n");
+  } else if (completion_wait_mode) {
     Require(completion_wait_checked, "scheduler completion predicate or shutdown failed");
     std::cout << "server_agent_scheduler_completion_wake_gate=passed\n";
   } else if (failed_snapshot_lifetime) {
