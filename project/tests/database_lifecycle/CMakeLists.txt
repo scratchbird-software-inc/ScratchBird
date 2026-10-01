@@ -3814,6 +3814,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
       sblr_agent_management_route_gate.cpp
     )
     target_compile_features(sblr_agent_management_route_gate PRIVATE cxx_std_20)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_options(sblr_agent_management_route_gate PRIVATE
+        "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+    endif()
     target_link_libraries(sblr_agent_management_route_gate
       PRIVATE
         sb_core_platform
@@ -3826,6 +3830,12 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
       NAME sblr_agent_management_route_gate
       COMMAND sblr_agent_management_route_gate
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      add_test(NAME agent_filespace_growth_failure_retention_gate
+        COMMAND sblr_agent_management_route_gate --growth-retention-only)
+      set_tests_properties(agent_filespace_growth_failure_retention_gate PROPERTIES
+        LABELS "storage;engine;physical_effects;binary_uuid;real_file;failure_injection")
+    endif()
     set_tests_properties(sblr_agent_management_route_gate PROPERTIES
       LABELS "PFAR-013;sblr_agent_management_route_gate;database_lifecycle;mga_transaction_regression"
     )

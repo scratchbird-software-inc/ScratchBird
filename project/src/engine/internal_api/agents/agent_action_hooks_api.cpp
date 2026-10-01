@@ -254,7 +254,8 @@ EngineApiDiagnostic DiagnosticFromFilespaceGrowth(
       detail += ":" + (*argument.text());
     }
   }
-  return MakeEngineApiDiagnostic(
+  return MakeEngineApiDiagnosticFromNative(
+      storage.diagnostic,
       storage.diagnostic.diagnostic_code.empty()
           ? "SB-STORAGE-FILESPACE-GROWTH-ROUTE-FAILED"
           : storage.diagnostic.diagnostic_code,
@@ -798,7 +799,19 @@ EngineApiDiagnostic PersistHookEvidence(const EngineAgentActionHookRequest& requ
   std::string event;
   if (!EncodeBinaryCatalogMetadata(fields, "agent.hook.event.v2", &event))
     return MakeInvalidRequestDiagnostic(operation_id, "agent_hook_event_encoding_failed");
-  return AppendApiBehaviorEvent(request.context, event);
+  // The metadata payload is not itself an SBAPI record. Preserve its binary
+  // identities inside the store's validated framing, rather than handing an
+  // incompatible blob to the appender after physical storage effects.
+  ApiBehaviorRecord record;
+  record.creator_tx = request.context.local_transaction_id;
+  record.operation_id = operation_id;
+  record.object_uuid = request.agent_uuid;
+  record.object_kind = "agent_hook";
+  record.target_database_uuid = request.context.database_uuid;
+  record.target_object_uuid = target.uuid;
+  record.payload = std::move(event);
+  record.state = "observed";
+  return AppendApiBehaviorEvent(request.context, MakeApiBehaviorRecordEvent(record));
 }
 
 template <typename TResult>
@@ -943,6 +956,20 @@ TResult RunHookWithDurableResourceReservationIfRequired(
   catalog = persisted.image;
 
   auto result = route(request, std::move(runtime_rows));
+  // Cleanup errors must append to, not replace, an already executed route's
+  // result. In particular the typed growth outcome and original diagnostic
+  // occurrences must survive a later reservation-release failure.
+  const auto fail_after_route = [&](const std::string& code,const std::string& detail) {
+    auto failure = DurableResourceReservationHookFailure<TResult>(
+        request, operation_id, normalized_action, code, detail);
+    result.ok = false;
+    result.refusal_reason = std::move(failure.refusal_reason);
+    for (auto& diagnostic : failure.diagnostics)
+      result.diagnostics.push_back(std::move(diagnostic));
+    for (auto& evidence : failure.evidence)
+      result.evidence.push_back(std::move(evidence));
+    return std::move(result);
+  };
   std::string release_evidence = reservation.evidence_uuid;
   for (const auto& evidence : result.evidence) {
     if (const auto* id = std::get_if<EngineUuid>(&evidence.evidence_id); id && !id->is_nil()) {
@@ -958,12 +985,7 @@ TResult RunHookWithDurableResourceReservationIfRequired(
       result.ok ? DurableAgentResourceReservationState::released
                 : DurableAgentResourceReservationState::cancelled);
   if (!released.ok) {
-    return DurableResourceReservationHookFailure<TResult>(
-        request,
-        operation_id,
-        normalized_action,
-        released.diagnostic_code,
-        released.detail);
+    return fail_after_route(released.diagnostic_code, released.detail);
   }
 
   AgentDurableCatalogStoreRequest release_store;
@@ -977,10 +999,7 @@ TResult RunHookWithDurableResourceReservationIfRequired(
       DurableCatalogStoreCheckpointEvidencePresentForHook(request);
   persisted = PersistAgentDurableCatalogImage(release_store);
   if (!persisted.ok) {
-    return DurableResourceReservationHookFailure<TResult>(
-        request,
-        operation_id,
-        normalized_action,
+    return fail_after_route(
         "SB_AGENT_HOOK_RESOURCE_RESERVATION.RELEASE_PERSIST_FAILED",
         persisted.diagnostic.detail.empty() ? persisted.diagnostic.code
                                             : persisted.diagnostic.detail);
@@ -1233,7 +1252,10 @@ EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
                                key,
                                page_size,
                                physical_member_path);
-  filespace::FilespaceGrowthLedger candidate = runtime.ledger;
+  // Physical file effects cannot be rolled back by discarding a candidate
+  // ledger. Keep quarantine/original-operation records even when storage or
+  // subsequent evidence publication reports failure.
+  auto& candidate = runtime.ledger;
 
   platform::u64 current_pages = OptionU64(request, "filespace.current_pages:", 64);
   platform::u64 preallocated_pages = OptionU64(request, "filespace.preallocated_pages:", 0);
@@ -1311,13 +1333,14 @@ EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
   storage_request.transaction_context.write_intent = true;
   storage_request.transaction_context.durability_fence_satisfied = true;
 
-  const auto storage = filespace::ExecuteFilespacePhysicalGrowth(
+  auto storage = filespace::ExecuteFilespacePhysicalGrowth(
       &candidate, runtime.registry, storage_request);
   if (!storage.ok()) {
-    return StorageRouteFailure<EngineRequestFilespaceGrowthResult>(
+    auto result = StorageRouteFailure<EngineRequestFilespaceGrowthResult>(
         request, kOperation, kAction, DiagnosticFromFilespaceGrowth(storage));
+    result.storage_result = std::move(storage);
+    return result;
   }
-  runtime.ledger = std::move(candidate);
 
   auto result = HookSuccess<EngineRequestFilespaceGrowthResult>(
       request, kOperation, kAction, std::move(runtime_rows));
@@ -1351,6 +1374,7 @@ EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
                       storage.operation.reserve_growth_as_preallocated ? "true" : "false"},
                      {"filespace_growth_page_allocation_authority_bypassed",
                       storage.page_allocation_authority_bypassed ? "true" : "false"}});
+  result.storage_result = std::move(storage);
   return result;
 }
 
