@@ -53,9 +53,9 @@ struct Fixture {
     Check(!s.current_bytes&&!s.reserved_capacity_bytes&&!s.active_capacity_reservation_count,"physical charge leak");}
 };
 struct File {
-  std::filesystem::path path;
-  File(){char name[]="/tmp/sb-native-memory-XXXXXX";const int fd=mkstemp(name);if(fd<0)throw std::runtime_error("mkstemp");close(fd);path=name;}
-  ~File(){std::error_code ec;std::filesystem::remove(path,ec);}
+  std::filesystem::path directory,path;
+  File(){char name[]="/tmp/sb-native-memory-XXXXXX";const auto* created=mkdtemp(name);if(!created)throw std::runtime_error("mkdtemp");directory=created;path=directory/"payload.bin";}
+  ~File(){std::error_code ec;std::filesystem::remove_all(directory,ec);}
 };
 void ProfilesAndLifetime(){
   for(const auto& a:d::kCanonicalFilespacePageProfiles)for(const auto& b:d::kCanonicalFilespacePageProfiles){
@@ -69,7 +69,7 @@ void ProfilesAndLifetime(){
     Check(f.manager.Snapshot().current_bytes==bytes&&memory.Snapshot().allocated_bytes==bytes,"actual simultaneous bytes charged");
     const auto full=memory.AllocatePage(a.uuid);Check(!full.ok()&&full.error==E::resource_exhausted,"real cumulative grant prevents overrun");
     for(usize i=0;i<first.buffer.size();++i)first.buffer.data()[i]=static_cast<byte>((i*13+7)%251);
-    File file;d::FileDevice device;Check(device.Open(file.path.string(),d::FileOpenMode::open_existing).ok(),"open actual owned fixture");
+    File file;d::FileDevice device;Check(device.Open(file.path.string(),d::FileOpenMode::create_new).ok(),"open actual owned fixture");
     auto io=device.WriteAt(0,first.buffer.data(),first.buffer.size());Check(io.ok()&&io.bytes_transferred==first.buffer.size(),"actual governed buffer write");
     Check(device.Sync().ok()&&device.Close().ok()&&device.Open(file.path.string(),d::FileOpenMode::open_existing).ok(),"sync and cold device reopen");
     std::memset(first.buffer.data(),0,first.buffer.size());io=device.ReadAt(0,first.buffer.data(),first.buffer.size());
