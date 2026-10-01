@@ -10,6 +10,7 @@ add_library(sb_core_metrics
   adaptive_tuning_metrics_evidence.cpp
   cluster_metric_descriptors.cpp
   metric_contracts.cpp
+  metric_concurrency_definitions.cpp
   metric_page_cache_definitions.cpp
   metric_history.cpp
   metric_history_record.cpp

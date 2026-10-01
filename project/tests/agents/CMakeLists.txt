@@ -8,6 +8,13 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(concurrency_metric_definitions_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/concurrency_metric_definitions_gate.cpp")
+target_link_libraries(concurrency_metric_definitions_gate PRIVATE sb_core_metrics)
+add_test(NAME concurrency_metric_definitions_gate COMMAND concurrency_metric_definitions_gate)
+set_tests_properties(concurrency_metric_definitions_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;metrics;definitions")
+
 if(UNIX)
 add_executable(startup_transaction_inventory_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_transaction_inventory_gate.cpp")
