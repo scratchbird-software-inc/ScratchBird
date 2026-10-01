@@ -42,6 +42,10 @@ inline SblrValue SblrValueFromProjectionArgument(
   value.descriptor_id = type_name;
   // Invalid carriers are unresolved non-NULL values, never manufactured NULLs.
   value.is_null = false;
+  // Core defines uint16 bytes, but no Engine/SBLR projection carrier profile
+  // currently binds those bytes to this adapter. Refuse every state until one
+  // authority is registered instead of treating native bytes as decimal text.
+  if (type_name == "uint16") return value;
   if (argument.state != internal_api::EngineValueState::value &&
       argument.state != internal_api::EngineValueState::sql_null) return value;
   const bool is_null = argument.is_null ||
@@ -157,6 +161,7 @@ inline bool ProjectionArgumentEncodingValid(
     const internal_api::EngineProjectionFunctionArgument& argument) {
   if (argument.type_name.empty()) return false;
   const auto type = projection_value_detail::LowerAscii(argument.type_name);
+  if (type == "uint16") return false;
   if (type == "binary" || type == "varbinary" || type == "uuid" || type == "uuid_array") {
     if (argument.state != internal_api::EngineValueState::value &&
         argument.state != internal_api::EngineValueState::sql_null) return false;
@@ -173,6 +178,7 @@ inline bool ProjectionArgumentEncodingValid(
 
 inline bool ProjectionSblrValueResolved(const SblrValue& value) {
   if (value.descriptor_id.empty()) return false;
+  if (value.descriptor_id == "uint16") return false;
   if (value.payload_kind == SblrValuePayloadKind::uuid_text) return false;
   if (value.is_null && (value.descriptor_id == "binary" ||
       value.descriptor_id == "varbinary" || value.descriptor_id == "uuid" ||
@@ -190,6 +196,8 @@ inline bool ProjectionSblrValueResolved(const SblrValue& value) {
 }
 
 inline internal_api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
+  if (value.descriptor_id == "uint16")
+    throw std::invalid_argument("SBLR uint16 projection carrier profile is unresolved");
   if (value.payload_kind == SblrValuePayloadKind::uuid_text ||
       (!value.is_null && (value.descriptor_id == "uuid" ||
                          value.payload_kind == SblrValuePayloadKind::uuid_binary) &&

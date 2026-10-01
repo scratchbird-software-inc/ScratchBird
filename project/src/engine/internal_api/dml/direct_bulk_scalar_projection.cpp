@@ -98,6 +98,12 @@ CrudStoredValue DirectTypedStoredValue(const EngineTypedValue& typed) {
     return CrudTypedValuePayload(typed);
   if (!typed.encoded_value.empty() && !typed.binary_value.empty())
     throw std::invalid_argument("ambiguous direct row payload");
+  const auto type = dt::CanonicalTypeIdFromStableName(
+      typed.descriptor.canonical_type_name);
+  if (type == dt::CanonicalTypeId::uint16) {
+    throw std::invalid_argument(
+        "uint16 direct row carrier profile is unresolved");
+  }
   return DirectTypedValueTextPayload(typed);
 }
 

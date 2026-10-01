@@ -800,7 +800,6 @@ void TestIntegerPhysicalSortKeyBytes() {
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
        "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
-      {dt::CanonicalTypeId::uint16, 2, false, "0", "65535", "65536"},
       {dt::CanonicalTypeId::uint32, 4, false, "0", "4294967295", "4294967296"},
       {dt::CanonicalTypeId::uint64, 8, false, "0", "18446744073709551615", "18446744073709551616"},
       {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
