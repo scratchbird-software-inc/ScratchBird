@@ -14,7 +14,8 @@ enum class NativeStoragePolicyResolutionError {
   none,invalid_request,capacity_failure,catalog_failure,missing_attachment,
   ambiguous_attachment,invalid_attachment,provisional_attachment,inactive_attachment,
   target_mismatch,missing_profile,ambiguous_profile,invalid_profile,
-  provisional_profile,inactive_profile,policy_failure,resource_exhausted,io_failure
+  provisional_profile,inactive_profile,policy_failure,resource_exhausted,io_failure,
+  policy_roots_failure
 };
 struct NativeStoragePolicySelection {
   core::catalog::CatalogStorageActionAttachment attachment;
@@ -25,9 +26,11 @@ struct NativeStoragePolicySelection {
 struct NativeStoragePolicyResolution {
   NativeStoragePolicyResolutionError error=NativeStoragePolicyResolutionError::invalid_request;
   NativeFilespaceCapacityResult capacity;
+  NativeCheckpointPolicyRootsResult policy_roots;
   NativeStoragePolicyLookupResult policy;
   std::optional<NativeStoragePolicySelection> selection;
-  bool ok() const noexcept {return error==NativeStoragePolicyResolutionError::none&&capacity.ok()&&policy.ok()&&selection.has_value();}
+  u64 retained_image_bytes=0;
+  bool ok() const noexcept {return error==NativeStoragePolicyResolutionError::none&&capacity.ok()&&policy_roots.ok()&&policy.ok()&&selection.has_value()&&retained_image_bytes;}
 };
 // Actual target-derived selection only. Runtime cannot choose a policy UUID.
 // Own devices must remain alive; acquire no unordered subset of their guards.
@@ -53,7 +56,14 @@ inline NativeStoragePolicyResolution ResolveNativeStoragePolicyFromOpenDevices(
     auto capacity=ReadNativeFilespaceCapacityFromOpenDevices(database,ordered,checkpoint,filespace,budget);
     if(!capacity.ok()){auto r=fail(E::capacity_failure);r.capacity=std::move(capacity);return r;}
     if(capacity.retained_image_bytes>=budget)return fail(E::resource_exhausted);
-    auto source=ReadNativePinnedCatalogVersionsFromOpenDevices(database,ordered,checkpoint,selector,role,relation,reader,pin,budget-capacity.retained_image_bytes);
+    // STORAGE-NATIVE-POLICY-ROOT-SOURCE-001. Catalog rows alone cannot stand in
+    // for the checkpoint's dedicated security/configuration roots. Keep these
+    // actual images and their complete nested proof under the same guards.
+    auto roots=VerifyNativeCheckpointPolicyRootsFromOpenDevices(database,ordered,checkpoint,budget-capacity.retained_image_bytes);
+    if(!roots.ok()){auto r=fail(E::policy_roots_failure);r.policy_roots=std::move(roots);return r;}
+    const u64 retained=capacity.retained_image_bytes+roots.retained_image_bytes;
+    if(retained>=budget)return fail(E::resource_exhausted);
+    auto source=ReadNativePinnedCatalogVersionsFromOpenDevices(database,ordered,checkpoint,selector,role,relation,reader,pin,budget-retained);
     if(!source.ok()){auto r=fail(E::catalog_failure);r.policy.error=NativeStoragePolicyLookupError::source_failure;r.policy.source=std::move(source);return r;}
     const auto retired=[](const NativeCatalogVersionRow& row){return row.metadata.record.header.deleted||row.effective_lifecycle==c::CatalogObjectLifecycle::dropped||row.effective_status==c::CatalogObjectStatus::retired;};
     const auto active=[](const NativeCatalogVersionRow& row){return row.effective_lifecycle==c::CatalogObjectLifecycle::active&&row.effective_status==c::CatalogObjectStatus::active;};
@@ -86,6 +96,8 @@ inline NativeStoragePolicyResolution ResolveNativeStoragePolicyFromOpenDevices(
     auto policy=native_storage_policy_detail::Select(database,std::move(source),{a.policy_uuid,filespace,a.storage_profile_uuid,a.page_size_profile_uuid,{},std::nullopt});
     if(!policy.ok()){auto r=fail(E::policy_failure);r.policy=std::move(policy);return r;}
     NativeStoragePolicyResolution result;result.error=E::none;result.capacity=std::move(capacity);
+    result.retained_image_bytes=retained+policy.source.source.retained_image_bytes;
+    result.policy_roots=std::move(roots);
     result.policy=std::move(policy);result.selection=std::move(selection);return result;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}

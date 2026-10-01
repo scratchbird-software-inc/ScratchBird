@@ -59,8 +59,7 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRange(
     const u64 allowance=std::min(budget,intent.maximum_retained_image_bytes);
     u64 retained=kNativeStorageActionIntentBytes;
     const auto charge=[&](u64 bytes){if(bytes>allowance-retained)return false;retained+=bytes;return true;};
-    if(!charge(policy.resolution.capacity.retained_image_bytes)||
-        !charge(policy.resolution.policy.source.source.retained_image_bytes))return fail(E::resource_exhausted);
+    if(!charge(policy.resolution.retained_image_bytes))return fail(E::resource_exhausted);
     if(intent.action==NativeStorageAction::page_preallocation){
       const auto target=std::find_if(devices.begin(),devices.end(),[&](const auto& d){return d.filespace_uuid==intent.filespace_uuid;});
       if(target==devices.end())return fail(E::invalid_request);
