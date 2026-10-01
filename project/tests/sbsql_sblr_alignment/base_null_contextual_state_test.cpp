@@ -779,7 +779,13 @@ void BoundOperationsRetainConcreteTypeIds() {
   set_operation.left_encoded_set = collision_set.encoded_set;
   set_operation.operation = dt::DatatypeSetOperationKind::cardinality;
   const auto cardinality = dt::ApplySetOperation(set_operation);
-  Check(cardinality.ok() && cardinality.value.encoded_value == "2",
+  std::uint64_t cardinality_value = 0;
+  Check(cardinality.ok() &&
+            cardinality.value.type_id == dt::CanonicalTypeId::uint64 &&
+            !cardinality.value.is_null &&
+            dt::DecodeCanonicalUint64Value(cardinality.value.encoded_value,
+                                           &cardinality_value) &&
+            cardinality_value == 2,
         "set duplicate suppression collapsed SQL NULL and present <NULL>");
 
   set_operation.operation = dt::DatatypeSetOperationKind::membership;
