@@ -121,7 +121,11 @@ inline NativeStorageIntentPolicyCheck CheckNativeStorageIntentPolicyFromOpenDevi
   const auto matched=MatchNativeStorageIntentCapacityObservation(intent,*resolved.capacity.observation);
   if(matched!=NativeStorageCapacityCheckError::none){auto r=fail(E::capacity_mismatch);r.capacity_error=matched;return r;}
   const auto& s=*resolved.selection;const auto& p=*resolved.policy.policy;
-  if(intent.attachment_uuid!=s.attachment.attachment_uuid||intent.attachment_generation!=s.attachment.generation||
+  // Match the catalog guard to the verified source, not just the selected
+  // objects. Unchanged policy versions cannot authorize a stale/omitted guard.
+  const auto catalog_generation=resolved.policy.source.source.checkpoint.catalogs.front().root->catalog_generation;
+  if(intent.catalog_generation!=catalog_generation||
+      intent.attachment_uuid!=s.attachment.attachment_uuid||intent.attachment_generation!=s.attachment.generation||
       intent.attachment_version_uuid!=s.attachment_version_uuid||intent.policy_uuid!=p.policy_uuid||
       intent.policy_generation!=p.generation||intent.policy_version_uuid!=resolved.policy.version_uuid||
       intent.storage_profile_uuid!=s.profile.descriptor_uuid.value||intent.storage_profile_generation!=s.profile_generation||
