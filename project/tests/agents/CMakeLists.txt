@@ -8,6 +8,14 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(runtime_authority_binding_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_gate.cpp")
+target_compile_features(runtime_authority_binding_gate PRIVATE cxx_std_23)
+target_link_libraries(runtime_authority_binding_gate PRIVATE sb_core_catalog)
+add_test(NAME runtime_authority_binding_gate COMMAND runtime_authority_binding_gate)
+set_tests_properties(runtime_authority_binding_gate PROPERTIES
+  TIMEOUT 60 LABELS "agents;configuration;binary_identity")
+
 if(NOT TARGET sb_core_concurrency)
   add_subdirectory("${PROJECT_SOURCE_DIR}/src/core/concurrency" "${CMAKE_CURRENT_BINARY_DIR}/core_concurrency")
 endif()
@@ -37,6 +45,21 @@ set_tests_properties(concurrency_metric_definitions_gate PROPERTIES
   TIMEOUT 60 LABELS "concurrency;metrics;definitions")
 
 if(UNIX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+find_package(OpenSSL REQUIRED)
+add_executable(runtime_authority_binding_native_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_native_gate.cpp")
+target_compile_features(runtime_authority_binding_native_gate PRIVATE cxx_std_23)
+target_include_directories(runtime_authority_binding_native_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/engine/internal_api")
+target_link_libraries(runtime_authority_binding_native_gate PRIVATE sb_storage_database OpenSSL::Crypto)
+target_link_options(runtime_authority_binding_native_gate PRIVATE
+  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
+  -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new
+  -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex
+  -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync)
+add_test(NAME runtime_authority_binding_native_gate COMMAND runtime_authority_binding_native_gate)
+set_tests_properties(runtime_authority_binding_native_gate PROPERTIES TIMEOUT 120 LABELS "agents;configuration;native_catalog")
+endif()
 add_executable(startup_transaction_inventory_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_transaction_inventory_gate.cpp")
 target_compile_features(startup_transaction_inventory_gate PRIVATE cxx_std_23)
