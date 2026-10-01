@@ -7,6 +7,7 @@
 #include "transaction_inventory.hpp"
 
 #include <optional>
+#include <span>
 
 namespace scratchbird::engine::internal_api {
 
@@ -53,5 +54,38 @@ struct StartupTransactionInventoryObservation {
 // inventory nor clears a fence, and cannot be used as a bearer recovery token.
 StartupTransactionInventoryObservation InspectStartupTransactionInventory(
     const StartupTransactionInventoryRequest& request);
+
+struct StartupTransactionInventoryIdentity {
+  EngineUuid transaction_uuid;
+  std::uint64_t local_transaction_id = 0;
+};
+struct StartupTransactionInventoryEntryObservation {
+  StartupTransactionInventoryOutcome outcome = StartupTransactionInventoryOutcome::unresolved;
+  scratchbird::transaction::mga::TransactionState observed_state =
+      scratchbird::transaction::mga::TransactionState::none;
+};
+enum class StartupTransactionInventoryBatchOutcome : std::uint8_t {
+  invalid_request, authority_unavailable, database_mismatch, observed
+};
+struct StartupTransactionInventoryBatchObservation {
+  StartupTransactionInventoryBatchOutcome outcome =
+      StartupTransactionInventoryBatchOutcome::invalid_request;
+  std::optional<scratchbird::transaction::mga::TransactionInventoryPublicationBase>
+      publication_base;
+  scratchbird::core::platform::DiagnosticRecord diagnostic;
+  std::size_t records_written = 0;
+};
+
+// Observe a nonempty caller-bounded set from ONE strong inventory snapshot.
+// Every tuple must be structurally valid and output must fit the complete set;
+// otherwise no output element is written. Duplicate tuples remain observations,
+// not evidence that an owning startup manifest is unique or complete. Output
+// elements beyond records_written are untouched. observed means the read was
+// successful, NOT that every transaction is terminal or recovery is complete.
+// The same engine ownership and non-bearer-authority rules as above apply.
+StartupTransactionInventoryBatchObservation InspectStartupTransactionInventories(
+    const std::string& database_path, EngineUuid database_uuid,
+    std::span<const StartupTransactionInventoryIdentity> identities,
+    std::span<StartupTransactionInventoryEntryObservation> output);
 
 }  // namespace scratchbird::engine::internal_api

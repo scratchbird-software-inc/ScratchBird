@@ -9,35 +9,16 @@
 
 namespace scratchbird::engine::internal_api {
 
-StartupTransactionInventoryObservation InspectStartupTransactionInventory(
-    const StartupTransactionInventoryRequest& request) {
-  namespace mga = scratchbird::transaction::mga;
-  namespace storage = scratchbird::storage::database;
-  namespace uuid = scratchbird::core::uuid;
-  using Outcome = StartupTransactionInventoryOutcome;
-  StartupTransactionInventoryObservation result;
-  if (request.database_path.empty() || request.local_transaction_id == 0 ||
-      !uuid::IsEngineIdentityUuid(request.database_uuid) ||
-      !uuid::IsEngineIdentityUuid(request.transaction_uuid)) {
-    result.outcome = Outcome::invalid_request;
-    return result;
-  }
+namespace {
+namespace mga = scratchbird::transaction::mga;
+namespace storage = scratchbird::storage::database;
+namespace uuid = scratchbird::core::uuid;
+using Outcome = StartupTransactionInventoryOutcome;
 
-  const auto guard = AcquireTransactionInventoryGuard(request.database_path);
-  const auto loaded = storage::AcquireStrongLocalTransactionInventorySnapshot(
-      request.database_path);
-  if (!loaded.ok()) {
-    result.diagnostic = loaded.diagnostic;
-    return result;
-  }
-  const auto& inventory = loaded.snapshot->inventory;
-  if (!inventory.publication_base || inventory.publication_base->generation == 0)
-    return result;
-  result.publication_base = inventory.publication_base;
-  if (result.publication_base->database_uuid != request.database_uuid) {
-    result.outcome = Outcome::database_mismatch;
-    return result;
-  }
+StartupTransactionInventoryEntryObservation ObserveEntry(
+    const mga::LocalTransactionInventory& inventory,
+    const StartupTransactionInventoryIdentity& request) {
+  StartupTransactionInventoryEntryObservation result;
 
   // Require the exact composite identity and uniqueness in both directions.
   // A reused local number or UUID never names the retained original work.
@@ -72,6 +53,65 @@ StartupTransactionInventoryObservation InspectStartupTransactionInventory(
       result.outcome = Outcome::rolled_back;
       break;
     default:
+      break;
+  }
+  return result;
+}
+}  // namespace
+
+StartupTransactionInventoryBatchObservation InspectStartupTransactionInventories(
+    const std::string& database_path, EngineUuid database_uuid,
+    std::span<const StartupTransactionInventoryIdentity> identities,
+    std::span<StartupTransactionInventoryEntryObservation> output) {
+  using BatchOutcome = StartupTransactionInventoryBatchOutcome;
+  StartupTransactionInventoryBatchObservation result;
+  if (database_path.empty() || !uuid::IsEngineIdentityUuid(database_uuid) ||
+      identities.empty() || output.size() < identities.size()) return result;
+  // Validate the complete set before writing anything or opening the database.
+  for (const auto& identity : identities) {
+    if (!uuid::IsEngineIdentityUuid(identity.transaction_uuid) ||
+        identity.local_transaction_id == 0) return result;
+  }
+  result.outcome = BatchOutcome::authority_unavailable;
+  const auto guard = AcquireTransactionInventoryGuard(database_path);
+  const auto loaded = storage::AcquireStrongLocalTransactionInventorySnapshot(database_path);
+  if (!loaded.ok()) {
+    result.diagnostic = loaded.diagnostic;
+    return result;
+  }
+  const auto& inventory = loaded.snapshot->inventory;
+  if (!inventory.publication_base || inventory.publication_base->generation == 0)
+    return result;
+  result.publication_base = inventory.publication_base;
+  if (result.publication_base->database_uuid != database_uuid) {
+    result.outcome = BatchOutcome::database_mismatch;
+    return result;
+  }
+  for (std::size_t i = 0; i != identities.size(); ++i)
+    output[i] = ObserveEntry(inventory, identities[i]);
+  result.records_written = identities.size();
+  result.outcome = BatchOutcome::observed;
+  return result;
+}
+
+StartupTransactionInventoryObservation InspectStartupTransactionInventory(
+    const StartupTransactionInventoryRequest& request) {
+  const StartupTransactionInventoryIdentity identity{
+      request.transaction_uuid, request.local_transaction_id};
+  StartupTransactionInventoryEntryObservation entry;
+  const auto batch = InspectStartupTransactionInventories(
+      request.database_path, request.database_uuid, {&identity, 1}, {&entry, 1});
+  StartupTransactionInventoryObservation result;
+  result.publication_base = batch.publication_base;
+  result.diagnostic = batch.diagnostic;
+  using BatchOutcome = StartupTransactionInventoryBatchOutcome;
+  switch (batch.outcome) {
+    case BatchOutcome::invalid_request: result.outcome = Outcome::invalid_request; break;
+    case BatchOutcome::authority_unavailable: break;
+    case BatchOutcome::database_mismatch: result.outcome = Outcome::database_mismatch; break;
+    case BatchOutcome::observed:
+      result.outcome = entry.outcome;
+      result.observed_state = entry.observed_state;
       break;
   }
   return result;

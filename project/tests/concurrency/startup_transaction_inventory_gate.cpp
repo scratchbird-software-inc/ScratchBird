@@ -178,6 +178,50 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   rollback_request.local_transaction_id = begun.entry.identity.local_id.value;
   Check(api::InspectStartupTransactionInventory(rollback_request).outcome == Outcome::unresolved,
         "unrelated commit cannot resolve original active work");
+  using BatchOutcome = api::StartupTransactionInventoryBatchOutcome;
+  std::array<api::StartupTransactionInventoryIdentity, 2> identities{{
+      {request.transaction_uuid, request.local_transaction_id},
+      {rollback_request.transaction_uuid, rollback_request.local_transaction_id}}};
+  std::array<api::StartupTransactionInventoryEntryObservation, 3> observations{};
+  observations[2].outcome = Outcome::invalid_request;
+  auto batch = api::InspectStartupTransactionInventories(
+      path.string(), request.database_uuid, identities, observations);
+  Check(batch.outcome == BatchOutcome::observed && batch.records_written == 2,
+        "complete startup set observed in one snapshot");
+  Check(batch.publication_base == persisted.inventory.publication_base,
+        "batch uses current exact native publication");
+  Check(observations[0].outcome == Outcome::committed &&
+            observations[0].observed_state == mga::TransactionState::archived &&
+            observations[1].outcome == Outcome::unresolved &&
+            observations[1].observed_state == mga::TransactionState::active,
+        "partial committed set retains unresolved original transaction");
+  Check(observations[2].outcome == Outcome::invalid_request,
+        "batch leaves output tail untouched");
+  for (int invalid = 0; invalid != 7; ++invalid) {
+    auto malformed = identities;
+    auto batch_path = path.string();
+    auto batch_database = request.database_uuid;
+    auto count = malformed.size();
+    auto capacity = observations.size();
+    switch (invalid) {
+      case 0: batch_path.clear(); break;
+      case 1: batch_database = {}; break;
+      case 2: malformed[1].transaction_uuid = {}; break;
+      case 3: malformed[1].local_transaction_id = 0; break;
+      case 4: count = 0; break;
+      case 5: capacity = 1; break;
+      case 6: malformed[1].transaction_uuid.bytes[6] = 0x40; break;
+    }
+    const auto rejected = api::InspectStartupTransactionInventories(
+        batch_path, batch_database, std::span(malformed).first(count),
+        std::span(observations).first(capacity));
+    Check(rejected.outcome == BatchOutcome::invalid_request &&
+              rejected.records_written == 0 && !rejected.publication_base,
+          "invalid set has no partial output or provenance");
+    Check(observations[0].outcome == Outcome::committed &&
+              observations[1].outcome == Outcome::unresolved,
+          "invalid later tuple leaves earlier output untouched");
+  }
   auto rolled_back = mga::RollbackLocalTransaction(persisted.inventory, begun.entry.identity.local_id, 5);
   Check(rolled_back.ok(), "candidate rollback");
   persisted = db::PersistLocalTransactionInventoryToDatabase(path.string(), rolled_back.inventory);
@@ -191,6 +235,26 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(api::InspectStartupTransactionInventory(rollback_request).outcome == Outcome::rolled_back,
         "archive does not turn rollback into commit");
   ColdRead(rollback_request, api::InspectStartupTransactionInventory(rollback_request));
+  batch = api::InspectStartupTransactionInventories(
+      path.string(), request.database_uuid, identities, observations);
+  Check(batch.outcome == BatchOutcome::observed &&
+            batch.publication_base == persisted.inventory.publication_base &&
+            observations[0].outcome == Outcome::committed &&
+            observations[1].outcome == Outcome::rolled_back,
+        "fresh set read preserves both actual terminal outcomes");
+  auto missing = identities;
+  missing[1].transaction_uuid = NewId(platform::UuidKind::transaction).value;
+  missing[1].local_transaction_id += 1000;
+  batch = api::InspectStartupTransactionInventories(
+      path.string(), request.database_uuid, missing, observations);
+  Check(batch.outcome == BatchOutcome::observed &&
+            observations[0].outcome == Outcome::committed &&
+            observations[1].outcome == Outcome::identity_missing,
+        "successful batch read is not all-transactions-resolved");
+  batch = api::InspectStartupTransactionInventories(
+      path.string(), NewId(platform::UuidKind::database).value, identities, observations);
+  Check(batch.outcome == BatchOutcome::database_mismatch && batch.records_written == 0,
+        "wrong database grants no batch observations");
 
   const auto bytes = [&] {
     std::ifstream input(path, std::ios::binary);
@@ -200,6 +264,9 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   const auto before_inspection = bytes();
   Check(api::InspectStartupTransactionInventory(request).outcome == Outcome::committed,
         "repeat exact original observation");
+  batch = api::InspectStartupTransactionInventories(
+      path.string(), request.database_uuid, identities, observations);
+  Check(batch.outcome == BatchOutcome::observed, "repeat batch observation");
   Check(bytes() == before_inspection, "inspection changes no database bytes");
 
   const auto held = path.string() + ".held";
@@ -208,6 +275,12 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(absent.outcome == Outcome::authority_unavailable && !absent.publication_base,
         "warm cache cannot authorize absent database");
   Check(!absent.diagnostic.diagnostic_code.empty(), "retain storage read failure");
+  batch = api::InspectStartupTransactionInventories(
+      path.string(), request.database_uuid, identities, observations);
+  Check(batch.outcome == BatchOutcome::authority_unavailable &&
+            batch.records_written == 0 && !batch.publication_base &&
+            !batch.diagnostic.diagnostic_code.empty(),
+        "batch cannot use warm cache when native file is unavailable");
   std::filesystem::rename(held, path);
   Check(api::InspectStartupTransactionInventory(request).outcome == Outcome::committed,
         "restored file read observes original committed identity");
