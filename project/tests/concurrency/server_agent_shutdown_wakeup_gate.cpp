@@ -52,6 +52,13 @@ sem_t scheduler_after_tick;
 sem_t worker_repark;
 sem_t scheduler_timeout;
 sem_t scheduler_next_wait;
+sem_t completion_park;
+sem_t release_completion;
+sem_t worker_entry;
+sem_t release_worker_entry;
+sem_t completion_stop_published;
+bool completion_wait_mode = false;
+thread_local bool completion_scheduler = false;
 bool spurious_wake = false;
 bool scheduler_timeout_mode = false;
 thread_local bool observed_waiter = false;
@@ -164,6 +171,27 @@ bool ReadStatusIdentities(const server::ServerAgentRuntimeSnapshot& snapshot,
   namespace result = scratchbird::wire::public_result;
   std::vector<result::Field> fields;
   if (!scratchbird::wire::binary_status::Decode(packet, &fields)) return false;
+  // SEARCH_KEY: SERVER_AGENT_STATUS_STOP_RESULT_PROJECTION
+  // Compare the actual packet's lifecycle projection with the public snapshot.
+  // This text fragment contains flags/codes, never rendered UUID identities.
+  const auto boolean = [](bool value) { return value ? "true" : "false"; };
+  std::string expected = "{\"server_agent_runtime\":{\"started\":";
+  expected += boolean(snapshot.started);
+  expected += ",\"stopping\":";
+  expected += boolean(snapshot.stopping);
+  expected += ",\"stop_attempted\":";
+  expected += boolean(snapshot.stop_result.attempted);
+  expected += ",\"durable_cleanup_complete\":";
+  expected += boolean(snapshot.stop_result.durable_cleanup_complete);
+  expected += ",\"stop_failed\":";
+  expected += boolean(!snapshot.stop_result.ok());
+  expected += ",\"stop_diagnostic_code\":\"";
+  expected += snapshot.stop_result.diagnostics.empty()
+      ? "" : snapshot.stop_result.diagnostics.front().code;
+  expected += "\",";
+  // Decode retains the contract discriminator at index zero.
+  if (fields.size() < 2 || fields[1].kind != result::Kind::text ||
+      !fields[1].value.starts_with(expected)) return false;
   identities->clear();
   for (std::size_t i = 1; i < fields.size(); ++i) {
     if (fields[i].kind != result::Kind::uuid) continue;
@@ -263,6 +291,13 @@ extern "C" int __wrap_pthread_cond_clockwait(pthread_cond_t* condition,
 
 extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
   const int result = __real_pthread_setname_np(thread, name);
+  if (completion_wait_mode) {
+    if (std::string_view(name) == "sb-agent-sch") completion_scheduler = true;
+    if (std::string_view(name).starts_with("sb-agent-w")) {
+      Signal(worker_entry);
+      Wait(release_worker_entry, "controller did not release worker entry");
+    }
+  }
   if (scheduler_timeout_mode && std::string_view(name) == "sb-agent-sch") {
     timed_scheduler = true;
   }
@@ -314,6 +349,22 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
 
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
                                          pthread_mutex_t* mutex) {
+  if (completion_scheduler) {
+    const bool first_wait = schedule_mutex == nullptr;
+    if (schedule_mutex == nullptr) {
+      schedule_mutex = mutex;
+      schedule_condition = condition;
+    }
+    Require(mutex == schedule_mutex && condition == schedule_condition,
+            "scheduler completion wait changed binding");
+    // Unsolicited native spurious wakes must not park the probe while the
+    // controller is trying to acquire the mutex for its next notification.
+    if (first_wait || notifications_sent.load() > observed_notifications) {
+      observed_notifications = notifications_sent.load();
+      Signal(completion_park);
+      Wait(release_completion, "controller did not release completion park");
+    }
+  }
   if (spurious_wake && observed_waiter &&
       notifications_sent.load() > observed_notifications) {
     // Reaching this call again means the production predicate rejected the
@@ -398,6 +449,9 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
 
 extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
   const int result = __real_pthread_cond_broadcast(condition);
+  if (completion_wait_mode && stop_thread && condition == schedule_condition) {
+    Signal(completion_stop_published);
+  }
   if (stop_thread && condition == schedule_condition &&
       !observed_boundary.exchange(true)) {
     // Old implementation: Stop has already published and notified, although
@@ -405,6 +459,51 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
     Signal(stop_boundary);
   }
   return result;
+}
+
+// SEARCH_KEY: SERVER_AGENT_SCHEDULER_COMPLETION_PREDICATE
+bool CheckSchedulerCompletionWait(server::ServerAgentRuntime& runtime) {
+  Wait(worker_entry, "first worker did not reach real native entry");
+  Wait(worker_entry, "second worker did not reach real native entry");
+  Wait(completion_park, "scheduler did not wait for worker completion");
+  bool no_advance = true;
+  constexpr unsigned notifications = 8;
+  for (unsigned wake = 0; wake < notifications; ++wake) {
+    Signal(release_completion);
+    // Acquisition proves the real cond_wait released the bound predicate mutex.
+    Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "completion probe lock failed");
+    notifications_sent.fetch_add(1);
+    Require(__real_pthread_cond_broadcast(schedule_condition) == 0,
+            "completion probe broadcast failed");
+    Require(pthread_mutex_unlock(schedule_mutex) == 0, "completion probe unlock failed");
+    Wait(completion_park, "false completion predicate did not repark scheduler");
+    const auto snapshot = runtime.Snapshot();
+    no_advance = no_advance && snapshot.started && !snapshot.stopping &&
+        snapshot.scheduler_ticks == 1 && snapshot.total_worker_ticks == 0 &&
+        snapshot.total_actions_accepted == 0 && snapshot.total_actions_refused == 0 &&
+        snapshot.total_actions_failed == 0;
+  }
+  std::thread stopper([&] {
+    stop_thread = true;
+    runtime.Stop();
+    stop_thread = false;
+    Signal(stop_finished);
+  });
+  Wait(stop_boundary, "Stop did not reach scheduler completion predicate mutex");
+  Signal(release_completion);
+  // Release workers only after real stop publication/notification, not merely
+  // after the stopper has attempted to acquire the predicate mutex.
+  Wait(completion_stop_published, "Stop did not publish completion-wait cancellation");
+  Signal(release_worker_entry);
+  Signal(release_worker_entry);
+  Wait(stop_finished, "Stop did not join completion waiter and held workers");
+  stopper.join();
+  const auto stopped = runtime.Snapshot();
+  std::cout << "completion_notifications=" << notifications
+            << " false_completion_rejected=" << no_advance << '\n';
+  return no_advance && publication_serialized.load() && !stopped.started &&
+      !stopped.stopping && stopped.scheduler_ticks == 1 && stopped.total_worker_ticks == 0 &&
+      stopped.stop_result.attempted && stopped.stop_result.ok();
 }
 
 // SEARCH_KEY: SERVER_AGENT_CONCURRENT_STOP_COMPLETION
@@ -487,10 +586,77 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   }
   const bool retained = same_result(second_result) && same_result(snapshot.stop_result) &&
       same_result(repeated);
+  std::vector<std::string> status_identities;
+  const bool status_matches = ReadStatusIdentities(snapshot, &status_identities);
+  // Negative oracle controls: the same real file must not match an inverted
+  // completion or attempted flag. Never rewrite production status evidence.
+  auto wrong_completion = snapshot;
+  wrong_completion.stop_result.durable_cleanup_complete =
+      !snapshot.stop_result.durable_cleanup_complete;
+  auto wrong_attempt = snapshot;
+  wrong_attempt.stop_result.attempted = !snapshot.stop_result.attempted;
+  const bool rejects_false_claims = !ReadStatusIdentities(wrong_completion, &status_identities) &&
+      !ReadStatusIdentities(wrong_attempt, &status_identities);
   std::cout << "concurrent_stop_failure=" << fail_cleanup
-            << " exact_result_retained=" << retained << '\n';
+            << " exact_result_retained=" << retained
+            << " status_result_preserved=" << status_matches
+            << " rejects_false_claims=" << rejects_false_claims << '\n';
   return second_waiting.load() && !second_returned_early.load() && expected_result && retained &&
-      !snapshot.started && !snapshot.stopping;
+      status_matches && rejects_false_claims && !snapshot.started && !snapshot.stopping;
+}
+
+// SEARCH_KEY: SERVER_AGENT_FAILED_SNAPSHOT_VALUE_LIFETIME
+bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
+                                 const server::HostedEngineState& engine) {
+  server::ServerAgentRuntimeSnapshot retained;
+  server::ServerAgentRuntimeStopResult retained_result;
+  bool isolated = false;
+  {
+    server::ServerAgentRuntime owned;
+    std::vector<server::ServerDiagnostic> diagnostics;
+    if (!owned.Start(config, engine, &diagnostics)) return false;
+    const auto active = owned.Snapshot();
+    if (!CheckConcurrentStop(owned, active.worker_thread_count, true)) return false;
+    retained = owned.Snapshot();
+    retained_result = owned.Stop();
+    if (retained_result.diagnostics.size() != 1) return false;
+    // Mutate only caller-owned copies, not runtime state or persisted evidence.
+    auto edited_snapshot = owned.Snapshot();
+    auto edited_result = owned.Stop();
+    edited_snapshot.database_uuid.clear();
+    edited_snapshot.workers.clear();
+    edited_snapshot.stop_result.diagnostics.clear();
+    edited_result.diagnostics.front().code = "caller-local-edit";
+    edited_result.diagnostics.front().occurrence_uuid.fill(0);
+    edited_result.diagnostics.front().fields.clear();
+    const auto unchanged = owned.Snapshot();
+    isolated = HasBinarySnapshotIdentities(unchanged, engine) &&
+        unchanged.stop_result.diagnostics.size() == 1 &&
+        unchanged.stop_result.diagnostics.front().code == retained_result.diagnostics.front().code &&
+        unchanged.stop_result.diagnostics.front().occurrence_uuid ==
+            retained_result.diagnostics.front().occurrence_uuid &&
+        unchanged.stop_result.diagnostics.front().fields.size() ==
+            retained_result.diagnostics.front().fields.size();
+  }  // The source runtime and all its internal records are now destroyed.
+  std::vector<std::string> identities;
+  const bool retained_status = ReadStatusIdentities(retained, &identities);
+  bool retained_failure = !retained.started && !retained.stopping &&
+      retained_result.attempted && !retained_result.ok() &&
+      !retained_result.durable_cleanup_complete &&
+      retained.stop_result.diagnostics.size() == 1;
+  if (retained_failure) {
+    const auto& diagnostic = retained.stop_result.diagnostics.front();
+    platform::Uuid occurrence;
+    occurrence.bytes = diagnostic.occurrence_uuid;
+    retained_failure = diagnostic.code == "SB-STORAGE-DISK-OPEN-MISSING" &&
+        diagnostic.occurrence_uuid == retained_result.diagnostics.front().occurrence_uuid &&
+        uuid::IsEngineIdentityUuid(occurrence) && !diagnostic.fields.empty();
+  }
+  std::cout << "failed_snapshot_after_destruction=" << retained_failure
+            << " value_copies_isolated=" << isolated
+            << " retained_status_matches=" << retained_status << '\n';
+  return isolated && retained_failure && retained_status &&
+      HasBinarySnapshotIdentities(retained, engine);
 }
 
 // SEARCH_KEY: SERVER_AGENT_SPURIOUS_WAKE_RECHECK
@@ -563,7 +729,8 @@ bool CheckSchedulerTimeout(server::ServerAgentRuntime& runtime) {
 bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
-                            std::vector<server::ServerDiagnostic>& diagnostics);
+                            std::vector<server::ServerDiagnostic>& diagnostics,
+                            bool repeat_active_start = false);
 
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
 bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
@@ -643,7 +810,8 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
 bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
-                            std::vector<server::ServerDiagnostic>& diagnostics) {
+                            std::vector<server::ServerDiagnostic>& diagnostics,
+                            bool repeat_active_start) {
   startup_runtime = &runtime;
   capture_state_unlock = true;
   (void)runtime.Snapshot();
@@ -669,6 +837,32 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     const auto active = runtime.Snapshot();
     std::vector<std::string> active_identities;
     const bool active_status_valid = ReadStatusIdentities(active, &active_identities);
+    // SEARCH_KEY: SERVER_AGENT_ACTIVE_START_RETAINS_COHORT
+    // Sequential same-input calls only: Start/destruction still require external
+    // lifecycle ownership. Native observation remains armed to catch new threads.
+    bool active_start_preserved = true;
+    if (repeat_active_start && started) {
+      track_native_creates = true;
+      for (unsigned repeat = 0; repeat < 3; ++repeat) {
+        std::vector<server::ServerDiagnostic> repeat_diagnostics;
+        bool repeated_start = false;
+        try {
+          repeated_start = runtime.Start(config, engine, &repeat_diagnostics);
+        } catch (const std::exception& error) {
+          std::cerr << "active Start exception: " << error.what() << '\n';
+        }
+        const auto same_cohort = runtime.Snapshot();
+        std::vector<std::string> same_identities;
+        active_start_preserved = active_start_preserved && repeated_start &&
+            repeat_diagnostics.empty() && same_cohort.started && !same_cohort.stopping &&
+            same_cohort.worker_thread_count == active.worker_thread_count &&
+            same_cohort.durable_lease_count == active.durable_lease_count &&
+            HasBinarySnapshotIdentities(same_cohort, engine) &&
+            ReadStatusIdentities(same_cohort, &same_identities) &&
+            same_identities == active_identities && launch_attempts == 3;
+      }
+      track_native_creates = false;
+    }
     runtime.Stop();
     startup_probe = false;
     bool joined = launched_threads == startup_threads.size();
@@ -683,6 +877,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     std::cout << "restart_cycle=" << cycle << " started=" << started
               << " native_creates=" << launched_threads << " all_joined=" << joined
               << " binary_status_preserved=" << status_preserved
+              << " active_start_repeats=" << (repeat_active_start ? 3 : 0)
+              << " active_start_preserved=" << active_start_preserved
               << " stopped=" << (!stopped.started && !stopped.stopping) << '\n';
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -690,7 +886,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     if (!started || !active.started || !HasBinarySnapshotIdentities(active, engine) ||
         active.worker_thread_count != 2 ||
         active.durable_lease_count < 2 || active.durable_catalog_root_digest.empty() ||
-        launch_attempts != 3 || !joined || !status_preserved || stopped.started || stopped.stopping) {
+        launch_attempts != 3 || !joined || !status_preserved || !active_start_preserved ||
+        stopped.started || stopped.stopping) {
       return false;
     }
   }
@@ -845,6 +1042,8 @@ bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
 }
 
 int main(int argc, char** argv) {
+  completion_wait_mode = argc == 2 &&
+      std::string_view(argv[1]) == "--scheduler-completion-wake";
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop_failure = argc == 2 &&
@@ -866,26 +1065,31 @@ int main(int argc, char** argv) {
     Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
             "unknown missing identity target");
   }
-  const bool sequential_restart = binary_boundary ||
+  const bool active_start_repeat = argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-repeat";
+  const bool sequential_restart = binary_boundary || active_start_repeat ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
+  const bool failed_snapshot_lifetime = argc == 2 &&
+      std::string_view(argv[1]) == "--failed-snapshot-lifetime";
   const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
   const bool setup_path_failure = setup_database_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
-  const bool lifecycle_case = active_destruction || startup_failure ||
+  const bool lifecycle_case = active_destruction || failed_snapshot_lifetime || startup_failure ||
       sequential_restart || setup_path_failure || missing_identity;
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode,
+  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode || completion_wait_mode,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
                        &second_stop_finished, &scheduler_at_entry, &allow_scheduler,
                        &worker_repark, &scheduler_after_tick, &scheduler_timeout,
-                       &scheduler_next_wait};
+                       &scheduler_next_wait, &completion_park, &release_completion,
+                       &worker_entry, &release_worker_entry, &completion_stop_published};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
@@ -954,9 +1158,12 @@ int main(int argc, char** argv) {
   bool restarted = false;
   bool destruction_joined = false;
   bool setup_recovered = false;
-  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
+  bool snapshot_retained = false;
+  armed.store(!completion_wait_mode && !failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
-  if (missing_identity) {
+  if (failed_snapshot_lifetime) {
+    snapshot_retained = CheckFailedSnapshotLifetime(config, engine);
+  } else if (missing_identity) {
     setup_recovered = CheckIdentityAdmission(runtime, config, engine, diagnostics, argv[2],
                                           malformed_identity ? argv[3] : "");
   } else if (setup_path_failure) {
@@ -965,7 +1172,7 @@ int main(int argc, char** argv) {
   } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
-    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
+    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics, active_start_repeat);
   } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
   } else if (!runtime.Start(config, engine, &diagnostics)) {
@@ -982,7 +1189,10 @@ int main(int argc, char** argv) {
   bool completion_serialized = false;
   bool spurious_rechecked = false;
   bool scheduler_timeout_checked = false;
-  if (scheduler_timeout_mode) {
+  bool completion_wait_checked = false;
+  if (completion_wait_mode) {
+    completion_wait_checked = CheckSchedulerCompletionWait(runtime);
+  } else if (scheduler_timeout_mode) {
     scheduler_timeout_checked = CheckSchedulerTimeout(runtime);
   } else if (spurious_wake) {
     spurious_rechecked = CheckSpuriousWake(runtime);
@@ -1020,7 +1230,13 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (missing_identity) {
+  if (completion_wait_mode) {
+    Require(completion_wait_checked, "scheduler completion predicate or shutdown failed");
+    std::cout << "server_agent_scheduler_completion_wake_gate=passed\n";
+  } else if (failed_snapshot_lifetime) {
+    Require(snapshot_retained, "failed snapshot/result did not retain independent owned values");
+    std::cout << "server_agent_failed_snapshot_lifetime_gate=passed\n";
+  } else if (missing_identity) {
     Require(setup_recovered, "missing identity was not refused before effects or repair failed");
     std::cout << "server_agent_missing_identity_gate=passed\n";
   } else if (setup_path_failure) {
