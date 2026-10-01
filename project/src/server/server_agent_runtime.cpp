@@ -678,6 +678,23 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     }
     return false;
   }
+  // Validate native root identities before path creation, MGA work or publication.
+  // Invalid non-nil input must not be reduced to absence by BinaryIdentity later.
+  const auto database_identity = core::uuid::MakeDurableEngineIdentityUuid(
+      platform::UuidKind::database, database->database_uuid);
+  const auto filespace_identity = core::uuid::MakeDurableEngineIdentityUuid(
+      platform::UuidKind::filespace, database->filespace_uuid);
+  if (!database_identity.ok() || !filespace_identity.ok()) {
+    const auto& invalid = !database_identity.ok() ? database_identity : filespace_identity;
+    if (diagnostics != nullptr) {
+      diagnostics->push_back(RuntimeDiagnostic(
+          invalid.diagnostic.diagnostic_code,
+          "The server agent runtime requires valid UUIDv7 database and filespace identities.",
+          {{"identity_field", !database_identity.ok() ? "database_uuid" : "filespace_uuid"},
+           {"uuid_message_key", invalid.diagnostic.message_key}}));
+    }
+    return false;
+  }
   if (auto blocked = ServerAgentRuntimeBlocker(*database)) {
     if (diagnostics != nullptr) {
       diagnostics->push_back(std::move(*blocked));

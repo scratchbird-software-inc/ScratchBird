@@ -702,15 +702,25 @@ bool CheckSetupPathFailure(server::ServerAgentRuntime& runtime,
 }
 
 // SEARCH_KEY: SERVER_AGENT_MISSING_IDENTITY_BEFORE_EFFECTS
-bool CheckMissingIdentity(server::ServerAgentRuntime& runtime,
+bool CheckIdentityAdmission(server::ServerAgentRuntime& runtime,
                           const server::ServerBootstrapConfig& config,
                           const server::HostedEngineState& engine,
                           std::vector<server::ServerDiagnostic>& diagnostics,
-                          std::string_view target) {
+                          std::string_view target,
+                          std::string_view malformed = {}) {
   auto invalid_engine = engine;
   auto& database = invalid_engine.databases.front();
-  if (target == "database") database.database_uuid = {};
-  else database.filespace_uuid = {};
+  auto& identity = target == "database" ? database.database_uuid : database.filespace_uuid;
+  std::string expected_code = "SERVER.AGENT_RUNTIME.IDENTITY_MISSING";
+  if (malformed == "variant") {
+    identity.bytes[8] &= 0x3fu;
+    expected_code = "SB-UUID-TYPED-VARIANT";
+  } else if (malformed == "version") {
+    identity.bytes[6] = (identity.bytes[6] & 0x0fu) | 0x40u;
+    expected_code = "SB-UUID-TYPED-ENGINE-IDENTITY-NOT-V7";
+  } else {
+    identity = {};
+  }
   const auto read_fixture = [&] {
     std::ifstream input(database.database_path, std::ios::binary | std::ios::ate);
     Require(input.good(), "could not open identity fixture for byte comparison");
@@ -725,17 +735,18 @@ bool CheckMissingIdentity(server::ServerAgentRuntime& runtime,
   const bool started = runtime.Start(config, invalid_engine, &diagnostics);
   const auto refused = runtime.Snapshot();
   const auto stopped = runtime.Stop();
+  const bool silent_refusal = malformed.empty() || !runtime.Start(config, invalid_engine, nullptr);
   const bool unchanged = before == read_fixture() && !std::filesystem::exists(config.control_dir);
   const bool correct_refusal = !started && !refused.started && !refused.stopping &&
       refused.worker_thread_count == 0 && refused.durable_lease_count == 0 &&
       refused.scheduler_ticks == 0 && diagnostics.size() == 1 &&
-      diagnostics.front().code == "SERVER.AGENT_RUNTIME.IDENTITY_MISSING" &&
+      diagnostics.front().code == expected_code &&
       stopped.ok() && !stopped.attempted && !stopped.durable_cleanup_complete;
-  std::cout << "missing_identity=" << target << " refused=" << correct_refusal
-            << " fixture_bytes_unchanged=" << unchanged << '\n';
+  std::cout << "identity_target=" << target << " refused=" << correct_refusal
+            << " malformed=" << malformed << " fixture_bytes_unchanged=" << unchanged << '\n';
   // Repair only the hosted descriptor by reusing the original valid engine
   // state. The actual database never had its on-disk identity changed.
-  return correct_refusal && unchanged &&
+  return correct_refusal && silent_refusal && unchanged &&
       CheckSequentialRestart(runtime, config, engine, diagnostics);
 }
 
@@ -787,7 +798,13 @@ int main(int argc, char** argv) {
   const bool startup_failure = cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool binary_boundary = argc == 3 && std::string_view(argv[1]) == "--binary-status-boundary";
-  const bool missing_identity = argc == 3 && std::string_view(argv[1]) == "--missing-identity";
+  const bool malformed_identity = argc == 4 && std::string_view(argv[1]) == "--malformed-identity";
+  const bool missing_identity = malformed_identity ||
+      (argc == 3 && std::string_view(argv[1]) == "--missing-identity");
+  if (malformed_identity) {
+    Require(std::string_view(argv[3]) == "variant" || std::string_view(argv[3]) == "version",
+            "unknown malformed identity profile");
+  }
   if (missing_identity) {
     Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
             "unknown missing identity target");
@@ -883,7 +900,8 @@ int main(int argc, char** argv) {
   armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
   if (missing_identity) {
-    setup_recovered = CheckMissingIdentity(runtime, config, engine, diagnostics, argv[2]);
+    setup_recovered = CheckIdentityAdmission(runtime, config, engine, diagnostics, argv[2],
+                                          malformed_identity ? argv[3] : "");
   } else if (setup_path_failure) {
     setup_recovered = CheckSetupPathFailure(runtime, config, engine, diagnostics,
                                            setup_database_failure);
