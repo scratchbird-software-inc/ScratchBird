@@ -701,6 +701,44 @@ bool CheckSetupPathFailure(server::ServerAgentRuntime& runtime,
       CheckSequentialRestart(runtime, config, engine, diagnostics);
 }
 
+// SEARCH_KEY: SERVER_AGENT_MISSING_IDENTITY_BEFORE_EFFECTS
+bool CheckMissingIdentity(server::ServerAgentRuntime& runtime,
+                          const server::ServerBootstrapConfig& config,
+                          const server::HostedEngineState& engine,
+                          std::vector<server::ServerDiagnostic>& diagnostics,
+                          std::string_view target) {
+  auto invalid_engine = engine;
+  auto& database = invalid_engine.databases.front();
+  if (target == "database") database.database_uuid = {};
+  else database.filespace_uuid = {};
+  const auto read_fixture = [&] {
+    std::ifstream input(database.database_path, std::ios::binary | std::ios::ate);
+    Require(input.good(), "could not open identity fixture for byte comparison");
+    const auto size = input.tellg();
+    Require(size > 0 && size <= 64 * 1024 * 1024, "unexpected identity fixture size");
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    input.seekg(0);
+    Require(static_cast<bool>(input.read(bytes.data(), bytes.size())), "identity fixture read failed");
+    return bytes;
+  };
+  const auto before = read_fixture();
+  const bool started = runtime.Start(config, invalid_engine, &diagnostics);
+  const auto refused = runtime.Snapshot();
+  const auto stopped = runtime.Stop();
+  const bool unchanged = before == read_fixture() && !std::filesystem::exists(config.control_dir);
+  const bool correct_refusal = !started && !refused.started && !refused.stopping &&
+      refused.worker_thread_count == 0 && refused.durable_lease_count == 0 &&
+      refused.scheduler_ticks == 0 && diagnostics.size() == 1 &&
+      diagnostics.front().code == "SERVER.AGENT_RUNTIME.IDENTITY_MISSING" &&
+      stopped.ok() && !stopped.attempted && !stopped.durable_cleanup_complete;
+  std::cout << "missing_identity=" << target << " refused=" << correct_refusal
+            << " fixture_bytes_unchanged=" << unchanged << '\n';
+  // Repair only the hosted descriptor by reusing the original valid engine
+  // state. The actual database never had its on-disk identity changed.
+  return correct_refusal && unchanged &&
+      CheckSequentialRestart(runtime, config, engine, diagnostics);
+}
+
 // SEARCH_KEY: SERVER_AGENT_ACTIVE_DESTRUCTOR_JOINS
 bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
@@ -749,6 +787,11 @@ int main(int argc, char** argv) {
   const bool startup_failure = cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool binary_boundary = argc == 3 && std::string_view(argv[1]) == "--binary-status-boundary";
+  const bool missing_identity = argc == 3 && std::string_view(argv[1]) == "--missing-identity";
+  if (missing_identity) {
+    Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
+            "unknown missing identity target");
+  }
   const bool sequential_restart = binary_boundary ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
@@ -756,7 +799,7 @@ int main(int argc, char** argv) {
   const bool setup_path_failure = setup_database_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
   const bool lifecycle_case = active_destruction || startup_failure ||
-      sequential_restart || setup_path_failure;
+      sequential_restart || setup_path_failure || missing_identity;
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
@@ -837,9 +880,11 @@ int main(int argc, char** argv) {
   bool restarted = false;
   bool destruction_joined = false;
   bool setup_recovered = false;
-  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure,
+  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
-  if (setup_path_failure) {
+  if (missing_identity) {
+    setup_recovered = CheckMissingIdentity(runtime, config, engine, diagnostics, argv[2]);
+  } else if (setup_path_failure) {
     setup_recovered = CheckSetupPathFailure(runtime, config, engine, diagnostics,
                                            setup_database_failure);
   } else if (active_destruction) {
@@ -899,7 +944,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (setup_path_failure) {
+  if (missing_identity) {
+    Require(setup_recovered, "missing identity was not refused before effects or repair failed");
+    std::cout << "server_agent_missing_identity_gate=passed\n";
+  } else if (setup_path_failure) {
     Require(setup_recovered, "early setup failure did not permit clean recovery");
     std::cout << (setup_database_failure ? "server_agent_setup_database_failure_gate=passed\n"
                                        : "server_agent_setup_path_failure_gate=passed\n");
