@@ -175,8 +175,9 @@ struct NativePreallocationPublicationResult {
     return publication.ok()&&physical&&physical->ok()&&physical_sync_completed;
   }
 };
-// Owned profile3 primary preallocation: retain exact intent/control graph,
+// Owned profile3 primary or secondary preallocation: retain exact intent/control graph,
 // perform actual contained physical reserve, sync, then publish native states.
+// Checkpoint/plan ownership remains primary; target addressing uses its own profile.
 // The owning kernel supplies security/policy/MGA/resource authority separately.
 // A pending exact anchored attempt can be resumed; a failed physical/sync phase
 // poisons its lease until explicit release/reinspection/resume. This is not a
@@ -202,6 +203,7 @@ struct NativePreallocationReconciliation {
 // Read-only exact original-request lookup in verified selected history and
 // pending intent, including after later publications. No repaired state, new
 // request/operation identity, physical reservation result or execution grant.
+// `primary` is the checkpoint owner, not necessarily the request's target member.
 NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
   const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
   const Uuid& primary,const NativeManagementOperation& original_request,
