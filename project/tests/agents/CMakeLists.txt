@@ -49,6 +49,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     -Wl,--wrap=pthread_setname_np)
   add_test(NAME server_agent_spurious_wake_gate
     COMMAND server_agent_shutdown_wakeup_gate --spurious-wake)
+  foreach(launch_index RANGE 1 3)
+    add_test(NAME server_agent_start_stop_${launch_index}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --start-stop ${launch_index})
+    set_tests_properties(server_agent_start_stop_${launch_index}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;shutdown;linux_proof")
+    add_test(NAME server_agent_start_start_${launch_index}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --start-start ${launch_index})
+    set_tests_properties(server_agent_start_start_${launch_index}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;linux_proof")
+  endforeach()
   set_tests_properties(server_agent_spurious_wake_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;spurious_wake;linux_proof")
   add_test(NAME server_agent_scheduler_timeout_gate

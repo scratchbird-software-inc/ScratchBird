@@ -662,6 +662,10 @@ ServerAgentRuntime::~ServerAgentRuntime() {
 bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
                                const HostedEngineState& engine_state,
                                std::vector<ServerDiagnostic>* diagnostics) {
+  // SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
+  // Retain ownership through durable setup, publication and native launch.
+  // started_ alone is not proof that the thread handles are fully installed.
+  std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
   const auto database = FirstOpenDatabase(engine_state);
   if (!database.has_value()) {
     return true;
@@ -1090,7 +1094,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   } catch (...) {
     // Retain the native exception contract, but never leave a partially launched
     // scheduler/worker set running when thread construction fails.
-    Stop();
+    StopWithLifecycleLock();
     throw;
   }
   WriteStatusSnapshot();
@@ -1100,7 +1104,11 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
   // Serialize the complete operation, not just the stop request. A contending
   // caller must not return while another caller is still joining or cleaning up.
-  std::lock_guard<std::mutex> stop_guard(stop_mutex_);
+  std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+  return StopWithLifecycleLock();
+}
+
+ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (!started_ || stopping_.load()) {
