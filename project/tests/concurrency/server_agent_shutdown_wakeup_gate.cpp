@@ -52,6 +52,13 @@ sem_t scheduler_after_tick;
 sem_t worker_repark;
 sem_t scheduler_timeout;
 sem_t scheduler_next_wait;
+sem_t completion_park;
+sem_t release_completion;
+sem_t worker_entry;
+sem_t release_worker_entry;
+sem_t completion_stop_published;
+bool completion_wait_mode = false;
+thread_local bool completion_scheduler = false;
 bool spurious_wake = false;
 bool scheduler_timeout_mode = false;
 thread_local bool observed_waiter = false;
@@ -284,6 +291,13 @@ extern "C" int __wrap_pthread_cond_clockwait(pthread_cond_t* condition,
 
 extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
   const int result = __real_pthread_setname_np(thread, name);
+  if (completion_wait_mode) {
+    if (std::string_view(name) == "sb-agent-sch") completion_scheduler = true;
+    if (std::string_view(name).starts_with("sb-agent-w")) {
+      Signal(worker_entry);
+      Wait(release_worker_entry, "controller did not release worker entry");
+    }
+  }
   if (scheduler_timeout_mode && std::string_view(name) == "sb-agent-sch") {
     timed_scheduler = true;
   }
@@ -335,6 +349,22 @@ extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
 
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition,
                                          pthread_mutex_t* mutex) {
+  if (completion_scheduler) {
+    const bool first_wait = schedule_mutex == nullptr;
+    if (schedule_mutex == nullptr) {
+      schedule_mutex = mutex;
+      schedule_condition = condition;
+    }
+    Require(mutex == schedule_mutex && condition == schedule_condition,
+            "scheduler completion wait changed binding");
+    // Unsolicited native spurious wakes must not park the probe while the
+    // controller is trying to acquire the mutex for its next notification.
+    if (first_wait || notifications_sent.load() > observed_notifications) {
+      observed_notifications = notifications_sent.load();
+      Signal(completion_park);
+      Wait(release_completion, "controller did not release completion park");
+    }
+  }
   if (spurious_wake && observed_waiter &&
       notifications_sent.load() > observed_notifications) {
     // Reaching this call again means the production predicate rejected the
@@ -419,6 +449,9 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
 
 extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
   const int result = __real_pthread_cond_broadcast(condition);
+  if (completion_wait_mode && stop_thread && condition == schedule_condition) {
+    Signal(completion_stop_published);
+  }
   if (stop_thread && condition == schedule_condition &&
       !observed_boundary.exchange(true)) {
     // Old implementation: Stop has already published and notified, although
@@ -426,6 +459,51 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
     Signal(stop_boundary);
   }
   return result;
+}
+
+// SEARCH_KEY: SERVER_AGENT_SCHEDULER_COMPLETION_PREDICATE
+bool CheckSchedulerCompletionWait(server::ServerAgentRuntime& runtime) {
+  Wait(worker_entry, "first worker did not reach real native entry");
+  Wait(worker_entry, "second worker did not reach real native entry");
+  Wait(completion_park, "scheduler did not wait for worker completion");
+  bool no_advance = true;
+  constexpr unsigned notifications = 8;
+  for (unsigned wake = 0; wake < notifications; ++wake) {
+    Signal(release_completion);
+    // Acquisition proves the real cond_wait released the bound predicate mutex.
+    Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "completion probe lock failed");
+    notifications_sent.fetch_add(1);
+    Require(__real_pthread_cond_broadcast(schedule_condition) == 0,
+            "completion probe broadcast failed");
+    Require(pthread_mutex_unlock(schedule_mutex) == 0, "completion probe unlock failed");
+    Wait(completion_park, "false completion predicate did not repark scheduler");
+    const auto snapshot = runtime.Snapshot();
+    no_advance = no_advance && snapshot.started && !snapshot.stopping &&
+        snapshot.scheduler_ticks == 1 && snapshot.total_worker_ticks == 0 &&
+        snapshot.total_actions_accepted == 0 && snapshot.total_actions_refused == 0 &&
+        snapshot.total_actions_failed == 0;
+  }
+  std::thread stopper([&] {
+    stop_thread = true;
+    runtime.Stop();
+    stop_thread = false;
+    Signal(stop_finished);
+  });
+  Wait(stop_boundary, "Stop did not reach scheduler completion predicate mutex");
+  Signal(release_completion);
+  // Release workers only after real stop publication/notification, not merely
+  // after the stopper has attempted to acquire the predicate mutex.
+  Wait(completion_stop_published, "Stop did not publish completion-wait cancellation");
+  Signal(release_worker_entry);
+  Signal(release_worker_entry);
+  Wait(stop_finished, "Stop did not join completion waiter and held workers");
+  stopper.join();
+  const auto stopped = runtime.Snapshot();
+  std::cout << "completion_notifications=" << notifications
+            << " false_completion_rejected=" << no_advance << '\n';
+  return no_advance && publication_serialized.load() && !stopped.started &&
+      !stopped.stopping && stopped.scheduler_ticks == 1 && stopped.total_worker_ticks == 0 &&
+      stopped.stop_result.attempted && stopped.stop_result.ok();
 }
 
 // SEARCH_KEY: SERVER_AGENT_CONCURRENT_STOP_COMPLETION
@@ -964,6 +1042,8 @@ bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
 }
 
 int main(int argc, char** argv) {
+  completion_wait_mode = argc == 2 &&
+      std::string_view(argv[1]) == "--scheduler-completion-wake";
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop_failure = argc == 2 &&
@@ -1002,13 +1082,14 @@ int main(int argc, char** argv) {
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode,
+  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode || completion_wait_mode,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
                        &second_stop_finished, &scheduler_at_entry, &allow_scheduler,
                        &worker_repark, &scheduler_after_tick, &scheduler_timeout,
-                       &scheduler_next_wait};
+                       &scheduler_next_wait, &completion_park, &release_completion,
+                       &worker_entry, &release_worker_entry, &completion_stop_published};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
@@ -1078,7 +1159,7 @@ int main(int argc, char** argv) {
   bool destruction_joined = false;
   bool setup_recovered = false;
   bool snapshot_retained = false;
-  armed.store(!failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
+  armed.store(!completion_wait_mode && !failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
   if (failed_snapshot_lifetime) {
     snapshot_retained = CheckFailedSnapshotLifetime(config, engine);
@@ -1108,7 +1189,10 @@ int main(int argc, char** argv) {
   bool completion_serialized = false;
   bool spurious_rechecked = false;
   bool scheduler_timeout_checked = false;
-  if (scheduler_timeout_mode) {
+  bool completion_wait_checked = false;
+  if (completion_wait_mode) {
+    completion_wait_checked = CheckSchedulerCompletionWait(runtime);
+  } else if (scheduler_timeout_mode) {
     scheduler_timeout_checked = CheckSchedulerTimeout(runtime);
   } else if (spurious_wake) {
     spurious_rechecked = CheckSpuriousWake(runtime);
@@ -1146,7 +1230,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (failed_snapshot_lifetime) {
+  if (completion_wait_mode) {
+    Require(completion_wait_checked, "scheduler completion predicate or shutdown failed");
+    std::cout << "server_agent_scheduler_completion_wake_gate=passed\n";
+  } else if (failed_snapshot_lifetime) {
     Require(snapshot_retained, "failed snapshot/result did not retain independent owned values");
     std::cout << "server_agent_failed_snapshot_lifetime_gate=passed\n";
   } else if (missing_identity) {

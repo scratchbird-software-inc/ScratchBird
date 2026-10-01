@@ -35,6 +35,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --scheduler-timeout)
   set_tests_properties(server_agent_scheduler_timeout_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;timeout;linux_proof")
+  add_test(NAME server_agent_scheduler_completion_wake_gate
+    COMMAND server_agent_shutdown_wakeup_gate --scheduler-completion-wake)
+  set_tests_properties(server_agent_scheduler_completion_wake_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;shutdown;spurious_wake;linux_proof")
   add_test(NAME server_agent_shutdown_wakeup_gate
     COMMAND server_agent_shutdown_wakeup_gate)
   set_tests_properties(server_agent_shutdown_wakeup_gate PROPERTIES
