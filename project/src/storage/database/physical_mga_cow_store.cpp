@@ -2134,13 +2134,14 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
     catch (...) { return fail(E::io_failure); }
 }
 
-NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
+namespace {
+NativePinnedCatalogReadResult ReadNativeCatalogVersionsAtCheckpoint(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding& binding,
-    const scratchbird::transaction::mga::TransactionIdentity& reader,
-    const scratchbird::transaction::mga::PublishedSnapshotPin& pin,
+    const scratchbird::transaction::mga::TransactionIdentity* reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin* pin,
     u64 maximum_retained_image_bytes) noexcept {
   namespace mga = scratchbird::transaction::mga;
   namespace catalog = scratchbird::core::catalog;
@@ -2149,13 +2150,15 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
   using E = NativePinnedCatalogReadError;
   const auto fail = [](E error) { NativePinnedCatalogReadResult r; r.error=error; return r; };
   try {
-    if (!reader.valid() || reader.scope!=mga::TransactionScope::local_node ||
-        !IsTypedEngineIdentity(reader.transaction_uuid, UuidKind::transaction)) return fail(E::invalid_reader);
-    const auto captured = pin.Resolve();
-    if (!captured.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=captured.diagnostic; return r; }
-    const auto& snapshot = captured.descriptor;
-    if (!SameUuid(snapshot.owning_transaction_uuid, reader.transaction_uuid) ||
-        snapshot.owning_transaction.value!=reader.local_id.value) return fail(E::reader_mismatch);
+    mga::SnapshotVectorResult captured;
+    if (pin) {
+      if (!reader || !reader->valid() || reader->scope!=mga::TransactionScope::local_node ||
+          !IsTypedEngineIdentity(reader->transaction_uuid, UuidKind::transaction)) return fail(E::invalid_reader);
+      captured=pin->Resolve();
+      if (!captured.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=captured.diagnostic; return r; }
+      if (!SameUuid(captured.descriptor.owning_transaction_uuid,reader->transaction_uuid) ||
+          captured.descriptor.owning_transaction.value!=reader->local_id.value) return fail(E::reader_mismatch);
+    }
 
     auto ordered=devices;
     std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
@@ -2174,18 +2177,34 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
         catalog_selector,relation_role,binding,maximum_retained_image_bytes);
     if (!result.source.ok()) { auto r=fail(E::source_failure); r.source=std::move(result.source); return r; }
     const auto& inventory=result.source.checkpoint.checkpoint_inventory.inventory;
-    const auto owner=LookupLocalTransaction(inventory,reader.local_id);
-    if (!owner.ok() || !SameUuid(owner.entry.identity.transaction_uuid,reader.transaction_uuid) ||
-        owner.entry.identity.scope!=reader.scope ||
-        (owner.entry.state!=TransactionState::active && owner.entry.state!=TransactionState::read_only_active) ||
-        inventory.next_local_transaction_id<snapshot.publication_inventory_next_local_transaction_id)
-      return fail(E::reader_mismatch);
     VisibilitySnapshot visibility;
-    visibility.reader_transaction=reader.local_id;
-    visibility.visible_through_local_transaction_id=snapshot.visible_committed_high_watermark;
-    visibility.visible_through_local_transaction_id_is_boundary=true;
-    visibility.active_excluded_local_transaction_ids=snapshot.active_excluded_local_transaction_ids;
-    visibility.in_doubt_excluded_local_transaction_ids=snapshot.in_doubt_excluded_local_transaction_ids;
+    if (pin) {
+      const auto& snapshot=captured.descriptor;
+      const auto owner=LookupLocalTransaction(inventory,reader->local_id);
+      if (!owner.ok() || !SameUuid(owner.entry.identity.transaction_uuid,reader->transaction_uuid) ||
+          owner.entry.identity.scope!=reader->scope ||
+          (owner.entry.state!=TransactionState::active && owner.entry.state!=TransactionState::read_only_active) ||
+          inventory.next_local_transaction_id<snapshot.publication_inventory_next_local_transaction_id)
+        return fail(E::reader_mismatch);
+      visibility.reader_transaction=reader->local_id;
+      visibility.visible_through_local_transaction_id=snapshot.visible_committed_high_watermark;
+      visibility.visible_through_local_transaction_id_is_boundary=true;
+      visibility.active_excluded_local_transaction_ids=snapshot.active_excluded_local_transaction_ids;
+      visibility.in_doubt_excluded_local_transaction_ids=snapshot.in_doubt_excluded_local_transaction_ids;
+    } else {
+      // The actual inventory, under the retained complete device guards, is
+      // the only visibility source. No fabricated transaction or snapshot pin.
+      if (result.source.checkpoint.checkpoint_inventory.checkpoint->flags&4) {
+        auto r=fail(E::source_failure);r.source.error=NativeCheckpointCatalogRelationError::cluster_requires_authority;return r;
+      }
+      for (const auto entry:result.source.navigation_creator_entries)
+        if (!mga::HasCommittedInventoryOutcome(inventory.entries[entry])) return fail(E::navigation_not_committed);
+      visibility.allow_reader_own_uncommitted=false;
+      visibility.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
+      visibility.visible_through_local_transaction_id_is_boundary=true;
+      visibility.visible_through_commit_sequence=inventory.next_commit_sequence-1;
+      visibility.visible_through_commit_sequence_is_boundary=true;
+    }
 
     const auto& sources=result.source.row_creators;
     const auto row_at=[&](std::size_t index)->const RowDataRecord& {
@@ -2286,14 +2305,35 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
         break;
       }
     }
-    const auto final_pin=pin.Resolve();
-    if (!final_pin.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=final_pin.diagnostic; return r; }
-    result.snapshot_uuid=snapshot.snapshot_uuid.value;
+    if (pin) {
+      const auto final_pin=pin->Resolve();
+      if (!final_pin.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=final_pin.diagnostic; return r; }
+      result.snapshot_uuid=captured.descriptor.snapshot_uuid.value;
+    }
     result.error=E::none;
     return result;
   } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
     catch (const std::length_error&) { return fail(E::resource_exhausted); }
     catch (...) { return fail(E::io_failure); }
+}
+
+} // namespace
+NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
+    const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
+    const NativeCatalogRelationBinding& binding,const transaction::mga::TransactionIdentity& reader,
+    const transaction::mga::PublishedSnapshotPin& pin,u64 budget) noexcept {
+  return ReadNativeCatalogVersionsAtCheckpoint(database,devices,checkpoint,selector,role,binding,&reader,&pin,budget);
+}
+NativeCommittedCatalogReadResult ReadNativeCommittedCatalogVersionsFromOpenDevices(
+    const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
+    const NativeCatalogRelationBinding& binding,u64 budget) noexcept {
+  auto selected=ReadNativeCatalogVersionsAtCheckpoint(database,devices,checkpoint,selector,role,binding,nullptr,nullptr,budget);
+  NativeCommittedCatalogReadResult result;result.error=selected.error;
+  result.source=std::move(selected.source);result.rows=std::move(selected.rows);
+  result.observations=std::move(selected.observations);result.diagnostic=std::move(selected.diagnostic);
+  return result;
 }
 
 NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
