@@ -63,9 +63,14 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
               ? "true"
               : "false";
     }
-  } else if (cast.type_id == core::datatypes::CanonicalTypeId::int8) {
-    core::datatypes::DecodeCanonicalInt8Value(
-        cast.encoded_value, &output->encoded_value);
+  } else if (cast.type_id == core::datatypes::CanonicalTypeId::int8 ||
+             cast.type_id == core::datatypes::CanonicalTypeId::uint8) {
+    const bool decoded = cast.type_id == core::datatypes::CanonicalTypeId::int8
+        ? core::datatypes::DecodeCanonicalInt8Value(
+              cast.encoded_value, &output->encoded_value)
+        : core::datatypes::DecodeCanonicalUint8Value(
+              cast.encoded_value, &output->encoded_value);
+    if (!decoded) output->encoded_value.clear();
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
     output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
@@ -100,7 +105,8 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
     }
     return false;
   }
-  if (type == core::datatypes::CanonicalTypeId::int8) {
+  if (type == core::datatypes::CanonicalTypeId::int8 ||
+      type == core::datatypes::CanonicalTypeId::uint8) {
     if (!input.binary_value.empty()) {
       if (!input.encoded_value.empty() || input.binary_value.size() != 1) {
         return false;
@@ -108,8 +114,9 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
       bytes->assign(1, static_cast<char>(input.binary_value[0]));
       return true;
     }
-    return core::datatypes::EncodeCanonicalInt8Value(input.encoded_value,
-                                                      bytes);
+    return type == core::datatypes::CanonicalTypeId::int8
+        ? core::datatypes::EncodeCanonicalInt8Value(input.encoded_value, bytes)
+        : core::datatypes::EncodeCanonicalUint8Value(input.encoded_value, bytes);
   }
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::binary;
@@ -272,7 +279,8 @@ bool QowCanonicalComparableEncodingV1(
   namespace dt = scratchbird::core::datatypes;
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
-  if (type_id == dt::CanonicalTypeId::int8) {
+  if (type_id == dt::CanonicalTypeId::int8 ||
+      type_id == dt::CanonicalTypeId::uint8) {
     return ScalarCastInputEncoding(value, type_id, encoded_value);
   }
   if (type_id == dt::CanonicalTypeId::boolean) {
@@ -1195,7 +1203,8 @@ bool QowApplyCanonicalNumericScalarV1(
       return false;
     }
     dt::DatatypeCastRequest result_request;
-    result_request.value.type_id = result_type == dt::CanonicalTypeId::int8
+    result_request.value.type_id =
+        result_type == dt::CanonicalTypeId::int8
         ? dt::CanonicalTypeId::character
         : result_type;
     result_request.value.encoded_value = std::to_string(computed);
@@ -2231,7 +2240,8 @@ bool QowEvaluateCanonicalTypedExpressionV1(
       }
       dt::DatatypeCastRequest cast_request;
       cast_request.value.type_id = source_type;
-      if (source_type == dt::CanonicalTypeId::int8) {
+      if (source_type == dt::CanonicalTypeId::int8 ||
+          source_type == dt::CanonicalTypeId::uint8) {
         if (!ScalarCastInputEncoding(function_value, source_type,
                                      &cast_request.value.encoded_value)) {
           *refusal_detail = "bound function result encoding is invalid";
@@ -2251,7 +2261,9 @@ bool QowEvaluateCanonicalTypedExpressionV1(
         return false;
       }
       if (source_type == dt::CanonicalTypeId::int8 ||
-          result_type == dt::CanonicalTypeId::int8) {
+          source_type == dt::CanonicalTypeId::uint8 ||
+          result_type == dt::CanonicalTypeId::int8 ||
+          result_type == dt::CanonicalTypeId::uint8) {
         PublishScalarCastValue(cast.value, request.result_descriptor,
                                &result->value);
       } else {

@@ -8,7 +8,6 @@
 
 // SBSQL source-layout fragment. Included only by sblr_special_forms.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
-    case datatypes::CanonicalTypeId::uint8:
     case datatypes::CanonicalTypeId::uint16:
     case datatypes::CanonicalTypeId::uint32:
     case datatypes::CanonicalTypeId::uint64: {

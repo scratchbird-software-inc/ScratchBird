@@ -741,7 +741,10 @@ void TestBinaryUuidOperations() {
   extract.value = cast.value;
   extract.field = "version";
   auto result = dt::ExtractDatatypeField(extract);
-  Require(result.ok() && result.value.encoded_value == "7", "binary UUID version extraction failed");
+  Require(result.ok() && result.value.type_id == dt::CanonicalTypeId::uint8 &&
+              result.value.encoded_value.size() == 1 &&
+              static_cast<unsigned char>(result.value.encoded_value[0]) == 7,
+          "binary UUID version extraction failed");
   extract.field = "uuidv7_unix_millis";
   result = dt::ExtractDatatypeField(extract);
   Require(result.ok() && result.value.encoded_value == "1108152157446",
@@ -770,6 +773,26 @@ void TestIntegerPhysicalSortKeyBytes() {
                {Value(dt::CanonicalTypeId::int8, std::string(2, '\0'))}).ok(),
           "int8 admitted a non-one-byte operation value");
 
+  const auto uint8_value = [](unsigned raw) {
+    return Value(dt::CanonicalTypeId::uint8,
+                 std::string(1, static_cast<char>(raw)));
+  };
+  const auto uint8_minimum = dt::MakeDatatypeSortKey({uint8_value(0x00)});
+  const auto uint8_maximum = dt::MakeDatatypeSortKey({uint8_value(0xff)});
+  Require(uint8_minimum.ok() && uint8_maximum.ok() &&
+              uint8_minimum.sort_key == std::string({char(1), char(0x00)}) &&
+              uint8_maximum.sort_key == std::string({char(1), char(0xff)}) &&
+              uint8_minimum.sort_key < uint8_maximum.sort_key,
+          "uint8 canonical-byte sort keys drifted");
+  Require(dt::CompareDatatypeValues(
+              {uint8_value(0x00), uint8_value(0xff)}).comparison < 0,
+          "uint8 canonical-byte unsigned comparison drifted");
+  Require(!dt::MakeDatatypeSortKey(
+               {Value(dt::CanonicalTypeId::uint8, {})}).ok() &&
+              !dt::MakeDatatypeSortKey(
+               {Value(dt::CanonicalTypeId::uint8, std::string(2, '\0'))}).ok(),
+          "uint8 admitted a non-one-byte operation value");
+
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
@@ -778,7 +801,6 @@ void TestIntegerPhysicalSortKeyBytes() {
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
        "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
-      {dt::CanonicalTypeId::uint8, 1, false, "0", "255", "256"},
       {dt::CanonicalTypeId::uint16, 2, false, "0", "65535", "65536"},
       {dt::CanonicalTypeId::uint32, 4, false, "0", "4294967295", "4294967296"},
       {dt::CanonicalTypeId::uint64, 8, false, "0", "18446744073709551615", "18446744073709551616"},
