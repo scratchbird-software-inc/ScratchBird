@@ -3634,6 +3634,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         intent.policy_uuid=original.record->policy_uuid;intent.policy_generation=original.record->generation;intent.policy_version_uuid=Id(170);
         intent.attachment_uuid=attachment.attachment_uuid;intent.attachment_generation=1;intent.attachment_version_uuid=Id(243);
         intent.storage_profile_generation=1;intent.storage_profile_version_uuid=Id(245);
+        intent.catalog_generation=catalog_root.catalog_generation;
         intent.current_total_pages=intent.first_page=c.total_pages;intent.page_count=8;intent.page_size_bytes=c.page_size_bytes;
         intent.maximum_total_pages=128;intent.maximum_work_bytes=8*c.page_size_bytes;intent.maximum_retained_image_bytes=ceiling;
         const auto match=[&](const auto& i){return db::CheckNativeStorageIntentPolicyFromOpenDevices(i,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling);};
@@ -4056,6 +4057,22 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
           auto changed=intent;changed.*field=Id(230);refused(changed,IE::selection_mismatch);}
         for(const auto field:{&db::NativeStorageActionIntent::policy_generation,&db::NativeStorageActionIntent::attachment_generation,
             &db::NativeStorageActionIntent::storage_profile_generation}){auto changed=intent;++(changed.*field);refused(changed,IE::selection_mismatch);}
+        // A valid canonical request can still carry a false/stale catalog guard.
+        // Equal policy, attachment and profile versions do not make it current.
+        for(const auto generation:{u64{0},intent.catalog_generation+1,~u64{0}}){
+          auto changed=intent;changed.catalog_generation=generation;
+          const auto encoded=db::EncodeNativeStorageActionIntent(changed,db::kNativeStorageActionIntentBytes);
+          Check(encoded.ok(),"catalog guard mismatch is canonical not a malformed request");
+          const auto decoded_intent=db::DecodeNativeStorageActionIntent(encoded.bytes,db::kNativeStorageActionIntentBytes);
+          Check(decoded_intent.ok()&&decoded_intent.intent->catalog_generation==generation,
+              "canonical round trip preserves the exact unmatched catalog guard");
+          const auto before1=actual(first,0,64*sizes[p]),before2=actual(second,0,64*sizes[q]);
+          stage_writes=stage_syncs=0;
+          refused(*decoded_intent.intent,IE::selection_mismatch);
+          Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==before1&&
+              actual(second,0,64*sizes[q])==before2,"catalog guard refusal preserves both physical files");
+          Check(match(intent).ok(),"catalog guard refusal preserves valid original policy match");
+        }
         auto changed=intent;++changed.capacity_generation;refused(changed,IE::capacity_mismatch);
         changed=intent;changed.page_count=0;refused(changed,IE::invalid_intent);
         changed=intent;changed.maximum_retained_image_bytes=768;refused(changed,IE::resource_exhausted);

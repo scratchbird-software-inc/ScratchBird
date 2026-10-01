@@ -23,6 +23,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -1205,7 +1206,8 @@ filespace::PhysicalFilespaceWriteResult EnsureFilespaceGrowthPhysicalMember(
 
 EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
     const EngineRequestFilespaceGrowthRequest& request,
-    std::vector<std::pair<std::string, std::string>> runtime_rows) {
+    std::vector<std::pair<std::string, std::string>> runtime_rows,
+    const filespace::FilespacePhysicalGrowthAuthorizationContext& authorization) {
   constexpr const char* kOperation = "agents.request_filespace_growth";
   constexpr const char* kAction = "filespace_growth_request";
   if (request.dry_run) {
@@ -1306,9 +1308,7 @@ EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
   storage_request.catalog_generation = std::max<platform::u64>(1, request.context.catalog_generation_id);
   storage_request.observed_catalog_generation = storage_request.catalog_generation;
   storage_request.caller_mode = filespace::FilespacePhysicalGrowthCallerMode::filespace_capacity_manager;
-  storage_request.authorization.obs_agent_control_right = true;
-  storage_request.authorization.filespace_lifecycle_right = true;
-  storage_request.authorization.action_approval = true;
+  storage_request.authorization = authorization;
   storage_request.evidence_store_present = request.evidence_sink_available;
   storage_request.evidence_before_success = true;
   storage_request.policy_expand_allowed = request.policy_authorized;
@@ -1476,12 +1476,52 @@ EngineRequestPageRelocationResult EngineRequestPageRelocation(const EngineReques
 
 // SEARCH_KEY: SB_AGENT_ACTION_HOOK_FILESPACE_GROWTH_REQUEST
 EngineRequestFilespaceGrowthResult EngineRequestFilespaceGrowth(const EngineRequestFilespaceGrowthRequest& request) {
+  const auto target_error = RequireFilespaceTarget(request, true);
+  filespace::FilespacePhysicalGrowthAuthorizationContext authorization;
+  if (target_error.empty() && !request.dry_run) {
+    // FCMA apply requires all three rights. Request policy/evidence flags and
+    // trace strings cannot supply them. Do this before the resource-reservation
+    // wrapper: even a denied request must not create a physical member or a
+    // durable reservation. Authentication and fresh durable context issuance
+    // remain the owning engine's obligations; this is not native admission.
+    struct RequiredRight {
+      const char* right;
+      EngineUuid target;
+      bool filespace::FilespacePhysicalGrowthAuthorizationContext::* field;
+    };
+    const std::array required{
+        RequiredRight{"OBS_AGENT_CONTROL", request.context.database_uuid,
+            &filespace::FilespacePhysicalGrowthAuthorizationContext::obs_agent_control_right},
+        RequiredRight{"FILESPACE_LIFECYCLE_CONTROL", request.target_filespace.uuid,
+            &filespace::FilespacePhysicalGrowthAuthorizationContext::filespace_lifecycle_right},
+        RequiredRight{"OBS_AGENT_ACTION_APPROVE", request.target_filespace.uuid,
+            &filespace::FilespacePhysicalGrowthAuthorizationContext::action_approval}};
+    for (const auto& needed : required) {
+      auto decision = EvaluateMaterializedAuthorization(request.context,
+          request.context.authorization_context, needed.right, needed.target);
+      if (!decision.authorized || decision.denied || decision.policy_recheck_required) {
+        auto result = HookFailure<EngineRequestFilespaceGrowthResult>(request,
+            "agents.request_filespace_growth", "filespace_growth_request",
+            std::string("filespace_growth_authorization_required:") + needed.right);
+        if (decision.diagnostics.empty()) {
+          decision.diagnostics.push_back(MakeSecurityDiagnostic(
+              "SECURITY.AUTHORIZATION.DENIED",
+              std::string("unresolved_storage_authorization:") + needed.right));
+        }
+        result.diagnostics = std::move(decision.diagnostics);
+        return result;
+      }
+      authorization.*(needed.field) = decision.authorized;
+    }
+  }
   return ValidateAndRoute<EngineRequestFilespaceGrowthResult>(
       request,
       "agents.request_filespace_growth",
       "filespace_growth_request",
-      RequireFilespaceTarget(request, true),
-      RunFilespaceGrowthRoute);
+      target_error,
+      [authorization](const auto& admitted, auto rows) {
+        return RunFilespaceGrowthRoute(admitted, std::move(rows), authorization);
+      });
 }
 
 EngineNotifyFilespaceShrinkReadinessResult EngineNotifyFilespaceShrinkReadiness(

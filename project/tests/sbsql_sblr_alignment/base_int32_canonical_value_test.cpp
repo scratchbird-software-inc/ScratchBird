@@ -55,20 +55,35 @@ void CheckCastRefused(const dt::DatatypeCastResult& result,
         reason);
 }
 
-scratchbird::engine::ExecutionTypeDescriptor Int32Descriptor() {
+scratchbird::engine::Uuid FixtureV7Uuid(std::uint8_t seed) {
+  scratchbird::engine::Uuid uuid{};
+  for (std::size_t index = 0; index < 16; ++index) {
+    uuid.bytes[index] = static_cast<std::uint8_t>(seed + index);
+  }
+  uuid.bytes[6] = static_cast<std::uint8_t>((uuid.bytes[6] & 0x0fu) | 0x70u);
+  uuid.bytes[8] = static_cast<std::uint8_t>((uuid.bytes[8] & 0x3fu) | 0x80u);
+  return uuid;
+}
+
+scratchbird::engine::ExecutionTypeDescriptor DescriptorFor(
+    dt::CanonicalTypeId type_id) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   const auto row = dt::LookupDatatypeCatalogRow(
-      manifest.manifest, dt::CanonicalTypeId::int32);
+      manifest.manifest, type_id);
   if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
   dt::CatalogExecutionTypeMetadata metadata;
   metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
   metadata.descriptor_epoch = row.manifest.descriptor_rows.front().descriptor_epoch;
   const auto descriptor = dt::LookupExecutionTypeDescriptorFromCatalog(
-      dt::CanonicalTypeId::int32, metadata);
+      type_id, metadata);
   return descriptor.ok()
       ? descriptor.descriptor
       : scratchbird::engine::ExecutionTypeDescriptor{};
+}
+
+scratchbird::engine::ExecutionTypeDescriptor Int32Descriptor() {
+  return DescriptorFor(dt::CanonicalTypeId::int32);
 }
 
 dt::DatatypeOperationValue Int32(std::int64_t value) {
@@ -516,6 +531,88 @@ void NullAndAbsentPolicies() {
     Check(result.ok() && result.category == dt::DatatypeCastCategory::identity &&
               result.value.is_null && result.value.encoded_value.empty(),
           "typed int32 NULL identity validates exact descriptor/state");
+
+    identity.target_descriptor.security_policy_uuid = FixtureV7Uuid(0x90u);
+    identity.target_descriptor.modifier_flags |=
+        scratchbird::engine::ExecutionTypeModifierFlagBit(
+            scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid);
+    CheckCastRefused(
+        dt::CastDatatypeValue(identity), "DATATYPE.DESCRIPTOR.INVALID",
+        "typed int32 NULL identity rejects a mismatched descriptor before cast policy");
+
+    auto mismatched_and_malformed = identity;
+    mismatched_and_malformed.value.encoded_value = "payload";
+    CheckCastRefused(
+        dt::CastDatatypeValue(mismatched_and_malformed),
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "typed int32 NULL descriptor mismatch precedes malformed NULL state");
+
+    auto mismatched_and_nonnullable = identity;
+    mismatched_and_nonnullable.target_descriptor.nullable_allowed = false;
+    CheckCastRefused(
+        dt::CastDatatypeValue(mismatched_and_nonnullable),
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "typed int32 NULL descriptor mismatch precedes target nullability");
+
+    auto mismatched_and_bad_context = identity;
+    mismatched_and_bad_context.context =
+        static_cast<dt::DatatypeCastContext>(0xffu);
+    CheckCastRefused(
+        dt::CastDatatypeValue(mismatched_and_bad_context),
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "typed int32 NULL descriptor mismatch precedes cast context");
+
+    auto malformed_state = identity;
+    malformed_state.target_descriptor = descriptor;
+    malformed_state.value.encoded_value = "payload";
+    CheckCastRefused(
+        dt::CastDatatypeValue(malformed_state), "DATATYPE.NULL_STATE.INVALID",
+        "typed int32 NULL with equal descriptors reports malformed state");
+
+    auto nonnullable_target = identity;
+    nonnullable_target.target_descriptor = descriptor;
+    nonnullable_target.target_descriptor.nullable_allowed = false;
+    nonnullable_target.value.descriptor =
+        nonnullable_target.target_descriptor;
+    CheckCastRefused(
+        dt::CastDatatypeValue(nonnullable_target),
+        "DATATYPE.NULL_NOT_ADMITTED",
+        "typed int32 NULL with equal descriptors reports target nullability");
+
+    auto bad_context = identity;
+    bad_context.target_descriptor = descriptor;
+    bad_context.context = static_cast<dt::DatatypeCastContext>(0xffu);
+    CheckCastRefused(
+        dt::CastDatatypeValue(bad_context), "DATATYPE.CAST_FORBIDDEN",
+        "typed int32 NULL with equal descriptors reports invalid cast context");
+  }
+
+  for (const auto sibling_type : {dt::CanonicalTypeId::int16,
+                                  dt::CanonicalTypeId::uint16}) {
+    auto sibling_descriptor = DescriptorFor(sibling_type);
+    sibling_descriptor.nullable_allowed = true;
+    dt::DatatypeOperationValue sibling_null{sibling_type, {}, true};
+    sibling_null.descriptor = sibling_descriptor;
+    auto mismatched_descriptor = sibling_descriptor;
+    mismatched_descriptor.security_policy_uuid = FixtureV7Uuid(0xa0u);
+    mismatched_descriptor.modifier_flags |=
+        scratchbird::engine::ExecutionTypeModifierFlagBit(
+            scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid);
+    for (const auto context : {dt::DatatypeCastContext::implicit,
+                               dt::DatatypeCastContext::assignment,
+                               dt::DatatypeCastContext::explicit_cast}) {
+      dt::DatatypeCastRequest sibling_identity;
+      sibling_identity.value = sibling_null;
+      sibling_identity.target_type_id = sibling_type;
+      sibling_identity.target_descriptor = mismatched_descriptor;
+      sibling_identity.context = context;
+      sibling_identity.explicit_cast =
+          context == dt::DatatypeCastContext::explicit_cast;
+      CheckCastRefused(
+          dt::CastDatatypeValue(sibling_identity),
+          "DATATYPE.DESCRIPTOR.INVALID",
+          "bounded typed NULL identity descriptor mismatch keeps descriptor precedence");
+    }
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
