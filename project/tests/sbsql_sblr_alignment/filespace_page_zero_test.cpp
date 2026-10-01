@@ -49,6 +49,7 @@ unsigned allocation_failure_reads=0;
 unsigned full_digest_fault=0;
 unsigned stage_write_fault=0,stage_sync_fault=0,stage_writes=0,stage_syncs=0;
 unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
+bool allocation_fault_after_stage_write=false;
 unsigned stage_corrupt_read=0;
 unsigned initialization_entropy_fault=0,initialization_entropy_calls=0;
 bool initialization_repeat_entropy=false;
@@ -130,6 +131,8 @@ extern "C" ssize_t __wrap_pwrite(int fd,const void* b,size_t n,off_t offset) {
   if(stage_write_fault&&(!stage_write_fault_after||--stage_write_fault_after==0)){const auto mode=stage_write_fault;stage_write_fault=0;
     if(mode==2&&n>1){const auto part=__real_pwrite(fd,b,n/2,offset);if(part<0)return part;}
     if(mode==3&&n>64){const auto part=__real_pwrite(fd,b,64,offset);if(part<0)return part;}
+    if(mode==4&&n>64){const auto part=__real_pwrite(fd,b,64,offset);if(part<0)return part;stage_write_fault=1;return part;}
+    if(allocation_fault_after_stage_write){allocation_fault_after_stage_write=false;allocation_budget=0;}
     errno=EIO;return -1;}
   return __real_pwrite(fd,b,n,offset);
 }
@@ -2411,6 +2414,72 @@ void CanonicalDirectoryAllocationBindings(){using E=page::NativeDirectoryError;
   }
 }
 
+template<class Effects,class Receipt>
+void CheckCompletedStageEffects(const Effects& effects,const Receipt& receipt,u64 size,bool wrote){
+  Check(effects.intent&&effects.intent->database_uuid==receipt.database_uuid&&
+    effects.intent->allocation_uuid==receipt.allocation_uuid&&effects.intent->page_uuid==receipt.page_uuid&&
+    effects.intent->page==receipt.page&&effects.intent->sha256==receipt.sha256&&
+    effects.intent->transaction.transaction_uuid.value==receipt.transaction.transaction_uuid.value&&
+    effects.intent->transaction.local_id.value==receipt.transaction.local_id.value&&
+    effects.requested_bytes==size,"physical effect intent retains exact binary reservation/image binding");
+  if constexpr(requires{receipt.relation_uuid;})Check(effects.intent->relation_uuid==receipt.relation_uuid,"effect relation owner exact");
+  if constexpr(requires{receipt.root_uuid;})Check(effects.intent->root_uuid==receipt.root_uuid,"effect root owner exact");
+  if constexpr(requires{receipt.index_uuid;})Check(effects.intent->index_uuid==receipt.index_uuid,"effect index owner exact");
+  if constexpr(requires{receipt.inventory_uuid;})Check(effects.intent->inventory_uuid==receipt.inventory_uuid,"effect inventory owner exact");
+  Check(effects.destination==(wrote?db::NativeReservedPageDestination::zero:db::NativeReservedPageDestination::exact_image)&&
+    effects.write_attempted==wrote&&effects.write_completed==wrote&&effects.write_reported_bytes==(wrote?size:0)&&
+    effects.sync_attempted&&effects.sync_completed&&effects.readback_attempted&&effects.readback_completed&&effects.readback_matches,
+    "actual complete write versus exact-image retry has distinct physical observations");
+}
+// This matrix runs for each actual admitted family/profile/destination fixture.
+template<class Stage,class Reset,class Read>
+void CheckSinglePageEffects(Stage stage,Reset reset,Read bytes,const Bytes& expected,u64 budget,unsigned read_count){
+  const Bytes blank(expected.size(),0);
+  const auto refused=[](const auto& r){Check(!r.ok()&&!r.receipt,"physical failure never grants successful stage receipt");};
+  for(unsigned mode:{1u,3u,4u}){
+    reset();stage_write_fault=mode;auto r=stage(budget);refused(r);const auto& e=r.effects;
+    Check(!stage_write_fault&&e.intent&&e.requested_bytes==expected.size()&&e.intent->sha256==WholeRootHash(expected)&&
+      e.destination==db::NativeReservedPageDestination::zero&&e.write_attempted&&!e.write_completed&&
+      e.write_reported_bytes==(mode==4?64u:0u)&&!e.sync_attempted&&!e.readback_attempted&&
+      e.diagnostic.diagnostic_code=="SB-STORAGE-DISK-WRITE-FAILED"&&e.diagnostic.message_key=="storage.disk.write_failed",
+      "zero or partial reported progress preserves attempted native write and original diagnostic");
+    const auto actual=bytes();Check(mode==1?actual==blank:actual!=blank&&actual!=expected,"native error really produces expected empty or partial bytes");
+    if(mode!=1){stage_writes=stage_syncs=0;const auto retry=stage(budget);refused(retry);
+      Check(retry.effects.intent&&retry.effects.destination==db::NativeReservedPageDestination::conflicting&&
+        !retry.effects.write_attempted&&!retry.effects.sync_attempted&&!stage_writes&&!stage_syncs&&bytes()==actual,
+        "conflicting partial image is observed but never overwritten or synchronized");}
+  }
+  reset();stage_write_fault=3;allocation_fault_after_stage_write=true;
+  auto exhausted=stage(budget);const auto remaining=allocation_budget;allocation_budget=-1;refused(exhausted);
+  Check(!stage_write_fault&&!allocation_fault_after_stage_write&&remaining<0&&
+    exhausted.error==decltype(exhausted.error)::resource_exhausted&&exhausted.effects.intent&&
+    exhausted.effects.write_attempted&&!exhausted.effects.write_completed&&!exhausted.effects.sync_attempted&&
+    bytes()!=blank&&bytes()!=expected,"allocation exception constructing I/O failure retains actual partial-write attempt");
+  reset();stage_sync_fault=1;auto unsynced=stage(budget);refused(unsynced);
+  Check(!stage_sync_fault&&unsynced.effects.write_completed&&unsynced.effects.write_reported_bytes==expected.size()&&
+    unsynced.effects.sync_attempted&&!unsynced.effects.sync_completed&&!unsynced.effects.readback_attempted&&
+    unsynced.effects.diagnostic.diagnostic_code=="SB-STORAGE-DISK-SYNC-FAILED"&&
+    unsynced.effects.diagnostic.message_key=="storage.disk.sync_failed"&&bytes()==expected,
+    "sync failure preserves actual completed write without claiming durability");
+  stage_writes=stage_syncs=0;auto retry=stage(budget);Check(retry.ok()&&!stage_writes&&stage_syncs==1,"exact-image retry only syncs and verifies");
+  CheckCompletedStageEffects(retry.effects,*retry.receipt,expected.size(),false);
+  for(const auto position:{read_count-1,read_count}){
+    reset();reads=0;read_fault=position;track_reads=true;auto r=stage(budget);track_reads=false;refused(r);
+    Check(!read_fault&&r.effects.intent&&r.effects.diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT"&&
+      r.effects.diagnostic.message_key=="storage.disk.read_short",
+      "destination/readback read failure keeps source diagnostic and exact intent");
+    if(position==read_count-1)Check(r.effects.destination==db::NativeReservedPageDestination::not_observed&&
+      !r.effects.write_attempted&&!r.effects.sync_attempted&&bytes()==blank,"failed destination read precedes effects");
+    else Check(r.effects.write_completed&&r.effects.sync_completed&&r.effects.readback_attempted&&
+      !r.effects.readback_completed&&!r.effects.readback_matches&&bytes()==expected,"failed readback retains completed write and sync");
+  }
+  reset();reads=0;stage_corrupt_read=read_count;track_reads=true;auto corrupt=stage(budget);track_reads=false;refused(corrupt);
+  Check(!stage_corrupt_read&&corrupt.effects.write_completed&&corrupt.effects.sync_completed&&
+    corrupt.effects.readback_completed&&!corrupt.effects.readback_matches&&bytes()==expected,
+    "readback mismatch differs from incomplete I/O and never certifies stage");
+  reset();auto complete=stage(budget);Check(complete.ok(),"stage succeeds after all native effect faults");
+  CheckCompletedStageEffects(complete.effects,*complete.receipt,expected.size(),true);
+}
 void CanonicalCatalogLeafStaging(){using E=db::NativeCatalogLeafStageError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
@@ -2447,6 +2516,10 @@ void CanonicalCatalogLeafStaging(){using E=db::NativeCatalogLeafStageError;using
     auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"stage error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" allocation="<<static_cast<int>(result.allocation_error)<<" leaf="<<static_cast<int>(result.leaf_error)<<std::endl;
     Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->allocation_uuid==Id(141)&&result.receipt->page_uuid==leaf.header.page_uuid&&result.receipt->transaction.transaction_uuid.value==Id(162)&&result.receipt->page.filespace_uuid==fs&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual reserved canonical leaf receipt and independent bytes");
+    Check(result.effects.intent&&result.effects.write_completed&&result.effects.sync_completed&&
+      result.effects.readback_matches,"catalog page writer retains actual physical-effect observations");
+    CheckCompletedStageEffects(result.effects,*result.receipt,expected.size(),true);
+    CheckSinglePageEffects(stage,reset,bytes,expected,budget,nr);
     stage_writes=stage_syncs=0;result=stage(budget);Check(result.ok()&&!stage_writes&&stage_syncs==1,"exact idempotent stage retry still syncs");
     auto conflicting=expected;conflicting.back()^=1;put(target,21,sizes[profile],conflicting);empty(stage(budget));Check(bytes()==conflicting,"different nonzero destination preserved");
     reset();empty(stage(budget-1));Check(bytes()==blank,"budget exhausted before any write");
@@ -2509,6 +2582,8 @@ void CanonicalRowDataStaging(){using E=db::NativeRowDataStageError;using S=page:
     auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"stage error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" allocation="<<static_cast<int>(result.allocation_error)<<" leaf="<<static_cast<int>(result.page_error)<<std::endl;
     Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->allocation_uuid==Id(141)&&result.receipt->page_uuid==leaf.header.page_uuid&&result.receipt->transaction.transaction_uuid.value==Id(162)&&result.receipt->page.filespace_uuid==fs&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual reserved canonical row-data receipt and independent bytes");
+    CheckCompletedStageEffects(result.effects,*result.receipt,expected.size(),true);
+    CheckSinglePageEffects(stage,reset,bytes,expected,budget,nr);
     stage_writes=stage_syncs=0;result=stage(budget);Check(result.ok()&&!stage_writes&&stage_syncs==1,"exact idempotent stage retry still syncs");
     auto conflicting=expected;conflicting.back()^=1;put(target,21,sizes[profile],conflicting);empty(stage(budget));Check(bytes()==conflicting,"different nonzero destination preserved");
     reset();empty(stage(budget-1));Check(bytes()==blank,"budget exhausted before any write");
@@ -2629,6 +2704,8 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
     auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"root stage error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" root="<<static_cast<int>(result.root_error)<<std::endl;
     Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->root_uuid==root.object_uuid&&result.receipt->allocation_uuid==Id(230)&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual staged root receipt and independent bytes");
+    CheckCompletedStageEffects(result.effects,*result.receipt,expected.size(),true);
+    CheckSinglePageEffects(stage,reset,bytes,expected,budget,nr);
     stage_writes=stage_syncs=0;Check(stage(budget).ok()&&!stage_writes&&stage_syncs==1,"idempotent root retry still syncs");
     auto conflict=expected;conflict.back()^=1;put(first,30,sizes[p],conflict);empty(stage(budget));Check(bytes()==conflict,"different reserved root data preserved");
     reset();phase="budget";empty(stage(budget-1));Check(bytes()==blank,"root budget checked before write");
@@ -2712,6 +2789,8 @@ void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::Nat
     const auto na=observed_allocations;const auto nr=reads,nf=observed_full_digests;
     if(!result.ok())std::cerr<<"B-tree stage error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" page="<<static_cast<int>(result.page_error)<<std::endl;
     Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->index_uuid==dependencies.index_uuid&&result.receipt->allocation_uuid==Id(230)&&result.receipt->page_uuid==node.header.page_uuid&&result.receipt->transaction.transaction_uuid.value==Id(162)&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual B-tree staged receipt and complete bytes");
+    CheckCompletedStageEffects(result.effects,*result.receipt,expected.size(),true);
+    CheckSinglePageEffects(stage,reset,bytes,expected,budget,nr);
     stage_writes=stage_syncs=0;Check(stage(budget).ok()&&!stage_writes&&stage_syncs==1,"B-tree exact retry still syncs");
     auto conflict=expected;conflict.back()^=1;put(second,30,sizes[q],conflict);empty(stage(budget));Check(bytes()==conflict,"nonzero competing B-tree page preserved");reset();empty(stage(budget-1));Check(bytes()==blank,"B-tree budget exhausted before write");
     if(p==0&&role==5&&variant==1){
@@ -5169,6 +5248,19 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       // page adds no recovery coverage. Changed bytes still get a durable reset.
       const auto reset=[&](){if(bytes(23)!=blank)put(23,blank);if(bytes(24)!=tail_blank)put_tail(tail_blank);};
       const auto no_receipts=[&](const auto& r){Check(!r.ok()&&r.receipts.empty(),"inventory staging failure has no successful prefix");};
+      const auto retained_effects=[&](const auto& r){
+        for(unsigned i=0;i<2;++i){const auto actual=bytes(23+i);const auto& empty_image=i?tail_blank:blank;
+          if(actual==empty_image)continue;
+          Check(r.page_effects.size()>i&&r.page_effects[i].intent&&r.page_effects[i].write_attempted,
+            "every newly changed inventory page retains its original physical attempt");
+          const auto& e=r.page_effects[i];const auto& intent=*e.intent;
+          Check(intent.page==InventoryRef(chain[i])&&intent.page_uuid==chain[i].header.page_uuid&&
+            intent.inventory_uuid==Id(44)&&intent.allocation_uuid==Id(143+i)&&intent.transaction.transaction_uuid.value==Id(162)&&
+            intent.sha256==WholeRootHash(expected[i])&&e.requested_bytes==expected[i].size(),
+            "failed inventory page retains exact binary owner and original intended image");
+          if(e.readback_matches)Check(e.sync_completed&&e.readback_completed&&actual==expected[i],"retained complete prefix is independently verified");
+        }
+      };
       const auto resource_failure=[](const auto& r){return r.error==db::NativeInventoryStageError::resource_exhausted||r.checkpoint_error==db::NativeCheckpointError::resource_exhausted||r.directory_error==page::NativeDirectoryError::resource_exhausted||r.allocation_error==page::NativeAllocationError::resource_exhausted;};
       auto dirty_head=blank,dirty_tail=tail_blank;dirty_head.front()=0xa5;dirty_tail.back()=0x5a;put(23,dirty_head);put_tail(dirty_tail);
       stage_writes=stage_syncs=0;reset();Check(stage_writes==2&&stage_syncs==2&&bytes(23)==blank&&bytes(24)==tail_blank,"fixture reset durably restores both actual dirty destinations");
@@ -5180,6 +5272,34 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       const auto cold=stage(stage_budget);
       if(!cold.ok())std::cerr<<"cold inventory stage error="<<int(cold.error)<<" cp="<<int(cold.checkpoint_error)<<" map="<<int(cold.allocation_error)<<" inv="<<int(cold.inventory_error)<<'\n';
       Check(cold.ok(),"cold inventory stage initializes transition consistency");
+      reset();stage_write_fault=3;stage_write_fault_after=2;
+      const auto lost_prefix=stage(stage_budget);no_receipts(lost_prefix);
+      Check(!stage_write_fault&&!stage_write_fault_after&&bytes(23)==expected[0]&&bytes(24)!=tail_blank&&
+        bytes(24)!=expected[1],"late native failure really retains complete head and partial tail bytes");
+      Check(lost_prefix.page_effects.size()==2&&lost_prefix.page_effects[0].readback_matches&&
+        lost_prefix.page_effects[1].write_attempted&&!lost_prefix.page_effects[1].write_completed,
+        "failed inventory staging retains completed physical prefix and partial-page attempt");
+      retained_effects(lost_prefix);
+      Check(lost_prefix.page_effects[1].write_reported_bytes==0&&!lost_prefix.page_effects[1].sync_attempted&&
+        lost_prefix.page_effects[1].diagnostic.diagnostic_code=="SB-STORAGE-DISK-WRITE-FAILED",
+        "partial inventory tail retains zero-progress error without claiming no effects");
+      reset();stage_write_fault=3;stage_write_fault_after=2;allocation_fault_after_stage_write=true;
+      const auto exhausted_prefix=stage(stage_budget);const auto fault_remaining=allocation_budget;allocation_budget=-1;
+      no_receipts(exhausted_prefix);retained_effects(exhausted_prefix);
+      Check(!stage_write_fault&&!stage_write_fault_after&&!allocation_fault_after_stage_write&&fault_remaining<0&&
+        exhausted_prefix.error==db::NativeInventoryStageError::resource_exhausted&&exhausted_prefix.page_effects.size()==2&&
+        exhausted_prefix.page_effects[0].readback_matches&&exhausted_prefix.page_effects[1].write_attempted,
+        "exception after late partial write retains prefix without allocation during unwind");
+      reset();stage_sync_fault=1;stage_sync_fault_after=2;const auto unsynced_prefix=stage(stage_budget);
+      no_receipts(unsynced_prefix);retained_effects(unsynced_prefix);
+      Check(!stage_sync_fault&&!stage_sync_fault_after&&unsynced_prefix.page_effects.size()==2&&
+        unsynced_prefix.page_effects[0].readback_matches&&unsynced_prefix.page_effects[1].write_completed&&
+        unsynced_prefix.page_effects[1].sync_attempted&&!unsynced_prefix.page_effects[1].sync_completed&&
+        unsynced_prefix.page_effects[1].diagnostic.diagnostic_code=="SB-STORAGE-DISK-SYNC-FAILED",
+        "late inventory sync refusal retains complete head and written unsynchronized tail");
+      stage_writes=stage_syncs=0;const auto retried_prefix=stage(stage_budget);
+      Check(retried_prefix.ok()&&retried_prefix.page_effects.size()==2&&!stage_writes&&stage_syncs==2,"exact retained chain retry does not rewrite");
+      for(unsigned i=0;i<2;++i)CheckCompletedStageEffects(retried_prefix.page_effects[i],retried_prefix.receipts[i],expected[i].size(),false);
       if(p==0&&role==1&&!mixed_inventory){byte warm=0;for(unsigned n=0;n<4097;++n){
         const auto a=device.ReadAt(0,&warm,1),b=second_device.ReadAt(0,&warm,1);
         Check(a.ok()&&a.bytes_transferred==1&&b.ok()&&b.bytes_transferred==1,"warm bounded inventory telemetry before fault-site measurement");}}
@@ -5188,6 +5308,8 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
       if(!staged.ok())std::cerr<<"inventory stage error="<<static_cast<int>(staged.error)<<" cp="<<static_cast<int>(staged.checkpoint_error)<<" map="<<static_cast<int>(staged.allocation_error)<<" inv="<<static_cast<int>(staged.inventory_error)<<std::endl;
       Check(staged.ok()&&staged.receipts.size()==2&&stage_writes==2&&stage_syncs==2,"complete inventory chain physically staged");
+      Check(staged.page_effects.size()==2,"complete inventory stage keeps both physical observations");
+      for(unsigned i=0;i<2;++i)CheckCompletedStageEffects(staged.page_effects[i],staged.receipts[i],expected[i].size(),true);
       for(unsigned i=0;i<2;++i){const auto& receipt=staged.receipts[i];Check(bytes(23+i)==expected[i]&&receipt.page==InventoryRef(chain[i])&&receipt.page_uuid==chain[i].header.page_uuid&&receipt.inventory_uuid==Id(44)&&receipt.allocation_uuid==Id(143+i)&&receipt.transaction.transaction_uuid.value==Id(162)&&receipt.sha256==WholeRootHash(expected[i]),"ordered receipts match independently encoded actual inventory pages");}
       stage_writes=stage_syncs=0;Check(stage(stage_budget).ok()&&stage_writes==0&&stage_syncs==2,"idempotent complete inventory retry syncs both pages");
       Check(read(budget).checkpoint_inventory.inventory_generation==19&&bytes(14)==InventoryOracle(inv,13,13,13),"staging does not publish inventory or change old bytes");
@@ -5219,15 +5341,15 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
             if(remaining<0)++consumed;
             if(staged.ok()){Check(staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory success wrote exact complete chain");
               if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only isolated recorded telemetry loss permits consumed allocation fault");}
-            else{Check(remaining<0,"inventory allocation injection actually consumed");no_receipts(staged);}
+            else{Check(remaining<0,"inventory allocation injection actually consumed");no_receipts(staged);retained_effects(staged);}
             if(fault<na)Check(remaining<0,"every measured inventory allocation position reached");
             else Check(staged.ok()&&remaining>=0,"inventory allocation terminal position succeeds without injection");
           }
           reset();Check(stage(stage_budget).ok()&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory staging succeeds after every allocation shard");
           std::cout<<"inventory stage allocations="<<na<<" shard="<<inventory_allocation_shard<<" stride=16 positions="<<positions<<" consumed="<<consumed<<std::endl;
         }
-        for(unsigned fault=1;fault<=nr;++fault){reset();reads=0;read_fault=fault;track_reads=true;staged=stage(stage_budget);track_reads=false;Check(!read_fault,"inventory read fault consumed");no_receipts(staged);}
-        for(unsigned fault=1;fault<=nf;++fault){reset();full_digest_fault=fault;staged=stage(stage_budget);Check(!full_digest_fault,"inventory full hash fault consumed");no_receipts(staged);}
+        for(unsigned fault=1;fault<=nr;++fault){reset();reads=0;read_fault=fault;track_reads=true;staged=stage(stage_budget);track_reads=false;Check(!read_fault,"inventory read fault consumed");no_receipts(staged);retained_effects(staged);}
+        for(unsigned fault=1;fault<=nf;++fault){reset();full_digest_fault=fault;staged=stage(stage_budget);Check(!full_digest_fault,"inventory full hash fault consumed");no_receipts(staged);retained_effects(staged);}
         for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;no_receipts(stage(stage_budget));Check(!hash_fault,"inventory multipart hash fault consumed");}
         reset();stage_write_fault=3;no_receipts(stage(stage_budget));Check(!stage_write_fault,"inventory partial write fault consumed");const auto partial=bytes(23);no_receipts(stage(stage_budget));Check(partial!=blank&&partial!=expected[0]&&bytes(23)==partial&&bytes(24)==blank,"partial inventory image preserved without prefix receipt");
         reset();stage_sync_fault=1;no_receipts(stage(stage_budget));Check(!stage_sync_fault&&stage(stage_budget).ok(),"inventory sync failure can retry exact bytes");

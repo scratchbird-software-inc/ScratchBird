@@ -49,6 +49,21 @@ enum class PhysicalMgaCowMutationKind : u16 {
   delete_row
 };
 
+enum class NativeReservedPageDestination { not_observed, zero, exact_image, conflicting };
+// Physical observations only; no publication, transaction finality or authority.
+// All identity-bearing fields are in the binary intended receipt. A write
+// attempt can have effects even when the device reports zero progress or throws.
+template<class Receipt>
+struct NativeReservedPageStageEffects {
+  std::optional<Receipt> intent;
+  u64 requested_bytes=0, write_reported_bytes=0;
+  NativeReservedPageDestination destination=NativeReservedPageDestination::not_observed;
+  bool write_attempted=false, write_completed=false;
+  bool sync_attempted=false, sync_completed=false;
+  bool readback_attempted=false, readback_completed=false, readback_matches=false;
+  DiagnosticRecord diagnostic;
+};
+
 enum class NativeRowDataStageError {
   none, invalid_request, checkpoint_failure, allocation_failure, page_failure,
   invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
@@ -71,6 +86,7 @@ struct NativeRowDataStageResult {
   scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
   scratchbird::storage::page::NativeRowDataError page_error=scratchbird::storage::page::NativeRowDataError::none;
   std::optional<NativeRowDataStageReceipt> receipt;
+  NativeReservedPageStageEffects<NativeRowDataStageReceipt> effects;
   bool ok() const noexcept {return error==NativeRowDataStageError::none&&receipt.has_value();}
 };
 // Actual reserved-page write/sync/readback. Does not allocate row identities,
@@ -131,6 +147,7 @@ struct NativeCatalogLeafStageResult {
   scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
   NativeCatalogLeafError leaf_error=NativeCatalogLeafError::none;
   std::optional<NativeCatalogLeafStageReceipt> receipt;
+  NativeReservedPageStageEffects<NativeCatalogLeafStageReceipt> effects;
   bool ok() const noexcept {return error==NativeCatalogLeafStageError::none&&receipt.has_value();}
 };
 // Actual reserved native page write/sync/readback only. Does not allocate row
@@ -171,6 +188,9 @@ struct NativeInventoryStageResult {
   scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
   scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
   std::vector<NativeInventoryStageReceipt> receipts;
+  // Retained ordered observations, including completed prefix, even on failure.
+  // receipts is still empty unless the complete chain successfully stages.
+  std::vector<NativeReservedPageStageEffects<NativeInventoryStageReceipt>> page_effects;
   bool ok() const noexcept {return error==NativeInventoryStageError::none&&!receipts.empty();}
 };
 // Complete immutable inventory chain staging only. No selection, finality,
@@ -195,6 +215,7 @@ struct NativeCatalogRootStageResult {
   scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
   scratchbird::storage::page::NativeCatalogRootError root_error=scratchbird::storage::page::NativeCatalogRootError::none;
   std::optional<NativeCatalogRootStageReceipt> receipt;
+  NativeReservedPageStageEffects<NativeCatalogRootStageReceipt> effects;
   bool ok() const noexcept {return error==NativeCatalogRootStageError::none&&receipt.has_value();}
 };
 // Actual reserved immutable successor write/sync/readback. No root selection,
@@ -230,6 +251,7 @@ struct NativeBtreeStageResult {
   scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
   scratchbird::storage::page::NativeBtreeError page_error=scratchbird::storage::page::NativeBtreeError::none;
   std::optional<NativeBtreeStageReceipt> receipt;
+  NativeReservedPageStageEffects<NativeBtreeStageReceipt> effects;
   bool ok() const noexcept {return error==NativeBtreeStageError::none&&receipt.has_value();}
 };
 // Actual reserved native root/branch/leaf write only. A matching expected tuple
