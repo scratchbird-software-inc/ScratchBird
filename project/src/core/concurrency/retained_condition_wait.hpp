@@ -26,16 +26,18 @@ enum class WaitOwnerScope {
   cluster, task, temporary, metrics, evidence
 };
 enum class WaitOutcome { satisfied, closed, cancelled, timed_out, failed };
+enum class WaitOwnershipProfile { owned, process_global };
 enum class WaitFailure { none, invalid_descriptor, fail_safe_release, timeout };
 
 struct ConditionWaitDescriptor {
   WaitUuid primitive_id{};
   WaitUuid predicate_mutex_id{};
-  WaitUuid owner_uuid{};
+  std::optional<WaitUuid> owner_uuid;
   WaitOwnerScope owner_scope = WaitOwnerScope::engine;
   std::uint64_t generation = 0;
   std::uint64_t creation_epoch = 0;
   WaitUuid last_transition{};
+  WaitOwnershipProfile ownership_profile = WaitOwnershipProfile::owned;
 };
 struct ConditionWaitLimits {
   std::uint32_t waiters = 0;
@@ -311,7 +313,12 @@ class ConditionWaitOwner {
     using S = memory::SafeRetirementStatus;
     if (state_ || !memory::MemorySystemUuidValid(descriptor.primitive_id) ||
         !memory::MemorySystemUuidValid(descriptor.predicate_mutex_id) ||
-        !memory::MemorySystemUuidValid(descriptor.owner_uuid) ||
+        (descriptor.owner_uuid && !memory::MemorySystemUuidValid(*descriptor.owner_uuid)) ||
+        (descriptor.ownership_profile != WaitOwnershipProfile::owned &&
+         descriptor.ownership_profile != WaitOwnershipProfile::process_global) ||
+        (descriptor.ownership_profile == WaitOwnershipProfile::process_global &&
+         descriptor.owner_scope != WaitOwnerScope::engine) ||
+        (!descriptor.owner_uuid && descriptor.ownership_profile != WaitOwnershipProfile::process_global) ||
         !memory::MemorySystemUuidValid(descriptor.last_transition) ||
         descriptor.primitive_id == descriptor.predicate_mutex_id ||
         descriptor.owner_scope < WaitOwnerScope::engine || descriptor.owner_scope > WaitOwnerScope::evidence ||

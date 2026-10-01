@@ -449,6 +449,57 @@ void ControlledCancellationAndUnregister() {
 #endif
 }
 
+void OwnershipProfiles() {
+  Fixture f;
+  {
+    m::MemorySafeRetirement domain(*f.resource, Id(10), 4, 8);
+    Check(domain.Initialize() == S::ok, "ownership domain initialized");
+    const auto baseline = f.manager.Snapshot().current_bytes;
+    for (int scope = 0; scope <= static_cast<int>(c::WaitOwnerScope::evidence); ++scope) {
+      for (int profile = 0; profile < 3; ++profile) {
+        for (int identity = 0; identity < 4; ++identity) {
+          auto d = Descriptor();
+          d.owner_scope = static_cast<c::WaitOwnerScope>(scope);
+          d.ownership_profile = static_cast<c::WaitOwnershipProfile>(profile);
+          if (identity == 0) d.owner_uuid.reset();
+          if (identity == 2) d.owner_uuid = c::WaitUuid{};
+          if (identity == 3) (*d.owner_uuid)[8] = 0;
+          const bool global = profile == 1 && scope == 0;
+          const bool admitted = (profile == 0 || global) &&
+              (identity == 1 || (identity == 0 && global));
+          {
+            c::ConditionWaitOwner owner(domain);
+            const auto result = owner.Initialize(d, {2, 4}, Hazard(30));
+            // A regression accepting forbidden ownership must still drain its
+            // real storage before the assertion unwinds the owner lifetime.
+            if (!admitted && result == S::ok) Finish(owner);
+            Check(result == (admitted ? S::ok : S::invalid_request), "scope/profile/identity admission matrix");
+            if (admitted) {
+              try {
+                const auto snapshot = owner.Snapshot();
+                Check(snapshot.descriptor.owner_uuid == d.owner_uuid &&
+                      snapshot.descriptor.ownership_profile == d.ownership_profile,
+                      "explicit presence and binary owner preserved");
+                Check(f.manager.Snapshot().current_bytes > baseline, "global profile still charges storage");
+                auto op = Acquire(owner, 31); auto lock = op.LockPredicate();
+                Check(op.Wait(lock, [] { return true; }, {}, c::WaitClock::now(), "owner profile").outcome == O::satisfied,
+                      "admitted ownership retains executable wait");
+              } catch (...) { Finish(owner); throw; }
+              Finish(owner);
+            } else {
+              Check(domain.Snapshot().published == 0 && f.manager.Snapshot().current_bytes == baseline,
+                    "invalid ownership refuses before allocation or publication");
+            }
+          }
+          Check(domain.Collect() == S::ok && f.manager.Snapshot().current_bytes == baseline,
+                "ownership case reclaims actual storage");
+        }
+      }
+    }
+  }
+  f.Empty();
+}
+
 void DescriptorAndWaiterBounds() {
   Fixture f;
   {
@@ -459,7 +510,7 @@ void DescriptorAndWaiterBounds() {
       c::ConditionWaitOwner owner(domain); auto d = Descriptor(); c::ConditionWaitLimits limits{2, 4};
       if (which == 0) d.primitive_id = {};
       if (which == 1) d.predicate_mutex_id[6] = 0;
-      if (which == 2) d.owner_uuid[8] = 0;
+      if (which == 2) (*d.owner_uuid)[8] = 0;
       if (which == 3) d.last_transition = {};
       if (which == 4) d.owner_scope = static_cast<c::WaitOwnerScope>(100);
       if (which == 5) limits.waiters = 0;
@@ -578,7 +629,7 @@ int main(int argc, char** argv) {
     CancellationAndCloseDrain(); AdmissionLimitsAndConstructionFailure();
     NativeAndRegisteredFailure();
     ControlledCancellationAndUnregister(); DescriptorAndWaiterBounds();
-    ActualDeadlineAndReplacement();
+    ActualDeadlineAndReplacement(); OwnershipProfiles();
 #if defined(__unix__)
     if (argc != 2 || std::string_view(argv[1]) != "--no-destructor-child") PrematureDestruction();
 #endif
