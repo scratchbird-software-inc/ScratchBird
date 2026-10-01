@@ -375,22 +375,31 @@ class ConditionWaitOwner {
     });
     std::unique_lock lifetime(s.lifetime);
     if (!s.fenced) return result;
+    std::optional<WaitClock::time_point> began;
+    const auto finish = [&]() {
+      if (began) result.wait_duration_us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(WaitClock::now() - *began).count());
+      return result;
+    };
     try {
       while (s.references != 0 && !cancellation.stop_requested()) {
-        if (WaitClock::now() >= deadline || !s.drained.Wait(lifetime, deadline))
-          return result;
+        if (WaitClock::now() >= deadline) return finish();
+        // Measure only a drain that actually attempts to park, through its
+        // terminal selection. Spurious wakes do not restart this interval.
+        if (!began) began = WaitClock::now();
+        if (!s.drained.Wait(lifetime, deadline)) return finish();
       }
     } catch (...) {
       // An error is not a wake or drain receipt. Failed native reacquisition
       // cannot return normally while claiming ownership of the lifetime mutex.
       if (!lifetime.owns_lock()) std::terminate();
-      return result;
+      return finish();
     }
-    if (cancellation.stop_requested()) { result.outcome = WaitOutcome::cancelled; return result; }
+    if (cancellation.stop_requested()) { result.outcome = WaitOutcome::cancelled; return finish(); }
     drain_observed_ = true;
     result.outcome = WaitOutcome::closed; result.failure = WaitFailure::none;
     result.required_action = {};
-    return result;
+    return finish();
   }
   ConditionWaitSnapshot Snapshot() const {
     if (!state_) return {};
