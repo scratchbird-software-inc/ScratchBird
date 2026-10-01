@@ -15,6 +15,7 @@
 #include "native_filespace_capacity.hpp"
 #include "native_storage_policy_lookup.hpp"
 #include "native_storage_policy_resolution.hpp"
+#include "native_storage_action_range.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -59,6 +60,7 @@ bool count_full_digests=false;
 std::size_t observed_read_bytes=0;
 bool track_reads=false;
 std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tree_read{false};
+unsigned pause_tree_read_number=0;
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
 bool extend_on_second_read=false;
 }
@@ -135,7 +137,8 @@ extern "C" int __wrap_fsync(int fd) {
   return result;
 }
 extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
-  if(pause_next_tree_read.exchange(false)) {tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
+  if(pause_next_tree_read.exchange(false)||(pause_tree_read_number&&track_reads&&reads+1==pause_tree_read_number)) {
+    tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
   if(track_reads) { ++reads; observed_read_bytes+=n; }
   if(read_fault&&reads==read_fault) { read_fault=0; errno=EIO; return -1; }
   if(extend_on_second_read&&reads==2){extend_on_second_read=false;
@@ -3641,6 +3644,129 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
           source_leaf.body.rows[0]=native_row(m,Id(170),1);persist();};
         set_policy(enabled);stage_writes=stage_syncs=0;Check(match(intent).ok(),"fresh actual enabled policy and capacity match exact intent");
         Check(!stage_writes&&!stage_syncs,"matching produces no storage effects or authorization");
+        {
+          using R=db::NativeStorageRangeError;
+          const auto inspect=[&](const auto& i,u64 limit,const auto& files){return db::InspectNativeStorageActionRangeFromOpenDevices(
+            i,files,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,limit);};
+          const auto failed=[&](const auto& r,R error){Check(!r.ok()&&r.error==error&&!r.policy.ok()&&!r.policy.resolution.selection&&
+            !r.policy.resolution.policy.policy,"failed range observation retains no successful selection");};
+          stage_writes=stage_syncs=0;auto growth=inspect(intent,ceiling,devices);
+          Check(growth.ok()&&!growth.inspected_pages&&!growth.blocked_page&&!stage_writes&&!stage_syncs,
+            "growth range observes exact existing end without probing or creating tail capacity");
+          auto pre=intent;pre.action=db::NativeStorageAction::page_preallocation;pre.first_page=32;pre.intended_state=db::NativeStorageIntentState::preallocated;
+          auto range=inspect(pre,ceiling,devices);failed(range,R::page_not_free);
+          Check(range.blocked_page==32&&!range.inspected_pages,"quarantined pages cannot become free through range shape");
+          const auto saved_map=map;
+          for(unsigned n=32;n<40;++n)map.states[n]=S::free;
+          const auto refresh=[&]{member.allocation_root->sha256=WholeRootHash(AllocationOracle(map));persist();
+            pre.allocation_sha256=WholeRootHash(AllocationOracle(map));pre.checkpoint_sha256=WholeRootHash(CheckpointOracle(cp));};
+          refresh();stage_writes=stage_syncs=0;range=inspect(pre,ceiling,devices);
+          if(!range.ok())std::cerr<<"range="<<static_cast<unsigned>(range.error)<<" policy="<<static_cast<unsigned>(range.policy.error)<<" allocation="<<static_cast<unsigned>(range.allocation_error)<<'\n';
+          Check(range.ok()&&range.inspected_pages==8&&!range.blocked_page&&range.retained_image_bytes<=ceiling&&
+            !stage_writes&&!stage_syncs,"native free range and actual zero pages qualify observation only");
+          const auto exact_budget=range.retained_image_bytes;
+          Check(inspect(pre,exact_budget,devices).ok(),"exact cumulative range image allowance");
+          failed(inspect(pre,exact_budget-1,devices),R::allocation_failure);
+          auto invalid=pre;invalid.page_count=0;failed(inspect(invalid,ceiling,devices),R::policy_failure);
+          invalid=pre;invalid.first_page=0;failed(inspect(invalid,ceiling,devices),R::policy_failure);
+          invalid=pre;invalid.first_page=63;invalid.page_count=2;failed(inspect(invalid,ceiling,devices),R::policy_failure);
+          invalid=intent;++invalid.first_page;failed(inspect(invalid,ceiling,devices),R::policy_failure);
+          invalid=pre;invalid.allocation_sha256[0]^=1;failed(inspect(invalid,ceiling,devices),R::policy_failure);
+          invalid=pre;invalid.first_page=13;invalid.page_count=1;range=inspect(invalid,ceiling,devices);failed(range,R::page_not_free);
+          Check(range.blocked_page==13&&!range.inspected_pages,"allocation control page cannot be preallocated");
+          failed(inspect(pre,0,devices),R::policy_failure);
+          auto invalid_files=devices;invalid_files.push_back(devices[0]);failed(inspect(pre,ceiling,invalid_files),R::invalid_request);
+          invalid_files=devices;invalid_files[0].device=nullptr;failed(inspect(pre,ceiling,invalid_files),R::invalid_request);
+          auto occupied=blank;occupied.back()=0x5a;put(target,37,sizes[profile],occupied);
+          stage_writes=stage_syncs=0;range=inspect(pre,ceiling,devices);failed(range,R::page_not_empty);
+          Check(range.blocked_page==37&&range.inspected_pages==6&&!stage_writes&&!stage_syncs&&actual(target,37,sizes[profile])==occupied,
+            "dirty free page is retained as owner recovery work rather than erased or granted");
+          put(target,37,sizes[profile],blank);
+          // Give every non-free state canonical owner lineage, so rejection
+          // proves range eligibility rather than an invalid metadata fixture.
+          for(const auto state:{S::reserved,S::allocated,S::reusable_pending_mga,S::reusable_free,S::compacting,S::quarantined,S::preallocated}){
+            page::NativeAllocationRecord r;r.page_number=37;r.allocation_uuid=Id(250);r.page_uuid=Id(251);r.owner_uuid=fs;
+            r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;r.page_generation=1;r.page_type=4;
+            r.reuse_horizon=state==S::reusable_pending_mga||state==S::reusable_free?1:0;
+            map.records.push_back(r);map.states[37]=state;
+            Check(page::EncodeNativeAllocationMap(map).ok(),"non-free range fixture is independently canonical");
+            refresh();range=inspect(pre,ceiling,devices);failed(range,R::page_not_free);
+            Check(range.blocked_page==37&&!range.inspected_pages,"every non-free state refuses before physical range probes");map.records.pop_back();
+          }
+          map.states[37]=S::free;refresh();
+          {
+            const auto unsplit=map;const auto old_tail=actual(target,40,sizes[profile]);
+            auto tail=map;tail.first_page=36;tail.header.page_number=40;tail.header.page_uuid=Id(252);
+            tail.states.assign(map.states.begin()+36,map.states.end());tail.records.clear();tail.next.reset();tail.next_sha256={};
+            page::NativeAllocationRecord r;r.page_number=40;r.allocation_uuid=Id(253);r.page_uuid=tail.header.page_uuid;
+            r.owner_uuid=tail.object_uuid;r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;
+            r.page_generation=tail.header.page_generation;r.page_type=3;tail.states[4]=S::allocated;tail.records.push_back(r);
+            Check(page::EncodeNativeAllocationMap(tail).ok(),"independent canonical continuation allocation page");
+            const auto tail_bytes=AllocationOracle(tail);put(target,40,sizes[profile],tail_bytes);
+            map.states.resize(36);map.next=disk::NativePageReference{fs,40,103,Profile(profile)};
+            map.next_sha256=WholeRootHash(tail_bytes);refresh();
+            range=inspect(pre,ceiling,devices);Check(range.ok()&&range.inspected_pages==8,
+              "one requested free range traverses both hash-bound allocation map images");
+            auto bad_tail=tail_bytes;bad_tail.back()^=1;put(target,40,sizes[profile],bad_tail);
+            range=inspect(pre,ceiling,devices);failed(range,R::policy_failure);
+            Check(!range.inspected_pages,"corrupt continuation never becomes a head-only free range");
+            put(target,40,sizes[profile],old_tail);map=unsplit;refresh();
+          }
+          if(p==0&&role==1){
+            const auto first_image=actual(first,0,64*sizes[p]),second_image=actual(second,0,64*sizes[q]);stage_writes=stage_syncs=0;
+            reads=0;track_reads=true;range=inspect(pre,ceiling,devices);track_reads=false;const auto nr=reads;
+            Check(range.ok()&&nr>8,"range actual-read baseline includes metadata and all requested pages");
+            for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;range=inspect(pre,ceiling,devices);track_reads=false;
+              Check(!read_fault&&!range.ok()&&!range.policy.ok()&&!range.policy.resolution.selection,
+                "every range metadata and physical read failure is consumed without successful prefix");}
+            observed_full_digests=0;count_full_digests=true;range=inspect(pre,ceiling,devices);count_full_digests=false;const auto nh=observed_full_digests;
+            Check(range.ok()&&nh,"range full hash baseline");
+            for(unsigned fault=1;fault<=nh;++fault){full_digest_fault=fault;range=inspect(pre,ceiling,devices);
+              Check(!full_digest_fault&&!range.ok()&&!range.policy.ok(),"every range full-image hash failure refuses");}
+            observed_allocations=0;count_allocations=true;range=inspect(pre,ceiling,devices);count_allocations=false;const auto na=observed_allocations;
+            Check(range.ok()&&na,"range allocation baseline");
+            for(unsigned long fault=0;fault<=na;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
+              range=inspect(pre,ceiling,devices);const auto remaining=allocation_budget;allocation_budget=-1;
+              Check(fault==na?remaining>=0:remaining<0,"every range allocation injection is consumed");
+              if(range.ok())Check(range.inspected_pages==8&&(remaining>=0||first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1),
+                "only accounted optional telemetry loss permits successful range observation");
+              else Check(!range.policy.ok()&&!range.policy.resolution.selection,"required allocation failure returns no range grant");
+            }
+            std::cout<<"storage range faults: reads="<<nr<<" hashes="<<nh<<" allocations="<<na<<'\n';
+            const auto mutex_of=[](auto& device){auto guard=device.AcquireOperationGuard();return guard.mutex();};
+            const std::array mutexes{mutex_of(first),mutex_of(second)};
+            tree_read_paused=false;resume_tree_read=false;pause_tree_read_number=nr;reads=0;track_reads=true;std::atomic<bool> done=false;
+            db::NativeStorageRangeInspection concurrent;
+            std::thread worker([&]{concurrent=inspect(pre,ceiling,reversed);done=true;});
+            while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+            bool all_held=tree_read_paused.load();
+            for(auto* mutex:mutexes)if(mutex->try_lock()){all_held=false;mutex->unlock();}
+            resume_tree_read=true;worker.join();pause_tree_read_number=0;track_reads=false;
+            Check(all_held&&concurrent.ok()&&reads==nr,"range keeps the complete ordered device set guarded through the last physical page probe");
+            Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==first_image&&actual(second,0,64*sizes[q])==second_image,
+              "all successful and failed range reads leave both complete files byte-for-byte unchanged");
+          }
+          Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&
+            second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"range actual read-only reopen");
+          Check(inspect(pre,ceiling,devices).ok(),"range observation does not require or imply write admission");
+          Check(first.Close().ok()&&second.Close().ok(),"range releases devices before fresh process");
+          const auto child=fork();Check(child>=0,"fresh range observation process");
+          if(!child){try{disk::FileDevice a,b;
+            if(!a.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()||!b.Open(path2,disk::FileOpenMode::open_existing_read_only).ok())_exit(80);
+            const std::vector<disk::NativeFilespaceDevice> files{{Id(2),Profile(p),&a},{Id(7),Profile(q),&b}};
+            const auto native=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),files,pre.checkpoint,ceiling);
+            if(!native.ok())_exit(81);CatalogTestPin fresh_pin(native.inventory,18);
+            const auto r=db::InspectNativeStorageActionRangeFromOpenDevices(pre,files,2,1,{Id(101),{}},
+              native.inventory.entries.back().identity,fresh_pin.pin,ceiling);
+            _exit(r.ok()&&r.inspected_pages==8?0:82);
+          }catch(...){_exit(83);}}
+          int child_status=0;Check(waitpid(child,&child_status,0)==child&&WIFEXITED(child_status)&&WEXITSTATUS(child_status)==0,
+            "new process reopens actual files and publishes its own actual inventory snapshot before range inspection");
+          Check(first.Open(path1,disk::FileOpenMode::open_existing).ok()&&
+            second.Open(path2,disk::FileOpenMode::open_existing).ok(),"restore range fixture owned handles");
+          map=saved_map;member.allocation_root->sha256=WholeRootHash(AllocationOracle(map));persist();
+          Check(match(intent).ok(),"range tests preserve original selected definitions and capacity");
+        }
         if(p==0&&role==1){
           reads=0;track_reads=true;auto matched=match(intent);track_reads=false;const auto count=reads;
           Check(matched.ok(),"intent matching read-fault baseline");
