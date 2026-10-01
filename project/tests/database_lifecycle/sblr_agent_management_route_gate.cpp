@@ -1114,9 +1114,14 @@ void TestDryRunAndValidationFailuresDoNotMutateBeforeLiveRoute() {
 
 }  // namespace
 
+#include "storage_action_security_checks.hpp"
+
 int main(int argc,char** argv) try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("sblr_agent_management_route_gate");
   RegisterComponentMetricDescriptors();
+  if(argc==2 && std::string_view(argv[1])=="--storage-security-only") {
+    storage_action_security_checks::Run();return EXIT_SUCCESS;
+  }
   if(argc==2 && std::string_view(argv[1])=="--growth-retention-only") {
     TestFilespaceGrowthAuthorizationBeforeEffects();
     TestApiFilespaceGrowthStorageMutation();

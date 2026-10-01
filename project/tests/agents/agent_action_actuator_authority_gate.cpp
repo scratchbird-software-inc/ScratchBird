@@ -9,7 +9,9 @@
 
 #include "agent_runtime.hpp"
 #include "metric_contracts.hpp"
+#include "metric_builtin_definitions.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -20,6 +22,7 @@
 namespace {
 
 namespace agents = scratchbird::core::agents;
+namespace metrics = scratchbird::core::metrics;
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -118,21 +121,24 @@ agents::AgentResourceBudgetEvaluationInput AllowingBudget(
 std::vector<agents::AgentMetricObservation> ObservationsFor(
     const agents::AgentActionContractDescriptor& contract) {
   std::vector<agents::AgentMetricObservation> observations;
+  std::uint32_t ordinal = 200;
   for (const auto& family : contract.metric_families) {
     agents::AgentMetricObservation observation;
     observation.metric_family = family;
     const auto* descriptor =
         scratchbird::core::metrics::DefaultMetricRegistry().FindDescriptorOrAlias(
             family);
-    observation.namespace_path =
-        descriptor == nullptr ? "sys.metrics.test" : descriptor->namespace_path;
+    Require(descriptor != nullptr, "fixture metric descriptor missing: " + family);
+    observation.namespace_path = descriptor->namespace_path;
     observation.age_microseconds = 1;
     observation.present = true;
     observation.trusted = true;
     observation.schema_compatible = true;
     observation.scope_compatible = true;
-    observation.evidence_uuid = "metric-evidence:" + family;
-    observation.snapshot_id = "metric-snapshot:" + family;
+    const auto evidence = scratchbird::tests::FixtureUuid(0x01f1, ordinal++);
+    const auto snapshot = scratchbird::tests::FixtureUuid(0x01f1, ordinal++);
+    observation.evidence_uuid.assign(reinterpret_cast<const char*>(evidence.bytes.data()), evidence.bytes.size());
+    observation.snapshot_id.assign(reinterpret_cast<const char*>(snapshot.bytes.data()), snapshot.bytes.size());
     observations.push_back(std::move(observation));
   }
   return observations;
@@ -165,6 +171,32 @@ agents::AgentActionContractDescriptor Contract(
   const auto contract = agents::FindAgentActionContract(owning_agent, action_id);
   Require(contract.has_value(), "missing contract: " + owning_agent + ":" + action_id);
   return *contract;
+}
+
+void RegisterComponentMetricFixtures() {
+  // Explicit component fixtures, not native catalog/producer activation.
+  // Enumerating definitions does not itself grant metric identities/readiness.
+  const auto definitions = metrics::BuiltinMetricDescriptorDefinitions();
+  const auto contract = Contract("page_allocation_manager", "preallocate_page_family");
+  std::uint32_t ordinal = 1;
+  for (const auto& family : contract.metric_families) {
+    const auto found = std::find_if(definitions.begin(), definitions.end(),
+        [&](const auto& definition) { return definition.family == family; });
+    Require(found != definitions.end(), "fixture builtin metric definition missing: " + family);
+    metrics::MetricDescriptor descriptor;
+    static_cast<metrics::MetricDescriptorDefinition&>(descriptor) = *found;
+    descriptor.metric_uuid = scratchbird::tests::FixtureUuid(0x01f1, ordinal++);
+    descriptor.descriptor_generation = 1;
+    descriptor.label_schema_uuid = scratchbird::tests::FixtureUuid(0x01f1, ordinal++);
+    descriptor.label_schema_generation = 1;
+    descriptor.retention_policy_uuid = scratchbird::tests::FixtureUuid(0x01f1, 100);
+    descriptor.retention_policy_generation = 1;
+    descriptor.visibility_policy_uuid = scratchbird::tests::FixtureUuid(0x01f1, 101);
+    descriptor.visibility_policy_generation = 1;
+    descriptor.readiness = metrics::MetricReadiness::contract_ready_unwired;
+    const auto registered = metrics::DefaultMetricRegistry().RegisterDescriptor(descriptor);
+    Require(registered.ok, "fixture metric registration failed: " + registered.diagnostic_code);
+  }
 }
 
 void TestAuthorityRegistryCoverage() {
@@ -293,6 +325,15 @@ void TestPrerequisitesDenyBeforeRoute() {
               "SB_AGENT_ACTION_CONTRACT.METRIC_REQUIRED",
           "metrics did not deny before route");
 
+  for (std::size_t index = 0; index < contract.metric_families.size(); ++index) {
+    auto wrong_namespace = ValidLiveRequest(contract, &policy);
+    wrong_namespace.metric_observations[index].namespace_path = "sys.metrics.test";
+    wrong_namespace.actuator_route_id = "memory_allocator";
+    const auto denied = agents::EvaluateAgentActionContract(contract, wrong_namespace);
+    Require(denied.diagnostic_code == "SB_AGENT_METRICS.NAMESPACE_SCHEMA_INCOMPATIBLE" &&
+            !denied.mutates_state, "wrong metric namespace did not deny before route: " + denied.diagnostic_code);
+  }
+
   auto budget = ValidLiveRequest(contract, &policy);
   auto limited_budget = *budget.resource_budget;
   limited_budget.foreground_database_work_active = true;
@@ -348,6 +389,7 @@ void TestCanonicalContractAndClusterBoundary() {
 }  // namespace
 
 int main() {
+  RegisterComponentMetricFixtures();
   TestAuthorityRegistryCoverage();
   TestValidLiveRouteAndDryRunOrder();
   TestWrongUnknownAndForbiddenActuatorsDenied();
