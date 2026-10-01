@@ -3,6 +3,7 @@
 #pragma once
 #include "node_uuid_issuer.hpp"
 #include "disk_device.hpp"
+#include "filespace_page_zero.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_publication_watermark.hpp"
 #include <memory>
@@ -44,6 +45,7 @@ struct NativePublicationReservation;
 struct NativePublicationPlan;
 struct NativeManagementOperation;
 struct NativePreallocationPublicationResult;
+struct NativeGrowthPublicationResult;
 class NativePublicationLease {
  public:
   ~NativePublicationLease();
@@ -76,6 +78,9 @@ class NativePublicationLease {
   friend NativePublicationInspection PublishNativeInventoryOnLease(
     NativePublicationLease&,const NativeManagementOperation&,
     const transaction::mga::LocalTransactionInventory&,u64,
+    core::uuid::StandaloneUuidV7Issuer&) noexcept;
+  friend NativeGrowthPublicationResult PublishNativeFilespaceGrowthOnLease(
+    NativePublicationLease&,const NativeManagementOperation&,u64,
     core::uuid::StandaloneUuidV7Issuer&) noexcept;
   friend NativePreallocationPublicationResult PublishNativePreallocationOnLease(
     NativePublicationLease&,const NativeManagementOperation&,u64,
@@ -188,6 +193,28 @@ NativePreallocationPublicationResult PublishNativePreallocationOnLease(
   NativePublicationLease&,const NativeManagementOperation&,
   u64 maximum_verification_image_bytes,core::uuid::StandaloneUuidV7Issuer&) noexcept;
 
+struct NativeGrowthPublicationResult {
+  NativePublicationError error=NativePublicationError::invalid_request;
+  Uuid request_uuid,operation_uuid,publication_attempt_uuid;
+  NativePublicationInspection preparation,selection;
+  bool physical_attempted=false,physical_sync_attempted=false;
+  std::optional<disk::PreallocateExtentResult> physical;
+  std::optional<disk::IoResult> physical_sync;
+  std::optional<disk::FilespacePageZeroBodyResult> page_zero;
+  bool ok() const noexcept {
+    return error==NativePublicationError::none&&preparation.ok()&&physical&&physical->ok()&&
+      physical_sync&&physical_sync->ok()&&page_zero&&page_zero->ok()&&selection.ok();
+  }
+};
+// Owned profile4 construction, real physical extension, body and selector
+// publication. All phase observations survive failure. No caller-built maps,
+// fresh identity on retry, kernel security/policy/resource grant or MGA finality.
+// An unchanged-before anchored request may resume; partial physical/body effects
+// require original-operation recovery, never rebuilding this lease's attempt.
+NativeGrowthPublicationResult PublishNativeFilespaceGrowthOnLease(
+  NativePublicationLease&,const NativeManagementOperation&,u64 maximum_verification_image_bytes,
+  core::uuid::StandaloneUuidV7Issuer&) noexcept;
+
 enum class NativePreallocationDisposition {
   absent, pending_unanchored, pending_anchored, other_operation_pending, selected
 };
@@ -207,6 +234,13 @@ struct NativePreallocationReconciliation {
 // request/operation identity, physical reservation result or execution grant.
 // `primary` is the checkpoint owner, not necessarily the request's target member.
 NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativeManagementOperation& original_request,
+  u64 maximum_verification_image_bytes) noexcept;
+// Same exact-id lookup for growth in an ordinarily admitted selected state or
+// unchanged-before pending state. Torn bodies/partial extension require owning
+// recovery first; this read-only lookup cannot repair them or claim completion.
+NativePreallocationReconciliation ReconcileNativeFilespaceGrowthFromOpenDevices(
   const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
   const Uuid& primary,const NativeManagementOperation& original_request,
   u64 maximum_verification_image_bytes) noexcept;

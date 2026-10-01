@@ -57,6 +57,12 @@ NativeManagementGraphHistory ReadNativeManagementGraphHistoryAtHistoricalContext
   const Uuid& primary,const NativeManagementCheckpointAnchor&,
   const std::map<Uuid,std::vector<byte>>& result_page_zero_images,
   u64 maximum_verification_image_bytes) noexcept;
+// Pure append validation using the same revision, semantic/idempotency and step
+// identity rules as the history reader. The caller must acquire actual history;
+// this grants no publication or physical effect authority.
+NativeManagementHistoryError ValidateNativeManagementHistoryAppend(
+  const NativeManagementGraphHistory&,const NativeManagementOperation&,
+  u64 maximum_index_bytes) noexcept;
 // Actual selected physical history and common evolution/uniqueness only.
 // NOT allocation/creator outcome, kernel authentication, effects or serving.
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,

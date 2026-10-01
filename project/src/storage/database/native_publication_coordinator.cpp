@@ -5,6 +5,7 @@
 #include "native_publication_plan.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_control_authority.hpp"
+#include "native_management_publication_recovery.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include "transaction_inventory_validation.hpp"
@@ -717,7 +718,7 @@ namespace {
 struct OwnedInventoryGraph {
   NativePublicationPlan plan;
   Bytes checkpoint;
-  Pages extent, bundle;
+  Pages extent, bundle, growth;
 };
 
 OwnedInventoryGraph AssembleInventory(Context& context,
@@ -728,7 +729,9 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   const auto& watermark=snapshot.watermark;
   const auto& zero=context.zero;
   const auto& base=*context.bound.checkpoint_inventory.checkpoint;
-  Require(watermark.intent&&watermark.intent->recovery_profile==(preallocation?3:2)&&
+  const bool growth=preallocation&&preallocation->action==NativeStorageAction::physical_growth;
+  const bool reserve=preallocation&&preallocation->intended_state==NativeStorageIntentState::preallocated;
+  Require(watermark.intent&&watermark.intent->recovery_profile==(growth?4:preallocation?3:2)&&
     !watermark.abandonment&&!watermark.publication_plan&&
     watermark.watermark>snapshot.selection.checkpoint_generation,E::operation_pending);
   const auto encoded_record=EncodeNativeManagementOperation(supplied_record,budget);
@@ -754,6 +757,22 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   u64 charged=context.bound.retained_image_bytes;
   Require(charged<=budget,E::resource_exhausted);
   const auto charge=[&](u64 count,u64 unit){Require(unit&&count<=(budget-charged)/unit,E::resource_exhausted);charged+=count*unit;};
+  std::optional<disk::FilespacePageZero> growth_before;
+  Pages growth_images;
+  if(growth){
+    charge(14,preallocation->page_size_bytes);
+    const auto file=std::find_if(context.devices.begin(),context.devices.end(),[&](const auto& f){return f.filespace_uuid==preallocation->filespace_uuid;});
+    Require(file!=context.devices.end()&&!file->device->read_only(),E::invalid_device);
+    const disk::FilespaceBootstrapBinding binding{zero.bootstrap.database_uuid,file->filespace_uuid,file->page_size_profile_uuid};
+    auto before=disk::ReadFilespacePageZeroFromOpenDevice(*file->device,&binding);
+    if(!before.ok())throw before.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
+      before.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:before.error==disk::FilespacePageZeroError::io_failure?E::io_failure:E::bootstrap_failure;
+    Require(before.record->total_pages==preallocation->current_total_pages&&preallocation->first_page==before.record->total_pages,E::stale_base);
+    Require(preallocation->page_count<=std::numeric_limits<u64>::max()-before.record->total_pages&&
+      before.record->page_generation!=std::numeric_limits<u64>::max()&&before.record->root_set_generation!=std::numeric_limits<u64>::max()&&
+      preallocation->capacity_generation!=std::numeric_limits<u64>::max(),E::generation_exhausted);
+    growth_before=std::move(*before.record);
+  }
   charge(20,size);charge(map_count,10*size);charge(inventory_count,14*size);
   charge(extent_count,4*size);charge(encoded_record.bytes.size(),4);
   // The preceding charges bound both addition and multiplication below.
@@ -789,7 +808,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     for(const auto& raw:original_directory.pages)directory_records.insert(directory_records.end(),raw.directory->records.begin(),raw.directory->records.end());
     const auto member=std::find_if(directory_records.begin(),directory_records.end(),[&](const auto& r){return r.bootstrap.filespace_uuid==zero.bootstrap.filespace_uuid;});
     Require(member!=directory_records.end(),E::binding_mismatch);
-    directory_publication=directory_records.size()>1||member->allocation_root.has_value();
+    directory_publication=growth||directory_records.size()>1||member->allocation_root.has_value();
   }
   if(directory_publication){
     directory_count=ceil(directory_records.size(),(size-384)/320);charge(directory_count,14*size);
@@ -815,6 +834,10 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   std::vector<const page::NativeAllocationMapResult*> source_maps;
   for(const auto& image:context.bound.allocation.pages)source_maps.push_back(&image);
   for(const auto& image:secondary_allocation.pages)source_maps.push_back(&image);
+  if(growth){const u64 framed=(context.bound.allocation.pages.size()+inventory_count+directory_count)*(size+8)+
+      secondary_allocation.pages.size()*(secondary_size+8)+2*(preallocation->page_size_bytes+u64{8});
+    const auto needed=ceil(framed,payload);Require(needed>=bundle_count,E::binding_mismatch);
+    charge(needed-bundle_count,4*size);bundle_count=needed;}
 
   // Only original free/recordless, physically zero slots may be consumed. A
   // dirty free slot is an orphan to be resolved by its owner, not free bytes.
@@ -852,7 +875,8 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   struct Partition {std::size_t source;u64 first,count;};
   std::vector<Partition> partitions;
   for(std::size_t i=0;i<source_maps.size();++i){const auto& m=*source_maps[i]->map;
-    partitions.push_back({i,m.first_page,m.states.size()});}
+    const auto suffix=growth&&m.header.filespace_uuid==preallocation->filespace_uuid&&!m.next?preallocation->page_count:0;
+    partitions.push_back({i,m.first_page,m.states.size()+suffix});}
   std::vector<u64> extent_slots,bundle_slots,map_slots,inventory_slots,directory_slots;
   u64 plan_slot=0,checkpoint_slot=0;
   for(;;){
@@ -872,7 +896,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
       bool overflow=at>page_size;u64 records=0;
       for(u64 n=part.first;n-part.first<part.count;++n){
         const bool old=record!=m.records.end()&&record->page_number==n;
-        const bool added=selected[group].contains(n)||(preallocation&&m.header.filespace_uuid==preallocation->filespace_uuid&&n>=preallocation->first_page&&n-preallocation->first_page<preallocation->page_count);
+        const bool added=selected[group].contains(n)||(reserve&&m.header.filespace_uuid==preallocation->filespace_uuid&&n>=preallocation->first_page&&n-preallocation->first_page<preallocation->page_count);
         if(old||added)++records;if(old)++record;
         if(overflow||records>(page_size-at)/128){overflow=true;break;}
       }
@@ -888,6 +912,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     Require(refined.size()>map_count,E::resource_exhausted);
     map_count=refined.size();
     u64 framed=(inventory_count+directory_count)*(directory_publication?size+8:size);
+    if(growth)framed+=2*(preallocation->page_size_bytes+u64{8});
     for(const auto& part:refined)framed+=source_maps[part.source]->map->header.page_size_bytes+(directory_publication?8:0);
     const u64 next_bundle=ceil(framed,payload);
     charge(next_bundle-bundle_count,4*size);bundle_count=next_bundle;partitions=std::move(refined);
@@ -928,11 +953,15 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   for(const auto& part:partitions){const auto& source=*source_maps[part.source]->map;
     auto map=source;map.first_page=part.first;
     const auto begin=part.first-source.first_page;
-    map.states.assign(source.states.begin()+begin,source.states.begin()+begin+part.count);
+    map.states.assign(part.count,page::NativeAllocationState::free);
+    if(begin<source.states.size())std::copy_n(source.states.begin()+begin,std::min<u64>(part.count,source.states.size()-begin),map.states.begin());
     const auto first=std::lower_bound(source.records.begin(),source.records.end(),part.first,[](const auto& r,u64 n){return r.page_number<n;});
     const auto last=std::lower_bound(first,source.records.end(),part.first+part.count,[](const auto& r,u64 n){return r.page_number<n;});
-    map.records.assign(first,last);maps.push_back(std::move(map));}
-  if(preallocation){
+    map.records.assign(first,last);
+    if(growth&&map.header.filespace_uuid==preallocation->filespace_uuid){map.total_pages+=preallocation->page_count;++map.capacity_generation;
+      for(auto& r:map.records)if(!r.page_number){Require(r.page_generation==growth_before->page_generation,E::binding_mismatch);++r.page_generation;}}
+    maps.push_back(std::move(map));}
+  if(reserve){
     for(const auto& map:maps){
       if(map.header.filespace_uuid!=preallocation->filespace_uuid)continue;
       const u64 page_size=map.header.page_size_bytes;
@@ -1008,6 +1037,18 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     inventory_images[i]=std::move(encoded.bytes);
   }
   auto extent=EncodeNativeManagementExtent(record,extent_object,extent_headers,budget);ControlExtentError(extent.error);
+  if(growth){auto after=*growth_before;++after.page_generation;++after.root_set_generation;after.total_pages+=preallocation->page_count;
+    after.free_pages=after.preallocated_pages=0;
+    for(const auto& map:maps)if(map.header.filespace_uuid==preallocation->filespace_uuid){
+      after.free_pages+=std::count(map.states.begin(),map.states.end(),page::NativeAllocationState::free);
+      after.preallocated_pages+=std::count(map.states.begin(),map.states.end(),page::NativeAllocationState::preallocated);}
+    for(const auto* z:{&*growth_before,&after}){auto encoded=disk::EncodeFilespacePageZero(*z);
+      if(!encoded.ok())throw encoded.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
+        encoded.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::image_failure;
+      growth_images.push_back(std::move(*encoded.bytes));}
+    for(auto& member:directory_records)if(member.bootstrap.filespace_uuid==preallocation->filespace_uuid){
+      member.page_zero_generation=after.page_generation;member.root_set_generation=after.root_set_generation;member.total_pages=after.total_pages;}
+  }
   Pages directory_images(directory_count);
   if(directory_publication){
     for(auto& member:directory_records)for(std::size_t i=0;i<maps.size();++i)if(member.bootstrap.filespace_uuid==maps[i].header.filespace_uuid&&!maps[i].first_page)
@@ -1035,7 +1076,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   Pages ordered_maps;ordered_maps.reserve(maps.size());
   for(const auto i:map_order)ordered_maps.push_back(map_images[i]);
   auto bundle=EncodeNativeManagementControlBundle(ordered_maps,zero.bootstrap.database_uuid,zero.page_uuid,
-    bundle_object,watermark.operation_uuid,bundle_headers,budget,inventory_images,directory_images);ControlBundleError(bundle.error);
+    bundle_object,watermark.operation_uuid,bundle_headers,budget,inventory_images,directory_images,growth_images);ControlBundleError(bundle.error);
   plan.object_uuid=plan_object;plan.bootstrap_uuid=zero.page_uuid;plan.timeline_uuid=base.timeline_uuid;
   plan.operation_uuid=watermark.operation_uuid;plan.security_snapshot_uuid=record.security_snapshot_uuid;
   plan.intent=intent;plan.reservation_state_sha256=snapshot.state_sha256;
@@ -1069,6 +1110,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==16;})->sha256=plan_image.sha256;
   checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
   graph.checkpoint=std::move(checkpoint.bytes);graph.extent=std::move(extent.pages);graph.bundle=std::move(bundle.pages);
+  graph.growth=std::move(growth_images);
   return graph;
 }
 } // namespace
@@ -1093,6 +1135,87 @@ NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease
   auto result=action();result.effects=lease.effects();return result;
 }
 
+NativeGrowthPublicationResult PublishNativeFilespaceGrowthOnLease(NativePublicationLease& lease,
+    const NativeManagementOperation& record,u64 budget,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  NativeGrowthPublicationResult result;
+  try {
+    Require(!lease.impl_->installation_ambiguous,E::stale_base);
+    const auto decoded=ReadNativeStorageActionIntentFromOperation(record,budget);
+    if(!decoded.ok())throw decoded.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+      decoded.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::invalid_request;
+    const auto& request=*decoded.intent;const auto& owned=*lease.impl_->context;
+    result.request_uuid=request.request_uuid;result.operation_uuid=request.operation_uuid;
+    result.publication_attempt_uuid=lease.snapshot().watermark.operation_uuid;
+    Require(request.action==NativeStorageAction::physical_growth&&request.checkpoint.filespace_uuid==owned.zero.bootstrap.filespace_uuid&&
+      lease.snapshot().watermark.intent&&lease.snapshot().watermark.intent->recovery_profile==4&&
+      !lease.snapshot().watermark.abandonment&&lease.snapshot().watermark.watermark>lease.snapshot().selection.checkpoint_generation,E::invalid_request);
+    Require(issuer.binding().database_uuid==request.database_uuid&&issuer.binding().policy_snapshot_uuid==request.policy_snapshot_uuid,E::request_mismatch);
+    const u64 allowance=std::min(budget,request.maximum_retained_image_bytes);
+    Require(allowance>kNativeStorageActionIntentBytes+8*u64{request.page_size_bytes},E::resource_exhausted);
+    {const auto prior=ReconcileNativeFilespaceGrowthFromOpenDevices(request.database_uuid,owned.devices,
+        owned.zero.bootstrap.filespace_uuid,record,allowance-kNativeStorageActionIntentBytes);
+      if(!prior.ok())throw prior.error;
+      Require((prior.observation->disposition==NativePreallocationDisposition::pending_unanchored||
+        prior.observation->disposition==NativePreallocationDisposition::pending_anchored)&&
+        prior.observation->publication_attempt_uuid==result.publication_attempt_uuid,E::request_mismatch);
+      Require(SameBase(prior.observation->snapshot,lease.snapshot()),E::stale_base);}
+    {const auto history=ReadNativeManagementHistoryFromOpenDevices(request.database_uuid,owned.devices,
+        owned.zero.bootstrap.filespace_uuid,allowance-kNativeStorageActionIntentBytes);
+      if(!history.ok())throw history.error==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+        history.error==NativeManagementHistoryError::hash_failure?E::hash_failure:history.error==NativeManagementHistoryError::io_failure?E::io_failure:E::binding_mismatch;
+      Require(history.verified_image_bytes<=allowance-kNativeStorageActionIntentBytes,E::resource_exhausted);
+      const auto append=ValidateNativeManagementHistoryAppend(history,record,allowance-kNativeStorageActionIntentBytes-history.verified_image_bytes);
+      if(append!=NativeManagementHistoryError::none)throw append==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+        append==NativeManagementHistoryError::hash_failure?E::hash_failure:E::request_mismatch;}
+    const auto matched=CheckNativeStorageIntentCapacityFromOpenDevices(request,owned.devices,allowance);
+    if(!matched.ok())throw CapacityFailure(matched.capacity);
+    const u64 fixed=kNativeStorageActionIntentBytes+8*u64{request.page_size_bytes};
+    Require(matched.capacity.retained_image_bytes<=allowance-fixed,E::resource_exhausted);
+    const u64 work=allowance-fixed-matched.capacity.retained_image_bytes;
+    auto current=Prepare(request.database_uuid,owned.devices,owned.zero.bootstrap.filespace_uuid,work,true,false);
+    Require(SameBase(lease.snapshot(),current->snapshot),E::stale_base);
+    const auto target=std::find_if(current->devices.begin(),current->devices.end(),[&](const auto& f){return f.filespace_uuid==request.filespace_uuid;});
+    Require(target!=current->devices.end()&&!target->device->read_only(),E::invalid_device);
+    Pages growth;
+    if(current->snapshot.watermark.publication_plan){const auto& anchor=*current->snapshot.watermark.publication_plan;
+      Bytes raw(current->zero.bootstrap.page_size_bytes);const auto io=current->primary->ReadAt(anchor.page.page_number*u64{raw.size()},raw.data(),raw.size());
+      Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);const auto plan=DecodeNativePublicationPlan(raw);ControlPlanError(plan.error);
+      Require(plan.sha256==anchor.sha256&&plan.plan->intent.recovery_profile==4&&plan.plan->control_bundle,E::request_mismatch);
+      ControlPlanError(BindNativePublicationPlanToManagementRecord(*plan.plan,record));
+      auto original=disk::EncodeFilespacePageZero(current->zero);
+      if(!original.ok())throw original.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
+        original.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::image_failure;
+      auto bundle=ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(
+        {current->zero.bootstrap.filespace_uuid,current->zero.bootstrap.page_size_profile_uuid,current->primary},*plan.plan->control_bundle,
+        request.database_uuid,current->zero.page_uuid,*original.bytes,work);ControlBundleError(bundle.error);
+      growth=std::move(bundle.growth_images);result.preparation=ResumeNativeManagementControlGraphOnLease(lease,work);
+    }else{auto graph=AssembleInventory(*current,record,current->bound.checkpoint_inventory.inventory,work,issuer,&request);
+      result.preparation=InstallNativeManagementControlGraphOnLease(lease,graph.plan,graph.checkpoint,graph.extent,graph.bundle,work);
+      growth=std::move(graph.growth);}
+    if(!result.preparation.ok()){result.error=result.preparation.error;return result;}
+    Require(growth.size()==2&&growth.front().size()==request.page_size_bytes,E::binding_mismatch);
+    Bytes actual(request.page_size_bytes);const auto read=target->device->ReadAt(0,actual.data(),actual.size());
+    Require(read.ok()&&read.bytes_transferred==actual.size(),E::io_failure);Require(actual==growth.front(),E::preimage_changed);
+    const auto size=target->device->Size();Require(size.ok(),E::io_failure);
+    Require(size.size_bytes==request.current_total_pages*u64{request.page_size_bytes},E::preimage_changed);
+    lease.impl_->installation_ambiguous=true;result.physical_attempted=true;
+    result.physical=target->device->PreallocateExtent(request.first_page*u64{request.page_size_bytes},request.page_count*u64{request.page_size_bytes});
+    Require(result.physical->ok()&&result.physical->logical_size_extended,E::io_failure);
+    result.physical_sync_attempted=true;result.physical_sync=target->device->Sync();Require(result.physical_sync->ok(),E::io_failure);
+    const disk::FilespaceBootstrapBinding binding{request.database_uuid,request.filespace_uuid,request.page_size_profile_uuid};
+    result.page_zero=disk::WriteFilespacePageZeroGrowthBodyFromOpenDevice(*target->device,binding,growth.front(),growth.back(),work);
+    if(!result.page_zero->ok()){using B=disk::FilespacePageZeroBodyError;throw result.page_zero->error==B::hash_failure?E::hash_failure:
+      result.page_zero->error==B::resource_exhausted?E::resource_exhausted:result.page_zero->error==B::io_failure?E::io_failure:E::binding_mismatch;}
+    result.selection=RecoverNativeManagementCheckpointPublicationOnOpenDevices(request.database_uuid,current->devices,
+      current->zero.bootstrap.filespace_uuid,result.publication_attempt_uuid,*lease.snapshot().watermark.intent,work);
+    if(!result.selection.ok()){result.error=result.selection.error;return result;}
+    // Physical effects changed this lease's original context. Keep it consumed;
+    // subsequent work must acquire the ordinarily admitted selected snapshot.
+    result.error=E::none;
+  }catch(E e){result.error=e;}catch(const std::bad_alloc&){result.error=E::resource_exhausted;}
+   catch(const std::length_error&){result.error=E::resource_exhausted;}catch(...){result.error=E::io_failure;}
+  return result;
+}
 NativePreallocationPublicationResult PublishNativePreallocationOnLease(NativePublicationLease& lease,
     const NativeManagementOperation& record,u64 budget,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   NativePreallocationPublicationResult result;
@@ -1186,15 +1309,15 @@ NativePreallocationPublicationResult PublishNativePreallocationOnLease(NativePub
    catch(...){result.publication.error=E::io_failure;result.publication.snapshot.reset();}
   result.publication.effects=lease.effects();return result;
 }
-NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
+static NativePreallocationReconciliation ReconcileNativeStorageActionFromOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const Uuid& primary,const NativeManagementOperation& record,u64 budget) noexcept {
+    const Uuid& primary,const NativeManagementOperation& record,u64 budget,NativeStorageAction action,u16 profile) noexcept {
   try {
     const auto original=ReadNativeStorageActionIntentFromOperation(record,budget);
     if(!original.ok())throw original.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
       original.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::invalid_request;
     const auto& request=*original.intent;
-    Require(request.action==NativeStorageAction::page_preallocation&&request.database_uuid==database&&
+    Require(request.action==action&&request.database_uuid==database&&
       request.checkpoint.filespace_uuid==primary,E::invalid_request);
     Require(budget>kNativeStorageActionIntentBytes,E::resource_exhausted);
     auto current=Prepare(database,devices,primary,budget-kNativeStorageActionIntentBytes,false,false);
@@ -1213,13 +1336,13 @@ NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
     observed.request_uuid=request.request_uuid;observed.operation_uuid=request.operation_uuid;
     observed.snapshot=current->snapshot;
     for(const auto& entry:history.entries){
-      if(entry.plan.intent.recovery_profile!=3)continue;
+      if(entry.plan.intent.recovery_profile!=3&&entry.plan.intent.recovery_profile!=4)continue;
       const auto retained_request=ReadNativeStorageActionIntentFromOperation(entry.record,budget);
       if(!retained_request.ok())throw retained_request.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
         retained_request.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
       const auto& actual=*retained_request.intent;
       if(actual.request_uuid!=request.request_uuid&&actual.operation_uuid!=request.operation_uuid)continue;
-      Require(actual.request_uuid==request.request_uuid&&actual.operation_uuid==request.operation_uuid&&
+      Require(actual.action==action&&actual.request_uuid==request.request_uuid&&actual.operation_uuid==request.operation_uuid&&
         entry.record.normalized_request_bytes==record.normalized_request_bytes,E::request_mismatch);
       Require(observed.disposition!=NativePreallocationDisposition::selected,E::binding_mismatch);
       observed.disposition=NativePreallocationDisposition::selected;
@@ -1231,8 +1354,8 @@ NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
     if(observed.disposition!=NativePreallocationDisposition::selected&&
         pending.watermark>current->snapshot.selection.checkpoint_generation&&!pending.abandonment){
       const NativePublicationIntent expected{record.initiator_uuid,record.request_context_uuid,
-        record.policy_snapshot_uuid,record.normalized_request_sha256,record.initiator_kind,3};
-      if(pending.intent&&pending.intent->recovery_profile==3&&pending.publication_plan){
+        record.policy_snapshot_uuid,record.normalized_request_sha256,record.initiator_kind,profile};
+      if(pending.intent&&(pending.intent->recovery_profile==3||pending.intent->recovery_profile==4)&&pending.publication_plan){
         const auto& anchor=*pending.publication_plan;const u64 size=current->zero.bootstrap.page_size_bytes;
         Require(history.verified_image_bytes<=budget-kNativeStorageActionIntentBytes-retained,E::resource_exhausted);
         const u64 remaining=budget-kNativeStorageActionIntentBytes-retained-history.verified_image_bytes;
@@ -1254,7 +1377,7 @@ NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
         if(!actual.ok())throw actual.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
           actual.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
         if(actual.intent->request_uuid==request.request_uuid||actual.intent->operation_uuid==request.operation_uuid)
-          Require(actual.intent->request_uuid==request.request_uuid&&actual.intent->operation_uuid==request.operation_uuid&&
+          Require(actual.intent->action==action&&actual.intent->request_uuid==request.request_uuid&&actual.intent->operation_uuid==request.operation_uuid&&
             extent.record->normalized_request_bytes==record.normalized_request_bytes,E::request_mismatch);
       }
       if(pending.intent&&*pending.intent==expected){
@@ -1267,5 +1390,15 @@ NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
     return {E::none,std::move(observed)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePreallocationReconciliation ReconcileNativePreallocationFromOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,
+    const Uuid& primary,const NativeManagementOperation& record,u64 budget) noexcept {
+  return ReconcileNativeStorageActionFromOpenDevices(database,supplied,primary,record,budget,NativeStorageAction::page_preallocation,3);
+}
+NativePreallocationReconciliation ReconcileNativeFilespaceGrowthFromOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,
+    const Uuid& primary,const NativeManagementOperation& record,u64 budget) noexcept {
+  return ReconcileNativeStorageActionFromOpenDevices(database,supplied,primary,record,budget,NativeStorageAction::physical_growth,4);
 }
 } // namespace scratchbird::storage::database

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_publication_recovery.hpp"
 #include "native_management_control_authority.hpp"
+#include "native_management_control_allocation.hpp"
+#include "native_storage_action_intent.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include "transaction_inventory_page.hpp"
@@ -196,5 +198,201 @@ NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDe
     const auto selected=EncodeNativeCheckpointSelection(final.snapshot->selection);SelectionBackend(selected.error);Require(selected.ok()&&selected.bytes==images[0],E::binding_mismatch);
     effects.selected_graph_verified=true;final.effects=effects;return final;
   }catch(E e){return {e,{},effects};}catch(const std::bad_alloc&){return {E::resource_exhausted,{},effects};}catch(const std::length_error&){return {E::resource_exhausted,{},effects};}catch(...){return {E::io_failure,{},effects};}
+}
+NativeGrowthRecoveryResult RecoverNativeFilespaceGrowthOnOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,
+  const Uuid& attempt,const NativeManagementOperation& record,u64 budget) noexcept {
+  NativeGrowthRecoveryResult result;result.publication_attempt_uuid=attempt;
+  try {
+    const auto decoded=ReadNativeStorageActionIntentFromOperation(record,budget);
+    if(!decoded.ok())throw decoded.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+      decoded.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::invalid_request;
+    const auto& request=*decoded.intent;
+    result.request_uuid=request.request_uuid;result.operation_uuid=request.operation_uuid;
+    Require(V7(attempt)&&request.database_uuid==database&&request.checkpoint.filespace_uuid==primary&&
+      request.action==NativeStorageAction::physical_growth&&!supplied.empty(),E::invalid_request);
+    Recovery c;c.database=database;c.primary=primary;c.budget=std::min(budget,request.maximum_retained_image_bytes);c.files=supplied;
+    c.Charge(kNativeStorageActionIntentBytes);
+    std::sort(c.files.begin(),c.files.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    std::set<disk::FileDevice*> handles;std::map<Uuid,Bytes> actual,contexts;
+    std::map<Uuid,u64> sizes;disk::FileDevice* target_device=nullptr;
+    for(std::size_t i=0;i<c.files.size();++i){const auto& f=c.files[i];const auto* profile=disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid);
+      Require(V7(f.filespace_uuid)&&profile&&f.device&&handles.insert(f.device).second&&(!i||c.files[i-1].filespace_uuid!=f.filespace_uuid),E::invalid_device);
+      c.guards.push_back(f.device->AcquireOperationGuard());Require(f.device->is_open(),E::invalid_device);
+      c.Charge(12,profile->page_size_bytes);const auto size=f.device->Size();Require(size.ok(),E::io_failure);sizes.emplace(f.filespace_uuid,size.size_bytes);
+      Bytes raw(profile->page_size_bytes);const auto io=f.device->ReadAt(0,raw.data(),raw.size());Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);actual.emplace(f.filespace_uuid,std::move(raw));
+      if(f.filespace_uuid==primary){c.device=f.device;c.size=profile->page_size_bytes;}
+      if(f.filespace_uuid==request.filespace_uuid){target_device=f.device;Require(f.page_size_profile_uuid==request.page_size_profile_uuid,E::binding_mismatch);}
+    }
+    Require(c.device&&target_device&&!c.device->read_only()&&!target_device->read_only(),E::invalid_device);c.Charge(40,c.size);
+    const auto primary_file=std::find_if(c.files.begin(),c.files.end(),[&](const auto& f){return f.filespace_uuid==primary;});
+    result.phase=NativeGrowthRecoveryPhase::anchor;
+    const auto probe=disk::ProbeFilespaceRecoveryRootCandidatesFromOpenDevice(*c.device,{database,primary,primary_file->page_size_profile_uuid},c.budget-c.used);
+    if(!probe.ok())throw probe.error==disk::FilespaceRecoveryRootError::resource_exhausted?E::resource_exhausted:
+      probe.error==disk::FilespaceRecoveryRootError::hash_failure?E::hash_failure:probe.error==disk::FilespaceRecoveryRootError::io_failure?E::io_failure:
+      probe.error==disk::FilespaceRecoveryRootError::encrypted_requires_authority?E::encrypted_requires_authority:
+      probe.error==disk::FilespaceRecoveryRootError::cluster_requires_authority?E::cluster_requires_authority:E::bootstrap_failure;
+    c.zero.total_pages=probe.observed_size_bytes/c.size;
+    std::array<disk::FilespaceRootReference,4> roots;std::array<Bytes,4> slots;
+    for(unsigned i=0;i<4;++i){const auto at=std::find_if(probe.roots.begin(),probe.roots.end(),[&](const auto& r){return r.kind==18+i;});
+      Require(at!=probe.roots.end()&&at->filespace_uuid==primary&&at->page_size_profile_uuid==primary_file->page_size_profile_uuid,E::binding_mismatch);roots[i]=*at;slots[i]=c.Read(at->page_number);}
+    const auto watermarks=ClassifyNativePublicationWatermarkPair(slots[2],slots[3]);WatermarkError(watermarks.error);const auto& w=*watermarks.state;
+    const NativePublicationIntent intent{record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,record.normalized_request_sha256,record.initiator_kind,4};
+    Require(w.intent&&*w.intent==intent&&w.operation_uuid==attempt&&!w.abandonment&&w.publication_plan,E::request_mismatch);
+    const auto& anchor=*w.publication_plan;Require(anchor.page.filespace_uuid==primary&&anchor.page.page_size_profile_uuid==primary_file->page_size_profile_uuid,E::binding_mismatch);
+    const auto plan_bytes=c.Read(anchor.page.page_number);const auto image=DecodeNativePublicationPlan(plan_bytes);
+    if(!image.ok())throw image.error==NativePublicationPlanError::resource_exhausted?E::resource_exhausted:image.error==NativePublicationPlanError::hash_failure?E::hash_failure:E::binding_mismatch;
+    const auto& p=*image.plan;
+    Require(p.base_selection_generation&&p.management_extent&&p.control_bundle&&p.control_bundle->growth_image_count==2&&
+      p.header.database_uuid==database&&Self(p.header)==anchor.page&&image.sha256==anchor.sha256&&p.object_uuid==anchor.object_uuid&&
+      p.bootstrap_uuid==w.bootstrap_uuid&&p.timeline_uuid==w.timeline_uuid&&p.operation_uuid==attempt&&p.intent==intent&&
+      p.reservation_state_sha256==anchor.reservation_state_sha256&&p.reserved_generation==w.watermark&&
+      p.base_checkpoint==w.base_checkpoint&&p.base_checkpoint_object_uuid==w.base_checkpoint_object_uuid&&p.base_checkpoint_sha256==w.base_checkpoint_sha256&&
+      p.base_checkpoint_generation==w.base_checkpoint_generation&&p.base_root_set_generation==w.base_root_set_generation,E::binding_mismatch);
+    const auto read_run=[&](const auto& root){Require(root.first.filespace_uuid==primary&&root.first.page_size_profile_uuid==primary_file->page_size_profile_uuid&&
+        root.first.page_number<c.zero.total_pages&&root.page_count<=c.zero.total_pages-root.first.page_number,E::binding_mismatch);
+      c.Charge(root.page_count,4*c.size);std::vector<Bytes> pages;pages.reserve(root.page_count);
+      for(u64 i=0;i<root.page_count;++i)pages.push_back(c.Read(root.first.page_number+i));return pages;};
+    result.phase=NativeGrowthRecoveryPhase::reconstruction;
+    const auto extent=read_run(*p.management_extent),bundle=read_run(*p.control_bundle);
+    const auto retained=DecodeNativeManagementExtent(extent,*p.management_extent,database,p.bootstrap_uuid,c.budget-c.used);
+    if(!retained.ok())throw retained.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:retained.error==NativeManagementExtentError::hash_failure?E::hash_failure:E::binding_mismatch;
+    Require(*retained.record==record,E::request_mismatch);
+    const auto bound_record=BindNativePublicationPlanToManagementRecord(p,record);
+    if(bound_record!=NativePublicationPlanError::none)throw bound_record==NativePublicationPlanError::resource_exhausted?E::resource_exhausted:bound_record==NativePublicationPlanError::hash_failure?E::hash_failure:E::request_mismatch;
+    const auto contents=DecodeNativeManagementControlBundle(bundle,*p.control_bundle,database,p.bootstrap_uuid,c.budget-c.used);
+    if(!contents.ok())throw contents.error==NativeManagementControlBundleError::resource_exhausted?E::resource_exhausted:contents.error==NativeManagementControlBundleError::hash_failure?E::hash_failure:E::binding_mismatch;
+    Require(contents.growth_images.size()==2&&contents.inventory_images.empty()&&!contents.directory_images.empty(),E::binding_mismatch);
+    for(const auto& f:c.files){const auto& raw=f.filespace_uuid==request.filespace_uuid?contents.growth_images.front():actual.at(f.filespace_uuid);
+      const disk::FilespaceBootstrapBinding binding{database,f.filespace_uuid,f.page_size_profile_uuid};const auto zero=disk::DecodeFilespacePageZero(raw.data(),raw.size(),&binding);
+      if(!zero.ok())throw zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:E::bootstrap_failure;
+      Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required),E::cluster_requires_authority);
+      Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted),E::encrypted_requires_authority);
+      const auto bytes=zero.record->total_pages*u64{raw.size()};Require(sizes.at(f.filespace_uuid)>=bytes,E::preimage_changed);
+      if(f.filespace_uuid!=request.filespace_uuid)Require(sizes.at(f.filespace_uuid)==bytes,E::preimage_changed);
+      const auto& observed=actual.at(f.filespace_uuid);
+      Require(raw.size()==observed.size()&&std::equal(raw.begin(),raw.begin()+4096,observed.begin())&&std::equal(raw.begin()+4480,raw.end(),observed.begin()+4480),E::preimage_changed);
+      contexts.emplace(f.filespace_uuid,raw);if(f.filespace_uuid==primary)c.zero=*zero.record;
+    }
+    Require(c.zero.page_uuid==p.bootstrap_uuid&&w.header.database_uuid==database&&w.header.filespace_uuid==primary&&
+      w.header.page_size_profile_uuid==primary_file->page_size_profile_uuid&&w.object_uuid==roots[2].object_uuid&&w.object_uuid==roots[3].object_uuid,E::binding_mismatch);
+    result.original_extent_bytes=request.current_total_pages*u64{request.page_size_bytes};
+    result.target_extent_bytes=(request.current_total_pages+request.page_count)*u64{request.page_size_bytes};result.observed_extent_bytes=sizes.at(request.filespace_uuid);
+    Require(result.observed_extent_bytes>=result.original_extent_bytes&&result.observed_extent_bytes<=result.target_extent_bytes,E::preimage_changed);
+    const auto observed_body=disk::DecodeFilespacePageZero(actual.at(request.filespace_uuid).data(),request.page_size_bytes);
+    if(observed_body.error==disk::FilespacePageZeroError::hash_provider_failure)throw E::hash_failure;
+    if(observed_body.error==disk::FilespacePageZeroError::resource_exhausted)throw E::resource_exhausted;
+    if(observed_body.ok())Require(actual.at(request.filespace_uuid)==contents.growth_images.front()||actual.at(request.filespace_uuid)==contents.growth_images.back(),E::preimage_changed);
+    const auto base_bytes=c.Read(p.base_checkpoint.page_number),target_bytes=c.Read(p.target_checkpoint.page_number);
+    const auto base=DecodeNativeCheckpointRoot(base_bytes),target=DecodeNativeCheckpointRoot(target_bytes);
+    if(base.error==NativeCheckpointError::hash_failure||target.error==NativeCheckpointError::hash_failure)throw E::hash_failure;
+    if(base.error==NativeCheckpointError::resource_exhausted||target.error==NativeCheckpointError::resource_exhausted)throw E::resource_exhausted;
+    Require(base.ok()&&target.ok()&&Hash(base_bytes)==p.base_checkpoint_sha256,E::checkpoint_failure);
+    const NativeManagementCheckpointAnchor base_anchor{p.base_checkpoint,p.base_checkpoint_object_uuid,p.base_checkpoint_sha256,p.base_checkpoint_generation,p.base_root_set_generation,p.timeline_uuid};
+    result.phase=NativeGrowthRecoveryPhase::base_graph;
+    const auto graph=ReadNativeManagementControlGraphAtHistoricalContextFromOpenDevices(database,c.files,primary,base_anchor,contexts,c.budget-c.used);
+    if(!graph.ok())throw graph.error==NativeManagementControlAuthorityError::resource_exhausted?E::resource_exhausted:
+      graph.error==NativeManagementControlAuthorityError::hash_failure?E::hash_failure:graph.error==NativeManagementControlAuthorityError::io_failure?E::io_failure:E::allocation_mismatch;
+    c.Charge(graph.verified_image_bytes);
+    const auto history=ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(database,c.files,primary,base_anchor,contexts,c.budget-c.used);
+    if(!history.ok())throw history.error==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+      history.error==NativeManagementHistoryError::hash_failure?E::hash_failure:history.error==NativeManagementHistoryError::io_failure?E::io_failure:E::binding_mismatch;
+    c.Charge(history.verified_image_bytes);
+    const auto append=ValidateNativeManagementHistoryAppend(history,record,c.budget-c.used);
+    if(append!=NativeManagementHistoryError::none)throw append==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+      append==NativeManagementHistoryError::hash_failure?E::hash_failure:E::request_mismatch;
+    for(const auto& entry:history.entries)if(entry.plan.intent.recovery_profile==3||entry.plan.intent.recovery_profile==4){
+      const auto old=ReadNativeStorageActionIntentFromOperation(entry.record,c.budget-c.used);
+      if(!old.ok())throw old.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:old.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
+      Require(old.intent->request_uuid!=request.request_uuid&&old.intent->operation_uuid!=request.operation_uuid,E::request_mismatch);
+    }
+    const auto& dr=Root(*base.root,3);const disk::FilespaceRootReference directory_ref{5,dr.page_type,dr.page.filespace_uuid,dr.page.page_number,dr.page.page_generation,dr.page.page_size_profile_uuid,dr.object_uuid};
+    std::vector<page::NativeHistoricalFilespaceImage> historical;for(const auto& [fs,raw]:contexts)historical.push_back({fs,raw});
+    const auto directory=page::ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(database,c.files,directory_ref,dr.sha256,historical,c.budget-c.used);
+    if(!directory.ok())throw directory.error==page::NativeDirectoryError::resource_exhausted?E::resource_exhausted:directory.error==page::NativeDirectoryError::hash_failure?E::hash_failure:directory.error==page::NativeDirectoryError::io_failure?E::io_failure:E::binding_mismatch;
+    std::set<Uuid> directory_members;
+    for(const auto& page:directory.pages)for(const auto& member:page.directory->records)
+      Require(contexts.contains(member.bootstrap.filespace_uuid)&&directory_members.insert(member.bootstrap.filespace_uuid).second,E::binding_mismatch);
+    Require(directory_members.size()==contexts.size(),E::binding_mismatch);
+    c.Charge(directory.retained_image_bytes);NativeManagementDirectoryBase original;std::vector<Bytes> maps;std::set<Uuid> changed_members;
+    for(const auto& raw:contents.allocation_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);
+      if(!h.ok())throw h.error==disk::NativeCommonPageHeaderError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
+      changed_members.insert(h.header->filespace_uuid);}
+    Require(changed_members.contains(primary)&&changed_members.contains(request.filespace_uuid),E::binding_mismatch);
+    for(const auto& fs:changed_members){const auto at=contexts.find(fs);Require(at!=contexts.end(),E::binding_mismatch);original.page_zero_images.push_back(at->second);}
+    for(const auto& page:directory.pages)original.directory_images.push_back(page.bytes);
+    const auto primary_maps=c.Maps(*base.root,&contexts.at(primary));for(const auto& page:primary_maps.pages)maps.push_back(page.bytes);
+    for(const auto& f:c.files)if(f.filespace_uuid!=primary&&changed_members.contains(f.filespace_uuid)){const page::NativeFilespaceDirectoryRecord* member=nullptr;
+      for(const auto& page:directory.pages)for(const auto& m:page.directory->records)if(m.bootstrap.filespace_uuid==f.filespace_uuid)member=&m;
+      Require(member,E::binding_mismatch);disk::FilespaceRootReference root;std::array<byte,32> hash{};
+      if(member->allocation_root){const auto& r=*member->allocation_root;root={3,3,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};hash=r.sha256;}
+      else{const auto z=disk::DecodeFilespacePageZero(contexts.at(f.filespace_uuid).data(),contexts.at(f.filespace_uuid).size());
+        if(!z.ok())throw z.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:z.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::binding_mismatch;
+        const auto at=std::find_if(z.record->roots.begin(),z.record->roots.end(),[](const auto& r){return r.kind==3;});Require(at!=z.record->roots.end(),E::binding_mismatch);root=*at;
+        c.Charge(z.record->bootstrap.page_size_bytes);Bytes raw(z.record->bootstrap.page_size_bytes);const auto io=f.device->ReadAt(root.page_number*u64{raw.size()},raw.data(),raw.size());Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);hash=Hash(raw);}
+      const auto chain=page::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(*f.device,{database,f.filespace_uuid,f.page_size_profile_uuid},root,hash,contexts.at(f.filespace_uuid),c.budget-c.used);
+      if(!chain.ok())throw chain.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:chain.error==page::NativeAllocationError::hash_failure?E::hash_failure:chain.error==page::NativeAllocationError::io_failure?E::io_failure:E::allocation_mismatch;
+      c.Charge(chain.retained_image_bytes);for(const auto& page:chain.pages)maps.push_back(page.bytes);
+    }
+    result.phase=NativeGrowthRecoveryPhase::allocation_delta;
+    const auto delta=ValidateNativeManagementDirectoryControlAllocation(base_bytes,target_bytes,plan_bytes,extent,maps,contents.allocation_images,original,c.budget-c.used,bundle);
+    if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:E::allocation_mismatch;
+    const auto& ir=Root(*base.root,1);const disk::FilespaceRootReference inventory_ref{4,ir.page_type,ir.page.filespace_uuid,ir.page.page_number,ir.page.page_generation,ir.page.page_size_profile_uuid,ir.object_uuid};
+    const auto inventory=page::ReadNativeTransactionInventoryChainAtHistoricalRootFromOpenDevices(database,c.files,inventory_ref,ir.sha256,contexts,c.budget-c.used);
+    if(!inventory.ok())throw inventory.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:inventory.error==page::NativeInventoryError::hash_failure?E::hash_failure:inventory.error==page::NativeInventoryError::io_failure?E::io_failure:E::checkpoint_failure;
+    c.Charge(inventory.retained_image_bytes);
+    const auto transaction=[&](const Uuid& uuid,u64 local,bool committed){const auto tx=mga::LookupLocalTransaction(inventory.inventory,mga::MakeLocalTransactionId(local));
+      Require(tx.ok()&&tx.entry.identity.transaction_uuid.value==uuid&&tx.entry.identity.scope==mga::TransactionScope::local_node&&(!committed||mga::HasCommittedInventoryOutcome(tx.entry)),E::allocation_mismatch);};
+    for(const auto& raw:maps){const auto image=page::DecodeNativeAllocationMap(raw);
+      if(!image.ok())throw image.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:image.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::allocation_mismatch;
+      const auto& map=*image.map;if(map.creator_operation_uuid.is_nil())transaction(map.creator_transaction_uuid,map.creator_local_transaction_id,true);
+      else Require(MatchesNativeManagementControlMap(graph,map),E::allocation_mismatch);
+      for(const auto& r:map.records){if(r.creator_operation_uuid.is_nil())transaction(r.creator_transaction_uuid,r.creator_local_transaction_id,false);
+        else Require(MatchesNativeManagementControlAllocation(graph,map.header.filespace_uuid,r,map.states[r.page_number-map.first_page]),E::allocation_mismatch);}
+    }
+    result.phase=NativeGrowthRecoveryPhase::installed_graph;
+    const auto installed=[&](const Bytes& expected){const auto h=disk::DecodeNativeCommonPageHeader(expected.data(),128);
+      if(!h.ok())throw h.error==disk::NativeCommonPageHeaderError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
+      const auto file=std::find_if(c.files.begin(),c.files.end(),[&](const auto& f){return f.filespace_uuid==h.header->filespace_uuid;});Require(file!=c.files.end(),E::binding_mismatch);
+      c.Charge(expected.size());Bytes raw(expected.size());const auto io=file->device->ReadAt(h.header->page_number*u64{raw.size()},raw.data(),raw.size());Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);Require(raw==expected,E::preimage_changed);};
+    for(const auto& raw:contents.allocation_images)installed(raw);for(const auto& raw:contents.directory_images)installed(raw);
+    // Original slot allocations, and at least one valid old/new selector, bind
+    // the mutable recovery locations before admitting physical work.
+    std::array<unsigned,2> classification{};
+    for(unsigned i=0;i<4;++i){const auto& r=Allocated(primary_maps,roots[i]);Require(r.creator_operation_uuid.is_nil(),E::allocation_mismatch);
+      transaction(r.creator_transaction_uuid,r.creator_local_transaction_id,true);
+      const disk::NativeCommonPageHeader header{c.zero.bootstrap.page_size_bytes,roots[i].page_type,database,primary,r.page_uuid,roots[i].page_number,roots[i].page_generation,0,c.zero.bootstrap.page_size_profile_uuid};
+      const auto common=disk::DecodeNativeCommonPageHeader(slots[i].data(),128);if(common.error==disk::NativeCommonPageHeaderError::resource_exhausted)throw E::resource_exhausted;
+      if(i>=2||common.ok())Header(slots[i],header);if(i>=2)continue;
+      const auto slot=DecodeNativeCheckpointSelection(slots[i]);SelectionBackend(slot.error);if(!slot.ok())continue;
+      Require(slot.selection->object_uuid==roots[i].object_uuid&&slot.selection->bootstrap_uuid==c.zero.page_uuid,E::binding_mismatch);
+      if(OldSelection(*slot.selection,p,*base.root))classification[i]=1;
+      else{const auto& s=*slot.selection;Require(s.selection_generation==*p.base_selection_generation+1&&s.previous_selection_generation==*p.base_selection_generation&&
+        s.publication_uuid==attempt&&s.checkpoint==p.target_checkpoint&&s.checkpoint_object_uuid==p.target_checkpoint_object_uuid&&s.checkpoint_sha256==Hash(target_bytes)&&
+        s.checkpoint_generation==p.reserved_generation&&s.root_set_generation==p.target_root_set_generation&&s.timeline_uuid==p.timeline_uuid&&
+        s.previous_checkpoint==p.base_checkpoint&&s.previous_checkpoint_object_uuid==p.base_checkpoint_object_uuid&&s.previous_checkpoint_sha256==p.base_checkpoint_sha256,E::binding_mismatch);classification[i]=2;}
+    }
+    Require((classification[0]||classification[1])&&!(classification[0]==1&&classification[1]==2),E::image_failure);
+    if(classification[0]&&classification[1]){const auto pair=ClassifyNativeCheckpointSelectionPair(slots[0],slots[1]);SelectionBackend(pair.error);Require(classification[0]==classification[1]?pair.ok():pair.error==NativeCheckpointSelectionError::repair_required,E::image_failure);}
+    for(const auto& f:c.files){const auto size=f.device->Size();Require(size.ok(),E::io_failure);Require(size.size_bytes==sizes.at(f.filespace_uuid),E::preimage_changed);
+      Bytes raw(actual.at(f.filespace_uuid).size());const auto io=f.device->ReadAt(0,raw.data(),raw.size());Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);Require(raw==actual.at(f.filespace_uuid),E::preimage_changed);}
+    for(unsigned i=0;i<4;++i)Require(c.Read(roots[i].page_number)==slots[i],E::preimage_changed);
+    result.original_graph_verified=true;
+    result.already_selected=classification[0]==2&&classification[1]==2;
+    if(result.already_selected)Require(result.observed_extent_bytes==result.target_extent_bytes&&actual.at(request.filespace_uuid)==contents.growth_images.back(),E::preimage_changed);
+    else{
+      result.phase=NativeGrowthRecoveryPhase::physical;
+      result.physical_attempted=true;result.physical=target_device->PreallocateExtent(request.first_page*u64{request.page_size_bytes},request.page_count*u64{request.page_size_bytes});Require(result.physical->ok(),E::io_failure);
+      result.physical_sync_attempted=true;result.physical_sync=target_device->Sync();Require(result.physical_sync->ok(),E::io_failure);
+      result.phase=NativeGrowthRecoveryPhase::page_zero;
+      result.page_zero=disk::RepairFilespacePageZeroGrowthBodyFromOpenDevice(*target_device,{database,request.filespace_uuid,request.page_size_profile_uuid},contents.growth_images.front(),contents.growth_images.back(),c.budget-c.used);
+      if(!result.page_zero->ok())throw result.page_zero->error==disk::FilespacePageZeroBodyError::resource_exhausted?E::resource_exhausted:result.page_zero->error==disk::FilespacePageZeroBodyError::hash_failure?E::hash_failure:result.page_zero->error==disk::FilespacePageZeroBodyError::io_failure?E::io_failure:E::binding_mismatch;
+    }
+    result.phase=NativeGrowthRecoveryPhase::selection;
+    result.selection=RecoverNativeManagementCheckpointPublicationOnOpenDevices(database,c.files,primary,attempt,intent,c.budget-c.used);
+    result.error=result.selection.error;
+    if(result.ok())result.phase=NativeGrowthRecoveryPhase::complete;
+  }catch(E e){result.error=e;}catch(const std::bad_alloc&){result.error=E::resource_exhausted;}catch(const std::length_error&){result.error=E::resource_exhausted;}catch(...){result.error=E::io_failure;}
+  return result;
 }
 } // namespace scratchbird::storage::database

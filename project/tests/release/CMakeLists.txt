@@ -349,6 +349,12 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     set_tests_properties(native_directory_owned_secondary_subdivision_${primary}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;secondary_preallocation;map_subdivision;not_runtime_acceptance")
     foreach(secondary RANGE 0 4)
+      foreach(mode growth growth-subdivision growth-admission growth-close growth-physical-recovery growth-recovery-refusals growth-crashes)
+        add_test(NAME native_directory_owned_${mode}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-${mode} ${primary} ${secondary})
+        set_tests_properties(native_directory_owned_${mode}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 600
+          LABELS "storage;binary_uuid;real_files;owned_growth;original_operation_recovery;not_runtime_acceptance")
+      endforeach()
       add_test(NAME native_directory_growth_staging_crashes_${primary}_${secondary}_gate
         COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-growth-staging-crashes ${primary} ${secondary})
       set_tests_properties(native_directory_growth_staging_crashes_${primary}_${secondary}_gate PROPERTIES TIMEOUT 600
@@ -386,6 +392,21 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-directory-inventory ${primary})
     set_tests_properties(native_directory_owned_inventory_${primary}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;owned_directory_assembly;not_runtime_acceptance")
+  endforeach()
+  foreach(route RANGE 0 2)
+    if(route EQUAL 0)
+      set(growth_recovery_last 0)
+    elseif(route EQUAL 1)
+      set(growth_recovery_last 19)
+    else()
+      set(growth_recovery_last 31)
+    endif()
+    foreach(shard RANGE 0 ${growth_recovery_last})
+      add_test(NAME native_directory_owned_growth_recovery_faults_${route}_${shard}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-growth-recovery-faults ${route} ${shard})
+      set_tests_properties(native_directory_owned_growth_recovery_faults_${route}_${shard}_gate PROPERTIES TIMEOUT 600
+        LABELS "storage;binary_uuid;real_files;owned_growth;original_operation_recovery;fault_injection;not_runtime_acceptance")
+    endforeach()
   endforeach()
   foreach(route RANGE 0 5)
     set(secondary_fault_last 0)
