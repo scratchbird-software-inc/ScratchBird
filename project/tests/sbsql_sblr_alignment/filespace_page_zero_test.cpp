@@ -3293,6 +3293,15 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       bind_storage(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"storage policy source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     auto catalog_root=RootExample(p);catalog_root.creator_transaction_uuid=Id(98);
     catalog_root.roots[0].page.page_number=30;
+    auto configuration_root=catalog_root,security_root=catalog_root;
+    configuration_root.root_kind=6;configuration_root.header.page_type=10;
+    configuration_root.header.page_number=16;configuration_root.header.page_generation=106;
+    configuration_root.header.page_uuid=Id(152);configuration_root.object_uuid=Id(46);
+    configuration_root.roots={catalog_root.roots[4]};
+    security_root.root_kind=7;security_root.header.page_type=11;
+    security_root.header.page_number=17;security_root.header.page_generation=107;
+    security_root.header.page_uuid=Id(153);security_root.object_uuid=Id(47);
+    security_root.roots={catalog_root.roots[3]};
     leaf.body.rows.clear();
     page::NativeAllocationMap map;map.header={sizes[profile],3,Id(1),fs,Id(70),13,103,0,Profile(profile)};map.object_uuid=Id(43);map.map_generation=5;map.capacity_generation=6;map.total_pages=64;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
     for(unsigned n:{0u,13u,21u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(120+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
@@ -3309,6 +3318,13 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
       cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
       put(first,12,sizes[p],cb);put(first,30,sizes[p],LeafOracle(source_leaf));
+      if(storage_policy){
+        const auto configuration=RootOracle(configuration_root),security=RootOracle(security_root);
+        cp.roots[5].page={Id(2),16,106,Profile(p)};cp.roots[5].object_uuid=Id(46);
+        cp.roots[6].page={Id(2),17,107,Profile(p)};cp.roots[6].object_uuid=Id(47);
+        cp.roots[5].sha256=WholeRootHash(configuration);cp.roots[6].sha256=WholeRootHash(security);
+        put(first,16,sizes[p],configuration);put(first,17,sizes[p],security);
+      }
       cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
       cp.roots[2].page={Id(2),15,105,Profile(p)};cp.roots[2].object_uuid=Id(45);cp.roots[2].sha256=WholeRootHash(dbb);
       if(primary){cp.roots[3].page={fs,13,103,Profile(profile)};cp.roots[3].object_uuid=Id(43);cp.roots[3].sha256=WholeRootHash(ab);}
@@ -3672,7 +3688,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       persist();const auto attached_rows=source_leaf.body.rows;
       const auto resolve=[&](u64 limit,const auto& members){return db::ResolveNativeStoragePolicyFromOpenDevices(Id(1),members,CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,limit);};
       const auto ceiling=128*std::max(sizes[p],sizes[profile]);
-      const auto resolution_good=[&](const auto& r){if(!r.ok())std::cerr<<"resolution error="<<static_cast<unsigned>(r.error)<<" capacity="<<static_cast<unsigned>(r.capacity.error)<<" catalog="<<static_cast<unsigned>(r.policy.source.error)<<'\n';
+      const auto resolution_good=[&](const auto& r){if(!r.ok())std::cerr<<"resolution error="<<static_cast<unsigned>(r.error)<<" capacity="<<static_cast<unsigned>(r.capacity.error)<<" catalog="<<static_cast<unsigned>(r.policy.source.error)<<" roots="<<static_cast<unsigned>(r.policy_roots.error)<<" root_image="<<static_cast<unsigned>(r.policy_roots.catalog_error)<<'\n';
         Check(r.ok()&&r.selection->attachment.attachment_uuid==Id(240)&&r.selection->attachment_version_uuid==Id(243)&&r.selection->profile_version_uuid==Id(245)&&
           r.selection->profile_generation==1&&r.selection->profile.filespace_uuid.value==fs&&r.selection->profile.page_size==sizes[profile]&&
           r.policy.policy->policy_uuid==original.record->policy_uuid&&!r.policy.policy->enabled&&r.policy.version_uuid==Id(170)&&
@@ -3681,6 +3697,55 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         "invalid native selection has no partial result expected="+std::to_string(static_cast<unsigned>(error))+" actual="+std::to_string(static_cast<unsigned>(r.error)));};
       stage_writes=stage_syncs=0;auto resolved=resolve(ceiling,devices);resolution_good(resolved);
       Check(!stage_writes&&!stage_syncs,"resolution performs no physical effects");
+      // A valid policy/attachment and allocation map cannot substitute for the
+      // actual dedicated configuration and security roots of this checkpoint.
+      for(const auto slot:{16u,17u}){
+        auto corrupt=actual(first,slot,sizes[p]);corrupt.back()^=1;put(first,slot,sizes[p],corrupt);
+        stage_writes=stage_syncs=0;const auto refused=resolve(ceiling,devices);
+        Check(!refused.ok()&&!refused.selection&&!refused.policy.policy,
+          "native policy resolution rejects corrupt actual configuration/security roots");
+        Check(refused.error==RE::policy_roots_failure&&refused.policy_roots.error==db::NativeCheckpointError::catalog_failure&&
+          refused.policy_roots.catalog_error==page::NativeCatalogRootError::invalid_family,
+          "corrupt policy root preserves exact physical decoder failure");
+        Check(!stage_writes&&!stage_syncs&&actual(first,slot,sizes[p])==corrupt,
+          "source refusal neither rewrites nor synchronizes corrupt policy roots");persist();
+      }
+      for(auto* root:{&configuration_root,&security_root}){
+        const auto saved=*root;
+        for(unsigned fault=0;fault<5;++fault){
+          *root=saved;
+          if(fault==0)++root->roots.front().page.page_number;
+          if(fault==1){root->creator_local_transaction_id=next_reader.identity.local_id.value;root->creator_transaction_uuid=next_reader.identity.transaction_uuid.value;}
+          if(fault==2)root->creator_transaction_uuid=Id(249);
+          if(fault==3)root->header.database_uuid=Id(249);
+          persist();
+          if(fault==4){++root->security_epoch;put(first,root->header.page_number,sizes[p],RootOracle(*root));}
+          const auto before1=actual(first,0,64*sizes[p]),before2=actual(second,0,64*sizes[q]);
+          stage_writes=stage_syncs=0;const auto refused=resolve(ceiling,devices);
+          resolution_bad(refused,RE::policy_roots_failure);
+          const db::NativeCheckpointError expected[]{db::NativeCheckpointError::policy_relation_mismatch,
+            db::NativeCheckpointError::catalog_creator_not_committed,db::NativeCheckpointError::catalog_creator_mismatch,
+            db::NativeCheckpointError::catalog_failure,db::NativeCheckpointError::invalid_integrity};
+          Check(refused.policy_roots.error==expected[fault]&&!refused.retained_image_bytes,
+            "resealed wrong policy root retains exact source refusal without successful image total");
+          Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==before1&&actual(second,0,64*sizes[q])==before2,
+            "policy root refusal preserves complete files");
+        }
+        *root=saved;persist();
+        put(first,root->header.page_number,sizes[p],Bytes(sizes[p],0));
+        resolution_bad(resolve(ceiling,devices),RE::policy_roots_failure);persist();
+      }
+      resolved=resolve(ceiling,devices);resolution_good(resolved);
+      const u64 root_images=5*u64{sizes[p]}; // checkpoint; inventory; shared catalog/feature; configuration; security
+      Check(resolved.policy_roots.ok()&&resolved.policy_roots.retained_image_bytes==root_images&&
+        resolved.policy_roots.policies[0].bytes==RootOracle(configuration_root)&&
+        resolved.policy_roots.policies[1].bytes==RootOracle(security_root)&&
+        resolved.retained_image_bytes==resolved.capacity.retained_image_bytes+root_images+resolved.policy.source.source.retained_image_bytes,
+        "resolver retains and charges every actual policy-root image including separately retained common images");
+      resolution_good(resolve(resolved.retained_image_bytes,devices));
+      const auto short_images=resolve(resolved.retained_image_bytes-1,devices);
+      Check(!short_images.ok()&&!short_images.selection&&!short_images.policy.policy&&!short_images.retained_image_bytes,
+        "one-byte-short complete resolver allowance cannot discard root evidence to fit");
       auto reversed=devices;std::reverse(reversed.begin(),reversed.end());resolution_good(resolve(ceiling,reversed));
       resolution_bad(resolve(0,devices),RE::invalid_request);resolution_bad(resolve(1,devices),RE::capacity_failure);
       auto duplicated=devices;duplicated.push_back(devices[0]);resolution_bad(resolve(ceiling,duplicated),RE::invalid_request);
@@ -3720,16 +3785,23 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         reads=0;track_reads=true;resolved=resolve(ceiling,devices);track_reads=false;const auto read_count=reads;resolution_good(resolved);
         for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;resolved=resolve(ceiling,devices);track_reads=false;
           Check(!read_fault&&!resolved.ok()&&!resolved.selection&&!resolved.policy.policy&&
-            (resolved.error==RE::capacity_failure||resolved.error==RE::catalog_failure),"every selection read failure retains failure without partial policy");}
+            (resolved.error==RE::capacity_failure||resolved.error==RE::policy_roots_failure||resolved.error==RE::catalog_failure),"every selection read failure retains failure without partial policy");}
+        observed_full_digests=0;count_full_digests=true;resolved=resolve(ceiling,devices);count_full_digests=false;
+        const auto digest_count=observed_full_digests;resolution_good(resolved);
+        for(unsigned fault=1;fault<=digest_count;++fault){full_digest_fault=fault;resolved=resolve(ceiling,devices);
+          Check(!full_digest_fault&&!resolved.ok()&&!resolved.selection&&!resolved.policy.policy&&!resolved.retained_image_bytes,
+            "every complete resolver digest failure withholds all selected authority");}
+        full_digest_fault=digest_count+1;resolved=resolve(ceiling,devices);
+        Check(full_digest_fault==1,"resolver hash sweep terminal injection is unconsumed");full_digest_fault=0;resolution_good(resolved);
         observed_allocations=0;count_allocations=true;resolved=resolve(ceiling,devices);count_allocations=false;const auto allocations=observed_allocations;resolution_good(resolved);
         unsigned long telemetry_losses=0;
         for(unsigned long fault=0;fault<=allocations;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();allocation_budget=fault;
           resolved=resolve(ceiling,devices);const auto remaining=allocation_budget;allocation_budget=-1;
           Check(fault==allocations?remaining>=0:remaining<0,"every measured resolver allocation position consumed");
           if(resolved.ok()){resolution_good(resolved);if(remaining<0){++telemetry_losses;Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,"only recorded optional telemetry loss permits resolved policy");}}
-          else Check(!resolved.selection&&!resolved.policy.policy&&(resolved.error==RE::capacity_failure||resolved.error==RE::catalog_failure||resolved.error==RE::policy_failure||resolved.error==RE::resource_exhausted),"allocation failure withholds policy selection");
+          else Check(!resolved.selection&&!resolved.policy.policy&&!resolved.retained_image_bytes&&(resolved.error==RE::capacity_failure||resolved.error==RE::policy_roots_failure||resolved.error==RE::catalog_failure||resolved.error==RE::policy_failure||resolved.error==RE::resource_exhausted),"allocation failure withholds policy selection");
         }
-        std::cout<<"storage policy resolution faults: reads="<<read_count<<" allocations="<<allocations<<" telemetry_loss="<<telemetry_losses<<'\n';
+        std::cout<<"storage policy resolution faults: reads="<<read_count<<" digests="<<digest_count<<" allocations="<<allocations<<" telemetry_loss="<<telemetry_losses<<'\n';
         std::atomic<unsigned> completions=0;
         const auto concurrent=[&](const auto& members){for(unsigned n=0;n<8;++n){const auto r=resolve(ceiling,members);
           if(r.ok()&&r.selection->attachment.attachment_uuid==Id(240)&&r.policy.version_uuid==Id(170))++completions;}};

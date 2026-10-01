@@ -68,11 +68,9 @@ inline NativeStoragePreallocationProposalResult ResolveNativeStoragePreallocatio
     auto intent=native_storage_proposal_detail::Bind(source,request,operation,context,budget);
     // Once the selected policy is known, enforce its ceiling on this first
     // retained source as well as on the subsequent independent range read.
-    u64 retained=kNativeStorageActionIntentBytes;
-    for(const auto bytes:{source.capacity.retained_image_bytes,source.policy.source.source.retained_image_bytes}){
-      if(bytes>intent.maximum_retained_image_bytes-retained)return fail(E::resource_exhausted);
-      retained+=bytes;
-    }
+    if(intent.maximum_retained_image_bytes<kNativeStorageActionIntentBytes||
+        source.retained_image_bytes>intent.maximum_retained_image_bytes-kNativeStorageActionIntentBytes)
+      return fail(E::resource_exhausted);
     intent.action=NativeStorageAction::page_preallocation;intent.intended_state=NativeStorageIntentState::preallocated;
     intent.first_page=demand.first_page;intent.page_count=demand.page_count;
     intent.allocation_owner_uuid=demand.allocation_owner_uuid;intent.allocation_page_type=demand.allocation_page_type;

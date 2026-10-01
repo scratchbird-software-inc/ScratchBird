@@ -54,8 +54,7 @@ inline NativeStorageGrowthProposalResult ResolveNativeStorageGrowthProposalFromO
     if(retained>allowance||bytes>allowance-retained)return false;
     retained+=bytes;return true;
   };
-  if(!charge(resolved.capacity.retained_image_bytes)||
-     !charge(resolved.policy.source.source.retained_image_bytes))return fail(E::resource_exhausted);
+  if(!charge(resolved.retained_image_bytes))return fail(E::resource_exhausted);
   NativeStorageGrowthNoWork reason=NativeStorageGrowthNoWork::none;
   std::optional<NativeStorageGrowthExtent> extent;
   if(!p.enabled)reason=NativeStorageGrowthNoWork::policy_disabled;
