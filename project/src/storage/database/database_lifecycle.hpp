@@ -36,6 +36,10 @@ using scratchbird::core::platform::u64;
 using scratchbird::storage::disk::DatabaseHeader;
 
 inline constexpr u64 kDatabaseHeaderPageNumber = 0;
+inline constexpr scratchbird::core::platform::Uuid kCanonicalSysarchRoleIdentity{
+    {0x01, 0x8f, 0x7a, 0x10, 0x12, 0x80, 0x70, 0x00,
+     0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05}};
+// Presentation compatibility; storage identity comparisons use the binary value.
 inline constexpr const char* kCanonicalSysarchRoleObjectUuid =
     "018f7a10-1280-7000-8000-000000000105";
 

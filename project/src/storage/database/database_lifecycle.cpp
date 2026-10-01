@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
 #include "../disk/filespace_bootstrap.hpp"
 
@@ -42,6 +43,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <charconv>
 #include <cctype>
 #include <cstddef>
 #include <cstdlib>
@@ -2983,7 +2985,8 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
     const LoadedPolicySeedPack& policy_seed_pack,
     TypedUuid security_parent_uuid) {
   const auto parsed_sysarch =
-      ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+      scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+          UuidKind::object, kCanonicalSysarchRoleIdentity);
   if (!parsed_sysarch.ok()) {
     return CatalogRowsBuildError(parsed_sysarch.status,
                                  parsed_sysarch.diagnostic);
@@ -5504,7 +5507,8 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
   if (generation == nullptr) {
     return BootstrapSecurityContextAuthorityClass::invalid;
   }
-  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  const auto sysarch = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, kCanonicalSysarchRoleIdentity);
   if (!sysarch.ok()) return BootstrapSecurityContextAuthorityClass::invalid;
   *generation = 0;
   u32 relevant = 0;
@@ -5570,7 +5574,8 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
 bool AddBootstrapSecurityContextAuthorityToRows(
     std::vector<CatalogPageRow>* rows) {
   if (rows == nullptr) return false;
-  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  const auto sysarch = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, kCanonicalSysarchRoleIdentity);
   if (!sysarch.ok()) return false;
   u32 updated = 0;
   for (auto& row : *rows) {
@@ -7333,10 +7338,44 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     return propagate(tx1.status, tx1.diagnostic);
   }
 
-  const auto sysarch = ParseTypedUuid(UuidKind::object, kCanonicalSysarchRoleObjectUuid);
+  std::vector<CatalogTypedRecord> records;
+  for (const auto& row : catalog_rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) return propagate(decoded.status, decoded.diagnostic);
+    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))
+      records.push_back(std::move(decoded.record));
+  }
+  auto validated = ValidateBootstrapSecurityRecords(records, path);
+  if (!validated.ok()) return validated;
+  const auto close = device.Close();
+  if (!close.ok()) return propagate(close.status, close.diagnostic);
+  // The shared validator cannot prove commitment. Only the actual source
+  // reader above has verified the owning inventory and bootstrap transaction.
+  validated.state.committed_by_inventory = true;
+  return validated;
+}
+
+DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
+    std::span<const CatalogTypedRecord> records, const std::string& path) {
+  auto fail = [&](std::string code, std::string key, std::string detail = {}) {
+    const auto lifecycle = LifecycleError(std::move(code), std::move(key), path,
+                                          std::move(detail));
+    DatabaseBootstrapSecurityCatalogReadResult result;
+    result.status = lifecycle.status;
+    result.diagnostic = lifecycle.diagnostic;
+    return result;
+  };
+  auto propagate = [](Status status, DiagnosticRecord diagnostic) {
+    DatabaseBootstrapSecurityCatalogReadResult result;
+    result.status = status;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  const auto sysarch = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, kCanonicalSysarchRoleIdentity);
   if (!sysarch.ok()) return propagate(sysarch.status, sysarch.diagnostic);
   DatabaseBootstrapSecurityCatalogState state;
-  state.committed_by_inventory = true;
   std::set<std::string> principal_names;
   std::set<scratchbird::core::platform::Uuid> principal_uuids;
   std::set<scratchbird::core::platform::Uuid> membership_uuids;
@@ -7345,6 +7384,30 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
   u32 bootstrap_principal_count = 0;
   u32 bootstrap_membership_count = 0;
   TypedUuid membership_principal_uuid;
+  u32 principal_policy_generation = 0;
+  u64 principal_context_generation = 0;
+  u32 membership_policy_generation = 0;
+  u64 membership_context_generation = 0;
+
+  // Security generations are exact unsigned decimal attributes in the V1
+  // payload, not permissive strtoul inputs. In particular, overflow, signs and
+  // trailing bytes must not alias a valid admitted generation.
+  const auto generation = []<typename T>(const std::map<std::string, std::string>& fields,
+                                         const std::string& key) -> T {
+    const auto found = fields.find(key);
+    if (found == fields.end() || found->second.empty()) return 0;
+    const auto& text = found->second;
+    T value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, 10);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return 0;
+    return value;
+  };
+  const auto read_u32 = [&](const auto& fields, const std::string& key) {
+    return generation.operator()<u32>(fields, key);
+  };
+  const auto read_u64 = [&](const auto& fields, const std::string& key) {
+    return generation.operator()<u64>(fields, key);
+  };
 
   auto exact_field = [](const std::map<std::string, std::string>& fields,
                         const std::string& key,
@@ -7359,18 +7422,17 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     return value;
   };
 
-  for (const auto& row : catalog_rows) {
-    if (row.kind != CatalogPageRowKind::typed_catalog_record) {
-      continue;
-    }
-    const auto decoded = DecodeCatalogTypedRecord(row);
+  for (const auto& record : records) {
+    if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(record.header.kind)) continue;
+    // This boundary also accepts in-memory records; do not assume their outer
+    // header/identity binding was already checked by a physical row decoder.
+    const auto decoded = EncodeCatalogTypedRecord(record, 0);
     if (!decoded.ok()) {
       return propagate(decoded.status, decoded.diagnostic);
     }
     if (decoded.record.header.deleted) {
       continue;
     }
-    if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind)) continue;
     const auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
         decoded.record.header.kind, decoded.record.payload);
     if (!security.ok()) return fail("CATALOG.INVALID_INPUT",
@@ -7410,18 +7472,18 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "creator_tx", "1") ||
           !exact_field(fields, "active", "1") ||
           !exact_field(fields, "security_context_authority_version", "1") ||
-          ParseU64Field(fields, "security_context_generation") == 0 ||
-          ParseU32Field(fields, "policy_generation") == 0) {
+          read_u64(fields, "security_context_generation") == 0 ||
+          read_u32(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID",
             "storage.database_lifecycle.bootstrap_security_sysarch_provenance_invalid",
             role_code);
       }
       state.sysarch_role_uuid = decoded.record.header.object_uuid;
-      state.creator_tx = ParseU64Field(fields, "creator_tx");
-      state.policy_generation = ParseU32Field(fields, "policy_generation");
+      state.creator_tx = read_u64(fields, "creator_tx");
+      state.policy_generation = read_u32(fields, "policy_generation");
       state.security_context_generation =
-          ParseU64Field(fields, "security_context_generation");
+          read_u64(fields, "security_context_generation");
       continue;
     }
 
@@ -7468,10 +7530,10 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "security_generation", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
           !exact_field(fields, "security_context_authority_version", "1") ||
-          ParseU64Field(fields, "security_context_generation") == 0 ||
+          read_u64(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
           !exact_field(fields, "create_time_only", "1") ||
-          ParseU32Field(fields, "policy_generation") == 0) {
+          read_u32(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID",
             "storage.database_lifecycle.bootstrap_security_principal_invalid",
@@ -7481,16 +7543,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       state.principal_uuid.value = principal_uuid;
       state.principal_name = principal_name;
       state.credential_fingerprint = fingerprint;
-      if (state.creator_tx != ParseU64Field(fields, "creator_tx") ||
-          state.policy_generation != ParseU32Field(fields,
-                                                   "policy_generation") ||
-          state.security_context_generation !=
-              ParseU64Field(fields, "security_context_generation")) {
-        return fail(
-            "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
-            "storage.database_lifecycle.bootstrap_security_generation_mismatch",
-            principal_name);
-      }
+      principal_policy_generation = read_u32(fields, "policy_generation");
+      principal_context_generation = read_u64(fields, "security_context_generation");
       continue;
     }
 
@@ -7514,10 +7568,10 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
           !exact_field(fields, "security_generation", "1") ||
           !exact_field(fields, "creator_tx", "1") ||
           !exact_field(fields, "security_context_authority_version", "1") ||
-          ParseU64Field(fields, "security_context_generation") == 0 ||
+          read_u64(fields, "security_context_generation") == 0 ||
           !exact_field(fields, "identity_authority", "uuid") ||
           !exact_field(fields, "create_time_only", "1") ||
-          ParseU32Field(fields, "policy_generation") == 0) {
+          read_u32(fields, "policy_generation") == 0) {
         return fail(
             "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID",
             "storage.database_lifecycle.bootstrap_security_membership_invalid",
@@ -7527,15 +7581,8 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
       state.membership_uuid.value = membership_uuid;
       membership_principal_uuid.kind = UuidKind::principal;
       membership_principal_uuid.value = member_uuid;
-      if (state.policy_generation != ParseU32Field(fields,
-                                                   "policy_generation") ||
-          state.security_context_generation !=
-              ParseU64Field(fields, "security_context_generation")) {
-        return fail(
-            "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
-            "storage.database_lifecycle.bootstrap_security_generation_mismatch",
-            "bootstrap_membership");
-      }
+      membership_policy_generation = read_u32(fields, "policy_generation");
+      membership_context_generation = read_u64(fields, "security_context_generation");
     }
   }
 
@@ -7557,13 +7604,21 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
         "principals=" + std::to_string(bootstrap_principal_count) +
             ";memberships=" + std::to_string(bootstrap_membership_count));
   } else {
+    if (state.policy_generation != principal_policy_generation ||
+        state.security_context_generation != principal_context_generation) {
+      return fail("SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+                  "storage.database_lifecycle.bootstrap_security_generation_mismatch",
+                  state.principal_name);
+    }
+    if (state.policy_generation != membership_policy_generation ||
+        state.security_context_generation != membership_context_generation) {
+      return fail("SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+                  "storage.database_lifecycle.bootstrap_security_generation_mismatch",
+                  "bootstrap_membership");
+    }
     state.present = true;
   }
 
-  const auto close = device.Close();
-  if (!close.ok()) {
-    return propagate(close.status, close.diagnostic);
-  }
   DatabaseBootstrapSecurityCatalogReadResult result;
   result.status = DatabaseLifecycleOkStatus();
   result.state = std::move(state);
@@ -7813,6 +7868,21 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
         "storage.database_lifecycle.bootstrap_security_context_authority_invalid",
         config.path, "generation_zero");
   }
+  // Migration classification alone is not bootstrap security validation.
+  // Check the same complete semantics as the security reader before locator
+  // migration, dirty marking or activation effects. Inventory finality is
+  // still established separately below, never by this in-memory validation.
+  std::vector<CatalogTypedRecord> bootstrap_records;
+  for (const auto& row : catalog_rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) return PropagateDiagnostic(decoded.status, decoded.diagnostic);
+    if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))
+      bootstrap_records.push_back(std::move(decoded.record));
+  }
+  const auto bootstrap_security = ValidateBootstrapSecurityRecords(bootstrap_records, config.path);
+  if (!bootstrap_security.ok())
+    return PropagateDiagnostic(bootstrap_security.status, bootstrap_security.diagnostic);
   if (legacy_private_security_locator) {
     const auto migrated_locator =
         MigrateDatabaseLocalPrivateSecurityLocator(
