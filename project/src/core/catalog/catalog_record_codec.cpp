@@ -13,6 +13,7 @@
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
+#include "catalog_runtime_authority_binding.hpp"
 #include "catalog_metric_visibility_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
@@ -126,6 +127,10 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     }
   }
 
+  if (IsCatalogRuntimeAuthorityBindingPayload(record.payload) &&
+      !CatalogRuntimeAuthorityBindingMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
+                      "runtime_authority_binary_payload_or_header_invalid");
   if (record.header.kind == CatalogRecordKind::storage_descriptor &&
       !CatalogStoragePayloadMatchesHeader(record)) {
     return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
@@ -327,6 +332,10 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
        IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
       !CatalogStorageActionPolicyMatchesMetadata(value))
     return MetadataError("storage_action_definition_binding_invalid");
+  if ((value.object_subtype == "agent_runtime_authority" ||
+       IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
+      !CatalogRuntimeAuthorityBindingMatchesMetadata(value))
+    return MetadataError("runtime_authority_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
   if ((value.object_subtype == "metric_visibility" ||
        IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
@@ -471,7 +480,8 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
-  return CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
+  return CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
+      CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
       CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
       CatalogStorageActionAttachmentPreservesOrigin(previous,successor) &&
       CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
