@@ -16,6 +16,7 @@
 #include "native_storage_policy_lookup.hpp"
 #include "native_storage_policy_resolution.hpp"
 #include "native_storage_action_range.hpp"
+#include "native_storage_growth_proposal.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -3642,6 +3643,133 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         auto enabled=*original.record;enabled.enabled=enabled.growth_allowed=enabled.preallocation_allowed=true;
         const auto set_policy=[&](const auto& value){auto m=decoded.record;bind_storage(m,&value);
           source_leaf.body.rows[0]=native_row(m,Id(170),1);persist();};
+        {
+          using GE=db::NativeStorageGrowthProposalError;
+          using GD=db::NativeStorageGrowthDisposition;
+          using GN=db::NativeStorageGrowthNoWork;
+          const auto propose=[&](u64 limit,const auto& files){return db::ResolveNativeStorageGrowthProposalFromOpenDevices(
+            Id(226),Id(227),Id(1),files,CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,limit);};
+          const auto bad=[&](const auto& r,GE error){Check(!r.ok()&&r.error==error&&r.disposition==GD::refused&&
+            !r.extent&&!r.resolution.selection&&!r.resolution.policy.policy,"growth refusal retains no usable extent or source prefix");};
+          const auto no_work=[&](const auto& r,GN why){Check(r.ok()&&r.disposition==GD::no_work&&r.no_work==why&&!r.extent,
+            "growth no-work has exact reason and no manufactured extent");};
+          // Oracle uses the fixture's independently encoded allocation states,
+          // not a production capacity result or production sizing helper.
+          const u64 free=std::count(map.states.begin(),map.states.end(),S::free);
+          const auto good=[&](const auto& r,u64 pages){
+            Check(r.ok()&&r.disposition==GD::proposed&&r.no_work==GN::none&&r.extent&&
+              r.extent->request_uuid==Id(226)&&r.extent->operation_uuid==Id(227)&&r.extent->first_page==64&&
+              r.extent->page_count==pages&&r.extent->work_bytes==pages*sizes[profile],"exact independently expected growth extent");
+            Check(r.resolution.selection->attachment_version_uuid==Id(243)&&r.resolution.selection->profile_version_uuid==Id(245)&&
+              r.resolution.policy.version_uuid==Id(170)&&r.resolution.capacity.observation->state_counts[0]==free&&
+              r.resolution.capacity.observation->allocation_sha256==WholeRootHash(AllocationOracle(map))&&
+              r.resolution.capacity.observation->checkpoint_sha256==WholeRootHash(CheckpointOracle(cp)),
+              "proposal retains actual binary selection and independently hashed source generations");
+          };
+          no_work(propose(ceiling,devices),GN::policy_disabled);
+          auto configured=enabled;configured.maximum_pages_per_action=32;configured.maximum_work_bytes=32*sizes[profile];
+          configured.minimum_free_pages=free+1;configured.target_free_pages=free+9;
+          configured.growth_allowed=false;set_policy(configured);no_work(propose(ceiling,devices),GN::growth_disallowed);
+          configured.growth_allowed=true;configured.minimum_free_pages=free;set_policy(configured);
+          no_work(propose(ceiling,devices),GN::free_threshold_satisfied);
+          configured.minimum_free_pages=0;set_policy(configured);no_work(propose(ceiling,devices),GN::free_threshold_satisfied);
+          configured.minimum_free_pages=free+1;configured.target_free_pages=free+1;set_policy(configured);good(propose(ceiling,devices),8);
+          configured.target_free_pages=free+8;set_policy(configured);good(propose(ceiling,devices),8);
+          configured.target_free_pages=free+9;set_policy(configured);good(propose(ceiling,devices),16);
+          configured.target_free_pages=free+33;set_policy(configured);good(propose(ceiling,devices),32);
+          configured.target_free_pages=free+9;configured.maximum_pages_per_action=11;configured.maximum_work_bytes=11*sizes[profile];
+          set_policy(configured);good(propose(ceiling,devices),11);
+          {
+            auto extreme=configured;extreme.minimum_free_pages=extreme.target_free_pages=0x7fffffffULL;
+            extreme.growth_increment_pages=0x7ffffffeULL;
+            extreme.maximum_total_pages=std::numeric_limits<u64>::max()/sizes[profile];
+            extreme.maximum_pages_per_action=0xfffffffcULL;extreme.maximum_work_bytes=0xfffffffcULL*sizes[profile];
+            set_policy(extreme);good(propose(ceiling,devices),0xfffffffcULL);
+            extreme.maximum_pages_per_action=0x7ffffffeULL;set_policy(extreme);good(propose(ceiling,devices),0x7ffffffeULL);
+          }
+          configured.maximum_total_pages=69;set_policy(configured);good(propose(ceiling,devices),5);
+          configured.maximum_total_pages=64;set_policy(configured);bad(propose(ceiling,devices),GE::capacity_limit);
+          configured.maximum_total_pages=63;set_policy(configured);bad(propose(ceiling,devices),GE::capacity_limit);
+          configured.maximum_total_pages=128;set_policy(configured);
+          {
+            const auto saved=map;
+            for(unsigned n=32;n<36;++n)map.states[n]=S::free;
+            member.allocation_root->sha256=WholeRootHash(AllocationOracle(map));
+            auto watermarks=configured;watermarks.minimum_free_pages=4;watermarks.target_free_pages=10;set_policy(watermarks);
+            no_work(propose(ceiling,devices),GN::free_threshold_satisfied);
+            watermarks.minimum_free_pages=5;set_policy(watermarks);const auto r=propose(ceiling,devices);
+            Check(r.ok()&&r.extent&&r.extent->page_count==8&&r.resolution.capacity.observation->state_counts[0]==4,
+              "positive free-state watermark excludes quarantine and rounds six-page deficit to eight");
+            map=saved;member.allocation_root->sha256=WholeRootHash(AllocationOracle(map));set_policy(configured);
+          }
+          const auto accepted=propose(ceiling,devices);good(accepted,11);
+          good(propose(ceiling,reversed),11);good(propose(accepted.retained_image_bytes,devices),11);
+          const auto short_result=propose(accepted.retained_image_bytes-1,devices);
+          Check(!short_result.ok()&&!short_result.extent,"one-byte-short total growth image allowance refuses");
+          configured.maximum_retained_image_bytes=768;set_policy(configured);bad(propose(ceiling,devices),GE::resource_exhausted);
+          configured.maximum_retained_image_bytes=ceiling;set_policy(configured);
+          bad(propose(768,devices),GE::resource_exhausted);bad(propose(ceiling,duplicated),GE::resolution_failure);
+          reads=0;track_reads=true;
+          const auto invalid=db::ResolveNativeStorageGrowthProposalFromOpenDevices({},Id(227),Id(1),devices,
+            CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling);
+          track_reads=false;bad(invalid,GE::invalid_request);Check(!reads,"malformed request UUID refuses before device reads");
+          auto non_system_operation=Id(227);non_system_operation.bytes[6]=0x40;
+          reads=0;track_reads=true;
+          const auto wrong_version=db::ResolveNativeStorageGrowthProposalFromOpenDevices(Id(226),non_system_operation,Id(1),devices,
+            CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling);
+          track_reads=false;bad(wrong_version,GE::invalid_request);Check(!reads,"user-data UUID version cannot identify a system operation");
+          const mga::PublishedSnapshotPin missing_pin;
+          bad(db::ResolveNativeStorageGrowthProposalFromOpenDevices(Id(226),Id(227),Id(1),devices,
+            CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,missing_pin,ceiling),GE::resolution_failure);
+          const auto first_image=actual(first,0,64*sizes[p]),second_image=actual(second,0,64*sizes[q]);
+          stage_writes=stage_syncs=0;
+          if(p==0&&role==1){
+            reads=0;track_reads=true;auto r=propose(ceiling,devices);track_reads=false;const auto nr=reads;good(r,11);
+            for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;r=propose(ceiling,devices);track_reads=false;
+              Check(!read_fault,"every measured growth source read failure consumed");bad(r,GE::resolution_failure);}
+            observed_full_digests=0;count_full_digests=true;r=propose(ceiling,devices);count_full_digests=false;
+            const auto nh=observed_full_digests;good(r,11);
+            for(unsigned fault=1;fault<=nh;++fault){full_digest_fault=fault;r=propose(ceiling,devices);
+              Check(!full_digest_fault,"every measured growth source hash failure consumed");bad(r,GE::resolution_failure);}
+            observed_allocations=0;count_allocations=true;r=propose(ceiling,devices);count_allocations=false;
+            const auto na=observed_allocations;good(r,11);
+            for(unsigned long fault=0;fault<=na;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();
+              allocation_budget=fault;r=propose(ceiling,devices);const auto remaining=allocation_budget;allocation_budget=-1;
+              Check(fault==na?remaining>=0:remaining<0,"every growth proposal allocation injection consumed");
+              if(r.ok()){good(r,11);Check(remaining>=0||first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,
+                  "only accounted optional telemetry loss permits complete growth proposal");}
+              else Check(!r.extent&&!r.resolution.selection&&!r.resolution.policy.policy,"growth allocation failure exposes no partial proposal");
+            }
+            std::cout<<"storage growth proposal faults: reads="<<nr<<" hashes="<<nh<<" allocations="<<na<<'\n';
+            const auto mutex_of=[](auto& device){auto guard=device.AcquireOperationGuard();return guard.mutex();};
+            const std::array mutexes{mutex_of(first),mutex_of(second)};
+            tree_read_paused=false;resume_tree_read=false;pause_tree_read_number=nr;reads=0;track_reads=true;std::atomic<bool> done=false;
+            db::NativeStorageGrowthProposalResult concurrent;
+            std::thread worker([&]{concurrent=propose(ceiling,reversed);done=true;});
+            while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+            bool all_held=tree_read_paused.load();
+            for(auto* mutex:mutexes)if(mutex->try_lock()){all_held=false;mutex->unlock();}
+            resume_tree_read=true;worker.join();pause_tree_read_number=0;track_reads=false;
+            Check(all_held&&reads==nr,"proposal holds all owned device guards through its last source read");good(concurrent,11);
+          }
+          Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==first_image&&actual(second,0,64*sizes[q])==second_image,
+            "growth resolution and failure sweeps leave both full files unchanged");
+          Check(first.Close().ok()&&second.Close().ok(),"release devices before independent growth proposal reopen");
+          const auto child=fork();Check(child>=0,"fresh growth proposal process");
+          if(!child){try{disk::FileDevice a,b;
+            if(!a.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()||!b.Open(path2,disk::FileOpenMode::open_existing_read_only).ok())_exit(84);
+            const std::vector<disk::NativeFilespaceDevice> files{{Id(2),Profile(p),&a},{Id(7),Profile(q),&b}};
+            const auto native=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),files,CheckpointRef(cp),ceiling);
+            if(!native.ok())_exit(85);CatalogTestPin fresh_pin(native.inventory,18);
+            const auto r=db::ResolveNativeStorageGrowthProposalFromOpenDevices(Id(226),Id(227),Id(1),files,CheckpointRef(cp),fs,
+              2,1,{Id(101),{}},native.inventory.entries.back().identity,fresh_pin.pin,ceiling);
+            _exit(r.ok()&&r.extent&&r.extent->first_page==64&&r.extent->page_count==11?0:86);
+          }catch(...){_exit(87);}}
+          int child_status=0;Check(waitpid(child,&child_status,0)==child&&WIFEXITED(child_status)&&WEXITSTATUS(child_status)==0,
+            "fresh process derives exact growth from actual native files and its own inventory snapshot");
+          Check(first.Open(path1,disk::FileOpenMode::open_existing).ok()&&second.Open(path2,disk::FileOpenMode::open_existing).ok(),
+            "restore growth proposal fixture handles");
+        }
         set_policy(enabled);stage_writes=stage_syncs=0;Check(match(intent).ok(),"fresh actual enabled policy and capacity match exact intent");
         Check(!stage_writes&&!stage_syncs,"matching produces no storage effects or authorization");
         {
@@ -4375,6 +4503,17 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(165),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     directory.records.push_back({zero.bootstrap,Id(166),zero.page_uuid,zero.page_generation,zero.root_set_generation,zero.total_pages,0,{}});
     directory.records.push_back({second_zero.bootstrap,Id(176),second_zero.page_uuid,second_zero.page_generation,second_zero.root_set_generation,second_zero.total_pages,0,{}});
+    if(directory_graph){
+      // Every directory reached by the immutable graph needs its own original
+      // allocation, including the later independently inspected ancestor.
+      for(const auto& h:std::array<disk::NativeCommonPageHeader,2>{directory.header,
+          {sizes[p],9,Id(1),Id(2),Id(206),16,106,0,Profile(p)}}){
+        map.states[h.page_number]=S::allocated;
+        map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,
+          directory.object_uuid,Id(98),17,h.page_generation,0,h.page_type,{}});
+      }
+      std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+    }
     page::NativeRetentionPage retention;retention.header={sizes[p],0x303,Id(1),Id(2),Id(167),40,140,0,Profile(p)};retention.object_uuid=Id(168);retention.epoch=1;retention.creator_transaction_uuid=Id(98);retention.creator_local_transaction_id=17;
     page::NativeHorizonRoot horizon;horizon.header={sizes[p],0x302,Id(1),Id(2),Id(169),41,141,0,Profile(p)};horizon.object_uuid=Id(170);horizon.epoch=1;horizon.creator_transaction_uuid=Id(98);horizon.creator_local_transaction_id=17;
     horizon.retention={Id(2),40,140,Profile(p)};horizon.retention_object_uuid=Id(168);
@@ -4445,6 +4584,16 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         persist();const auto original=graph(64*u64{sizes[p]});
         if(!original.ok())std::cerr<<"directory graph fixture error="<<int(original.error)<<'\n';
         Check(original.ok(),"independent transaction-created genesis ancestry admits graph fixture");
+        {
+          const auto valid_map=map;
+          map.records.erase(std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==15;}));
+          map.states[15]=S::quarantined;
+          directory.records[0].allocation_root->sha256=WholeRootHash(AllocationOracle(map));
+          persist();stage_writes=stage_syncs=0;const auto missing=graph(64*u64{sizes[p]});no_graph(missing);
+          Check(missing.error==db::NativeManagementControlAuthorityError::allocation_failure&&!stage_writes&&!stage_syncs,
+            "historical unallocated-directory fixture remains a typed no-effect rejection");
+          map=valid_map;directory=baseline;persist();
+        }
         for(unsigned bad=0;bad<9;++bad){directory=baseline;auto& r=*directory.records[1].allocation_root;
           if(bad==0)r.sha256[0]^=1;if(bad==1)++r.map_generation;if(bad==2)++r.capacity_generation;if(bad==3)++r.page.page_generation;
           if(bad==4)r.object_uuid=Id(178);if(bad==5)r.page.page_number=23;
