@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "filespace_growth.hpp"
 
 #include <string>
 
@@ -58,7 +59,13 @@ struct EngineRequestPageRelocationResult : EngineAgentActionHookResult {};
 EngineRequestPageRelocationResult EngineRequestPageRelocation(const EngineRequestPageRelocationRequest& request);
 
 struct EngineRequestFilespaceGrowthRequest : EngineAgentActionHookRequest {};
-struct EngineRequestFilespaceGrowthResult : EngineAgentActionHookResult {};
+struct EngineRequestFilespaceGrowthResult : EngineAgentActionHookResult {
+  // Exact storage outcome, including the original binary operation identity
+  // and applied effects on failure. Absence means storage did not return an
+  // outcome; it is NOT proof of zero effects. This legacy route receipt does
+  // not establish native admission, durable recovery or management completion.
+  std::optional<storage::filespace::FilespacePhysicalGrowthResult> storage_result;
+};
 EngineRequestFilespaceGrowthResult EngineRequestFilespaceGrowth(const EngineRequestFilespaceGrowthRequest& request);
 
 struct EngineNotifyFilespaceShrinkReadinessRequest : EngineAgentActionHookRequest {};
