@@ -245,15 +245,24 @@ SafeRetirementSnapshot MemorySafeRetirement::Snapshot() const {
     snapshot.metadata_bytes += object_limit_ * sizeof(Object);
     for (usize i = 0; i < object_limit_; ++i) {
       const auto& object = objects_[i];
-      switch (object.state) {
-        case State::empty: break;
-        case State::constructing: ++snapshot.constructing; break;
-        case State::published: ++snapshot.published; break;
-        case State::retired: ++snapshot.retired; break;
-        case State::reclaiming: ++snapshot.reclaiming; break;
-      }
-      snapshot.retained_payload_bytes += object.bytes;
-      snapshot.readers += object.readers;
+      if (object.state == State::empty) continue;
+      const auto count = [&](auto& gauge) {
+        switch (object.state) {
+          case State::empty: break;
+          case State::constructing: ++gauge.constructing; break;
+          case State::published: ++gauge.published; break;
+          case State::retired: ++gauge.retired; break;
+          case State::reclaiming: ++gauge.reclaiming; break;
+        }
+        gauge.retained_payload_bytes += object.bytes;
+        gauge.readers += object.readers;
+        if (object.state == State::retired && object.readers != 0) {
+          ++gauge.reclamation_blocked_objects;
+          gauge.reclamation_blocked_bytes += object.bytes;
+        }
+      };
+      count(snapshot);
+      count(snapshot.by_kind[static_cast<usize>(object.kind)]);
     }
   }
   if (readers_) snapshot.metadata_bytes += reader_limit_ * sizeof(Reader);

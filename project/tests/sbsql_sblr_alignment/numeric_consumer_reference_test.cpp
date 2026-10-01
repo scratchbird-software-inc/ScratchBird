@@ -94,12 +94,17 @@ void PublicOwners() {
         "nulls_last", "null ordering helper last");
   auto numeric = dt::ApplyNumericOperation(Request(dt::DatatypeNumericOperationKind::add, "1", "2"));
   Check(numeric.ok() && numeric.value.encoded_value == "3", "ordinary numeric owner");
+  const std::string int32_seven{"\x07\x00\x00\x00", 4};
   dt::DatatypeSortKeyRequest key;
-  key.value = {dt::CanonicalTypeId::int32, "7", false};
-  Check(dt::MakeDatatypeSortKey(key).ok(), "sort owner linked");
+  key.value = {dt::CanonicalTypeId::int32, int32_seven, false};
+  const auto ordered = dt::MakeDatatypeSortKey(key);
+  Check(ordered.ok() &&
+            ordered.sort_key == std::string{"\x01\x80\x00\x00\x07", 5},
+        "sort owner linked with canonical int32 bytes");
   dt::DatatypeHashRequest hash;
   hash.value = key.value;
-  Check(dt::HashDatatypeValue(hash).ok(), "hash owner linked");
+  Check(!dt::HashDatatypeValue(hash).ok(),
+        "unresolved int32 hash policy refuses");
   dt::DatatypeSerializationRequest serialize;
   serialize.value = key.value;
   const auto encoded = dt::SerializeDatatypeValue(serialize);
@@ -107,7 +112,8 @@ void PublicOwners() {
   deserialize.expected_type_id = key.value.type_id;
   deserialize.serialized_value = encoded.serialized_value;
   const auto decoded = dt::DeserializeDatatypeValue(deserialize);
-  Check(encoded.ok() && decoded.ok() && decoded.value.encoded_value == "7",
+  Check(encoded.ok() && decoded.ok() &&
+            decoded.value.encoded_value == int32_seven,
         "serialization owners linked and preserve value");
   // These linkage calls do NOT qualify the retained prototype sort/hash/
   // serialization formats as canonical durable or wire representations.

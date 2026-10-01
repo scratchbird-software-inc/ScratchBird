@@ -626,14 +626,12 @@ void EngineBoundaryAdapters() {
 
   api::EngineTypedValue output;
   std::string category, refusal;
-  Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            EngineValue(uint8_descriptor, "255"), int32_descriptor, false,
-            &output, &category, &refusal) &&
-            category == "lossless_implicit" && output.encoded_value == "255" &&
-            output.binary_value.empty() &&
-            output.state == api::EngineValueState::value,
-        "Engine adapter widens uint8 through the canonical byte boundary: " +
-            refusal);
+  Check(!api::QowApplyCanonicalDescriptorCoercionV1(
+             EngineValue(uint8_descriptor, "255"), int32_descriptor, false,
+             &output, &category, &refusal) &&
+            output.state == api::EngineValueState::error &&
+            output.encoded_value.empty() && output.binary_value.empty(),
+        "Engine adapter refuses unresolved uint8-to-int32 coercion");
 
   Check(!api::QowApplyCanonicalDescriptorCoercionV1(
              EngineValue(character_descriptor, "255"), uint8_descriptor, true,
@@ -642,11 +640,12 @@ void EngineBoundaryAdapters() {
 
   auto native_49 = EngineValue(uint8_descriptor, {});
   native_49.binary_value = {0x31};
-  Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            native_49, int32_descriptor, false, &output, &category, &refusal) &&
-            output.encoded_value == "49",
-        "Engine adapter decodes canonical uint8 byte 0x31 as native 49: " +
-            refusal);
+  Check(!api::QowApplyCanonicalDescriptorCoercionV1(
+             native_49, int32_descriptor, false,
+             &output, &category, &refusal) &&
+            output.state == api::EngineValueState::error &&
+            output.encoded_value.empty() && output.binary_value.empty(),
+        "Engine adapter refuses native uint8-to-int32 coercion without a rule");
   native_49.binary_value = {0x31, 0x00};
   Check(!api::QowApplyCanonicalDescriptorCoercionV1(
              native_49, int32_descriptor, false,
@@ -661,13 +660,12 @@ void EngineBoundaryAdapters() {
   null_value.descriptor = nullable_uint8;
   null_value.is_null = true;
   null_value.state = api::EngineValueState::sql_null;
-  Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            null_value, nullable_int32, false,
-            &output, &category, &refusal) &&
-            output.isSqlNull() && output.encoded_value.empty() &&
-            output.binary_value.empty(),
-        "Engine adapter preserves zero-payload typed NULL across uint8 widening: " +
-            refusal);
+  Check(!api::QowApplyCanonicalDescriptorCoercionV1(
+             null_value, nullable_int32, false,
+             &output, &category, &refusal) &&
+            output.state == api::EngineValueState::error &&
+            output.encoded_value.empty() && output.binary_value.empty(),
+        "Engine adapter refuses typed NULL uint8-to-int32 without a cast rule");
 }
 
 void ExecutorBoundaryAdapters() {

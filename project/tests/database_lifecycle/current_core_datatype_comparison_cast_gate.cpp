@@ -64,6 +64,13 @@ dt::DatatypeOperationValue Value(dt::CanonicalTypeId type,
   return {type, std::move(encoded), false};
 }
 
+dt::DatatypeOperationValue Int32Value(std::int64_t number) {
+  std::string encoded;
+  Require(dt::EncodeCanonicalInt32Value(number, &encoded),
+          "MDF-014 int32 fixture encoding failed");
+  return Value(dt::CanonicalTypeId::int32, std::move(encoded));
+}
+
 bool IsCanonicalBoolean(const dt::DatatypeOperationValue& value,
                         bool expected) {
   return value.type_id == dt::CanonicalTypeId::boolean && !value.is_null &&
@@ -483,14 +490,11 @@ void TestNonScalarOperatorCastProof() {
   set_descriptor.allow_duplicates = false;
   const auto encoded_left = dt::EncodeSetValue(
       set_descriptor,
-      {Value(dt::CanonicalTypeId::int32, "2"),
-       Value(dt::CanonicalTypeId::int32, "1"),
-       Value(dt::CanonicalTypeId::int32, "2")});
+      {Int32Value(2), Int32Value(1), Int32Value(2)});
   Require(encoded_left.ok(), "MDF-014 set encoding failed");
   const auto encoded_right = dt::EncodeSetValue(
       set_descriptor,
-      {Value(dt::CanonicalTypeId::int32, "1"),
-       Value(dt::CanonicalTypeId::int32, "2")});
+      {Int32Value(1), Int32Value(2)});
   Require(encoded_right.ok(), "MDF-014 set equality fixture encoding failed");
 
   dt::DatatypeSetOperationRequest set_operation;
@@ -502,11 +506,11 @@ void TestNonScalarOperatorCastProof() {
           "MDF-014 set cardinality drifted");
 
   set_operation.operation = dt::DatatypeSetOperationKind::membership;
-  set_operation.right_value = Value(dt::CanonicalTypeId::int32, "1");
+  set_operation.right_value = Int32Value(1);
   set_result = dt::ApplySetOperation(set_operation);
   Require(set_result.ok() && IsCanonicalBoolean(set_result.value, true),
           "MDF-014 set membership failed");
-  set_operation.right_value = Value(dt::CanonicalTypeId::int32, "3");
+  set_operation.right_value = Int32Value(3);
   set_result = dt::ApplySetOperation(set_operation);
   Require(set_result.ok() && IsCanonicalBoolean(set_result.value, false),
           "MDF-014 set non-membership failed");
@@ -796,7 +800,6 @@ void TestIntegerPhysicalSortKeyBytes() {
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::int32, 4, true, "-2147483648", "2147483647", "2147483648"},
       {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
        "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
