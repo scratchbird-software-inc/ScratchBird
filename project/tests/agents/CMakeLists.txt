@@ -75,6 +75,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --setup-database-failure)
   set_tests_properties(server_agent_setup_database_failure_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;startup;partial_failure;linux_proof")
+  foreach(identity_target database filespace)
+    foreach(identity_fault variant version)
+      add_test(NAME server_agent_malformed_${identity_target}_${identity_fault}_identity_gate
+        COMMAND server_agent_shutdown_wakeup_gate --malformed-identity ${identity_target} ${identity_fault})
+      set_tests_properties(server_agent_malformed_${identity_target}_${identity_fault}_identity_gate PROPERTIES
+        TIMEOUT 120 LABELS "agents;concurrency;startup;invalid_input;linux_proof")
+    endforeach()
+    add_test(NAME server_agent_missing_${identity_target}_identity_gate
+      COMMAND server_agent_shutdown_wakeup_gate --missing-identity ${identity_target})
+    set_tests_properties(server_agent_missing_${identity_target}_identity_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;startup;binary_uuid;linux_proof")
+  endforeach()
   add_executable(server_agent_durable_stop_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_durable_stop_gate.cpp")
   target_compile_features(server_agent_durable_stop_gate PRIVATE cxx_std_23)
