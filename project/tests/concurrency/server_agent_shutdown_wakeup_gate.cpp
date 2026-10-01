@@ -591,10 +591,17 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
 bool CheckSetupPathFailure(server::ServerAgentRuntime& runtime,
                            const server::ServerBootstrapConfig& config,
                            const server::HostedEngineState& engine,
-                           std::vector<server::ServerDiagnostic>& diagnostics) {
+                           std::vector<server::ServerDiagnostic>& diagnostics,
+                           bool database_unavailable = false) {
+  // SEARCH_KEY: SERVER_AGENT_SETUP_DATABASE_FAILURE_RECOVERY
+  const std::filesystem::path database_path = engine.databases.front().database_path;
+  const auto held_path = database_path.string() + ".held";
   // A real regular file prevents directory creation, before service setup or
-  // native runtime thread launch. No engine status or filesystem call is mocked.
-  {
+  // native runtime thread launch. Alternatively hold the real database aside
+  // so catalog-seed transaction admission fails. Neither path mocks engine I/O.
+  if (database_unavailable) {
+    std::filesystem::rename(database_path, held_path);
+  } else {
     std::ofstream obstruction(config.control_dir);
     obstruction << "runtime setup obstruction\n";
     obstruction.close();
@@ -609,20 +616,33 @@ bool CheckSetupPathFailure(server::ServerAgentRuntime& runtime,
   const bool started = runtime.Start(config, engine, &diagnostics);
   startup_probe = false;
   const auto failed = runtime.Snapshot();
-  bool path_diagnostic = false;
+  bool expected_diagnostic = false;
   for (const auto& diagnostic : diagnostics) {
     std::cout << diagnostic.code << ':' << diagnostic.safe_message << '\n';
-    path_diagnostic = path_diagnostic ||
-        diagnostic.code == "SERVER.AGENT_RUNTIME.STATUS_PATH_FAILED";
+    expected_diagnostic = expected_diagnostic || (database_unavailable
+        ? diagnostic.code == "SB-STORAGE-DISK-OPEN-MISSING" &&
+          diagnostic.safe_message == "The server agent runtime could not begin an MGA transaction for catalog seeding."
+        : diagnostic.code == "SERVER.AGENT_RUNTIME.STATUS_PATH_FAILED");
   }
-  const bool refused_cleanly = !started && path_diagnostic && !failed.started &&
+  const bool refused_cleanly = !started && expected_diagnostic && !failed.started &&
       !failed.stopping && failed.durable_lease_count == 0 &&
       failed.scheduler_ticks == 0 && launch_attempts == 0 && launched_threads == 0;
+  // Stop before any admitted service/native cohort is a harmless no-op, not
+  // a fabricated durable cleanup receipt. It must not create a missing database.
+  const auto stop_result = runtime.Stop();
+  const bool stopped_cleanly = stop_result.ok() && !stop_result.attempted &&
+      !stop_result.durable_cleanup_complete;
   std::error_code error;
-  const bool removed = std::filesystem::remove(config.control_dir, error);
-  Require(removed && !error, "could not remove status-path obstruction");
+  if (database_unavailable) {
+    Require(!std::filesystem::exists(database_path), "failed startup recreated missing database");
+    std::filesystem::rename(held_path, database_path);
+  } else {
+    const bool removed = std::filesystem::remove(config.control_dir, error);
+    Require(removed && !error, "could not remove status-path obstruction");
+  }
   std::cout << "setup_refused_before_native_cohort=" << refused_cleanly << '\n';
-  return refused_cleanly && CheckSequentialRestart(runtime, config, engine, diagnostics);
+  return refused_cleanly && stopped_cleanly &&
+      CheckSequentialRestart(runtime, config, engine, diagnostics);
 }
 
 // SEARCH_KEY: SERVER_AGENT_ACTIVE_DESTRUCTOR_JOINS
@@ -674,7 +694,9 @@ int main(int argc, char** argv) {
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
-  const bool setup_path_failure = argc == 2 && std::string_view(argv[1]) == "--setup-path-failure";
+  const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
+  const bool setup_path_failure = setup_database_failure ||
+      (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
   const bool lifecycle_case = active_destruction || startup_failure ||
       sequential_restart || setup_path_failure;
   if (startup_failure) {
@@ -740,7 +762,8 @@ int main(int argc, char** argv) {
   armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure,
               std::memory_order_release);
   if (setup_path_failure) {
-    setup_recovered = CheckSetupPathFailure(runtime, config, engine, diagnostics);
+    setup_recovered = CheckSetupPathFailure(runtime, config, engine, diagnostics,
+                                           setup_database_failure);
   } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
@@ -799,8 +822,9 @@ int main(int argc, char** argv) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
   if (setup_path_failure) {
-    Require(setup_recovered, "status-path setup failure did not permit clean recovery");
-    std::cout << "server_agent_setup_path_failure_gate=passed\n";
+    Require(setup_recovered, "early setup failure did not permit clean recovery");
+    std::cout << (setup_database_failure ? "server_agent_setup_database_failure_gate=passed\n"
+                                       : "server_agent_setup_path_failure_gate=passed\n");
   } else if (active_destruction) {
     Require(destruction_joined, "active destruction did not join its native cohort");
     std::cout << "server_agent_active_destruction_gate=passed\n";
