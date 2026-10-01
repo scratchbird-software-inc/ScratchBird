@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_storage_policy_resolution.hpp"
+#include "native_storage_memory.hpp"
 #include "hash_digest.hpp"
 
 namespace scratchbird::storage::database {
 enum class NativeStorageRangeError {
   none, invalid_request, policy_failure, resource_exhausted, allocation_failure,
-  allocation_mismatch, page_not_free, page_not_empty, io_failure, hash_failure
+  allocation_mismatch, page_not_free, page_not_empty, io_failure, hash_failure,
+  memory_binding_failure
 };
 struct NativeStorageRangeInspection {
   NativeStorageRangeError error=NativeStorageRangeError::invalid_request;
   NativeStorageIntentPolicyCheck policy;
   page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
+  NativeStorageMemoryError memory_error=NativeStorageMemoryError::none;
+  core::platform::Status memory_status;
+  core::platform::DiagnosticRecord memory_diagnostic;
   std::optional<u64> blocked_page;
   u64 inspected_pages=0, retained_image_bytes=0;
   bool ok() const noexcept {return error==NativeStorageRangeError::none&&policy.ok();}
@@ -24,14 +29,20 @@ struct NativeStorageRangeInspection {
 // Growth checks its exact observed end; it never creates or reserves capacity.
 // Preallocation accepts only native free/recordless and physically zero pages;
 // reusable, quarantined, reserved or dirty-free pages need their owning recovery.
-inline NativeStorageRangeInspection InspectNativeStorageActionRangeFromOpenDevices(
+namespace detail {
+inline NativeStorageRangeInspection InspectNativeStorageActionRange(
     const NativeStorageActionIntent& intent,const std::vector<disk::NativeFilespaceDevice>& supplied,
     u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
-    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget) noexcept {
+    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget,
+    NativeStorageMemory* memory) noexcept {
   using E=NativeStorageRangeError;
   NativeStorageRangeInspection result;
   const auto fail=[&](E e){result.error=e;return std::move(result);};
   try {
+    if(memory){
+      result.memory_error=memory->CheckBinding(intent.database_uuid,intent.operation_uuid);
+      if(result.memory_error!=NativeStorageMemoryError::none)return fail(E::memory_binding_failure);
+    }
     auto devices=supplied;
     std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     if(devices.empty())return fail(E::invalid_request);
@@ -82,12 +93,22 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRangeFromOpenDevic
         }
       }
       if(covered!=intent.page_count)return fail(E::allocation_mismatch);
-      std::vector<byte> scratch(intent.page_size_bytes);
+      std::vector<byte> unmanaged_scratch;
+      NativeStorageBuffer owned_scratch;
+      byte* scratch=nullptr;
+      if(memory){
+        auto allocated=memory->AllocatePage(intent.page_size_profile_uuid);
+        if(!allocated.ok()){
+          result.memory_error=allocated.error;result.memory_status=allocated.allocation_status;
+          result.memory_diagnostic=std::move(allocated.diagnostic);return fail(E::resource_exhausted);
+        }
+        owned_scratch=std::move(allocated.buffer);scratch=owned_scratch.data();
+      }else{unmanaged_scratch.resize(intent.page_size_bytes);scratch=unmanaged_scratch.data();}
       for(u64 n=intent.first_page;n<end;++n){
-        const auto io=target->device->ReadAt(n*intent.page_size_bytes,scratch.data(),scratch.size());
-        if(!io.ok()||io.bytes_transferred!=scratch.size()){result.blocked_page=n;return fail(E::io_failure);}
+        const auto io=target->device->ReadAt(n*intent.page_size_bytes,scratch,intent.page_size_bytes);
+        if(!io.ok()||io.bytes_transferred!=intent.page_size_bytes){result.blocked_page=n;return fail(E::io_failure);}
         ++result.inspected_pages;
-        if(std::any_of(scratch.begin(),scratch.end(),[](byte b){return b!=0;})){
+        if(std::any_of(scratch,scratch+intent.page_size_bytes,[](byte b){return b!=0;})){
           result.blocked_page=n;return fail(E::page_not_empty);
         }
       }
@@ -96,5 +117,25 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRangeFromOpenDevic
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}
    catch(const std::system_error&){return fail(E::io_failure);}
+}
+} // namespace detail
+// Bounded-image primitive retained for callers that own their allocation policy.
+// This entry makes no shared-memory grant claim.
+inline NativeStorageRangeInspection InspectNativeStorageActionRangeFromOpenDevices(
+    const NativeStorageActionIntent& intent,const std::vector<disk::NativeFilespaceDevice>& devices,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
+    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget) noexcept {
+  return detail::InspectNativeStorageActionRange(intent,devices,selector,role,relation,reader,pin,budget,nullptr);
+}
+// The actual reusable I/O page is allocated from the retained node grant and
+// bound to this database/operation. Other readers' returned metadata/images
+// still obey their image allowances; this does not certify whole-call memory
+// governance, authorize storage execution or change device ownership.
+inline NativeStorageRangeInspection InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
+    const NativeStorageActionIntent& intent,const std::vector<disk::NativeFilespaceDevice>& devices,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
+    const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget,
+    NativeStorageMemory& memory) noexcept {
+  return detail::InspectNativeStorageActionRange(intent,devices,selector,role,relation,reader,pin,budget,&memory);
 }
 } // namespace scratchbird::storage::database

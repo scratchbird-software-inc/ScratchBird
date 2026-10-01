@@ -91,6 +91,7 @@ target_include_directories(sbsql_sblr_alignment_native_storage_components PRIVAT
 target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE
   sb_core_platform sb_core_uuid sb_core_time sb_core_hash sbl_numeric
   OpenSSL::Crypto Threads::Threads)
+target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE sb_core_memory)
 # The source files also contain legacy entry points outside this component.
 # Link-time reachability must not replace any reachable production function.
 target_compile_options(sbsql_sblr_alignment_native_storage_components PRIVATE
