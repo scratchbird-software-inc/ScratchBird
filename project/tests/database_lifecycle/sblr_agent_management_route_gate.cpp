@@ -24,6 +24,8 @@
 #include "metric_contracts.hpp"
 
 #include <chrono>
+#include <algorithm>
+#include <map>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -40,6 +42,8 @@
 #include <sys/stat.h>
 namespace {
 unsigned growth_fault=0, growth_syncs=0, growth_reads=0, growth_writes=0;
+bool watch_authorization_io=false;
+unsigned authorization_reads=0,authorization_writes=0,authorization_syncs=0;
 int growth_fd=-1;
 bool release_fault_armed=false, release_fault_consumed=false;
 dev_t growth_device=0;
@@ -51,6 +55,7 @@ extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" int __real_fsync(int);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t bytes,off_t offset) {
+  if(watch_authorization_io)++authorization_reads;
   struct stat identity{};
   const bool target=growth_fault<5 ||
       (::fstat(fd,&identity)==0 && identity.st_dev==growth_device && identity.st_ino==growth_inode);
@@ -72,6 +77,7 @@ extern "C" ssize_t __wrap_pread(int fd,void* data,size_t bytes,off_t offset) {
   return result;
 }
 extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t bytes,off_t offset) {
+  if(watch_authorization_io)++authorization_writes;
   if(growth_fault && fd==growth_fd) {
     ++growth_writes;
     if(growth_fault==2 && offset==0) { errno=EIO; return -1; }
@@ -79,6 +85,7 @@ extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t bytes,off_t offs
   return __real_pwrite(fd,data,bytes,offset);
 }
 extern "C" int __wrap_fsync(int fd) {
+  if(watch_authorization_io)++authorization_syncs;
   if(growth_fault && fd==growth_fd) {
     ++growth_syncs;
     if((growth_fault==1 && growth_syncs==1) || (growth_fault==3 && growth_syncs==2)) {
@@ -224,7 +231,7 @@ api::EngineRequestContext Context(const Fixture& fixture, std::string request_id
   context.security_epoch = 13;
   context.resource_epoch = fixture.resource_epoch;
   scratchbird::tests::MaterializeComponentAuthorization(context,
-      {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL"});
+      {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL", "OBS_AGENT_ACTION_APPROVE"});
   return context;
 }
 
@@ -586,6 +593,102 @@ void TestSblrPagePreallocationStorageMutation() {
   RequireUuidField(result.api_result, "page_preallocation_allocation_uuid");
   RequireField(result.api_result, "page_preallocation_ledger_mutated", "true");
   RequireField(result.api_result, "page_preallocation_state", "preallocated");
+}
+
+void TestFilespaceGrowthAuthorizationBeforeEffects() {
+  const std::array<std::string,3> rights{
+      "OBS_AGENT_CONTROL","FILESPACE_LIFECYCLE_CONTROL","OBS_AGENT_ACTION_APPROVE"};
+  unsigned profiles=0,refusals=0;
+  for(const auto& profile:scratchbird::storage::disk::kCanonicalFilespacePageProfiles){
+    const auto fixture=MakeFixture("growth_authorization",30000+profiles++);
+    const auto snapshot=[&]{
+      std::map<std::string,std::string> files;
+      for(const auto& entry:std::filesystem::recursive_directory_iterator(fixture.dir)){
+        if(entry.is_regular_file()){
+          std::ifstream in(entry.path(),std::ios::binary);Require(in.good(),"open authorization fixture image");
+          files.emplace(entry.path().lexically_relative(fixture.dir).string(),
+              std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>()));
+        }else files.emplace(entry.path().lexically_relative(fixture.dir).string()+"/","");
+      }
+      return files;
+    };
+    const auto watch=[](bool active){
+#if defined(__linux__)
+      watch_authorization_io=active;
+      if(active)authorization_reads=authorization_writes=authorization_syncs=0;
+#endif
+    };
+    const auto denied=[&](const auto& result,const auto& before){
+      watch(false);
+      Require(!result.ok&&!result.diagnostics.empty()&&result.diagnostics.front().error&&
+          result.diagnostics.front().code.rfind("SECURITY.",0)==0,
+          "growth denial must preserve a registered security diagnostic");
+      Require(snapshot()==before,"authorization refusal changed a member, evidence file or durable reservation");
+#if defined(__linux__)
+      Require(!authorization_reads&&!authorization_writes&&!authorization_syncs,
+          "authorization refusal reached storage I/O before admission");
+#endif
+      ++refusals;
+    };
+    for(unsigned phase=0;phase<2;++phase){
+      const auto before=snapshot();
+      Require(phase? !before.empty():before.empty(),"authorization test has independent absent/existing member phases");
+      for(unsigned right=0;right<rights.size();++right)for(unsigned mode=0;mode<4;++mode){
+        auto request=FilespaceRequest(fixture,"denied-growth",profile.page_size_bytes);
+        auto& auth=request.context.authorization_context;
+        auto grant=std::find_if(auth.grants.begin(),auth.grants.end(),[&](const auto& g){return g.right==rights[right];});
+        Require(grant!=auth.grants.end(),"explicit authorized component fixture contains tested grant");
+        if(mode==0)auth.grants.erase(grant);
+        if(mode==1){auto rejection=*grant;rejection.grant_uuid=scratchbird::tests::FixtureUuid(9912,1);
+          rejection.deny=true;auth.grants.push_back(rejection);}
+        if(mode==2)grant->target_uuid=scratchbird::tests::FixtureUuid(9912,2);
+        if(mode==3){api::EngineMaterializedAuthorizationPolicy policy;
+          policy.policy_uuid=scratchbird::tests::FixtureUuid(9912,3);policy.subject_uuid=fixture.principal_uuid;
+          policy.subject_kind="principal";policy.right=rights[right];policy.policy_kind="storage_action";
+          policy.requires_runtime_recheck=true;policy.policy_epoch=auth.policy_epoch;auth.policies.push_back(policy);}
+        request.context.trace_tags.push_back("right:"+rights[right]);
+        request.option_envelopes.push_back("right:"+rights[right]);
+        request.option_envelopes.push_back("authorization:true");
+        request.option_envelopes.push_back("agent_durable_resource_reservation_required:true");
+        watch(true);const auto result=api::EngineRequestFilespaceGrowth(request);denied(result,before);
+        Require(!result.action_accepted&&!result.storage_result&&result.refusal_reason==
+            "filespace_growth_authorization_required:"+rights[right],"exact refused right and no fabricated storage outcome");
+        if(mode==0){
+          auto sblr_request=FilespaceSblrApiRequest(fixture);
+          watch(true);const auto routed=DispatchWithContext(request.context,"agents.request_filespace_growth",
+              "SBLR_AGENT_REQUEST_FILESPACE_GROWTH",std::move(sblr_request));
+          denied(routed.api_result,before);
+        }
+      }
+      for(unsigned fault=0;fault<4;++fault){
+        auto request=FilespaceRequest(fixture,"invalid-growth-context",profile.page_size_bytes);
+        if(fault==0)request.context.authorization_context={};
+        if(fault==1)++request.context.security_epoch;
+        if(fault==2)request.context.principal_uuid=scratchbird::tests::FixtureUuid(9912,4);
+        if(fault==3)++request.context.catalog_generation_id;
+        watch(true);const auto result=api::EngineRequestFilespaceGrowth(request);denied(result,before);
+      }
+      if(!phase){
+        auto dry=FilespaceRequest(fixture,"inspect-without-apply-rights",profile.page_size_bytes);dry.dry_run=true;
+        scratchbird::tests::MaterializeComponentAuthorization(dry.context,{"OBS_AGENT_STATE_READ"});
+        const auto observed=api::EngineRequestFilespaceGrowth(dry);
+        Require(observed.ok&&!observed.storage_result&&snapshot()==before,"dry-run inspection must not require live apply grants or mutate files");
+        auto live=FilespaceRequest(fixture,"explicitly-authorized-growth",profile.page_size_bytes);
+        for(auto& grant:live.context.authorization_context.grants){
+          if(grant.right=="OBS_AGENT_CONTROL")grant.target_uuid=fixture.database_uuid;
+          if(grant.right=="FILESPACE_LIFECYCLE_CONTROL"||grant.right=="OBS_AGENT_ACTION_APPROVE")
+            grant.target_uuid=fixture.filespace_uuid;
+        }
+        const auto applied=api::EngineRequestFilespaceGrowth(live);
+        if(!applied.ok)DumpDiagnostics(applied);
+        Require(applied.ok&&applied.storage_result&&applied.storage_result->ok()&&
+            applied.storage_result->evidence.physical_extension_completed,
+            "correctly scoped explicit rights must execute actual growth after refusals");
+        RequireField(applied,"filespace_growth_evidence_sequence","1");
+      }
+    }
+  }
+  std::cout<<"growth authorization: profiles="<<profiles<<" no-effect refusals="<<refusals<<'\n';
 }
 
 void TestApiFilespaceGrowthStorageMutation() {
@@ -1015,6 +1118,7 @@ int main(int argc,char** argv) try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("sblr_agent_management_route_gate");
   RegisterComponentMetricDescriptors();
   if(argc==2 && std::string_view(argv[1])=="--growth-retention-only") {
+    TestFilespaceGrowthAuthorizationBeforeEffects();
     TestApiFilespaceGrowthStorageMutation();
     TestApiFilespaceGrowthRetainsFailure();
     TestApiFilespaceGrowthRetainsEvidenceFailure();
@@ -1023,6 +1127,7 @@ int main(int argc,char** argv) try {
     return EXIT_SUCCESS;
   }
   Require(argc==1,"unexpected test arguments");
+  TestFilespaceGrowthAuthorizationBeforeEffects();
   TestApiPagePreallocationStorageMutation();
   TestSblrPagePreallocationStorageMutation();
   TestApiFilespaceGrowthStorageMutation();
