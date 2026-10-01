@@ -7,13 +7,18 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <new>
+#include <mutex>
 #include <source_location>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -21,7 +26,15 @@ long allocation_budget = -1;
 bool count_allocations = false;
 unsigned long observed_allocations = 0;
 unsigned reads = 0, fail_read = 0;
+unsigned hashes = 0, fail_hash_at = 0, resize_at_read = 0;
+off_t resize_to = 0;
+bool resized_during_read = false;
+unsigned stats = 0, fail_stat = 0;
+unsigned long writes = 0, syncs = 0;
 bool fail_hash = false;
+std::mutex read_pause_mutex;
+std::condition_variable read_pause_cv;
+bool pause_read = false, read_entered = false, release_read = false;
 }
 void* operator new(std::size_t n) {
   if (count_allocations) ++observed_allocations;
@@ -39,10 +52,36 @@ extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
 extern "C" ssize_t __wrap_pread(int fd, void* out, size_t n, off_t at) {
   ++reads;
   if (fail_read && reads == fail_read) { errno = EIO; return -1; }
+  if (resize_at_read && reads == resize_at_read) {
+    resized_during_read = ::ftruncate(fd, resize_to) == 0;
+  }
+  {
+    std::unique_lock lock(read_pause_mutex);
+    if (pause_read) {
+      pause_read=false;read_entered=true;read_pause_cv.notify_all();
+      read_pause_cv.wait(lock,[]{return release_read;});
+    }
+  }
   return __real_pread(fd, out, n, at);
 }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
+#ifdef NATIVE_HISTORICAL_IO_FAULTS
+extern "C" int __real_fstat(int, struct stat*);
+extern "C" int __wrap_fstat(int fd, struct stat* out) {
+  ++stats;
+  if (fail_stat && stats == fail_stat) { errno=EIO;return -1; }
+  return __real_fstat(fd,out);
+}
+extern "C" ssize_t __real_pwrite(int, const void*, size_t, off_t);
+extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t size, off_t at) {
+  ++writes;return __real_pwrite(fd,bytes,size,at);
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd) { ++syncs;return __real_fsync(fd); }
+#endif
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new() {
+  ++hashes;
+  if (fail_hash_at && hashes == fail_hash_at) return nullptr;
   if (fail_hash) { fail_hash = false; return nullptr; }
   return __real_EVP_MD_CTX_new();
 }
@@ -248,6 +287,146 @@ struct Fixture {
     auto* result=::mkdtemp(path.data());Check(result,"create isolated fixture");root=result; }
   ~Fixture(){std::error_code e;std::filesystem::remove_all(root,e);}
 };
+void HistoricalChain(d::FileDevice& device, const d::FilespacePageZero& zero,
+                     const Bytes& zero_bytes, const Bytes& head, const Bytes& tail) {
+  const auto& b = zero.bootstrap;
+  const d::FilespaceBootstrapBinding binding{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid};
+  const auto root = zero.roots.front();
+  const auto digest = Hash(head);
+  const u64 size = b.page_size_bytes, original_length = zero.total_pages * size;
+  const u64 limit = 3 * size + 4096;
+  const auto read = [&](u64 budget) {
+    return p::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
+        device,binding,root,digest,zero_bytes,budget);
+  };
+  const auto image = [&] {
+    const auto extent=device.Size();Check(extent.ok(),"observe fixture extent");
+    Bytes bytes(extent.size_bytes);
+    const auto io=device.ReadAt(0,bytes.data(),bytes.size());
+    Check(io.ok()&&io.bytes_transferred==bytes.size(),"read whole fixture for no-effect oracle");
+    return bytes;
+  };
+  const auto original = image();
+  const auto verify = [&](const p::NativeAllocationChainResult& result) {
+    Check(result.ok()&&result.pages.size()==2&&result.retained_image_bytes==limit&&
+          result.pages[0].bytes==head&&result.pages[1].bytes==tail&&result.state_counts[4]==1&&
+          result.state_counts[7]==1,"historical image binds exact independent chain and allowance");
+  };
+  const auto initial_writes=writes,initial_syncs=syncs;
+  reads=hashes=stats=0;observed_allocations=0;count_allocations=true;
+  const auto good=read(limit);count_allocations=false;
+  const auto read_count=reads,hash_count=hashes;
+  const auto stat_count=stats;
+#ifdef NATIVE_HISTORICAL_IO_FAULTS
+  Check(stat_count>=2,"both actual size observations reached kernel");
+#endif
+  const auto allocation_count=observed_allocations;
+  verify(good);
+  for (const u64 budget : {u64{0},size-1,size+4095,limit-1}) {
+    const auto r=read(budget);Empty(r);Check(r.error==E::resource_exhausted,"historical image ceiling exact refusal");
+  }
+  for (unsigned at=1;at<=read_count;++at) {
+    reads=0;fail_read=at;const auto r=read(limit);fail_read=0;
+    Empty(r);Check(r.error==E::io_failure,"historical read error retained");
+  }
+  for (unsigned at=1;at<=hash_count;++at) {
+    hashes=0;fail_hash_at=at;const auto r=read(limit);fail_hash_at=0;
+    Empty(r);Check(r.error==E::hash_failure,"historical hash-provider error retained");
+  }
+  for (unsigned at=1;at<=stat_count;++at) {
+    stats=0;fail_stat=at;const auto r=read(limit);fail_stat=0;
+    Empty(r);Check(r.error==E::io_failure,"historical size observation error retained");
+  }
+  for (unsigned long at=0;at<allocation_count;++at) {
+    const auto lost=device.failed_io_latency_observations();
+    allocation_budget=static_cast<long>(at);const auto r=read(limit);allocation_budget=-1;
+    if(r.ok()) {
+      // Device latency observation is explicitly optional; all chain-owned
+      // allocations must fail closed. Do not silently accept arbitrary success.
+      Check(device.failed_io_latency_observations()>lost,"only measured optional telemetry can lose an allocation");
+      verify(r);
+    } else {Empty(r);Check(r.error==E::resource_exhausted,"historical allocation error retained");}
+  }
+  Check(image()==original&&writes==initial_writes&&syncs==initial_syncs,
+        "historical success and fault sweeps preserve every file byte without writes or syncs");
+  for (unsigned mutation=0;mutation<8;++mutation) {
+    auto old=zero;auto expected=digest;auto reference=root;auto expected_binding=binding;
+    if(mutation==0)expected[0]^=1;
+    if(mutation==1)expected={};
+    if(mutation==2)reference.page_generation++;
+    if(mutation==3)old.page_generation++;
+    if(mutation==4)old.page_uuid=Id(232);
+    if(mutation==5)expected_binding.database_uuid=Id(230);
+    if(mutation==6)reference.object_uuid=Id(231);
+    if(mutation==7)old.bootstrap.flags|=d::FilespaceBootstrapFlag::cluster_authority_required;
+    const auto encoded=d::EncodeFilespacePageZero(old);Check(encoded.ok(),"individually valid historical negative fixture");
+    const auto r=p::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
+        device,expected_binding,reference,expected,*encoded.bytes,limit);
+    Empty(r);
+    if(mutation==0)Check(r.error==E::invalid_integrity,"historical root whole-image digest mismatch");
+    if(mutation==7)Check(r.error==E::cluster_requires_authority,"historical cluster flag preserves routing refusal");
+  }
+  // A retained page-zero image may predate selected allocations within the
+  // same capacity. Like the current explicit-root overload, count the actual
+  // hash-bound map, not the bootstrap's initial free/preallocation counters.
+  auto stale_counters=zero;stale_counters.free_pages++;stale_counters.preallocated_pages=0;
+  const auto stale_image=d::EncodeFilespacePageZero(stale_counters);
+  Check(stale_image.ok(),"valid initial counters before selected allocations");
+  verify(p::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
+      device,binding,root,digest,*stale_image.bytes,limit));
+  for (u64 extra : {u64{1},size,2*size+1}) {
+    std::filesystem::resize_file(device.path(),original_length+extra);
+    verify(read(limit));
+    Empty(p::ReadNativeAllocationChainFromOpenDevice(device,binding,2*size));
+    Empty(p::ReadNativeAllocationChainAtRootFromOpenDevice(device,binding,root,2*size));
+  }
+  auto current=zero;current.total_pages+=2;current.page_generation++;
+  current.root_set_generation++;current.free_pages+=2;
+  const auto new_zero=d::EncodeFilespacePageZero(current);Check(new_zero.ok(),"new current capacity image");
+  std::filesystem::resize_file(device.path(),current.total_pages*size);
+  Check(device.WriteAt(0,new_zero.bytes->data(),new_zero.bytes->size()).ok()&&device.Sync().ok(),"persist changed page zero");
+  Check(d::ReadFilespacePageZeroFromOpenDevice(device,&binding).ok(),"new page zero independently valid");
+  verify(read(limit));
+  Empty(p::ReadNativeAllocationChainAtRootFromOpenDevice(device,binding,root,2*size));
+  current.bootstrap.flags|=d::FilespaceBootstrapFlag::cluster_authority_required;
+  const auto cluster=d::EncodeFilespacePageZero(current);Check(cluster.ok(),"current cluster fixture");
+  Check(device.WriteAt(0,cluster.bytes->data(),cluster.bytes->size()).ok(),"write actual cluster bootstrap");
+  const auto routed=read(limit);Empty(routed);
+  Check(routed.error==E::cluster_requires_authority,"actual cluster flag cannot be hidden by historical input");
+  Check(device.WriteAt(0,zero_bytes.data(),zero_bytes.size()).ok(),"restore page zero");
+  std::filesystem::resize_file(device.path(),original_length-1);
+  const auto short_file=read(limit);Empty(short_file);
+  Check(short_file.error==E::invalid_range,"complete historical extent must remain present");
+  std::filesystem::resize_file(device.path(),original_length);
+  reads=0;resize_at_read=2;resize_to=original_length+1;resized_during_read=false;
+  const auto raced=read(limit);resize_at_read=0;
+  Empty(raced);Check(resized_during_read&&raced.error==E::physical_extent_changed,"actual extent change during chain read rejected");
+  std::filesystem::resize_file(device.path(),original_length);
+  Check(image()==original,"historical tests restore exact real fixture");
+  const auto path=device.path();
+  {
+    std::lock_guard lock(read_pause_mutex);pause_read=true;read_entered=false;release_read=false;
+  }
+  auto reading=std::async(std::launch::async,[&]{return read(limit);});
+  {
+    std::unique_lock lock(read_pause_mutex);
+    if(!read_pause_cv.wait_for(lock,std::chrono::seconds(5),[]{return read_entered;})) {
+      release_read=true;read_pause_cv.notify_all();
+      Check(false,"historical reader reached retained device read");
+    }
+  }
+  std::promise<void> close_started;auto started=close_started.get_future();
+  auto closing=std::async(std::launch::async,[&]{close_started.set_value();return device.Close();});
+  started.wait();
+  const bool held=closing.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
+  {
+    std::lock_guard lock(read_pause_mutex);release_read=true;read_pause_cv.notify_all();
+  }
+  const auto finished=reading.get();const auto closed=closing.get();
+  Check(held&&closed.ok(),"concurrent close waits for complete historical verification");verify(finished);
+  Check(device.Open(path,d::FileOpenMode::open_existing).ok(),"reopen after retained-guard test");
+  std::cout<<"historical profile="<<size<<" reads="<<read_count<<" hashes="<<hash_count<<" stats="<<stat_count<<" allocations="<<allocation_count<<'\n';
+}
 void RetainedChain() {
   for (unsigned profile=0;profile<5;++profile) for(unsigned ownership=0;ownership<4;++ownership) {
     Fixture fixture;auto full=Example(profile); full.states[2]=S::allocated;
@@ -331,8 +510,13 @@ void RetainedChain() {
     auto wrong_zero=zero;wrong_zero.free_pages=2;auto wrong=d::EncodeFilespacePageZero(wrong_zero);Check(wrong.ok(),"counter mismatch fixture");
     write(0,*wrong.bytes);Empty(read(limit));write(0,*zero_bytes.bytes);
     fail_hash=true;result=read(limit);Check(!fail_hash,"retained hash failure reached provider");Empty(result);
+    HistoricalChain(device,zero,*zero_bytes.bytes,head_bytes,tail_bytes);
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only).ok(),"reopen read-only actual filespace");
     Check(read(limit).ok()&&device.read_only(),"retained reader preserves read-only ownership");
+    const auto retained=p::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
+        device,binding,zero.roots.front(),Hash(head_bytes),*zero_bytes.bytes,limit+b.page_size_bytes+4096);
+    Check(retained.ok()&&device.read_only()&&retained.pages[0].bytes==head_bytes&&retained.pages[1].bytes==tail_bytes,
+          "historical reader preserves actual read-only reopened ownership");
     Check(device.Close().ok(),"close fixture");Empty(read(limit));
   }
 }

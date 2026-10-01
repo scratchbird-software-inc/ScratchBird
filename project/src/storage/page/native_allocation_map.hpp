@@ -56,7 +56,7 @@ enum class NativeAllocationError {
   invalid_state, invalid_record, invalid_reference, invalid_integrity,
   hash_failure, resource_exhausted, invalid_filespace, binding_mismatch,
   chain_mismatch, physical_owner_mismatch, counter_mismatch, io_failure,
-  cluster_requires_authority
+  cluster_requires_authority, physical_extent_changed
 };
 struct NativeAllocationMapResult {
   NativeAllocationError error = NativeAllocationError::invalid_family;
@@ -85,4 +85,14 @@ NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
 NativeAllocationChainResult ReadNativeAllocationChainAtRootFromOpenDevice(
     disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
     const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes) noexcept;
+// STORAGE-NATIVE-HISTORICAL-ALLOCATION-READ-001. Verification of retained
+// immutable history, NOT current capacity, recovery selection or mutation
+// authority. The owner must bind the historical page-zero image and root digest
+// to its actual publication. Extra physical bytes never become free pages.
+// The image ceiling includes historical page zero, bootstrap probe and maps.
+NativeAllocationChainResult ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
+    disk::FileDevice&, const disk::FilespaceBootstrapBinding&,
+    const disk::FilespaceRootReference&, const std::array<byte, 32>& root_sha256,
+    const std::vector<byte>& historical_page_zero,
+    u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::page
