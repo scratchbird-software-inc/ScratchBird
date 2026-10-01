@@ -47,6 +47,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --concurrent-stop-failure)
   set_tests_properties(server_agent_concurrent_stop_failure_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;durable_result;partial_failure;linux_proof")
+  add_test(NAME server_agent_failed_snapshot_lifetime_gate
+    COMMAND server_agent_shutdown_wakeup_gate --failed-snapshot-lifetime)
+  set_tests_properties(server_agent_failed_snapshot_lifetime_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;shutdown;durable_result;lifetime;linux_proof")
   foreach(failed_launch RANGE 1 3)
     add_test(NAME server_agent_startup_failure_${failed_launch}_gate
       COMMAND server_agent_shutdown_wakeup_gate --startup-failure ${failed_launch})

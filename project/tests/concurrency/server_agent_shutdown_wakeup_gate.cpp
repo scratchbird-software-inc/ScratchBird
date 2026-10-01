@@ -527,6 +527,60 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
       status_matches && rejects_false_claims && !snapshot.started && !snapshot.stopping;
 }
 
+// SEARCH_KEY: SERVER_AGENT_FAILED_SNAPSHOT_VALUE_LIFETIME
+bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
+                                 const server::HostedEngineState& engine) {
+  server::ServerAgentRuntimeSnapshot retained;
+  server::ServerAgentRuntimeStopResult retained_result;
+  bool isolated = false;
+  {
+    server::ServerAgentRuntime owned;
+    std::vector<server::ServerDiagnostic> diagnostics;
+    if (!owned.Start(config, engine, &diagnostics)) return false;
+    const auto active = owned.Snapshot();
+    if (!CheckConcurrentStop(owned, active.worker_thread_count, true)) return false;
+    retained = owned.Snapshot();
+    retained_result = owned.Stop();
+    if (retained_result.diagnostics.size() != 1) return false;
+    // Mutate only caller-owned copies, not runtime state or persisted evidence.
+    auto edited_snapshot = owned.Snapshot();
+    auto edited_result = owned.Stop();
+    edited_snapshot.database_uuid.clear();
+    edited_snapshot.workers.clear();
+    edited_snapshot.stop_result.diagnostics.clear();
+    edited_result.diagnostics.front().code = "caller-local-edit";
+    edited_result.diagnostics.front().occurrence_uuid.fill(0);
+    edited_result.diagnostics.front().fields.clear();
+    const auto unchanged = owned.Snapshot();
+    isolated = HasBinarySnapshotIdentities(unchanged, engine) &&
+        unchanged.stop_result.diagnostics.size() == 1 &&
+        unchanged.stop_result.diagnostics.front().code == retained_result.diagnostics.front().code &&
+        unchanged.stop_result.diagnostics.front().occurrence_uuid ==
+            retained_result.diagnostics.front().occurrence_uuid &&
+        unchanged.stop_result.diagnostics.front().fields.size() ==
+            retained_result.diagnostics.front().fields.size();
+  }  // The source runtime and all its internal records are now destroyed.
+  std::vector<std::string> identities;
+  const bool retained_status = ReadStatusIdentities(retained, &identities);
+  bool retained_failure = !retained.started && !retained.stopping &&
+      retained_result.attempted && !retained_result.ok() &&
+      !retained_result.durable_cleanup_complete &&
+      retained.stop_result.diagnostics.size() == 1;
+  if (retained_failure) {
+    const auto& diagnostic = retained.stop_result.diagnostics.front();
+    platform::Uuid occurrence;
+    occurrence.bytes = diagnostic.occurrence_uuid;
+    retained_failure = diagnostic.code == "SB-STORAGE-DISK-OPEN-MISSING" &&
+        diagnostic.occurrence_uuid == retained_result.diagnostics.front().occurrence_uuid &&
+        uuid::IsEngineIdentityUuid(occurrence) && !diagnostic.fields.empty();
+  }
+  std::cout << "failed_snapshot_after_destruction=" << retained_failure
+            << " value_copies_isolated=" << isolated
+            << " retained_status_matches=" << retained_status << '\n';
+  return isolated && retained_failure && retained_status &&
+      HasBinarySnapshotIdentities(retained, engine);
+}
+
 // SEARCH_KEY: SERVER_AGENT_SPURIOUS_WAKE_RECHECK
 bool CheckSpuriousWake(server::ServerAgentRuntime& runtime) {
   Wait(scheduler_at_entry, "scheduler did not reach controlled entry");
@@ -936,10 +990,12 @@ int main(int argc, char** argv) {
   const bool sequential_restart = binary_boundary || active_start_repeat ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
+  const bool failed_snapshot_lifetime = argc == 2 &&
+      std::string_view(argv[1]) == "--failed-snapshot-lifetime";
   const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
   const bool setup_path_failure = setup_database_failure ||
       (argc == 2 && std::string_view(argv[1]) == "--setup-path-failure");
-  const bool lifecycle_case = active_destruction || startup_failure ||
+  const bool lifecycle_case = active_destruction || failed_snapshot_lifetime || startup_failure ||
       sequential_restart || setup_path_failure || missing_identity;
   if (startup_failure) {
     const std::string_view index(argv[2]);
@@ -1021,9 +1077,12 @@ int main(int argc, char** argv) {
   bool restarted = false;
   bool destruction_joined = false;
   bool setup_recovered = false;
-  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
+  bool snapshot_retained = false;
+  armed.store(!failed_snapshot_lifetime && !concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure && !missing_identity,
               std::memory_order_release);
-  if (missing_identity) {
+  if (failed_snapshot_lifetime) {
+    snapshot_retained = CheckFailedSnapshotLifetime(config, engine);
+  } else if (missing_identity) {
     setup_recovered = CheckIdentityAdmission(runtime, config, engine, diagnostics, argv[2],
                                           malformed_identity ? argv[3] : "");
   } else if (setup_path_failure) {
@@ -1087,7 +1146,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (missing_identity) {
+  if (failed_snapshot_lifetime) {
+    Require(snapshot_retained, "failed snapshot/result did not retain independent owned values");
+    std::cout << "server_agent_failed_snapshot_lifetime_gate=passed\n";
+  } else if (missing_identity) {
     Require(setup_recovered, "missing identity was not refused before effects or repair failed");
     std::cout << "server_agent_missing_identity_gate=passed\n";
   } else if (setup_path_failure) {
