@@ -4,10 +4,13 @@
 #include "native_publication_coordinator.hpp"
 
 namespace scratchbird::storage::database {
-// Actual-file forward recovery of an installed V4 management publication.
+// Actual-file forward recovery of an installed management publication.
 // Requires exact durable request, complete immutable graph and original slot
 // allocations. No fabricated lease, survivor-based serving, new identity,
 // authentication/effect completion or SQL receipt is granted.
+// Growth profile 4 additionally requires already completed physical growth and
+// the exact installed after page-zero body. This selector-only primitive never
+// extends a device, reserves physical storage, or repairs a torn growth body.
 NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDevices(
   const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
   const Uuid& primary,const Uuid& expected_attempt,

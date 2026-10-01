@@ -57,10 +57,12 @@ struct Recovery {
     if(!result.ok())throw result.error==NativeCheckpointError::hash_failure?E::hash_failure:result.error==NativeCheckpointError::resource_exhausted?E::resource_exhausted:result.error==NativeCheckpointError::io_failure?E::io_failure:result.error==NativeCheckpointError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::checkpoint_failure;
     Require(result.root->completed,E::checkpoint_failure);const auto sha=Hash(result.bytes);return {std::move(*result.root),sha};
   }
-  page::NativeAllocationChainResult Maps(const NativeCheckpointRoot& cp){
+  page::NativeAllocationChainResult Maps(const NativeCheckpointRoot& cp,const Bytes* historical_zero=nullptr){
     const auto& ref=Root(cp,4);Require(ref.page_type==3&&ref.page.filespace_uuid==primary&&ref.page.page_size_profile_uuid==zero.bootstrap.page_size_profile_uuid,E::binding_mismatch);
     const disk::FilespaceRootReference root{3,3,ref.page.filespace_uuid,ref.page.page_number,ref.page.page_generation,ref.page.page_size_profile_uuid,ref.object_uuid};
-    auto result=page::ReadNativeAllocationChainAtRootFromOpenDevice(*device,{database,primary,zero.bootstrap.page_size_profile_uuid},root,budget-used);
+    auto result=historical_zero?page::ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(*device,
+      {database,primary,zero.bootstrap.page_size_profile_uuid},root,ref.sha256,*historical_zero,budget-used):
+      page::ReadNativeAllocationChainAtRootFromOpenDevice(*device,{database,primary,zero.bootstrap.page_size_profile_uuid},root,budget-used);
     if(!result.ok())throw result.error==page::NativeAllocationError::hash_failure?E::hash_failure:result.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:result.error==page::NativeAllocationError::io_failure?E::io_failure:result.error==page::NativeAllocationError::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;
     Charge(result.retained_image_bytes);Require(Hash(result.pages.front().bytes)==ref.sha256,E::binding_mismatch);return result;
   }
@@ -124,7 +126,28 @@ NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDe
     if(!graph.ok()){using G=NativeManagementControlAuthorityError;throw graph.error==G::hash_failure?E::hash_failure:graph.error==G::resource_exhausted?E::resource_exhausted:graph.error==G::io_failure?E::io_failure:graph.error==G::encrypted_requires_authority?E::encrypted_requires_authority:graph.error==G::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;}
     c.Charge(graph.verified_image_bytes);Require(MatchesNativeManagementPublishedCheckpoint(graph,target.root,target.sha),E::binding_mismatch);
     effects.installed_graph_verified=true;
-    const auto before=c.Maps(base.root),after=c.Maps(target.root);const auto inventory=c.Inventory(target.root);
+    Bytes original_primary_zero;
+    if(p.intent.recovery_profile==4){
+      // This selector primitive requires completed physical growth and an exact
+      // current after body. It neither extends nor repairs page-zero metadata.
+      const auto history=ReadNativeManagementGraphHistoryFromOpenDevices(database,c.files,primary,graph_anchor,budget-c.used);
+      if(!history.ok()){using H=NativeManagementHistoryError;throw history.error==H::hash_failure?E::hash_failure:
+        history.error==H::resource_exhausted?E::resource_exhausted:history.error==H::io_failure?E::io_failure:E::binding_mismatch;}
+      c.Charge(history.verified_image_bytes);
+      Require(!history.entries.empty()&&history.entries.back().plan.operation_uuid==attempt,E::binding_mismatch);
+      const auto& growth=history.entries.back().control_growth_images;Require(growth.size()==2,E::binding_mismatch);
+      c.Charge(growth.front().size(),3);
+      const auto before_zero=disk::DecodeFilespacePageZero(growth.front().data(),growth.front().size());
+      if(!before_zero.ok())throw before_zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:
+        before_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
+      const auto& z=*before_zero.record;const auto file=std::find_if(c.files.begin(),c.files.end(),[&](const auto& f){return f.filespace_uuid==z.bootstrap.filespace_uuid;});
+      Require(file!=c.files.end(),E::invalid_device);
+      Bytes actual(growth.back().size());const auto read=file->device->ReadAt(0,actual.data(),actual.size());
+      Require(read.ok()&&read.bytes_transferred==actual.size(),E::io_failure);
+      Require(actual==growth.back(),E::preimage_changed);
+      if(z.bootstrap.filespace_uuid==primary)original_primary_zero=growth.front();
+    }
+    const auto before=c.Maps(base.root,original_primary_zero.empty()?nullptr:&original_primary_zero),after=c.Maps(target.root);const auto inventory=c.Inventory(target.root);
     std::array<disk::NativeCommonPageHeader,4> headers;
     for(unsigned i=0;i<4;++i){const auto& old=Allocated(before,roots[i]);const auto& record=Allocated(after,roots[i]);
       Require(old==record&&record.creator_operation_uuid.is_nil(),E::allocation_mismatch);

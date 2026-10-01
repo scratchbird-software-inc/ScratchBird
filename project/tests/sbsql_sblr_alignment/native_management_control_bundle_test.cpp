@@ -34,6 +34,7 @@ unsigned entropy_fault=0,entropy_calls=0;
 unsigned preallocation_fault=0,preallocation_calls=0;
 int preallocation_fd=-1;off_t preallocation_offset=0,preallocation_bytes=0;
 unsigned preallocation_death=0;
+std::atomic<unsigned> preallocation_pause{0};
 off_t growth_extend_to=0;
 std::atomic<unsigned> historical_read_pause{0};
 #ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
@@ -108,6 +109,7 @@ extern "C" int __wrap_fsync(int fd){Trace(-1);if(io_counting){++syncs;if(syncs==
 #if defined(__linux__)
 extern "C" int __real_posix_fallocate(int,off_t,off_t);
 extern "C" int __wrap_posix_fallocate(int fd,off_t offset,off_t bytes){
+ unsigned expected=1;if(preallocation_pause.compare_exchange_strong(expected,2))while(preallocation_pause==2)std::this_thread::yield();
  preallocation_fd=fd;preallocation_offset=offset;preallocation_bytes=bytes;
  if(preallocation_death==1)_exit(86);
  if(preallocation_fault){++preallocation_calls;
@@ -982,6 +984,119 @@ void DirectoryAuthority(DirectoryHistoryFixture& f,unsigned expected=1){
  Check(actual.allocations.size()==allocations&&actual.preallocations.size()==preallocations,"no additional allocation authority");
  const auto graph=db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*actual.anchor,f.budget);
  Check(graph.ok()&&graph.allocations==actual.allocations&&graph.preallocations==actual.preallocations,"explicit actual graph and selected metadata agree");
+}
+void DirectoryGrowthSelectionRecovery(unsigned primary,unsigned secondary,int fault_route=-1,unsigned shard=0){
+ for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserved:{false,true}){
+  if(fault_route>=0&&fault_route<3&&(!reverse||!reserved))continue;
+  DirectoryHistoryFixture f(primary,secondary,reverse,4,target,reserved);auto& t=f.t;auto& p=t.graph.plan;
+  f.budget=32768*std::max<u64>(t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+  const auto slot=[&](unsigned kind)->const d::FilespaceRootReference&{const auto at=std::find_if(t.graph.zero.roots.begin(),t.graph.zero.roots.end(),[&](const auto& r){return r.kind==kind;});Check(at!=t.graph.zero.roots.end(),"growth recovery original control slot");return *at;};
+  const auto genesis=db::DecodeNativePublicationWatermark(t.fixture.Read(slot(20).page_number));Check(genesis.ok(),"growth recovery original watermark shape");
+  auto original=*genesis.state;original.base_checkpoint=p.base_checkpoint;original.base_checkpoint_object_uuid=p.base_checkpoint_object_uuid;
+  original.base_checkpoint_sha256=p.base_checkpoint_sha256;original.base_checkpoint_generation=p.base_checkpoint_generation;original.base_root_set_generation=p.base_root_set_generation;
+  const auto original_image=db::EncodeNativePublicationWatermark(original);Check(original_image.ok(),"growth recovery exact original base watermark");
+  auto pending=original;pending.previous_watermark=original.watermark;pending.watermark=p.reserved_generation;
+  pending.previous_state_sha256=original_image.state_sha256;pending.operation_uuid=p.operation_uuid;pending.intent=p.intent;
+  const auto bare=db::EncodeNativePublicationWatermark(pending);Check(bare.ok(),"canonical retained growth request watermark");
+  p.reservation_state_sha256=bare.state_sha256;t.Refresh();f.Write(t.plan_image);f.Write(t.target_cp);f.Select();
+  pending.publication_plan=db::NativePublicationWatermark::PlanAnchor{Self(p.header),p.object_uuid,Sha(t.plan_image),bare.state_sha256};
+  for(unsigned i=0;i<2;++i){const auto old=db::DecodeNativePublicationWatermark(t.fixture.Read(slot(20+i).page_number));Check(old.ok(),"growth watermark replica header");
+   pending.header=old.state->header;const auto image=db::EncodeNativePublicationWatermark(pending);Check(image.ok(),"exact anchored growth watermark");f.Write(image.bytes);}
+  std::array<Bytes,2> old_selectors,new_selectors;
+  for(unsigned i=0;i<2;++i){new_selectors[i]=t.fixture.Read(slot(18+i).page_number);const auto decoded=db::DecodeNativeCheckpointSelection(new_selectors[i]);Check(decoded.ok(),"complete growth target selector");
+   auto old=*decoded.selection;old.selection_generation=*p.base_selection_generation;old.previous_selection_generation=0;old.previous_checkpoint.reset();old.previous_checkpoint_object_uuid={};old.previous_checkpoint_sha256={};
+   old.publication_uuid=t.graph.zero.creation_operation_uuid;old.checkpoint=p.base_checkpoint;old.checkpoint_object_uuid=p.base_checkpoint_object_uuid;old.checkpoint_sha256=p.base_checkpoint_sha256;
+   old.checkpoint_generation=p.base_checkpoint_generation;old.root_set_generation=p.base_root_set_generation;old_selectors[i]=SelectorOracle(old);Check(db::DecodeNativeCheckpointSelection(old_selectors[i]).ok(),"independent exact original selector");}
+  std::vector<std::pair<d::FileDevice*,Bytes>> expected;
+  for(const auto& file:t.fixture.devices){Check(file.device->Sync().ok(),"fully installed physical growth fixture barrier");const auto size=file.device->Size();Check(size.ok(),"actual grown fixture size");Bytes raw(size.size_bytes);
+   const auto io=file.device->ReadAt(0,raw.data(),raw.size());Check(io.ok()&&io.bytes_transferred==raw.size(),"complete grown fixture postimage");expected.emplace_back(file.device,std::move(raw));}
+  const auto call=[&]{return db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),t.fixture.devices,Id(2),p.operation_uuid,p.intent,f.budget);};
+  const auto reset=[&]{for(const auto& raw:old_selectors)f.Write(raw);Check(t.fixture.device.Sync().ok(),"original growth selector fault preimages synchronized");};
+  const auto exact=[&](bool selected){for(const auto& [file,bytes]:expected){const auto size=file->Size();Check(size.ok()&&size.size_bytes==bytes.size(),"growth selector work never changes capacity");Bytes actual(bytes.size());
+    const auto io=file->ReadAt(0,actual.data(),actual.size());Check(io.ok()&&io.bytes_transferred==actual.size(),"complete actual growth effect image");
+    if(!selected&&file==&t.fixture.device)for(unsigned i=0;i<2;++i)std::copy(new_selectors[i].begin(),new_selectors[i].end(),actual.begin()+slot(18+i).page_number*t.fixture.size);
+    Check(actual==bytes,"growth recovery cannot affect anything except its original selector slots");}};
+  if(fault_route>=0&&fault_route<3){
+   reset();for(const auto& file:t.fixture.devices){byte scratch=0;for(unsigned i=0;i<4097;++i)Check(file.device->ReadAt(0,&scratch,1).ok(),"growth telemetry warmup");}
+   reads=writes=syncs=hash_seen=0;allocations=0;io_counting=true;hash_counting=fault_route==1;counting=fault_route==2;
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+   historical_stats=0;historical_stat_counting=fault_route==0;
+#endif
+   const auto baseline=call();io_counting=hash_counting=counting=false;
+   const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto na=allocations;
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+   historical_stat_counting=false;const auto nstats=historical_stats;
+#endif
+   Check(baseline.ok(),"growth recovery fault baseline");exact(true);
+   std::cout<<"growth recovery target="<<target<<" route="<<fault_route<<" reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" allocations="<<na<<'\n';
+   const auto loss=[&]{u64 n=0;for(const auto& file:t.fixture.devices)n+=file.device->failed_io_latency_observations();return n;};
+   const auto run=[&](unsigned kind,unsigned long at,std::size_t torn=0){reset();const auto lost=loss();reads=writes=syncs=0;io_counting=true;preallocation_fd=-1;
+    if(kind==0)read_fault=at;if(kind==1){write_fault=at;torn_bytes=torn;}if(kind==2)sync_fault=at;
+    if(kind==3){hash_fault=shard%5+1;hash_target=at;hash_seen=0;hash_active=false;}if(kind==4)allocation_budget=at;
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+    if(kind==5){historical_stats=0;historical_stat_counting=true;historical_stat_fault=at;}
+#endif
+    const auto result=call();const auto left=allocation_budget;allocation_budget=-1;const bool consumed=!hash_fault;
+    hash_fault=read_fault=write_fault=sync_fault=0;torn_bytes=0;io_counting=false;
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+    historical_stat_counting=false;historical_stat_fault=0;if(kind==5)Check(historical_stats>=at,"growth stat fault consumed");
+#endif
+    Check(result.effects.observed&&result.effects.write_attempts==writes&&result.effects.sync_attempts==syncs&&preallocation_fd==-1,"growth recovery reports every physical effect without allocating again");
+    if(kind==4&&result.ok())Check(left==-1&&loss()==lost+1,"only accounted optional telemetry allocation failure permits growth completion");
+    else{const auto want=kind==3?db::NativePublicationError::hash_failure:kind==4?db::NativePublicationError::resource_exhausted:db::NativePublicationError::io_failure;
+     if(result.error!=want)std::cerr<<"growth recovery fault kind="<<kind<<" site="<<at<<" target="<<target<<" error="<<unsigned(result.error)<<'\n';
+     Check(result.error==want&&!result.snapshot,"growth fault preserves typed error and no completion snapshot");}
+    if(kind==0)Check(reads>=at,"growth read fault consumed");if(kind==1)Check(writes>=at&&result.effects.uncertain_write,"growth torn selector has retained uncertain effects");
+    if(kind==2)Check(syncs>=at,"growth sync fault consumed");if(kind==3)Check(consumed,"growth digest fault consumed");if(kind==4)Check(left==-1,"growth allocation failure consumed");exact(result.ok());
+   };
+   if(fault_route==2){for(unsigned long at=shard;at<na;at+=32)run(4,at);}
+   else if(fault_route==1){for(unsigned at=shard/5+1;at<=nh;at+=4)run(3,at);}
+   else{for(unsigned at=1;at<=nr;++at)run(0,at);for(unsigned at=1;at<=nw;++at){run(1,at);run(1,at,256);}for(unsigned at=1;at<=ns;++at)run(2,at);
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+    for(unsigned at=1;at<=nstats;++at)run(5,at);
+#endif
+   }
+   reset();Check(call().ok(),"original growth operation remains recoverable after fault sweep");exact(true);continue;
+  }
+  if(fault_route==3){reset();reads=writes=syncs=0;io_counting=true;const auto baseline=call();io_counting=false;Check(baseline.ok(),"growth crash baseline");const auto nw=writes,ns=syncs;
+   for(unsigned kind=0;kind<4;++kind)for(unsigned at=1;at<=(kind<2?nw:ns);++at){reset();for(const auto& file:t.fixture.devices)Check(file.device->Close().ok(),"close growth parent before interruption");
+    const auto child=fork();Check(child>=0,"fork actual growth selector recovery");if(!child){f.Reopen(true);writes=syncs=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;kill_after_sync=kind==3;torn_bytes=kind==1?256:0;io_counting=true;(void)call();_exit(87);}
+    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"growth recovery exits at each actual selector write or barrier");
+    const auto recovery=fork();Check(recovery>=0,"fork independent resumed growth recovery");if(!recovery){f.Reopen(true);const auto result=call();_exit(result.ok()?0:83);}
+    Check(waitpid(recovery,&status,0)==recovery&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"interrupted growth recovery completes only original operation");f.Reopen(true);exact(true);
+   }continue;
+  }
+  reset();for(unsigned defect=0;defect<3;++defect){auto invalid=t.growth.back();if(defect==0)invalid=t.growth.front();
+   if(defect==1){std::copy_n(t.growth.front().begin()+4096,97,invalid.begin()+4096);
+    Check(invalid!=t.growth.front()&&invalid!=t.growth.back()&&!d::DecodeFilespacePageZero(invalid.data(),invalid.size()).ok(),"growth negative contains actual torn metadata rather than an unchanged prefix");}
+   if(defect==2){const auto decoded=d::DecodeFilespacePageZero(invalid.data(),invalid.size());Check(decoded.ok(),"growth metadata contradiction source");auto z=*decoded.record;++z.page_generation;const auto encoded=d::EncodeFilespacePageZero(z);Check(encoded.ok(),"canonical contradictory growth body");invalid=*encoded.bytes;}
+   auto* file=f.File(t.changed);Check(file->WriteAt(0,invalid.data(),invalid.size()).ok()&&file->Sync().ok(),"actual incomplete or contradictory growth body");
+   reads=writes=syncs=0;io_counting=true;const auto denied=call();io_counting=false;
+   Check(!denied.ok()&&!denied.snapshot&&!writes&&!syncs,"selector completion cannot repair or bless incomplete physical-growth metadata");
+   Bytes observed(invalid.size());Check(file->ReadAt(0,observed.data(),observed.size()).ok()&&observed==invalid,"refusal preserves actual damaged growth bytes");
+   Check(file->WriteAt(0,t.growth.back().data(),t.growth.back().size()).ok()&&file->Sync().ok(),"restore exact completed physical-growth test body");}
+  for(unsigned variant=0;variant<5;++variant){auto selectors=variant==2?new_selectors:old_selectors;
+   if(variant==1||variant==4)selectors[0]=new_selectors[0];
+   if(variant==3||variant==4){const unsigned damaged=variant==3?0:1;std::copy_n(new_selectors[damaged].begin(),256,selectors[damaged].begin());
+    Check(db::DecodeNativeCheckpointSelection(selectors[damaged]).error==db::NativeCheckpointSelectionError::invalid_integrity,"growth recovery actual damaged selector payload");}
+   for(unsigned i=0;i<2;++i)f.Write(selectors[i]);Check(t.fixture.device.Sync().ok(),"growth selection preimage barrier");
+   reads=writes=syncs=0;io_counting=true;auto wrong=p.intent;wrong.request_context_uuid=Id(32000);
+   const auto refused=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),t.fixture.devices,Id(2),p.operation_uuid,wrong,f.budget);io_counting=false;
+   if(refused.error!=db::NativePublicationError::request_mismatch)std::cerr<<"growth wrong-request refusal="<<unsigned(refused.error)<<'\n';
+   Check(refused.error==db::NativePublicationError::request_mismatch&&!refused.snapshot&&!writes&&!syncs,"growth selection cannot substitute another request");
+   preallocation_fd=-1;const auto result=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),t.fixture.devices,Id(2),p.operation_uuid,p.intent,f.budget);
+   if(!result.ok())std::cerr<<"growth selection primary="<<primary<<" secondary="<<secondary<<" target="<<target<<" variant="<<variant<<" error="<<unsigned(result.error)<<'\n';
+   Check(result.ok()&&result.effects.installed_graph_verified&&result.effects.selected_graph_verified&&preallocation_fd==-1,
+     "actual fully installed growth selection recovers without claiming or repeating physical allocation");
+   for(const auto& [file,bytes]:expected){const auto size=file->Size();Check(size.ok()&&size.size_bytes==bytes.size(),"selector recovery never changes physical capacity");Bytes actual(bytes.size());
+    const auto io=file->ReadAt(0,actual.data(),actual.size());Check(io.ok()&&io.bytes_transferred==actual.size()&&actual==bytes,"independent complete grown-node byte oracle");}
+  }
+  for(const auto& file:t.fixture.devices)Check(file.device->Close().ok(),"close all grown members before independent admission");
+  const auto child=fork();Check(child>=0,"fresh grown publication observer");
+  if(!child){f.Reopen();const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),f.budget);
+   _exit(selected.ok()&&selected.snapshot->selection.checkpoint_sha256==Sha(t.target_cp)?0:84);}
+  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process admits recovered growth selection");
+ }
 }
 void DirectoryControlInstalledPages(DirectoryHistoryFixture& f){
  Pages images;for(const auto& [fs,maps]:f.t.after)images.push_back(MapOracle(maps.front()));images.push_back(DirectoryImageOracle(f.t.directory));
@@ -1919,6 +2034,8 @@ struct OwnedPreallocationRequest {
   Check(before.ok(),"preallocation actual base");const auto& s=before.snapshot->selection;
   const d::FilespaceRootReference root{9,0x300,Id(2),s.checkpoint.page_number,s.checkpoint.page_generation,s.checkpoint.page_size_profile_uuid,s.checkpoint_object_uuid};
   const auto capacity=db::ReadNativeFilespaceCapacityFromOpenDevices(Id(1),f.devices,root,target,f.budget);
+  if(!capacity.ok())std::cerr<<"preallocation capacity error="<<unsigned(capacity.error)<<" checkpoint="<<unsigned(capacity.checkpoint_error)<<" directory="<<unsigned(capacity.directory_error)
+    <<" allocation="<<unsigned(capacity.allocation_error)<<" management="<<unsigned(capacity.management_error)<<" bootstrap="<<unsigned(capacity.bootstrap_error)<<'\n';
   Check(capacity.ok(),"preallocation actual capacity");const auto& c=*capacity.observation;
   storage.request_uuid=Id(21000+(reused==2?0:ordinal*1000));
   storage.operation_uuid=Id(21001+(reused==1?0:ordinal*1000));storage.database_uuid=c.database_uuid;
@@ -1986,15 +2103,37 @@ void PreallocationDeltaNegatives(Fixture& f,u64 first=200,bool dense=false) {
   run(std::move(maps),false);
  }
 }
+// Construct a larger original fixture, not evidence of a production growth action.
+void EnlargeInitialSecondaryFixture(DirectoryHistoryFixture& fixture,u64 total){
+ auto& t=fixture.t;auto& zero=t.zeros.at(t.other);if(total<=zero.total_pages)return;
+ auto& map=t.before.at(t.other).front();map.states.resize(total,State::free);map.total_pages=total;
+ zero.free_pages+=total-zero.total_pages;zero.total_pages=total;
+ const auto map_image=MapOracle(map);
+ for(auto& member:t.old_directory.records)if(member.bootstrap.filespace_uuid==t.other){member.total_pages=total;
+  member.allocation_root=page::NativeFilespaceAllocationRoot{Self(map.header),map.object_uuid,Sha(map_image),map.map_generation,map.capacity_generation};}
+ const byte end=0;Check(t.fixture.secondary.WriteAt(total*u64{zero.bootstrap.page_size_bytes}-1,&end,1).ok(),"larger original secondary fixture extent");
+ const auto image=d::EncodeFilespacePageZero(zero);Check(image.ok()&&t.fixture.secondary.WriteAt(0,image.bytes->data(),image.bytes->size()).ok(),"larger original secondary fixture metadata");
+ fixture.Write(map_image);const auto dir=DirectoryImageOracle(t.old_directory);fixture.Write(dir);
+ auto checkpoint=t.graph.base;auto root=std::find_if(checkpoint.roots.begin(),checkpoint.roots.end(),[](const auto& r){return r.role==3;});
+ Check(root!=checkpoint.roots.end(),"larger fixture original directory root");root->sha256=Sha(dir);
+ const auto cp=db::EncodeNativeCheckpointRoot(checkpoint);Check(cp.ok(),"larger fixture original checkpoint");fixture.Write(cp.bytes);const auto digest=Sha(cp.bytes);
+ for(const auto& r:t.graph.zero.roots){
+  if(r.kind==18||r.kind==19){auto s=*db::DecodeNativeCheckpointSelection(t.fixture.Read(r.page_number)).selection;s.checkpoint_sha256=digest;fixture.Write(SelectorOracle(s));}
+  if(r.kind==20||r.kind==21){auto w=*db::DecodeNativePublicationWatermark(t.fixture.Read(r.page_number)).state;w.base_checkpoint_sha256=digest;
+   const auto bytes=db::EncodeNativePublicationWatermark(w);Check(bytes.ok(),"larger fixture original watermark");fixture.Write(bytes.bytes);}}
+ for(const auto& member:t.fixture.devices)Check(member.device->Sync().ok(),"larger original fixture barrier");
+}
 void OwnedDirectoryPreallocation(unsigned primary,bool secondary_target=false,bool subdivide=false){
  for(unsigned secondary=0;secondary<5;++secondary)for(bool reverse:{false,true}){
-  if(subdivide&&secondary)continue;
+  if(subdivide&&secondary&&secondary!=primary)continue;
   DirectoryHistoryFixture f(primary,secondary,reverse,3,false,true,true,false);auto& t=f.t;
   f.budget=t.fixture.budget=16384*std::max<u64>(t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+  const u64 dense_count=subdivide?(d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes-384)/128+1:0;
+  if(subdivide)EnlargeInitialSecondaryFixture(f,300+2*dense_count);
   const auto read=[&](const Uuid& fs){const auto size=f.File(fs)->Size();Check(size.ok(),"actual untouched file size");Bytes raw(size.size_bytes);const auto io=f.File(fs)->ReadAt(0,raw.data(),raw.size());Check(io.ok()&&io.bytes_transferred==raw.size(),"complete untouched file bytes");return raw;};
   const auto other=read(t.other),untouched=read(Id(11));
   auto expected_other=other;
-  for(unsigned repeat=0;repeat<2;++repeat){OwnedPreallocationRequest request(t.fixture,repeat,0,false,secondary_target?t.other:Id(2),subdivide?80:0);
+  for(unsigned repeat=0;repeat<2;++repeat){OwnedPreallocationRequest request(t.fixture,repeat,0,false,secondary_target?t.other:Id(2),dense_count);
    if(secondary_target&&!repeat){
     const auto original_effects=request.held.lease->effects();
     const auto refused=[&](u64 allowance,db::NativePublicationError expected){reads=writes=syncs=0;io_counting=true;
@@ -2043,6 +2182,33 @@ void OwnedDirectoryPreallocation(unsigned primary,bool secondary_target=false,bo
    Check(read(t.other)==expected_other&&read(Id(11))==untouched,"complete independent secondary file oracle and untouched third member");
   }
   f.Reopen();Check(db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),t.fixture.devices,Id(2),f.budget).ok(),"cold directory-bearing physical publication");
+ }
+}
+void OwnedSecondaryConcurrentClose(unsigned primary,unsigned secondary){
+ for(unsigned member=0;member<3;++member){
+  DirectoryHistoryFixture fixture(primary,secondary,true,3,true,true,true,false);auto& f=fixture.t.fixture;
+  f.budget=16384*std::max<u64>(f.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+  preallocation_pause=1;
+  auto writer=std::async(std::launch::async,[&]{
+   OwnedPreallocationRequest request(f,0,0,false,fixture.t.other);
+   auto result=db::PublishNativePreallocationOnLease(*request.held.lease,request.record,f.budget,*f.issuer);
+   return std::pair{std::move(result),request.record};
+  });
+  struct Release {~Release(){preallocation_pause=3;}} release;
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+  while(preallocation_pause!=2&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+  Check(preallocation_pause==2,"owning publisher reaches actual target allocation with retained guards");
+  auto* target=fixture.File(member==0?Id(2):member==1?fixture.t.other:Id(11));std::atomic<bool> entered=false;
+  auto closer=std::async(std::launch::async,[&]{entered=true;return target->Close();});
+  while(!entered&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+  const bool blocked=closer.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
+  preallocation_pause=3;const auto outcome=writer.get();const auto closed=closer.get();
+  Check(entered&&blocked&&closed.ok()&&outcome.first.ok()&&outcome.first.publication.effects.selected_graph_verified,
+    "concurrent Close on every node member waits through physical reservation and selected publication");
+  preallocation_pause=0;fixture.Reopen();
+  const auto reconciled=db::ReconcileNativePreallocationFromOpenDevices(Id(1),f.devices,Id(2),outcome.second,f.budget);
+  Check(reconciled.ok()&&reconciled.observation->disposition==db::NativePreallocationDisposition::selected,
+    "result and original request survive writer lifetime and concurrent close before cold reconciliation");
  }
 }
 void OwnedPreallocationPublication(unsigned profile,bool dense=false) {
@@ -2717,6 +2883,18 @@ int main(int argc,char** argv){
  if(argc==4&&std::string_view(argv[1])=="--owned-secondary-sweeps"){
    const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<6&&shard>=0&&shard<(route==2?32:route==1?5:1),"secondary preallocation fault shard");
    OwnedPreallocationSweeps(route,shard,false,true);return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--owned-secondary-close"){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"secondary allocation close profiles");
+   OwnedSecondaryConcurrentClose(primary,secondary);return 0;
+ }
+ if(argc==4&&(std::string_view(argv[1])=="--directory-growth-selection"||std::string_view(argv[1])=="--directory-growth-selection-crashes")){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"growth selector recovery profiles");
+   DirectoryGrowthSelectionRecovery(primary,secondary,std::string_view(argv[1])=="--directory-growth-selection-crashes"?3:-1);return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--directory-growth-selection-faults"){
+   const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<3&&shard>=0&&shard<(route==2?32:route==1?20:1),"growth recovery fault shard");
+   DirectoryGrowthSelectionRecovery(0,1,route,shard);return 0;
  }
  if(argc==3&&std::string_view(argv[1])=="--owned-directory-repacking"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"owned directory repacking profile");OwnedDirectoryRepacking(profile);return 0;

@@ -324,6 +324,21 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
         LABELS "storage;binary_uuid;real_files;owned_directory_assembly;fault_injection;not_runtime_acceptance")
     endforeach()
   endforeach()
+  foreach(route RANGE 0 2)
+    if(route EQUAL 0)
+      set(last_shard 0)
+    elseif(route EQUAL 1)
+      set(last_shard 19)
+    else()
+      set(last_shard 31)
+    endif()
+    foreach(shard RANGE 0 ${last_shard})
+      add_test(NAME native_directory_growth_selection_faults_${route}_${shard}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-growth-selection-faults ${route} ${shard})
+      set_tests_properties(native_directory_growth_selection_faults_${route}_${shard}_gate PROPERTIES TIMEOUT 300
+        LABELS "storage;binary_uuid;real_files;growth_selector_recovery;fault_injection;not_runtime_acceptance")
+    endforeach()
+  endforeach()
   foreach(primary RANGE 0 4)
     add_test(NAME native_directory_owned_secondary_preallocation_${primary}_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-secondary-preallocation ${primary})
@@ -334,6 +349,16 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     set_tests_properties(native_directory_owned_secondary_subdivision_${primary}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;secondary_preallocation;map_subdivision;not_runtime_acceptance")
     foreach(secondary RANGE 0 4)
+      foreach(mode selection selection-crashes)
+        add_test(NAME native_directory_growth_${mode}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-growth-${mode} ${primary} ${secondary})
+        set_tests_properties(native_directory_growth_${mode}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 300
+          LABELS "storage;binary_uuid;real_files;growth_selector_recovery;not_runtime_acceptance")
+      endforeach()
+      add_test(NAME native_directory_owned_secondary_close_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-secondary-close ${primary} ${secondary})
+      set_tests_properties(native_directory_owned_secondary_close_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;real_files;secondary_preallocation;retained_device_concurrency;not_runtime_acceptance")
       foreach(reverse RANGE 0 1)
         add_test(NAME native_directory_owned_secondary_physical_faults_${primary}_${secondary}_${reverse}_gate
           COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-secondary-physical-faults ${primary} ${secondary} ${reverse})
