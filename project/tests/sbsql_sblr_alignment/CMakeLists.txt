@@ -10257,6 +10257,17 @@ set_tests_properties(sbsql_sblr_alignment_base_int32_canonical_value PROPERTIES
   LABELS "sbsql_sblr_alignment;datatype;base_int32;representation_evidence;persistence;component_regression;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_uint32_canonical_value
+  base_uint32_canonical_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_uint32_canonical_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_uint32_canonical_value PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_uint32_canonical_value
+  COMMAND sbsql_sblr_alignment_base_uint32_canonical_value)
+set_tests_properties(sbsql_sblr_alignment_base_uint32_canonical_value PROPERTIES
+  LABELS "sbsql_sblr_alignment;datatype;base_uint32;representation_evidence;persistence;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 # Binary parameter hashing and cursor framing are component regressions. The
 # existing process tests retain the independent live execution/publication checks.
 add_executable(sbsql_sblr_alignment_parameter_slot_binary_hash
