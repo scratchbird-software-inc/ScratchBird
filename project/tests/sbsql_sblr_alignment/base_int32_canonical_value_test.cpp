@@ -46,6 +46,15 @@ void Check(bool ok, const std::string& reason) {
   }
 }
 
+void CheckCastRefused(const dt::DatatypeCastResult& result,
+                      std::string_view diagnostic_code,
+                      const std::string& reason) {
+  Check(!result.ok() && result.diagnostic.diagnostic_code == diagnostic_code &&
+            result.value.type_id == dt::CanonicalTypeId::unknown &&
+            !result.value.is_null && result.value.encoded_value.empty(),
+        reason);
+}
+
 scratchbird::engine::ExecutionTypeDescriptor Int32Descriptor() {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -508,27 +517,45 @@ void NullAndAbsentPolicies() {
               result.value.is_null && result.value.encoded_value.empty(),
           "typed int32 NULL identity validates exact descriptor/state");
   }
-  dt::DatatypeCastRequest contextual;
-  contextual.value = {dt::CanonicalTypeId::null_type, {}, true};
-  contextual.target_type_id = dt::CanonicalTypeId::int32;
-  contextual.target_descriptor = descriptor;
-  const auto bound = dt::CastDatatypeValue(contextual);
-  Check(bound.ok() && bound.value.type_id == dt::CanonicalTypeId::int32 &&
-            bound.value.is_null && bound.value.encoded_value.empty(),
-        "contextual NULL binds to an exact nullable int32 descriptor");
-  contextual.target_descriptor.nullable_allowed = false;
-  Check(!dt::CastDatatypeValue(contextual).ok(),
-        "contextual NULL refuses a non-nullable int32 descriptor");
-  contextual.target_descriptor = descriptor;
-  ++contextual.target_descriptor.descriptor_epoch;
-  Check(!dt::CastDatatypeValue(contextual).ok(),
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeCastRequest contextual;
+    contextual.value = {dt::CanonicalTypeId::null_type, {}, true};
+    contextual.target_type_id = dt::CanonicalTypeId::int32;
+    contextual.target_descriptor = descriptor;
+    contextual.context = context;
+    contextual.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    const auto bound = dt::CastDatatypeValue(contextual);
+    Check(bound.ok() && bound.value.type_id == dt::CanonicalTypeId::int32 &&
+              bound.value.is_null && bound.value.encoded_value.empty(),
+          "contextual NULL binds to an exact nullable int32 descriptor");
+
+    contextual.target_descriptor.nullable_allowed = false;
+    CheckCastRefused(dt::CastDatatypeValue(contextual),
+                     "DATATYPE.NULL_NOT_ADMITTED",
+                     "contextual NULL refuses a non-nullable int32 descriptor");
+    contextual.target_descriptor = descriptor;
+    ++contextual.target_descriptor.descriptor_epoch;
+    CheckCastRefused(
+        dt::CastDatatypeValue(contextual), "DATATYPE.DESCRIPTOR.INVALID",
         "contextual NULL refuses a mismatched int32 descriptor generation");
 
-  dt::DatatypeCastRequest standalone_target;
-  standalone_target.value = Int32(0);
-  standalone_target.target_type_id = dt::CanonicalTypeId::null_type;
-  Check(!dt::CastDatatypeValue(standalone_target).ok(),
-        "int32 cannot cast to the standalone NULL sentinel");
+    dt::DatatypeCastRequest standalone_target;
+    standalone_target.value = Int32(0);
+    standalone_target.target_type_id = dt::CanonicalTypeId::null_type;
+    standalone_target.context = context;
+    standalone_target.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    CheckCastRefused(dt::CastDatatypeValue(standalone_target),
+                     "DATATYPE.CAST_FORBIDDEN",
+                     "present int32 cannot cast to the standalone NULL sentinel");
+    standalone_target.value = null_value;
+    CheckCastRefused(
+        dt::CastDatatypeValue(standalone_target), "DATATYPE.CAST_FORBIDDEN",
+        "typed int32 NULL cannot cast to the standalone NULL sentinel");
+  }
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32,
