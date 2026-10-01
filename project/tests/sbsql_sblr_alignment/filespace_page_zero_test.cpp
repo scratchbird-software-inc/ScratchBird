@@ -3721,9 +3721,92 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
           const mga::PublishedSnapshotPin missing_pin;
           bad(db::ResolveNativeStorageGrowthProposalFromOpenDevices(Id(226),Id(227),Id(1),devices,
             CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,missing_pin,ceiling),GE::resolution_failure);
+          const db::NativeStorageGrowthContext growth_context{policy_uuid,Id(228),Id(229),901,902};
+          const auto construct=[&](const auto& context,u64 limit,const auto& files){
+            return db::ResolveNativeStorageGrowthIntentFromOpenDevices(Id(226),Id(227),Id(1),files,
+              CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,context,limit);};
+          // Independent 768-byte oracle from fixture values; do not encode a
+          // production proposal/intent to obtain the expected request image.
+          const auto intent_oracle=[&](const auto& context,u64 limit){
+            Bytes b(768,0);const std::string magic="SBSINT04";std::copy(magic.begin(),magic.end(),b.begin());
+            Number(b,8,2,4);Number(b,10,2,1);Number(b,12,4,768);
+            const std::array ids{Id(226),Id(227),Id(1),fs,Id(primary?190:191),zero.page_uuid,Profile(profile),
+              context.policy_snapshot_uuid,Id(233),context.initiator_uuid,context.request_context_uuid};
+            for(unsigned n=0;n<ids.size();++n)PutUuid(b,16+16*n,ids[n]);
+            const auto root=[&](unsigned at,const auto& r){Number(b,at,2,r.kind);Number(b,at+4,4,r.page_type);
+              PutUuid(b,at+8,r.filespace_uuid);Number(b,at+24,8,r.page_number);Number(b,at+32,8,r.page_generation);
+              PutUuid(b,at+40,r.page_size_profile_uuid);PutUuid(b,at+56,r.object_uuid);};
+            root(192,CheckpointRef(cp));root(272,disk::FilespaceRootReference{3,3,fs,13,103,Profile(profile),Id(43)});
+            const auto cp_hash=WholeRootHash(CheckpointOracle(cp)),map_hash=WholeRootHash(AllocationOracle(map));
+            std::copy(cp_hash.begin(),cp_hash.end(),b.begin()+352);std::copy(map_hash.begin(),map_hash.end(),b.begin()+384);
+            const std::array<u64,16> numbers{cp.checkpoint_generation,cp.root_set_generation,directory.directory_generation,
+              zero.root_set_generation,zero.page_generation,map.map_generation,map.capacity_generation,catalog_root.catalog_generation,
+              configured.generation,context.security_generation,64,64,11,128,11*sizes[profile],std::min(limit,configured.maximum_retained_image_bytes)};
+            for(unsigned n=0;n<numbers.size();++n)Number(b,416+8*n,8,numbers[n]);
+            Number(b,544,4,sizes[profile]);Number(b,552,8,context.configuration_generation);
+            const std::array selected{configured.policy_uuid,Id(170),Id(240),Id(243),Id(245)};
+            for(unsigned n=0;n<selected.size();++n)PutUuid(b,560+16*n,selected[n]);
+            Number(b,640,8,1);Number(b,648,8,1);
+            const auto hash=WholeRootHash(Bytes(b.begin(),b.begin()+736));std::copy(hash.begin(),hash.end(),b.begin()+736);return b;
+          };
+          const auto constructed_good=[&](const auto& r,const Bytes& expected){
+            Check(r.ok()&&r.image.ok()&&r.image.bytes==expected&&r.proposal.retained_image_bytes<=ceiling,
+              "actual growth intent equals independently constructed binary request without caller-built capacity");
+            good(r.proposal,11);Check(match(*r.image.intent).ok(),"constructed intent matches actual native selection and capacity");
+          };
+          const auto constructed_bad=[&](const auto& r){Check(!r.ok()&&!r.image.intent&&r.image.bytes.empty()&&
+            !r.proposal.extent&&!r.proposal.resolution.selection&&!r.proposal.resolution.policy.policy,
+            "construction failure has no canonical request or successful proposal prefix");};
+          const auto expected_growth_intent=intent_oracle(growth_context,ceiling);
+          constructed_good(construct(growth_context,ceiling,devices),expected_growth_intent);
+          constructed_good(construct(growth_context,ceiling,reversed),expected_growth_intent);
+          auto context=growth_context;context.configuration_generation=context.security_generation=0;
+          constructed_good(construct(context,ceiling,devices),intent_oracle(context,ceiling));
+          context=growth_context;context.policy_snapshot_uuid=Id(231);context.initiator_uuid=Id(232);context.request_context_uuid=Id(234);
+          constructed_good(construct(context,ceiling,devices),intent_oracle(context,ceiling));
+          for(auto field:{&db::NativeStorageGrowthContext::policy_snapshot_uuid,&db::NativeStorageGrowthContext::initiator_uuid,
+              &db::NativeStorageGrowthContext::request_context_uuid})for(unsigned fault=0;fault<2;++fault){
+            context=growth_context;if(fault)(context.*field).bytes[6]=0x40;else context.*field={};
+            reads=0;track_reads=true;const auto r=construct(context,ceiling,devices);track_reads=false;
+            constructed_bad(r);Check(!reads&&r.error==db::NativeStorageGrowthIntentError::invalid_context,
+              "invalid engine binding identities reject before any I/O");
+          }
+          const auto exact=construct(growth_context,ceiling,devices).proposal.retained_image_bytes;
+          constructed_good(construct(growth_context,exact,devices),intent_oracle(growth_context,exact));
+          constructed_bad(construct(growth_context,exact-1,devices));
+          const auto source_failure=construct(growth_context,ceiling,duplicated);constructed_bad(source_failure);
+          Check(source_failure.error==db::NativeStorageGrowthIntentError::proposal_failure&&
+            source_failure.proposal.error==GE::resolution_failure,"construction retains typed underlying source failure");
+          for(unsigned reason=0;reason<3;++reason){auto no_action=configured;
+            if(reason==0)no_action.enabled=false;if(reason==1)no_action.growth_allowed=false;if(reason==2)no_action.minimum_free_pages=0;
+            set_policy(no_action);const auto r=construct(growth_context,ceiling,devices);
+            Check(r.ok()&&!r.image.intent&&r.image.bytes.empty(),"no-work constructs no canonical action");
+            no_work(r.proposal,reason==0?GN::policy_disabled:reason==1?GN::growth_disallowed:GN::free_threshold_satisfied);
+          }
+          set_policy(configured);
           const auto first_image=actual(first,0,64*sizes[p]),second_image=actual(second,0,64*sizes[q]);
           stage_writes=stage_syncs=0;
           if(p==0&&role==1){
+            reads=0;track_reads=true;auto built=construct(growth_context,ceiling,devices);track_reads=false;const auto br=reads;
+            constructed_good(built,expected_growth_intent);
+            for(unsigned fault=1;fault<=br;++fault){reads=0;read_fault=fault;track_reads=true;
+              built=construct(growth_context,ceiling,devices);track_reads=false;Check(!read_fault,"all construction reads faulted");constructed_bad(built);}
+            observed_full_digests=0;count_full_digests=true;built=construct(growth_context,ceiling,devices);count_full_digests=false;
+            const auto bh=observed_full_digests;constructed_good(built,expected_growth_intent);
+            for(unsigned fault=1;fault<=bh;++fault){full_digest_fault=fault;built=construct(growth_context,ceiling,devices);
+              Check(!full_digest_fault,"all construction hashes including final intent seal faulted");constructed_bad(built);
+              if(fault==bh)Check(built.error==db::NativeStorageGrowthIntentError::intent_failure&&
+                built.image.error==db::NativeStorageIntentError::hash_failure,"seal failure preserves exact typed error");}
+            observed_allocations=0;count_allocations=true;built=construct(growth_context,ceiling,devices);count_allocations=false;
+            const auto ba=observed_allocations;constructed_good(built,expected_growth_intent);
+            for(unsigned long fault=0;fault<=ba;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();
+              allocation_budget=fault;built=construct(growth_context,ceiling,devices);const auto remaining=allocation_budget;allocation_budget=-1;
+              Check(fault==ba?remaining>=0:remaining<0,"every construction allocation injection consumed");
+              if(built.ok()){constructed_good(built,expected_growth_intent);Check(remaining>=0||
+                first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1,"only accounted optional telemetry loss permits construction");}
+              else constructed_bad(built);
+            }
+            std::cout<<"storage growth intent faults: reads="<<br<<" hashes="<<bh<<" allocations="<<ba<<'\n';
             reads=0;track_reads=true;auto r=propose(ceiling,devices);track_reads=false;const auto nr=reads;good(r,11);
             for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;r=propose(ceiling,devices);track_reads=false;
               Check(!read_fault,"every measured growth source read failure consumed");bad(r,GE::resolution_failure);}
@@ -3763,7 +3846,10 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
             if(!native.ok())_exit(85);CatalogTestPin fresh_pin(native.inventory,18);
             const auto r=db::ResolveNativeStorageGrowthProposalFromOpenDevices(Id(226),Id(227),Id(1),files,CheckpointRef(cp),fs,
               2,1,{Id(101),{}},native.inventory.entries.back().identity,fresh_pin.pin,ceiling);
-            _exit(r.ok()&&r.extent&&r.extent->first_page==64&&r.extent->page_count==11?0:86);
+            const auto built=db::ResolveNativeStorageGrowthIntentFromOpenDevices(Id(226),Id(227),Id(1),files,CheckpointRef(cp),fs,
+              2,1,{Id(101),{}},native.inventory.entries.back().identity,fresh_pin.pin,growth_context,ceiling);
+            _exit(r.ok()&&r.extent&&r.extent->first_page==64&&r.extent->page_count==11&&built.ok()&&
+              built.image.bytes==expected_growth_intent?0:86);
           }catch(...){_exit(87);}}
           int child_status=0;Check(waitpid(child,&child_status,0)==child&&WIFEXITED(child_status)&&WEXITSTATUS(child_status)==0,
             "fresh process derives exact growth from actual native files and its own inventory snapshot");

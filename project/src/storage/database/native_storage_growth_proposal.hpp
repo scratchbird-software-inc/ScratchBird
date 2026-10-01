@@ -77,4 +77,75 @@ inline NativeStorageGrowthProposalResult ResolveNativeStorageGrowthProposalFromO
   r.disposition=extent?NativeStorageGrowthDisposition::proposed:NativeStorageGrowthDisposition::no_work;
   r.extent=std::move(extent);r.resolution=std::move(resolved);r.retained_image_bytes=retained;return r;
 }
+
+// Owning-engine binding material, NOT an authorization context. In particular
+// these guards still require current configuration/security admission. Runtime
+// observations must not be converted into authority by constructing this type.
+struct NativeStorageGrowthContext {
+  Uuid policy_snapshot_uuid, initiator_uuid, request_context_uuid;
+  u64 configuration_generation=0, security_generation=0;
+};
+enum class NativeStorageGrowthIntentError { none, invalid_context, proposal_failure, intent_failure };
+struct NativeStorageGrowthIntentResult {
+  NativeStorageGrowthIntentError error=NativeStorageGrowthIntentError::invalid_context;
+  NativeStorageGrowthProposalResult proposal;
+  NativeStorageIntentImage image;
+  bool ok() const noexcept {
+    return error==NativeStorageGrowthIntentError::none&&proposal.ok()&&
+      (proposal.disposition==NativeStorageGrowthDisposition::no_work?
+        !image.intent&&image.bytes.empty():image.ok());
+  }
+};
+// STORAGE-NATIVE-GROWTH-INTENT-CONSTRUCTION-001. Resolve from actual devices,
+// never from a caller-built proposal. No writes, generated identities or grants.
+// Canonical request retention/retry and fresh execution admission remain owned
+// by the engine. A changed result is not permission to rebind an original retry.
+inline NativeStorageGrowthIntentResult ResolveNativeStorageGrowthIntentFromOpenDevices(
+    const Uuid& request,const Uuid& operation,const Uuid& database,
+    const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& checkpoint,const Uuid& filespace,
+    u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
+    const transaction::mga::TransactionIdentity& reader,
+    const transaction::mga::PublishedSnapshotPin& pin,
+    const NativeStorageGrowthContext& context,u64 budget) noexcept {
+  using E=NativeStorageGrowthIntentError;
+  NativeStorageGrowthIntentResult result;
+  for(const auto* id:{&context.policy_snapshot_uuid,&context.initiator_uuid,&context.request_context_uuid})
+    if(!core::uuid::IsEngineIdentityUuid(*id))return result;
+  auto proposal=ResolveNativeStorageGrowthProposalFromOpenDevices(request,operation,database,
+    devices,checkpoint,filespace,selector,role,relation,reader,pin,budget);
+  if(!proposal.ok()){
+    result.error=E::proposal_failure;result.proposal=std::move(proposal);return result;
+  }
+  if(proposal.disposition==NativeStorageGrowthDisposition::proposed){
+    const auto& c=*proposal.resolution.capacity.observation;
+    const auto& s=*proposal.resolution.selection;
+    const auto& p=*proposal.resolution.policy.policy;
+    const auto& extent=*proposal.extent;
+    NativeStorageActionIntent i;
+    i.request_uuid=extent.request_uuid;i.operation_uuid=extent.operation_uuid;
+    i.database_uuid=c.database_uuid;i.filespace_uuid=c.filespace_uuid;
+    i.locator_uuid=c.locator_uuid;i.page_zero_uuid=c.page_zero_uuid;
+    i.page_size_profile_uuid=c.page_size_profile_uuid;i.page_size_bytes=c.page_size_bytes;
+    i.policy_snapshot_uuid=context.policy_snapshot_uuid;i.initiator_uuid=context.initiator_uuid;
+    i.request_context_uuid=context.request_context_uuid;
+    i.configuration_generation=context.configuration_generation;i.security_generation=context.security_generation;
+    i.catalog_generation=proposal.resolution.policy.source.source.checkpoint.catalogs.front().root->catalog_generation;
+    i.checkpoint=c.checkpoint;i.allocation_root=c.allocation_root;
+    i.checkpoint_sha256=c.checkpoint_sha256;i.allocation_sha256=c.allocation_sha256;
+    i.checkpoint_generation=c.checkpoint_generation;i.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
+    i.directory_generation=c.directory_generation;i.filespace_root_set_generation=c.filespace_root_set_generation;
+    i.page_zero_generation=c.page_zero_generation;i.map_generation=c.map_generation;i.capacity_generation=c.capacity_generation;
+    i.attachment_uuid=s.attachment.attachment_uuid;i.attachment_version_uuid=s.attachment_version_uuid;
+    i.attachment_generation=s.attachment.generation;i.storage_profile_uuid=s.profile.descriptor_uuid.value;
+    i.storage_profile_version_uuid=s.profile_version_uuid;i.storage_profile_generation=s.profile_generation;
+    i.policy_uuid=p.policy_uuid;i.policy_version_uuid=proposal.resolution.policy.version_uuid;i.policy_generation=p.generation;
+    i.current_total_pages=c.total_pages;i.first_page=extent.first_page;i.page_count=extent.page_count;
+    i.maximum_total_pages=p.maximum_total_pages;i.maximum_work_bytes=p.maximum_work_bytes;
+    i.maximum_retained_image_bytes=std::min(budget,p.maximum_retained_image_bytes);
+    result.image=EncodeNativeStorageActionIntent(i,kNativeStorageActionIntentBytes);
+    if(!result.image.ok()){result.error=E::intent_failure;return result;}
+  }
+  result.error=E::none;result.proposal=std::move(proposal);return result;
+}
 } // namespace scratchbird::storage::database
