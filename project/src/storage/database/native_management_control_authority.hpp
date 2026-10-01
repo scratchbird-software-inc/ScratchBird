@@ -33,6 +33,13 @@ struct NativeManagementControlAuthority : NativeManagementControlGraph {
 NativeManagementControlGraph ReadNativeManagementControlGraphFromOpenDevices(
   const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
   const Uuid& primary,const NativeManagementCheckpointAnchor&,u64 maximum_verification_image_bytes) noexcept;
+// Explicit older/torn-current context verification. The owning recovery path
+// authenticates these inputs; no selected authority or repair grant is issued.
+NativeManagementControlGraph ReadNativeManagementControlGraphAtHistoricalContextFromOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativeManagementCheckpointAnchor&,
+  const std::map<Uuid,std::vector<byte>>& result_page_zero_images,
+  u64 maximum_verification_image_bytes) noexcept;
 // Actual selected metadata ancestry and exact original control allocations.
 // No authentication, user-operation completion, publication or SQL receipt.
 NativeManagementControlAuthority ReadNativeManagementControlAuthorityFromOpenDevices(

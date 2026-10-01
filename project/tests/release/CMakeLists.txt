@@ -309,7 +309,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  foreach(profile RANGE 0 4)
+    add_test(NAME native_directory_control_close_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-control-close ${profile})
+    set_tests_properties(native_directory_control_close_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;real_files;actual_control_ancestry;retained_device_concurrency;not_runtime_acceptance")
+  endforeach()
   foreach(profile RANGE 2 4)
+    foreach(route RANGE 0 2)
+      if(route EQUAL 2)
+        set(control_fault_last 7)
+      elseif(route EQUAL 1)
+        set(control_fault_last 4)
+      else()
+        set(control_fault_last 0)
+      endif()
+      foreach(shard RANGE 0 ${control_fault_last})
+        add_test(NAME native_directory_control_faults_${profile}_${route}_${shard}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-control-faults ${profile} ${route} ${shard})
+        set_tests_properties(native_directory_control_faults_${profile}_${route}_${shard}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;actual_control_ancestry;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
     if(profile GREATER 2)
       add_test(NAME native_directory_history_repeat_${profile}_gate
         COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat ${profile})
