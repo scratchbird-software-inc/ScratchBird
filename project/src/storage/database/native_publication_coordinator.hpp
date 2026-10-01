@@ -145,6 +145,8 @@ NativePublicationInspection InstallNativeManagementPublicationOnLease(
 // directory-bearing control pages in their actual owned filespaces. Growth
 // staging requires unchanged original physical capacity and page-zero bodies;
 // the retained after body is reconstruction input, never an implicit write.
+// Candidate management records must pass actual selected-history append rules
+// before any reconstruction, anchor or candidate-page write, including resumes.
 // Does not extend/reserve storage, change selectors or confer kernel authority.
 NativePublicationInspection InstallNativeManagementControlGraphOnLease(
   NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,

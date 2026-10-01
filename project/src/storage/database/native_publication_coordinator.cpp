@@ -550,6 +550,26 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
       ValidateNativeManagementDirectoryControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,directory_base,budget,bundle,before_inventory):
       ValidateNativeManagementControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,budget,bundle,before_inventory);
     if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::allocation_mismatch;
+    {
+      // A valid candidate graph can still conflict with a previously selected
+      // management operation. Reject that append before installing even its
+      // reconstruction pages. This also covers caller-built graphs and resumes.
+      const auto candidate=DecodeNativeManagementExtent(extent,*plan.management_extent,
+        plan.header.database_uuid,plan.bootstrap_uuid,ExtentAllowance(*plan.management_extent,size,budget));
+      ControlExtentError(candidate.error);Require(candidate.record.has_value(),E::binding_mismatch);
+      const auto history=ReadNativeManagementHistoryFromOpenDevices(plan.header.database_uuid,
+        c->devices,c->zero.bootstrap.filespace_uuid,budget-allowance);
+      if(!history.ok())throw history.error==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+        history.error==NativeManagementHistoryError::hash_failure?E::hash_failure:
+        history.error==NativeManagementHistoryError::io_failure?E::io_failure:
+        history.error==NativeManagementHistoryError::cluster_requires_authority?E::cluster_requires_authority:
+        history.error==NativeManagementHistoryError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
+      Require(history.verified_image_bytes<=budget-allowance,E::resource_exhausted);
+      const auto validation=ValidateNativeManagementHistoryAppend(history,*candidate.record,
+        budget-allowance-history.verified_image_bytes);
+      if(validation!=NativeManagementHistoryError::none)throw validation==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
+        validation==NativeManagementHistoryError::hash_failure?E::hash_failure:E::request_mismatch;
+    }
     struct Artifact {Uuid filespace;u64 page=0;Bytes bytes,before;};std::vector<Artifact> artifacts;artifacts.reserve(2+extent.size()+bundle.size()+reconstruction.allocation_images.size()+reconstruction.inventory_images.size()+reconstruction.directory_images.size());
     const auto append=[&](Bytes raw){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);const auto& f=device(h.header->filespace_uuid);
       Require(h.header->database_uuid==plan.header.database_uuid&&h.header->page_size_profile_uuid==f.page_size_profile_uuid&&raw.size()==disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)->page_size_bytes,E::binding_mismatch);

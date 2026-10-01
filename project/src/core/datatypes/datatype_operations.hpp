@@ -339,6 +339,13 @@ bool EncodeCanonicalUint16Value(std::int64_t value,
                                 std::string* canonical_bytes);
 bool DecodeCanonicalUint16Value(std::string_view canonical_bytes,
                                 std::uint64_t* value);
+// Canonical INT32 value boundary. Present values are exactly four
+// little-endian two's-complement bytes. This bridge is mathematical and does
+// not define a text, parser, display, or cast policy.
+bool EncodeCanonicalInt32Value(std::int64_t value,
+                               std::string* canonical_bytes);
+bool DecodeCanonicalInt32Value(std::string_view canonical_bytes,
+                               std::int64_t* value);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile = false);

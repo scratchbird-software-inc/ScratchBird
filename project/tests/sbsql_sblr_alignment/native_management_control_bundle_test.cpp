@@ -1955,7 +1955,7 @@ struct OwnedInventoryRequest {
  db::NativePublicationIntent intent;
  db::NativePublicationSnapshot pending;
  db::NativePublicationReservation held;
- explicit OwnedInventoryRequest(Fixture& f,unsigned sequence=0) {
+ explicit OwnedInventoryRequest(Fixture& f,unsigned sequence=0,bool original_context=false) {
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok(),"owned failure fixture actual selected inventory");
   auto begun=mga::BeginLocalTransaction(selected.checkpoint_inventory.inventory,{UuidKind::transaction,Id(19000+sequence)},3000);
@@ -1964,7 +1964,7 @@ struct OwnedInventoryRequest {
   const auto zero=d::ReadFilespacePageZeroFromOpenDevice(f.device);Check(zero.ok(),"owned failure fixture bootstrap");
   record=records::Example(1);record.uuid=Id(20000+sequence);record.bootstrap_uuid=zero.record->page_uuid;
   record.security_snapshot_uuid={};record.generation_guards={};record.idempotency_key="owned-failure";
-  if(sequence){record.idempotency_key+=std::to_string(sequence);record.request_context_uuid=Id(21000+sequence);}
+  if(sequence){record.idempotency_key+=std::to_string(sequence);if(!original_context)record.request_context_uuid=Id(21000+sequence);}
   intent={record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,
     record.normalized_request_sha256,record.initiator_kind};intent.recovery_profile=2;
   const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
@@ -2113,6 +2113,47 @@ struct OwnedPreallocationRequest {
   Check(held.ok(),"durable preallocation generation");
  }
 };
+void OwnedAppendAdmission(unsigned primary,unsigned secondary){
+ for(bool inventory:{false,true})for(bool target:{false,true}){
+  DirectoryHistoryFixture fixture(primary,secondary,true,inventory?2:3,target,true,true,false);auto& f=fixture.t.fixture;
+  f.budget=32768*std::max<u64>(f.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+  const auto snapshot=[&]{std::map<Uuid,Bytes> images;for(const auto& file:f.devices){const auto size=file.device->Size();Check(size.ok(),"append admission actual extent");Bytes raw(size.size_bytes);
+    const auto io=file.device->ReadAt(0,raw.data(),raw.size());Check(io.ok()&&io.bytes_transferred==raw.size(),"append admission complete bytes");images.emplace(file.filespace_uuid,std::move(raw));}return images;};
+  const auto exercise=[&](auto& first,auto& next,auto&& publish){
+    const auto original=next.record;const auto before=snapshot();
+    for(unsigned fault=0;fault<2;++fault){next.record=original;
+      if(fault==0)next.record.idempotency_key=first.record.idempotency_key;
+      else next.record.revision=2;
+      reads=writes=syncs=preallocation_calls=0;preallocation_fault=1;io_counting=true;const auto refused=publish(next);io_counting=false;preallocation_fault=0;
+      const auto error=[&]{if constexpr(requires{refused.error;})return refused.error;else return refused.publication.error;}();
+      Check(!refused.ok()&&error==db::NativePublicationError::request_mismatch&&!writes&&!syncs&&!preallocation_calls&&snapshot()==before,
+        "conflicting retained key or noninitial revision refuses before metadata or physical effects");
+      const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+      Check(history.ok()&&history.entries.size()==1&&history.entries.front().record.uuid==first.record.uuid,
+        "refusal preserves the independently readable original selected history");
+    }
+    next.record=original;Check(publish(next).ok(),"original valid retained request still publishes after rejected appends");
+    const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+    Check(history.ok()&&history.entries.size()==2&&history.entries.back().record.uuid==original.uuid,
+      "successful retry publishes the original binary operation identity");
+  };
+  if(inventory){
+    const auto publish=[&](auto& request){return db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget,*f.issuer);};
+    OwnedInventoryRequest first(f);Check(publish(first).ok(),"actual initial inventory publication for append conflict");first.held.lease.reset();
+    OwnedInventoryRequest next(f,1);exercise(first,next,publish);
+    next.held.lease.reset();OwnedInventoryRequest duplicate(f,2,true);const auto before=snapshot();
+    reads=writes=syncs=0;io_counting=true;const auto refused=publish(duplicate);io_counting=false;
+    Check(!refused.ok()&&refused.error==db::NativePublicationError::request_mismatch&&!writes&&!syncs&&snapshot()==before,"same semantic identity cannot be reassigned by supplying a distinct idempotency key");
+    duplicate.record.descriptor_uuid=Id(23002);Check(publish(duplicate).ok(),"distinct descriptor admits a genuinely distinct management request");
+  }else{
+    const auto publish=[&](auto& request){return db::PublishNativePreallocationOnLease(*request.held.lease,request.record,f.budget,*f.issuer);};
+    OwnedPreallocationRequest first(f,0,0,false,fixture.t.changed);Check(publish(first).ok(),"actual initial preallocation publication for append conflict");first.held.lease.reset();
+    OwnedPreallocationRequest next(f,1,0,false,fixture.t.changed);exercise(first,next,publish);
+  }
+  fixture.Reopen();Check(db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget).ok(),"cold history after append refusal and genuine retry");
+ }
+ std::cout<<"owned append admission primary="<<primary<<" secondary="<<secondary<<" PASS\n";
+}
 void OwnedGrowthPublication(unsigned primary,unsigned secondary,bool subdivide=false){
  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
   DirectoryHistoryFixture f(primary,secondary,reverse,4,target,reserve,true,false);auto& t=f.t;
@@ -2970,18 +3011,21 @@ void ReservationEffects(unsigned profile) {
   if(fault==3||fault==4)Check(f.Read(0,256)!=before,"torn reservation retains real changed bytes");
  }
 }
-void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool directory=false) {
+void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool directory=false,bool retained_history=false) {
  using PE=db::NativePublicationError;
  std::unique_ptr<DirectoryHistoryFixture> mixed;std::unique_ptr<Fixture> single;
  if(directory)mixed=std::make_unique<DirectoryHistoryFixture>(profile,(profile+1)%5,true,2,false,true,true,false);
  else single=std::make_unique<Fixture>(profile);
- auto& f=directory?mixed->t.fixture:*single;f.budget*=directory?32:4;OwnedInventoryRequest request(f);
+ auto& f=directory?mixed->t.fixture:*single;f.budget*=directory?32:4;
+ if(retained_history){Check(route<3,"retained history fault routes");f.budget*=4;OwnedInventoryRequest original(f);
+  Check(db::PublishNativeInventoryOnLease(*original.held.lease,original.record,original.inventory,f.budget,*f.issuer).ok(),"actual prior selected record for append fault coverage");}
+ OwnedInventoryRequest request(f,retained_history?1:0);
  const auto loss=[&]{u64 total=0;for(const auto& file:f.devices)total+=file.device->failed_io_latency_observations();return total;};
  const auto before=f.Read(0,f.total_pages);
  const auto reset=[&] {
   request.held.lease.reset();const auto write=f.device.WriteAt(0,before.data(),before.size());
   Check(write.ok()&&write.bytes_transferred==before.size()&&f.device.Sync().ok(),"restore isolated pending fault fixture");
-  request.held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),request.pending,Id(20100),request.intent,f.budget);
+  request.held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),request.pending,request.pending.watermark.operation_uuid,request.intent,f.budget);
   Check(request.held.ok(),"resume exact isolated pending request");
   f.ResetIssuer();
  };
@@ -3048,13 +3092,13 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
   if(route==0)Check(skipped_dirty>0,"read-corrupted free slots exercise truthful alternate placement");
   std::cout<<"owned inventory corrupted free probes skipped="<<skipped_dirty<<'\n';
  }else if(route==1) {
-  for(unsigned at=1;at<=nh;++at) {
-   reset();hash_fault=shard+1;hash_target=at;hash_seen=0;hash_active=false;
+  for(unsigned at=retained_history?shard/5+1:1;at<=nh;at+=retained_history?4:1) {
+   reset();hash_fault=(retained_history?shard%5:shard)+1;hash_target=at;hash_seen=0;hash_active=false;
    const auto result=call(f.budget);const bool consumed=!hash_fault;hash_fault=0;
    Check(consumed&&result.error==PE::hash_failure&&!result.snapshot,"owned publication consumes every digest fault without receipt");
   }
  }else if(route==2) {
-  for(unsigned long at=shard;at<na;at+=32) {
+  for(unsigned long at=shard;at<na;at+=retained_history?128:32) {
    reset();const auto previous_loss=loss();allocation_budget=at;
    const auto result=call(f.budget);const auto remaining=allocation_budget;allocation_budget=-1;
    Check(remaining<0&&(result.error==PE::resource_exhausted||(result.ok()&&loss()==previous_loss+1)),
@@ -3220,6 +3264,14 @@ int main(int argc,char** argv){
  if(argc==4&&(std::string_view(argv[1])=="--owned-growth"||std::string_view(argv[1])=="--owned-growth-subdivision")){
    const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"owned growth profiles");
    OwnedGrowthPublication(primary,secondary,std::string_view(argv[1])=="--owned-growth-subdivision");return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--owned-append-admission"){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"append admission profiles");
+   OwnedAppendAdmission(primary,secondary);return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--owned-append-faults"){
+   const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<3&&shard>=0&&shard<(route==2?128:route==1?20:1),"append fault route and shard");
+   OwnedInventoryFaults(route,shard,0,false,true);return 0;
  }
  if(argc==4&&(std::string_view(argv[1])=="--owned-growth-admission"||std::string_view(argv[1])=="--owned-growth-close")){
    const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"owned growth admission profiles");
