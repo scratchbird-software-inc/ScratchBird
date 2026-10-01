@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agents/agent_action_hooks_api.hpp"
+#include "agents/agent_durable_catalog_store_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "storage/storage_management_api.hpp"
@@ -36,19 +37,39 @@
 #if defined(__linux__)
 #include <cerrno>
 #include <unistd.h>
+#include <sys/stat.h>
 namespace {
 unsigned growth_fault=0, growth_syncs=0, growth_reads=0, growth_writes=0;
 int growth_fd=-1;
+bool release_fault_armed=false, release_fault_consumed=false;
+dev_t growth_device=0;
+ino_t growth_inode=0;
+const char* release_row_path=nullptr;
+const char* release_saved_path=nullptr;
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" int __real_fsync(int);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t bytes,off_t offset) {
-  if(growth_fault && offset==0 && bytes==256) {
+  struct stat identity{};
+  const bool target=growth_fault<5 ||
+      (::fstat(fd,&identity)==0 && identity.st_dev==growth_device && identity.st_ino==growth_inode);
+  if(growth_fault && target && offset==0 && bytes==256) {
     growth_fd=fd; ++growth_reads;
     if(growth_fault==4 && growth_syncs==2) { errno=EIO; return -1; }
   }
-  return __real_pread(fd,data,bytes,offset);
+  const auto result=__real_pread(fd,data,bytes,offset);
+  if(growth_fault>=5 && target && fd==growth_fd && offset==0 && bytes==256 &&
+      growth_syncs==2 && result==static_cast<ssize_t>(bytes) && !release_fault_armed) {
+    release_fault_armed=true;
+    // Make the owning row-store path nonregular only AFTER actual extension
+    // readback. This fails real release publication even under a root test user;
+    // std::ofstream writes cannot be intercepted by the pwrite linker wrapper.
+    if(release_row_path && release_saved_path && ::rename(release_row_path,release_saved_path)==0)
+      release_fault_consumed=::mkdir(release_row_path,0700)==0;
+    if(growth_fault==6) { errno=EIO; return -1; }
+  }
+  return result;
 }
 extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t bytes,off_t offset) {
   if(growth_fault && fd==growth_fd) {
@@ -634,6 +655,71 @@ void TestApiFilespaceGrowthRetainsEvidenceFailure() {
           "trace strings bypassed materialized authorization or touched storage");
 }
 
+void TestApiFilespaceGrowthRetainsReleaseFailure() {
+#if defined(__linux__)
+  for(const auto& profile:scratchbird::storage::disk::kCanonicalFilespacePageProfiles)
+  for(unsigned fault=5;fault<=6;++fault) {
+  auto fixture=MakeFixture("growth_resource_release_failure",13000);
+  SeedFilespaceCatalogDescriptor(fixture);
+  api::AgentDurableCatalogStoreRequest seed;
+  seed.context=Context(fixture,"seed-resource-catalog");
+  seed.evidence_uuid=IdentityBytes(fixture.agent_uuid);
+  seed.production_live_path=true;
+  seed.fsync_or_checkpoint_evidence=true;
+  const auto seeded=api::PersistAgentDurableCatalogImage(seed);
+  Require(seeded.ok,"real resource catalog seed failed: "+seeded.diagnostic.code+":"+seeded.diagnostic.detail);
+  auto request=FilespaceRequest(fixture,"growth-release-failure",profile.page_size_bytes);
+  request.option_envelopes.push_back("agent_action_hook_production_live:true");
+  request.option_envelopes.push_back("agent_durable_catalog_fsync_or_checkpoint_evidence:true");
+  // Precreate/grow the member before arming native failure so initialization
+  // cannot be confused with the requested extension's readback.
+  auto initial_request=FilespaceRequest(fixture,"growth-before-resource-failure",profile.page_size_bytes);
+  const auto initial=api::EngineRequestFilespaceGrowth(initial_request);
+  Require(initial.ok && initial.storage_result && initial.storage_result->operation.admitted_request,
+          "release fixture initial physical growth failed");
+  const auto path=initial.storage_result->operation.admitted_request->member_capacity.physical_path;
+  const auto before=std::filesystem::file_size(path);
+  struct stat identity{};
+  Require(::stat(path.c_str(),&identity)==0,"release fixture member identity unavailable");
+  growth_device=identity.st_dev; growth_inode=identity.st_ino;
+  const auto row_path=fixture.database_path.string()+".sb.mga_row_versions";
+  const auto saved_path=row_path+".retained-for-injection";
+  Require(std::filesystem::is_regular_file(row_path) && !std::filesystem::exists(saved_path),
+          "release fixture exact row-store target unavailable");
+  release_row_path=row_path.c_str(); release_saved_path=saved_path.c_str();
+  growth_fault=fault; growth_fd=-1; growth_reads=growth_writes=growth_syncs=0;
+  release_fault_armed=release_fault_consumed=false;
+  const auto failed=api::EngineRequestFilespaceGrowth(request);
+  growth_fault=0;
+  release_row_path=release_saved_path=nullptr;
+  if(release_fault_consumed)
+    Require(::rmdir(row_path.c_str())==0 && ::rename(saved_path.c_str(),row_path.c_str())==0,
+            "restore owned resource row-store after injection");
+  Require(release_fault_armed && release_fault_consumed,
+          "post-growth durable resource publication fault was not reached: "+failed.refusal_reason);
+  Require(!failed.ok && failed.storage_result && failed.storage_result->ok()==(fault==5) &&
+              failed.storage_result->operation.physical_extension_synced &&
+              failed.storage_result->operation.physical_header_updated &&
+              failed.refusal_reason.starts_with("SB_AGENT_HOOK_RESOURCE_RESERVATION.RELEASE_PERSIST_FAILED"),
+          "resource-release publication error erased the executed physical outcome: "+failed.refusal_reason);
+  if(fault==5)
+    Require(failed.action_accepted && HasEvidence(failed,"storage_executor","ExecuteFilespacePhysicalGrowth"),
+            "cleanup failure lost original successful execution evidence");
+  else {
+    Require(HasDiagnostic(failed,failed.storage_result->diagnostic.diagnostic_code) &&
+                !failed.diagnostics.empty() && failed.diagnostics.front().native_source &&
+                failed.diagnostics.front().native_source->record.diagnostic_code==
+                    failed.storage_result->diagnostic.diagnostic_code &&
+                failed.storage_result->operation.state==
+                    scratchbird::storage::filespace::FilespacePhysicalGrowthState::quarantine,
+            "cleanup failure erased the original storage error or quarantine");
+  }
+  Require(std::filesystem::file_size(path)==before+12*profile.page_size_bytes,
+          "cleanup failure lost actual extension");
+  }
+#endif
+}
+
 void TestApiFilespaceGrowthRetainsFailure() {
 #if defined(__linux__)
   namespace fs=scratchbird::storage::filespace;
@@ -932,6 +1018,7 @@ int main(int argc,char** argv) try {
     TestApiFilespaceGrowthStorageMutation();
     TestApiFilespaceGrowthRetainsFailure();
     TestApiFilespaceGrowthRetainsEvidenceFailure();
+    TestApiFilespaceGrowthRetainsReleaseFailure();
     std::cout<<"PASS storage adapter actual growth failure/retry retention across five page profiles\n";
     return EXIT_SUCCESS;
   }
@@ -941,6 +1028,7 @@ int main(int argc,char** argv) try {
   TestApiFilespaceGrowthStorageMutation();
   TestApiFilespaceGrowthRetainsFailure();
   TestApiFilespaceGrowthRetainsEvidenceFailure();
+  TestApiFilespaceGrowthRetainsReleaseFailure();
   TestSblrFilespaceGrowthStorageMutation();
   TestSblrFilespaceGrowthAcceptsRequestedPages();
   TestSblrFilespacePreallocateStorageMutation();
