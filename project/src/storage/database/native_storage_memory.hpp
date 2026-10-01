@@ -105,19 +105,19 @@ class NativeStorageMemory {
   NativeStorageMemoryBinding binding_;
   std::shared_ptr<core::memory::ReservationBackedMemoryResource> resource_;
   friend NativeStorageMemoryResult AdoptNativeStorageMemory(
-    const NativeStorageMemoryBinding&,std::unique_ptr<core::memory::ReservationBackedMemoryResource>) noexcept;
+    const NativeStorageMemoryBinding&,std::unique_ptr<core::memory::ReservationBackedMemoryResource>&) noexcept;
 };
 struct NativeStorageMemoryResult {
   NativeStorageMemoryError error=NativeStorageMemoryError::invalid_grant;
   NativeStorageMemory memory;
   bool ok() const noexcept {return error==NativeStorageMemoryError::none;}
 };
-// Consume exclusive ownership of an already admitted shared grant. A failed
-// adoption releases that unused grant; it never creates its own governor or
+// Consume exclusive ownership of an already admitted shared grant on success.
+// Failure leaves the caller's original grant/payloads intact; never create a governor or
 // trusts observations/permission booleans supplied by the scheduling runtime.
 inline NativeStorageMemoryResult AdoptNativeStorageMemory(
     const NativeStorageMemoryBinding& binding,
-    std::unique_ptr<core::memory::ReservationBackedMemoryResource> grant) noexcept {
+    std::unique_ptr<core::memory::ReservationBackedMemoryResource>& grant) noexcept {
   namespace m=core::memory;
   NativeStorageMemoryResult out;
   for(const auto& id:{binding.database_uuid,binding.operation_uuid,binding.owner_uuid,binding.context_uuid})

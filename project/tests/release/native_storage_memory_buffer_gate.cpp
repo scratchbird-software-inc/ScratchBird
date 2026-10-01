@@ -48,7 +48,7 @@ struct Fixture {
       Check(ledger.SetBudget(b).ok(),"actual node parent budget");}
   }
   auto Grant(){auto r=m::AcquireReservationBackedMemoryResource(request);Check(r.ok(),"real grant");return std::move(r.resource);}
-  auto Memory(){auto r=db::AdoptNativeStorageMemory(binding,Grant());Check(r.ok(),"actual grant adoption");return std::move(r.memory);}
+  auto Memory(){auto grant=Grant();auto r=db::AdoptNativeStorageMemory(binding,grant);Check(r.ok()&&!grant,"actual grant adoption transfers ownership");return std::move(r.memory);}
   void Empty(){Check(!ledger.Snapshot().current_bytes,"hierarchical charge leak");const auto s=manager.Snapshot();
     Check(!s.current_bytes&&!s.reserved_capacity_bytes&&!s.active_capacity_reservation_count,"physical charge leak");}
 };
@@ -96,9 +96,13 @@ void Refusals(){
     if(mode==7)f.request.consumer_kind=m::ReservationBackedMemoryConsumerKind::executor_operator;
     auto grant=f.Grant();
     if(mode==8){const auto r=f.ledger.Cancel(grant->reservation_token());Check(r.retained,"revoked unused grant retains owner");}
-    if(mode==9)Check(grant->Allocate({1,0,"preexisting allocation"}).ok(),"preused grant fixture");
-    const auto refused=db::AdoptNativeStorageMemory(binding,std::move(grant));
-    Check(!refused.ok()&&refused.error==(mode==4||mode==5?E::invalid_binding:E::invalid_grant),"exact binary/scope/type/live/unused grant admission");f.Empty();
+    void* payload=nullptr;
+    if(mode==9){const auto allocated=grant->Allocate({1,0,"preexisting allocation"});Check(allocated.ok(),"preused grant fixture");payload=allocated.pointer;*static_cast<byte*>(payload)=0x5a;}
+    const auto refused=db::AdoptNativeStorageMemory(binding,grant);
+    Check(!refused.ok()&&refused.error==(mode==4||mode==5?E::invalid_binding:E::invalid_grant),"exact binary/scope/type/live/unused grant admission");
+    Check(grant&&f.ledger.Snapshot().current_bytes==p.page_size_bytes,"failed adoption leaves original caller grant charged and owned");
+    if(payload)Check(f.manager.Snapshot().current_bytes==1&&*static_cast<byte*>(payload)==0x5a,"rejected preused grant never frees a caller's live payload");
+    grant.reset();f.Empty();
   }
   Fixture f(p.page_size_bytes-1);auto memory=f.Memory();
   Check(memory.Matches(f.binding.database_uuid,f.binding.operation_uuid)&&!memory.Matches(Id(99),f.binding.operation_uuid)&&
@@ -106,18 +110,20 @@ void Refusals(){
   auto bad=memory.AllocatePage(Id(99));Check(!bad.ok()&&bad.error==E::invalid_profile&&!f.manager.Snapshot().current_bytes,"unknown profile no payload");
   bad=memory.AllocatePage(p.uuid);Check(!bad.ok()&&bad.error==E::resource_exhausted&&!f.manager.Snapshot().current_bytes,"one byte short cannot allocate");
   memory={};f.Empty();
-  auto none=db::AdoptNativeStorageMemory(f.binding,{});Check(!none.ok(),"no fabricated grant");
+  std::unique_ptr<m::ReservationBackedMemoryResource> missing;
+  auto none=db::AdoptNativeStorageMemory(f.binding,missing);Check(!none.ok(),"no fabricated grant");
 }
 void Faults(){
   const auto& p=d::kCanonicalFilespacePageProfiles[0];
   for(unsigned phase=0;phase<2;++phase){bool end=false;unsigned faults=0;
     for(long point=0;point<1024;++point){Fixture f(p.page_size_bytes);auto grant=f.Grant();
-      db::NativeStorageMemory memory;if(phase){auto r=db::AdoptNativeStorageMemory(f.binding,std::move(grant));Check(r.ok(),"fault fixture adoption");memory=std::move(r.memory);}
+      db::NativeStorageMemory memory;if(phase){auto r=db::AdoptNativeStorageMemory(f.binding,grant);Check(r.ok()&&!grant,"fault fixture adoption");memory=std::move(r.memory);}
       failure_hit=false;fail_after=point;
-      if(!phase){auto r=db::AdoptNativeStorageMemory(f.binding,std::move(grant));fail_after=-1;
-        if(r.ok())memory=std::move(r.memory);else Check(r.error==E::resource_exhausted,"adoption allocation failure typed");}
+      if(!phase){auto r=db::AdoptNativeStorageMemory(f.binding,grant);fail_after=-1;
+        if(r.ok()){Check(!grant,"successful adoption consumes caller grant");memory=std::move(r.memory);}
+        else Check(r.error==E::resource_exhausted&&grant&&f.ledger.Snapshot().current_bytes==p.page_size_bytes,"adoption allocation failure leaves original owner intact");}
       else{auto r=memory.AllocatePage(p.uuid);fail_after=-1;Check(r.ok()||r.error==E::resource_exhausted,"buffer allocation failure typed");}
-      fail_after=-1;const bool hit=failure_hit;faults+=hit;memory={};f.Empty();
+      fail_after=-1;const bool hit=failure_hit;faults+=hit;memory={};grant.reset();f.Empty();
       if(!hit){end=true;break;}
     }Check(end&&faults,"every measured allocation site faulted");
   }

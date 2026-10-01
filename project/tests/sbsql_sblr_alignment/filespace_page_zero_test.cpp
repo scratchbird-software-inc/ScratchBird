@@ -3690,7 +3690,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
               Check(ledger.SetBudget(budget).ok(),"configure shared page-buffer parent");}
             const auto acquire=[&]{auto grant=mem::AcquireReservationBackedMemoryResource(request);
               Check(grant.ok(),"admit actual page-buffer memory grant");auto owned=db::AdoptNativeStorageMemory(
-                {pre.database_uuid,pre.operation_uuid,pre.initiator_uuid,pre.request_context_uuid},std::move(grant.resource));
+                {pre.database_uuid,pre.operation_uuid,pre.initiator_uuid,pre.request_context_uuid},grant.resource);
               Check(owned.ok(),"adopt exact binary storage memory binding");return std::move(owned.memory);};
             auto memory=acquire();
             const auto governed=[&](const auto& candidate){return db::InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
