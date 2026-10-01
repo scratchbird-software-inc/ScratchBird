@@ -492,9 +492,11 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     std::map<Uuid,disk::FilespacePageZero> member_zeros;
     const auto device=[&](const Uuid& id)->const disk::NativeFilespaceDevice& {const auto it=std::lower_bound(c->devices.begin(),c->devices.end(),id,[](const auto& f,const auto& v){return f.filespace_uuid<v;});Require(it!=c->devices.end()&&it->filespace_uuid==id,E::invalid_device);return *it;};
     if(plan.control_bundle->directory_count){
-      // Growth requires its own retained physical-operation protocol. A metadata
-      // installer cannot extend a file or publish its after body implicitly.
-      Require(reconstruction.growth_images.empty()&&plan.intent.recovery_profile!=4,E::invalid_request);
+      // A growth graph is staged against original capacity. Its retained after
+      // body is reconstruction input only; this installer never extends a file
+      // or writes page zero. Physical admission/execution remains separate.
+      Require(plan.intent.recovery_profile==4?reconstruction.growth_images.size()==2:
+        reconstruction.growth_images.empty(),E::invalid_request);
       const auto& cp=*c->bound.checkpoint_inventory.checkpoint;const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==3;});Require(root!=cp.roots.end(),E::binding_mismatch);
       const disk::FilespaceRootReference ref{5,root->page_type,root->page.filespace_uuid,root->page.page_number,root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
       auto directory=page::ReadNativeFilespaceDirectoryFromOpenDevices(plan.header.database_uuid,c->devices,ref,budget-allowance);
@@ -584,9 +586,10 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
     // Storage work has no metadata-only abandonment. An anchor may not escape
     // until its immutable reconstruction inputs are durable and verified.
-    if(plan.intent.recovery_profile!=3)Publish(*c,images,scratch);
+    const bool storage_work=plan.intent.recovery_profile==3||plan.intent.recovery_profile==4;
+    if(!storage_work)Publish(*c,images,scratch);
     install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);
-    if(plan.intent.recovery_profile==3)Publish(*c,images,scratch);
+    if(storage_work)Publish(*c,images,scratch);
     if(inventory_start!=map_start)install(inventory_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
     lease.impl_->effects.installed_graph_verified=true;
     c->bytes=std::move(images);lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);lease.impl_->installation_ambiguous=false;return {E::none,std::move(snapshot)};
@@ -612,7 +615,21 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePubl
     auto extent=EncodeNativeManagementExtent(*record.record,plan.management_extent->object_uuid,record.page_headers,extent_allowance);
     ControlExtentError(extent.error);
     Require(extent.root==plan.management_extent,E::binding_mismatch);
-    auto contents=ReadNativeManagementControlBundleFromOpenDevice(file,*plan.control_bundle,plan.header.database_uuid,plan.bootstrap_uuid,bundle_allowance);ControlBundleError(contents.error);
+    NativeManagementControlBundleRead contents;
+    if(plan.intent.recovery_profile==4){
+      // This is pre-extension reconstruction under the original retained lease,
+      // not an ordinary result-context read of an already completed growth.
+      // Bound every immutable input to original capacity before reading it;
+      // installation below revalidates the full actual before-image lineage.
+      const auto& root=*plan.control_bundle;
+      Require(root.first.filespace_uuid==file.filespace_uuid&&root.first.page_size_profile_uuid==file.page_size_profile_uuid&&
+        root.first.page_number<context.zero.total_pages&&root.page_count<=context.zero.total_pages-root.first.page_number,E::binding_mismatch);
+      Pages pages;pages.reserve(root.page_count);
+      for(u64 i=0;i<root.page_count;++i){Bytes bytes(size);const auto read=context.primary->ReadAt((root.first.page_number+i)*size,bytes.data(),bytes.size());
+        Require(read.ok()&&read.bytes_transferred==bytes.size(),E::io_failure);pages.push_back(std::move(bytes));}
+      contents=DecodeNativeManagementControlBundle(pages,root,plan.header.database_uuid,plan.bootstrap_uuid,bundle_allowance);
+    }else contents=ReadNativeManagementControlBundleFromOpenDevice(file,*plan.control_bundle,plan.header.database_uuid,plan.bootstrap_uuid,bundle_allowance);
+    ControlBundleError(contents.error);
     auto bundle=EncodeNativeManagementControlBundle(contents.allocation_images,plan.header.database_uuid,plan.bootstrap_uuid,plan.control_bundle->object_uuid,plan.operation_uuid,contents.page_headers,bundle_allowance,contents.inventory_images,contents.directory_images,contents.growth_images);ControlBundleError(bundle.error);Require(bundle.root==plan.control_bundle,E::binding_mismatch);
     std::optional<page::NativeAllocationMap> first;std::optional<page::NativeAllocationRecord> target_record;
     const Bytes* primary_map_image=nullptr;

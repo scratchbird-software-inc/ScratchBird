@@ -349,6 +349,10 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     set_tests_properties(native_directory_owned_secondary_subdivision_${primary}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;secondary_preallocation;map_subdivision;not_runtime_acceptance")
     foreach(secondary RANGE 0 4)
+      add_test(NAME native_directory_growth_staging_crashes_${primary}_${secondary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-growth-staging-crashes ${primary} ${secondary})
+      set_tests_properties(native_directory_growth_staging_crashes_${primary}_${secondary}_gate PROPERTIES TIMEOUT 600
+        LABELS "storage;binary_uuid;real_files;growth_staging;crash_reopen;not_runtime_acceptance")
       foreach(mode selection selection-crashes)
         add_test(NAME native_directory_growth_${mode}_${primary}_${secondary}_gate
           COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-growth-${mode} ${primary} ${secondary})
@@ -397,8 +401,13 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
         LABELS "storage;binary_uuid;real_files;secondary_preallocation;fault_injection;not_runtime_acceptance")
     endforeach()
   endforeach()
-  foreach(profile RANGE 2 3)
-    foreach(stage RANGE 0 2)
+  foreach(profile RANGE 2 4)
+    if(profile EQUAL 4)
+      set(last_install_stage 1)
+    else()
+      set(last_install_stage 2)
+    endif()
+    foreach(stage RANGE 0 ${last_install_stage})
       foreach(route RANGE 0 2)
         if(route EQUAL 2)
           set(install_fault_last 15)
@@ -420,20 +429,25 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       endforeach()
     endforeach()
     foreach(primary RANGE 0 4)
-      foreach(secondary RANGE 0 4)
-        add_test(NAME native_directory_publication_torn_payload_${profile}_${primary}_${secondary}_gate
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-publication-torn-payload ${profile} ${primary} ${secondary})
-        set_tests_properties(native_directory_publication_torn_payload_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
-          LABELS "storage;binary_uuid;real_files;actual_control_publication;crash_reopen;torn_payload;not_runtime_acceptance")
-        add_test(NAME native_directory_publication_crashes_${profile}_${primary}_${secondary}_gate
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-publication-crashes ${profile} ${primary} ${secondary})
-        set_tests_properties(native_directory_publication_crashes_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
-          LABELS "storage;binary_uuid;real_files;actual_control_publication;crash_reopen;not_runtime_acceptance")
-      endforeach()
+      if(NOT profile EQUAL 4)
+        foreach(secondary RANGE 0 4)
+          add_test(NAME native_directory_publication_torn_payload_${profile}_${primary}_${secondary}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-publication-torn-payload ${profile} ${primary} ${secondary})
+          set_tests_properties(native_directory_publication_torn_payload_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;actual_control_publication;crash_reopen;torn_payload;not_runtime_acceptance")
+          add_test(NAME native_directory_publication_crashes_${profile}_${primary}_${secondary}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-publication-crashes ${profile} ${primary} ${secondary})
+          set_tests_properties(native_directory_publication_crashes_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;actual_control_publication;crash_reopen;not_runtime_acceptance")
+        endforeach()
+      endif()
       add_test(NAME native_directory_install_${profile}_${primary}_gate
         COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-install ${profile} ${primary})
       set_tests_properties(native_directory_install_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
         LABELS "storage;binary_uuid;real_files;actual_control_publication;not_runtime_acceptance")
+      if(profile EQUAL 4)
+        set_tests_properties(native_directory_install_${profile}_${primary}_gate PROPERTIES TIMEOUT 300)
+      endif()
     endforeach()
   endforeach()
   foreach(profile RANGE 0 4)

@@ -815,8 +815,8 @@ void DirectoryInstallationRefusals(unsigned primary){for(bool readonly:{false,tr
  const auto tiny=db::InstallNativeManagementControlGraphOnLease(*held.lease,t.graph.plan,t.target_cp,t.extent,t.bundle,1);
  Check(tiny.error==db::NativePublicationError::resource_exhausted&&!tiny.snapshot&&tiny.effects==original,"bounded refusal retains only prior reservation effects");
 }}
-void DirectoryInstallation(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool resume){
- DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,true,true,false);auto& t=f.t;
+void DirectoryInstallation(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool resume,bool reserve=true){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,true,false);auto& t=f.t;
  // Publication retains both original and candidate ancestry. Its fixture
  // ceiling accounts for the largest supplied member, not just primary pages.
  f.budget=8*1024*std::max<u64>(t.fixture.size,t.zeros.at(t.other).bootstrap.page_size_bytes);
@@ -839,6 +839,9 @@ void DirectoryInstallation(unsigned primary,unsigned secondary,bool reverse,unsi
  const auto installed=db::InstallNativeManagementControlGraphOnLease(*held.lease,t.graph.plan,t.target_cp,t.extent,t.bundle,f.budget);
  if(!installed.ok())std::cerr<<"directory install profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" error="<<int(installed.error)<<'\n';
  Check(installed.ok()&&installed.effects.installed_graph_verified&&installed.snapshot->selection.checkpoint_sha256==initial.snapshot->selection.checkpoint_sha256,"mixed control pages actually installed without selecting target");
+ if(profile==4)for(const auto& file:t.fixture.devices){const auto& original=t.zeros.at(file.filespace_uuid==Id(11)?t.other:file.filespace_uuid);
+   const auto size=file.device->Size();Check(size.ok()&&size.size_bytes==original.total_pages*u64{original.bootstrap.page_size_bytes},"growth staging cannot extend any actual member");
+   if(file.filespace_uuid==t.changed){Bytes zero(t.growth.front().size());Check(file.device->ReadAt(0,zero.data(),zero.size()).ok()&&zero==t.growth.front(),"growth staging preserves exact original mutable body");}}
  if(resume){const auto pending=*installed.snapshot;held.lease.reset();f.Reopen(true);
    held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),pending,t.graph.plan.operation_uuid,t.graph.plan.intent,f.budget);Check(held.ok(),"reacquire exact original mixed publication");
    const auto replay=db::ResumeNativeManagementControlGraphOnLease(*held.lease,f.budget);
@@ -848,7 +851,17 @@ void DirectoryInstallation(unsigned primary,unsigned secondary,bool reverse,unsi
  // qualify the still-separate runtime storage admission/worker action adapter.
  if(profile==3){const auto physical=f.File(t.changed)->PreallocateExtent(t.request.first_page*u64{t.request.page_size_bytes},t.request.page_count*u64{t.request.page_size_bytes});
    Check(physical.ok()&&!physical.logical_size_extended&&f.File(t.changed)->Sync().ok(),"actual contained physical preallocation before metadata selection");}
- const auto published=db::PublishNativeManagementControlGraphOnLease(*held.lease,f.budget);
+ db::NativePublicationInspection published;
+ if(profile==4){const auto before=held.lease->effects();const auto premature=db::PublishNativeManagementControlGraphOnLease(*held.lease,f.budget);
+   Check(!premature.ok()&&!premature.snapshot&&premature.effects==before,"candidate growth graph cannot be selected before physical extension and metadata publication");
+   const auto physical=f.File(t.changed)->PreallocateExtent(t.request.first_page*u64{t.request.page_size_bytes},t.request.page_count*u64{t.request.page_size_bytes});
+   Check(physical.ok()&&physical.logical_size_extended&&f.File(t.changed)->Sync().ok(),"explicit real physical growth after durable reconstruction staging");
+   const d::FilespaceBootstrapBinding binding{Id(1),t.changed,t.request.page_size_profile_uuid};
+   const auto body=d::WriteFilespacePageZeroGrowthBodyFromOpenDevice(*f.File(t.changed),binding,t.growth.front(),t.growth.back(),f.budget);
+   Check(body.ok()&&body.postimage_verified&&body.sync_completed,"actual synchronized growth body before selector recovery");
+   auto& bytes=expected.at(t.changed);bytes.resize((t.request.current_total_pages+t.request.page_count)*u64{t.request.page_size_bytes});std::copy(t.growth.back().begin(),t.growth.back().end(),bytes.begin());
+   held.lease.reset();published=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),t.fixture.devices,Id(2),t.graph.plan.operation_uuid,t.graph.plan.intent,f.budget);
+ }else published=db::PublishNativeManagementControlGraphOnLease(*held.lease,f.budget);
  if(!published.ok())std::cerr<<"directory publish profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" reverse="<<reverse<<" target="<<target<<" resume="<<resume<<" error="<<int(published.error)<<'\n';
  Check(published.ok()&&published.effects.selected_graph_verified&&published.snapshot->selection.checkpoint_sha256==Sha(t.target_cp),"actual mixed directory graph selected after complete publication");
  held.lease.reset();const auto actual=db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),t.fixture.devices,Id(2),f.budget);Check(actual.ok()&&actual.publications.size()==1,"ordinary metadata ancestry admits actual mixed publication");
@@ -968,6 +981,39 @@ void DirectoryPublicationCrashes(unsigned profile,unsigned primary,unsigned seco
    Check(waitpid(recovery,&status,0)==recovery&&WIFEXITED(status),"independent mixed recovery exits normally");
    if(WEXITSTATUS(status))std::cerr<<"mixed crash profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" kind="<<kind<<" at="<<at<<'\n';
    Check(WEXITSTATUS(status)==0,"every interrupted mixed selection retains original publication and recovers exact graph");f.Reopen(true);
+  }
+ }
+}
+void DirectoryGrowthStagingCrashes(unsigned primary,unsigned secondary){
+ for(bool target:{false,true}){
+  DirectoryInstallRequest r(4,0,false,primary,secondary,true,target);auto& f=r.f;auto& t=f.t;
+  reads=writes=syncs=0;io_counting=true;const auto baseline=r.Call();io_counting=false;
+  Check(baseline.ok(),"growth staging crash baseline");const auto nw=writes,ns=syncs;
+  for(unsigned kind=0;kind<4;++kind)for(unsigned at=1;at<=(kind<2?nw:ns);++at){
+   r.Reset();r.held.lease.reset();for(const auto& file:t.fixture.devices)Check(file.device->Close().ok(),"close growth staging parent");
+   const auto child=fork();Check(child>=0,"fork actual growth staging writer");
+   if(!child){f.Reopen(true);r.held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),r.original,t.graph.plan.operation_uuid,t.graph.plan.intent,f.budget);
+    if(!r.held.ok())_exit(81);writes=syncs=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;kill_after_sync=kind==3;torn_bytes=kind==1?600:0;io_counting=true;(void)r.Call();_exit(87);}
+   int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"growth staging interruption reaches exact physical boundary");
+   const auto recovery=fork();Check(recovery>=0,"fork original growth staging recovery");
+   if(!recovery){f.Reopen(true);const auto observed=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),f.budget);
+    if(!observed.ok()||observed.snapshot->watermark.operation_uuid!=t.graph.plan.operation_uuid||observed.snapshot->watermark.intent!=t.graph.plan.intent||
+      observed.snapshot->selection.checkpoint_sha256!=r.original.selection.checkpoint_sha256)_exit(82);
+    auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),*observed.snapshot,t.graph.plan.operation_uuid,t.graph.plan.intent,f.budget);
+    if(!held.ok())_exit(83);reads=writes=syncs=0;io_counting=true;const auto restored=db::ResumeNativeManagementControlGraphOnLease(*held.lease,f.budget);io_counting=false;
+    const bool anchored=observed.snapshot->watermark.publication_plan.has_value();
+    if(anchored?!restored.ok():(restored.error!=db::NativePublicationError::invalid_request||writes||syncs))_exit(84);
+    // An unanchored interrupted request remains pending with its real staged
+    // bytes. Refusal is not completion or permission to allocate a new attempt.
+    held.lease.reset();const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),t.fixture.devices,Id(2),f.budget);
+    if(!selected.ok()||selected.snapshot->selection.checkpoint_sha256!=r.original.selection.checkpoint_sha256)_exit(85);
+    for(const auto& file:t.fixture.devices){const auto& before=t.zeros.at(file.filespace_uuid==Id(11)?t.other:file.filespace_uuid);const auto size=file.device->Size();
+     if(!size.ok()||size.size_bytes!=before.total_pages*u64{before.bootstrap.page_size_bytes})_exit(88);}
+    Bytes actual(t.growth.front().size());const auto io=f.File(t.changed)->ReadAt(0,actual.data(),actual.size());
+    _exit(io.ok()&&io.bytes_transferred==actual.size()&&actual==t.growth.front()?0:89);}
+   Check(waitpid(recovery,&status,0)==recovery&&WIFEXITED(status),"growth staging recovery exits normally");
+   if(WEXITSTATUS(status))std::cerr<<"growth staging primary="<<primary<<" secondary="<<secondary<<" target="<<target<<" kind="<<kind<<" at="<<at<<" status="<<WEXITSTATUS(status)<<'\n';
+   Check(WEXITSTATUS(status)==0,"durable growth anchor implies reconstructible metadata and never unperformed physical effects");f.Reopen(true);
   }
  }
 }
@@ -2892,6 +2938,10 @@ int main(int argc,char** argv){
    const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"growth selector recovery profiles");
    DirectoryGrowthSelectionRecovery(primary,secondary,std::string_view(argv[1])=="--directory-growth-selection-crashes"?3:-1);return 0;
  }
+ if(argc==4&&std::string_view(argv[1])=="--directory-growth-staging-crashes"){
+   const auto primary=std::stoi(argv[2]),secondary=std::stoi(argv[3]);Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"growth staging crash profiles");
+   DirectoryGrowthStagingCrashes(primary,secondary);return 0;
+ }
  if(argc==4&&std::string_view(argv[1])=="--directory-growth-selection-faults"){
    const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<3&&shard>=0&&shard<(route==2?32:route==1?20:1),"growth recovery fault shard");
    DirectoryGrowthSelectionRecovery(0,1,route,shard);return 0;
@@ -2912,14 +2962,15 @@ int main(int argc,char** argv){
  }
  if(argc==6&&std::string_view(argv[1])=="--directory-install-faults"){
    const auto profile=std::stoi(argv[2]),stage=std::stoi(argv[3]),route=std::stoi(argv[4]),shard=std::stoi(argv[5]);
-   Check((profile==2||profile==3)&&stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==2?16:route==1?(stage==2?20:5):1),"directory installation fault arguments");
+   Check(profile>=2&&profile<=4&&stage>=0&&stage<(profile==4?2:3)&&route>=0&&route<3&&shard>=0&&shard<(route==2?16:route==1?(stage==2?20:5):1),"directory installation fault arguments");
    DirectoryInstallFaults(profile,stage,route,shard);return 0;
  }
  if(argc==4&&std::string_view(argv[1])=="--directory-install"){
-   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]);Check((profile==2||profile==3)&&primary>=0&&primary<5,"directory installation profile");
+   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]);Check(profile>=2&&profile<=4&&primary>=0&&primary<5,"directory installation profile");
    if(profile==2)DirectoryInstallationRefusals(primary);
    for(unsigned secondary=0;secondary<5;++secondary)for(bool reverse:{false,true})for(bool target:{false,true})for(bool resume:{false,true}){
-     if(profile==2&&target)continue;DirectoryInstallation(primary,secondary,reverse,profile,target,resume);}
+     if(profile==2&&target)continue;DirectoryInstallation(primary,secondary,reverse,profile,target,resume);
+     if(profile==4)DirectoryInstallation(primary,secondary,reverse,profile,target,resume,false);}
    return 0;
  }
  if(argc==3&&std::string_view(argv[1])=="--directory-control-close"){
