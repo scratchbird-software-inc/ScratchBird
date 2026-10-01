@@ -3340,11 +3340,25 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     const auto bound_stage=[&](u64 limit,const auto& policy,auto& allocation){
       return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit,policy,allocation);};
     const auto stage=[&](u64 limit){return bound_stage(limit,policy_uuid,issuer);};
-    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row,"failed version staging never returns an admitted row");
+      if(r.stage.receipt)Check(r.stage.ok()&&r.attempted_row&&
+        (r.error==E::snapshot_failure||r.error==E::resource_exhausted||r.error==E::io_failure),
+        "retained physical receipt requires completed physical stage and later admission failure");
+      else Check(!r.stage.ok(),"failed physical staging returns no successful physical receipt");
+      if(!r.issued_version_uuid.is_nil())Check(r.identity_observation.has_value(),"issued identity keeps clock observation after failure");
+      if(r.attempted_row)Check(r.attempted_row->version_uuid==r.issued_version_uuid&&
+        r.attempted_row->database_uuid.value==Id(1)&&r.attempted_row->filespace_uuid.value==fs&&
+        r.attempted_row->page_number==21&&r.attempted_row->page_uuid.value==leaf.header.page_uuid&&
+        r.attempted_row->creator.transaction_uuid.value==owner.transaction_uuid.value&&
+        r.attempted_row->creator.local_id.value==owner.local_id.value,
+        "failed physical attempt retains exact binary identity and destination without claiming effects");};
     const auto unchanged=[&](){Check(actual(first,30,sizes[p])==source_bytes&&actual(first,12,sizes[p])==root_bytes&&actual(first,0,sizes[p])==zero_bytes,"staging preserves predecessor and current-root selection");};
     const auto verify=[&](const auto& result,u64 sequence,const auto& predecessor,bool retired){
       if(!result.ok())std::cerr<<"version stage error="<<static_cast<int>(result.error)<<" source="<<static_cast<int>(result.source_error)<<" physical="<<static_cast<int>(result.stage.error)<<std::endl;
       Check(result.ok(),"actual pinned native catalog version staging");
+      Check(result.attempted_row&&result.issued_version_uuid==result.row->version_uuid&&
+        result.attempted_row->version_uuid==result.row->version_uuid,
+        "successful stage retains the same issued and attempted identity");
       Check(result.identity_error==identity::StandaloneUuidV7Error::none&&result.identity_observation&&
         result.identity_observation->wall_clock.unix_seconds==static_cast<std::int64_t>(initialization_uuid_millis/1000)&&
         result.identity_clock_decision==scratchbird::core::time::LocalClockObservationDecision::accepted,
@@ -3399,7 +3413,8 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       stage_writes=stage_syncs=0;const auto refused=bound_stage(budget,policy_uuid,fresh);
       initialization_repeat_entropy=false;initialization_entropy_tag=5;
       empty(refused);Check(refused.error==E::identity_collision&&!stage_writes&&!stage_syncs&&
-        actual(target,21,sizes[profile])==blank,"issued UUID collision with retained/request identities refuses before writes");unchanged();
+        actual(target,21,sizes[profile])==blank&&refused.issued_version_uuid==Id(collision)&&!refused.attempted_row,
+        "issued UUID collision retained without entering physical writer");unchanged();
       const auto next=fresh.Issue(platform::UuidKind::row);
       Check(next.ok()&&Id(collision)<next.value->value,"rejected collision never rolls back retained issuer state");
     }
@@ -3419,6 +3434,28 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
         db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"real clock and cryptographic entropy produce physically staged native version");unchanged();
     }
     reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
+    // Every page profile/destination and typed-family route retains the exact
+    // generated identity after actual write/sync failures. A zero reported
+    // write count from the OS is not evidence that the page is unchanged.
+    for(unsigned fault=1;fault<=3;++fault){reset();stage_writes=stage_syncs=0;
+      if(fault<3)stage_write_fault=fault;else stage_sync_fault=1;
+      const auto failed=stage(budget);empty(failed);
+      Check(!stage_write_fault&&!stage_sync_fault&&failed.error==E::stage_failure&&
+        failed.stage.error==db::NativeCatalogLeafStageError::io_failure&&failed.attempted_row&&
+        stage_writes==1&&stage_syncs==(fault==3?1u:0u),"physical failure retains attempted generated row");
+      const auto written=actual(target,21,sizes[profile]);
+      if(fault==1)Check(written==blank,"pre-write native error leaves blank destination");
+      if(fault==2){Check(written!=blank,"partial native error really changes destination");
+        const auto retained=stage(budget);empty(retained);
+        Check(retained.error==E::stage_failure&&retained.stage.error==db::NativeCatalogLeafStageError::destination_not_empty&&
+          actual(target,21,sizes[profile])==written,"fresh identity cannot overwrite an unresolved partial attempt");}
+      if(fault==3){const auto decoded_page=db::DecodeNativeCatalogLeaf(written);
+        Check(decoded_page.ok()&&decoded_page.page->body.rows.front().version_uuid==failed.issued_version_uuid&&
+          decoded_page.page->body.rows.front().row_uuid.value==failed.attempted_row->row_uuid.value,
+          "sync failure retains original row identity matching actual bytes");}
+      unchanged();
+    }
+    reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
     auto previous_identity=result.row->version_uuid;
     const auto entropy_calls=initialization_entropy_calls;
     for(unsigned repeat=0;repeat<3;++repeat){reset();result=stage(budget);verify(result,1,platform::Uuid{},false);
@@ -4362,14 +4399,23 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       reset();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
       result=stage(budget);track_reads=count_full_digests=count_allocations=false;Check(result.ok(),"measure successful complete version staging");
       const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+      unsigned retained_after_resource_failure=0;
       for(unsigned long n=0;n<=na;++n){reset();allocation_budget=n;result=stage(budget);allocation_budget=-1;
         if(!result.ok())empty(result);else Check(db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"allocation recovery preserves actual canonical successor");
+        if(!result.ok()&&result.stage.ok()){
+          Check(result.error==E::resource_exhausted&&result.attempted_row&&
+            result.stage.receipt->sha256==WholeRootHash(actual(target,21,sizes[profile])),
+            "post-stage allocation failure preserves verified physical bytes");
+          ++retained_after_resource_failure;
+        }
         unchanged();if(n==na)Check(result.ok(),"version allocation sweep reaches success");}
+      Check(retained_after_resource_failure>0,"allocation sweep reaches post-stage snapshot copy failure");
       for(unsigned n=1;n<=nr;++n){reset();reads=0;read_fault=n;track_reads=true;result=stage(budget);track_reads=false;Check(!read_fault,"version actual read fault consumed");empty(result);unchanged();}
       for(unsigned n=1;n<=nf;++n){reset();full_digest_fault=n;result=stage(budget);Check(!full_digest_fault,"version full digest fault consumed");empty(result);unchanged();}
       for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;result=stage(budget);Check(!hash_fault,"version multipart digest failure consumed");empty(result);unchanged();}
       reset();reads=0;stage_corrupt_read=nr;track_reads=true;result=stage(budget);track_reads=false;Check(!stage_corrupt_read,"version actual readback corruption consumed");empty(result);unchanged();
-      std::cout<<"catalog version allocations="<<na<<" reads="<<nr<<" full digests="<<nf<<std::endl;
+      std::cout<<"catalog version allocations="<<na<<" reads="<<nr<<" full digests="<<nf
+        <<" retained after resource failure="<<retained_after_resource_failure<<std::endl;
       for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;empty(stage(budget));Check(!stage_write_fault,"version write failure actually exercised");unchanged();}
       reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault,"version sync failure actually exercised");unchanged();
       reset();inv.inventory.entries[0].rollback_only=true;persist();empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"rollback-only writer cannot stage version");inv.inventory.entries[0].rollback_only=false;persist();
@@ -4417,9 +4463,33 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       source_leaf=saved_source;inv=saved_inventory;persist();unchanged();
     }
     request=create;reset();revoke_on_stage_sync=&snapshot.published.descriptor.snapshot_uuid;result=stage(budget);
-    Check(!revoke_on_stage_sync&&result.error==E::snapshot_failure,"snapshot revoked during actual stage sync");empty(result);
-    Check(db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"post-write snapshot refusal does not misrepresent durable reserved bytes");unchanged();
-    reset();empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"revoked snapshot cannot stage");unchanged();
+    Check(!revoke_on_stage_sync&&result.error==E::snapshot_failure&&
+      result.diagnostic.diagnostic_code=="SB-MGA-SNAPSHOT-VECTOR-REVOKED"&&
+      result.diagnostic.message_key=="transaction.snapshot_vector.revoked",
+      "snapshot revoked during actual stage sync retains owning typed diagnostic");
+    Check(!result.ok()&&!result.row&&result.stage.ok()&&result.stage.receipt&&
+      result.stage.receipt->page.filespace_uuid==fs&&result.stage.receipt->page.page_number==21&&
+      result.stage.receipt->sha256==WholeRootHash(actual(target,21,sizes[profile])),
+      "post-write snapshot refusal retains completed physical stage, not successful version admission");
+    const auto staged_image=actual(target,21,sizes[profile]);const auto staged_page=db::DecodeNativeCatalogLeaf(staged_image);
+    Check(staged_page.ok()&&result.attempted_row&&result.identity_observation&&
+      result.issued_version_uuid==staged_page.page->body.rows.front().version_uuid&&
+      result.attempted_row->version_uuid==result.issued_version_uuid&&
+      result.attempted_row->row_uuid.value==staged_page.page->body.rows.front().row_uuid.value&&
+      result.attempted_row->storage_generation==staged_page.page->body.rows.front().storage_generation&&
+      result.attempted_row->stable_slot_id==staged_page.page->body.rows.front().stable_slot_id&&
+      result.attempted_row->row_version==staged_page.page->body.rows.front().row_version&&
+      result.attempted_row->previous_version_uuid==staged_page.page->body.rows.front().previous_version_uuid,
+      "post-write failure retains exact actual row and physical evidence");unchanged();
+    Check(first.Close().ok()&&second.Close().ok()&&
+      first.Open(path1,disk::FileOpenMode::open_existing).ok()&&
+      second.Open(path2,disk::FileOpenMode::open_existing).ok(),"independent native file reopen after snapshot refusal");
+    Check(actual(target,21,sizes[profile])==staged_image,"retained physical stage survives reopen");unchanged();
+    stage_writes=stage_syncs=0;const auto prior_entropy=initialization_entropy_calls;
+    const auto retry=stage(budget);empty(retry);
+    Check(!retry.attempted_row&&retry.issued_version_uuid.is_nil()&&!retry.identity_observation&&
+      !stage_writes&&!stage_syncs&&initialization_entropy_calls==prior_entropy&&
+      actual(target,21,sizes[profile])==staged_image,"revoked snapshot retry cannot replace original effects or issue identity");unchanged();
   }
 }
 void CheckpointCatalogRelations() {

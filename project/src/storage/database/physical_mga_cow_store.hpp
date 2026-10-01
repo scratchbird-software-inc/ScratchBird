@@ -555,10 +555,20 @@ enum class NativeCatalogVersionStageError {
 struct NativeCatalogVersionStageResult {
   NativeCatalogVersionStageError error=NativeCatalogVersionStageError::invalid_request;
   scratchbird::core::uuid::StandaloneUuidV7Error identity_error=scratchbird::core::uuid::StandaloneUuidV7Error::none;
+  // Retained once issued, including collision or later failure. Never reuse it.
+  scratchbird::core::platform::Uuid issued_version_uuid;
   std::optional<scratchbird::core::time::ClockSnapshot> identity_observation;
   scratchbird::core::time::LocalClockObservationDecision identity_clock_decision=scratchbird::core::time::LocalClockObservationDecision::accepted;
   NativePinnedCatalogReadError source_error=NativePinnedCatalogReadError::none;
+  // Physical completion is independent of the final snapshot recheck. On
+  // snapshot_failure this may still contain a successful physical receipt.
   NativeCatalogLeafStageResult stage;
+  // Set immediately before entering the physical writer. Exact reconciliation
+  // input, NOT proof of writes, durability, version admission or publication.
+  // A failed writer can have effects even without stage.receipt. Retain the
+  // original owning request; do not retry by generating another version UUID.
+  std::optional<PhysicalMgaCowRowReceipt> attempted_row;
+  // Only present on complete version-staging success (including pin recheck).
   std::optional<PhysicalMgaCowRowReceipt> row;
   DiagnosticRecord diagnostic;
   bool ok() const noexcept {return error==NativeCatalogVersionStageError::none&&stage.ok()&&row.has_value();}
