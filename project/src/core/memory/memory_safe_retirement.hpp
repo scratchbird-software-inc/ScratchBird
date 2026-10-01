@@ -9,6 +9,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <span>
 #include <stop_token>
 #include <type_traits>
 #include <utility>
@@ -52,6 +53,25 @@ struct SafeRetirementSnapshot {
   u64 metadata_bytes = 0;
   bool closed = false;
   bool initialized = false;
+};
+
+// Protected internal lifecycle evidence. No payload pointer or value is
+// exposed. The authorized owning layer controls diagnostic visibility.
+struct SafeRetirementReaderRecord {
+  SafeRetirementHandle object;
+  MemoryBinaryUuid object_uuid{};
+  SafeRetirementObjectKind object_kind = SafeRetirementObjectKind::temporary_descriptor;
+  SafeRetirementHazard hazard;
+  // Per object, not additive across multiple hazards protecting that object.
+  usize object_bytes = 0;
+  bool retirement_requested = false;
+};
+
+struct SafeRetirementReaderInspection {
+  SafeRetirementStatus status = SafeRetirementStatus::invalid_request;
+  usize matching_readers = 0;
+  usize records_written = 0;
+  bool truncated = false;
 };
 
 class MemorySafeRetirement;
@@ -130,6 +150,21 @@ class MemorySafeRetirement {
   SafeRetirementStatus Drain(std::chrono::steady_clock::time_point deadline,
                              std::stop_token cancellation = {});
   SafeRetirementSnapshot Snapshot() const;
+  // One consistent bounded scan into caller-owned storage; no allocation,
+  // callback, release, revocation or forced reclamation. Select only this task's
+  // still-live hazards required by or before the supplied completed boundary
+  // (operation -> task -> runtime). Invalid/uninitialized calls write nothing.
+  // Selection alone does not prove a hold is overdue: the lifecycle owner must
+  // establish the exact completed operation/task scope before reporting a leak.
+  // An empty span still counts all matches and explicitly reports truncation.
+  // Only the first records_written output elements belong to this result;
+  // remaining elements are untouched and must not be emitted as current data.
+  // ok means inspection succeeded, NOT that the lifecycle has drained. A zero
+  // count is only an observation: fence new references and join all users at
+  // the owning boundary. No caller assertion here grants recovery authority.
+  SafeRetirementReaderInspection InspectRetainedReaders(
+      MemoryBinaryUuid owner_task, SafeRetirementBoundary completed_boundary,
+      std::span<SafeRetirementReaderRecord> output) const;
 
  private:
   friend class SafeRetirementGuard;

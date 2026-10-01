@@ -260,4 +260,34 @@ SafeRetirementSnapshot MemorySafeRetirement::Snapshot() const {
   return snapshot;
 }
 
+SafeRetirementReaderInspection MemorySafeRetirement::InspectRetainedReaders(
+    MemoryBinaryUuid owner_task, SafeRetirementBoundary completed_boundary,
+    std::span<SafeRetirementReaderRecord> output) const {
+  SafeRetirementReaderInspection result;
+  if (!MemorySystemUuidValid(owner_task) ||
+      completed_boundary < SafeRetirementBoundary::operation_completion ||
+      completed_boundary > SafeRetirementBoundary::runtime_shutdown)
+    return result;
+  std::lock_guard lock(mutex_);
+  if (!initialized_) {
+    result.status = SafeRetirementStatus::not_initialized;
+    return result;
+  }
+  for (usize i = 0; i < reader_limit_; ++i) {
+    const auto& reader = readers_[i];
+    if (!reader.active || reader.hazard.owner_task != owner_task ||
+        reader.hazard.release_required_by > completed_boundary)
+      continue;
+    ++result.matching_readers;
+    if (result.records_written == output.size()) continue;
+    const auto& object = objects_[reader.object.slot];
+    output[result.records_written++] = {
+        reader.object, object.identity, object.kind, reader.hazard,
+        object.bytes, object.state == State::retired};
+  }
+  result.truncated = result.records_written < result.matching_readers;
+  result.status = SafeRetirementStatus::ok;
+  return result;
+}
+
 }  // namespace scratchbird::core::memory

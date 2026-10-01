@@ -342,6 +342,117 @@ void InvalidAdmissionAndPayloadCapacity() {
   }
   f.Empty();
 }
+void BoundedReaderInspection() {
+  Fixture f;
+  {
+    m::MemorySafeRetirement domain(*f.resource, Id(110), 2, 4);
+    std::array<m::SafeRetirementReaderRecord, 3> records{};
+    using B = m::SafeRetirementBoundary;
+    Check(domain.InspectRetainedReaders(Id(99), B::task_completion, records).status ==
+              S::not_initialized, "inspection before initialized metadata");
+    Check(domain.Initialize() == S::ok, "inspection metadata");
+    const auto object = domain.Emplace<unsigned>(Id(111), kind, 17);
+    Check(object.ok(), "inspection real payload");
+    std::array<m::SafeRetirementGuard, 4> guards;
+    Check(domain.Protect(object.handle, {Id(112), Id(99), B::operation_completion}, guards[0]) == S::ok &&
+          domain.Protect(object.handle, {Id(113), Id(99), B::task_completion}, guards[1]) == S::ok &&
+          domain.Protect(object.handle, {Id(114), Id(99), B::runtime_shutdown}, guards[2]) == S::ok &&
+          domain.Protect(object.handle, {Id(115), Id(98), B::operation_completion}, guards[3]) == S::ok,
+          "four real scoped reader holds");
+    const auto charged = f.manager.Snapshot().current_bytes;
+    const auto allocations = f.resource->Snapshot().allocation_count;
+    const auto operation = domain.InspectRetainedReaders(Id(99), B::operation_completion, records);
+    Check(operation.status == S::ok && operation.matching_readers == 1 &&
+              operation.records_written == 1 && !operation.truncated,
+          "operation boundary excludes later deadlines and another owner");
+    Check(records[0].hazard.hazard_id == Id(112) && records[0].hazard.owner_task == Id(99) &&
+              records[0].object == object.handle && records[0].object_uuid == Id(111) &&
+              records[0].object_kind == kind && records[0].object_bytes == sizeof(unsigned) &&
+              !records[0].retirement_requested,
+          "exact binary protected record without payload exposure");
+    const auto task = domain.InspectRetainedReaders(Id(99), B::task_completion, records);
+    Check(task.matching_readers == 2 && task.records_written == 2 && !task.truncated &&
+              records[1].hazard.hazard_id == Id(113), "task boundary includes earlier holds");
+    const auto bounded = domain.InspectRetainedReaders(Id(99), B::runtime_shutdown,
+        std::span(records).first(1));
+    Check(bounded.matching_readers == 3 && bounded.records_written == 1 && bounded.truncated,
+          "bounded output counts omitted records and explicitly truncates");
+    const auto count = domain.InspectRetainedReaders(Id(99), B::runtime_shutdown, {});
+    Check(count.matching_readers == 3 && count.records_written == 0 && count.truncated,
+          "empty output cannot hide outstanding holds");
+    records[0].object_uuid = Id(120);
+    Check(domain.InspectRetainedReaders({}, B::runtime_shutdown, records).status == S::invalid_request &&
+              records[0].object_uuid == Id(120), "invalid task leaves caller output untouched");
+    Check(domain.InspectRetainedReaders(Id(99), static_cast<B>(99), records).status == S::invalid_request &&
+              records[0].object_uuid == Id(120), "invalid boundary leaves output untouched");
+    const auto other = domain.InspectRetainedReaders(Id(97), B::runtime_shutdown, records);
+    Check(other.status == S::ok && other.matching_readers == 0 && !other.truncated &&
+              records[0].object_uuid == Id(120), "no nonmatching task records");
+    domain.Close();
+    const auto closed = domain.InspectRetainedReaders(Id(99), B::runtime_shutdown, records);
+    Check(closed.status == S::ok && closed.matching_readers == 3 && records[0].retirement_requested,
+          "close retains inspection and all outstanding hazards");
+    Check(domain.Collect() == S::ok && domain.Snapshot().readers == 4 &&
+              f.manager.Snapshot().current_bytes == charged &&
+              f.resource->Snapshot().allocation_count == allocations &&
+              *static_cast<unsigned*>(guards[0].get()) == 17,
+          "inspection allocates nothing and cannot reclaim or revoke holds");
+    guards[0].Reset(); guards[1].Reset(); guards[2].Reset();
+    const auto own_clear = domain.InspectRetainedReaders(Id(99), B::runtime_shutdown, records);
+    Check(own_clear.matching_readers == 0 && domain.Snapshot().readers == 1 &&
+              domain.Drain(std::chrono::steady_clock::now()) == S::timed_out,
+          "zero task records is not domain drain or authority to free");
+    guards[3].Reset();
+    Check(domain.Drain(std::chrono::steady_clock::now()) == S::ok,
+          "all actual releases permit safe drain");
+  }
+  f.Empty();
+}
+
+void ConcurrentReaderInspection() {
+  Fixture f;
+  {
+    m::MemorySafeRetirement domain(*f.resource, Id(121), 1, 1);
+    Check(domain.Initialize() == S::ok, "concurrent inspection metadata");
+    std::barrier boundary(2);
+    m::SafeRetirementHandle expected;
+    bool consistent = true;
+    std::thread inspector([&] {
+      for (unsigned i = 0; i != 100; ++i) {
+        boundary.arrive_and_wait();
+        std::array<m::SafeRetirementReaderRecord, 1> record{};
+        const auto result = domain.InspectRetainedReaders(
+            Id(99), m::SafeRetirementBoundary::runtime_shutdown, record);
+        consistent = consistent && result.status == S::ok && !result.truncated &&
+            result.matching_readers <= 1 && result.records_written == result.matching_readers;
+        if (result.records_written)
+          consistent = consistent && record[0].object == expected &&
+              record[0].object_uuid == Id(130 + i) && record[0].hazard.hazard_id == Id(230 + i) &&
+              record[0].hazard.owner_task == Id(99) && record[0].retirement_requested &&
+              record[0].object_bytes == sizeof(unsigned);
+        boundary.arrive_and_wait();
+      }
+    });
+    bool publications = true;
+    for (unsigned i = 0; i != 100; ++i) {
+      const auto object = domain.Emplace<unsigned>(Id(130 + i), kind, i);
+      m::SafeRetirementGuard guard;
+      publications = publications && object.ok();
+      publications = (domain.Protect(object.handle, Hazard(230 + i), guard) == S::ok) && publications;
+      publications = (domain.Retire(object.handle) == S::ok) && publications;
+      expected = object.handle;
+      boundary.arrive_and_wait();
+      guard.Reset();
+      boundary.arrive_and_wait();
+      publications = (domain.Collect() == S::ok) && publications;
+    }
+    inspector.join();
+    Check(publications && consistent, "release/inspection race never mixes reused reader/object identities");
+    Check(domain.Snapshot().readers == 0 && domain.Snapshot().retained_payload_bytes == 0,
+          "inspection creates no retained reader or payload charge");
+  }
+  f.Empty();
+}
 }  // namespace
 
 int main() {
@@ -351,6 +462,8 @@ int main() {
     FailedReleaseRetainsCharge();
     ConcurrentCollectorsAndDrain();
     InvalidAdmissionAndPayloadCapacity();
+    BoundedReaderInspection();
+    ConcurrentReaderInspection();
     std::cout << "PASS safe retirement checks=" << checks << "\n";
     return 0;
   } catch (const std::exception& error) {
