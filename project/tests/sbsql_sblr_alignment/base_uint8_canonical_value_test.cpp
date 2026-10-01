@@ -271,8 +271,11 @@ void OperationsAndSerialization() {
   }
   const auto widened = Cast(Uint8(0xff), dt::CanonicalTypeId::int16,
                             dt::DatatypeCastContext::implicit);
-  Check(widened.ok() && widened.value.encoded_value == "255",
-        "uint8-to-int16 lossless widening emits unsigned decimal text");
+  Check(!widened.ok() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint8,
+                                     dt::CanonicalTypeId::int16) ==
+                dt::DatatypeCastCategory::forbidden,
+        "unregistered uint8-to-int16 cast remains fail-closed");
   Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint8,
                                 dt::CanonicalTypeId::int8) ==
             dt::DatatypeCastCategory::lossy_explicit &&
@@ -312,26 +315,18 @@ void OperationsAndSerialization() {
                                      dt::CanonicalTypeId::boolean) ==
                 dt::DatatypeCastCategory::forbidden,
         "unresolved non-integer uint8 cast pairs remain fail-closed");
-  const auto narrowed = Cast({dt::CanonicalTypeId::int16, "255", false},
+  const auto narrowed = Cast(
+      {dt::CanonicalTypeId::int16, std::string{'\xff', '\0'}, false},
                              dt::CanonicalTypeId::uint8,
                              dt::DatatypeCastContext::explicit_cast);
-  Check(narrowed.ok() && IsUint8(narrowed.value, 0xff),
-        "narrowing cast emits one canonical byte");
-  const auto assigned = Cast({dt::CanonicalTypeId::int16, "128", false},
+  Check(!narrowed.ok(),
+        "unregistered int16-to-uint8 explicit cast remains fail-closed");
+  const auto assigned = Cast(
+      {dt::CanonicalTypeId::int16, std::string{'\x80', '\0'}, false},
                              dt::CanonicalTypeId::uint8,
                              dt::DatatypeCastContext::assignment);
-  Check(assigned.ok() && IsUint8(assigned.value, 0x80),
-        "checked assignment cast emits one canonical byte");
-  for (const char* invalid : {"-1", "256"}) {
-    Check(!Cast({dt::CanonicalTypeId::int16, invalid, false},
-                dt::CanonicalTypeId::uint8,
-                dt::DatatypeCastContext::explicit_cast).ok(),
-          "narrowing overflow or underflow fails closed");
-    Check(!Cast({dt::CanonicalTypeId::int16, invalid, false},
-                dt::CanonicalTypeId::uint8,
-                dt::DatatypeCastContext::assignment).ok(),
-          "assignment overflow or underflow fails closed");
-  }
+  Check(!assigned.ok(),
+        "unregistered int16-to-uint8 assignment remains fail-closed");
   for (const auto& source :
        {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.0", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
@@ -604,7 +599,7 @@ api::EngineDescriptor EngineDescriptor(const std::string& uuid,
                                        const std::string& type,
                                        bool nullable) {
   const auto type_id = type == "uint8" ? dt::CanonicalTypeId::uint8
-      : type == "int16" ? dt::CanonicalTypeId::int16
+      : type == "int32" ? dt::CanonicalTypeId::int32
       : type == "character" ? dt::CanonicalTypeId::character
       : dt::CanonicalTypeId::boolean;
   return scratchbird::tests::ExactScalarDescriptorFixture(
@@ -624,15 +619,15 @@ api::EngineTypedValue EngineValue(const api::EngineDescriptor& descriptor,
 void EngineBoundaryAdapters() {
   const auto uint8_descriptor = EngineDescriptor(
       "019dffbc-1000-7000-8000-000000000201", "uint8", false);
-  const auto int16_descriptor = EngineDescriptor(
-      "019dffbc-1000-7000-8000-000000000202", "int16", false);
+  const auto int32_descriptor = EngineDescriptor(
+      "019dffbc-1000-7000-8000-000000000202", "int32", false);
   const auto character_descriptor = EngineDescriptor(
       "019dffbc-1000-7000-8000-000000000203", "character", false);
 
   api::EngineTypedValue output;
   std::string category, refusal;
   Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            EngineValue(uint8_descriptor, "255"), int16_descriptor, false,
+            EngineValue(uint8_descriptor, "255"), int32_descriptor, false,
             &output, &category, &refusal) &&
             category == "lossless_implicit" && output.encoded_value == "255" &&
             output.binary_value.empty() &&
@@ -648,26 +643,26 @@ void EngineBoundaryAdapters() {
   auto native_49 = EngineValue(uint8_descriptor, {});
   native_49.binary_value = {0x31};
   Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            native_49, int16_descriptor, false, &output, &category, &refusal) &&
+            native_49, int32_descriptor, false, &output, &category, &refusal) &&
             output.encoded_value == "49",
         "Engine adapter decodes canonical uint8 byte 0x31 as native 49: " +
             refusal);
   native_49.binary_value = {0x31, 0x00};
   Check(!api::QowApplyCanonicalDescriptorCoercionV1(
-             native_49, int16_descriptor, false,
+             native_49, int32_descriptor, false,
              &output, &category, &refusal),
         "Engine adapter rejects a non-one-byte uint8 binary carrier");
 
   const auto nullable_uint8 = EngineDescriptor(
       "019dffbc-1000-7000-8000-000000000204", "uint8", true);
-  const auto nullable_int16 = EngineDescriptor(
-      "019dffbc-1000-7000-8000-000000000205", "int16", true);
+  const auto nullable_int32 = EngineDescriptor(
+      "019dffbc-1000-7000-8000-000000000205", "int32", true);
   api::EngineTypedValue null_value;
   null_value.descriptor = nullable_uint8;
   null_value.is_null = true;
   null_value.state = api::EngineValueState::sql_null;
   Check(api::QowApplyCanonicalDescriptorCoercionV1(
-            null_value, nullable_int16, false,
+            null_value, nullable_int32, false,
             &output, &category, &refusal) &&
             output.isSqlNull() && output.encoded_value.empty() &&
             output.binary_value.empty(),
