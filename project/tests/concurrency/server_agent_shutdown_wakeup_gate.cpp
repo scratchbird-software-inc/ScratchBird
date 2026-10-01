@@ -10,6 +10,7 @@
 #include "server_agent_runtime.hpp"
 #include "time.hpp"
 #include "uuid.hpp"
+#include "wire/binary_status_packet.hpp"
 
 #include <array>
 #include <atomic>
@@ -146,6 +147,54 @@ bool HasBinarySnapshotIdentities(const server::ServerAgentRuntimeSnapshot& snaps
     if (!uuid::IsEngineIdentityUuid(id)) return false;
   }
   return snapshot.workers.size() == 2;
+}
+
+// SEARCH_KEY: SERVER_AGENT_STATUS_FILE_BINARY_IDENTITIES
+bool ReadStatusIdentities(const server::ServerAgentRuntimeSnapshot& snapshot,
+                          std::vector<std::string>* identities) {
+  // Read the actual production sidecar, not a test-encoded substitute. Opening
+  // the file pins one complete inode even if the scheduler atomically replaces it.
+  std::ifstream input(snapshot.status_path, std::ios::binary | std::ios::ate);
+  if (!input) return false;
+  const auto length = input.tellg();
+  if (length <= 0 || length > 1024 * 1024) return false;
+  std::string packet(static_cast<std::size_t>(length), '\0');
+  input.seekg(0);
+  if (!input.read(packet.data(), static_cast<std::streamsize>(packet.size()))) return false;
+  namespace result = scratchbird::wire::public_result;
+  std::vector<result::Field> fields;
+  if (!scratchbird::wire::binary_status::Decode(packet, &fields)) return false;
+  identities->clear();
+  for (std::size_t i = 1; i < fields.size(); ++i) {
+    if (fields[i].kind != result::Kind::uuid) continue;
+    const auto index = identities->size();
+    const auto& bytes = fields[i].value;
+    if (bytes.size() != 16 || fields[i - 1].kind != result::Kind::text) return false;
+    std::string_view label;
+    if (index == 0) {
+      label = "\"database_uuid\":\"";
+      if (bytes != snapshot.database_uuid) return false;
+    } else if (index == 1) {
+      label = "\"filespace_uuid\":\"";
+      if (bytes != snapshot.filespace_uuid) return false;
+    } else {
+      const auto worker = (index - 2) / 2;
+      if (worker >= snapshot.workers.size()) return false;
+      if (index % 2 == 0) {
+        label = "\"instance_uuid\":\"";
+        if (bytes != snapshot.workers[worker].instance_uuid) return false;
+      } else {
+        label = "\"lease_uuid\":\"";
+      }
+    }
+    if (!fields[i - 1].value.ends_with(label)) return false;
+    platform::Uuid identity;
+    for (std::size_t byte = 0; byte < identity.bytes.size(); ++byte)
+      identity.bytes[byte] = static_cast<unsigned char>(bytes[byte]);
+    if (!uuid::IsEngineIdentityUuid(identity)) return false;
+    identities->push_back(bytes);
+  }
+  return identities->size() == 2 + 2 * snapshot.workers.size();
 }
 }  // namespace
 
@@ -564,6 +613,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     }
     track_native_creates = false;  // Stop's dependency helpers are not cohort threads.
     const auto active = runtime.Snapshot();
+    std::vector<std::string> active_identities;
+    const bool active_status_valid = ReadStatusIdentities(active, &active_identities);
     runtime.Stop();
     startup_probe = false;
     bool joined = launched_threads == startup_threads.size();
@@ -571,8 +622,13 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
       joined = joined && startup_joined[i];
     }
     const auto stopped = runtime.Snapshot();
+    std::vector<std::string> stopped_identities;
+    const bool status_preserved = active_status_valid &&
+        ReadStatusIdentities(stopped, &stopped_identities) &&
+        active_identities == stopped_identities;
     std::cout << "restart_cycle=" << cycle << " started=" << started
               << " native_creates=" << launched_threads << " all_joined=" << joined
+              << " binary_status_preserved=" << status_preserved
               << " stopped=" << (!stopped.started && !stopped.stopping) << '\n';
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -580,7 +636,7 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     if (!started || !active.started || !HasBinarySnapshotIdentities(active, engine) ||
         active.worker_thread_count != 2 ||
         active.durable_lease_count < 2 || active.durable_catalog_root_digest.empty() ||
-        launch_attempts != 3 || !joined || stopped.started || stopped.stopping) {
+        launch_attempts != 3 || !joined || !status_preserved || stopped.started || stopped.stopping) {
       return false;
     }
   }
