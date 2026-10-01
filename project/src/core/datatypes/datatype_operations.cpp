@@ -2324,6 +2324,19 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
+  const bool typed_null_identity =
+      request.value.is_null &&
+      (request.value.type_id == CanonicalTypeId::int16 ||
+       request.value.type_id == CanonicalTypeId::uint16 ||
+       request.value.type_id == CanonicalTypeId::int32) &&
+      request.value.type_id == request.target_type_id;
+  if (typed_null_identity &&
+      !ExecutionDescriptorEquals(request.value.descriptor,
+                                 request.target_descriptor)) {
+    return CastFailure("typed_null_identity_descriptor_mismatch",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (source_is_contextual_null &&
       (!request.value.is_null || !request.value.encoded_value.empty())) {
     return CastFailure("contextual_null_state_invalid",
@@ -2375,17 +2388,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   // Typed NULL identity is a state/descriptor validation, not a non-NULL
   // value-conversion policy. Preserve it even when a datatype's present-value
   // cast table remains unresolved.
-  if (request.value.is_null &&
-      (request.value.type_id == CanonicalTypeId::int16 ||
-       request.value.type_id == CanonicalTypeId::uint16 ||
-       request.value.type_id == CanonicalTypeId::int32) &&
-      request.value.type_id == request.target_type_id) {
-    if (!ExecutionDescriptorEquals(request.value.descriptor,
-                                   request.target_descriptor)) {
-      return CastFailure("typed_null_identity_descriptor_mismatch",
-                         DatatypeCastCategory::forbidden,
-                         "DATATYPE.CAST_FORBIDDEN");
-    }
+  if (typed_null_identity) {
     DatatypeCastResult null_identity;
     null_identity.status = OkStatus();
     null_identity.category = DatatypeCastCategory::identity;

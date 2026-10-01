@@ -10,6 +10,7 @@
 // SEARCH_KEY: SB_SERVER_AUTH_SESSION_ATTACH
 
 #include "session_registry.hpp"
+#include "security/durable_authorization_projection.hpp"
 #include "session_metadata_context.hpp"
 #include "native_identity_selector.hpp"
 #include "hash_digest.hpp"
@@ -979,14 +980,6 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-std::string NormalizeAuthorizationSubjectKind(std::string kind) {
-  kind = LowerAscii(std::move(kind));
-  if (kind.empty() || kind == "user" || kind == "service" ||
-      kind == "system_actor") {
-    return "principal";
-  }
-  return kind;
-}
 
 std::string NormalizeRoleName(std::string value) {
   value = LowerAscii(std::move(value));
@@ -1030,17 +1023,6 @@ std::string UuidSetHash(std::string_view prefix,
          "/sha256:" + scratchbird::core::hash::HexLower(digest.digest);
 }
 
-std::string InferLifecycleSubjectKind(
-    const engine_api::EngineSecurityPrincipalLifecycleState& state,
-    const engine_api::EngineUuid& uuid) {
-  for (const auto& role : state.roles) {
-    if (role.role_uuid == uuid) return "role";
-  }
-  for (const auto& group : state.groups) {
-    if (group.group_uuid == uuid) return "group";
-  }
-  return "principal";
-}
 
 bool LifecycleStateHasDurableSubjects(
     const engine_api::EngineSecurityPrincipalLifecycleState& state) {
@@ -1053,107 +1035,22 @@ engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
     const engine_api::EngineSecurityPrincipalLifecycleState& lifecycle,
     const ServerSessionRecord& session,
     const engine_api::EngineRequestContext& context) {
-  engine_api::DurableAuthorizationState state;
-  state.authority_uuid = context.database_uuid;
-  state.security_context_generation =
-      lifecycle.security_context_generation;
-  state.security_epoch =
+  // Preserve this session adapter's existing epoch policy. The shared engine
+  // projection itself never supplies a missing generation or authority.
+  engine_api::DurableAuthorizationProjectionBinding binding;
+  binding.authority_uuid = context.database_uuid;
+  binding.principal_uuid = context.principal_uuid;
+  binding.security_epoch =
       context.security_epoch == 0 ? std::max<std::uint64_t>(1, lifecycle.security_generation)
                                   : context.security_epoch;
-  state.policy_epoch =
+  binding.policy_epoch =
       session.policy_generation == 0
           ? std::max<std::uint64_t>(1, lifecycle.policy_generation)
           : session.policy_generation;
-  state.catalog_generation_id =
+  binding.catalog_generation_id =
       context.catalog_generation_id == 0 ? std::max<std::uint64_t>(1, session.catalog_generation)
                                          : context.catalog_generation_id;
-
-  for (const auto& principal : lifecycle.principals) {
-    if (principal.deleted || principal.lifecycle_state != "active") continue;
-    engine_api::DurableAuthorizationPrincipalRecord record;
-    record.principal_uuid = principal.principal_uuid;
-    record.principal_kind = "principal";
-    record.active = true;
-    record.security_epoch = state.security_epoch;
-    state.principals.push_back(std::move(record));
-  }
-  for (const auto& role : lifecycle.roles) {
-    if (role.deleted || role.lifecycle_state != "active") continue;
-    engine_api::DurableAuthorizationRoleRecord record;
-    record.role_uuid = role.role_uuid;
-    record.active = true;
-    record.security_epoch = state.security_epoch;
-    state.roles.push_back(std::move(record));
-  }
-  for (const auto& group : lifecycle.groups) {
-    if (group.deleted || group.lifecycle_state != "active") continue;
-    engine_api::DurableAuthorizationGroupRecord record;
-    record.group_uuid = group.group_uuid;
-    record.active = true;
-    record.security_epoch = state.security_epoch;
-    state.groups.push_back(std::move(record));
-  }
-  for (const auto& membership : lifecycle.memberships) {
-    if (membership.revoked || membership.member_principal_uuid.is_nil() ||
-        membership.container_uuid.is_nil()) {
-      continue;
-    }
-    engine_api::DurableAuthorizationMembershipRecord record;
-    record.member_uuid = membership.member_principal_uuid;
-    record.member_kind = InferLifecycleSubjectKind(lifecycle,
-                                                   membership.member_principal_uuid);
-    record.parent_uuid = membership.container_uuid;
-    record.parent_kind = NormalizeAuthorizationSubjectKind(membership.container_kind);
-    if (record.parent_kind == "principal") {
-      record.parent_kind = InferLifecycleSubjectKind(lifecycle, membership.container_uuid);
-    }
-    record.active = true;
-    record.security_epoch = state.security_epoch;
-    state.memberships.push_back(std::move(record));
-  }
-  for (const auto& grant : lifecycle.grants) {
-    if (grant.revoked || grant.privilege.empty()) continue;
-    engine_api::DurableAuthorizationGrantRecord record;
-    record.grant_uuid = grant.grant_uuid;
-    record.subject_uuid = grant.grantee_uuid;
-    record.subject_kind = NormalizeAuthorizationSubjectKind(grant.grantee_kind);
-    record.target_uuid = grant.target_object_uuid;
-    record.right = grant.privilege;
-    record.deny = LowerAscii(grant.grant_effect) == "deny";
-    record.active = true;
-    record.security_epoch = state.security_epoch;
-    state.grants.push_back(std::move(record));
-  }
-  for (const auto& policy : lifecycle.row_policies) {
-    if (policy.deleted || policy.lifecycle_state != "active") continue;
-    engine_api::DurableAuthorizationPolicyRecord record;
-    record.policy_uuid = policy.policy_uuid;
-    // A durable row policy is materialized for the authenticated principal
-    // whose effective policy set is being built.  The source catalog row,
-    // target and native expression identities remain byte-for-byte provider
-    // authority; no predicate envelope or display text is consulted.
-    record.subject_uuid = context.principal_uuid;
-    record.subject_kind = "principal";
-    record.target_uuid = policy.target_object_uuid;
-    record.right = "UPDATE";
-    record.policy_kind = "row_policy";
-    record.requires_runtime_recheck = true;
-    record.active = true;
-    record.source_policy_generation = policy.policy_generation;
-    record.policy_epoch = state.policy_epoch;
-    record.update_policy_phase = policy.update_policy_phase;
-    record.effective_policy_uuid =
-        policy.effective_policy_uuid;
-    record.effective_policy_generation =
-        policy.effective_policy_generation;
-    record.effective_expression_uuid =
-        policy.effective_expression_uuid;
-    record.effective_expression_generation =
-        policy.effective_expression_generation;
-    record.effective_expression_evidence_sha256 =
-        policy.effective_expression_evidence_sha256;
-    state.policies.push_back(std::move(record));
-  }
+  auto state = engine_api::ProjectDurableAuthorizationState(lifecycle, binding);
   const auto sysarch_identity =
       engine_api::ResolveEngineOwnedSysarchRoleIdentity(context);
   if (sysarch_identity.ok) {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "security/runtime_principal_observation.hpp"
+#include "security/durable_authorization_projection.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "memory.hpp"
 #include "../support/durable_authorization_fixture.hpp"
@@ -112,6 +113,80 @@ inline void ColdRead(const api::RuntimePrincipalObservationRequest& request,
         "fresh-process durable principal observation");
 }
 
+// Qualify the shared projection against actual MGA-published grants. These
+// checks do not authenticate a runtime or issue startup admission.
+inline void ProjectionChecks(const api::EngineRequestContext& admin,
+                             const api::RuntimePrincipalObservationRequest& request) {
+  const auto project = [&] {
+    api::EngineRequestContext source;
+    source.database_path = request.database_path;
+    source.database_uuid = request.database_uuid;
+    const auto loaded = api::LoadSecurityPrincipalLifecycleState(source);
+    Check(loaded.ok, "projection durable source");
+    const api::DurableAuthorizationProjectionBinding binding{
+        request.database_uuid, request.principal_uuid, loaded.state.security_generation,
+        loaded.state.policy_generation, admin.catalog_generation_id};
+    auto result = api::ProjectDurableAuthorizationState(loaded.state, binding);
+    Check(result.authority_uuid == request.database_uuid &&
+          result.security_context_generation == loaded.state.security_context_generation &&
+          result.security_epoch == binding.security_epoch && result.policy_epoch == binding.policy_epoch &&
+          result.catalog_generation_id == binding.catalog_generation_id &&
+          result.engine_owned_sysarch_role_uuid.is_nil(), "projection preserves source and explicit bindings");
+    const auto missing = api::ProjectDurableAuthorizationState(loaded.state, {});
+    Check(missing.authority_uuid.is_nil() && missing.security_epoch == 0 &&
+          missing.policy_epoch == 0 && missing.catalog_generation_id == 0,
+          "projection never invents authority or epochs");
+    api::DurableAuthorizationMaterializeRequest materialize;
+    materialize.principal_uuid = request.principal_uuid;
+    Check(!api::MaterializeDurableAuthorizationContext(missing, materialize).ok,
+          "owning materializer refuses unbound projection");
+    Check(api::MaterializeDurableAuthorizationContext(result, materialize).ok,
+          "owning materializer consumes real active principal projection");
+    return result;
+  };
+  const auto selected = [&](const api::DurableAuthorizationState& state) {
+    std::vector<api::DurableAuthorizationGrantRecord> grants;
+    for (const auto& grant : state.grants)
+      if (grant.subject_uuid == request.principal_uuid && grant.right == "OBS_AGENT_STATE_READ")
+        grants.push_back(grant);
+    return grants;
+  };
+  Check(selected(project()).empty(), "projection supplies no implicit service grant");
+  api::EngineSecurityGrantPrivilegeRequest grant;
+  grant.context = Begin(admin);
+  grant.grant_uuid = NewId(platform::UuidKind::object).value;
+  grant.grantee_uuid = request.principal_uuid; grant.grantee_kind = "service";
+  grant.target_object_uuid = request.database_uuid; grant.target_object_kind = "database";
+  grant.privilege = "OBS_AGENT_STATE_READ";
+  const auto granted = api::EngineSecurityGrantPrivilege(grant);
+  Check(granted.ok && granted.privilege_granted, "actual service inspection grant");
+  Check(selected(project()).empty(), "uncommitted grant excluded from projection");
+  Finish(grant.context, true);
+  auto grants = selected(project());
+  Check(grants.size() == 1 && grants[0].grant_uuid == grant.grant_uuid &&
+        grants[0].subject_kind == "principal" && grants[0].target_uuid == request.database_uuid &&
+        grants[0].active && !grants[0].deny, "committed binary grant projected exactly");
+  grant.context = Begin(admin); grant.grant_effect = "deny";
+  Check(api::EngineSecurityGrantPrivilege(grant).ok, "actual service denial staged");
+  grants = selected(project());
+  Check(grants.size() == 1 && !grants[0].deny, "uncommitted denial excluded");
+  Finish(grant.context, false);
+  grants = selected(project());
+  Check(grants.size() == 1 && !grants[0].deny, "rolled back denial excluded");
+  grant.context = Begin(admin);
+  Check(api::EngineSecurityGrantPrivilege(grant).ok, "actual service denial restaged");
+  Finish(grant.context, true);
+  grants = selected(project());
+  Check(grants.size() == 1 && grants[0].deny && grants[0].grant_uuid == grant.grant_uuid,
+        "committed denial projected");
+  api::EngineSecurityRevokePrivilegeRequest revoke;
+  revoke.context = Begin(admin); revoke.grantee_uuid = request.principal_uuid;
+  revoke.target_object_uuid = request.database_uuid; revoke.privilege = grant.privilege;
+  Check(api::EngineSecurityRevokePrivilege(revoke).ok, "actual grant revoke");
+  Finish(revoke.context, true);
+  Check(selected(project()).empty(), "committed revoke removes projected grant");
+}
+
 inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   const auto path = root / ("principal-" + std::to_string(page_size) + ".sbdb");
   db::DatabaseCreateConfig create;
@@ -164,6 +239,7 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
       "exact actual principal and generation facts");
   ColdRead(request, original);
   Check(bytes() == committed_bytes, "active warm and cold observation writes no bytes");
+  ProjectionChecks(admin, request);
   auto invalid = request;
   invalid.database_uuid = NewId(platform::UuidKind::database).value;
   auto refused = api::InspectRuntimePrincipal(invalid);
