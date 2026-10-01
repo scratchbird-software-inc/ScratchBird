@@ -57,6 +57,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --sequential-restart)
   set_tests_properties(server_agent_sequential_thread_restart_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;restart;linux_proof")
+  foreach(binary_profile leading embedded)
+    add_test(NAME server_agent_binary_status_${binary_profile}_gate
+      COMMAND server_agent_shutdown_wakeup_gate --binary-status-boundary ${binary_profile})
+    set_tests_properties(server_agent_binary_status_${binary_profile}_gate PROPERTIES
+      TIMEOUT 120 LABELS "agents;concurrency;shutdown;restart;binary_uuid;linux_proof")
+  endforeach()
   add_test(NAME server_agent_active_destruction_gate
     COMMAND server_agent_shutdown_wakeup_gate --active-destruction)
   set_tests_properties(server_agent_active_destruction_gate PROPERTIES

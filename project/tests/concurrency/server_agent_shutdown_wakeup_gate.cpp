@@ -748,7 +748,9 @@ int main(int argc, char** argv) {
   cleanup_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure";
   const bool startup_failure = cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
-  const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
+  const bool binary_boundary = argc == 3 && std::string_view(argv[1]) == "--binary-status-boundary";
+  const bool sequential_restart = binary_boundary ||
+      (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
   const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
   const bool setup_path_failure = setup_database_failure ||
@@ -779,11 +781,31 @@ int main(int argc, char** argv) {
   Require(clock.ok(), "node clock unavailable");
   const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
   Require(millis.ok(), "UUID clock conversion failed");
+  // SEARCH_KEY: SERVER_AGENT_BINARY_UUID_ZERO_BOUNDARIES
+  // Historical fixture creation times exercise zero bytes in UUIDv7's timestamp
+  // prefix. Identities are issued by the real engine generator; no identity is
+  // hand-edited and the runtime clock/deadlines remain the actual node clock.
+  auto creation_millis = millis.unix_epoch_millis;
+  if (binary_boundary) {
+    const std::string_view profile(argv[2]);
+    Require(profile == "leading" || profile == "embedded", "unknown binary boundary profile");
+    creation_millis = profile == "leading" ? 0x100ULL : 0x010000000001ULL;
+  }
   db::DatabaseCreateConfig create;
   create.path = (directory / "runtime.sbdb").string();
-  create.database_uuid = NewIdentity(platform::UuidKind::database, millis.unix_epoch_millis);
-  create.filespace_uuid = NewIdentity(platform::UuidKind::filespace, millis.unix_epoch_millis);
-  create.creation_unix_epoch_millis = millis.unix_epoch_millis;
+  create.database_uuid = NewIdentity(platform::UuidKind::database, creation_millis);
+  create.filespace_uuid = NewIdentity(platform::UuidKind::filespace, creation_millis);
+  create.creation_unix_epoch_millis = creation_millis;
+  if (binary_boundary) {
+    const bool leading = std::string_view(argv[2]) == "leading";
+    for (const auto& id : {create.database_uuid.value, create.filespace_uuid.value}) {
+      Require(uuid::IsEngineIdentityUuid(id) && id.bytes[1] == 0 &&
+                  id.bytes[0] == (leading ? 0 : 1) &&
+                  id.bytes[5] == (leading ? 0 : 1) && (id.bytes[8] & 0x80) != 0,
+              "engine-issued fixture did not exercise zero/high-bit byte boundary");
+    }
+    std::cout << "binary_uuid_boundary=" << argv[2] << '\n';
+  }
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   const auto created = db::CreateDatabaseFile(create);
