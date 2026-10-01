@@ -309,6 +309,46 @@ void RepresentationAndCodecs() {
   }
 }
 
+void BulkImportTextConverter() {
+  struct Accepted {
+    std::string_view text;
+    std::int64_t value;
+  };
+  constexpr std::array<Accepted, 9> accepted{{
+      {"-2147483648", -2147483648LL},
+      {"-65536", -65536},
+      {"-1", -1},
+      {"0", 0},
+      {"1", 1},
+      {"127", 127},
+      {"32768", 32768},
+      {"65536", 65536},
+      {"2147483647", 2147483647LL},
+  }};
+  for (const auto& vector : accepted) {
+    std::string actual;
+    std::string expected;
+    Check(dt::EncodeCanonicalInt32BulkImportTextV1(vector.text, &actual) &&
+              dt::EncodeCanonicalInt32Value(vector.value, &expected) &&
+              actual == expected,
+          "int32 bulk-import text converter emits canonical LE4");
+  }
+
+  constexpr std::array<std::string_view, 23> rejected{{
+      "", "+0", "+1", "-0", "00", "01", "-00", "-01", " 0",
+      "0 ", "\t0", "0\n", "1_000", "1,000", "1.0", "1e0", "--1",
+      "2147483648", "-2147483649", "4294967295", "abc", "0x1", "\xc2\xb9",
+  }};
+  for (const auto text : rejected) {
+    std::string output = "unchanged";
+    Check(!dt::EncodeCanonicalInt32BulkImportTextV1(text, &output) &&
+              output == "unchanged",
+          "int32 bulk-import text converter rejects noncanonical input atomically");
+  }
+  Check(!dt::EncodeCanonicalInt32BulkImportTextV1("0", nullptr),
+        "int32 bulk-import text converter rejects a null output");
+}
+
 void StructuredPropertyPartitions() {
   const auto verify = [](std::uint32_t raw, bool have_previous,
                          std::int64_t previous_value,
@@ -722,6 +762,7 @@ void Persistence() {
 int main() {
   ExactIdentity();
   RepresentationAndCodecs();
+  BulkImportTextConverter();
   StructuredPropertyPartitions();
   NullAndAbsentPolicies();
   Persistence();
