@@ -461,6 +461,32 @@ void NativeAndRegisteredFailure() {
   });
 }
 
+void DrainElapsedDuration() {
+  Run([](auto& owner, auto& domain) {
+    auto op = Acquire(owner, 31);
+    Check(owner.Close(Id(24)) && owner.FenceAdmission(), "duration drain close and fence");
+    const auto began = c::WaitClock::now();
+    const auto result = owner.Drain(began + 20ms);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        c::WaitClock::now() - began).count();
+    Check(result.failure == c::WaitFailure::fail_safe_release &&
+          result.required_action == "retain_storage_complete_drain",
+          "elapsed drain remains a failure not a completion receipt");
+    Check(owner.Snapshot().operation_ref_count == 1 && domain.Collect() == S::ok &&
+          domain.Snapshot().retired == 1, "elapsed drain preserves protected storage");
+    op.Reset();
+    const auto retry = owner.Drain(c::WaitClock::now() + 1s);
+    Check(retry.failure == c::WaitFailure::none && retry.wait_duration_us == 0,
+          "already quiescent drain does not invent blocking duration");
+    const auto diagnostic = result.Diagnostic();
+    Check(result.wait_duration_us >= 1000 &&
+          result.wait_duration_us <= static_cast<std::uint64_t>(elapsed),
+          "blocking drain reports measured nonzero elapsed duration");
+    Check(diagnostic && diagnostic->wait_duration_us == result.wait_duration_us,
+          "drain diagnostic retains actual elapsed duration after successful retry");
+  });
+}
+
 void NativeDrainFailure() {
 #if defined(SB_WAIT_NATIVE_FAULT_GATE)
   Run([](auto& owner, auto& domain) {
@@ -798,7 +824,7 @@ int main(int argc, char** argv) {
     }
     EntryAndValidation(); Precedence(); PublicationAndSpuriousWake();
     CancellationAndCloseDrain(); AdmissionLimitsAndConstructionFailure();
-    NativeAndRegisteredFailure(); NativeDrainFailure(); NativeConstructionFailure();
+    NativeAndRegisteredFailure(); NativeDrainFailure(); NativeConstructionFailure(); DrainElapsedDuration();
     ControlledCancellationAndUnregister(); DescriptorAndWaiterBounds();
     ActualDeadlineAndReplacement(); OwnershipProfiles(); DiagnosticRetention();
 #if defined(__unix__)
