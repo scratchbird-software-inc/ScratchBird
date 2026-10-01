@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <pthread.h>
 #include <semaphore.h>
@@ -586,6 +587,44 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
   return true;
 }
 
+// SEARCH_KEY: SERVER_AGENT_SETUP_PATH_FAILURE_RECOVERY
+bool CheckSetupPathFailure(server::ServerAgentRuntime& runtime,
+                           const server::ServerBootstrapConfig& config,
+                           const server::HostedEngineState& engine,
+                           std::vector<server::ServerDiagnostic>& diagnostics) {
+  // A real regular file prevents directory creation, before service setup or
+  // native runtime thread launch. No engine status or filesystem call is mocked.
+  {
+    std::ofstream obstruction(config.control_dir);
+    obstruction << "runtime setup obstruction\n";
+    obstruction.close();
+    Require(!obstruction.fail(), "could not create status-path obstruction");
+  }
+  startup_runtime = &runtime;
+  capture_state_unlock = true;
+  (void)runtime.Snapshot();
+  capture_state_unlock = false;
+  Require(runtime_state_mutex != nullptr, "could not observe setup state mutex");
+  startup_probe = true;
+  const bool started = runtime.Start(config, engine, &diagnostics);
+  startup_probe = false;
+  const auto failed = runtime.Snapshot();
+  bool path_diagnostic = false;
+  for (const auto& diagnostic : diagnostics) {
+    std::cout << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+    path_diagnostic = path_diagnostic ||
+        diagnostic.code == "SERVER.AGENT_RUNTIME.STATUS_PATH_FAILED";
+  }
+  const bool refused_cleanly = !started && path_diagnostic && !failed.started &&
+      !failed.stopping && failed.durable_lease_count == 0 &&
+      failed.scheduler_ticks == 0 && launch_attempts == 0 && launched_threads == 0;
+  std::error_code error;
+  const bool removed = std::filesystem::remove(config.control_dir, error);
+  Require(removed && !error, "could not remove status-path obstruction");
+  std::cout << "setup_refused_before_native_cohort=" << refused_cleanly << '\n';
+  return refused_cleanly && CheckSequentialRestart(runtime, config, engine, diagnostics);
+}
+
 // SEARCH_KEY: SERVER_AGENT_ACTIVE_DESTRUCTOR_JOINS
 bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
@@ -635,12 +674,15 @@ int main(int argc, char** argv) {
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
   const bool sequential_restart = argc == 2 && std::string_view(argv[1]) == "--sequential-restart";
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
+  const bool setup_path_failure = argc == 2 && std::string_view(argv[1]) == "--setup-path-failure";
+  const bool lifecycle_case = active_destruction || startup_failure ||
+      sequential_restart || setup_path_failure;
   if (startup_failure) {
     const std::string_view index(argv[2]);
     Require(index == "1" || index == "2" || index == "3", "invalid failed launch index");
     fail_launch = static_cast<unsigned>(index[0] - '0');
   }
-  Require(argc == 1 || concurrent_stop || startup_failure || sequential_restart || spurious_wake || scheduler_timeout_mode || active_destruction,
+  Require(argc == 1 || concurrent_stop || lifecycle_case || spurious_wake || scheduler_timeout_mode,
           "unknown shutdown test mode");
   const auto events = {&waiter_at_park, &allow_park, &stop_boundary, &stop_finished,
                        &final_join_reached, &allow_cleanup, &second_stop_boundary,
@@ -694,9 +736,12 @@ int main(int argc, char** argv) {
   bool startup_unwound = false;
   bool restarted = false;
   bool destruction_joined = false;
-  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode,
+  bool setup_recovered = false;
+  armed.store(!concurrent_stop && !startup_failure && !sequential_restart && !scheduler_timeout_mode && !setup_path_failure,
               std::memory_order_release);
-  if (active_destruction) {
+  if (setup_path_failure) {
+    setup_recovered = CheckSetupPathFailure(runtime, config, engine, diagnostics);
+  } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
     restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
@@ -709,9 +754,9 @@ int main(int argc, char** argv) {
     Fail("actual runtime Start failed");
   }
   const auto active = runtime.Snapshot();
-  Require(active_destruction || startup_failure || sequential_restart || (active.started && active.worker_thread_count == 2),
+  Require(lifecycle_case || (active.started && active.worker_thread_count == 2),
           "real runtime did not start both workers");
-  Require(active_destruction || startup_failure || sequential_restart || active.durable_lease_count >= 2,
+  Require(lifecycle_case || active.durable_lease_count >= 2,
           "real worker leases were not created");
   bool completion_serialized = false;
   bool spurious_rechecked = false;
@@ -722,7 +767,7 @@ int main(int argc, char** argv) {
     spurious_rechecked = CheckSpuriousWake(runtime);
   } else if (concurrent_stop) {
     completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
-  } else if (!startup_failure && !sequential_restart && !active_destruction) {
+  } else if (!lifecycle_case) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
     std::thread stopper([&] {
@@ -753,7 +798,10 @@ int main(int argc, char** argv) {
   for (auto* event : events) {
     Require(sem_destroy(event) == 0, "sem_destroy failed");
   }
-  if (active_destruction) {
+  if (setup_path_failure) {
+    Require(setup_recovered, "status-path setup failure did not permit clean recovery");
+    std::cout << "server_agent_setup_path_failure_gate=passed\n";
+  } else if (active_destruction) {
     Require(destruction_joined, "active destruction did not join its native cohort");
     std::cout << "server_agent_active_destruction_gate=passed\n";
   } else if (scheduler_timeout_mode) {

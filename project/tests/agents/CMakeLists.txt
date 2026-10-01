@@ -61,6 +61,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     COMMAND server_agent_shutdown_wakeup_gate --active-destruction)
   set_tests_properties(server_agent_active_destruction_gate PROPERTIES
     TIMEOUT 120 LABELS "agents;concurrency;shutdown;lifetime;linux_proof")
+  add_test(NAME server_agent_setup_path_failure_gate
+    COMMAND server_agent_shutdown_wakeup_gate --setup-path-failure)
+  set_tests_properties(server_agent_setup_path_failure_gate PROPERTIES
+    TIMEOUT 120 LABELS "agents;concurrency;startup;partial_failure;linux_proof")
   add_executable(server_agent_durable_stop_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_durable_stop_gate.cpp")
   target_compile_features(server_agent_durable_stop_gate PRIVATE cxx_std_23)
