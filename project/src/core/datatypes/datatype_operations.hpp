@@ -346,6 +346,12 @@ bool EncodeCanonicalInt32Value(std::int64_t value,
                                std::string* canonical_bytes);
 bool DecodeCanonicalInt32Value(std::string_view canonical_bytes,
                                std::int64_t* value);
+// Exact bulk-import converter 019d...b775 generation 1. This accepts only the
+// lane's canonical decimal grammar and is not a general parser, cast, or
+// display policy.
+bool EncodeCanonicalInt32BulkImportTextV1(
+    std::string_view decimal_text,
+    std::string* canonical_bytes);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile = false);

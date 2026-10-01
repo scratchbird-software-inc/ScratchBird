@@ -46,6 +46,15 @@ void Check(bool ok, const std::string& reason) {
   }
 }
 
+void CheckCastRefused(const dt::DatatypeCastResult& result,
+                      std::string_view diagnostic_code,
+                      const std::string& reason) {
+  Check(!result.ok() && result.diagnostic.diagnostic_code == diagnostic_code &&
+            result.value.type_id == dt::CanonicalTypeId::unknown &&
+            !result.value.is_null && result.value.encoded_value.empty(),
+        reason);
+}
+
 scratchbird::engine::ExecutionTypeDescriptor Int32Descriptor() {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -309,6 +318,46 @@ void RepresentationAndCodecs() {
   }
 }
 
+void BulkImportTextConverter() {
+  struct Accepted {
+    std::string_view text;
+    std::int64_t value;
+  };
+  constexpr std::array<Accepted, 9> accepted{{
+      {"-2147483648", -2147483648LL},
+      {"-65536", -65536},
+      {"-1", -1},
+      {"0", 0},
+      {"1", 1},
+      {"127", 127},
+      {"32768", 32768},
+      {"65536", 65536},
+      {"2147483647", 2147483647LL},
+  }};
+  for (const auto& vector : accepted) {
+    std::string actual;
+    std::string expected;
+    Check(dt::EncodeCanonicalInt32BulkImportTextV1(vector.text, &actual) &&
+              dt::EncodeCanonicalInt32Value(vector.value, &expected) &&
+              actual == expected,
+          "int32 bulk-import text converter emits canonical LE4");
+  }
+
+  constexpr std::array<std::string_view, 23> rejected{{
+      "", "+0", "+1", "-0", "00", "01", "-00", "-01", " 0",
+      "0 ", "\t0", "0\n", "1_000", "1,000", "1.0", "1e0", "--1",
+      "2147483648", "-2147483649", "4294967295", "abc", "0x1", "\xc2\xb9",
+  }};
+  for (const auto text : rejected) {
+    std::string output = "unchanged";
+    Check(!dt::EncodeCanonicalInt32BulkImportTextV1(text, &output) &&
+              output == "unchanged",
+          "int32 bulk-import text converter rejects noncanonical input atomically");
+  }
+  Check(!dt::EncodeCanonicalInt32BulkImportTextV1("0", nullptr),
+        "int32 bulk-import text converter rejects a null output");
+}
+
 void StructuredPropertyPartitions() {
   const auto verify = [](std::uint32_t raw, bool have_previous,
                          std::int64_t previous_value,
@@ -468,27 +517,45 @@ void NullAndAbsentPolicies() {
               result.value.is_null && result.value.encoded_value.empty(),
           "typed int32 NULL identity validates exact descriptor/state");
   }
-  dt::DatatypeCastRequest contextual;
-  contextual.value = {dt::CanonicalTypeId::null_type, {}, true};
-  contextual.target_type_id = dt::CanonicalTypeId::int32;
-  contextual.target_descriptor = descriptor;
-  const auto bound = dt::CastDatatypeValue(contextual);
-  Check(bound.ok() && bound.value.type_id == dt::CanonicalTypeId::int32 &&
-            bound.value.is_null && bound.value.encoded_value.empty(),
-        "contextual NULL binds to an exact nullable int32 descriptor");
-  contextual.target_descriptor.nullable_allowed = false;
-  Check(!dt::CastDatatypeValue(contextual).ok(),
-        "contextual NULL refuses a non-nullable int32 descriptor");
-  contextual.target_descriptor = descriptor;
-  ++contextual.target_descriptor.descriptor_epoch;
-  Check(!dt::CastDatatypeValue(contextual).ok(),
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeCastRequest contextual;
+    contextual.value = {dt::CanonicalTypeId::null_type, {}, true};
+    contextual.target_type_id = dt::CanonicalTypeId::int32;
+    contextual.target_descriptor = descriptor;
+    contextual.context = context;
+    contextual.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    const auto bound = dt::CastDatatypeValue(contextual);
+    Check(bound.ok() && bound.value.type_id == dt::CanonicalTypeId::int32 &&
+              bound.value.is_null && bound.value.encoded_value.empty(),
+          "contextual NULL binds to an exact nullable int32 descriptor");
+
+    contextual.target_descriptor.nullable_allowed = false;
+    CheckCastRefused(dt::CastDatatypeValue(contextual),
+                     "DATATYPE.NULL_NOT_ADMITTED",
+                     "contextual NULL refuses a non-nullable int32 descriptor");
+    contextual.target_descriptor = descriptor;
+    ++contextual.target_descriptor.descriptor_epoch;
+    CheckCastRefused(
+        dt::CastDatatypeValue(contextual), "DATATYPE.DESCRIPTOR.INVALID",
         "contextual NULL refuses a mismatched int32 descriptor generation");
 
-  dt::DatatypeCastRequest standalone_target;
-  standalone_target.value = Int32(0);
-  standalone_target.target_type_id = dt::CanonicalTypeId::null_type;
-  Check(!dt::CastDatatypeValue(standalone_target).ok(),
-        "int32 cannot cast to the standalone NULL sentinel");
+    dt::DatatypeCastRequest standalone_target;
+    standalone_target.value = Int32(0);
+    standalone_target.target_type_id = dt::CanonicalTypeId::null_type;
+    standalone_target.context = context;
+    standalone_target.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    CheckCastRefused(dt::CastDatatypeValue(standalone_target),
+                     "DATATYPE.CAST_FORBIDDEN",
+                     "present int32 cannot cast to the standalone NULL sentinel");
+    standalone_target.value = null_value;
+    CheckCastRefused(
+        dt::CastDatatypeValue(standalone_target), "DATATYPE.CAST_FORBIDDEN",
+        "typed int32 NULL cannot cast to the standalone NULL sentinel");
+  }
 
   for (const auto& candidate : dt::BuiltinDatatypeDescriptors()) {
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int32,
@@ -722,6 +789,7 @@ void Persistence() {
 int main() {
   ExactIdentity();
   RepresentationAndCodecs();
+  BulkImportTextConverter();
   StructuredPropertyPartitions();
   NullAndAbsentPolicies();
   Persistence();

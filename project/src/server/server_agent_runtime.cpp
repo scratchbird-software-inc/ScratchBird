@@ -309,7 +309,9 @@ ServerDiagnostic RuntimeDiagnostic(std::string code,
                                    std::vector<ServerDiagnosticField> fields = {},
                                    ServerDiagnosticSeverity severity =
                                        ServerDiagnosticSeverity::kError) {
-  return ServerDiagnostic{std::move(code),
+  // Retain the code-only message key before transferring the code's storage.
+  // Moving from code twice leaves the second identity unspecified/empty.
+  return ServerDiagnostic{code,
                           std::move(code),
                           severity,
                           std::move(message),
