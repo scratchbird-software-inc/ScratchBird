@@ -16,6 +16,7 @@
 #include "filespace_page_zero.hpp"
 
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -70,6 +71,17 @@ NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainFromOpe
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& head,
+    u64 maximum_retained_image_bytes) noexcept;
+
+// Explicit immutable historical verification, not current inventory selection or
+// transaction authority. The owner authenticates the root and exact contexts.
+// The ceiling includes input contexts and actual immutable-byte observations.
+NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainAtHistoricalRootFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const std::array<byte,32>& root_sha256,
+    const std::map<scratchbird::core::platform::Uuid,std::vector<byte>>& page_zero_images,
     u64 maximum_retained_image_bytes) noexcept;
 
 inline constexpr u32 kTransactionInventoryPageDigestBytes = 32;

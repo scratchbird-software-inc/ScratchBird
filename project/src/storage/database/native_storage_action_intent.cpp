@@ -12,7 +12,7 @@ namespace scratchbird::storage::database {
 namespace {
 using I=NativeStorageActionIntent;
 using E=NativeStorageIntentError;
-constexpr std::array<byte,8> magic{'S','B','S','I','N','T','0','3'};
+constexpr std::array<byte,8> magic{'S','B','S','I','N','T','0','4'};
 constexpr std::array<Uuid I::*,11> ids{{
   &I::request_uuid,&I::operation_uuid,&I::database_uuid,&I::filespace_uuid,
   &I::locator_uuid,&I::page_zero_uuid,&I::page_size_profile_uuid,&I::policy_snapshot_uuid,
@@ -75,6 +75,10 @@ NativeStorageIntentError ValidateNativeStorageActionIntent(const I& i) noexcept 
   }else if(!i.first_page||i.first_page>=i.current_total_pages||
       i.page_count>i.current_total_pages-i.first_page||i.intended_state!=NativeStorageIntentState::preallocated)
     return E::invalid_range;
+  if(i.intended_state==NativeStorageIntentState::preallocated){
+    if(!core::uuid::IsEngineIdentityUuid(i.allocation_owner_uuid))return E::invalid_identity;
+    if(!i.allocation_page_type||!disk::IsRegisteredNativePageType(i.allocation_page_type))return E::invalid_profile;
+  }else if(!i.allocation_owner_uuid.is_nil()||i.allocation_page_type)return E::invalid_profile;
   return E::none;
 }
 NativeStorageIntentImage EncodeNativeStorageActionIntent(const I& i,u64 budget) noexcept {
@@ -82,7 +86,7 @@ NativeStorageIntentImage EncodeNativeStorageActionIntent(const I& i,u64 budget) 
     if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
     const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return Fail(error);
     std::vector<byte> b(kNativeStorageActionIntentBytes,0);std::copy(magic.begin(),magic.end(),b.begin());
-    Put(b.data()+8,3,2);Put(b.data()+10,static_cast<u16>(i.action),2);Put(b.data()+12,b.size(),4);
+    Put(b.data()+8,4,2);Put(b.data()+10,static_cast<u16>(i.action),2);Put(b.data()+12,b.size(),4);
     for(std::size_t n=0;n<ids.size();++n)PutId(b.data()+16+16*n,i.*ids[n]);
     PutRoot(b.data()+192,i.checkpoint);PutRoot(b.data()+272,i.allocation_root);
     std::copy(i.checkpoint_sha256.begin(),i.checkpoint_sha256.end(),b.begin()+352);
@@ -92,6 +96,7 @@ NativeStorageIntentImage EncodeNativeStorageActionIntent(const I& i,u64 budget) 
     Put(b.data()+552,i.configuration_generation,8);
     for(std::size_t n=0;n<selected_ids.size();++n)PutId(b.data()+560+16*n,i.*selected_ids[n]);
     Put(b.data()+640,i.attachment_generation,8);Put(b.data()+648,i.storage_profile_generation,8);
+    PutId(b.data()+656,i.allocation_owner_uuid);Put(b.data()+672,i.allocation_page_type,4);
     const auto hash=core::hash::ComputeSha256Digest(b.data(),736);
     if(!hash.ok())return Fail(E::hash_failure);
     std::copy(hash.digest.begin(),hash.digest.end(),b.begin()+736);
@@ -103,7 +108,7 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
   try {
     if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
     if(b.size()!=kNativeStorageActionIntentBytes||!std::equal(magic.begin(),magic.end(),b.begin())||
-        Get(b.data()+8,2)!=3||Get(b.data()+12,4)!=b.size()||!Zero(b.data()+550,2)||!Zero(b.data()+656,80)||
+        Get(b.data()+8,2)!=4||Get(b.data()+12,4)!=b.size()||!Zero(b.data()+550,2)||!Zero(b.data()+676,60)||
         !Zero(b.data()+194,2)||!Zero(b.data()+264,8)||!Zero(b.data()+274,2)||!Zero(b.data()+344,8))
       return Fail(E::invalid_header);
     I i;i.action=static_cast<NativeStorageAction>(Get(b.data()+10,2));
@@ -115,6 +120,7 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
     i.configuration_generation=Get(b.data()+552,8);
     for(std::size_t n=0;n<selected_ids.size();++n)i.*selected_ids[n]=GetId(b.data()+560+16*n);
     i.attachment_generation=Get(b.data()+640,8);i.storage_profile_generation=Get(b.data()+648,8);
+    i.allocation_owner_uuid=GetId(b.data()+656);i.allocation_page_type=static_cast<u32>(Get(b.data()+672,4));
     const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return Fail(error);
     const auto hash=core::hash::ComputeSha256Digest(b.data(),736);
     if(!hash.ok())return Fail(E::hash_failure);

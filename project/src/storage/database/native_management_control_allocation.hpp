@@ -9,7 +9,9 @@ enum class NativeManagementControlAllocationError {
   invalid_allocation, binding_mismatch, invalid_delta, resource_exhausted,
   hash_failure, cluster_requires_authority, encrypted_requires_authority
 };
-// Complete immutable metadata/inventory allocation delta. The base must separately
+// Complete immutable primary-only metadata/inventory allocation delta. Directory
+// publications require their complete base-directory delta, not this entry point.
+// The base must separately
 // come from the owning device lease. No I/O, selection, authentication or grant.
 NativeManagementControlAllocationError ValidateNativeManagementControlAllocation(
   const std::vector<byte>& base_checkpoint, const std::vector<byte>& target_checkpoint,
@@ -17,5 +19,21 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
   const std::vector<std::vector<byte>>& base_allocation,
   const std::vector<std::vector<byte>>& target_allocation, u64 maximum_input_image_bytes,
   const std::vector<std::vector<byte>>& control_bundle = {},
+  const std::vector<std::vector<byte>>& base_inventory = {}) noexcept;
+struct NativeManagementDirectoryBase {
+  std::vector<std::vector<byte>> directory_images;
+  // Exact original images for every filespace represented in base_allocation.
+  // Immutable verification inputs, not caller assertions of live authority.
+  std::vector<std::vector<byte>> page_zero_images;
+};
+// Complete directory-bearing inventory/preallocation/growth image transition.
+// Requires actual base acquisition and separate physical/admission protocols.
+NativeManagementControlAllocationError ValidateNativeManagementDirectoryControlAllocation(
+  const std::vector<byte>& base_checkpoint, const std::vector<byte>& target_checkpoint,
+  const std::vector<byte>& plan, const std::vector<std::vector<byte>>& extent,
+  const std::vector<std::vector<byte>>& base_allocation,
+  const std::vector<std::vector<byte>>& target_allocation,
+  const NativeManagementDirectoryBase&, u64 maximum_input_image_bytes,
+  const std::vector<std::vector<byte>>& control_bundle,
   const std::vector<std::vector<byte>>& base_inventory = {}) noexcept;
 } // namespace scratchbird::storage::database

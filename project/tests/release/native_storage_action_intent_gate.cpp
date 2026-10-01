@@ -112,12 +112,13 @@ I Example(unsigned profile,unsigned action){
   i.page_size_bytes=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
   i.maximum_work_bytes=8*i.page_size_bytes;i.maximum_retained_image_bytes=768;
   i.intended_state=action==1?db::NativeStorageIntentState::free:db::NativeStorageIntentState::preallocated;
+  if(action==2){i.allocation_owner_uuid=Id(57);i.allocation_page_type=1;}
   return i;
 }
 // Literal format offsets and field list, independent of production serializer.
 Bytes Oracle(const I& i){
-  Bytes b(768,0);const std::string magic="SBSINT03";std::copy(magic.begin(),magic.end(),b.begin());
-  Number(b,8,2,3);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,768);
+  Bytes b(768,0);const std::string magic="SBSINT04";std::copy(magic.begin(),magic.end(),b.begin());
+  Number(b,8,2,4);Number(b,10,2,static_cast<u16>(i.action));Number(b,12,4,768);
   std::size_t at=16;
   for(const auto id:{i.request_uuid,i.operation_uuid,i.database_uuid,i.filespace_uuid,i.locator_uuid,
       i.page_zero_uuid,i.page_size_profile_uuid,i.policy_snapshot_uuid,i.storage_profile_uuid,i.initiator_uuid,i.request_context_uuid}){
@@ -141,7 +142,8 @@ Bytes Oracle(const I& i){
   Number(b,552,8,i.configuration_generation);at=560;
   for(const auto id:{i.policy_uuid,i.policy_version_uuid,i.attachment_uuid,i.attachment_version_uuid,i.storage_profile_version_uuid}){
     Identity(b,at,id);at+=16;}
-  Number(b,640,8,i.attachment_generation);Number(b,648,8,i.storage_profile_generation);Seal(b);return b;
+  Number(b,640,8,i.attachment_generation);Number(b,648,8,i.storage_profile_generation);
+  Identity(b,656,i.allocation_owner_uuid);Number(b,672,4,i.allocation_page_type);Seal(b);return b;
 }
 void Empty(const db::NativeStorageIntentImage& r,E expected){
   Check(r.error==expected&&!r.ok()&&!r.intent&&r.bytes.empty(),"exact failure and no partial intent/image");
@@ -165,7 +167,7 @@ void Malformed(const I& i){
   auto b=raw;b.push_back(0);Empty(db::DecodeNativeStorageActionIntent(b,769),E::invalid_header);
   for(std::size_t n=0;n<16;++n){b=raw;b[n]^=0xff;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);}
   for(std::size_t n=0;n<768;++n){
-    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<552)||(n>=656&&n<736);
+    const bool reserved=(n>=194&&n<196)||(n>=264&&n<272)||(n>=274&&n<276)||(n>=344&&n<352)||(n>=550&&n<552)||(n>=676&&n<736);
     if(reserved){b=raw;b[n]=1;Seal(b);Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);}
   }
   for(std::size_t n=16;n<192;n+=16)for(unsigned fault=0;fault<3;++fault){
@@ -187,6 +189,8 @@ void Malformed(const I& i){
   b=raw;b[7]='2';Number(b,8,2,2);Seal(b);
   Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
   b.resize(640);Number(b,12,4,640);
+  Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
+  b=raw;b[7]='3';Number(b,8,2,3);std::fill(b.begin()+656,b.begin()+676,0);Seal(b);
   Empty(db::DecodeNativeStorageActionIntent(b,768),E::invalid_header);
   for(const u64 budget:{0u,1u,639u}){
     Empty(db::EncodeNativeStorageActionIntent(i,budget),E::resource_exhausted);
@@ -236,11 +240,23 @@ void Bounds(I i){
     x=i;x.maximum_total_pages=i.current_total_pages+i.page_count;Good(x);
     --x.maximum_total_pages;invalid(x,E::invalid_range);
     x=i;x.first_page--;invalid(x,E::invalid_range);
-    x=i;x.intended_state=db::NativeStorageIntentState::preallocated;Good(x);
+    x=i;x.intended_state=db::NativeStorageIntentState::preallocated;
+    x.allocation_owner_uuid=Id(57);x.allocation_page_type=1;Good(x);
   }else{
     x=i;x.first_page=i.current_total_pages-i.page_count;Good(x);
     ++x.first_page;invalid(x,E::invalid_range);x=i;x.first_page=0;invalid(x,E::invalid_range);
     x=i;x.intended_state=db::NativeStorageIntentState::free;invalid(x,E::invalid_range);
+  }
+  if(i.intended_state==db::NativeStorageIntentState::preallocated){
+    x=i;x.allocation_owner_uuid={};invalid(x,E::invalid_identity);
+    x=i;x.allocation_owner_uuid.bytes[6]=0x40;invalid(x,E::invalid_identity);
+    x=i;x.allocation_owner_uuid.bytes[8]=0;invalid(x,E::invalid_identity);
+    x=i;x.allocation_page_type=0;invalid(x,E::invalid_profile);
+    x=i;x.allocation_page_type=std::numeric_limits<u32>::max();invalid(x,E::invalid_profile);
+    x=i;x.allocation_owner_uuid=Id(58);Good(x);
+  }else{
+    x=i;x.allocation_owner_uuid=Id(57);invalid(x,E::invalid_profile);
+    x=i;x.allocation_page_type=1;invalid(x,E::invalid_profile);
   }
 }
 void Binding(const I& i){

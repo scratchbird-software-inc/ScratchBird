@@ -17,6 +17,10 @@ struct NativeStorageActionIntent {
   Uuid storage_profile_uuid, initiator_uuid, request_context_uuid;
   Uuid policy_uuid, policy_version_uuid, attachment_uuid, attachment_version_uuid;
   Uuid storage_profile_version_uuid;
+  // Required only for preallocated pages, including growth into that state.
+  // The owner/type are immutable request material, not an execution-time default.
+  Uuid allocation_owner_uuid;
+  u32 allocation_page_type=0;
   u64 attachment_generation=0, storage_profile_generation=0;
   disk::FilespaceRootReference checkpoint, allocation_root;
   std::array<byte,32> checkpoint_sha256{}, allocation_sha256{};

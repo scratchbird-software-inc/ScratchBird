@@ -25,6 +25,7 @@ struct NativePublicationPlan {
   std::optional<u64> base_selection_generation;
   // Profile1 selects version5 (metadata only); profile2 selects version6
   // with the complete inventory-bearing bundle. Both require the sequence.
+  // Profile3 selects version7 with exact primary preallocation/control delta.
 };
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,

@@ -292,7 +292,123 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
   LABELS "public_release_correctness;public_disk_file_device_gate;PCR-GATE-020;PCR-GATE-021;PCR-020;PCR-021;storage;disk;durable_sync;atomic_create"
 )
 
+foreach(history_target sbsql_sblr_alignment_native_allocation_map sbsql_sblr_alignment_native_filespace_directory)
+  if(TARGET ${history_target} AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(${history_target} PRIVATE NATIVE_HISTORICAL_IO_FAULTS=1)
+    target_link_options(${history_target} PRIVATE -Wl,--wrap=fstat -Wl,--wrap=pwrite -Wl,--wrap=fsync)
+  endif()
+endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(native_page_zero_growth_body_gate native_page_zero_growth_body_gate.cpp)
+  target_compile_features(native_page_zero_growth_body_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_page_zero_growth_body_gate PRIVATE sb_storage_disk)
+  target_link_options(native_page_zero_growth_body_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_Digest)
+  add_test(NAME native_page_zero_growth_body_gate COMMAND native_page_zero_growth_body_gate)
+  set_tests_properties(native_page_zero_growth_body_gate PROPERTIES TIMEOUT 120
+    LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
+endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  foreach(profile RANGE 0 4)
+    add_test(NAME native_directory_control_close_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-control-close ${profile})
+    set_tests_properties(native_directory_control_close_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;real_files;actual_control_ancestry;retained_device_concurrency;not_runtime_acceptance")
+  endforeach()
+  foreach(profile RANGE 2 4)
+    foreach(route RANGE 0 2)
+      if(route EQUAL 2)
+        set(control_fault_last 7)
+      elseif(route EQUAL 1)
+        set(control_fault_last 4)
+      else()
+        set(control_fault_last 0)
+      endif()
+      foreach(shard RANGE 0 ${control_fault_last})
+        add_test(NAME native_directory_control_faults_${profile}_${route}_${shard}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-control-faults ${profile} ${route} ${shard})
+        set_tests_properties(native_directory_control_faults_${profile}_${route}_${shard}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;actual_control_ancestry;fault_injection;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+    if(profile GREATER 2)
+      add_test(NAME native_directory_history_repeat_${profile}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat ${profile})
+      set_tests_properties(native_directory_history_repeat_${profile}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
+    endif()
+    add_test(NAME native_directory_history_faults_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-faults ${profile})
+    set_tests_properties(native_directory_history_faults_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;real_files;historical_provenance;fault_injection;not_runtime_acceptance")
+    foreach(primary RANGE 0 4)
+      add_test(NAME native_directory_history_${profile}_${primary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history ${profile} ${primary})
+      set_tests_properties(native_directory_history_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
+    endforeach()
+    add_test(NAME native_directory_allocation_delta_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta ${profile})
+    set_tests_properties(native_directory_allocation_delta_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    add_test(NAME native_directory_allocation_delta_faults_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-faults ${profile})
+    set_tests_properties(native_directory_allocation_delta_faults_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;immutable_transition;fault_injection;not_runtime_acceptance")
+  endforeach()
+  add_test(NAME native_preallocation_repeat_gate
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-repeat)
+  set_tests_properties(native_preallocation_repeat_gate PROPERTIES TIMEOUT 120
+    LABELS "storage;binary_uuid;real_files;native_publication;not_runtime_acceptance")
+  add_test(NAME native_preallocation_publication_gate
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation)
+  set_tests_properties(native_preallocation_publication_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;binary_uuid;real_files;native_publication;not_runtime_acceptance")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE -Wl,--wrap=posix_fallocate)
+    target_compile_definitions(sbsql_sblr_alignment_native_management_control_bundle PRIVATE NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS=1)
+    target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE -Wl,--wrap=fstat)
+    foreach(stage RANGE 0 2)
+      foreach(route RANGE 0 2)
+        if(route EQUAL 0)
+          set(reconcile_last_shard 0)
+        elseif(route EQUAL 1)
+          set(reconcile_last_shard 4)
+        else()
+          set(reconcile_last_shard 7)
+        endif()
+        foreach(shard RANGE 0 ${reconcile_last_shard})
+          add_test(NAME native_preallocation_reconcile_${stage}_${route}_${shard}
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-reconcile-faults ${stage} ${route} ${shard})
+          set_tests_properties(native_preallocation_reconcile_${stage}_${route}_${shard} PROPERTIES TIMEOUT 180
+            LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+    endforeach()
+    add_test(NAME native_preallocation_publication_fault_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-faults)
+    set_tests_properties(native_preallocation_publication_fault_gate PROPERTIES
+      TIMEOUT 120 LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+    foreach(profile RANGE 0 4)
+      add_test(NAME native_preallocation_crash_${profile}
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-crashes ${profile})
+      set_tests_properties(native_preallocation_crash_${profile} PROPERTIES TIMEOUT 180
+        LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+    endforeach()
+    foreach(route RANGE 0 2)
+      if(route EQUAL 2)
+        set(preallocation_last_shard 7)
+      else()
+        set(preallocation_last_shard 0)
+      endif()
+      foreach(shard RANGE 0 ${preallocation_last_shard})
+        add_test(NAME native_preallocation_sweep_${route}_${shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-sweep ${route} ${shard})
+        set_tests_properties(native_preallocation_sweep_${route}_${shard} PROPERTIES
+          TIMEOUT 180 LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endif()
   add_test(NAME native_publication_effect_receipt_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --publication-effects)
   set_tests_properties(native_publication_effect_receipt_gate PROPERTIES

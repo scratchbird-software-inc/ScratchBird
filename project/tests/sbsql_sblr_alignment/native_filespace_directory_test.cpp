@@ -6,19 +6,28 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <new>
+#include <mutex>
 #include <source_location>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <unistd.h>
 namespace {
 long allocation_budget=-1;
 bool count_allocations=false;
 unsigned long allocations=0;
 unsigned reads=0,fail_read=0,hash_calls=0,fail_hash=0;
+unsigned resize_at_read=0;off_t resize_to=0;bool resized=false;
+unsigned stats=0,fail_stat=0;unsigned long writes=0,syncs=0;
+std::mutex pause_mutex;std::condition_variable pause_cv;
+bool pause_next=false,entered=false,released=false;
 }
 void* operator new(std::size_t n){if(count_allocations)++allocations;
   if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
@@ -27,9 +36,20 @@ void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
-extern "C" ssize_t __wrap_pread(int fd,void* p,size_t n,off_t o){++reads;if(fail_read==reads){errno=EIO;return -1;}return __real_pread(fd,p,n,o);}
+extern "C" ssize_t __wrap_pread(int fd,void* p,size_t n,off_t o){++reads;if(fail_read==reads){errno=EIO;return -1;}
+  if(resize_at_read==reads)resized=::ftruncate(fd,resize_to)==0;
+  {std::unique_lock lock(pause_mutex);if(pause_next){pause_next=false;entered=true;pause_cv.notify_all();pause_cv.wait(lock,[]{return released;});}}
+  return __real_pread(fd,p,n,o);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){++hash_calls;if(fail_hash==hash_calls)return nullptr;return __real_EVP_MD_CTX_new();}
+#ifdef NATIVE_HISTORICAL_IO_FAULTS
+extern "C" int __real_fstat(int,struct stat*);
+extern "C" int __wrap_fstat(int fd,struct stat* out){++stats;if(fail_stat==stats){errno=EIO;return -1;}return __real_fstat(fd,out);}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t at){++writes;return __real_pwrite(fd,data,n,at);}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd){++syncs;return __real_fsync(fd);}
+#endif
 namespace {
 namespace p=scratchbird::storage::page;namespace d=scratchbird::storage::disk;
 using namespace scratchbird::core::platform;
@@ -103,11 +123,95 @@ void Codecs(){for(unsigned profile=0;profile<5;++profile){auto v=Example(profile
 }
 struct Fixture{std::filesystem::path root;Fixture(){char pattern[]="/tmp/sb-directory-test-XXXXXX";const auto p=mkdtemp(pattern);Check(p,"owned temporary fixture");root=p;}
   ~Fixture(){std::error_code e;std::filesystem::remove_all(root,e);}};
-void Chains(){for(unsigned profile=0;profile<5;++profile){Fixture fixture;d::FileDevice first,second;auto z1=Zero(profile,2),z2=Zero((profile+1)%5,3);
+void Historical(d::FileDevice& first,d::FileDevice& second,const d::FilespacePageZero& z1,
+                const d::FilespacePageZero& z2,const Bytes& head,const Bytes& tail) {
+  const auto zero1=d::EncodeFilespacePageZero(z1),zero2=d::EncodeFilespacePageZero(z2);
+  Check(zero1.ok()&&zero2.ok(),"historical complete page-zero images");
+  const std::vector<d::NativeFilespaceDevice> devices{{Id(3),z2.bootstrap.page_size_profile_uuid,&second},{Id(2),z1.bootstrap.page_size_profile_uuid,&first}};
+  const std::vector<p::NativeHistoricalFilespaceImage> history{{Id(2),*zero1.bytes},{Id(3),*zero2.bytes}};
+  const d::FilespaceRootReference ref{5,9,Id(2),15,105,z1.bootstrap.page_size_profile_uuid,Id(65)};
+  const auto digest=Hash(head);const u64 limit=2*(head.size()+tail.size())+8192;
+  const auto read=[&](u64 budget){return p::ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(Id(1),devices,ref,digest,history,budget);};
+  const auto verify=[&](const p::NativeFilespaceDirectoryChainResult& r){
+    Check(r.ok()&&r.pages.size()==2&&r.retained_image_bytes==limit&&r.pages[0].bytes==head&&r.pages[1].bytes==tail,
+          "historical whole directory image oracle and bounded accounting");};
+  const auto file_hash=[&](d::FileDevice& device){const auto size=device.Size();Check(size.ok(),"fixture size");Bytes b(size.size_bytes);
+    const auto io=device.ReadAt(0,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"whole fixture read");return Hash(b);};
+  const auto original1=file_hash(first),original2=file_hash(second);
+  const auto initial_writes=writes,initial_syncs=syncs;
+  reads=hash_calls=stats=0;allocations=0;count_allocations=true;auto good=read(limit);count_allocations=false;
+  const auto nr=reads,nh=hash_calls,ns=stats;const auto na=allocations;verify(good);
+#ifdef NATIVE_HISTORICAL_IO_FAULTS
+  Check(ns==4,"both initial and final actual member sizes measured");
+#endif
+  for(const u64 budget:{u64{0},u64{head.size()},limit-1}){const auto r=read(budget);Empty(r);Check(r.error==E::resource_exhausted,"historical image budget refusal");}
+  for(unsigned at=1;at<=nr;++at){reads=0;fail_read=at;const auto r=read(limit);fail_read=0;Empty(r);Check(r.error==E::io_failure,"historical I/O failure category");}
+  for(unsigned at=1;at<=nh;++at){hash_calls=0;fail_hash=at;const auto r=read(limit);fail_hash=0;Empty(r);Check(r.error==E::hash_failure,"historical digest failure category");}
+  for(unsigned at=1;at<=ns;++at){stats=0;fail_stat=at;const auto r=read(limit);fail_stat=0;Empty(r);Check(r.error==E::io_failure,"historical size failure category");}
+  for(unsigned long at=0;at<na;++at){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();
+    allocation_budget=at;const auto r=read(limit);allocation_budget=-1;
+    if(r.ok()){Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()>lost,"only measured optional telemetry allocation may fail");verify(r);}
+    else{Empty(r);Check(r.error==E::resource_exhausted,"historical allocation failure category");}}
+  for(unsigned mutation=0;mutation<12;++mutation){auto retained=history;auto sha=digest;auto root=ref;auto files=devices;
+    if(mutation==0)sha[0]^=1;if(mutation==1)sha={};if(mutation==2)retained.pop_back();
+    if(mutation==3)retained.push_back(retained.front());if(mutation==4)retained[1]=retained[0];
+    if(mutation==5)retained[1].filespace_uuid=Id(4);if(mutation==6)retained[0].page_zero[5000]^=1;
+    if(mutation==7)root.page_generation++;if(mutation==8)files[0].device=files[1].device;
+    if(mutation>=9){auto changed=z2;if(mutation==9)changed.page_generation++;
+      if(mutation==10)changed.total_pages--;if(mutation==11)changed.bootstrap.database_uuid=Id(99);
+      const auto b=d::EncodeFilespacePageZero(changed);Check(b.ok(),"valid historical binding negative");retained[1].page_zero=*b.bytes;}
+    const auto r=p::ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(Id(1),files,root,sha,retained,limit);Empty(r);
+    if(mutation==0)Check(r.error==E::invalid_integrity,"external directory root digest cannot be substituted");
+  }
+  Check(file_hash(first)==original1&&file_hash(second)==original2&&writes==initial_writes&&syncs==initial_syncs,
+        "historical success and fault paths preserve all bytes without writes or syncs");
+  auto reversed=history;std::reverse(reversed.begin(),reversed.end());
+  verify(p::ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(Id(1),devices,ref,digest,reversed,limit));
+  const u64 length1=z1.total_pages*head.size(),length2=z2.total_pages*tail.size();
+  for(unsigned member=0;member<2;++member){auto& device=member?second:first;const auto length=member?length2:length1;const auto size=member?tail.size():head.size();
+    for(u64 extra:{u64{1},u64{size}}){std::filesystem::resize_file(device.path(),length+extra);verify(read(limit));
+      Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),devices,ref,head.size()+tail.size()));}
+    auto latest=member?z2:z1;latest.total_pages++;latest.page_generation++;latest.root_set_generation++;
+    const auto encoded=d::EncodeFilespacePageZero(latest);Check(encoded.ok(),"newer current member metadata");
+    Check(device.WriteAt(0,encoded.bytes->data(),encoded.bytes->size()).ok()&&device.Sync().ok(),"persist newer metadata");
+    Check(d::ReadFilespacePageZeroFromOpenDevice(device).ok(),"newer current member independently valid");verify(read(limit));
+    Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),devices,ref,head.size()+tail.size()));
+    latest.bootstrap.database_uuid=Id(99);const auto misbound=d::EncodeFilespacePageZero(latest);
+    Check(misbound.ok()&&device.WriteAt(0,misbound.bytes->data(),misbound.bytes->size()).ok(),"actual misbound bootstrap fixture");
+    const auto wrong_actual=read(limit);Empty(wrong_actual);Check(wrong_actual.error==E::invalid_filespace,"actual member identity checked independently of retained image");
+    const auto& original=member?*zero2.bytes:*zero1.bytes;Check(device.WriteAt(0,original.data(),original.size()).ok(),"restore original metadata");
+    std::filesystem::resize_file(device.path(),length-1);const auto short_file=read(limit);Empty(short_file);
+    Check(short_file.error==E::invalid_filespace,"short historical member refused even when directory pages remain readable");
+    std::filesystem::resize_file(device.path(),length);
+    reads=0;resized=false;resize_at_read=member?4:3;resize_to=length+1;
+    const auto raced=read(limit);resize_at_read=0;Empty(raced);
+    Check(resized&&raced.error==E::physical_extent_changed,"historical directory notices either member length changing");
+    std::filesystem::resize_file(device.path(),length);
+  }
+  Check(file_hash(first)==original1&&file_hash(second)==original2,"exact restored historical files");
+  const auto path1=first.path(),path2=second.path();
+  Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing_read_only).ok()&&
+        second.Open(path2,d::FileOpenMode::open_existing_read_only).ok(),"historical readonly reopen");
+  verify(read(limit));Check(first.read_only()&&second.read_only(),"historical reads preserve readonly handles");
+  {std::lock_guard lock(pause_mutex);pause_next=true;entered=false;released=false;}
+  auto reading=std::async(std::launch::async,[&]{return read(limit);});
+  struct ReleasePause {~ReleasePause(){std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();}} release_pause;
+  {std::unique_lock lock(pause_mutex);Check(pause_cv.wait_for(lock,std::chrono::seconds(5),[]{return entered;}),"historical directory reached actual read");}
+  std::promise<void> close_started;auto started=close_started.get_future();
+  auto closing=std::async(std::launch::async,[&]{close_started.set_value();return second.Close();});
+  started.wait();const bool held=closing.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
+  {std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();}
+  const auto completed=reading.get();const auto closed=closing.get();
+  Check(held&&closed.ok(),"other member close waits while first member is being verified");verify(completed);
+  Check(first.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing).ok()&&
+        second.Open(path2,d::FileOpenMode::open_existing).ok(),"restore fixture ownership");
+  std::cout<<"historical directory profiles="<<head.size()<<'/'<<tail.size()<<" reads="<<nr<<" hashes="<<nh<<" stats="<<ns<<" allocations="<<na<<'\n';
+}
+void Chains(){for(unsigned profile=0;profile<5;++profile)for(unsigned secondary=0;secondary<5;++secondary){Fixture fixture;d::FileDevice first,second;auto z1=Zero(profile,2),z2=Zero(secondary,3);
     const auto path1=(fixture.root/"first").string(),path2=(fixture.root/"second").string();Check(first.Open(path1,d::FileOpenMode::create_new).ok()&&second.Open(path2,d::FileOpenMode::create_new).ok(),"owned mixed-profile filespaces");
     const auto prepare=[&](auto& device,const auto& z){const auto b=d::EncodeFilespacePageZero(z);Check(b.ok(),"page-zero fixture encoding");const byte pad=0;
       Check(device.WriteAt(z.total_pages*z.bootstrap.page_size_bytes-1,&pad,1).ok()&&device.WriteAt(0,b.bytes->data(),b.bytes->size()).ok()&&device.Sync().ok(),"actual filespace header and capacity");};prepare(first,z1);prepare(second,z2);
-    auto head=Example(profile),tail=Example((profile+1)%5);tail.header.filespace_uuid=Id(3);tail.header.page_uuid=Id(21);
+    auto head=Example(profile),tail=Example(secondary);tail.header.filespace_uuid=Id(3);tail.header.page_uuid=Id(21);
     tail.records={{z2.bootstrap,Id(91),z2.page_uuid,z2.page_generation,z2.root_set_generation,z2.total_pages,4,{}}};tail.total_records=2;tail.first_record=1;
     head.total_records=2;head.next=d::NativePageReference{Id(3),15,105,z2.bootstrap.page_size_profile_uuid};head.next_sha256=Hash(Oracle(tail));
     const auto put=[&](auto& device,const auto& image){const auto b=Oracle(image);const auto io=device.WriteAt(image.header.page_number*image.header.page_size_bytes,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&device.Sync().ok(),"actual directory page persistence");};
@@ -149,7 +253,8 @@ void Chains(){for(unsigned profile=0;profile<5;++profile){Fixture fixture;d::Fil
     }
     auto missing=devices;missing.erase(missing.begin());Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),missing,ref,limit));
     auto duplicate=devices;duplicate.push_back(devices.front());Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),duplicate,ref,limit));
-    persist(head,tail);Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,d::FileOpenMode::open_existing_read_only).ok(),"reopen owned read-only filespaces");
+    persist(head,tail);Historical(first,second,z1,z2,Oracle(head),Oracle(tail));
+    Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,d::FileOpenMode::open_existing_read_only).ok(),"reopen owned read-only filespaces");
     Check(read(limit).ok()&&first.read_only()&&second.read_only(),"directory read-only reopen");
   }}
 }

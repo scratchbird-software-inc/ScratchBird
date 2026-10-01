@@ -45,7 +45,7 @@ struct NativeFilespaceDirectory {
 enum class NativeDirectoryError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, chain_mismatch, io_failure
+  binding_mismatch, chain_mismatch, io_failure, physical_extent_changed
 };
 struct NativeFilespaceDirectoryResult {
   NativeDirectoryError error = NativeDirectoryError::invalid_family;
@@ -66,4 +66,16 @@ struct NativeFilespaceDirectoryChainResult {
 NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
     const Uuid& database_uuid, const std::vector<disk::NativeFilespaceDevice>&,
     const disk::FilespaceRootReference& head, u64 maximum_retained_image_bytes) noexcept;
+struct NativeHistoricalFilespaceImage {
+  Uuid filespace_uuid;
+  std::vector<byte> page_zero;
+};
+// Verification inputs only. The owning publication reader must authenticate
+// the retained images/root digest; this is not a current directory or capacity
+// grant. The ceiling includes supplied page-zero images and bootstrap probes.
+NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(
+    const Uuid& database_uuid, const std::vector<disk::NativeFilespaceDevice>&,
+    const disk::FilespaceRootReference& head, const std::array<byte, 32>& root_sha256,
+    const std::vector<NativeHistoricalFilespaceImage>&,
+    u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::page

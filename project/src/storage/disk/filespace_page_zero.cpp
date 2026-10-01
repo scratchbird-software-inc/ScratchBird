@@ -280,4 +280,157 @@ FilespacePageZeroRecoveryObservation ObserveFilespacePageZeroForRecoveryFromOpen
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
    catch(...){return fail(Error::io_failure);}
 }
+FilespaceRecoveryRootCandidates ProbeFilespaceRecoveryRootCandidatesFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding& binding,u64 budget) noexcept {
+  using E=FilespaceRecoveryRootError;
+  FilespaceRecoveryRootCandidates result;
+  const auto require=[](bool valid,E error){if(!valid)throw error;};
+  try {
+    require(budget>=kFilespaceBootstrapBytes,E::resource_exhausted);
+    const auto guard=device.AcquireOperationGuard();require(device.is_open(),E::invalid_request);
+    SerializedFilespaceBootstrap prefix{};
+    const auto read=[&](byte* out,std::size_t bytes){auto io=device.ReadAt(0,out,bytes);
+      if(!io.ok()||io.bytes_transferred!=bytes){result.diagnostic=std::move(io.diagnostic);throw E::io_failure;}};
+    read(prefix.data(),prefix.size());
+    const auto probe=DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
+    if(!probe.ok()){result.image_error=BootstrapError(probe.error);
+      throw probe.error==FilespaceBootstrapError::hash_provider_failure?E::hash_failure:
+            probe.error==FilespaceBootstrapError::resource_exhausted?E::resource_exhausted:E::invalid_bootstrap;}
+    const auto& bootstrap=*probe.preamble;const auto size=bootstrap.page_size_bytes;
+    require(bootstrap.filespace_role>=1&&bootstrap.filespace_role<=4,E::invalid_bootstrap);
+    require(!(bootstrap.flags&FilespaceBootstrapFlag::payload_encrypted),E::encrypted_requires_authority);
+    require(!(bootstrap.flags&FilespaceBootstrapFlag::cluster_authority_required),E::cluster_requires_authority);
+    require(size<=budget-kFilespaceBootstrapBytes,E::resource_exhausted);
+    const auto extent=[&]{auto value=device.Size();if(!value.ok()){result.diagnostic=std::move(value.diagnostic);throw E::io_failure;}return value.size_bytes;};
+    const auto observed=extent();require(observed>=size,E::invalid_extent);
+    std::vector<byte> image(size);read(image.data(),image.size());
+    require(std::equal(prefix.begin(),prefix.end(),image.begin()),E::changed_observation);
+    std::vector<FilespaceRootReference> roots;roots.reserve(32);u16 previous=0;u32 kinds=0;
+    std::size_t offset=directory_offset;
+    for(unsigned i=0;i<32;++i,offset+=80){const auto* entry=image.data()+offset;if(Zero(entry,80))break;
+      FilespaceRootReference r{LoadLittle16(entry),LoadLittle32(entry+4),GetUuid(entry+8),
+        LoadLittle64(entry+24),LoadLittle64(entry+32),GetUuid(entry+40),GetUuid(entry+56)};
+      require(r.kind>previous&&r.kind<=21&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
+        !LoadLittle16(entry+2)&&Zero(entry+72,8)&&V7(r.filespace_uuid)&&V7(r.object_uuid)&&r.page_number&&r.page_generation,E::invalid_directory);
+      const auto* profile=FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);require(profile,E::invalid_directory);
+      require(r.page_number<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&
+        CheckFileDeviceExtent(r.page_number*u64{profile->page_size_bytes},profile->page_size_bytes).ok(),E::invalid_directory);
+      if(r.filespace_uuid==binding.filespace_uuid)require(r.page_size_profile_uuid==binding.page_size_profile_uuid&&
+        r.page_number<observed/size,E::invalid_extent);
+      if(r.kind==3)require(r.filespace_uuid==binding.filespace_uuid,E::invalid_directory);
+      // Cluster-only roots cannot appear in this clear local recovery profile.
+      require(r.kind<15||r.kind>17,E::cluster_requires_authority);
+      for(const auto& old:roots)if(old.filespace_uuid==r.filespace_uuid){require(old.page_size_profile_uuid==r.page_size_profile_uuid,E::invalid_directory);
+        if(old.page_number==r.page_number)require(old.page_type==r.page_type&&old.page_generation==r.page_generation&&old.object_uuid==r.object_uuid,E::invalid_directory);}
+      previous=r.kind;kinds|=u32{1}<<r.kind;roots.push_back(r);
+    }
+    require(Zero(image.data()+offset,image.size()-offset),E::invalid_directory);
+    constexpr u32 required=0x3feu|(u32{15}<<18);require((kinds&required)==required,E::invalid_directory);
+    const auto root=[&](u16 kind)->const FilespaceRootReference&{return *std::find_if(roots.begin(),roots.end(),[&](const auto& r){return r.kind==kind;});};
+    for(u16 first:{u16{18},u16{20}}){const auto& a=root(first);const auto& b=root(first+1);
+      require(a.filespace_uuid==binding.filespace_uuid&&b.filespace_uuid==binding.filespace_uuid&&a.object_uuid==b.object_uuid&&a.page_number!=b.page_number,E::invalid_directory);}
+    require(root(18).object_uuid!=root(20).object_uuid,E::invalid_directory);
+    for(const auto& r:roots)if(r.kind<20&&r.filespace_uuid==binding.filespace_uuid)
+      require(r.page_number!=root(20).page_number&&r.page_number!=root(21).page_number,E::invalid_directory);
+    require(extent()==observed,E::changed_observation);
+    result.bootstrap=bootstrap;result.roots=std::move(roots);result.observed_size_bytes=observed;result.error=E::none;
+  }catch(E error){result.error=error;}catch(const std::bad_alloc&){result.error=E::resource_exhausted;}
+   catch(const std::length_error&){result.error=E::resource_exhausted;}catch(...){result.error=E::io_failure;}
+  return result;
+}
+namespace {
+FilespacePageZeroBodyResult MutateGrowthBody(FileDevice& device,
+    const FilespaceBootstrapBinding& binding, const std::vector<byte>& before,
+    const std::vector<byte>& after, u64 budget, bool repair) noexcept {
+  using E=FilespacePageZeroBodyError;
+  FilespacePageZeroBodyResult result;
+  const auto require=[](bool valid,E error){if(!valid)throw error;};
+  const auto image_error=[&](Error error){
+    if(error==Error::none)return;
+    result.image_error=error;
+    throw error==Error::hash_provider_failure?E::hash_failure:
+          error==Error::resource_exhausted?E::resource_exhausted:E::image_failure;
+  };
+  try {
+    require(before.size()==after.size()&&before.size()>=directory_offset,E::invalid_request);
+    require(before.size()<=budget/4,E::resource_exhausted);
+    const auto original=DecodeFilespacePageZero(before.data(),before.size(),&binding);
+    image_error(original.error);
+    const auto target=DecodeFilespacePageZero(after.data(),after.size(),&binding);
+    image_error(target.error);
+    const auto& a=*original.record;const auto& b=*target.record;
+    require(a.page_generation!=std::numeric_limits<u64>::max()&&
+            a.root_set_generation!=std::numeric_limits<u64>::max()&&
+            b.page_generation==a.page_generation+1&&
+            b.root_set_generation==a.root_set_generation+1&&b.total_pages>a.total_pages,
+            E::invalid_transition);
+    auto normalized=b;normalized.page_generation=a.page_generation;
+    normalized.root_set_generation=a.root_set_generation;normalized.total_pages=a.total_pages;
+    normalized.free_pages=a.free_pages;normalized.preallocated_pages=a.preallocated_pages;
+    const auto normalized_image=EncodeFilespacePageZero(normalized);image_error(normalized_image.error);
+    require(*normalized_image.bytes==before,E::invalid_transition);
+    const auto immutable=[&](const std::vector<byte>& image){
+      return std::equal(before.begin(),before.begin()+common_offset,image.begin())&&
+             std::equal(before.begin()+directory_offset,before.end(),image.begin()+directory_offset);
+    };
+    require(immutable(after),E::invalid_transition);
+    std::vector<byte> scratch(before.size());
+    const auto guard=device.AcquireOperationGuard();
+    require(device.is_open()&&!device.read_only(),E::invalid_device);
+    const u64 required_size=b.total_pages*b.bootstrap.page_size_bytes;
+    const auto extent=[&]{auto size=device.Size();
+      if(!size.ok()){result.diagnostic=std::move(size.diagnostic);throw E::io_failure;}
+      result.observed_size_bytes=size.size_bytes;require(size.size_bytes==required_size,E::extent_mismatch);
+    };
+    const auto read=[&]{auto io=device.ReadAt(0,scratch.data(),scratch.size());
+      if(!io.ok()||io.bytes_transferred!=scratch.size()){
+        result.diagnostic=std::move(io.diagnostic);throw E::io_failure;}
+    };
+    extent();read();
+    require(immutable(scratch),E::preimage_changed);
+    result.original_preimage_verified=scratch==before;
+    result.target_already_present=scratch==after;
+    if(!result.original_preimage_verified&&!result.target_already_present){
+      require(repair,E::preimage_changed);
+      const auto actual=DecodeFilespacePageZero(scratch.data(),scratch.size(),&binding);
+      result.observed_body_error=actual.error;
+      if(actual.error==Error::hash_provider_failure||actual.error==Error::resource_exhausted)
+        image_error(actual.error);
+      require(!actual.ok(),E::preimage_changed);
+      result.damaged_body_observed=true;
+    }
+    // Reobserve the external extent after all validation and before effects.
+    extent();
+    if(!result.target_already_present){
+      constexpr auto length=directory_offset-common_offset;
+      result.write_attempted=result.uncertain_write=true;
+      auto io=device.WriteAt(common_offset,after.data()+common_offset,length);
+      if(io.bytes_transferred<=length)result.confirmed_bytes=io.bytes_transferred;
+      if(!io.ok()||io.bytes_transferred!=length){
+        result.diagnostic=std::move(io.diagnostic);throw E::io_failure;}
+      result.uncertain_write=false;
+    }
+    result.sync_attempted=true;
+    auto sync=device.Sync();
+    if(!sync.ok()){result.diagnostic=std::move(sync.diagnostic);throw E::io_failure;}
+    result.sync_completed=true;
+    read();require(scratch==after,E::readback_mismatch);extent();
+    result.postimage_verified=true;result.error=E::none;
+  }catch(E error){result.error=error;}
+   catch(const std::bad_alloc&){result.error=E::resource_exhausted;}
+   catch(const std::length_error&){result.error=E::resource_exhausted;}
+   catch(...){result.error=E::io_failure;}
+  return result;
+}
+} // namespace
+FilespacePageZeroBodyResult WriteFilespacePageZeroGrowthBodyFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding& binding,const std::vector<byte>& before,
+    const std::vector<byte>& after,u64 budget) noexcept {
+  return MutateGrowthBody(device,binding,before,after,budget,false);
+}
+FilespacePageZeroBodyResult RepairFilespacePageZeroGrowthBodyFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding& binding,const std::vector<byte>& before,
+    const std::vector<byte>& after,u64 budget) noexcept {
+  return MutateGrowthBody(device,binding,before,after,budget,true);
+}
 }  // namespace scratchbird::storage::disk
