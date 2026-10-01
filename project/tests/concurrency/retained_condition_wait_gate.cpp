@@ -482,6 +482,52 @@ void ControlledCancellationAndUnregister() {
 #endif
 }
 
+template<class Result>
+void CheckDiagnosticContext(const Result& result, const char* code, unsigned severity) {
+  if constexpr (requires { result.Diagnostic(); }) {
+    const auto d = result.Diagnostic();
+    Check(d.has_value(), "failure has typed concurrency diagnostic");
+    Check(d->registration.code == code && static_cast<unsigned>(d->registration.severity) == severity &&
+          d->registration.is_failure && d->registration.sqlstate == "not_applicable" &&
+          d->registration.numeric_binding == "not_applicable" &&
+          d->registration.diagnostic_class == "MGA.CONCURRENCY", "exact canonical registration facts");
+    Check(d->primitive_id == Id(20) && d->thread_or_task_id == Id(99) &&
+          d->owner_scope == c::WaitOwnerScope::database && d->primitive_class == "condition_wait" &&
+          d->requested_mode == "none" && d->held_modes_summary == "none" && d->protected_data,
+          "protected binary primitive task and scope diagnostic context");
+    Check(d->wait_duration_us == result.wait_duration_us && d->required_action == result.required_action,
+          "diagnostic preserves selected duration and corrective action");
+  } else Check(false, "missing typed concurrency diagnostic context");
+}
+
+void DiagnosticRetention() {
+  c::ConditionWaitResult timeout, invalid, drain;
+  Run([&](auto& owner, auto&) {
+    auto op = Acquire(owner, 31); auto lock = op.LockPredicate();
+    const auto satisfied = op.Wait(lock, [] { return true; }, {}, c::WaitClock::now(), "diagnostic success");
+    Check(!satisfied.Diagnostic(), "satisfied wait invents no failure diagnostic");
+    std::stop_source stop; stop.request_stop();
+    const auto cancelled = op.Wait(lock, [] { return false; }, stop.get_token(), std::nullopt);
+    Check(cancelled.outcome == O::cancelled && !cancelled.Diagnostic(),
+          "ordinary wait cancellation invents no failure diagnostic");
+    timeout = op.Wait(lock, [] { return false; }, {}, c::WaitClock::now(), "diagnostic timeout");
+    lock.unlock();
+    std::mutex wrong; std::unique_lock other(wrong);
+    invalid = op.Wait(other, [] { return true; }, {}, c::WaitClock::now(), "invalid binding");
+    other.unlock();
+    Check(owner.Close(Id(24)) && owner.FenceAdmission(), "diagnostic drain close and fence");
+    lock.lock();
+    const auto closed = op.Wait(lock, [] { return true; }, {}, c::WaitClock::now(), "diagnostic close");
+    Check(closed.outcome == O::closed && !closed.Diagnostic(), "closed wait invents no failure diagnostic");
+    lock.unlock();
+    drain = owner.Drain(c::WaitClock::now());
+  });
+  // All primitive/native storage is reclaimed before inspecting copied results.
+  CheckDiagnosticContext(timeout, "diag.mga.concurrency.latch_timeout", 3);
+  CheckDiagnosticContext(invalid, "diag.mga.concurrency.invalid_primitive_descriptor", 4);
+  CheckDiagnosticContext(drain, "diag.mga.concurrency.fail_safe_release", 3);
+}
+
 void OwnershipProfiles() {
   Fixture f;
   {
@@ -567,6 +613,8 @@ void DescriptorAndWaiterBounds() {
     const auto refused = extra.Wait(lock, [] { return false; }, {}, c::WaitClock::now() + 5s,
         "bounded capacity");
     Check(refused.failure == c::WaitFailure::invalid_descriptor, "waiter limit refuses before mutation");
+    CheckDiagnosticContext(refused, "diag.mga.concurrency.invalid_primitive_descriptor", 4);
+    Check(refused.reason() == "bounded capacity", "admission refusal retains bounded reason");
     lock.unlock();
     Check(owner.Snapshot().waiter_count == 1 && owner.Snapshot().registered_waits == 1,
           "existing waiter survives saturation");
@@ -665,7 +713,7 @@ int main(int argc, char** argv) {
     CancellationAndCloseDrain(); AdmissionLimitsAndConstructionFailure();
     NativeAndRegisteredFailure(); NativeDrainFailure();
     ControlledCancellationAndUnregister(); DescriptorAndWaiterBounds();
-    ActualDeadlineAndReplacement(); OwnershipProfiles();
+    ActualDeadlineAndReplacement(); OwnershipProfiles(); DiagnosticRetention();
 #if defined(__unix__)
     if (argc != 2 || std::string_view(argv[1]) != "--no-destructor-child") PrematureDestruction();
 #endif

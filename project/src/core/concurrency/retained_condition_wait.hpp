@@ -4,6 +4,7 @@
 
 #include "memory_safe_retirement.hpp"
 #include "checked_condition.hpp"
+#include "canonical_diagnostic_catalog.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -44,6 +45,21 @@ struct ConditionWaitLimits {
   std::uint32_t waiters = 0;
   std::uint32_t operation_references = 0;
 };
+// Allocation-free internal diagnostic content. Binary identities are owned;
+// registration strings have immutable catalog lifetime. Not an emitted occurrence,
+// disclosure grant, public rendering, retry admission or task-completion receipt.
+struct ConditionWaitDiagnostic {
+  diagnostics::DiagnosticCodeDefinition registration;
+  std::optional<WaitUuid> primitive_id;
+  std::string_view primitive_class = "condition_wait";
+  std::optional<WaitOwnerScope> owner_scope;
+  std::optional<WaitUuid> thread_or_task_id;
+  std::string_view requested_mode = "none";
+  std::string_view held_modes_summary = "none"; // Condition waits grant no latch modes.
+  std::uint64_t wait_duration_us = 0;
+  std::string_view required_action;
+  bool protected_data = true;
+};
 struct ConditionWaitResult {
   WaitOutcome outcome = WaitOutcome::failed;
   WaitFailure failure = WaitFailure::invalid_descriptor;
@@ -53,6 +69,7 @@ struct ConditionWaitResult {
   std::string_view required_action = "repair_descriptor";
   std::array<char, 96> uninterruptible_reason{};
   std::uint8_t reason_size = 0;
+  std::optional<WaitOwnerScope> owner_scope;
   std::string_view reason() const noexcept { return {uninterruptible_reason.data(), reason_size}; }
   std::string_view code() const noexcept {
     switch (failure) {
@@ -64,6 +81,13 @@ struct ConditionWaitResult {
       case WaitFailure::timeout: return "diag.mga.concurrency.latch_timeout";
     }
     return "diag.mga.concurrency.invalid_primitive_descriptor";
+  }
+  std::optional<ConditionWaitDiagnostic> Diagnostic() const noexcept {
+    if (failure == WaitFailure::none) return std::nullopt;
+    const auto* registration = diagnostics::FindCanonicalDiagnosticCode(code());
+    if (!registration) return std::nullopt; // Never invent missing catalog authority.
+    return ConditionWaitDiagnostic{*registration, primitive_id, "condition_wait", owner_scope,
+        task_id, "none", "none", wait_duration_us, required_action, true};
   }
 };
 struct ConditionWaitSnapshot {
@@ -161,6 +185,7 @@ class ConditionWaitOperation {
     result.task_id = task_;
     auto& s = *state_;
     result.primitive_id = s.descriptor.primitive_id;
+    result.owner_scope = s.descriptor.owner_scope;
     if (!lock.owns_lock() || lock.mutex() != &s.predicate ||
         (!cancellation.stop_possible() && (!deadline || uninterruptible_reason.empty())) ||
         uninterruptible_reason.size() > result.uninterruptible_reason.size() ||
@@ -193,16 +218,19 @@ class ConditionWaitOperation {
       if (select()) { count_timeout(); return result; }
     } catch (...) { failed(); return result; }
     // Counts are admission state. Refuse saturation before any registration.
+    const auto refused = [&]() {
+      result.outcome = WaitOutcome::failed; result.failure = WaitFailure::invalid_descriptor;
+      result.required_action = "repair_descriptor";
+      return result;
+    };
     if (s.waiters == s.limits.waiters ||
         s.registered_waits == std::numeric_limits<std::uint64_t>::max())
-      return {WaitOutcome::failed, WaitFailure::invalid_descriptor,
-          result.primitive_id, task_, 0, "repair_descriptor"};
+      return refused();
     bool callback_reference = false;
     if (cancellation.stop_possible()) {
       std::lock_guard lifetime(s.lifetime);
       if (s.references == s.limits.operation_references)
-        return {WaitOutcome::failed, WaitFailure::invalid_descriptor,
-            result.primitive_id, task_, 0, "repair_descriptor"};
+        return refused();
       ++s.references; callback_reference = true;
     }
     ++s.waiters; ++s.registered_waits;
@@ -288,6 +316,7 @@ class ConditionWaitOwner {
       return protected_state;
     }
     state_ = static_cast<detail::ConditionWaitState*>(owner_guard_.get());
+    owner_task_ = owner_hazard.owner_task;
     state_->closed = false; state_->fenced = false;
     return S::ok;
   }
@@ -335,6 +364,8 @@ class ConditionWaitOwner {
     if (!state_) return result;
     auto& s = *state_;
     result.primitive_id = s.descriptor.primitive_id;
+    result.owner_scope = s.descriptor.owner_scope;
+    result.task_id = owner_task_;
     // The lifecycle owner, not a counted operation, retains this observer and
     // its callback. All owner calls must return before owner destruction.
     // Register outside lifetime: already-requested stop invokes inline.
@@ -374,6 +405,7 @@ class ConditionWaitOwner {
   memory::SafeRetirementGuard owner_guard_;
   detail::ConditionWaitState* state_ = nullptr;
   bool drain_observed_ = false;
+  WaitUuid owner_task_{};
 };
 
 } // namespace scratchbird::core::concurrency
