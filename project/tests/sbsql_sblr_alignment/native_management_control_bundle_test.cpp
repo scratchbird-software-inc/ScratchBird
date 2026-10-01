@@ -239,6 +239,7 @@ Bytes MapOracle(const page::NativeAllocationMap& m) {
   u64 fnv = 14695981039346656037ull;
   for (unsigned i=0;i<128;++i) { fnv ^= b[i]; fnv *= 1099511628211ull; } Num(b,96,8,fnv);
   const auto bitmap = (m.states.size()+1)/2, at = (384+bitmap+7)&~std::size_t(7);
+  Check(at<=b.size()&&m.records.size()<=(b.size()-at)/128,"map oracle fits the registered physical page");
   unsigned version=m.creator_operation_uuid.is_nil()?1:2;
   for(const auto& r:m.records)if(!r.creator_operation_uuid.is_nil())version=2;
   std::copy_n(version==1?"SBABM001":"SBABM002",8,b.begin()+128); Num(b,136,2,version); Num(b,138,2,256);
@@ -319,7 +320,7 @@ struct Bundle {
  void Install(){for(std::size_t n=0;n<pages.size();++n){const auto& b=pages[n];const auto io=graph.fixture.device.WriteAt((root.first.page_number+n)*graph.fixture.size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"isolated bundle fixture write");}Check(graph.fixture.device.Sync().ok(),"isolated bundle fixture sync");}
  void Good(const db::NativeManagementControlBundleRead& r)const{Check(r.ok()&&r.allocation_images==graph.after_bytes&&r.inventory_images==inventory&&r.page_headers.size()==headers.size()&&r.total_pages==graph.after.front().total_pages,"complete original target map and inventory images");for(unsigned n=0;n<headers.size();++n)Check(r.page_headers[n].page_uuid==headers[n].page_uuid&&Self(r.page_headers[n])==Self(headers[n]),"verified bundle page bindings");}
 };
-void Empty(const db::NativeManagementControlBundleRead& r){Check(!r.ok()&&r.allocation_images.empty()&&r.inventory_images.empty()&&r.directory_images.empty()&&r.page_headers.empty()&&!r.total_pages,"no failed bundle result prefix");}
+void Empty(const db::NativeManagementControlBundleRead& r){Check(!r.ok()&&r.allocation_images.empty()&&r.inventory_images.empty()&&r.directory_images.empty()&&r.growth_images.empty()&&r.page_headers.empty()&&!r.total_pages,"no failed bundle result prefix");}
 void Empty(const db::NativeManagementControlBundleImage& r){Check(!r.ok()&&!r.root&&r.pages.empty(),"no failed bundle image prefix");}
 Bytes SelectorOracle(const db::NativeCheckpointSelection& s){const auto& h=s.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x30e);Num(b,20,2,1);Num(b,22,2,1);Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
  std::copy_n("SBDCP001",8,b.begin()+128);Num(b,136,2,1);Num(b,138,2,384);Num(b,140,4,512);Put(b,144,s.object_uuid);Put(b,160,s.bootstrap_uuid);Num(b,176,8,s.selection_generation);Put(b,184,s.publication_uuid);Ref(b,200,s.checkpoint);Put(b,248,s.checkpoint_object_uuid);std::copy(s.checkpoint_sha256.begin(),s.checkpoint_sha256.end(),b.begin()+264);Num(b,296,8,s.checkpoint_generation);Num(b,304,8,s.root_set_generation);Put(b,312,s.timeline_uuid);Num(b,328,8,s.previous_selection_generation);if(s.previous_checkpoint)Ref(b,336,*s.previous_checkpoint);Put(b,384,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),b.begin()+400);const auto sha=Sha(b);std::copy(sha.begin(),sha.end(),b.begin()+432);return b;}
@@ -368,13 +369,17 @@ Bytes DirectoryImageOracle(const page::NativeFilespaceDirectory& p){
 }
 struct DirectoryBundle {
  Fixture& fixture;d::FilespacePageZero zero;Maps maps;std::vector<page::NativeTransactionInventoryPage> inventories;
- std::vector<page::NativeFilespaceDirectory> directories;std::vector<d::NativeCommonPageHeader> headers;BundleRoot root;Pages map_images,inventory_images,directory_images,pages;
- DirectoryBundle(Fixture& f,unsigned secondary_profile,bool reverse):fixture(f){
+ std::vector<page::NativeFilespaceDirectory> directories;std::vector<d::NativeCommonPageHeader> headers;BundleRoot root;Pages map_images,inventory_images,directory_images,growth_images,pages;
+ DirectoryBundle(Fixture& f,unsigned secondary_profile,bool reverse,int growing=-1):fixture(f){
   const auto z=d::ReadFilespacePageZeroFromOpenDevice(f.device);Check(z.ok(),"mixed bundle primary bootstrap");zero=*z.record;
   const auto other=reverse?Id(0):Id(7);const auto& q=d::kCanonicalFilespacePageProfiles[secondary_profile];
   root.object_uuid=Id(10001);root.operation_uuid=Id(10002);root.map_count=2;root.inventory_count=2;root.directory_count=2;
-  root.payload_bytes=4*f.size+2*u64{q.page_size_bytes}+48;root.page_count=(root.payload_bytes+f.size-385)/(f.size-384);
-  for(unsigned i=0;i<root.page_count;++i)headers.push_back({u32(f.size),0x500,Id(1),Id(2),Id(10100+i),180+i,2,0,zero.bootstrap.page_size_profile_uuid});root.first=Self(headers.front());
+  root.payload_bytes=4*f.size+2*u64{q.page_size_bytes}+48;
+  const bool split_primary=growing==1&&f.size==8192&&q.page_size_bytes==131072;
+  if(growing>=0){root.growth_image_count=2;root.payload_bytes+=2*(growing?q.page_size_bytes:f.size)+16;}
+  if(split_primary){++root.map_count;root.payload_bytes+=f.size+8;}
+  root.page_count=(root.payload_bytes+f.size-385)/(f.size-384);
+  for(unsigned i=0;i<root.page_count;++i)headers.push_back({u32(f.size),0x500,Id(1),Id(2),Id(10100+i),(growing>=0?40u:180u)+i,2,0,zero.bootstrap.page_size_profile_uuid});root.first=Self(headers.front());
   for(unsigned i=0;i<2;++i){const auto fs=i?other:Id(2);const auto profile=i?q.uuid:zero.bootstrap.page_size_profile_uuid;const auto size=i?q.page_size_bytes:u32(f.size);
    page::NativeAllocationMap m;m.header={size,3,Id(1),fs,Id(10200+i),140,2,0,profile};m.object_uuid=Id(10300+i);m.map_generation=2;m.capacity_generation=1;m.total_pages=256;m.creator_operation_uuid=root.operation_uuid;m.states.resize(256,State::free);maps.push_back(m);
    page::NativeTransactionInventoryPage inventory;inventory.header={size,0x301,Id(1),fs,Id(10400+i),222,2,0,profile};inventory.object_uuid=Id(10410);inventory.inventory_generation=2;inventory.inventory.next_local_transaction_id=3;inventory.inventory.next_commit_sequence=1;
@@ -388,30 +393,111 @@ struct DirectoryBundle {
   for(auto& m:maps)std::sort(m.records.begin(),m.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});std::sort(maps.begin(),maps.end(),[](const auto& a,const auto& b){return a.header.filespace_uuid<b.header.filespace_uuid;});
   for(unsigned i=0;i<2;++i){const auto& m=maps[i];page::NativeFilespaceDirectoryRecord r;r.bootstrap=zero.bootstrap;r.bootstrap.filespace_uuid=m.header.filespace_uuid;r.bootstrap.page_size_profile_uuid=m.header.page_size_profile_uuid;r.bootstrap.page_size_bytes=m.header.page_size_bytes;
    if(m.header.filespace_uuid!=Id(2))r.bootstrap.filespace_role=5;r.locator_uuid=Id(10600+i);r.page_zero_uuid=m.header.filespace_uuid==Id(2)?zero.page_uuid:Id(10610);r.page_zero_generation=m.header.filespace_uuid==Id(2)?zero.page_generation:1;r.root_set_generation=m.header.filespace_uuid==Id(2)?zero.root_set_generation:1;r.total_pages=256;directories[i].records.push_back(r);}
-  directories[0].next=Self(directories[1].header);Refresh();
+  directories[0].next=Self(directories[1].header);
+  if(growing>=0){const auto fs=growing?other:Id(2);auto& map=*std::find_if(maps.begin(),maps.end(),[&](const auto& m){return m.header.filespace_uuid==fs;});
+    auto& member=std::find_if(directories.begin(),directories.end(),[&](const auto& dir){return dir.records.front().bootstrap.filespace_uuid==fs;})->records.front();
+    auto before=zero;before.bootstrap=member.bootstrap;before.page_uuid=member.page_zero_uuid;
+    if(growing){before.roots={{3,3,fs,1,1,q.uuid,Id(13000)}};before.page_generation=7;before.root_set_generation=9;}
+    const auto initial=d::EncodeFilespacePageZero(before);Check(initial.ok(),"canonical original growth image");
+    auto after=before;++after.page_generation;++after.root_set_generation;after.total_pages+=4;
+    map.total_pages=after.total_pages;map.capacity_generation++;map.states.resize(after.total_pages,State::free);map.states[0]=State::allocated;
+    page::NativeAllocationRecord z;z.allocation_uuid=Id(13001);z.page_uuid=after.page_uuid;z.owner_uuid=fs;z.page_generation=after.page_generation;
+    z.page_type=growing?2:1;z.creator_operation_uuid=root.operation_uuid;map.records.insert(map.records.begin(),z);
+    if(reverse){for(u64 n=after.total_pages-2;n<after.total_pages;++n){map.states[n]=State::preallocated;
+      page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(16000+n);r.owner_uuid=Id(16001);r.page_type=0x100;r.creator_operation_uuid=root.operation_uuid;map.records.push_back(r);}}
+    after.free_pages=std::count(map.states.begin(),map.states.end(),State::free);after.preallocated_pages=std::count(map.states.begin(),map.states.end(),State::preallocated);
+    const auto final=d::EncodeFilespacePageZero(after);Check(final.ok(),"canonical resulting growth image");growth_images={*initial.bytes,*final.bytes};
+    member.page_zero_generation=after.page_generation;member.root_set_generation=after.root_set_generation;member.total_pages=after.total_pages;
+  }
+  if(split_primary){auto head=std::find_if(maps.begin(),maps.end(),[](const auto& m){return m.header.filespace_uuid==Id(2);});
+    auto tail=*head;tail.header.page_number=141;tail.header.page_uuid=Id(13010);tail.first_page=80;tail.states.erase(tail.states.begin(),tail.states.begin()+80);
+    tail.records.erase(tail.records.begin(),std::lower_bound(tail.records.begin(),tail.records.end(),u64{80},[](const auto& r,u64 n){return r.page_number<n;}));
+    head->states.resize(80);head->records.erase(std::lower_bound(head->records.begin(),head->records.end(),u64{80},[](const auto& r,u64 n){return r.page_number<n;}),head->records.end());
+    page::NativeAllocationRecord r;r.page_number=141;r.allocation_uuid=Id(13011);r.page_uuid=tail.header.page_uuid;r.page_generation=2;r.page_type=3;r.owner_uuid=tail.object_uuid;r.creator_operation_uuid=root.operation_uuid;
+    tail.states[141-80]=State::allocated;tail.records.push_back(r);std::sort(tail.records.begin(),tail.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+    head->next=Self(tail.header);maps.insert(head+1,std::move(tail));
+  }
+  Refresh();
  }
  u64 Budget()const{return root.page_count*fixture.size+4*root.payload_bytes+2*fixture.size;}
  void Refresh(){map_images.clear();inventory_images.clear();directory_images.resize(2);
-  for(const auto& m:maps){const auto encoded=page::EncodeNativeAllocationMap(m);const auto raw=MapOracle(m);Check(encoded.ok()&&encoded.bytes==raw,"independent mixed bundle map image");map_images.push_back(raw);}
+  map_images.resize(maps.size());for(std::size_t left=maps.size();left;--left){const auto i=left-1;auto& m=maps[i];if(m.next){Check(i+1<maps.size(),"map successor exists");m.next_sha256=Sha(map_images[i+1]);}
+    const auto encoded=page::EncodeNativeAllocationMap(m);const auto raw=MapOracle(m);Check(encoded.ok()&&encoded.bytes==raw,"independent mixed bundle map image");map_images[i]=raw;}
   for(const auto& p:inventories){const auto raw=InventoryOracle(p);const auto encoded=page::EncodeNativeTransactionInventoryPage(p);Check(encoded.ok()&&encoded.bytes==raw,"independent mixed inventory image");inventory_images.push_back(raw);}
-  for(unsigned i=0;i<2;++i){auto& r=directories[i].records.front();const auto& m=maps[i];r.allocation_root=page::NativeFilespaceAllocationRoot{Self(m.header),m.object_uuid,Sha(map_images[i]),m.map_generation,m.capacity_generation};}
+  for(unsigned i=0;i<2;++i){auto& r=directories[i].records.front();const auto at=std::find_if(maps.begin(),maps.end(),[&](const auto& m){return m.header.filespace_uuid==r.bootstrap.filespace_uuid;})-maps.begin();const auto& m=maps[at];r.allocation_root=page::NativeFilespaceAllocationRoot{Self(m.header),m.object_uuid,Sha(map_images[at]),m.map_generation,m.capacity_generation};}
   for(unsigned left=2;left;--left){const auto i=left-1;if(!i)directories[0].next_sha256=Sha(directory_images[1]);const auto raw=DirectoryImageOracle(directories[i]);const auto encoded=page::EncodeNativeFilespaceDirectory(directories[i]);Check(encoded.ok()&&encoded.bytes==raw,"independent mixed directory image");directory_images[i]=raw;}Oracle();
  }
- void Oracle(){Bytes payload;for(const auto* group:{&map_images,&inventory_images,&directory_images})for(const auto& raw:*group){const auto at=payload.size();payload.resize(at+8);Num(payload,at,8,raw.size());payload.insert(payload.end(),raw.begin(),raw.end());}
+ void Oracle(){Bytes payload;for(const auto* group:{&map_images,&inventory_images,&directory_images,&growth_images})for(const auto& raw:*group){const auto at=payload.size();payload.resize(at+8);Num(payload,at,8,raw.size());payload.insert(payload.end(),raw.begin(),raw.end());}
   Check(payload.size()==root.payload_bytes,"independent framed payload exact length");root.aggregate_sha256=Sha(payload);pages.assign(headers.size(),Bytes(fixture.size));
   for(unsigned i=0;i<pages.size();++i){auto& b=pages[i];const auto& h=headers[i];std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,fixture.size);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
    const u64 offset=i*(fixture.size-384),length=std::min<u64>(fixture.size-384,payload.size()-offset);std::copy_n("SBMCB003",8,b.begin()+128);Num(b,136,2,3);Num(b,138,2,256);Num(b,140,4,384+length);Put(b,144,root.object_uuid);Put(b,160,zero.page_uuid);Put(b,176,root.operation_uuid);Num(b,192,8,root.map_count);Num(b,200,8,root.payload_bytes);Num(b,208,8,offset);Num(b,216,8,i);Num(b,224,8,root.page_count);Num(b,232,8,root.first.page_number);std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),b.begin()+240);Num(b,272,4,length);Num(b,276,8,root.inventory_count);Num(b,284,4,8);Num(b,352,8,root.directory_count);std::copy_n(payload.begin()+offset,length,b.begin()+384);}
+  if(root.growth_image_count)for(auto& b:pages){std::copy_n("SBMCB004",8,b.begin()+128);Num(b,136,2,4);Num(b,360,8,root.growth_image_count);}
   Reseal();
  }
  void ResealPayload(){Bytes payload;for(const auto& raw:pages){const auto length=LoadLittle32(raw.data()+272);payload.insert(payload.end(),raw.begin()+384,raw.begin()+384+length);}root.aggregate_sha256=Sha(payload);for(auto& raw:pages)std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),raw.begin()+240);Reseal();}
  void Reseal(){std::array<byte,32> next{};for(std::size_t n=pages.size();n;--n){auto& raw=pages[n-1];std::copy(next.begin(),next.end(),raw.begin()+288);std::fill(raw.begin()+320,raw.begin()+352,0);const auto seal=Sha(raw);std::copy(seal.begin(),seal.end(),raw.begin()+320);next=Sha(raw);}root.first_page_sha256=next;}
- auto Encode()const{return db::EncodeNativeManagementControlBundle(map_images,Id(1),zero.page_uuid,root.object_uuid,root.operation_uuid,headers,Budget(),inventory_images,directory_images);}
+ auto Encode()const{return db::EncodeNativeManagementControlBundle(map_images,Id(1),zero.page_uuid,root.object_uuid,root.operation_uuid,headers,Budget(),inventory_images,directory_images,growth_images);}
  auto Decode(u64 budget=0)const{return db::DecodeNativeManagementControlBundle(pages,root,Id(1),zero.page_uuid,budget?budget:Budget());}
  auto Read()const{return db::ReadNativeManagementControlBundleFromOpenDevice(fixture.devices.front(),root,Id(1),zero.page_uuid,Budget());}
  void Install(){for(std::size_t i=0;i<pages.size();++i){const auto r=fixture.device.WriteAt((root.first.page_number+i)*fixture.size,pages[i].data(),pages[i].size());Check(r.ok()&&r.bytes_transferred==pages[i].size(),"isolated actual mixed bundle write");}Check(fixture.device.Sync().ok(),"actual mixed bundle barrier");}
  void Good(const db::NativeManagementControlBundleRead& r)const{Check(r.ok()&&r.allocation_images==map_images&&r.inventory_images==inventory_images&&r.directory_images==directory_images&&r.total_pages==256&&r.page_headers.size()==headers.size(),"complete exact original mixed bundle reconstruction");}
 };
-void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
+void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
+ std::cout<<"growth bundle primary="<<primary<<" secondary="<<secondary<<" reverse="<<reverse<<" growing="<<growing<<'\n';
+ Fixture f(primary);DirectoryBundle b(f,secondary,reverse,growing);
+ const auto good=[&](const db::NativeManagementControlBundleRead& r){Check(r.ok()&&r.growth_images==b.growth_images&&r.allocation_images==b.map_images&&
+   r.inventory_images==b.inventory_images&&r.directory_images==b.directory_images&&r.total_pages==(growing?256:260),"exact original growth reconstruction images");};
+ const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent version4 frames and seals");good(b.Decode());
+ Empty(b.Decode(b.Budget()-1));b.Install();
+ if(!growing){Empty(b.Read());const byte tail=0;Check(f.device.WriteAt(260*f.size-1,&tail,1).ok(),"fixture grown extent");
+   Empty(b.Read());Check(f.device.WriteAt(0,b.growth_images[1].data(),b.growth_images[1].size()).ok()&&f.device.Sync().ok(),"fixture complete after metadata");}
+ good(b.Read());Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"growth bundle read-only reopen");good(b.Read());
+ Check(f.device.Close().ok(),"growth bundle release before process");const auto child=fork();Check(child>=0,"growth bundle independent process");
+ if(!child){d::FileDevice device;if(!device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);
+   const auto r=db::ReadNativeManagementControlBundleFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,b.Budget());
+   _exit(r.ok()&&r.growth_images==b.growth_images&&r.directory_images==b.directory_images&&r.allocation_images==b.map_images?0:81);}
+ int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"growth images retained across independent reopen");
+ Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"growth fixture reopen");
+ const auto saved_images=b.growth_images,saved_pages=b.pages;const auto saved_root=b.root;
+ for(unsigned field=0;field<9;++field){auto after=*d::DecodeFilespacePageZero(saved_images[1].data(),saved_images[1].size()).record;
+   if(field==0)++after.page_generation;if(field==1)++after.root_set_generation;if(field==2)--after.free_pages;
+   if(field==3)after.writer_identity_uuid=Id(14001);if(field==4)after.roots.front().object_uuid=Id(14002);
+   if(field==5)after.total_pages--;if(field==6)after.preallocated_pages++;if(field==7)after.page_uuid=Id(14003);
+   if(field==8)++after.creation_utc_millis;
+   const auto image=d::EncodeFilespacePageZero(after);Check(image.ok(),"valid unrelated growth image");b.growth_images[1]=*image.bytes;b.Oracle();Empty(b.Encode());Empty(b.Decode());b.growth_images=saved_images;
+ }
+ b.Oracle();std::swap(b.growth_images[0],b.growth_images[1]);b.Oracle();Empty(b.Encode());Empty(b.Decode());b.growth_images=saved_images;b.Oracle();
+ for(unsigned field:{135u,136u,360u,368u,383u}){b.pages=saved_pages;b.root=saved_root;b.pages.front()[field]^=1;b.Reseal();Empty(b.Decode());}
+ b.pages=saved_pages;b.root=saved_root;
+ for(u64 count:{u64{0},u64{1},u64{3},std::numeric_limits<u64>::max()}){b.root.growth_image_count=count;Empty(b.Decode());}b.root=saved_root;
+ u64 growth_offset=0;for(const auto* group:{&b.map_images,&b.inventory_images,&b.directory_images})for(const auto& raw:*group)growth_offset+=8+raw.size();
+ for(u64 length:{u64{0},u64{127},u64{4096},u64{8191},std::numeric_limits<u64>::max()}){
+   b.pages=saved_pages;for(unsigned i=0;i<8;++i){const auto at=growth_offset+i;b.pages[at/(f.size-384)][384+at%(f.size-384)]=static_cast<byte>(length>>(8*i));}
+   b.ResealPayload();Empty(b.Decode());}b.pages=saved_pages;b.root=saved_root;
+ b.growth_images.pop_back();Empty(b.Encode());b.growth_images=saved_images;b.growth_images.push_back(saved_images[1]);Empty(b.Encode());b.growth_images=saved_images;
+ if(!growing){auto wrong=*d::DecodeFilespacePageZero(saved_images[1].data(),saved_images[1].size()).record;wrong.writer_identity_uuid=Id(15000);
+   const auto image=d::EncodeFilespacePageZero(wrong);Check(image.ok()&&f.device.WriteAt(0,image.bytes->data(),image.bytes->size()).ok()&&f.device.Sync().ok(),"different valid actual metadata");
+   Empty(b.Read());Check(f.device.WriteAt(0,saved_images[1].data(),saved_images[1].size()).ok()&&f.device.Sync().ok(),"restore exact after metadata");good(b.Read());}
+ // Sweep all required allocations and every provider failure at each hash site.
+ // Largest mixed framing is included in addition to each equal-profile case.
+ if(reverse||!(primary==secondary||(primary==0&&secondary==4)))return;
+ byte scratch=0;for(unsigned i=0;i<4097;++i)Check(f.device.ReadAt(0,&scratch,1).ok(),"growth telemetry warmup");
+ const auto original=f.Read(0,growing?256:260);
+ for(unsigned route=0;route<3;++route){const auto call=[&]{if(!route){const auto r=b.Encode();if(!r.ok())Empty(r);return r.error;}
+     const auto r=route==1?b.Decode():b.Read();if(!r.ok())Empty(r);return r.error;};
+   counting=true;allocations=0;Check(call()==BE::none,"growth allocation baseline");counting=false;const auto sites=allocations;
+   for(unsigned long at=0;at<=sites;++at){const auto loss=f.device.failed_io_latency_observations();allocation_budget=at;const auto r=call();const auto left=allocation_budget;allocation_budget=-1;
+     Check(at==sites?(r==BE::none&&left>=0):(left<0&&(r==BE::resource_exhausted||(r==BE::none&&f.device.failed_io_latency_observations()==loss+1))),"growth allocation failure retained or measured telemetry loss");}
+   hash_counting=true;hash_seen=0;Check(call()==BE::none,"growth hash baseline");hash_counting=false;const auto hashes=hash_seen;
+   for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto r=call();Check(!hash_fault&&r==BE::hash_failure,"every growth provider failure consumed");}
+ }
+ reads=writes=syncs=0;io_counting=true;good(b.Read());io_counting=false;const auto sites=reads;
+ for(unsigned at=1;at<=sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=b.Read();io_counting=false;read_fault=0;Check(r.error==BE::io_failure&&reads>=at,"growth read error consumed");Empty(r);}
+ Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"growth reconstruction failures never mutate storage");
+}
+void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
+ GrowthBundle(primary,secondary,reverse,0);GrowthBundle(primary,secondary,reverse,1);
+ Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent complete version3 framing bytes and full hashes");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"mixed bundle exact checked allowance");Empty(short_budget);b.Install();b.Good(b.Read());
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"mixed bundle actual read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"mixed bundle close before independent process");
  const auto child=fork();Check(child>=0,"mixed bundle independent process");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),b.zero.bootstrap.page_size_profile_uuid,&own};const auto result=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),b.zero.page_uuid,b.Budget());_exit(result.ok()&&result.directory_images==b.directory_images&&result.allocation_images==b.map_images&&result.inventory_images==b.inventory_images?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"mixed-size original bytes reconstructed in independent process");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"mixed bundle parent reopen");
@@ -454,7 +540,7 @@ void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){Fixt
  }
  reads=writes=syncs=0;io_counting=true;b.Good(b.Read());io_counting=false;const auto sites=reads;Check(!writes&&!syncs,"mixed bundle reader is mutation-free");
  for(unsigned at=1;at<=sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=b.Read();io_counting=false;read_fault=0;Check(reads>=at&&r.error==BE::io_failure,"all actual mixed bundle read failures consumed");Empty(r);reads=0;corrupt_read=at;io_counting=true;const auto corrupt=b.Read();io_counting=false;corrupt_read=0;Empty(corrupt);}Check(f.Read(0,256)==original,"mixed bundle failures preserve every actual node byte");
- Graph g(f);Bundle old(g);g.plan.control_bundle=old.root;g.Refresh();for(unsigned field=0;field<2;++field){auto wrong=g.plan;if(field==0)wrong.control_bundle->directory_count=1;else wrong.control_bundle->payload_bytes=1;Failed(db::EncodeNativePublicationPlan(wrong));}
+ Graph g(f);Bundle old(g);g.plan.control_bundle=old.root;g.Refresh();for(unsigned field=0;field<3;++field){auto wrong=g.plan;if(field==0)wrong.control_bundle->directory_count=1;if(field==1)wrong.control_bundle->payload_bytes=1;if(field==2)wrong.control_bundle->growth_image_count=2;Failed(db::EncodeNativePublicationPlan(wrong));}
 }
 void InventoryHistory(Fixture& f,Graph& g,Bundle& b,unsigned profile){
  using HE=db::NativeManagementHistoryError;using AE=db::NativeManagementControlAuthorityError;
