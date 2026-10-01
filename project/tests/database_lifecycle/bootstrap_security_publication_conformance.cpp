@@ -12,12 +12,15 @@
 #include "catalog_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
 #include "database_lifecycle.hpp"
+#include "bootstrap_security_validation.hpp"
 #include "disk_device.hpp"
+#include "hash_digest.hpp"
 #include "memory.hpp"
 #include "page_manager.hpp"
 #include "uuid.hpp"
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -28,6 +31,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,8 +55,7 @@ constexpr const char* kCredentialFingerprint =
     "abcdef0123456789abcdef0123456789";
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -85,7 +88,9 @@ struct Cleanup {
                                  ".sb.txn_publish",
                                  ".sb.txn_publish.tmp",
                                  ".sb.security_principal_events",
-                                 ".sb.local_password_auth"}) {
+                                 ".sb.local_password_auth",
+                                 ".sb.security_context_generation_v1.migration_tmp",
+                                 ".sb.security_context_generation_v1.migration_tmp.sb.owner.lock"}) {
         std::error_code ignored;
         std::filesystem::remove(path.string() + suffix, ignored);
       }
@@ -531,6 +536,227 @@ void TestForbiddenSecuritySidecars(Cleanup* cleanup) {
   RequireReaderRejects(path, "local-password sidecar was admitted");
 }
 
+// Catalog identity and generations, not row placement, determine bootstrap
+// authority. Exercise every order of the three actual published owners.
+void CheckSemanticValidation(
+    const std::vector<catalog::CatalogTypedRecord>& records,
+    const db::DatabaseBootstrapSecurityCatalogState& expected) {
+  const auto valid = db::ValidateBootstrapSecurityRecords(records, "semantic-fixture");
+  Require(valid.ok() && valid.state.present && !valid.state.committed_by_inventory &&
+              valid.state.principal_uuid.value == expected.principal_uuid.value &&
+              valid.state.sysarch_role_uuid.value == db::kCanonicalSysarchRoleIdentity &&
+              valid.state.membership_uuid.value == expected.membership_uuid.value &&
+              valid.state.credential_fingerprint == expected.credential_fingerprint &&
+              valid.state.creator_tx == 1 &&
+              valid.state.policy_generation == expected.policy_generation &&
+              valid.state.security_context_generation == expected.security_context_generation,
+          "semantic validation changed fields or asserted storage commitment");
+  auto refused = [](const auto& candidate, std::string_view code) {
+    const auto result = db::ValidateBootstrapSecurityRecords(candidate, "semantic-fixture");
+    Require(!result.ok() && result.diagnostic.diagnostic_code == code &&
+                !result.state.present && !result.state.committed_by_inventory &&
+                result.state.principal_uuid.value.is_nil() &&
+                result.state.sysarch_role_uuid.value.is_nil(),
+            "semantic refusal lost its diagnostic or exposed partial authority");
+    const std::map<std::string_view, std::string_view> keys{
+        {"SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID", "storage.database_lifecycle.bootstrap_security_sysarch_provenance_invalid"},
+        {"SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID", "storage.database_lifecycle.bootstrap_security_principal_invalid"},
+        {"SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID", "storage.database_lifecycle.bootstrap_security_membership_invalid"},
+        {"SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH", "storage.database_lifecycle.bootstrap_security_generation_mismatch"},
+        {"SB-DB-BOOTSTRAP-SECURITY-SYSARCH-CARDINALITY-INVALID", "storage.database_lifecycle.bootstrap_security_sysarch_cardinality_invalid"},
+        {"SB-DB-BOOTSTRAP-SECURITY-CARDINALITY-INVALID", "storage.database_lifecycle.bootstrap_security_cardinality_invalid"},
+        {"SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-NAME-DUPLICATE", "storage.database_lifecycle.bootstrap_security_principal_name_duplicate"},
+        {"CATALOG.INVALID_INPUT", "catalog.security_record.invalid"}};
+    Require(result.diagnostic.message_key == keys.at(code), "semantic diagnostic message key drift");
+    bool has_path = false;
+    for (const auto& argument : result.diagnostic.arguments) {
+      const auto bytes = scratchbird::tests::DiagnosticValueBytes(argument.value);
+      has_path = has_path || bytes == "semantic-fixture";
+      Require(bytes.find("local-password-") == std::string::npos &&
+                  bytes.find("89abcdef0123456789abcdef01234567") == std::string::npos &&
+                  bytes.find("not-a-credential") == std::string::npos,
+              "semantic diagnostic exposed credential data");
+    }
+    Require(code == "CATALOG.INVALID_INPUT" || has_path,
+            "semantic diagnostic lost its source label");
+  };
+  auto change = [](auto& record, const char* field, const std::string& value) {
+    auto security = catalog::DecodeCatalogSecurityRecord(record.header.kind, record.payload);
+    Require(security.ok(), "semantic mutation decode failed");
+    security.record->attributes[field] = value;
+    const auto encoded = catalog::EncodeCatalogSecurityRecord(*security.record);
+    Require(encoded.ok(), "semantic mutation encode failed");
+    record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
+  };
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    for (const char* field : {"policy_generation", "security_context_generation"}) {
+      auto candidate = records;
+      change(candidate[i], field, "2");
+      refused(candidate, "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH");
+    }
+    const bool role = records[i].header.kind == catalog::CatalogRecordKind::role_account;
+    const bool principal = records[i].header.kind == catalog::CatalogRecordKind::user_account;
+    const std::string_view invalid = role ?
+        "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-PROVENANCE-INVALID" : principal ?
+        "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID" :
+        "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID";
+    for (const char* field : {"policy_generation", "security_context_generation"}) {
+      for (const std::string bad : {"", "0", "-1", "+1", " 1", "1junk",
+                                    "18446744073709551616", "999999999999999999999999999"}) {
+        auto candidate = records;
+        change(candidate[i], field, bad);
+        refused(candidate, invalid);
+      }
+      auto candidate = records;
+      change(candidate[i], field, std::string("1\0suffix", 8));
+      refused(candidate, invalid);
+    }
+    for (const char* overflow : {"4294967296", "4294967297"}) {
+      auto candidate = records;
+      change(candidate[i], "policy_generation", overflow);
+      refused(candidate, invalid);
+    }
+    const std::string_view cardinality = role ?
+        "SB-DB-BOOTSTRAP-SECURITY-SYSARCH-CARDINALITY-INVALID" :
+        "SB-DB-BOOTSTRAP-SECURITY-CARDINALITY-INVALID";
+    auto candidate = records;
+    candidate.erase(candidate.begin() + i);
+    refused(candidate, cardinality);
+    candidate = records;
+    candidate.push_back(records[i]);
+    refused(candidate, role ? cardinality : principal ?
+        "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-NAME-DUPLICATE" :
+        "SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID");
+    candidate = records;
+    candidate[i].header.deleted = true;
+    refused(candidate, cardinality);
+    candidate = records;
+    candidate[i].header.object_uuid.value.bytes[15] ^= 0x40;
+    refused(candidate, "CATALOG.INVALID_INPUT");
+    candidate = records;
+    change(candidate[i], "creator_tx", "2");
+    refused(candidate, invalid);
+    if (principal) {
+      candidate = records;
+      change(candidate[i], "credential_fingerprint", "not-a-credential");
+      refused(candidate, "SB-DB-BOOTSTRAP-SECURITY-PRINCIPAL-INVALID");
+    }
+  }
+  auto maxima = records;
+  for (auto& record : maxima) {
+    change(record, "policy_generation", "4294967295");
+    change(record, "security_context_generation", "18446744073709551615");
+  }
+  const auto maximum = db::ValidateBootstrapSecurityRecords(maxima, "semantic-fixture");
+  Require(maximum.ok() && !maximum.state.committed_by_inventory &&
+              maximum.state.policy_generation == UINT32_MAX &&
+              maximum.state.security_context_generation == UINT64_MAX,
+          "exact maximum generation was lost or refused");
+  std::vector<catalog::CatalogTypedRecord> role_only;
+  for (const auto& record : records)
+    if (record.header.kind == catalog::CatalogRecordKind::role_account) role_only.push_back(record);
+  const auto uncredentialed = db::ValidateBootstrapSecurityRecords(role_only, "semantic-fixture");
+  Require(uncredentialed.ok() && !uncredentialed.state.present &&
+              !uncredentialed.state.committed_by_inventory &&
+              uncredentialed.state.principal_uuid.value.is_nil() &&
+              uncredentialed.state.sysarch_role_uuid.value == expected.sysarch_role_uuid.value,
+          "role-only validation invented a principal or durable grant");
+}
+
+void TestBootstrapRecordOrder() {
+  const auto file_image = [](const std::filesystem::path& path) {
+    const auto size = std::filesystem::file_size(path);
+    std::ifstream input(path, std::ios::binary);
+    const auto digest = scratchbird::core::hash::ComputeSha256Stream(input, size);
+    Require(digest.ok(), "record-order whole-file digest failed");
+    return std::make_pair(size, digest.digest);
+  };
+  for (const std::uint32_t page_size : {8192u, 16384u, 32768u, 65536u, 131072u}) {
+    Cleanup cleanup;
+    const auto path = TestPath("record_order");
+    cleanup.paths.push_back(path);
+    auto config = MakeConfig(path);
+    config.page_size = page_size;
+    const auto created = db::CreateDatabaseFile(config);
+    Require(created.ok(), "record-order database creation failed");
+    const auto expected = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(expected.ok() && expected.state.present && expected.state.committed_by_inventory,
+            "record-order baseline missing");
+    const auto original = ReadCatalogRows(path, page_size);
+    std::vector<std::size_t> positions;
+    for (std::size_t i = 0; i < original.size(); ++i) {
+      if (original[i].kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+      const auto decoded = catalog::DecodeCatalogTypedRecord(original[i]);
+      Require(decoded.ok(), "record-order fixture decode failed");
+      const auto id = decoded.record.header.object_uuid.value;
+      if (id == expected.state.sysarch_role_uuid.value ||
+          id == expected.state.principal_uuid.value ||
+          id == expected.state.membership_uuid.value) positions.push_back(i);
+    }
+    Require(positions.size() == 3, "record-order fixture did not select three owners");
+    std::array<unsigned, 3> order{0, 1, 2};
+    unsigned permutations = 0;
+    do {
+      auto rows = original;
+      for (std::size_t i = 0; i < order.size(); ++i) {
+        rows[positions[i]] = original[positions[order[i]]];
+        rows[positions[i]].ordinal = original[positions[i]].ordinal;
+      }
+      std::vector<catalog::CatalogTypedRecord> records;
+      for (const auto position : positions) {
+        auto decoded = catalog::DecodeCatalogTypedRecord(rows[position]);
+        Require(decoded.ok(), "permuted fixture decode failed");
+        records.push_back(std::move(decoded.record));
+      }
+      CheckSemanticValidation(records, expected.state);
+      WriteCatalogRows(path, page_size, rows);
+      const auto actual = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+      if (!actual.ok()) std::cerr << actual.diagnostic.diagnostic_code << '\n';
+      Require(actual.ok() && actual.state.present && actual.state.committed_by_inventory,
+              "valid bootstrap record permutation was refused");
+      Require(actual.state.sysarch_role_uuid.value == expected.state.sysarch_role_uuid.value &&
+                  actual.state.principal_uuid.value == expected.state.principal_uuid.value &&
+                  actual.state.membership_uuid.value == expected.state.membership_uuid.value &&
+                  actual.state.principal_name == expected.state.principal_name &&
+                  actual.state.credential_fingerprint == expected.state.credential_fingerprint &&
+                  actual.state.creator_tx == expected.state.creator_tx &&
+                  actual.state.policy_generation == expected.state.policy_generation &&
+                  actual.state.security_context_generation == expected.state.security_context_generation,
+              "record permutation changed bootstrap identity or generation");
+      db::DatabaseOpenConfig open;
+      open.path = path.string();
+      open.read_only = true;
+      Require(db::OpenDatabaseFile(open).ok(), "permuted bootstrap did not reopen");
+      // An actual persisted generation disagreement must still refuse in
+      // every order; the next iteration restores the original complete rows.
+      MutateOneTypedRecord(path, page_size,
+          [](const auto& record, const auto& fields) {
+            return record.header.kind == catalog::CatalogRecordKind::user_account &&
+                fields.contains("bootstrap_principal");
+          }, [](auto*, auto* fields) { (*fields)["policy_generation"] = "2"; });
+      const auto before_refusal = file_image(path);
+      const auto mismatch = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+      Require(!mismatch.ok() && !mismatch.state.committed_by_inventory &&
+                  mismatch.diagnostic.diagnostic_code == "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+              "persisted generation mismatch was not refused exactly");
+      for (const bool read_only : {true, false}) {
+        open.read_only = read_only;
+        const auto refused_open = db::OpenDatabaseFile(open);
+        Require(!refused_open.ok() && refused_open.diagnostic.diagnostic_code ==
+                    "SB-DB-BOOTSTRAP-SECURITY-GENERATION-MISMATCH",
+                "open admitted mismatched bootstrap generations");
+        Require(file_image(path) == before_refusal,
+                "refused bootstrap read/open changed persisted bytes");
+      }
+      ++permutations;
+    } while (std::next_permutation(order.begin(), order.end()));
+    Require(permutations == 6, "bootstrap permutation coverage incomplete");
+  }
+  std::cout << "bootstrap ordering: 5 profiles, 30 real-file permutations/reopens, "
+               "30 persisted mismatch refusals, 60 no-effect open refusals, "
+               "30 semantic matrices\n";
+}
+
 void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
   for (const char* fault : {"", "after_copy_before_rewrite",
                             "after_rewrite_sync_before_publish", "after_publish_before_ack"}) {
@@ -592,7 +818,7 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
 
 }  // namespace
 
-int main() {
+int main() try {
   auto policy = memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name =
       "database_lifecycle_bootstrap_security_publication_conformance";
@@ -602,6 +828,7 @@ int main() {
   Require(configured.ok(), "bootstrap security memory fixture failed");
 
   Cleanup cleanup;
+  TestBootstrapRecordOrder();
   TestPrepublicationFaults(&cleanup);
   TestPostpublicationFaults(&cleanup);
   TestReplayRefused(&cleanup);
@@ -610,4 +837,7 @@ int main() {
   TestNativeSecurityGenerationRepair(&cleanup);
   TestForbiddenSecuritySidecars(&cleanup);
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }
