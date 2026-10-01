@@ -321,6 +321,9 @@ int main(int argc, char** argv) {
                repeated.diagnostics.size() == stopped.diagnostics.size();
       for (std::size_t i = 0; i < stopped.diagnostics.size() && i < repeated.diagnostics.size(); ++i) {
         passed = passed && stopped.diagnostics[i].code == repeated.diagnostics[i].code &&
+                 !stopped.diagnostics[i].code.empty() &&
+                 stopped.diagnostics[i].message_key == stopped.diagnostics[i].code &&
+                 repeated.diagnostics[i].message_key == stopped.diagnostics[i].message_key &&
                  stopped.diagnostics[i].occurrence_uuid == repeated.diagnostics[i].occurrence_uuid;
       }
       if (sync_fault) {

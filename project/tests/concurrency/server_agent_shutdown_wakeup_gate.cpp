@@ -1269,6 +1269,9 @@ bool CheckIdentityAdmission(server::ServerAgentRuntime& runtime,
       refused.worker_thread_count == 0 && refused.durable_lease_count == 0 &&
       refused.scheduler_ticks == 0 && diagnostics.size() == 1 &&
       diagnostics.front().code == expected_code &&
+      diagnostics.front().message_key == expected_code &&
+      diagnostics.front().severity == server::ServerDiagnosticSeverity::kError &&
+      !diagnostics.front().safe_message.empty() &&
       stopped.ok() && !stopped.attempted && !stopped.durable_cleanup_complete;
   std::cout << "identity_target=" << target << " refused=" << correct_refusal
             << " malformed=" << malformed << " fixture_bytes_unchanged=" << unchanged << '\n';
