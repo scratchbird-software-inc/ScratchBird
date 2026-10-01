@@ -85,6 +85,33 @@ struct NativeStorageGrowthContext {
   Uuid policy_snapshot_uuid, initiator_uuid, request_context_uuid;
   u64 configuration_generation=0, security_generation=0;
 };
+using NativeStorageActionContext=NativeStorageGrowthContext;
+namespace native_storage_proposal_detail {
+// Only a binding projection of a resolver-owned source, never a permission.
+inline NativeStorageActionIntent Bind(const NativeStoragePolicyResolution& r,
+    const Uuid& request,const Uuid& operation,const NativeStorageActionContext& context,u64 budget) noexcept {
+  const auto& c=*r.capacity.observation;const auto& s=*r.selection;const auto& p=*r.policy.policy;
+  NativeStorageActionIntent i;
+  i.request_uuid=request;i.operation_uuid=operation;i.database_uuid=c.database_uuid;i.filespace_uuid=c.filespace_uuid;
+  i.locator_uuid=c.locator_uuid;i.page_zero_uuid=c.page_zero_uuid;
+  i.page_size_profile_uuid=c.page_size_profile_uuid;i.page_size_bytes=c.page_size_bytes;
+  i.policy_snapshot_uuid=context.policy_snapshot_uuid;i.initiator_uuid=context.initiator_uuid;
+  i.request_context_uuid=context.request_context_uuid;
+  i.configuration_generation=context.configuration_generation;i.security_generation=context.security_generation;
+  i.catalog_generation=r.policy.source.source.checkpoint.catalogs.front().root->catalog_generation;
+  i.checkpoint=c.checkpoint;i.allocation_root=c.allocation_root;
+  i.checkpoint_sha256=c.checkpoint_sha256;i.allocation_sha256=c.allocation_sha256;
+  i.checkpoint_generation=c.checkpoint_generation;i.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
+  i.directory_generation=c.directory_generation;i.filespace_root_set_generation=c.filespace_root_set_generation;
+  i.page_zero_generation=c.page_zero_generation;i.map_generation=c.map_generation;i.capacity_generation=c.capacity_generation;
+  i.attachment_uuid=s.attachment.attachment_uuid;i.attachment_version_uuid=s.attachment_version_uuid;
+  i.attachment_generation=s.attachment.generation;i.storage_profile_uuid=s.profile.descriptor_uuid.value;
+  i.storage_profile_version_uuid=s.profile_version_uuid;i.storage_profile_generation=s.profile_generation;
+  i.policy_uuid=p.policy_uuid;i.policy_version_uuid=r.policy.version_uuid;i.policy_generation=p.generation;
+  i.current_total_pages=c.total_pages;i.maximum_total_pages=p.maximum_total_pages;i.maximum_work_bytes=p.maximum_work_bytes;
+  i.maximum_retained_image_bytes=std::min(budget,p.maximum_retained_image_bytes);return i;
+}
+}
 enum class NativeStorageGrowthIntentError { none, invalid_context, proposal_failure, intent_failure };
 struct NativeStorageGrowthIntentResult {
   NativeStorageGrowthIntentError error=NativeStorageGrowthIntentError::invalid_context;
@@ -118,31 +145,9 @@ inline NativeStorageGrowthIntentResult ResolveNativeStorageGrowthIntentFromOpenD
     result.error=E::proposal_failure;result.proposal=std::move(proposal);return result;
   }
   if(proposal.disposition==NativeStorageGrowthDisposition::proposed){
-    const auto& c=*proposal.resolution.capacity.observation;
-    const auto& s=*proposal.resolution.selection;
-    const auto& p=*proposal.resolution.policy.policy;
     const auto& extent=*proposal.extent;
-    NativeStorageActionIntent i;
-    i.request_uuid=extent.request_uuid;i.operation_uuid=extent.operation_uuid;
-    i.database_uuid=c.database_uuid;i.filespace_uuid=c.filespace_uuid;
-    i.locator_uuid=c.locator_uuid;i.page_zero_uuid=c.page_zero_uuid;
-    i.page_size_profile_uuid=c.page_size_profile_uuid;i.page_size_bytes=c.page_size_bytes;
-    i.policy_snapshot_uuid=context.policy_snapshot_uuid;i.initiator_uuid=context.initiator_uuid;
-    i.request_context_uuid=context.request_context_uuid;
-    i.configuration_generation=context.configuration_generation;i.security_generation=context.security_generation;
-    i.catalog_generation=proposal.resolution.policy.source.source.checkpoint.catalogs.front().root->catalog_generation;
-    i.checkpoint=c.checkpoint;i.allocation_root=c.allocation_root;
-    i.checkpoint_sha256=c.checkpoint_sha256;i.allocation_sha256=c.allocation_sha256;
-    i.checkpoint_generation=c.checkpoint_generation;i.checkpoint_root_set_generation=c.checkpoint_root_set_generation;
-    i.directory_generation=c.directory_generation;i.filespace_root_set_generation=c.filespace_root_set_generation;
-    i.page_zero_generation=c.page_zero_generation;i.map_generation=c.map_generation;i.capacity_generation=c.capacity_generation;
-    i.attachment_uuid=s.attachment.attachment_uuid;i.attachment_version_uuid=s.attachment_version_uuid;
-    i.attachment_generation=s.attachment.generation;i.storage_profile_uuid=s.profile.descriptor_uuid.value;
-    i.storage_profile_version_uuid=s.profile_version_uuid;i.storage_profile_generation=s.profile_generation;
-    i.policy_uuid=p.policy_uuid;i.policy_version_uuid=proposal.resolution.policy.version_uuid;i.policy_generation=p.generation;
-    i.current_total_pages=c.total_pages;i.first_page=extent.first_page;i.page_count=extent.page_count;
-    i.maximum_total_pages=p.maximum_total_pages;i.maximum_work_bytes=p.maximum_work_bytes;
-    i.maximum_retained_image_bytes=std::min(budget,p.maximum_retained_image_bytes);
+    auto i=native_storage_proposal_detail::Bind(proposal.resolution,request,operation,context,budget);
+    i.first_page=extent.first_page;i.page_count=extent.page_count;
     result.image=EncodeNativeStorageActionIntent(i,kNativeStorageActionIntentBytes);
     if(!result.image.ok()){result.error=E::intent_failure;return result;}
   }

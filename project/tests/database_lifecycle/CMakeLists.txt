@@ -3830,6 +3830,10 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
       NAME sblr_agent_management_route_gate
       COMMAND sblr_agent_management_route_gate
     )
+    add_test(NAME agent_storage_current_security_gate
+      COMMAND sblr_agent_management_route_gate --storage-security-only)
+    set_tests_properties(agent_storage_current_security_gate PROPERTIES TIMEOUT 300
+      LABELS "storage;engine;real_file;binary_uuid;security_negative;not_SQL_E2E;not_full_build")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME agent_filespace_growth_failure_retention_gate
         COMMAND sblr_agent_management_route_gate --growth-retention-only)
