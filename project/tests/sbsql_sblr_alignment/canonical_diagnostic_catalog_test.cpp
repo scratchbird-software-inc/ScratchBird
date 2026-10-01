@@ -35,10 +35,37 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 }
 int main() {
   using S=d::CanonicalSeverity;
+  Sample("AGENT.INVALID_STATE",S::error,true,
+         "only_after_legal_state_and_owner_revalidation",
+         "refuse_transition_preserve_current_state_and_ownership","AGENT");
+  Sample("diag.mga.concurrency.invalid_primitive_descriptor",S::fatal,true,
+         "only_after_corrected_descriptor_and_fresh_admission",
+         "reject_before_registration_preserve_existing_ownership","MGA.CONCURRENCY");
+  Sample("diag.mga.concurrency.latch_timeout",S::error,true,
+         "only_after_owner_revalidates_wait_and_operation_state",
+         "end_wait_preserve_authoritative_operation_outcome","MGA.CONCURRENCY");
+  Sample("diag.mga.concurrency.fail_safe_release",S::error,true,
+         "only_after_owner_proves_safe_cleanup_and_revalidates_admission",
+         "retain_reachable_storage_and_original_ownership_until_safe_release","MGA.CONCURRENCY");
+  Sample("diag.mga.concurrency.hazard_leak_detected",S::fatal,true,
+         "only_after_owner_proves_reader_quiescence",
+         "defer_reclamation_preserve_backing_and_charges","MGA.CONCURRENCY");
+  Sample("diag.mga.concurrency.reclamation_blocked_by_hazard",S::warning,false,
+         "only_after_reader_quiescence_or_later_collection",
+         "defer_reclamation_preserve_backing_and_charges","MGA.CONCURRENCY");
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes native bulk policy, shutdown identity and retained agent notices. Check the
   // exact admitted Core import, not a minimum row count.
-  Check(catalog.size==1442 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1448 && catalog.data!=nullptr,"complete Core code inventory missing");
+  for(const std::string_view code:{"AGENT.INVALID_STATE",
+      "diag.mga.concurrency.invalid_primitive_descriptor",
+      "diag.mga.concurrency.latch_timeout","diag.mga.concurrency.fail_safe_release",
+      "diag.mga.concurrency.hazard_leak_detected",
+      "diag.mga.concurrency.reclamation_blocked_by_hazard"}) {
+    const auto* row=d::FindCanonicalDiagnosticCode(code);
+    Check(row && row->sqlstate=="not_applicable" && row->numeric_binding=="not_applicable",
+          "internal concurrency diagnostic acquired a public binding");
+  }
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -245,13 +272,14 @@ int main() {
   for(const std::string_view unknown:{"","diag.code_unknown"," DIAG.CODE_UNKNOWN",
                                       "DIAG.CODE_UNKNOWN ","SB_ENGINE_API_INVALID_REQUEST",
                                       "DATATYPE.DESCRIPTOR_INVALID","SBLR.OPERAND.INVALID",
-                                      "MGA.TRANSACTION.STALE","CATALOG.SNAPSHOT_STALE"}) {
+                                      "MGA.TRANSACTION.STALE","CATALOG.SNAPSHOT_STALE",
+                                      "agent.invalid_state","DIAG.MGA.CONCURRENCY.LATCH_TIMEOUT"}) {
     allocation_forbidden=true;const auto* found=d::FindCanonicalDiagnosticCode(unknown);
     allocation_forbidden=false;
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x16,0x81,0x5c,0x24,0x47,0xaa,0x87,0xf3,0xe2,0x6e,0xdd,0x7e,0xfa,0xba,0xdd,0x2e,0xd1,0x1a,0x4d,0xe1,0x69,0xbc,0xf6,0x23,0xd2,0xd9,0xa5,0x85,0x65,0x91,0xd6,0xda};
+    0x62,0x5c,0x5e,0x12,0x59,0x90,0x3d,0x0c,0x48,0x05,0x35,0x4e,0x30,0x71,0x7e,0x5a,0x3e,0x36,0x68,0xef,0x93,0xac,0x45,0x02,0xa2,0xab,0x20,0xb0,0xca,0xf2,0x41,0xd9};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
