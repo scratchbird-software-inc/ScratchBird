@@ -58,6 +58,9 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     auto base=DecodeNativeCheckpointRoot(base_bytes);CheckpointError(base.error);auto target=DecodeNativeCheckpointRoot(target_bytes);CheckpointError(target.error);
     auto encoded=DecodeNativePublicationPlan(plan_bytes);PlanError(encoded.error);const auto& p=*encoded.plan;const auto& a=*base.root;const auto& b=*target.root;
     Require(p.management_extent.has_value(),E::invalid_plan);
+    // This entry point has no base-directory input. It cannot prove a mixed
+    // filespace delta, even if all of the reconstruction images decode.
+    Require(!p.control_bundle||!p.control_bundle->directory_count,E::invalid_plan);
     const bool inventory=p.intent.recovery_profile==2;
     Require(inventory!=before_inventory.empty(),E::invalid_request);
     u64 inventory_work=0;

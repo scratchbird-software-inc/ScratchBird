@@ -9,7 +9,9 @@ enum class NativeManagementControlAllocationError {
   invalid_allocation, binding_mismatch, invalid_delta, resource_exhausted,
   hash_failure, cluster_requires_authority, encrypted_requires_authority
 };
-// Complete immutable metadata/inventory allocation delta. The base must separately
+// Complete immutable primary-only metadata/inventory allocation delta. Directory
+// publications require their complete base-directory delta, not this entry point.
+// The base must separately
 // come from the owning device lease. No I/O, selection, authentication or grant.
 NativeManagementControlAllocationError ValidateNativeManagementControlAllocation(
   const std::vector<byte>& base_checkpoint, const std::vector<byte>& target_checkpoint,

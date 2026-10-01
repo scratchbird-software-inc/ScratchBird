@@ -140,7 +140,7 @@ void PlanSeal(Bytes& b){std::fill(b.begin()+688,b.begin()+720,0);const auto h=Sh
 Bytes Oracle(const db::NativePublicationPlan& p){
  const auto& h=p.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);
  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
-const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value(),v5=p.intent.recovery_profile!=0,v6=p.intent.recovery_profile==2,v7=p.intent.recovery_profile==3;std::copy_n(v7?"SBPPM007":v6?"SBPPM006":v5?"SBPPM005":v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v7?7:v6?6:v5?5:v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
+const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value(),v5=p.intent.recovery_profile!=0,v6=p.intent.recovery_profile==2,v7=p.intent.recovery_profile==3,v8=v3&&p.control_bundle->directory_count;std::copy_n(v8?"SBPPM008":v7?"SBPPM007":v6?"SBPPM006":v5?"SBPPM005":v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v8?8:v7?7:v6?6:v5?5:v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
  Put(b,144,p.object_uuid);Put(b,160,p.bootstrap_uuid);Put(b,176,p.timeline_uuid);Put(b,192,p.operation_uuid);Put(b,208,p.intent.initiator_uuid);Put(b,224,p.intent.request_context_uuid);Put(b,240,p.intent.policy_snapshot_uuid);Put(b,256,p.security_snapshot_uuid);
  std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),b.begin()+272);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+304);
  Num(b,336,8,p.reserved_generation);Num(b,344,8,p.base_checkpoint_generation);Num(b,352,8,p.base_root_set_generation);Num(b,360,8,p.target_root_set_generation);
@@ -149,7 +149,8 @@ const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4
  Num(b,656,8,p.catalog_generation);Num(b,664,8,p.configuration_generation);Num(b,672,8,p.security_generation);Num(b,680,2,p.intent.initiator_kind);Num(b,682,2,1);Num(b,684,2,2);
  if(p.management_extent){const auto& r=*p.management_extent;Num(b,720,4,p.generation_guard_flags);Ref(b,736,r.first);Put(b,784,r.object_uuid);Put(b,800,r.operation_uuid);Num(b,816,8,r.revision);Num(b,824,4,r.aggregate_bytes);Num(b,828,4,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+832);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+864);}
  if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}
- if(v4)Num(b,1040,8,*p.base_selection_generation);if(v5)Num(b,1048,2,p.intent.recovery_profile);if(v6&&p.control_bundle)Num(b,1056,8,p.control_bundle->inventory_count);PlanSeal(b);return b;
+ if(v4)Num(b,1040,8,*p.base_selection_generation);if(v5)Num(b,1048,2,p.intent.recovery_profile);if((v6||v8)&&p.control_bundle)Num(b,1056,8,p.control_bundle->inventory_count);
+ if(v8){Num(b,1064,8,p.control_bundle->directory_count);Num(b,1072,8,p.control_bundle->payload_bytes);Num(b,1080,8,p.control_bundle->growth_image_count);}PlanSeal(b);return b;
 }
 void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed plan prefix");}
 void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
@@ -554,7 +555,65 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
    Check(r.error==BE::io_failure&&reads>=at,"historical bundle read error consumed");Empty(r);}
  Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"historical bundle failures preserve all physical bytes");
 }
+void DirectoryPlan(unsigned primary,unsigned secondary,bool reverse){
+ Fixture f(primary);Graph g(f);DirectoryBundle source(f,secondary,reverse);
+ const auto original=f.Read(0,256);
+ for(unsigned profile=2;profile<=4;++profile){
+  auto p=g.plan;p.control_bundle=source.root;p.operation_uuid=source.root.operation_uuid;
+  p.base_selection_generation=1;p.intent.recovery_profile=profile;
+  auto& r=*p.control_bundle;
+  // Only profile2 uses the actual inventory-bearing fixture bundle. Other
+  // profiles exercise root/plan framing, not a claim of publication admission.
+  if(profile!=2){r.inventory_count=0;r.payload_bytes-=f.size+d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes+16;}
+  if(profile==4){r.growth_image_count=2;r.payload_bytes+=2*(u64{d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes}+8);}
+  r.page_count=(r.payload_bytes+f.size-385)/(f.size-384);
+  const auto raw=Oracle(p);const auto encoded=db::EncodeNativePublicationPlan(p);
+  Check(encoded.ok()&&encoded.bytes==raw&&encoded.sha256==Sha(raw),"version8 exact independent bytes and full reference digest");
+  const auto decoded=db::DecodeNativePublicationPlan(raw);
+  Check(decoded.ok()&&decoded.plan->control_bundle==p.control_bundle&&decoded.plan->intent==p.intent&&
+    decoded.plan->base_selection_generation==p.base_selection_generation&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==raw,
+    "version8 retains all mixed-profile/growth commitments");
+  Check(db::ValidateNativeManagementControlAllocation(g.base_bytes,g.target_bytes,raw,g.extent,g.before_bytes,g.after_bytes,f.budget)==CE::invalid_plan,
+    "primary-only validator cannot silently ignore a directory delta");
+  const auto invalid=[&](const db::NativePublicationPlan& bad,unsigned field){const auto encoded_bad=db::EncodeNativePublicationPlan(bad);
+   if(encoded_bad.ok())std::cerr<<"version8 invalid encoding profile="<<profile<<" field="<<field<<'\n';Failed(encoded_bad);
+   auto image=Oracle(bad);std::copy_n("SBPPM008",8,image.begin()+128);Num(image,136,2,8);
+   const auto& b=*bad.control_bundle;Num(image,1056,8,b.inventory_count);Num(image,1064,8,b.directory_count);
+   Num(image,1072,8,b.payload_bytes);Num(image,1080,8,b.growth_image_count);PlanSeal(image);const auto decoded_bad=db::DecodeNativePublicationPlan(image);
+   if(field==15){Check(decoded_bad.ok()&&decoded_bad.plan->control_bundle->operation_uuid==p.operation_uuid,
+     "wire bundle operation is derived from the single committed plan identity");return;}
+   if(decoded_bad.ok())std::cerr<<"version8 invalid decoding profile="<<profile<<" field="<<field<<'\n';Failed(decoded_bad);};
+  for(unsigned field=0;field<17;++field){auto bad=p;auto& b=*bad.control_bundle;switch(field){
+   case 0:bad.intent.recovery_profile=0;break;case 1:bad.intent.recovery_profile=1;break;
+   case 2:bad.intent.recovery_profile=5;break;case 3:b.directory_count=0;break;case 4:b.payload_bytes=0;break;
+   case 5:b.payload_bytes=std::numeric_limits<u64>::max();break;case 6:b.directory_count=std::numeric_limits<u64>::max();break;
+   case 7:b.map_count=std::numeric_limits<u64>::max();break;case 8:b.inventory_count=profile==2?0:1;break;
+   case 9:b.growth_image_count=profile==4?0:2;break;case 10:b.growth_image_count=1;break;
+   case 11:++b.page_count;break;case 12:bad.base_selection_generation.reset();break;
+   case 13:bad.base_selection_generation=std::numeric_limits<u64>::max();break;
+   case 14:b.first.page_size_profile_uuid={};break;case 15:b.operation_uuid=Id(19000);break;
+   case 16:b.first.page_number=std::numeric_limits<u64>::max();break;}invalid(bad,field);}
+  for(unsigned at:{135u,136u,138u,140u,1050u,1055u,1088u,1151u,1152u}){auto bad=raw;bad[at]^=1;PlanSeal(bad);Failed(db::DecodeNativePublicationPlan(bad));}
+  for(unsigned version=1;version<8;++version){auto bad=raw;bad[135]='0'+version;Num(bad,136,2,version);PlanSeal(bad);Failed(db::DecodeNativePublicationPlan(bad));}
+  {auto bad=raw;Num(bad,1064,8,0);Num(bad,1072,8,0);Num(bad,1080,8,0);PlanSeal(bad);Failed(db::DecodeNativePublicationPlan(bad));}
+  // Every committed field affects the full-image seal, even if another value
+  // might be structurally admissible with a different authoritative bundle.
+  for(unsigned at:{1056u,1063u,1064u,1071u,1072u,1079u,1080u,1087u}){auto bad=raw;bad[at]^=1;Check(db::DecodeNativePublicationPlan(bad).error==E::invalid_integrity,"extension field is sealed");}
+  if(primary!=secondary)continue;
+  for(unsigned route=0;route<2;++route){const auto call=[&]{return route?db::DecodeNativePublicationPlan(raw):db::EncodeNativePublicationPlan(p);};
+   allocations=0;counting=true;const auto baseline=call();counting=false;const auto sites=allocations;Check(baseline.ok(),"version8 allocation baseline");
+   for(unsigned long at=0;at<=sites;++at){allocation_budget=at;const auto result=call();const auto remaining=allocation_budget;allocation_budget=-1;
+    if(at==sites)Check(remaining>=0&&result.ok(),"version8 complete allocation boundary");
+    else{Check(remaining==-1&&result.error==E::resource_exhausted,"version8 consumed allocation failure");Failed(result);}}
+   hash_counting=true;hash_seen=0;const auto measured=call();hash_counting=false;const auto hashes=hash_seen;Check(measured.ok(),"version8 hash baseline");
+   for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;
+    const auto result=call();Check(!hash_fault&&result.error==E::hash_failure,"version8 consumed hash failure");Failed(result);}
+  }
+ }
+ Check(f.Read(0,256)==original,"plan validation never modifies the actual device");
+}
 void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
+ DirectoryPlan(primary,secondary,reverse);
  GrowthBundle(primary,secondary,reverse,0);GrowthBundle(primary,secondary,reverse,1);
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
  const auto original_zero=f.Read(0);
