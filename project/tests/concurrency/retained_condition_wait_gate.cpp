@@ -49,6 +49,15 @@ void ParkPause(pthread_mutex_t* mutex) {
 }
 extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
 extern "C" int __real_pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const timespec*);
+#if defined(_GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT)
+extern "C" int __real_pthread_cond_clockwait(pthread_cond_t*, pthread_mutex_t*, clockid_t, const timespec*);
+extern "C" int __wrap_pthread_cond_clockwait(pthread_cond_t* c, pthread_mutex_t* m, clockid_t clock, const timespec* t) {
+  ++native_timed_waits;
+  if (std::exchange(fail_next_native_wait, false)) return EINVAL;
+  ParkPause(m);
+  return __real_pthread_cond_clockwait(c, m, clock, t);
+}
+#endif
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* c, pthread_mutex_t* m) {
   if (std::exchange(fail_next_native_wait, false)) return EINVAL;
   ParkPause(m);
@@ -368,6 +377,30 @@ void NativeAndRegisteredFailure() {
   });
 }
 
+void NativeDrainFailure() {
+#if defined(SB_WAIT_NATIVE_FAULT_GATE)
+  Run([](auto& owner, auto& domain) {
+    auto op = Acquire(owner, 31);
+    Check(owner.Close(Id(24)) && owner.FenceAdmission(), "native drain close and fence");
+    native_timed_waits = 0;
+    fail_next_native_wait = true;
+    const auto result = owner.Drain(c::WaitClock::now() + 20ms);
+    const auto calls = native_timed_waits;
+    const bool injected = !fail_next_native_wait;
+    fail_next_native_wait = false;
+    Check(result.failure == c::WaitFailure::fail_safe_release &&
+          result.required_action == "retain_storage_complete_drain",
+          "native drain failure preserves fail-safe outcome");
+    Check(owner.Snapshot().operation_ref_count == 1 && domain.Collect() == S::ok &&
+          domain.Snapshot().retired == 1, "native drain failure retains reachable storage");
+    op.Reset();
+    Check(owner.Drain(c::WaitClock::now() + 1s).failure == c::WaitFailure::none,
+          "actual reference release allows drain retry after native failure");
+    Check(injected && calls == 1, "native drain error returns without retrying or parking again");
+  });
+#endif
+}
+
 void ControlledCancellationAndUnregister() {
 #if defined(SB_WAIT_NATIVE_FAULT_GATE)
   Run([](auto& owner, auto&) {
@@ -619,6 +652,9 @@ void PrematureDestruction() {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string_view(argv[1]) == "--drain-native-error") {
+      NativeDrainFailure(); return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--native-errors") {
       NativeAndRegisteredFailure(); return 0;
     }
@@ -627,7 +663,7 @@ int main(int argc, char** argv) {
     }
     EntryAndValidation(); Precedence(); PublicationAndSpuriousWake();
     CancellationAndCloseDrain(); AdmissionLimitsAndConstructionFailure();
-    NativeAndRegisteredFailure();
+    NativeAndRegisteredFailure(); NativeDrainFailure();
     ControlledCancellationAndUnregister(); DescriptorAndWaiterBounds();
     ActualDeadlineAndReplacement(); OwnershipProfiles();
 #if defined(__unix__)

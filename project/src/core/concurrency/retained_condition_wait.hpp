@@ -140,7 +140,7 @@ struct ConditionWaitState {
   // Lock order when both are needed: predicate -> lifetime. No memory-domain
   // lock is held while acquiring either mutex. Native waits release their mutex.
   std::mutex lifetime;
-  std::condition_variable drained;
+  PredicateCondition drained;
   // Unpublished construction is already safe to retire if owner protection
   // cannot be acquired. Only Initialize's retained owner opens the instance.
   bool closed = true;                  // predicate
@@ -159,7 +159,7 @@ struct ConditionWaitState {
     std::lock_guard lock(lifetime);
     if (references == 0) std::terminate();
     --references;
-    drained.notify_all();
+    if (!drained.NotifyAll()) std::terminate();
   }
   struct CancellationWake {
     ConditionWaitState* state;
@@ -356,7 +356,11 @@ class ConditionWaitOwner {
     if (s.references == s.limits.operation_references) return S::exhausted;
     ++s.references;
     const auto protected_state = domain_.Protect(handle_, hazard, output.guard_);
-    if (protected_state != S::ok) { --s.references; s.drained.notify_all(); return protected_state; }
+    if (protected_state != S::ok) {
+      --s.references;
+      if (!s.drained.NotifyAll()) std::terminate();
+      return protected_state;
+    }
     output.state_ = state_; output.task_ = hazard.owner_task;
     return S::ok;
   }
@@ -388,13 +392,21 @@ class ConditionWaitOwner {
     // Register outside lifetime: already-requested stop invokes inline.
     std::stop_callback wake(cancellation, [&s] {
       std::lock_guard lifetime(s.lifetime);
-      s.drained.notify_all();
+      if (!s.drained.NotifyAll()) std::terminate();
     });
     std::unique_lock lifetime(s.lifetime);
-    if (!s.fenced || !s.drained.wait_until(lifetime, deadline, [&] {
-          return s.references == 0 || cancellation.stop_requested();
-        }))
+    if (!s.fenced) return result;
+    try {
+      while (s.references != 0 && !cancellation.stop_requested()) {
+        if (WaitClock::now() >= deadline || !s.drained.Wait(lifetime, deadline))
+          return result;
+      }
+    } catch (...) {
+      // An error is not a wake or drain receipt. Failed native reacquisition
+      // cannot return normally while claiming ownership of the lifetime mutex.
+      if (!lifetime.owns_lock()) std::terminate();
       return result;
+    }
     if (cancellation.stop_requested()) { result.outcome = WaitOutcome::cancelled; return result; }
     drain_observed_ = true;
     result.outcome = WaitOutcome::closed; result.failure = WaitFailure::none;
