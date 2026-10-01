@@ -199,6 +199,10 @@ SblrValue SblrValueFromDatatypeValue(const datatypes::DatatypeOperationValue& va
       out.text_value = out.encoded_value;
       return out;
     }
+    case datatypes::CanonicalTypeId::uint16: {
+      throw std::invalid_argument(
+          "SBLR uint16 result carrier profile is unresolved");
+    }
     case datatypes::CanonicalTypeId::int16:
     case datatypes::CanonicalTypeId::int32:
     case datatypes::CanonicalTypeId::int64: {
