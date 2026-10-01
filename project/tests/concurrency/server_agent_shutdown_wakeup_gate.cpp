@@ -408,11 +408,14 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
 }
 
 // SEARCH_KEY: SERVER_AGENT_CONCURRENT_STOP_COMPLETION
-bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_count) {
+bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_count,
+                         bool fail_cleanup = false) {
+  server::ServerAgentRuntimeStopResult first_result;
+  server::ServerAgentRuntimeStopResult second_result;
   expected_joins = worker_count + 1;  // Workers plus scheduler.
   std::thread first([&] {
     stop_caller = 1;
-    runtime.Stop();
+    first_result = runtime.Stop();
     stop_caller = 0;
     Signal(stop_finished);
   });
@@ -420,9 +423,16 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   const auto stopping = runtime.Snapshot();
   Require(stopping.started && stopping.stopping,
           "first Stop was not paused before completion publication");
+  const std::filesystem::path database_path(stopping.database_path);
+  const auto held_path = database_path.string() + ".held";
+  if (fail_cleanup) {
+    // All runtime threads really joined; only the first Stop's cleanup remains.
+    // Make its actual MGA Begin fail, without inventing a storage result.
+    std::filesystem::rename(database_path, held_path);
+  }
   std::thread second([&] {
     stop_caller = 2;
-    runtime.Stop();
+    second_result = runtime.Stop();
     stop_caller = 0;
     second_returned_early.store(runtime.Snapshot().started);
     if (!second_waiting.load()) {
@@ -436,7 +446,51 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   Wait(second_stop_finished, "second Stop did not finish");
   first.join();
   second.join();
-  return second_waiting.load() && !second_returned_early.load();
+  if (fail_cleanup) {
+    Require(!std::filesystem::exists(database_path), "cleanup recreated missing database");
+    std::filesystem::rename(held_path, database_path);
+  }
+  const auto snapshot = runtime.Snapshot();
+  const auto repeated = runtime.Stop();
+  const auto same_result = [&](const server::ServerAgentRuntimeStopResult& other) {
+    if (other.attempted != first_result.attempted ||
+        other.durable_cleanup_complete != first_result.durable_cleanup_complete ||
+        other.diagnostics.size() != first_result.diagnostics.size()) return false;
+    for (std::size_t i = 0; i < other.diagnostics.size(); ++i) {
+      const auto& a = first_result.diagnostics[i];
+      const auto& b = other.diagnostics[i];
+      if (a.code != b.code || a.message_key != b.message_key || a.severity != b.severity ||
+          a.safe_message != b.safe_message || a.occurrence_uuid != b.occurrence_uuid ||
+          a.fields.size() != b.fields.size()) return false;
+      for (std::size_t field = 0; field < a.fields.size(); ++field) {
+        if (a.fields[field].key != b.fields[field].key ||
+            a.fields[field].value != b.fields[field].value) return false;
+      }
+    }
+    return true;
+  };
+  bool expected_result = first_result.attempted;
+  if (fail_cleanup) {
+    expected_result = expected_result && !first_result.ok() &&
+        !first_result.durable_cleanup_complete && first_result.diagnostics.size() == 1 &&
+        first_result.diagnostics.front().code == "SB-STORAGE-DISK-OPEN-MISSING";
+    bool begin_failure = false;
+    for (const auto& diagnostic : first_result.diagnostics) {
+      for (const auto& field : diagnostic.fields) {
+        begin_failure = begin_failure ||
+            (field.key == "shutdown_phase" && field.value == "service-drain:begin");
+      }
+    }
+    expected_result = expected_result && begin_failure;
+  } else {
+    expected_result = expected_result && first_result.ok() && first_result.durable_cleanup_complete;
+  }
+  const bool retained = same_result(second_result) && same_result(snapshot.stop_result) &&
+      same_result(repeated);
+  std::cout << "concurrent_stop_failure=" << fail_cleanup
+            << " exact_result_retained=" << retained << '\n';
+  return second_waiting.load() && !second_returned_early.load() && expected_result && retained &&
+      !snapshot.started && !snapshot.stopping;
 }
 
 // SEARCH_KEY: SERVER_AGENT_SPURIOUS_WAKE_RECHECK
@@ -793,7 +847,10 @@ bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
 int main(int argc, char** argv) {
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
-  const bool concurrent_stop = argc == 2 && std::string_view(argv[1]) == "--concurrent-stop";
+  const bool concurrent_stop_failure = argc == 2 &&
+      std::string_view(argv[1]) == "--concurrent-stop-failure";
+  const bool concurrent_stop = concurrent_stop_failure ||
+      (argc == 2 && std::string_view(argv[1]) == "--concurrent-stop");
   cleanup_failure_mode = argc == 3 && std::string_view(argv[1]) == "--startup-cleanup-failure";
   const bool startup_failure = cleanup_failure_mode ||
       (argc == 3 && std::string_view(argv[1]) == "--startup-failure");
@@ -930,7 +987,8 @@ int main(int argc, char** argv) {
   } else if (spurious_wake) {
     spurious_rechecked = CheckSpuriousWake(runtime);
   } else if (concurrent_stop) {
-    completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count);
+    completion_serialized = CheckConcurrentStop(runtime, active.worker_thread_count,
+                                                concurrent_stop_failure);
   } else if (!lifecycle_case) {
     Wait(waiter_at_park, "worker did not reach its native predicate/park boundary");
 
