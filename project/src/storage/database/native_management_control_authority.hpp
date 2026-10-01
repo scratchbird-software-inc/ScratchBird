@@ -20,6 +20,7 @@ struct NativeManagementControlGraph {
   std::optional<NativeManagementCheckpointAnchor> anchor;
   std::map<Uuid,NativeManagementPublishedCheckpoint> publications;
   std::map<std::pair<Uuid,u64>,page::NativeAllocationRecord> allocations;
+  std::map<std::pair<Uuid,u64>,page::NativeAllocationRecord> preallocations;
   u64 verified_image_bytes=0;
   bool ok() const noexcept {return error==NativeManagementControlAuthorityError::none&&anchor.has_value();}
 };

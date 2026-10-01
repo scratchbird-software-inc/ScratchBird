@@ -293,6 +293,36 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
 )
 
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  add_test(NAME native_preallocation_publication_gate
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation)
+  set_tests_properties(native_preallocation_publication_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;binary_uuid;real_files;native_publication;not_runtime_acceptance")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE -Wl,--wrap=posix_fallocate)
+    add_test(NAME native_preallocation_publication_fault_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-faults)
+    set_tests_properties(native_preallocation_publication_fault_gate PROPERTIES
+      TIMEOUT 120 LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+    foreach(profile RANGE 0 4)
+      add_test(NAME native_preallocation_crash_${profile}
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-crashes ${profile})
+      set_tests_properties(native_preallocation_crash_${profile} PROPERTIES TIMEOUT 180
+        LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+    endforeach()
+    foreach(route RANGE 0 2)
+      if(route EQUAL 2)
+        set(preallocation_last_shard 7)
+      else()
+        set(preallocation_last_shard 0)
+      endif()
+      foreach(shard RANGE 0 ${preallocation_last_shard})
+        add_test(NAME native_preallocation_sweep_${route}_${shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-sweep ${route} ${shard})
+        set_tests_properties(native_preallocation_sweep_${route}_${shard} PROPERTIES
+          TIMEOUT 180 LABELS "storage;binary_uuid;real_files;fault_injection;native_publication;not_runtime_acceptance")
+      endforeach()
+    endforeach()
+  endif()
   add_test(NAME native_publication_effect_receipt_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --publication-effects)
   set_tests_properties(native_publication_effect_receipt_gate PROPERTIES

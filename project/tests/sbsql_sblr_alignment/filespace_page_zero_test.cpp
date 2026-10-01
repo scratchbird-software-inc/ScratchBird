@@ -3654,6 +3654,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
           Check(growth.ok()&&!growth.inspected_pages&&!growth.blocked_page&&!stage_writes&&!stage_syncs,
             "growth range observes exact existing end without probing or creating tail capacity");
           auto pre=intent;pre.action=db::NativeStorageAction::page_preallocation;pre.first_page=32;pre.intended_state=db::NativeStorageIntentState::preallocated;
+          pre.allocation_owner_uuid=Id(231);pre.allocation_page_type=1;
           auto range=inspect(pre,ceiling,devices);failed(range,R::page_not_free);
           Check(range.blocked_page==32&&!range.inspected_pages,"quarantined pages cannot become free through range shape");
           const auto saved_map=map;
@@ -3802,6 +3803,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
           refused(changed,IE::limit_exceeded);}
         auto restricted=enabled;restricted.growth_allowed=false;set_policy(restricted);refused(intent,IE::action_disallowed);
         changed=intent;changed.action=db::NativeStorageAction::page_preallocation;changed.first_page=32;changed.intended_state=db::NativeStorageIntentState::preallocated;
+        changed.allocation_owner_uuid=Id(231);changed.allocation_page_type=1;
         Check(match(changed).ok(),"preallocation policy matching does not claim range is free or grant execution");
         restricted.preallocation_allowed=false;set_policy(restricted);refused(changed,IE::action_disallowed);
         set_policy(enabled);source_leaf.body.rows[2].version_uuid=Id(230);persist();refused(intent,IE::selection_mismatch);

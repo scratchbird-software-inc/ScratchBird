@@ -102,9 +102,10 @@ page::NativeTransactionInventoryChainResult Controls(Context& c,const Checkpoint
       const auto& r=*entry.allocation_root;const auto& root=Root(cp.root,4);const auto& map=*maps.pages.front().map;
       Require(r.page==root.page&&r.object_uuid==root.object_uuid&&r.sha256==root.sha256&&
         r.map_generation==map.map_generation&&r.capacity_generation==map.capacity_generation&&entry.total_pages==map.total_pages,E::binding_mismatch);}
-  std::size_t retained_allocations=0;
+  std::size_t retained_allocations=0,retained_preallocations=0;
   for(const auto& file:c.files){if(std::none_of(required.begin(),required.end(),[&](const auto& v){return v.header.filespace_uuid==file.filespace_uuid;})&&
-      std::none_of(proof.allocations.begin(),proof.allocations.end(),[&](const auto& entry){return entry.first.first==file.filespace_uuid;}))continue;
+      std::none_of(proof.allocations.begin(),proof.allocations.end(),[&](const auto& entry){return entry.first.first==file.filespace_uuid;})&&
+      std::none_of(proof.preallocations.begin(),proof.preallocations.end(),[&](const auto& entry){return entry.first.first==file.filespace_uuid;}))continue;
     page::NativeAllocationChainResult other;const auto* chain=&maps;if(file.filespace_uuid!=c.primary){
       const page::NativeFilespaceDirectoryRecord* member=nullptr;
       for(const auto& image:directory.pages)for(const auto& entry:image.directory->records)if(entry.bootstrap.filespace_uuid==file.filespace_uuid)member=&entry;
@@ -120,8 +121,15 @@ page::NativeTransactionInventoryChainResult Controls(Context& c,const Checkpoint
     for(const auto& [key,record]:proof.allocations){if(key.first!=file.filespace_uuid)continue;auto expected=chain->pages.front().map->header;
       expected.page_number=record.page_number;expected.page_uuid=record.page_uuid;expected.page_generation=record.page_generation;expected.page_type=record.page_type;
       Require(Allocated(*chain,expected,record.owner_uuid)==record,E::binding_mismatch);++retained_allocations;}
+    for(const auto& [key,record]:proof.preallocations){if(key.first!=file.filespace_uuid)continue;
+      auto image=std::upper_bound(chain->pages.begin(),chain->pages.end(),record.page_number,[](u64 n,const auto& p){return n<p.map->first_page;});
+      Require(image!=chain->pages.begin(),E::binding_mismatch);const auto& map=*std::prev(image)->map;
+      Require(record.page_number-map.first_page<map.states.size()&&map.states[record.page_number-map.first_page]==State::preallocated,E::binding_mismatch);
+      const auto actual=std::lower_bound(map.records.begin(),map.records.end(),record.page_number,[](const auto& r,u64 n){return r.page_number<n;});
+      Require(actual!=map.records.end()&&*actual==record,E::binding_mismatch);++retained_preallocations;
+    }
   }
-  Require(retained_allocations==proof.allocations.size(),E::binding_mismatch);
+  Require(retained_allocations==proof.allocations.size()&&retained_preallocations==proof.preallocations.size(),E::binding_mismatch);
   return inventory;
 }
 Pages Images(const page::NativeAllocationChainResult& maps){Pages out;out.reserve(maps.pages.size());for(const auto& p:maps.pages)out.push_back(p.bytes);return out;}
@@ -145,7 +153,9 @@ bool MatchesNativeManagementPublishedDirectory(const NativeManagementControlGrap
   return true;
 }
 bool MatchesNativeManagementControlAllocation(const NativeManagementControlGraph& proof,const Uuid& fs,const page::NativeAllocationRecord& r,State state) noexcept {
-  const auto p=proof.allocations.find({fs,r.page_number});return state==State::allocated&&p!=proof.allocations.end()&&p->second==r&&!r.creator_operation_uuid.is_nil();
+  if(state!=State::allocated&&state!=State::preallocated)return false;
+  const auto& records=state==State::allocated?proof.allocations:proof.preallocations;
+  const auto p=records.find({fs,r.page_number});return p!=records.end()&&p->second==r&&!r.creator_operation_uuid.is_nil();
 }
 bool MatchesNativeManagementControlMap(const NativeManagementControlGraph& proof,const page::NativeAllocationMap& map) noexcept {
   const auto p=proof.allocations.find({map.header.filespace_uuid,map.header.page_number});if(p==proof.allocations.end())return false;const auto& r=p->second;
@@ -182,7 +192,12 @@ NativeManagementControlAuthority ReadControlGraph(const Uuid& database,const std
       const auto delta=ValidateNativeManagementControlAllocation(base.bytes,target.bytes,plan.bytes,extent.pages,before_bytes,after_bytes,budget,bundle.pages,before_inventory_bytes);
       if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
       Require(result.publications.emplace(p.operation_uuid,NativeManagementPublishedCheckpoint{p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256,Root(target.root,3)}).second,E::binding_mismatch);
-      for(const auto& image:after.pages)for(const auto& record:image.map->records)if(record.creator_operation_uuid==p.operation_uuid)Require(result.allocations.emplace(std::make_pair(primary,record.page_number),record).second,E::binding_mismatch);
+      for(const auto& image:after.pages)for(const auto& record:image.map->records)if(record.creator_operation_uuid==p.operation_uuid){
+        const auto state=image.map->states[record.page_number-image.map->first_page];
+        Require(state==State::allocated||state==State::preallocated,E::binding_mismatch);
+        auto& records=state==State::allocated?result.allocations:result.preallocations;
+        Require(records.emplace(std::make_pair(primary,record.page_number),record).second,E::binding_mismatch);
+      }
       Controls(c,target,after,result,expected_inventory);
     }
     const auto& anchor=*history.anchor;auto current=c.Read(anchor.checkpoint,anchor.checkpoint_object_uuid,anchor.checkpoint_sha256);auto maps=c.Maps(primary,&Root(current.root,4));Controls(c,current,maps,result,expected_inventory);

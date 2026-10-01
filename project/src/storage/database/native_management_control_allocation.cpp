@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_allocation.hpp"
 #include "native_inventory_publication_delta.hpp"
+#include "native_storage_action_intent.hpp"
 #include "hash_digest_parts.hpp"
 #include <algorithm>
 #include <map>
@@ -92,6 +93,26 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     const auto* old_root=Root(a,4);const auto* new_root=Root(b,4);Require(old_root&&new_root,E::invalid_allocation);
     const auto before=DecodeMaps(before_bytes,*old_root,p.header);const auto after=DecodeMaps(after_bytes,*new_root,p.header);
     Require(before.size()==after.size()&&before.front().total_pages==after.front().total_pages&&before.front().object_uuid==after.front().object_uuid&&before.front().capacity_generation==after.front().capacity_generation&&after.front().map_generation>before.front().map_generation,E::invalid_delta);
+    std::optional<NativeStorageActionIntent> preallocation;
+    if(p.intent.recovery_profile==3){
+      const auto operation=DecodeNativeManagementExtent(extent_bytes,extent,p.header.database_uuid,p.bootstrap_uuid,extent_budget);
+      if(!operation.ok())throw operation.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:
+        operation.error==NativeManagementExtentError::hash_failure?E::hash_failure:E::invalid_extent;
+      const auto request=ReadNativeStorageActionIntentFromOperation(*operation.record,budget);
+      if(!request.ok())throw request.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+        request.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
+      preallocation=*request.intent;const auto& i=*preallocation;
+      Require(i.action==NativeStorageAction::page_preallocation&&i.filespace_uuid==p.header.filespace_uuid&&
+        i.page_size_profile_uuid==p.header.page_size_profile_uuid&&i.page_size_bytes==p.header.page_size_bytes&&
+        i.checkpoint.filespace_uuid==p.base_checkpoint.filespace_uuid&&i.checkpoint.page_number==p.base_checkpoint.page_number&&
+        i.checkpoint.page_generation==p.base_checkpoint.page_generation&&i.checkpoint.page_size_profile_uuid==p.base_checkpoint.page_size_profile_uuid&&
+        i.checkpoint.object_uuid==p.base_checkpoint_object_uuid&&i.checkpoint_sha256==p.base_checkpoint_sha256&&
+        i.checkpoint_generation==p.base_checkpoint_generation&&i.checkpoint_root_set_generation==p.base_root_set_generation&&
+        i.allocation_root.filespace_uuid==old_root->page.filespace_uuid&&i.allocation_root.page_number==old_root->page.page_number&&
+        i.allocation_root.page_generation==old_root->page.page_generation&&i.allocation_root.object_uuid==old_root->object_uuid&&
+        i.allocation_sha256==old_root->sha256&&i.current_total_pages==before.front().total_pages&&
+        i.map_generation==before.front().map_generation&&i.capacity_generation==before.front().capacity_generation,E::binding_mismatch);
+    }
     Allocated(before,a.header,a.object_uuid);
     std::map<u64,Control> controls;std::set<Uuid> page_ids,old_allocations,old_pages;
     for(const auto& m:before)for(const auto& r:m.records){old_allocations.insert(r.allocation_uuid);if(!r.page_uuid.is_nil())old_pages.insert(r.page_uuid);}
@@ -101,14 +122,22 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     for(const auto& raw:after_inventory){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::invalid_delta);add(*h.header,Root(b,1)->object_uuid);}
     for(const auto& raw:extent_bytes){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::invalid_extent);add(*h.header,p.management_extent->object_uuid);}
     for(const auto& m:after){Require(m.map_generation==p.reserved_generation&&m.creator_transaction_uuid.is_nil()&&!m.creator_local_transaction_id&&m.creator_operation_uuid==p.operation_uuid,E::invalid_delta);add(m.header,m.object_uuid);}
-    std::size_t matched=0;
+    std::size_t matched=0;u64 reserved=0;
     for(std::size_t n=0;n<before.size();++n){const auto& x=before[n];const auto& y=after[n];Require(x.first_page==y.first_page&&x.states.size()==y.states.size(),E::invalid_delta);std::size_t xi=0,yi=0;
       for(std::size_t i=0;i<x.states.size();++i){const auto number=x.first_page+i;const auto* xr=xi<x.records.size()&&x.records[xi].page_number==number?&x.records[xi++]:nullptr;const auto* yr=yi<y.records.size()&&y.records[yi].page_number==number?&y.records[yi++]:nullptr;const auto found=controls.find(number);
+        const bool reserve=preallocation&&number>=preallocation->first_page&&number-preallocation->first_page<preallocation->page_count;
+        if(reserve){
+          Require(found==controls.end()&&x.states[i]==S::free&&!xr&&y.states[i]==S::preallocated&&yr&&
+            yr->page_uuid.is_nil()&&!yr->page_generation&&yr->owner_uuid==preallocation->allocation_owner_uuid&&
+            yr->page_type==preallocation->allocation_page_type&&yr->creator_operation_uuid==p.operation_uuid&&
+            yr->creator_transaction_uuid.is_nil()&&!yr->creator_local_transaction_id&&!yr->reuse_horizon&&
+            !old_allocations.contains(yr->allocation_uuid),E::invalid_delta);++reserved;continue;
+        }
         if(found==controls.end()){Require(x.states[i]==y.states[i]&&bool(xr)==bool(yr)&&(!xr||*xr==*yr),E::invalid_delta);continue;}
         const auto& c=found->second;Require(yr&&y.states[i]==S::allocated&&yr->page_uuid==c.header.page_uuid&&yr->page_generation==c.header.page_generation&&yr->page_type==c.header.page_type&&yr->owner_uuid==c.owner&&yr->creator_transaction_uuid.is_nil()&&!yr->creator_local_transaction_id&&yr->creator_operation_uuid==p.operation_uuid&&!yr->reuse_horizon&&!old_allocations.contains(yr->allocation_uuid),E::invalid_delta);++matched;
       }
     }
-    Require(matched==controls.size(),E::invalid_delta);return E::none;
+    Require(matched==controls.size()&&reserved==(preallocation?preallocation->page_count:0),E::invalid_delta);return E::none;
   }catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_request;}
 }
 } // namespace scratchbird::storage::database

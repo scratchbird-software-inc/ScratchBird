@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "node_uuid_issuer.hpp"
+#include "disk_device.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_publication_watermark.hpp"
 #include <memory>
@@ -42,6 +43,7 @@ struct NativePublicationInspection {
 struct NativePublicationReservation;
 struct NativePublicationPlan;
 struct NativeManagementOperation;
+struct NativePreallocationPublicationResult;
 class NativePublicationLease {
  public:
   ~NativePublicationLease();
@@ -74,6 +76,9 @@ class NativePublicationLease {
   friend NativePublicationInspection PublishNativeInventoryOnLease(
     NativePublicationLease&,const NativeManagementOperation&,
     const transaction::mga::LocalTransactionInventory&,u64,
+    core::uuid::StandaloneUuidV7Issuer&) noexcept;
+  friend NativePreallocationPublicationResult PublishNativePreallocationOnLease(
+    NativePublicationLease&,const NativeManagementOperation&,u64,
     core::uuid::StandaloneUuidV7Issuer&) noexcept;
 };
 struct NativePublicationReservation {
@@ -157,5 +162,25 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(
 NativePublicationInspection PublishNativeInventoryOnLease(
   NativePublicationLease&,const NativeManagementOperation&,
   const transaction::mga::LocalTransactionInventory&,
+  u64 maximum_verification_image_bytes,core::uuid::StandaloneUuidV7Issuer&) noexcept;
+
+struct NativePreallocationPublicationResult {
+  NativePublicationInspection publication;
+  bool physical_attempted=false, physical_sync_completed=false;
+  std::optional<disk::PreallocateExtentResult> physical;
+  // An attempted call without a returned physical result has unknown effects.
+  // Publication effects and a returned failed physical result remain available.
+  bool ok() const noexcept {
+    return publication.ok()&&physical&&physical->ok()&&physical_sync_completed;
+  }
+};
+// Owned profile3 primary preallocation: retain exact intent/control graph,
+// perform actual contained physical reserve, sync, then publish native states.
+// The owning kernel supplies security/policy/MGA/resource authority separately.
+// A pending exact anchored attempt can be resumed; a failed physical/sync phase
+// poisons its lease until explicit release/reinspection/resume. This is not a
+// runtime API, transaction completion or a proof of physical reserve on fallback.
+NativePreallocationPublicationResult PublishNativePreallocationOnLease(
+  NativePublicationLease&,const NativeManagementOperation&,
   u64 maximum_verification_image_bytes,core::uuid::StandaloneUuidV7Issuer&) noexcept;
 } // namespace scratchbird::storage::database

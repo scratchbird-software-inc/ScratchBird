@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_publication_coordinator.hpp"
+#include "native_storage_action_intent.hpp"
 #include "native_publication_plan.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_control_authority.hpp"
@@ -27,6 +28,24 @@ bool V7(const Uuid& id){return core::uuid::IsEngineIdentityUuid(id);}
 void Backend(NativePublicationWatermarkError error){
   if(error==NativePublicationWatermarkError::hash_failure)throw E::hash_failure;
   if(error==NativePublicationWatermarkError::resource_exhausted)throw E::resource_exhausted;
+}
+E CapacityFailure(const NativeFilespaceCapacityResult& r){
+  // Readers retain the failing layer separately from its backend diagnostic.
+  // A failed read/hash/allocation is not evidence that the proposal was stale.
+  const auto backend=[](auto error){
+    using T=decltype(error);
+    return error==T::resource_exhausted?E::resource_exhausted:
+      error==T::hash_failure?E::hash_failure:error==T::io_failure?E::io_failure:E::none;
+  };
+  for(const auto error:{backend(r.error),backend(r.checkpoint_error),backend(r.inventory_error),
+      backend(r.directory_error),backend(r.allocation_error),backend(r.management_error)})
+    if(error!=E::none)return error;
+  if(r.bootstrap_error==disk::FilespacePageZeroError::resource_exhausted)return E::resource_exhausted;
+  if(r.bootstrap_error==disk::FilespacePageZeroError::hash_provider_failure)return E::hash_failure;
+  if(r.bootstrap_error==disk::FilespacePageZeroError::io_failure)return E::io_failure;
+  if(r.error==NativeFilespaceCapacityError::cluster_requires_authority)return E::cluster_requires_authority;
+  if(r.error==NativeFilespaceCapacityError::encrypted_requires_authority)return E::encrypted_requires_authority;
+  return E::stale_base;
 }
 struct Context {
   std::vector<disk::NativeFilespaceDevice> devices;
@@ -502,8 +521,13 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     const auto install=[&](std::size_t first,std::size_t end){for(std::size_t n=end;n>first;--n){auto& target=artifacts[n-1];read(target.page,scratch);Require(scratch==target.before,E::preimage_changed);
         if(scratch!=target.bytes){EffectWrite(*c,*c->primary,target.page*size,target.bytes);}}
       EffectSync(*c,*c->primary);for(std::size_t n=first;n<end;++n){read(artifacts[n].page,scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}};
-    c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;Publish(*c,images,scratch);
-    install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);if(inventory_start!=map_start)install(inventory_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
+    c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
+    // Storage work has no metadata-only abandonment. An anchor may not escape
+    // until its immutable reconstruction inputs are durable and verified.
+    if(plan.intent.recovery_profile!=3)Publish(*c,images,scratch);
+    install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);
+    if(plan.intent.recovery_profile==3)Publish(*c,images,scratch);
+    if(inventory_start!=map_start)install(inventory_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
     lease.impl_->effects.installed_graph_verified=true;
     c->bytes=std::move(images);lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);lease.impl_->installation_ambiguous=false;return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
@@ -615,12 +639,12 @@ struct OwnedInventoryGraph {
 OwnedInventoryGraph AssembleInventory(Context& context,
     const NativeManagementOperation& supplied_record,
     const mga::LocalTransactionInventory& supplied_inventory, u64 budget,
-    core::uuid::StandaloneUuidV7Issuer& issuer) {
+    core::uuid::StandaloneUuidV7Issuer& issuer,const NativeStorageActionIntent* preallocation=nullptr) {
   const auto& snapshot=context.snapshot;
   const auto& watermark=snapshot.watermark;
   const auto& zero=context.zero;
   const auto& base=*context.bound.checkpoint_inventory.checkpoint;
-  Require(watermark.intent&&watermark.intent->recovery_profile==2&&
+  Require(watermark.intent&&watermark.intent->recovery_profile==(preallocation?3:2)&&
     !watermark.abandonment&&!watermark.publication_plan&&
     watermark.watermark>snapshot.selection.checkpoint_generation,E::operation_pending);
   const auto encoded_record=EncodeNativeManagementOperation(supplied_record,budget);
@@ -638,7 +662,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     issuer.binding().policy_snapshot_uuid==record.policy_snapshot_uuid,E::request_mismatch);
   const u64 size=zero.bootstrap.page_size_bytes, payload=size-384, per_inventory=payload/72;
   const auto ceil=[](u64 n,u64 d){return n/d+(n%d!=0);};
-  const u64 inventory_count=std::max<u64>(1,ceil(supplied_inventory.entries.size(),per_inventory));
+  const u64 inventory_count=preallocation?0:std::max<u64>(1,ceil(supplied_inventory.entries.size(),per_inventory));
   const u64 map_count=context.bound.allocation.pages.size();
   const u64 extent_count=ceil(encoded_record.bytes.size(),payload);
   u64 charged=context.bound.retained_image_bytes;
@@ -674,7 +698,8 @@ OwnedInventoryGraph AssembleInventory(Context& context,
       const auto& map=*image.map;
       for(std::size_t i=0;i<map.states.size();++i) {
         const u64 number=map.first_page+i;
-        if(!number||map.states[i]!=page::NativeAllocationState::free||selected.contains(number)) {run.clear();continue;}
+        if(!number||map.states[i]!=page::NativeAllocationState::free||selected.contains(number)||
+            (preallocation&&number>=preallocation->first_page&&number-preallocation->first_page<preallocation->page_count)) {run.clear();continue;}
         auto known=probes.find(number);
         if(known==probes.end()) {
           charge(1,size);
@@ -715,6 +740,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   for(const auto& entry:context.bound.checkpoint_inventory.inventory.entries)retain(entry.identity.transaction_uuid.value);
   for(const auto& step:record.steps)for(const auto& id:{step.uuid,step.operation_uuid,step.family_uuid,step.target_uuid,
     step.started_at,step.completed_at,step.evidence_uuid,step.metric_evidence_uuid,step.diagnostic_uuid,step.boundary_uuid})retain(id);
+  if(preallocation)retain(preallocation->allocation_owner_uuid);
   const auto issue=[&](core::platform::UuidKind kind) {
     const auto id=issuer.Issue(kind);
     Require(id.error!=core::uuid::StandaloneUuidV7Error::resource_exhausted,E::resource_exhausted);
@@ -726,6 +752,25 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   std::vector<page::NativeAllocationMap> maps;
   maps.reserve(map_count);
   for(const auto& image:context.bound.allocation.pages)maps.push_back(*image.map);
+  if(preallocation){
+    for(const auto& map:maps){
+      const u64 begin=std::max(map.first_page,preallocation->first_page);
+      const u64 end=std::min(map.first_page+map.states.size(),preallocation->first_page+preallocation->page_count);
+      const u64 records_at=(384+(map.states.size()+1)/2+7)&~u64{7};
+      Require(records_at<=size&&map.records.size()<=(size-records_at)/128,E::resource_exhausted);
+      Require(end<=begin||end-begin<=(size-records_at)/128-map.records.size(),E::resource_exhausted);
+    }
+    for(u64 n=preallocation->first_page;n-preallocation->first_page<preallocation->page_count;++n){
+      const auto found=std::upper_bound(maps.begin(),maps.end(),n,[](u64 number,const auto& m){return number<m.first_page;});
+      Require(found!=maps.begin(),E::allocation_mismatch);auto& map=*std::prev(found);
+      Require(n-map.first_page<map.states.size()&&map.states[n-map.first_page]==page::NativeAllocationState::free,E::allocation_mismatch);
+      const auto at=std::lower_bound(map.records.begin(),map.records.end(),n,[](const auto& r,u64 number){return r.page_number<number;});
+      Require(at==map.records.end()||at->page_number!=n,E::allocation_mismatch);
+      page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=issue(UuidKind::object);
+      r.owner_uuid=preallocation->allocation_owner_uuid;r.page_type=preallocation->allocation_page_type;
+      r.creator_operation_uuid=watermark.operation_uuid;map.records.insert(at,r);map.states[n-map.first_page]=page::NativeAllocationState::preallocated;
+    }
+  }
   const auto control=[&](u64 number,u32 type,const Uuid& owner) {
     disk::NativeCommonPageHeader h{u32(size),type,zero.bootstrap.database_uuid,zero.bootstrap.filespace_uuid,
       issue(UuidKind::page),number,watermark.watermark,0,zero.bootstrap.page_size_profile_uuid};
@@ -797,7 +842,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   target.predecessor=plan.base_checkpoint;target.predecessor_sha256=plan.base_checkpoint_sha256;
   target.selected_local_transaction_id=inventory.next_local_transaction_id-1;
   for(auto& r:target.roots) {
-    if(r.role==1)r={1,0x301,ControlRef(inventory_headers.front()),inventory_root.object_uuid,ControlHash(inventory_images.front())};
+    if(r.role==1&&!preallocation)r={1,0x301,ControlRef(inventory_headers.front()),inventory_root.object_uuid,ControlHash(inventory_images.front())};
     if(r.role==4)r={4,3,ControlRef(maps.front().header),maps.front().object_uuid,ControlHash(map_images.front())};
   }
   NativeCheckpointRootReference plan_root{16,0x500,ControlRef(plan.header),plan.object_uuid,{}};
@@ -833,5 +878,71 @@ NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease
 
   };
   auto result=action();result.effects=lease.effects();return result;
+}
+
+NativePreallocationPublicationResult PublishNativePreallocationOnLease(NativePublicationLease& lease,
+    const NativeManagementOperation& record,u64 budget,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  NativePreallocationPublicationResult result;
+  try {
+    Require(!lease.impl_->installation_ambiguous,E::stale_base);
+    const auto request=ReadNativeStorageActionIntentFromOperation(record,budget);
+    if(!request.ok())throw request.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
+      request.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::invalid_request;
+    const auto& intent=*request.intent;
+    const auto& old=*lease.impl_->context;
+    Require(intent.action==NativeStorageAction::page_preallocation&&
+      intent.filespace_uuid==old.zero.bootstrap.filespace_uuid&&
+      lease.snapshot().watermark.intent&&lease.snapshot().watermark.intent->recovery_profile==3,E::invalid_request);
+    Require(issuer.binding().database_uuid==intent.database_uuid&&
+      issuer.binding().policy_snapshot_uuid==intent.policy_snapshot_uuid,E::request_mismatch);
+    const u64 allowance=std::min(budget,intent.maximum_retained_image_bytes);
+    Require(allowance>kNativeStorageActionIntentBytes+intent.page_size_bytes,E::resource_exhausted);
+    // A retained proposal is never authority for stale selected capacity.
+    const auto matched=CheckNativeStorageIntentCapacityFromOpenDevices(intent,old.devices,allowance);
+    if(!matched.ok())throw CapacityFailure(matched.capacity);
+    Require(matched.capacity.retained_image_bytes<=allowance-kNativeStorageActionIntentBytes-intent.page_size_bytes,E::resource_exhausted);
+    const u64 work_budget=allowance-matched.capacity.retained_image_bytes-kNativeStorageActionIntentBytes-intent.page_size_bytes;
+    auto current=Prepare(intent.database_uuid,old.devices,intent.filespace_uuid,work_budget,true,false);
+    Require(SameBase(lease.snapshot(),current->snapshot),E::stale_base);
+    Bytes probe(intent.page_size_bytes);
+    for(u64 n=intent.first_page;n-intent.first_page<intent.page_count;++n){
+      const auto image=std::upper_bound(current->bound.allocation.pages.begin(),current->bound.allocation.pages.end(),n,
+        [](u64 number,const auto& p){return number<p.map->first_page;});
+      Require(image!=current->bound.allocation.pages.begin(),E::allocation_mismatch);const auto& map=*std::prev(image)->map;
+      Require(n-map.first_page<map.states.size()&&map.states[n-map.first_page]==page::NativeAllocationState::free&&
+        std::none_of(map.records.begin(),map.records.end(),[&](const auto& r){return r.page_number==n;}),E::allocation_mismatch);
+      const auto io=current->primary->ReadAt(n*intent.page_size_bytes,probe.data(),probe.size());
+      Require(io.ok()&&io.bytes_transferred==probe.size(),E::io_failure);
+      Require(std::all_of(probe.begin(),probe.end(),[](byte value){return !value;}),E::preimage_changed);
+    }
+    if(current->snapshot.watermark.publication_plan){
+      const auto& anchor=*current->snapshot.watermark.publication_plan;
+      const auto io=current->primary->ReadAt(anchor.page.page_number*intent.page_size_bytes,probe.data(),probe.size());
+      Require(io.ok()&&io.bytes_transferred==probe.size(),E::io_failure);
+      const auto plan=DecodeNativePublicationPlan(probe);ControlPlanError(plan.error);
+      Require(plan.plan->intent.recovery_profile==3,E::request_mismatch);
+      ControlPlanError(BindNativePublicationPlanToManagementRecord(*plan.plan,record));
+      result.publication=ResumeNativeManagementControlGraphOnLease(lease,work_budget);
+    }else{
+      auto graph=AssembleInventory(*current,record,current->bound.checkpoint_inventory.inventory,work_budget,issuer,&intent);
+      result.publication=InstallNativeManagementControlGraphOnLease(lease,graph.plan,graph.checkpoint,graph.extent,graph.bundle,work_budget);
+    }
+    if(!result.publication.ok())return result;
+    // From here an exception is an attempted physical operation with unknown
+    // effects, not a fabricated no-effect refusal. Never rebuild this attempt.
+    lease.impl_->installation_ambiguous=true;
+    result.physical_attempted=true;
+    result.physical=current->primary->PreallocateExtent(intent.first_page*u64{intent.page_size_bytes},
+      intent.page_count*u64{intent.page_size_bytes});
+    Require(result.physical->ok()&&!result.physical->logical_size_extended,E::io_failure);
+    current->effects=&lease.impl_->effects;EffectSync(*current,*current->primary);
+    result.physical_sync_completed=true;
+    lease.impl_->installation_ambiguous=false;
+    result.publication=PublishNativeManagementControlGraphOnLease(lease,work_budget);
+  }catch(E e){result.publication.error=e;result.publication.snapshot.reset();}
+   catch(const std::bad_alloc&){result.publication.error=E::resource_exhausted;result.publication.snapshot.reset();}
+   catch(const std::length_error&){result.publication.error=E::resource_exhausted;result.publication.snapshot.reset();}
+   catch(...){result.publication.error=E::io_failure;result.publication.snapshot.reset();}
+  result.publication.effects=lease.effects();return result;
 }
 } // namespace scratchbird::storage::database

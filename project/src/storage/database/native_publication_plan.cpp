@@ -34,7 +34,7 @@ E Validate(const NativePublicationPlan& p){
   const bool inventory=p.intent.recovery_profile==2;
   if(inventory!=bool(p.control_bundle&&p.control_bundle->inventory_count))return E::invalid_family;
   if(p.base_selection_generation&&(!p.control_bundle||!*p.base_selection_generation||*p.base_selection_generation==std::numeric_limits<u64>::max()))return E::invalid_family;
-  if(p.intent.recovery_profile>2||(p.intent.recovery_profile&&!p.base_selection_generation))return E::invalid_family;
+  if(p.intent.recovery_profile>3||(p.intent.recovery_profile&&!p.base_selection_generation))return E::invalid_family;
   for(const auto* id:{&p.object_uuid,&p.bootstrap_uuid,&p.timeline_uuid,&p.operation_uuid,&p.intent.initiator_uuid,&p.intent.request_context_uuid,&p.intent.policy_snapshot_uuid,&p.base_checkpoint_object_uuid,&p.target_checkpoint_object_uuid})if(!V7(*id))return E::invalid_identity;
   if(!p.management_extent){if(!V7(p.security_snapshot_uuid))return E::invalid_identity;if(p.generation_guard_flags!=7||!p.catalog_generation||!p.configuration_generation||!p.security_generation)return E::invalid_family;}
   else {if(!p.security_snapshot_uuid.is_nil()&&!V7(p.security_snapshot_uuid))return E::invalid_identity;
@@ -70,7 +70,7 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
     const auto h=disk::EncodeNativeCommonPageHeader(p.header);if(!h.ok())return Fail(E::invalid_header);
     std::vector<byte> b(p.header.page_size_bytes,0);std::copy(h.bytes->begin(),h.bytes->end(),b.begin());auto* f=b.data()+128;
-    const bool extent=p.management_extent.has_value(),bundle=p.control_bundle.has_value(),sequence=p.base_selection_generation.has_value(),profile=p.intent.recovery_profile!=0,inventory=p.intent.recovery_profile==2;std::copy_n(inventory?"SBPPM006":profile?"SBPPM005":sequence?"SBPPM004":bundle?"SBPPM003":extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,inventory?6:profile?5:sequence?4:bundle?3:extent?2:1);StoreLittle16(f+10,bundle?1024:extent?896:640);StoreLittle32(f+12,bundle?1152:extent?1024:768);
+    const bool extent=p.management_extent.has_value(),bundle=p.control_bundle.has_value(),sequence=p.base_selection_generation.has_value(),profile=p.intent.recovery_profile!=0,inventory=p.intent.recovery_profile==2,preallocation=p.intent.recovery_profile==3;std::copy_n(preallocation?"SBPPM007":inventory?"SBPPM006":profile?"SBPPM005":sequence?"SBPPM004":bundle?"SBPPM003":extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,preallocation?7:inventory?6:profile?5:sequence?4:bundle?3:extent?2:1);StoreLittle16(f+10,bundle?1024:extent?896:640);StoreLittle32(f+12,bundle?1152:extent?1024:768);
     Put(f+16,p.object_uuid);Put(f+32,p.bootstrap_uuid);Put(f+48,p.timeline_uuid);Put(f+64,p.operation_uuid);Put(f+80,p.intent.initiator_uuid);Put(f+96,p.intent.request_context_uuid);Put(f+112,p.intent.policy_snapshot_uuid);Put(f+128,p.security_snapshot_uuid);
     std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),f+144);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),f+176);
     StoreLittle64(f+208,p.reserved_generation);StoreLittle64(f+216,p.base_checkpoint_generation);StoreLittle64(f+224,p.base_root_set_generation);StoreLittle64(f+232,p.target_root_set_generation);
@@ -95,9 +95,9 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
     const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
     if(!h.ok()||h.header->page_type!=0x500||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
     const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);if(!std::equal(sha.digest.begin(),sha.digest.end(),b.begin()+688))return Fail(E::invalid_integrity);
-    const auto* f=b.data()+128;const auto magic=std::string_view(reinterpret_cast<const char*>(f),8);const bool inventory=magic=="SBPPM006",profile=inventory||magic=="SBPPM005",sequence=profile||magic=="SBPPM004",bundle=sequence||magic=="SBPPM003",extent=bundle||magic=="SBPPM002";
-    if((!extent&&magic!="SBPPM001")||LoadLittle16(f+8)!=(inventory?6:profile?5:sequence?4:bundle?3:extent?2:1)||LoadLittle16(f+10)!=(bundle?1024:extent?896:640)||LoadLittle32(f+12)!=(bundle?1152:extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
-    if(bundle){if(!Zero(f+596,12)||!Zero(b.data()+1152,b.size()-1152)||(profile&&LoadLittle16(f+920)!=(inventory?2:1)))return Fail(E::invalid_family);
+    const auto* f=b.data()+128;const auto magic=std::string_view(reinterpret_cast<const char*>(f),8);const bool preallocation=magic=="SBPPM007",inventory=magic=="SBPPM006",profile=preallocation||inventory||magic=="SBPPM005",sequence=profile||magic=="SBPPM004",bundle=sequence||magic=="SBPPM003",extent=bundle||magic=="SBPPM002";
+    if((!extent&&magic!="SBPPM001")||LoadLittle16(f+8)!=(preallocation?7:inventory?6:profile?5:sequence?4:bundle?3:extent?2:1)||LoadLittle16(f+10)!=(bundle?1024:extent?896:640)||LoadLittle32(f+12)!=(bundle?1152:extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
+    if(bundle){if(!Zero(f+596,12)||!Zero(b.data()+1152,b.size()-1152)||(profile&&LoadLittle16(f+920)!=(preallocation?3:inventory?2:1)))return Fail(E::invalid_family);
       if(inventory){if(!Zero(f+922,6)||!Zero(f+936,88))return Fail(E::invalid_family);}
       else if(!Zero(f+(profile?922:sequence?920:912),profile?102:sequence?104:112))return Fail(E::invalid_family);}
     else if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return Fail(E::invalid_family);}
