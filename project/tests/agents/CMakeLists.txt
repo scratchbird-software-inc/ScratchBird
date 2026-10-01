@@ -8,6 +8,16 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(UNIX)
+add_executable(startup_transaction_inventory_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_transaction_inventory_gate.cpp")
+target_compile_features(startup_transaction_inventory_gate PRIVATE cxx_std_23)
+target_link_libraries(startup_transaction_inventory_gate PRIVATE sb_engine_internal_api)
+add_test(NAME startup_transaction_inventory_gate COMMAND startup_transaction_inventory_gate)
+set_tests_properties(startup_transaction_inventory_gate PROPERTIES
+  TIMEOUT 120 LABELS "agents;mga;startup;native_inventory")
+endif()
+
 add_executable(memory_safe_retirement_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/memory_safe_retirement_gate.cpp")
 target_compile_features(memory_safe_retirement_gate PRIVATE cxx_std_23)
