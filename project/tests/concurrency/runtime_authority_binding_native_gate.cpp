@@ -9,6 +9,22 @@
 namespace {
 namespace runtime_api=scratchbird::engine::internal_api;
 using BindingError=runtime_api::RuntimeAuthorityBindingReadError;
+template<class T> concept HasSnapshotIdentity=requires(T value){value.snapshot_uuid;};
+static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingCommittedReadResult>);
+
+void VerifyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result) {
+  if(!result.ok())std::cerr<<"committed binding error="<<static_cast<unsigned>(result.error)
+      <<" source="<<static_cast<unsigned>(result.source_error)<<'\n';
+  Check(result.ok()&&result.binding->binding_uuid==Id(180)&&result.binding->database_uuid==Id(1)&&
+      result.binding->service_principal_uuid==Id(200)&&result.binding->credential_reference_uuid==Id(203)&&
+      result.binding->provider_uuid==Id(201)&&result.binding->policy_uuid==Id(202)&&
+      result.binding->generation==1&&result.binding->policy_epoch==3&&result.binding->provider_generation==5&&
+      result.native_version_uuid==Id(170),"committed source preserves exact binary definition and version");
+}
+void EmptyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result,BindingError error) {
+  Check(result.error==error&&!result.binding&&result.native_version_uuid.is_nil(),
+        "committed source failure exposes no usable binding/version");
+}
 
 void BindRuntimeDefinition(db::NativeCatalogLeafPage& leaf) {
   for(auto& row:leaf.body.rows) {
@@ -69,6 +85,16 @@ void RuntimeBindingFiles() {
       const byte padding=0; Check(device.WriteAt(zero.total_pages*sizes[profile]-1,&padding,1).ok()&&device.Sync().ok(),"sync native fixture");
     };
     persist();
+    const std::vector<disk::NativeFilespaceDevice> committed_devices{{Id(2),Profile(profile),&device}};
+    const auto read_committed=[&](u64 generation=1,byte identity=180,u64 budget=0) {
+      return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),committed_devices,
+          CheckpointRef(checkpoint),2,1,{Id(101),{}},Id(identity),generation,budget?budget:8*u64{sizes[profile]});
+    };
+    stage_writes=stage_syncs=0;
+    VerifyCommittedBinding(read_committed());
+    EmptyCommittedBinding(read_committed(2),BindingError::generation_mismatch);
+    EmptyCommittedBinding(read_committed(1,250),BindingError::absent);
+    Check(!stage_writes&&!stage_syncs,"committed configuration observation performs no writes or syncs");
     const auto verify=[&](const auto& result) {
       if(!result.ok())std::cerr<<"read error="<<static_cast<unsigned>(result.error)<<" source="<<static_cast<unsigned>(result.source_error)<<'\n';
       Check(result.ok()&&result.binding->binding_uuid==Id(180)&&result.binding->database_uuid==Id(1)&&
@@ -85,9 +111,11 @@ void RuntimeBindingFiles() {
     auto saved=inventory;
     inventory.inventory.entries[0].state=mga::TransactionState::active; inventory.inventory.entries[0].commit_sequence=0;
     persist(); empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::absent);
+    EmptyCommittedBinding(read_committed(),BindingError::absent);
     empty(ReadRuntimeBinding(device,profile,inventory.inventory,13),BindingError::not_committed_active);
     inventory.inventory.entries[0].state=mga::TransactionState::rolled_back; persist();
     empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::absent);
+    EmptyCommittedBinding(read_committed(),BindingError::absent);
     inventory=saved; persist();
     const auto original_leaf=leaf;
     auto changed=catalog::DecodeCatalogMetadataVersion(leaf.body.rows[0].cells[0].value.payload);
@@ -101,8 +129,56 @@ void RuntimeBindingFiles() {
     const auto outer=catalog::EncodeCatalogMetadataVersion(changed.record); Check(outer.ok(),"well-formed foreign metadata");
     leaf.body.rows[0].cells[0].value.payload=outer.bytes; persist();
     empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::invalid_definition);
+    EmptyCommittedBinding(read_committed(),BindingError::invalid_definition);
     leaf=original_leaf; persist();
+    // A committed source requires no active reader. Do not synthesize or begin
+    // a transaction just to load the configuration used to admit that BEGIN.
+    inventory.inventory.entries[2].state=mga::TransactionState::committed;
+    inventory.inventory.entries[2].commit_sequence=3;inventory.inventory.next_commit_sequence=4;
+    persist();VerifyCommittedBinding(read_committed());
+    inventory=saved;persist();
+    // Navigation ownership is independent of the selected binding row.
+    inventory.inventory.entries[1].state=mga::TransactionState::active;
+    inventory.inventory.entries[1].commit_sequence=0;persist();
+    const auto uncommitted_navigation=read_committed();
+    EmptyCommittedBinding(uncommitted_navigation,BindingError::source_failure);
+    // This fixture uses a direct catalog root, not an index navigation page.
+    // Checkpoint selection rejects its uncommitted creator before row selection.
+    Check(uncommitted_navigation.source_error==db::NativeCommittedCatalogReadError::source_failure,
+          "committed binding retains checkpoint source refusal");
+    inventory=saved;persist();
     if(profile==0) {
+      for(unsigned invalid=0;invalid<5;++invalid) {
+        auto database=Id(1),binding=Id(180);u64 generation=1,budget=8*u64{sizes[0]};
+        if(invalid==0)database={};if(invalid==1)binding={};if(invalid==2)generation=0;
+        if(invalid==3)budget=0;if(invalid==4)binding.bytes[6]=0x40;
+        reads=0;track_reads=true;
+        const auto bad=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(database,{{Id(2),Profile(0),&device}},
+            CheckpointRef(checkpoint),2,1,{Id(101),{}},binding,generation,budget);
+        track_reads=false;EmptyCommittedBinding(bad,BindingError::invalid_request);
+        Check(!reads,"invalid committed request performs no native reads");
+      }
+      EmptyCommittedBinding(read_committed(1,180,1),BindingError::source_failure);
+      reads=0;track_reads=true;auto committed=read_committed();track_reads=false;const auto committed_reads=reads;
+      VerifyCommittedBinding(committed);Check(committed_reads>0,"committed source actually reads files");
+      for(unsigned fault=1;fault<=committed_reads;++fault) {
+        reads=0;read_fault=fault;track_reads=true;committed=read_committed();track_reads=false;
+        Check(read_fault==0,"committed source read fault consumed");EmptyCommittedBinding(committed,BindingError::source_failure);
+      }
+      for(long fault:{0l,1l,5l,20l,50l}) {
+        const auto loss=device.failed_io_latency_observations();
+        allocation_budget=fault;committed=read_committed();const bool consumed=allocation_budget==-1;allocation_budget=-1;
+        Check(consumed,"committed source selected allocation fault consumed");
+        if(committed.ok()) {
+          Check(device.failed_io_latency_observations()==loss+1,"only recorded telemetry loss preserves committed source success");
+          VerifyCommittedBinding(committed);
+        }else {
+          Check(!committed.binding&&committed.native_version_uuid.is_nil()&&
+              (committed.error==BindingError::source_failure||committed.error==BindingError::resource_exhausted),
+              "committed allocation failure retains no usable result");
+        }
+      }
+      VerifyCommittedBinding(read_committed());
       CatalogTestPin pin(inventory.inventory,18);
       const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
       const auto read=[&](u64 budget=8*u64{sizes[0]}) {
@@ -157,7 +233,10 @@ int main(int argc,char** argv) {
           CheckpointRef(CheckpointExample(profile)),8*u64{sizes[profile]});
       if(!source.ok())return 4;
       const auto read=ReadRuntimeBinding(device,profile,source.inventory);
-      return read.ok()&&read.binding->service_principal_uuid==Id(200)&&read.native_version_uuid==Id(170)?0:5;
+      if(!read.ok()||read.binding->service_principal_uuid!=Id(200)||read.native_version_uuid!=Id(170))return 5;
+      const auto committed=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
+          CheckpointRef(CheckpointExample(profile)),2,1,{Id(101),{}},Id(180),1,8*u64{sizes[profile]});
+      VerifyCommittedBinding(committed);return 0;
     }
     RuntimeBindingFiles(); std::cout<<"native runtime binding checks="<<checks<<" failures=0\n"; return 0;
   }catch(const std::exception& error){allocation_budget=-1;std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}
