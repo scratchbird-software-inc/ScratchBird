@@ -5,6 +5,7 @@
 #include "reservation_backed_memory_resource.hpp"
 
 #include <chrono>
+#include <array>
 #include <condition_variable>
 #include <limits>
 #include <mutex>
@@ -43,6 +44,20 @@ struct SafeRetirementHazard {
   SafeRetirementBoundary release_required_by = SafeRetirementBoundary::operation_completion;
 };
 
+inline constexpr usize kSafeRetirementObjectKindCount =
+    static_cast<usize>(SafeRetirementObjectKind::archive_stub) + 1;
+
+struct SafeRetirementKindSnapshot {
+  usize constructing = 0;
+  usize published = 0;
+  usize retired = 0;
+  usize reclaiming = 0;
+  usize readers = 0;
+  u64 retained_payload_bytes = 0;
+  usize reclamation_blocked_objects = 0;
+  u64 reclamation_blocked_bytes = 0;
+};
+
 struct SafeRetirementSnapshot {
   usize constructing = 0;
   usize published = 0;
@@ -53,6 +68,14 @@ struct SafeRetirementSnapshot {
   u64 metadata_bytes = 0;
   bool closed = false;
   bool initialized = false;
+  // Current gauges, not cumulative events or evidence of completed drain.
+  // A hazard blocks reclamation only when its object is retired. Multiple
+  // readers protecting the same object count that object/backing once.
+  usize reclamation_blocked_objects = 0;
+  u64 reclamation_blocked_bytes = 0;
+  // Indexed by the validated SafeRetirementObjectKind enum. One locked sample;
+  // no per-object identities/payloads or heap allocation in metric snapshots.
+  std::array<SafeRetirementKindSnapshot, kSafeRetirementObjectKindCount> by_kind{};
 };
 
 // Protected internal lifecycle evidence. No payload pointer or value is

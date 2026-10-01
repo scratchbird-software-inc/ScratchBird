@@ -177,7 +177,10 @@ void ConstructionAndClose() {
       return domain.Emplace<PausedConstruction>(Id(32), kind, entered, release, destroyed);
     });
     entered.wait();
-    const bool constructing = domain.Snapshot().constructing == 1;
+    const auto construction = domain.Snapshot();
+    const bool constructing = construction.constructing == 1 &&
+        construction.by_kind[static_cast<m::usize>(kind)].constructing == 1 &&
+        construction.reclamation_blocked_objects == 0;
     const auto result = domain.Drain(std::chrono::steady_clock::now());
     release.count_down();
     const auto created = creating.get();
@@ -263,6 +266,11 @@ void FailedReleaseRetainsCharge() {
           "physical release failure follows exactly one destructor");
     Check(domain.Snapshot().retired == 1 && domain.Snapshot().retained_payload_bytes == sizeof(Payload) &&
           f.manager.Snapshot().current_bytes == charged, "failed release retains actual backing and charge");
+    const auto failed_release = domain.Snapshot();
+    Check(failed_release.reclamation_blocked_objects == 0 &&
+          failed_release.by_kind[static_cast<m::usize>(kind)].retired == 1 &&
+          failed_release.by_kind[static_cast<m::usize>(kind)].reclamation_blocked_objects == 0,
+          "physical release failure is not a hazard blocker");
     m::SafeRetirementGuard guard;
     Check(domain.Protect(created.handle, Hazard(72), guard) == S::stale_handle,
           "destroyed but unreleased object cannot be republished");
@@ -301,6 +309,10 @@ void ConcurrentCollectorsAndDrain() {
     const auto first = collector.get();
     Check(snapshot.reclaiming == 1 && snapshot.retained_payload_bytes == sizeof(PausedDestruction) &&
           still_charged == charged, "in-flight destructor retains backing and charge");
+    Check(snapshot.reclamation_blocked_objects == 0 &&
+          snapshot.by_kind[static_cast<m::usize>(kind)].reclaiming == 1 &&
+          snapshot.by_kind[static_cast<m::usize>(kind)].retained_payload_bytes == sizeof(PausedDestruction),
+          "in-flight destructor remains measured without inventing a hazard");
     Check(second == S::ok && drain == S::timed_out && first == S::ok && destroyed.load() == 1,
           "second collector and drain cannot release destructor-in-flight backing");
     Check(domain.Drain(std::chrono::steady_clock::now()) == S::ok, "completed collector permits drain");
@@ -423,6 +435,14 @@ void ConcurrentReaderInspection() {
         std::array<m::SafeRetirementReaderRecord, 1> record{};
         const auto result = domain.InspectRetainedReaders(
             Id(99), m::SafeRetirementBoundary::runtime_shutdown, record);
+        const auto metrics = domain.Snapshot();
+        const auto& kind_metrics = metrics.by_kind[static_cast<m::usize>(kind)];
+        consistent = consistent && metrics.retired == 1 && metrics.readers <= 1 &&
+            metrics.reclamation_blocked_objects == metrics.readers &&
+            metrics.retained_payload_bytes == sizeof(unsigned) &&
+            kind_metrics.retired == metrics.retired && kind_metrics.readers == metrics.readers &&
+            kind_metrics.reclamation_blocked_objects == metrics.reclamation_blocked_objects &&
+            metrics.reclamation_blocked_bytes == metrics.readers * sizeof(unsigned);
         consistent = consistent && result.status == S::ok && !result.truncated &&
             result.matching_readers <= 1 && result.records_written == result.matching_readers;
         if (result.records_written)
@@ -453,6 +473,68 @@ void ConcurrentReaderInspection() {
   }
   f.Empty();
 }
+void ReclamationGaugesByKind() {
+  Fixture f;
+  constexpr auto count = m::kSafeRetirementObjectKindCount;
+  {
+    m::MemorySafeRetirement domain(*f.resource, Id(500), count, count * 2);
+    Check(domain.Initialize() == S::ok, "kind gauge metadata");
+    std::array<m::SafeRetirementHandle, count> handles;
+    std::array<m::SafeRetirementGuard, count * 2> guards;
+    for (unsigned i = 0; i != count; ++i) {
+      const auto created = domain.Emplace<unsigned>(Id(501 + i),
+          static_cast<m::SafeRetirementObjectKind>(i), i);
+      Check(created.ok(), "all object kinds actually allocated");
+      handles[i] = created.handle;
+      Check(domain.Protect(handles[i], Hazard(520 + i * 2), guards[i * 2]) == S::ok &&
+            domain.Protect(handles[i], Hazard(521 + i * 2), guards[i * 2 + 1]) == S::ok,
+            "two real readers for each object kind");
+    }
+    const auto published = domain.Snapshot();
+    Check(published.published == count && published.readers == count * 2 &&
+          published.reclamation_blocked_objects == 0 && published.reclamation_blocked_bytes == 0,
+          "live published readers are not deferred-reclamation objects");
+    for (unsigned i = 0; i != count; ++i) {
+      const auto& gauge = published.by_kind[i];
+      Check(gauge.published == 1 && gauge.readers == 2 &&
+            gauge.retained_payload_bytes == sizeof(unsigned) && gauge.reclamation_blocked_objects == 0,
+            "per-kind publication/reader/byte gauges");
+      Check(domain.Retire(handles[i]) == S::ok, "retire each protected kind");
+    }
+    const auto retired = domain.Snapshot();
+    Check(retired.retired == count && retired.reclamation_blocked_objects == count &&
+          retired.reclamation_blocked_bytes == count * sizeof(unsigned),
+          "blocked object and byte gauges do not double count readers");
+    for (unsigned i = 0; i != count; ++i) {
+      const auto& gauge = retired.by_kind[i];
+      Check(gauge.retired == 1 && gauge.published == 0 && gauge.readers == 2 &&
+            gauge.reclamation_blocked_objects == 1 && gauge.reclamation_blocked_bytes == sizeof(unsigned),
+            "exact retired object kind and retained bytes");
+      guards[i * 2].Reset();
+    }
+    Check(domain.Snapshot().reclamation_blocked_objects == count,
+          "first reader release does not remove last-reader blocker");
+    for (unsigned i = 0; i != count; ++i) {
+      guards[i * 2 + 1].Reset();
+      const auto released = domain.Snapshot();
+      Check(released.reclamation_blocked_objects == count - i - 1 &&
+            released.reclamation_blocked_bytes == (count - i - 1) * sizeof(unsigned) &&
+            released.by_kind[i].reclamation_blocked_objects == 0 &&
+            released.by_kind[i].retired == 1 && released.by_kind[i].retained_payload_bytes == sizeof(unsigned),
+            "last reader removes blocker but does not fabricate physical release");
+    }
+    Check(domain.Collect() == S::ok, "collect all unprotected kinds");
+    const auto collected = domain.Snapshot();
+    Check(collected.retired == 0 && collected.retained_payload_bytes == 0 &&
+          collected.reclamation_blocked_objects == 0, "real collection clears payload gauges");
+    for (const auto& gauge : collected.by_kind)
+      Check(gauge.constructing == 0 && gauge.published == 0 && gauge.retired == 0 &&
+            gauge.reclaiming == 0 && gauge.readers == 0 && gauge.retained_payload_bytes == 0 &&
+            gauge.reclamation_blocked_objects == 0 && gauge.reclamation_blocked_bytes == 0,
+            "reclaimed slot leaves no stale kind gauge");
+  }
+  f.Empty();
+}
 }  // namespace
 
 int main() {
@@ -464,6 +546,7 @@ int main() {
     InvalidAdmissionAndPayloadCapacity();
     BoundedReaderInspection();
     ConcurrentReaderInspection();
+    ReclamationGaugesByKind();
     std::cout << "PASS safe retirement checks=" << checks << "\n";
     return 0;
   } catch (const std::exception& error) {
