@@ -118,26 +118,59 @@ NativeFilespaceDirectoryResult DecodeNativeFilespaceDirectory(const std::vector<
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
 
-NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
+static NativeFilespaceDirectoryChainResult ReadDirectory(
     const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const disk::FilespaceRootReference& head,u64 budget) noexcept {
+    const disk::FilespaceRootReference& head,u64 budget,
+    const std::vector<NativeHistoricalFilespaceImage>* history=nullptr,
+    const std::array<byte,32>* root_sha256=nullptr) noexcept {
   try{
     if(!V7(database_uuid)||!V7(head.object_uuid)||head.kind!=5||head.page_type!=9||devices.empty()||
         !Ref({head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid}))return ChainFail(E::invalid_reference);
+    if(history&&(!root_sha256||Zero(root_sha256->data(),root_sha256->size())||history->size()!=devices.size()))
+      return ChainFail(E::invalid_reference);
     auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::vector<std::unique_lock<std::recursive_mutex>> guards;std::vector<disk::FilespacePageZero> zeros;
+    std::vector<u64> sizes;
+    std::vector<const NativeHistoricalFilespaceImage*> historical_images;
+    u64 retained_bytes=0;
     guards.reserve(ordered.size());zeros.reserve(ordered.size());
     std::set<disk::FileDevice*> device_ids;Uuid prior;
     for(const auto& device:ordered){if(!V7(device.filespace_uuid)||!(prior<device.filespace_uuid)||!device.device||!device_ids.insert(device.device).second||
         !disk::FindCanonicalFilespacePageProfile(device.page_size_profile_uuid))return ChainFail(E::invalid_filespace);
       guards.push_back(device.device->AcquireOperationGuard());prior=device.filespace_uuid;}
+    if(history){
+      sizes.reserve(ordered.size());historical_images.reserve(history->size());
+      for(const auto& image:*history)historical_images.push_back(&image);
+      std::sort(historical_images.begin(),historical_images.end(),[](const auto* a,const auto* b){return a->filespace_uuid<b->filespace_uuid;});
+      for(std::size_t i=0;i<ordered.size();++i)
+        if(historical_images[i]->filespace_uuid!=ordered[i].filespace_uuid)return ChainFail(E::invalid_filespace);
+    }
     for(const auto& device:ordered){const disk::FilespaceBootstrapBinding binding{database_uuid,device.filespace_uuid,device.page_size_profile_uuid};
-      auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*device.device,&binding);
+      const std::vector<byte>* bytes=nullptr;
+      if(history){
+        bytes=&historical_images[zeros.size()]->page_zero;
+        if(bytes->size()>budget-retained_bytes)return ChainFail(E::resource_exhausted);
+        retained_bytes+=bytes->size();
+        if(disk::kFilespaceBootstrapBytes>budget-retained_bytes)return ChainFail(E::resource_exhausted);
+        retained_bytes+=disk::kFilespaceBootstrapBytes;
+      }
+      auto zero=bytes?disk::DecodeFilespacePageZero(bytes->data(),bytes->size(),&binding):
+                     disk::ReadFilespacePageZeroFromOpenDevice(*device.device,&binding);
       if(!zero.ok())return ChainFail(zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
         zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:
         zero.error==disk::FilespacePageZeroError::io_failure?E::io_failure:E::invalid_filespace);
+      if(history){
+        const auto actual=disk::ReadFilespaceBootstrapFromOpenDevice(*device.device,&binding);
+        if(!actual.ok())return ChainFail(actual.error==disk::FilespaceBootstrapError::resource_exhausted?E::resource_exhausted:
+          actual.error==disk::FilespaceBootstrapError::hash_provider_failure?E::hash_failure:
+          actual.error==disk::FilespaceBootstrapError::io_failure||actual.error==disk::FilespaceBootstrapError::device_not_open?E::io_failure:E::invalid_filespace);
+        const auto size=device.device->Size();if(!size.ok())return ChainFail(E::io_failure);
+        if(size.size_bytes<zero.record->total_pages*zero.record->bootstrap.page_size_bytes)return ChainFail(E::invalid_filespace);
+        sizes.push_back(size.size_bytes);
+      }
       zeros.push_back(std::move(*zero.record));}
     NativeFilespaceDirectoryChainResult result;disk::NativePageReference next{head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid};
+    result.retained_image_bytes=retained_bytes;
     std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;Uuid last_record;
     u64 ordinal=0;
     while(true){const auto it=std::lower_bound(ordered.begin(),ordered.end(),next.filespace_uuid,[](const auto& a,const auto& b){return a.filespace_uuid<b;});
@@ -148,6 +181,9 @@ NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
       if(size>budget-result.retained_image_bytes)return ChainFail(E::resource_exhausted);
       std::vector<byte> bytes(size);const auto io=it->device->ReadAt(next.page_number*size,bytes.data(),size);
       if(!io.ok()||io.bytes_transferred!=size)return ChainFail(E::io_failure);
+      if(result.pages.empty()&&root_sha256){const auto digest=Digest(bytes,false);
+        if(!digest.ok())return ChainFail(E::hash_failure);
+        if(digest.digest!=*root_sha256)return ChainFail(E::invalid_integrity);}
       auto loaded=DecodeNativeFilespaceDirectory(bytes);if(!loaded.ok())return ChainFail(loaded.error);const auto& d=*loaded.directory;const auto& h=d.header;
       if(h.database_uuid!=database_uuid||h.filespace_uuid!=next.filespace_uuid||h.page_size_profile_uuid!=next.page_size_profile_uuid||
           h.page_number!=next.page_number||h.page_generation!=next.page_generation||d.object_uuid!=head.object_uuid)return ChainFail(E::binding_mismatch);
@@ -172,7 +208,22 @@ NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
     for(const auto* r:records)if(r->operation){const auto it=lookup(r->operation->filespace_uuid);
       if(it!=records.end()&&(*it)->bootstrap.filespace_uuid==r->operation->filespace_uuid&&
           ((*it)->bootstrap.page_size_profile_uuid!=r->operation->page_size_profile_uuid||r->operation->page_number>=(*it)->total_pages))return ChainFail(E::invalid_reference);}
+    if(history)for(std::size_t i=0;i<ordered.size();++i){
+      const auto size=ordered[i].device->Size();if(!size.ok())return ChainFail(E::io_failure);
+      if(size.size_bytes!=sizes[i])return ChainFail(E::physical_extent_changed);
+    }
     result.error=E::none;return result;
   }catch(const std::bad_alloc&){return ChainFail(E::resource_exhausted);}catch(const std::length_error&){return ChainFail(E::resource_exhausted);}catch(...){return ChainFail(E::io_failure);}
+}
+NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& head,u64 budget) noexcept {
+  return ReadDirectory(database,devices,head,budget);
+}
+NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& head,const std::array<byte,32>& root_sha256,
+    const std::vector<NativeHistoricalFilespaceImage>& history,u64 budget) noexcept {
+  return ReadDirectory(database,devices,head,budget,&history,&root_sha256);
 }
 }  // namespace scratchbird::storage::page

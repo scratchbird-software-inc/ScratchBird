@@ -292,11 +292,12 @@ set_tests_properties(public_disk_file_device_gate PROPERTIES
   LABELS "public_release_correctness;public_disk_file_device_gate;PCR-GATE-020;PCR-GATE-021;PCR-020;PCR-021;storage;disk;durable_sync;atomic_create"
 )
 
-if(TARGET sbsql_sblr_alignment_native_allocation_map AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  target_compile_definitions(sbsql_sblr_alignment_native_allocation_map PRIVATE NATIVE_HISTORICAL_IO_FAULTS=1)
-  target_link_options(sbsql_sblr_alignment_native_allocation_map PRIVATE
-    -Wl,--wrap=fstat -Wl,--wrap=pwrite -Wl,--wrap=fsync)
-endif()
+foreach(history_target sbsql_sblr_alignment_native_allocation_map sbsql_sblr_alignment_native_filespace_directory)
+  if(TARGET ${history_target} AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(${history_target} PRIVATE NATIVE_HISTORICAL_IO_FAULTS=1)
+    target_link_options(${history_target} PRIVATE -Wl,--wrap=fstat -Wl,--wrap=pwrite -Wl,--wrap=fsync)
+  endif()
+endforeach()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   add_test(NAME native_preallocation_repeat_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-repeat)
