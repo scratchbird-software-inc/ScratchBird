@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_runtime_authority_binding.hpp"
+#include <array>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -105,7 +106,7 @@ void Run() {
     for (std::size_t size=0; size<bytes.size(); ++size)
       Check(!c::DecodeCatalogRuntimeAuthorityBinding(bytes.substr(0,size)).ok(),"every truncated prefix rejected");
     Check(!c::DecodeCatalogRuntimeAuthorityBinding(bytes+"x").ok(),"trailing bytes rejected");
-    for (std::size_t at : {std::size_t{0},4ul,6ul,8ul,12ul,16ul,20ul,22ul,24ul,26ul,27ul,28ul}) {
+    for (std::size_t at : std::array<std::size_t,12>{0,4,6,8,12,16,20,22,24,26,27,28}) {
       auto changed=bytes; changed[at]^=0x40;
       Check(!c::DecodeCatalogRuntimeAuthorityBinding(changed).ok(),"malformed header/field rejected");
     }
