@@ -712,13 +712,10 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
               ? "filespace_uuid"
               : database_path_ != database->database_path ? "database_path" : nullptr;
       if (conflict != nullptr && diagnostics != nullptr) {
-        // The specialized code is specified but not yet in the consolidated
-        // catalog. Preserve refusal without emitting an unregistered code.
-        // Remove this fallback only after the owning registration is delivered.
         diagnostics->push_back(ServerDiagnostic{
-            "DIAG.CODE_UNKNOWN", "DIAG.CODE_UNKNOWN", ServerDiagnosticSeverity::kError,
-            "Active runtime owner replacement is refused; its specialized diagnostic is not registered.",
-            {{"requested_code", "AGENT.INVALID_STATE"}, {"identity_field", conflict}}});
+            "AGENT.INVALID_STATE", "AGENT.INVALID_STATE", ServerDiagnosticSeverity::kError,
+            "An active runtime cannot replace its current database or filespace owner.",
+            {{"identity_field", conflict}}});
       }
       return conflict == nullptr;
     }

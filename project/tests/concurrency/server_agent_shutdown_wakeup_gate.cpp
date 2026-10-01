@@ -1096,13 +1096,12 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
           std::vector<std::string> retained_identities;
           const bool diagnosed = !with_diagnostics ||
               (conflict_diagnostics.size() == 1 &&
-               conflict_diagnostics.front().code == "DIAG.CODE_UNKNOWN" &&
-               conflict_diagnostics.front().message_key == "DIAG.CODE_UNKNOWN" &&
-               conflict_diagnostics.front().fields.size() == 2 &&
-               conflict_diagnostics.front().fields[0].key == "requested_code" &&
-               conflict_diagnostics.front().fields[0].value == "AGENT.INVALID_STATE" &&
-               conflict_diagnostics.front().fields[1].key == "identity_field" &&
-               conflict_diagnostics.front().fields[1].value ==
+               conflict_diagnostics.front().code == "AGENT.INVALID_STATE" &&
+               conflict_diagnostics.front().message_key == "AGENT.INVALID_STATE" &&
+               conflict_diagnostics.front().severity == server::ServerDiagnosticSeverity::kError &&
+               conflict_diagnostics.front().fields.size() == 1 &&
+               conflict_diagnostics.front().fields[0].key == "identity_field" &&
+               conflict_diagnostics.front().fields[0].value ==
                    (field == 0 ? "database_uuid" : field == 1 ? "filespace_uuid" : "database_path"));
           active_start_preserved = active_start_preserved && !accepted && diagnosed &&
               retained.started && !retained.stopping &&
