@@ -18,6 +18,7 @@ constexpr std::size_t kUsed = 512, kStateSeal = 368, kImageSeal = 400;
 constexpr std::array<byte,8> kPlanDomain{'S','B','P','A','G','S','T','3'};
 constexpr std::array<byte,8> kIntentDomain{'S','B','P','A','G','S','T','2'};
 constexpr std::array<byte,8> kResolutionDomain{'S','B','P','A','G','S','T','4'};
+constexpr std::array<byte,8> kStartupDomain{'S','B','P','A','G','S','T','5'};
 
 bool Zero(const byte* bytes, std::size_t size) {
   return std::all_of(bytes, bytes + size, [](byte value) { return value == 0; });
@@ -87,6 +88,11 @@ E Validate(const NativePublicationWatermark& state) {
     if(!V7(intent.initiator_uuid)||!V7(intent.request_context_uuid)||!V7(intent.policy_snapshot_uuid))return E::invalid_identity;
     if(state.watermark==1||intent.initiator_kind<1||intent.initiator_kind>8||intent.recovery_profile>4||
        Zero(intent.normalized_request_sha256.data(),32))return E::invalid_family;
+    if(intent.startup_binding){const auto& binding=*intent.startup_binding;
+      if(!V7(binding.operation_uuid)||!V7(binding.session_uuid)||!V7(binding.transaction_uuid))return E::invalid_identity;
+      if(intent.recovery_profile!=2||!binding.local_transaction_id||
+         binding.local_transaction_id==std::numeric_limits<u64>::max()||!binding.fence_generation)return E::invalid_family;
+    }
   }
   if(state.publication_plan){const auto& plan=*state.publication_plan;
     if(!state.intent||!V7(plan.object_uuid)||plan.object_uuid==state.object_uuid||plan.object_uuid==state.bootstrap_uuid||
@@ -96,14 +102,14 @@ E Validate(const NativePublicationWatermark& state) {
        (plan.page.filespace_uuid==state.base_checkpoint.filespace_uuid&&plan.page.page_number==state.base_checkpoint.page_number))return E::invalid_reference;
   }
   if(state.abandonment){const auto& resolution=*state.abandonment;
-    if(!state.intent||(state.intent->recovery_profile!=1&&state.intent->recovery_profile!=2)||!V7(resolution.resolution_uuid)||
+    if(!state.intent||state.intent->startup_binding||(state.intent->recovery_profile!=1&&state.intent->recovery_profile!=2)||!V7(resolution.resolution_uuid)||
        resolution.resolution_uuid==state.operation_uuid||Zero(resolution.pending_state_sha256.data(),32))return E::invalid_family;
   }
   return E::none;
 }
 auto StateDigest(const byte* family,u16 version) {
   if(version==1)return core::hash::ComputeSha256Digest(family,240);
-  const auto& domain=version==4?kResolutionDomain:version==3?kPlanDomain:kIntentDomain;
+  const auto& domain=version==5?kStartupDomain:version==4?kResolutionDomain:version==3?kPlanDomain:kIntentDomain;
   const core::hash::HashDigestSegment parts[]={{domain.data(),domain.size()},
     {family,240},{family+304,version>=3?336u:208u}};
   return core::hash::ComputeSha256DigestParts(parts,3);
@@ -111,10 +117,12 @@ auto StateDigest(const byte* family,u16 version) {
 auto OriginDigest(const byte* family,u16 version) {
   std::array<byte,640> original{};
   std::copy_n(family,240,original.begin());std::copy_n(family+304,84,original.begin()+304);
-  if(version==4)std::copy_n(family+516,2,original.begin()+516);
-  std::copy_n(version==4?"SBPAG004":"SBPAG002",8,original.begin());StoreLittle16(original.data()+8,version==4?4:2);
-  StoreLittle16(original.data()+10,version==4?640:512);StoreLittle32(original.data()+12,version==4?768:640);
-  return StateDigest(original.data(),version==4?4:2);
+  if(version>=4)std::copy_n(family+516,2,original.begin()+516);
+  if(version==5)std::copy_n(family+568,64,original.begin()+568);
+  const u16 origin_version=version>=4?version:2;
+  std::copy_n(version==5?"SBPAG005":version==4?"SBPAG004":"SBPAG002",8,original.begin());StoreLittle16(original.data()+8,origin_version);
+  StoreLittle16(original.data()+10,version>=4?640:512);StoreLittle32(original.data()+12,version>=4?768:640);
+  return StateDigest(original.data(),origin_version);
 }
 auto PendingDigest(const byte* family) {
   std::array<byte,640> pending{};std::copy_n(family,640,pending.begin());
@@ -139,8 +147,8 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
     std::vector<byte> bytes(state.header.page_size_bytes, 0);
     std::copy(common.bytes->begin(), common.bytes->end(), bytes.begin());
     auto* family = bytes.data() + 128;
-    const bool intent=state.intent.has_value();const u16 version=intent&&state.intent->recovery_profile?4:state.publication_plan?3:intent?2:1;
-    std::copy_n(version==4?"SBPAG004":version==3?"SBPAG003":intent?"SBPAG002":"SBPAG001", 8, family);
+    const bool intent=state.intent.has_value();const u16 version=intent&&state.intent->startup_binding?5:intent&&state.intent->recovery_profile?4:state.publication_plan?3:intent?2:1;
+    std::copy_n(version==5?"SBPAG005":version==4?"SBPAG004":version==3?"SBPAG003":intent?"SBPAG002":"SBPAG001", 8, family);
     StoreLittle16(family + 8, version);
     StoreLittle16(family + 10, version>=3?640:intent?512:384);
     StoreLittle32(family + 12, version>=3?768:intent?640:kUsed);
@@ -162,7 +170,11 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
       std::copy(request.normalized_request_sha256.begin(),request.normalized_request_sha256.end(),family+352);
       StoreLittle16(family+384,request.initiator_kind);StoreLittle16(family+386,1);
     }
-    if(version==4)StoreLittle16(family+516,state.intent->recovery_profile);
+    if(version>=4)StoreLittle16(family+516,state.intent->recovery_profile);
+    if(version==5){const auto& binding=*state.intent->startup_binding;
+      PutUuid(family+568,binding.operation_uuid);PutUuid(family+584,binding.session_uuid);PutUuid(family+600,binding.transaction_uuid);
+      StoreLittle64(family+616,binding.local_transaction_id);StoreLittle64(family+624,binding.fence_generation);
+    }
     if(state.abandonment){StoreLittle16(family+518,state.intent->recovery_profile);PutUuid(family+520,state.abandonment->resolution_uuid);
       std::copy(state.abandonment->pending_state_sha256.begin(),state.abandonment->pending_state_sha256.end(),family+536);
     }
@@ -202,14 +214,15 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
     const auto* family = bytes.data() + 128;
     const auto version=LoadLittle16(family+8);
     const bool intent=version>=2;const std::size_t used=version>=3?768:intent?640:kUsed;
-    if (version<1||version>4||std::string_view(reinterpret_cast<const char*>(family),8)!=(version==4?"SBPAG004":version==3?"SBPAG003":intent?"SBPAG002":"SBPAG001")||
+    if (version<1||version>5||std::string_view(reinterpret_cast<const char*>(family),8)!=(version==5?"SBPAG005":version==4?"SBPAG004":version==3?"SBPAG003":intent?"SBPAG002":"SBPAG001")||
         LoadLittle16(family+10)!=(version>=3?640:intent?512:384)||LoadLittle32(family+12)!=used||
-        !Zero(family+(version==4?568:version==3?516:intent?388:304),version==4?72:intent?124:80)||
+        !Zero(family+(version==5?632:version==4?568:version==3?516:intent?388:304),version==5?8:version==4?72:intent?124:80)||
         (intent&&LoadLittle16(family+386)!=1)||!Zero(bytes.data()+used,bytes.size()-used))return Fail(E::invalid_family);
-    if(version==4&&(LoadLittle16(family+516)<1||LoadLittle16(family+516)>4||
+    if(version>=4&&(LoadLittle16(family+516)<1||LoadLittle16(family+516)>4||
        (LoadLittle16(family+518)&&LoadLittle16(family+518)!=LoadLittle16(family+516))||
        (!LoadLittle16(family+518)&&!Zero(family+520,48))))return Fail(E::invalid_family);
-    const bool anchor=version==3||(version==4&&!Zero(family+388,128));
+    if(version==5&&(LoadLittle16(family+516)!=2||!Zero(family+518,50)))return Fail(E::invalid_family);
+    const bool anchor=version==3||(version>=4&&!Zero(family+388,128));
     if(anchor){const auto origin=OriginDigest(family,version);if(!origin.ok())return Fail(E::hash_failure);
       if(!std::equal(origin.digest.begin(),origin.digest.end(),family+484))return Fail(E::invalid_integrity);
     }
@@ -237,7 +250,8 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
     if(intent){NativePublicationIntent request;
       request.initiator_uuid=GetUuid(family+304);request.request_context_uuid=GetUuid(family+320);
       request.policy_snapshot_uuid=GetUuid(family+336);request.initiator_kind=LoadLittle16(family+384);
-      if(version==4)request.recovery_profile=LoadLittle16(family+516);
+      if(version>=4)request.recovery_profile=LoadLittle16(family+516);
+      if(version==5)request.startup_binding=NativeStartupBinding{GetUuid(family+568),GetUuid(family+584),GetUuid(family+600),LoadLittle64(family+616),LoadLittle64(family+624)};
       std::copy_n(family+352,32,request.normalized_request_sha256.begin());state.intent=request;
     }
     if(anchor){NativePublicationWatermark::PlanAnchor plan;

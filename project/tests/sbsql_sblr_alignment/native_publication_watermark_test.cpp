@@ -49,7 +49,7 @@ void Ref(Bytes& b,std::size_t at,const d::NativePageReference& r) {
 }
 void Seal(Bytes& b,bool state=true) {
   std::array<byte,32> sha{};
-  if(state){if(b[136]>=2&&b[136]<=4){const std::string_view domain=b[136]==4?"SBPAGST4":b[136]==3?"SBPAGST3":"SBPAGST2";Bytes material(domain.begin(),domain.end());
+  if(state){if(b[136]>=2&&b[136]<=5){const std::string_view domain=b[136]==5?"SBPAGST5":b[136]==4?"SBPAGST4":b[136]==3?"SBPAGST3":"SBPAGST2";Bytes material(domain.begin(),domain.end());
       material.insert(material.end(),b.begin()+128,b.begin()+368);material.insert(material.end(),b.begin()+432,b.begin()+(b[136]>=3?768:640));
       Check(SHA256(material.data(),material.size(),sha.data())!=nullptr,"independent intent state SHA256");
     }else Check(SHA256(b.data()+128,240,sha.data())!=nullptr,"independent state SHA256");
@@ -66,8 +66,9 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
   Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);
   u64 fnv=14695981039346656037ull;for(unsigned i=0;i<128;++i){fnv^=b[i];fnv*=1099511628211ull;}Num(b,96,8,fnv);
   const bool profiled=s.intent&&s.intent->recovery_profile;
-  std::copy_n(profiled?"SBPAG004":s.publication_plan?"SBPAG003":s.intent?"SBPAG002":"SBPAG001",8,b.begin()+128);
-  Num(b,136,2,profiled?4:s.publication_plan?3:s.intent?2:1);Num(b,138,2,(profiled||s.publication_plan)?640:s.intent?512:384);Num(b,140,4,(profiled||s.publication_plan)?768:s.intent?640:512);
+  const bool startup=s.intent&&s.intent->startup_binding;
+  std::copy_n(startup?"SBPAG005":profiled?"SBPAG004":s.publication_plan?"SBPAG003":s.intent?"SBPAG002":"SBPAG001",8,b.begin()+128);
+  Num(b,136,2,startup?5:profiled?4:s.publication_plan?3:s.intent?2:1);Num(b,138,2,(startup||profiled||s.publication_plan)?640:s.intent?512:384);Num(b,140,4,(startup||profiled||s.publication_plan)?768:s.intent?640:512);
   Put(b,144,s.object_uuid);Put(b,160,s.bootstrap_uuid);Put(b,176,s.timeline_uuid);
   Num(b,192,8,s.watermark);Num(b,200,8,s.base_checkpoint_generation);Num(b,208,8,s.base_root_set_generation);Num(b,216,8,s.previous_watermark);
   Put(b,224,s.operation_uuid);Ref(b,240,s.base_checkpoint);Put(b,288,s.base_checkpoint_object_uuid);
@@ -79,6 +80,9 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
     std::copy(p.sha256.begin(),p.sha256.end(),b.begin()+580);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+612);}
   if(profiled)Num(b,644,2,s.intent->recovery_profile);
   if(s.abandonment){Num(b,646,2,s.intent->recovery_profile);Put(b,648,s.abandonment->resolution_uuid);std::copy(s.abandonment->pending_state_sha256.begin(),s.abandonment->pending_state_sha256.end(),b.begin()+664);}
+  if(startup){const auto& binding=*s.intent->startup_binding;
+    Put(b,696,binding.operation_uuid);Put(b,712,binding.session_uuid);Put(b,728,binding.transaction_uuid);
+    Num(b,744,8,binding.local_transaction_id);Num(b,752,8,binding.fence_generation);}
   Seal(b);return b;
 }
 db::NativePublicationWatermark Example(unsigned p=0) {
@@ -215,7 +219,60 @@ auto wrong=state;wrong.intent->recovery_profile=5;Invalid(wrong);wrong=state;wro
   }
  }
 }
+void StartupBindingTests() {
+  for(unsigned profile=0;profile<5;++profile)for(bool attached:{false,true}) {
+    auto state=Next(Example(profile));
+    state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,2};
+    state.intent->normalized_request_sha256.fill(43);
+    state.intent->startup_binding=db::NativeStartupBinding{Id(50),Id(51),Id(52),13,19};
+    const auto origin=Oracle(state);
+    if(attached){db::NativePublicationWatermark::PlanAnchor anchor;
+      anchor.page={Id(2),30,2,state.header.page_size_profile_uuid};anchor.object_uuid=Id(44);anchor.sha256.fill(45);
+      std::copy_n(origin.begin()+368,32,anchor.reservation_state_sha256.begin());state.publication_plan=anchor;}
+    const auto raw=Oracle(state),other=Oracle(Other(state));
+    Check(db::EncodeNativePublicationWatermark(state).bytes==raw,"independent complete startup watermark bytes");
+    const auto decoded=db::DecodeNativePublicationWatermark(raw);
+    Check(decoded.ok()&&decoded.state->intent==state.intent&&decoded.state->publication_plan==state.publication_plan&&
+      Oracle(*decoded.state)==raw,"startup binary binding and original anchor round trip");
+    Check(db::ClassifyNativePublicationWatermarkPair(raw,other).ok(),"stable startup-bound pair");
+    if(attached)for(bool reverse:{false,true})Check(db::ClassifyNativePublicationWatermarkPair(
+      reverse?other:origin,reverse?origin:other).error==E::repair_required,"startup anchor interruption is repair not admission");
+    for(unsigned field=0;field<5;++field){auto changed=Other(state);auto& b=*changed.intent->startup_binding;
+      if(field==0)b.operation_uuid=Id(53);if(field==1)b.session_uuid=Id(53);if(field==2)b.transaction_uuid=Id(53);
+      if(field==3)++b.local_transaction_id;if(field==4)++b.fence_generation;
+      const auto altered=Oracle(changed);
+      if(attached)Empty(db::DecodeNativePublicationWatermark(altered));
+      else {Check(db::DecodeNativePublicationWatermark(altered).ok(),"changed binding individually valid");
+        Check(db::ClassifyNativePublicationWatermarkPair(raw,altered).error==E::invalid_pair,"same generation cannot substitute startup binding");}
+    }
+    for(unsigned field=0;field<3;++field)for(unsigned invalid=0;invalid<3;++invalid){auto bad=state;
+      auto& b=*bad.intent->startup_binding;auto& id=field==0?b.operation_uuid:field==1?b.session_uuid:b.transaction_uuid;
+      if(!invalid)id={};if(invalid==1)id.bytes[6]=0x40;if(invalid==2)id.bytes[8]=0xc0;Invalid(bad);}
+    for(unsigned field=0;field<3;++field){auto bad=state;auto& b=*bad.intent->startup_binding;
+      if(!field)b.local_transaction_id=0;if(field==1)b.local_transaction_id=UINT64_MAX;if(field==2)b.fence_generation=0;Invalid(bad);}
+    for(u16 profile_value:{0,1,3,4,5}){auto bad=state;bad.intent->recovery_profile=profile_value;Invalid(bad);}
+    auto abandoned=state;abandoned.abandonment=db::NativePublicationWatermark::Abandonment{Id(60),{}};
+    std::copy_n(raw.begin()+368,32,abandoned.abandonment->pending_state_sha256.begin());Invalid(abandoned);
+    for(unsigned at=696;at<760;++at){auto bad=raw;bad[at]^=1;Seal(bad,false);
+      const auto r=db::DecodeNativePublicationWatermark(bad);Empty(r);Check(r.error==E::invalid_integrity,"every startup byte bound by inner digest/origin");}
+    for(unsigned at=760;at<768;++at){auto bad=raw;bad[at]=1;Seal(bad);Empty(db::DecodeNativePublicationWatermark(bad));}
+    auto legacy=raw;legacy[135]='4';Num(legacy,136,2,4);Seal(legacy);Empty(db::DecodeNativePublicationWatermark(legacy));
+    auto maximum=state;maximum.publication_plan.reset();maximum.intent->startup_binding->local_transaction_id=UINT64_MAX-1;
+    maximum.intent->startup_binding->fence_generation=UINT64_MAX;
+    Check(db::EncodeNativePublicationWatermark(maximum).bytes==Oracle(maximum)&&db::DecodeNativePublicationWatermark(Oracle(maximum)).ok(),"exact unsigned startup bounds without overflow");
+    for(unsigned route=0;route<3;++route){const auto call=[&]{return route==0?db::EncodeNativePublicationWatermark(state):route==1?db::DecodeNativePublicationWatermark(raw):db::ClassifyNativePublicationWatermarkPair(raw,other);};
+      bool complete=false;for(long at=0;at<20;++at){allocation_budget=at;const auto result=call();const auto left=allocation_budget;allocation_budget=-1;
+        if(result.ok()){Check(left==0,"startup complete allocation sweep");complete=true;break;}
+        Check(left==-1&&result.error==E::resource_exhausted,"startup allocation failure consumed");Empty(result);}
+      Check(complete,"startup allocation sweep terminates");
+      for(unsigned mode=1;mode<=5;++mode)for(unsigned site=1;site<=(2+unsigned(attached))*(route==2?2u:1u);++site){
+        hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;const auto result=call();
+        Check(!hash_fault&&result.error==E::hash_failure,"startup every digest/origin fault consumed");Empty(result);}
+    }
+  }
+}
 void Test() {
+  StartupBindingTests();
   for(unsigned recovery=3;recovery<=4;++recovery)for(unsigned profile=0;profile<5;++profile)for(bool attached:{false,true}){
     auto state=Next(Example(profile));state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,u16(recovery)};
     state.intent->normalized_request_sha256.fill(43);

@@ -254,6 +254,17 @@ NativeManagementControlAllocationError ValidateControlAllocation(
       if(!delta.ok())throw delta.error==NativeInventoryDeltaError::resource_exhausted?E::resource_exhausted:delta.error==NativeInventoryDeltaError::hash_failure?E::hash_failure:delta.error==NativeInventoryDeltaError::encrypted_requires_authority?E::encrypted_requires_authority:E::invalid_delta;
       Require(!delta.delta->cluster_difference,E::cluster_requires_authority);
       Require(a.selected_local_transaction_id==delta.delta->before.next_local_transaction_id-1&&b.selected_local_transaction_id==delta.delta->after.next_local_transaction_id-1,E::invalid_delta);
+      if(p.intent.startup_binding){const auto& binding=*p.intent.startup_binding;
+        const auto& entries=delta.delta->after.entries;
+        const auto entry=std::find_if(entries.begin(),entries.end(),[&](const auto& e){return e.identity.local_id.value==binding.local_transaction_id;});
+        Require(entry!=entries.end()&&entry->identity.transaction_uuid.value==binding.transaction_uuid&&
+          entry->identity.scope==transaction::mga::TransactionScope::local_node,E::binding_mismatch);
+        for(const auto& difference:delta.delta->differences){
+          Require(difference.after&&difference.after->identity.local_id.value==binding.local_transaction_id&&
+            difference.after->identity.transaction_uuid.value==binding.transaction_uuid&&
+            difference.after->identity.scope==transaction::mga::TransactionScope::local_node,E::invalid_delta);
+        }
+      }
     }
     auto normalized=b;normalized.header=a.header;normalized.creator_transaction_uuid=a.creator_transaction_uuid;normalized.creator_local_transaction_id=a.creator_local_transaction_id;normalized.creator_operation_uuid=a.creator_operation_uuid;normalized.checkpoint_generation=a.checkpoint_generation;normalized.root_set_generation=a.root_set_generation;normalized.predecessor=a.predecessor;normalized.predecessor_sha256=a.predecessor_sha256;normalized.roots=a.roots;
     if(inventory)normalized.selected_local_transaction_id=a.selected_local_transaction_id;

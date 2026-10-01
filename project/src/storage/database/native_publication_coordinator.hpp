@@ -118,6 +118,12 @@ NativePublicationInspection RecoverNativePublicationGenerationOnOpenDevices(
 // Thread-affine: consume and destroy the lease on the reserving thread.
 // Caller-owned devices must remain open and alive until the lease is released.
 // No page reservation, checkpoint publication, transaction finality or SQL receipt.
+// With intent.startup_binding, durably retains the binary tuple before any
+// inventory publication, after checking exact selected local/UUID identity or
+// the actual next allocation number. It does NOT allocate that number or issue
+// the startup fence generation; those are separate owning-engine obligations.
+// A failed receipt may retain writes. Reconcile the original attempt, never
+// manufacture a new identity or infer no effects from a missing lease.
 NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(
   const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
   const NativePublicationSnapshot&,const Uuid& operation_uuid,u64,
@@ -169,6 +175,10 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(
 // Anchored/ambiguous attempts require existing exact-graph recovery, not rebuild.
 // Requires the owning node/policy-bound allocation instance, not raw time or a
 // context-free runtime generator. The kernel retains policy-selection authority.
+// Startup-bound leases accept only their exact transaction's inventory delta
+// and complete V2 operation request. Reconstruction inputs are durable before
+// anchoring; selected history retains the binding across later publications.
+// The family must validate request semantics and issue its own recovery receipt.
 NativePublicationInspection PublishNativeInventoryOnLease(
   NativePublicationLease&,const NativeManagementOperation&,
   const transaction::mga::LocalTransactionInventory&,

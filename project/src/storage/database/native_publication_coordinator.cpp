@@ -258,6 +258,17 @@ NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(con
     Require(SameBase(expected,c->snapshot),E::stale_base);
     auto w=c->snapshot.watermark;
     Require(!w.intent||w.abandonment||w.watermark==c->snapshot.selection.checkpoint_generation,E::operation_pending);
+    if(intent&&intent->startup_binding){const auto& binding=*intent->startup_binding;
+      const auto& inventory=c->bound.checkpoint_inventory.inventory;
+      bool present=false;
+      for(const auto& entry:inventory.entries){
+        const bool same_local=entry.identity.local_id.value==binding.local_transaction_id;
+        const bool same_uuid=entry.identity.transaction_uuid.value==binding.transaction_uuid;
+        Require(same_local==same_uuid,E::request_mismatch);
+        if(same_local){Require(entry.identity.scope==mga::TransactionScope::local_node,E::cluster_requires_authority);present=true;}
+      }
+      Require(present||binding.local_transaction_id==inventory.next_local_transaction_id,E::request_mismatch);
+    }
     Require(operation!=w.operation_uuid&&operation!=c->snapshot.selection.publication_uuid,E::invalid_request);
     Require(w.watermark!=std::numeric_limits<u64>::max(),E::generation_exhausted);
     w.previous_watermark=w.watermark;++w.watermark;w.previous_state_sha256=c->snapshot.state_sha256;w.operation_uuid=operation;
@@ -566,7 +577,7 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
         history.error==NativeManagementHistoryError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
       Require(history.verified_image_bytes<=budget-allowance,E::resource_exhausted);
       const auto validation=ValidateNativeManagementHistoryAppend(history,*candidate.record,
-        budget-allowance-history.verified_image_bytes);
+        budget-allowance-history.verified_image_bytes,plan.intent.startup_binding);
       if(validation!=NativeManagementHistoryError::none)throw validation==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:
         validation==NativeManagementHistoryError::hash_failure?E::hash_failure:E::request_mismatch;
     }
@@ -605,9 +616,9 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
       for(const auto& file:c->devices)if(std::any_of(artifacts.begin()+first,artifacts.begin()+end,[&](const auto& target){return target.filespace==file.filespace_uuid;}))EffectSync(*c,*file.device);
       for(std::size_t n=first;n<end;++n){read(artifacts[n],scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}scratch.resize(size);};
     c->effects=&lease.impl_->effects;lease.impl_->installation_ambiguous=true;
-    // Storage work has no metadata-only abandonment. An anchor may not escape
+    // Storage work and startup bindings have no generic abandonment. An anchor may not escape
     // until its immutable reconstruction inputs are durable and verified.
-    const bool storage_work=plan.intent.recovery_profile==3||plan.intent.recovery_profile==4;
+    const bool storage_work=plan.intent.recovery_profile==3||plan.intent.recovery_profile==4||plan.intent.startup_binding.has_value();
     if(!storage_work)Publish(*c,images,scratch);
     install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);
     if(storage_work)Publish(*c,images,scratch);

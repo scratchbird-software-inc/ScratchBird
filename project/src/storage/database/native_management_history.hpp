@@ -62,7 +62,7 @@ NativeManagementGraphHistory ReadNativeManagementGraphHistoryAtHistoricalContext
 // this grants no publication or physical effect authority.
 NativeManagementHistoryError ValidateNativeManagementHistoryAppend(
   const NativeManagementGraphHistory&,const NativeManagementOperation&,
-  u64 maximum_index_bytes) noexcept;
+  u64 maximum_index_bytes,const std::optional<NativeStartupBinding>& startup_binding = {}) noexcept;
 // Actual selected physical history and common evolution/uniqueness only.
 // NOT allocation/creator outcome, kernel authentication, effects or serving.
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,
