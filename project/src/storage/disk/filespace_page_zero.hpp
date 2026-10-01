@@ -67,4 +67,36 @@ struct FilespacePageZeroRecoveryObservation {
 // Root references are declared metadata, not proof of their physical backing.
 FilespacePageZeroRecoveryObservation ObserveFilespacePageZeroForRecoveryFromOpenDevice(
     FileDevice&, const FilespaceBootstrapBinding& expected) noexcept;
+
+enum class FilespacePageZeroBodyError {
+  none, invalid_request, invalid_device, image_failure, invalid_transition,
+  extent_mismatch, preimage_changed, readback_mismatch, io_failure,
+  hash_failure, resource_exhausted
+};
+struct FilespacePageZeroBodyResult {
+  FilespacePageZeroBodyError error=FilespacePageZeroBodyError::invalid_request;
+  FilespacePageZeroError image_error=FilespacePageZeroError::none;
+  FilespacePageZeroError observed_body_error=FilespacePageZeroError::none;
+  core::platform::DiagnosticRecord diagnostic;
+  bool original_preimage_verified=false, target_already_present=false;
+  bool damaged_body_observed=false, write_attempted=false, uncertain_write=false;
+  u64 confirmed_bytes=0, observed_size_bytes=0;
+  bool sync_attempted=false, sync_completed=false, postimage_verified=false;
+  bool ok() const noexcept {
+    return error==FilespacePageZeroBodyError::none&&sync_completed&&postimage_verified;
+  }
+};
+// Trusted physical actuator only. The owning native publisher must durably
+// retain/admit the original operation and both exact images BEFORE growth.
+// Does not extend storage, grant capacity, select a checkpoint or complete MGA.
+// Writes only [4096,4480), preserving bootstrap and recovery-root locations.
+FilespacePageZeroBodyResult WriteFilespacePageZeroGrowthBodyFromOpenDevice(
+    FileDevice&, const FilespaceBootstrapBinding&, const std::vector<byte>& before,
+    const std::vector<byte>& after, u64 maximum_verification_image_bytes) noexcept;
+// Explicit original-operation repair only, not ordinary-open auto-repair.
+// Invalid mutable bytes may be repaired; immutable damage and unexpected valid
+// metadata refuse. Caller-selected images are not proof of recovery authority.
+FilespacePageZeroBodyResult RepairFilespacePageZeroGrowthBodyFromOpenDevice(
+    FileDevice&, const FilespaceBootstrapBinding&, const std::vector<byte>& before,
+    const std::vector<byte>& after, u64 maximum_verification_image_bytes) noexcept;
 }  // namespace scratchbird::storage::disk

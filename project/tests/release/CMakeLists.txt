@@ -298,6 +298,16 @@ foreach(history_target sbsql_sblr_alignment_native_allocation_map sbsql_sblr_ali
     target_link_options(${history_target} PRIVATE -Wl,--wrap=fstat -Wl,--wrap=pwrite -Wl,--wrap=fsync)
   endif()
 endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(native_page_zero_growth_body_gate native_page_zero_growth_body_gate.cpp)
+  target_compile_features(native_page_zero_growth_body_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_page_zero_growth_body_gate PRIVATE sb_storage_disk)
+  target_link_options(native_page_zero_growth_body_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat -Wl,--wrap=EVP_MD_CTX_new)
+  add_test(NAME native_page_zero_growth_body_gate COMMAND native_page_zero_growth_body_gate)
+  set_tests_properties(native_page_zero_growth_body_gate PROPERTIES TIMEOUT 120
+    LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
+endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   add_test(NAME native_preallocation_repeat_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-repeat)
