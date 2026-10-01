@@ -353,6 +353,13 @@ bool EncodeCanonicalUint32Value(std::uint64_t value,
                                 std::string* canonical_bytes);
 bool DecodeCanonicalUint32Value(std::string_view canonical_bytes,
                                 std::uint64_t* value);
+// Canonical INT64 value boundary. Present values are exactly eight
+// little-endian two's-complement bytes. This bridge is mathematical and does
+// not define a text, parser, display, or cast policy.
+bool EncodeCanonicalInt64Value(std::int64_t value,
+                               std::string* canonical_bytes);
+bool DecodeCanonicalInt64Value(std::string_view canonical_bytes,
+                               std::int64_t* value);
 // Exact bulk-import converter 019d...b775 generation 1. This accepts only the
 // lane's canonical decimal grammar and is not a general parser, cast, or
 // display policy.

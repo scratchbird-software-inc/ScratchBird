@@ -168,6 +168,18 @@ dt::DatatypeOperationValue TypedNull(
   return value;
 }
 
+dt::DatatypeOperationValue PresentInt64(
+    std::int64_t number,
+    const engine::ExecutionTypeDescriptor& descriptor = {}) {
+  std::string encoded;
+  Check(dt::EncodeCanonicalInt64Value(number, &encoded),
+        "encode canonical int64 fixture");
+  dt::DatatypeOperationValue value{
+      dt::CanonicalTypeId::int64, std::move(encoded), false};
+  value.descriptor = descriptor;
+  return value;
+}
+
 void StandaloneNullIsNotADatatype() {
   const auto& descriptors = dt::BuiltinDatatypeDescriptors();
   Check(std::none_of(descriptors.begin(), descriptors.end(), [](const auto& descriptor) {
@@ -292,7 +304,7 @@ void ContextualBindingPreservesTargetType() {
         "cast classifier admitted an out-of-range source type");
 
   dt::DatatypeCastRequest invalid_target;
-  invalid_target.value = {dt::CanonicalTypeId::int64, "1", false};
+  invalid_target.value = PresentInt64(1);
   invalid_target.target_type_id = invalid_type;
   invalid_target.context = dt::DatatypeCastContext::explicit_cast;
   invalid_target.reference_compatibility_profile = true;
@@ -310,7 +322,7 @@ void ContextualBindingPreservesTargetType() {
                   "out-of-range cast source descriptor");
 
   dt::DatatypeCastRequest concrete_to_unknown;
-  concrete_to_unknown.value = {dt::CanonicalTypeId::int64, "1", false};
+  concrete_to_unknown.value = PresentInt64(1);
   concrete_to_unknown.target_type_id = dt::CanonicalTypeId::unknown;
   CheckRejectedAs(dt::CastDatatypeValue(concrete_to_unknown),
                   "DATATYPE.DESCRIPTOR.INVALID",
@@ -390,8 +402,8 @@ void ContextualBindingPreservesTargetType() {
   nullability_precedes_context.target_descriptor = nullable_source;
   nullability_precedes_context.target_descriptor.nullable_allowed = false;
   CheckRejectedAs(dt::CastDatatypeValue(nullability_precedes_context),
-                  "DATATYPE.NULL_NOT_ADMITTED",
-                  "nullability precedence over out-of-range cast context");
+                  "DATATYPE.DESCRIPTOR.INVALID",
+                  "typed NULL descriptor mismatch before cast context");
 }
 
 void ExactDescriptorFidelityAndRefusal() {
@@ -434,10 +446,9 @@ void ExactDescriptorFidelityAndRefusal() {
   cross_type.target_type_id = dt::CanonicalTypeId::real64;
   cross_type.context = dt::DatatypeCastContext::explicit_cast;
   cross_type.target_descriptor = real64_descriptor;
-  const auto crossed = dt::CastDatatypeValue(cross_type);
-  Check(crossed.ok() && crossed.value.is_null &&
-            DescriptorEquals(crossed.value.descriptor, real64_descriptor),
-        "admitted cross-type typed NULL cast lost target descriptor");
+  CheckRejectedAs(dt::CastDatatypeValue(cross_type),
+                  "DATATYPE.CAST_FORBIDDEN",
+                  "unresolved int64-to-real64 typed NULL cast");
 
   cross_type.value =
       TypedNull(dt::CanonicalTypeId::decimal, full_descriptor);
@@ -556,8 +567,8 @@ void ExactDescriptorFidelityAndRefusal() {
       DescriptorFor(dt::CanonicalTypeId::date, 0x62u));
   extract.field = "year";
   CheckRejectedAs(dt::ExtractDatatypeField(extract),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "extract NULL result without declared descriptor");
+                  "SB_DATATYPE_EXTRACT_REJECTED",
+                  "unresolved temporal NULL extraction without result profile");
 }
 
 void BoundOperationsRetainConcreteTypeIds() {
@@ -623,14 +634,9 @@ void BoundOperationsRetainConcreteTypeIds() {
   extract.field = "year";
   extract.result_descriptor =
       DescriptorFor(dt::CanonicalTypeId::int32, 0x42u);
-  const auto extract_result = dt::ExtractDatatypeField(extract);
-  Check(extract_result.ok(), "typed date NULL extraction failed");
-  Check(extract_result.value.type_id == dt::CanonicalTypeId::int32 &&
-            extract_result.value.is_null && extract_result.value.encoded_value.empty(),
-        "NULL date extraction lost its declared int32 result type");
-  Check(DescriptorEquals(extract_result.value.descriptor,
-                         extract.result_descriptor),
-        "NULL date extraction lost its declared result descriptor");
+  CheckRejectedAs(dt::ExtractDatatypeField(extract),
+                  "SB_DATATYPE_EXTRACT_REJECTED",
+                  "unresolved temporal-to-int32 NULL extraction");
 
   extract.value.encoded_value = "payload";
   CheckRejectedAs(dt::ExtractDatatypeField(extract),
@@ -646,14 +652,15 @@ void BoundOperationsRetainConcreteTypeIds() {
   const auto int64_descriptor =
       DescriptorFor(dt::CanonicalTypeId::int64, 0x43u);
   comparison.left = TypedNull(dt::CanonicalTypeId::int64, int64_descriptor);
-  comparison.right = {dt::CanonicalTypeId::int64, "1", false};
+  comparison.right = PresentInt64(1, int64_descriptor);
   comparison.null_ordering = dt::DatatypeNullOrdering::nulls_first;
-  const auto compared = dt::CompareDatatypeValues(comparison);
-  Check(compared.ok() && compared.comparison < 0,
-        "typed NULL comparison lost NULLS FIRST ordering");
+  CheckRejectedAs(dt::CompareDatatypeValues(comparison),
+                  "SB_DATATYPE_COMPARISON_REJECTED",
+                  "unresolved int64 NULLS FIRST comparison");
   comparison.null_ordering = dt::DatatypeNullOrdering::nulls_last;
-  Check(dt::CompareDatatypeValues(comparison).comparison > 0,
-        "typed NULL comparison lost NULLS LAST ordering");
+  CheckRejectedAs(dt::CompareDatatypeValues(comparison),
+                  "SB_DATATYPE_COMPARISON_REJECTED",
+                  "unresolved int64 NULLS LAST comparison");
 
   auto descriptor_precedes_bad_null_order = comparison;
   ++descriptor_precedes_bad_null_order.left.descriptor.descriptor_epoch;
@@ -669,7 +676,7 @@ void BoundOperationsRetainConcreteTypeIds() {
   CheckRejectedAs(dt::CompareDatatypeValues(comparison),
                   "SB_DATATYPE_COMPARISON_REJECTED",
                   "different concrete typed NULL comparison");
-  comparison.right = {dt::CanonicalTypeId::int64, "1", false};
+  comparison.right = PresentInt64(1, int64_descriptor);
 
   dt::DatatypeSortKeyRequest sort;
   sort.value = TypedNull(dt::CanonicalTypeId::int64, int64_descriptor);
@@ -690,7 +697,9 @@ void BoundOperationsRetainConcreteTypeIds() {
 
   dt::DatatypeHashRequest hash;
   hash.value = TypedNull(dt::CanonicalTypeId::int64, int64_descriptor);
-  Check(dt::HashDatatypeValue(hash).ok(), "typed NULL hash failed");
+  CheckRejectedAs(dt::HashDatatypeValue(hash),
+                  "SB_DATATYPE_HASH_REJECTED",
+                  "unresolved typed int64 NULL hash");
   hash.value = {dt::CanonicalTypeId::null_type, {}, true};
   CheckRejectedAs(dt::HashDatatypeValue(hash), "DATATYPE.DESCRIPTOR.INVALID",
                   "standalone NULL hash");
@@ -1030,13 +1039,11 @@ void SerializationRetainsConcreteType() {
   const auto present_descriptor =
       DescriptorFor(dt::CanonicalTypeId::int64, 0x6fu);
   dt::DatatypeSerializationRequest present_request;
-  present_request.value =
-      {dt::CanonicalTypeId::int64, "1", false};
-  present_request.value.descriptor = present_descriptor;
+  present_request.value = PresentInt64(1, present_descriptor);
   const auto present_serialized = dt::SerializeDatatypeValue(present_request);
   Check(present_serialized.ok() &&
             present_serialized.serialized_value ==
-                "SBDV1;type=int64;state=value;payload=31" &&
+                "SBDV1;type=int64;state=value;payload=0100000000000000" &&
             DescriptorEquals(present_serialized.descriptor,
                              present_descriptor),
         "present value serialization changed bytes or descriptor sidecar");
@@ -1046,7 +1053,8 @@ void SerializationRetainsConcreteType() {
   present_decode.expected_descriptor = present_descriptor;
   const auto present_decoded = dt::DeserializeDatatypeValue(present_decode);
   Check(present_decoded.ok() && !present_decoded.value.is_null &&
-            present_decoded.value.encoded_value == "1" &&
+            present_decoded.value.encoded_value ==
+                std::string("\x01\x00\x00\x00\x00\x00\x00\x00", 8) &&
             DescriptorEquals(present_decoded.value.descriptor,
                              present_descriptor),
         "present value deserialization lost exact expected descriptor");
@@ -1054,7 +1062,8 @@ void SerializationRetainsConcreteType() {
   const auto legacy_present = dt::DeserializeDatatypeValue(present_decode);
   Check(legacy_present.ok() && !legacy_present.value.is_null &&
             legacy_present.value.type_id == dt::CanonicalTypeId::int64 &&
-            legacy_present.value.encoded_value == "1",
+            legacy_present.value.encoded_value ==
+                std::string("\x01\x00\x00\x00\x00\x00\x00\x00", 8),
         "legacy present value decode without descriptor regressed during NULL work");
 
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {

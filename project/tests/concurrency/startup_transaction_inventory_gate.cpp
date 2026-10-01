@@ -9,6 +9,7 @@
 #include "uuid.hpp"
 
 #include <cstdlib>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -26,6 +27,17 @@ namespace mga = scratchbird::transaction::mga;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 using Outcome = api::StartupTransactionInventoryOutcome;
+
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+std::atomic_size_t inventory_guard_calls{0};
+extern "C" std::unique_lock<std::recursive_mutex>
+__real__ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(const std::string&);
+extern "C" std::unique_lock<std::recursive_mutex>
+__wrap__ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(const std::string& path) {
+  inventory_guard_calls.fetch_add(1, std::memory_order_relaxed);
+  return __real__ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(path);
+}
+#endif
 
 unsigned checks = 0;
 const char* executable = nullptr;
@@ -110,7 +122,14 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
       path.string(), create.database_uuid.value, transaction.value,
       begun.entry.identity.local_id.value};
 
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+  const auto valid_guards_before = inventory_guard_calls.load();
+#endif
   const auto active = api::InspectStartupTransactionInventory(request);
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+  Check(inventory_guard_calls.load() > valid_guards_before,
+        "valid observation reaches actual inventory guard; probe is live");
+#endif
   Check(active.outcome == Outcome::unresolved, "active cannot prove completion");
   Check(active.observed_state == mga::TransactionState::active, "actual active state");
   Check(active.publication_base == persisted.inventory.publication_base, "exact native base");
@@ -132,7 +151,13 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(api::InspectStartupTransactionInventory(wrong).outcome == Outcome::identity_missing,
         "missing is not no effect");
 
-  for (int invalid = 0; invalid != 6; ++invalid) {
+  const auto bytes = [&] {
+    std::ifstream input(path, std::ios::binary);
+    Check(input.good(), "read-only oracle opens actual database");
+    return std::vector<char>(std::istreambuf_iterator<char>(input), {});
+  };
+  const auto before_invalid_single = bytes();
+  for (int invalid = 0; invalid != 9; ++invalid) {
     wrong = request;
     switch (invalid) {
       case 0: wrong.database_path.clear(); break;
@@ -141,11 +166,27 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
       case 3: wrong.local_transaction_id = 0; break;
       case 4: wrong.transaction_uuid.bytes[6] = 0x40; break;
       case 5: wrong.database_uuid.bytes[8] = 0; break;
+      case 6: wrong.database_path.push_back('\0'); break;
+      case 7: wrong.database_path += std::string("\0.other", 7); break;
+      case 8: wrong.database_path.insert(0, 1, '\0'); break;
     }
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    const auto guards_before = inventory_guard_calls.load();
+#endif
     const auto result = api::InspectStartupTransactionInventory(wrong);
-    Check(result.outcome == Outcome::invalid_request && !result.publication_base,
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    Check(inventory_guard_calls.load() == guards_before,
+          "invalid single request never enters inventory guard");
+#endif
+    Check(result.outcome == Outcome::invalid_request && !result.publication_base &&
+              result.observed_state == mga::TransactionState::none,
           "malformed request never obtains inventory provenance");
   }
+  Check(bytes() == before_invalid_single, "invalid single routing changes no database bytes");
+  const auto corrected = api::InspectStartupTransactionInventory(request);
+  Check(corrected.outcome == active.outcome && corrected.observed_state == active.observed_state &&
+            corrected.publication_base == active.publication_base,
+        "corrected single route retains exact original inventory");
 
   auto committed = mga::CommitLocalTransaction(persisted.inventory, begun.entry.identity.local_id, 3);
   Check(committed.ok(), "candidate commit");
@@ -199,7 +240,8 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
         "partial committed set retains unresolved original transaction");
   Check(observations[2].outcome == Outcome::invalid_request,
         "batch leaves output tail untouched");
-  for (int invalid = 0; invalid != 7; ++invalid) {
+  const auto before_invalid_batch = bytes();
+  for (int invalid = 0; invalid != 10; ++invalid) {
     auto malformed = identities;
     auto batch_path = path.string();
     auto batch_database = request.database_uuid;
@@ -213,17 +255,39 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
       case 4: count = 0; break;
       case 5: capacity = 1; break;
       case 6: malformed[1].transaction_uuid.bytes[6] = 0x40; break;
+      case 7: batch_path.push_back('\0'); break;
+      case 8: batch_path += std::string("\0.other", 7); break;
+      case 9: batch_path.insert(0, 1, '\0'); break;
     }
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    const auto guards_before = inventory_guard_calls.load();
+#endif
     const auto rejected = api::InspectStartupTransactionInventories(
         batch_path, batch_database, std::span(malformed).first(count),
         std::span(observations).first(capacity));
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    Check(inventory_guard_calls.load() == guards_before,
+          "invalid batch request never enters inventory guard");
+#endif
     Check(rejected.outcome == BatchOutcome::invalid_request &&
               rejected.records_written == 0 && !rejected.publication_base,
           "invalid set has no partial output or provenance");
     Check(observations[0].outcome == Outcome::committed &&
-              observations[1].outcome == Outcome::unresolved,
+              observations[0].observed_state == mga::TransactionState::archived &&
+              observations[1].outcome == Outcome::unresolved &&
+              observations[1].observed_state == mga::TransactionState::active &&
+              observations[2].outcome == Outcome::invalid_request &&
+              observations[2].observed_state == mga::TransactionState::none,
           "invalid later tuple leaves earlier output untouched");
   }
+  Check(bytes() == before_invalid_batch, "invalid batch routing changes no database bytes");
+  batch = api::InspectStartupTransactionInventories(path.string(), request.database_uuid,
+                                                   identities, observations);
+  Check(batch.outcome == BatchOutcome::observed && batch.records_written == 2 &&
+            batch.publication_base == persisted.inventory.publication_base &&
+            observations[0].outcome == Outcome::committed &&
+            observations[1].outcome == Outcome::unresolved,
+        "corrected batch route retains both original transactions");
   auto rolled_back = mga::RollbackLocalTransaction(persisted.inventory, begun.entry.identity.local_id, 5);
   Check(rolled_back.ok(), "candidate rollback");
   persisted = db::PersistLocalTransactionInventoryToDatabase(path.string(), rolled_back.inventory);
@@ -258,11 +322,6 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(batch.outcome == BatchOutcome::database_mismatch && batch.records_written == 0,
         "wrong database grants no batch observations");
 
-  const auto bytes = [&] {
-    std::ifstream input(path, std::ios::binary);
-    Check(input.good(), "read-only oracle opens actual database");
-    return std::vector<char>(std::istreambuf_iterator<char>(input), {});
-  };
   const auto before_inspection = bytes();
   Check(api::InspectStartupTransactionInventory(request).outcome == Outcome::committed,
         "repeat exact original observation");

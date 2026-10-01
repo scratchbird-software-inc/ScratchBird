@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -69,6 +70,16 @@ dt::DatatypeOperationValue Int32Value(std::int64_t number) {
   Require(dt::EncodeCanonicalInt32Value(number, &encoded),
           "MDF-014 int32 fixture encoding failed");
   return Value(dt::CanonicalTypeId::int32, std::move(encoded));
+}
+
+dt::DatatypeOperationValue Int64Value(std::int64_t number) {
+  std::string encoded;
+  Require(dt::EncodeCanonicalInt64Value(number, &encoded),
+          "MDF-014 int64 fixture encoding failed");
+  auto value = Value(dt::CanonicalTypeId::int64, std::move(encoded));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::int64);
+  value.descriptor = descriptor;
+  return value;
 }
 
 bool IsCanonicalBoolean(const dt::DatatypeOperationValue& value,
@@ -162,11 +173,8 @@ void RequireCompareEqual(const dt::DatatypeTextSeedAuthority& seed,
 
 void TestOrderedKeysAndResourceBoundComparison() {
   const std::vector<dt::DatatypeOperationValue> signed_values = {
-      Value(dt::CanonicalTypeId::int64, "-257"),
-      Value(dt::CanonicalTypeId::int64, "-1"),
-      Value(dt::CanonicalTypeId::int64, "0"),
-      Value(dt::CanonicalTypeId::int64, "2"),
-      Value(dt::CanonicalTypeId::int64, "256")};
+      Int64Value(-257), Int64Value(-1), Int64Value(0), Int64Value(2),
+      Int64Value(256)};
   for (std::size_t index = 1; index < signed_values.size(); ++index) {
     const auto compare = dt::CompareDatatypeValues(
         {signed_values[index - 1], signed_values[index]});
@@ -215,15 +223,15 @@ void TestOrderedKeysAndResourceBoundComparison() {
   null_value.is_null = true;
   null_value.descriptor = Descriptor(dt::CanonicalTypeId::int64);
   const auto nulls_first = dt::CompareDatatypeValues(
-      {null_value, Value(dt::CanonicalTypeId::int64, "0"),
+      {null_value, Int64Value(0),
        dt::DatatypeNullOrdering::nulls_first});
-  Require(nulls_first.ok() && nulls_first.comparison < 0,
-          "MDF-014 nulls-first comparison order drifted");
+  Require(!nulls_first.ok(),
+          "MDF-014 unresolved int64 NULL comparison did not fail closed");
   const auto nulls_last = dt::CompareDatatypeValues(
-      {null_value, Value(dt::CanonicalTypeId::int64, "0"),
+      {null_value, Int64Value(0),
        dt::DatatypeNullOrdering::nulls_last});
-  Require(nulls_last.ok() && nulls_last.comparison > 0,
-          "MDF-014 nulls-last comparison order drifted");
+  Require(!nulls_last.ok(),
+          "MDF-014 unresolved int64 NULL ordering did not infer policy");
 
   dt::DatatypeComparisonRequest compare;
   compare.left = Value(dt::CanonicalTypeId::character, "Alpha");
@@ -858,10 +866,61 @@ void TestIntegerPhysicalSortKeyBytes() {
               !dt::RenderDatatypeValueForDisplay({uint32_value(0)}).ok(),
           "uint32 unresolved NULL comparison, hash, or display policy did not fail closed");
 
+  const auto int64_key = [&](std::int64_t raw) {
+    const auto encoded = dt::MakeDatatypeSortKey({Int64Value(raw)});
+    Require(encoded.ok(), "int64 canonical comparison key refused");
+    return encoded.sort_key;
+  };
+  Require(int64_key(std::numeric_limits<std::int64_t>::min()) ==
+              std::string({char(1), char(0), char(0), char(0), char(0),
+                           char(0), char(0), char(0), char(0)}) &&
+              int64_key(0) ==
+              std::string({char(1), char(0x80), char(0), char(0), char(0),
+                           char(0), char(0), char(0), char(0)}) &&
+              int64_key(std::numeric_limits<std::int64_t>::max()) ==
+              std::string({char(1), char(0xff), char(0xff), char(0xff),
+                           char(0xff), char(0xff), char(0xff), char(0xff),
+                           char(0xff)}),
+          "int64 key is not state plus sign-transformed big-endian bytes");
+  const std::array<std::int64_t, 5> int64_ordered{
+      std::numeric_limits<std::int64_t>::min(), -1, 0, 1,
+      std::numeric_limits<std::int64_t>::max()};
+  for (std::size_t left = 0; left < int64_ordered.size(); ++left) {
+    for (std::size_t right = 0; right < int64_ordered.size(); ++right) {
+      const int expected = left < right ? -1 : (left > right ? 1 : 0);
+      const auto compared = dt::CompareDatatypeValues(
+          {Int64Value(int64_ordered[left]), Int64Value(int64_ordered[right])});
+      const auto left_key = int64_key(int64_ordered[left]);
+      const auto right_key = int64_key(int64_ordered[right]);
+      const int key_comparison =
+          left_key < right_key ? -1 : (left_key > right_key ? 1 : 0);
+      Require(compared.ok() && compared.comparison == expected &&
+                  key_comparison == expected,
+              "int64 comparison and physical key disagree with signed order");
+    }
+  }
+  for (const auto width : {0U, 1U, 4U, 7U, 9U}) {
+    const auto malformed = Value(dt::CanonicalTypeId::int64,
+                                 std::string(width, '\0'));
+    Require(!dt::CompareDatatypeValues({malformed, Int64Value(0)}).ok() &&
+                !dt::CompareDatatypeValues({Int64Value(0), malformed}).ok() &&
+                !dt::HashDatatypeValue({malformed}).ok() &&
+                !dt::MakeDatatypeSortKey({malformed}).ok(),
+            "int64 operation admitted a malformed canonical width");
+  }
+  const auto int64_null = TypedNull(dt::CanonicalTypeId::int64);
+  auto int64_described_zero = Int64Value(0);
+  int64_described_zero.descriptor = int64_null.descriptor;
+  Require(!dt::CompareDatatypeValues(
+              {int64_null, int64_described_zero}).ok() &&
+              !dt::HashDatatypeValue({Int64Value(0)}).ok() &&
+              !dt::HashDatatypeValue({int64_null}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({Int64Value(0)}).ok(),
+          "int64 unresolved NULL comparison, hash, or display policy did not fail closed");
+
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::int64, 8, true, "-9223372036854775808", "9223372036854775807", "9223372036854775808"},
       {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
        "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
       {dt::CanonicalTypeId::uint64, 8, false, "0", "18446744073709551615", "18446744073709551616"},

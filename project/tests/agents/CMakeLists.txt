@@ -64,6 +64,11 @@ add_executable(startup_transaction_inventory_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_transaction_inventory_gate.cpp")
 target_compile_features(startup_transaction_inventory_gate PRIVATE cxx_std_23)
 target_link_libraries(startup_transaction_inventory_gate PRIVATE sb_engine_internal_api)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(startup_transaction_inventory_gate PRIVATE SB_STARTUP_INVENTORY_GUARD_PROBE)
+  target_link_options(startup_transaction_inventory_gate PRIVATE
+    -Wl,--wrap=_ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE)
+endif()
 add_test(NAME startup_transaction_inventory_gate COMMAND startup_transaction_inventory_gate)
 set_tests_properties(startup_transaction_inventory_gate PROPERTIES
   TIMEOUT 120 LABELS "agents;mga;startup;native_inventory")

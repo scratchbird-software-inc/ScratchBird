@@ -83,6 +83,8 @@ struct StartupTransactionInventoryBatchObservation {
 // elements beyond records_written are untouched. observed means the read was
 // successful, NOT that every transaction is terminal or recovery is complete.
 // The same engine ownership and non-bearer-authority rules as above apply.
+// Empty or NUL-bearing paths are invalid before inventory guard/storage lookup;
+// a malformed path must never alias a truncated OS pathname.
 StartupTransactionInventoryBatchObservation InspectStartupTransactionInventories(
     const std::string& database_path, EngineUuid database_uuid,
     std::span<const StartupTransactionInventoryIdentity> identities,
