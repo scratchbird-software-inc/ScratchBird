@@ -31,6 +31,7 @@ add_library(sb_core_memory
   memory_observability_overhead.cpp
   memory_policy_config.cpp
   memory_reserved_category_claims.cpp
+  memory_safe_retirement.cpp
   memory_support_bundle.cpp
   memory_pressure_response.cpp
   plugin_native_memory_sandbox.cpp
@@ -44,7 +45,8 @@ add_library(sb_core_memory
   typed_slab_pool.cpp
 )
 
-target_compile_features(sb_core_memory PUBLIC cxx_std_17)
+# The shared retirement interface uses stop_token and scoped stop callbacks.
+target_compile_features(sb_core_memory PUBLIC cxx_std_20)
 target_include_directories(sb_core_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sb_core_memory PUBLIC sb_core_platform sb_core_metrics sb_core_uuid)
 if(WIN32)
