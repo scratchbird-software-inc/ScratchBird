@@ -18,6 +18,9 @@ target_link_libraries(retained_condition_wait_gate PRIVATE sb_core_concurrency)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_definitions(retained_condition_wait_gate PRIVATE SB_WAIT_NATIVE_FAULT_GATE)
   target_link_options(retained_condition_wait_gate PRIVATE
+    "-Wl,--wrap=pthread_condattr_init" "-Wl,--wrap=pthread_condattr_setclock"
+    "-Wl,--wrap=pthread_condattr_destroy" "-Wl,--wrap=pthread_cond_init"
+    "-Wl,--wrap=pthread_cond_destroy"
     "-Wl,--wrap=pthread_cond_clockwait"
     "-Wl,--wrap=pthread_cond_wait" "-Wl,--wrap=pthread_cond_timedwait"
     "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock")

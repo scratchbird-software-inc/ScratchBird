@@ -17,6 +17,45 @@
 #if defined(SB_WAIT_NATIVE_FAULT_GATE)
 thread_local bool fail_next_native_wait = false;
 thread_local unsigned native_timed_waits = 0;
+thread_local unsigned fail_condition_stage = 0;
+thread_local unsigned fail_condition_occurrence = 0;
+std::atomic<int> live_native_attributes{0}, live_native_conditions{0};
+bool FailConditionStage(unsigned stage) {
+  if (fail_condition_stage != stage || --fail_condition_occurrence != 0) return false;
+  fail_condition_stage = 0;
+  return true;
+}
+extern "C" int __real_pthread_condattr_init(pthread_condattr_t*);
+extern "C" int __real_pthread_condattr_destroy(pthread_condattr_t*);
+extern "C" int __real_pthread_condattr_setclock(pthread_condattr_t*, clockid_t);
+extern "C" int __real_pthread_cond_init(pthread_cond_t*, const pthread_condattr_t*);
+extern "C" int __real_pthread_cond_destroy(pthread_cond_t*);
+extern "C" int __wrap_pthread_condattr_init(pthread_condattr_t* attributes) {
+  if (FailConditionStage(1)) return EAGAIN;
+  const int error = __real_pthread_condattr_init(attributes);
+  if (!error) ++live_native_attributes;
+  return error;
+}
+extern "C" int __wrap_pthread_condattr_setclock(pthread_condattr_t* attributes, clockid_t clock) {
+  if (FailConditionStage(2)) return EINVAL;
+  return __real_pthread_condattr_setclock(attributes, clock);
+}
+extern "C" int __wrap_pthread_condattr_destroy(pthread_condattr_t* attributes) {
+  const int error = __real_pthread_condattr_destroy(attributes);
+  if (!error) --live_native_attributes;
+  return error;
+}
+extern "C" int __wrap_pthread_cond_init(pthread_cond_t* condition, const pthread_condattr_t* attributes) {
+  if (FailConditionStage(3)) return EAGAIN;
+  const int error = __real_pthread_cond_init(condition, attributes);
+  if (!error) ++live_native_conditions;
+  return error;
+}
+extern "C" int __wrap_pthread_cond_destroy(pthread_cond_t* condition) {
+  const int error = __real_pthread_cond_destroy(condition);
+  if (!error) --live_native_conditions;
+  return error;
+}
 struct NativePause {
   std::binary_semaphore reached{0};
   std::binary_semaphore resume{0};
@@ -344,6 +383,51 @@ void AdmissionLimitsAndConstructionFailure() {
     Check(domain.Drain(c::WaitClock::now() + 5s) == S::ok, "failed initialization leaves no protected leak");
   }
   f.Empty();
+}
+
+void NativeConstructionFailure() {
+#if defined(SB_WAIT_NATIVE_FAULT_GATE)
+  const auto initial_conditions = live_native_conditions.load();
+  const auto initial_attributes = live_native_attributes.load();
+  for (unsigned stage = 1; stage <= 3; ++stage) {
+    for (unsigned occurrence = 1; occurrence <= 2; ++occurrence) {
+      Fixture f;
+      {
+        m::MemorySafeRetirement domain(*f.resource, Id(10), 4, 8);
+        Check(domain.Initialize() == S::ok, "native construction domain");
+        const auto baseline = f.manager.Snapshot().current_bytes;
+        const auto conditions = live_native_conditions.load();
+        c::ConditionWaitOwner owner(domain);
+        fail_condition_stage = stage; fail_condition_occurrence = occurrence;
+        const auto status = owner.Initialize(Descriptor(), {2, 4}, Hazard(30));
+        const bool injected = fail_condition_stage == 0;
+        fail_condition_stage = 0;
+        if (status == S::ok) Finish(owner); // Keep negative controls safe to unwind.
+        Check(injected && status == S::construction_failed && !owner.Snapshot().initialized,
+              "native stage failure never publishes usable wait");
+        Check(live_native_conditions == conditions && live_native_attributes == initial_attributes,
+              "partial native construction releases prior condition and attributes");
+        const auto failed = domain.Snapshot();
+        Check(failed.constructing == 0 && failed.published == 0 && failed.readers == 0 &&
+              failed.retired == 1 && f.manager.Snapshot().current_bytes > baseline,
+              "failed construction retains real backing until memory-owner collection");
+        Check(domain.Collect() == S::ok && domain.Snapshot().retired == 0 &&
+              f.manager.Snapshot().current_bytes == baseline, "memory owner reclaims failed construction");
+        Check(owner.Initialize(Descriptor(), {2, 4}, Hazard(30)) == S::ok,
+              "unpublished failed construction permits actual retry");
+        {
+          auto op = Acquire(owner, 31); auto lock = op.LockPredicate();
+          Check(op.Wait(lock, [] { return true; }, {}, c::WaitClock::now(), "construction retry").outcome == O::satisfied,
+                "retry uses real newly constructed native wait");
+        }
+        Finish(owner);
+      }
+      f.Empty();
+      Check(live_native_conditions == initial_conditions && live_native_attributes == initial_attributes,
+            "fault case and retry leave no native resource leak");
+    }
+  }
+#endif
 }
 
 void NativeAndRegisteredFailure() {
@@ -700,6 +784,9 @@ void PrematureDestruction() {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string_view(argv[1]) == "--native-construction") {
+      NativeConstructionFailure(); return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--drain-native-error") {
       NativeDrainFailure(); return 0;
     }
@@ -711,7 +798,7 @@ int main(int argc, char** argv) {
     }
     EntryAndValidation(); Precedence(); PublicationAndSpuriousWake();
     CancellationAndCloseDrain(); AdmissionLimitsAndConstructionFailure();
-    NativeAndRegisteredFailure(); NativeDrainFailure();
+    NativeAndRegisteredFailure(); NativeDrainFailure(); NativeConstructionFailure();
     ControlledCancellationAndUnregister(); DescriptorAndWaiterBounds();
     ActualDeadlineAndReplacement(); OwnershipProfiles(); DiagnosticRetention();
 #if defined(__unix__)
