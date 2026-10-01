@@ -555,6 +555,191 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
    Check(r.error==BE::io_failure&&reads>=at,"historical bundle read error consumed");Empty(r);}
  Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"historical bundle failures preserve all physical bytes");
 }
+// Complete immutable transitions, not fabricated runtime admission. Primary
+// genesis is read from a real file; all candidate images have independent oracles.
+struct DirectoryTransition {
+ Fixture fixture;Graph graph;Uuid other,changed;unsigned profile;bool reserve;
+ std::map<Uuid,Maps> before,after;std::map<Uuid,d::FilespacePageZero> zeros;
+ db::NativeManagementDirectoryBase base;page::NativeFilespaceDirectory old_directory,directory;
+ db::NativeStorageActionIntent request;records::O operation;
+ Pages before_images,after_images,inventory_before,inventory_after,growth,bundle,extent;
+ std::vector<d::NativeCommonPageHeader> bundle_headers;Bytes base_cp,target_cp,plan_image;
+ unsigned identity=30000;
+ DirectoryTransition(unsigned primary,unsigned secondary,bool reverse,unsigned recovery,bool secondary_target,bool preallocated)
+   :fixture(primary,512),graph(fixture),other(reverse?Id(0):Id(7)),changed(secondary_target?other:Id(2)),profile(recovery),reserve(preallocated){
+  auto& p=graph.plan;const auto& q=d::kCanonicalFilespacePageProfiles[secondary];
+  zeros.emplace(Id(2),graph.zero);auto z=graph.zero;z.bootstrap.filespace_uuid=other;z.bootstrap.filespace_role=5;
+  z.bootstrap.page_size_profile_uuid=q.uuid;z.bootstrap.page_size_bytes=q.page_size_bytes;z.page_uuid=Id(29000);
+  z.page_generation=7;z.root_set_generation=9;z.free_pages=510;z.preallocated_pages=0;
+  z.roots={{3,3,other,1,1,q.uuid,Id(29001)}};zeros.emplace(other,z);
+  before.emplace(Id(2),graph.before);page::NativeAllocationMap m;
+  m.header={q.page_size_bytes,3,Id(1),other,Id(29002),1,1,0,q.uuid};m.object_uuid=Id(29001);
+  m.map_generation=m.capacity_generation=1;m.total_pages=512;m.states.resize(512,State::free);m.creator_transaction_uuid=Id(5);m.creator_local_transaction_id=1;
+  before.emplace(other,Maps{m});
+  Add(before, {q.page_size_bytes,2,Id(1),other,z.page_uuid,0,7,0,q.uuid},other,{});
+  Add(before,m.header,m.object_uuid,{});
+  const auto root=std::find_if(graph.base.roots.begin(),graph.base.roots.end(),[](const auto& r){return r.role==3;});
+  Check(root!=graph.base.roots.end(),"genesis directory root");const auto raw=fixture.Read(root->page.page_number);
+  const auto decoded=page::DecodeNativeFilespaceDirectory(raw);Check(decoded.ok()&&!decoded.directory->next,"genesis directory image");old_directory=*decoded.directory;
+  page::NativeFilespaceDirectoryRecord member;member.bootstrap=z.bootstrap;member.locator_uuid=Id(29003);member.page_zero_uuid=z.page_uuid;
+  member.page_zero_generation=z.page_generation;member.root_set_generation=z.root_set_generation;member.total_pages=z.total_pages;
+  old_directory.records.push_back(member);
+  // A directory member with no changed allocation chain must remain byte-exact.
+  auto unchanged=member;unchanged.bootstrap.filespace_uuid=Id(11);unchanged.page_zero_uuid=Id(29009);unchanged.locator_uuid=Id(29008);
+  old_directory.records.push_back(unchanged);old_directory.total_records=3;
+  std::sort(old_directory.records.begin(),old_directory.records.end(),[](const auto& a,const auto& b){return a.bootstrap.filespace_uuid<b.bootstrap.filespace_uuid;});
+  RefreshBase();directory=old_directory;directory.header.page_uuid=Id(identity++);directory.header.page_number=220;
+  directory.header.page_generation=directory.directory_generation=p.reserved_generation;
+  directory.creator_transaction_uuid={};directory.creator_local_transaction_id=0;directory.creator_operation_uuid=p.operation_uuid;
+  p.base_selection_generation=1;p.intent.recovery_profile=profile;
+  for(const auto& [fs,maps]:before){const auto& source=maps.front();Maps result;const u64 width=fs==Id(2)?32:64;
+    const u64 total=512+(profile==4&&fs==changed?4:0);
+    for(u64 n=0;n<512;n+=width){auto candidate=source;candidate.header.page_uuid=Id(identity++);candidate.header.page_number=200+n/width;
+      candidate.header.page_generation=candidate.map_generation=p.reserved_generation;candidate.creator_transaction_uuid={};candidate.creator_local_transaction_id=0;candidate.creator_operation_uuid=p.operation_uuid;
+      candidate.total_pages=total;candidate.capacity_generation+=(profile==4&&fs==changed);candidate.first_page=n;
+      const u64 end=n+width==512?total:n+width;candidate.states.assign(end-n,State::free);candidate.records.clear();candidate.next.reset();candidate.next_sha256={};
+      for(u64 i=n;i<std::min<u64>(end,512);++i){const auto& old=Cover(before.at(fs),i);candidate.states[i-n]=old.states[i-old.first_page];
+        for(const auto& r:old.records)if(r.page_number==i)candidate.records.push_back(r);}
+      result.push_back(std::move(candidate));}
+    after.emplace(fs,std::move(result));}
+  if(profile==2){const auto root=std::find_if(graph.base.roots.begin(),graph.base.roots.end(),[](const auto& r){return r.role==1;});
+    const auto raw=fixture.Read(root->page.page_number);inventory_before.push_back(raw);const auto decoded=page::DecodeNativeTransactionInventoryPage(raw);
+    Check(decoded.ok()&&!decoded.page->next,"actual inventory base");auto inv=*decoded.page;
+    inv.header={q.page_size_bytes,0x301,Id(1),other,Id(identity++),222,p.reserved_generation,0,q.uuid};inv.inventory_generation=p.reserved_generation;
+    mga::TransactionInventoryEntry e;e.identity.transaction_uuid={UuidKind::transaction,Id(identity++)};e.identity.local_id=mga::MakeLocalTransactionId(inv.inventory.next_local_transaction_id++);
+    e.identity.scope=mga::TransactionScope::local_node;e.state=mga::TransactionState::created;e.begin_unix_epoch_millis=2000000000000ULL;
+    e.begin_visible_through_local_transaction_id=e.identity.local_id.value-1;e.begin_visible_through_commit_sequence=inv.inventory.next_commit_sequence-1;inv.inventory.entries.push_back(e);
+    const auto image=InventoryOracle(inv);Check(page::EncodeNativeTransactionInventoryPage(inv).bytes==image,"independent candidate inventory");inventory_after.push_back(image);
+    Add(after,inv.header,inv.object_uuid,p.operation_uuid);auto& target=*std::find_if(graph.target.roots.begin(),graph.target.roots.end(),[](const auto& r){return r.role==1;});
+    target={1,0x301,Self(inv.header),inv.object_uuid,Sha(image)};graph.target.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
+    operation=records::Example(1);operation.uuid=Id(29900);operation.bootstrap_uuid=graph.zero.page_uuid;operation.security_snapshot_uuid={};operation.generation_guards={};
+  }else{
+    const auto& z=zeros.at(changed);const auto& m=before.at(changed).front();const auto& member=*std::find_if(old_directory.records.begin(),old_directory.records.end(),[&](const auto& r){return r.bootstrap.filespace_uuid==changed;});
+    request.request_uuid=Id(29901);request.operation_uuid=Id(29900);request.database_uuid=Id(1);request.filespace_uuid=changed;request.locator_uuid=member.locator_uuid;
+    request.page_zero_uuid=z.page_uuid;request.page_size_profile_uuid=z.bootstrap.page_size_profile_uuid;request.page_size_bytes=z.bootstrap.page_size_bytes;
+    request.policy_snapshot_uuid=Id(10);request.storage_profile_uuid=Id(29902);request.initiator_uuid=Id(8);request.request_context_uuid=Id(9);
+    request.policy_uuid=Id(29903);request.policy_version_uuid=Id(29904);request.attachment_uuid=Id(29905);request.attachment_version_uuid=Id(29906);request.storage_profile_version_uuid=Id(29907);
+    request.attachment_generation=request.storage_profile_generation=1;
+    request.checkpoint={9,0x300,Id(2),graph.base.header.page_number,graph.base.header.page_generation,graph.zero.bootstrap.page_size_profile_uuid,graph.base.object_uuid};
+    request.allocation_root={3,3,changed,m.header.page_number,m.header.page_generation,m.header.page_size_profile_uuid,m.object_uuid};
+    request.checkpoint_sha256=Sha(base_cp);request.allocation_sha256=Sha(EncodeMaps(before.at(changed)).front());
+    request.checkpoint_generation=graph.base.checkpoint_generation;request.checkpoint_root_set_generation=graph.base.root_set_generation;
+    request.directory_generation=old_directory.directory_generation;request.filespace_root_set_generation=z.root_set_generation;request.page_zero_generation=z.page_generation;
+    request.map_generation=m.map_generation;request.capacity_generation=m.capacity_generation;request.current_total_pages=512;
+    request.first_page=profile==4?512:256;request.page_count=4;request.maximum_total_pages=profile==4?516:512;
+    request.maximum_work_bytes=4*u64{z.bootstrap.page_size_bytes};request.maximum_retained_image_bytes=fixture.budget;
+    request.action=profile==4?db::NativeStorageAction::physical_growth:db::NativeStorageAction::page_preallocation;
+    request.intended_state=reserve?db::NativeStorageIntentState::preallocated:db::NativeStorageIntentState::free;
+    if(reserve){request.allocation_owner_uuid=Id(29908);request.allocation_page_type=0x100;
+      for(u64 n=request.first_page;n<request.first_page+4;++n){auto& m=Cover(after.at(changed),n);m.states[n-m.first_page]=State::preallocated;
+        page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(identity++);r.owner_uuid=request.allocation_owner_uuid;r.page_type=request.allocation_page_type;r.creator_operation_uuid=p.operation_uuid;m.records.push_back(r);}}
+    if(profile==4)++Find(after.at(changed),0).page_generation;
+    operation=records::Example(1);operation.uuid=request.operation_uuid;operation.bootstrap_uuid=graph.zero.page_uuid;operation.target_uuid=changed;
+    operation.security_snapshot_uuid={};operation.generation_guards={};
+  }
+  SetExtent();auto h=graph.target.header;h.page_number=p.target_checkpoint.page_number;h.page_generation=p.reserved_generation;
+  Add(after,h,graph.target.object_uuid,p.operation_uuid);Add(after,p.header,p.object_uuid,p.operation_uuid);
+  for(const auto& raw:extent){const auto h=d::DecodeNativeCommonPageHeader(raw.data(),128);Check(h.ok(),"extent header");Add(after,*h.header,p.management_extent->object_uuid,p.operation_uuid);}
+  Add(after,directory.header,directory.object_uuid,p.operation_uuid);
+  for(const auto& [fs,maps]:after)for(const auto& map:maps)Add(after,map.header,map.object_uuid,p.operation_uuid);
+  u64 payload=fixture.size+8;for(const auto& [fs,maps]:after)for(const auto& m:maps)payload+=m.header.page_size_bytes+8;
+  for(const auto& image:inventory_after)payload+=image.size()+8;if(profile==4)payload+=2*(zeros.at(changed).bootstrap.page_size_bytes+8);
+  const u64 count=(payload+fixture.size-385)/(fixture.size-384);Check(300+count<=512,"bundle fits original capacity");
+  for(u64 n=0;n<count;++n){d::NativeCommonPageHeader h{u32(fixture.size),0x500,Id(1),Id(2),Id(identity++),300+n,p.reserved_generation,0,graph.zero.bootstrap.page_size_profile_uuid};
+    bundle_headers.push_back(h);Add(after,h,Id(29909),p.operation_uuid);}
+  Refresh();
+ }
+ void Add(std::map<Uuid,Maps>& groups,const d::NativeCommonPageHeader& h,const Uuid& owner,const Uuid& creator){
+  auto& m=Cover(groups.at(h.filespace_uuid),h.page_number);Check(m.states[h.page_number-m.first_page]==State::free,"transition slot free");m.states[h.page_number-m.first_page]=State::allocated;
+  page::NativeAllocationRecord r;r.page_number=h.page_number;r.allocation_uuid=Id(identity++);r.page_uuid=h.page_uuid;r.owner_uuid=owner;
+  r.page_generation=h.page_generation;r.page_type=h.page_type;r.creator_operation_uuid=creator;
+  if(creator.is_nil()){r.creator_transaction_uuid=Id(5);r.creator_local_transaction_id=1;}m.records.push_back(r);
+ }
+ Pages MapsImages(std::map<Uuid,Maps>& groups){Pages images;for(auto& [fs,maps]:groups){for(auto& m:maps)std::sort(m.records.begin(),m.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+    const auto encoded=EncodeMaps(maps);images.insert(images.end(),encoded.begin(),encoded.end());}return images;}
+ void BindMembers(page::NativeFilespaceDirectory& dir,std::map<Uuid,Maps>& groups){for(auto& r:dir.records){if(!groups.contains(r.bootstrap.filespace_uuid))continue;const auto& m=groups.at(r.bootstrap.filespace_uuid).front();
+    r.allocation_root=page::NativeFilespaceAllocationRoot{Self(m.header),m.object_uuid,Sha(MapOracle(m)),m.map_generation,m.capacity_generation};}}
+ void RefreshBase(){before_images=MapsImages(before);BindMembers(old_directory,before);const auto raw=DirectoryImageOracle(old_directory);
+  Check(page::EncodeNativeFilespaceDirectory(old_directory).bytes==raw,"independent base directory");base.directory_images={raw};base.page_zero_images.clear();
+  for(const auto& [fs,z]:zeros){const auto encoded=d::EncodeFilespacePageZero(z);Check(encoded.ok(),"canonical original page zero");base.page_zero_images.push_back(*encoded.bytes);}
+  auto& dir=*std::find_if(graph.base.roots.begin(),graph.base.roots.end(),[](const auto& r){return r.role==3;});dir.sha256=Sha(raw);
+  base_cp=db::EncodeNativeCheckpointRoot(graph.base).bytes;Check(!base_cp.empty(),"transition base checkpoint");graph.plan.base_checkpoint_sha256=Sha(base_cp);
+ }
+ void SetExtent(){if(profile!=2){const auto encoded=db::EncodeNativeStorageActionIntent(request,fixture.budget);Check(encoded.ok(),"directory exact storage intent");operation.normalized_request_bytes=encoded.bytes;operation.normalized_request_sha256=Sha(encoded.bytes);}
+  auto& p=graph.plan;p.intent={operation.initiator_uuid,operation.request_context_uuid,operation.policy_snapshot_uuid,operation.normalized_request_sha256,operation.initiator_kind,u16(profile)};
+  std::vector<d::NativeCommonPageHeader> headers{{u32(fixture.size),0x500,Id(1),Id(2),Id(29910),102,p.reserved_generation,0,graph.zero.bootstrap.page_size_profile_uuid}};
+  const auto encoded=db::EncodeNativeManagementExtent(operation,Id(5000),headers,fixture.budget);Check(encoded.ok(),"directory bound management extent");extent=encoded.pages;p.management_extent=encoded.root;
+ }
+ void Refresh(){after_images=MapsImages(after);BindMembers(directory,after);growth.clear();
+  if(profile==4){const auto& z=zeros.at(changed);auto next=z;++next.page_generation;++next.root_set_generation;next.total_pages=516;next.free_pages=next.preallocated_pages=0;
+    for(const auto& m:after.at(changed)){next.free_pages+=std::count(m.states.begin(),m.states.end(),State::free);next.preallocated_pages+=std::count(m.states.begin(),m.states.end(),State::preallocated);}
+    const auto first=d::EncodeFilespacePageZero(z),last=d::EncodeFilespacePageZero(next);Check(first.ok()&&last.ok(),"exact growth pair");growth={*first.bytes,*last.bytes};
+    for(auto& r:directory.records)if(r.bootstrap.filespace_uuid==changed){r.page_zero_generation=next.page_generation;r.root_set_generation=next.root_set_generation;r.total_pages=next.total_pages;}}
+  const auto dir=DirectoryImageOracle(directory);Check(page::EncodeNativeFilespaceDirectory(directory).bytes==dir,"independent complete candidate directory");
+  auto& p=graph.plan;const auto encoded=db::EncodeNativeManagementControlBundle(after_images,Id(1),graph.zero.page_uuid,Id(29909),p.operation_uuid,bundle_headers,fixture.budget,inventory_after,{dir},growth);
+  Check(encoded.ok(),"structurally canonical complete transition bundle");bundle=encoded.pages;p.control_bundle=encoded.root;
+  auto& d=*std::find_if(graph.target.roots.begin(),graph.target.roots.end(),[](const auto& r){return r.role==3;});d={3,9,Self(directory.header),directory.object_uuid,Sha(dir)};
+  const auto& map=after.at(Id(2)).front();auto& m=*std::find_if(graph.target.roots.begin(),graph.target.roots.end(),[](const auto& r){return r.role==4;});m={4,3,Self(map.header),map.object_uuid,Sha(MapOracle(map))};
+  target_cp=Finish(p,graph.target);plan_image=Oracle(p);
+ }
+ u64 Budget()const{u64 total=base_cp.size()+target_cp.size()+plan_image.size();for(const auto* group:{&extent,&before_images,&after_images,&bundle,&base.directory_images,&base.page_zero_images})for(const auto& raw:*group)total+=raw.size();
+  for(const auto* group:{&inventory_before,&inventory_after})for(const auto& raw:*group)total+=4*raw.size();return total;}
+ CE Validate(u64 budget=0)const{return db::ValidateNativeManagementDirectoryControlAllocation(base_cp,target_cp,plan_image,extent,before_images,after_images,base,budget?budget:Budget(),bundle,inventory_before);}
+};
+void DirectoryDelta(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve){
+ DirectoryTransition t(primary,secondary,reverse,profile,target,reserve);const auto original=t.fixture.Read(0,512);
+ const auto result=t.Validate();if(result!=CE::none)std::cerr<<"directory delta primary="<<primary<<" secondary="<<secondary<<" profile="<<profile<<" target="<<target<<" error="<<int(result)<<'\n';
+ Check(result==CE::none,"complete exact directory allocation transition");
+ Check(t.Validate(t.Budget()-1)==CE::resource_exhausted,"exact directory input budget boundary");
+ Check(db::ValidateNativeManagementControlAllocation(t.base_cp,t.target_cp,t.plan_image,t.extent,t.before_images,t.after_images,t.Budget(),t.bundle,t.inventory_before)==CE::invalid_plan,"legacy entrypoint cannot omit base directory");
+ const auto initial_after=t.after;const auto initial_directory=t.directory;const auto initial_base=t.base;const auto initial_request=t.request;
+ const auto initial_target=t.graph.target;
+ const auto reject=[&](unsigned mode){const auto error=t.Validate();if(error==CE::none)std::cerr<<"accepted invalid directory delta mode="<<mode<<" profile="<<profile<<'\n';Check(error!=CE::none,"canonical images cannot authorize an unrelated directory/allocation mutation");};
+ for(unsigned mode=0;mode<16;++mode){
+  if(mode>=4&&primary!=secondary)continue;
+  if(profile==2&&mode>=8&&mode<=13)continue;
+  t.after=initial_after;t.directory=initial_directory;t.base=initial_base;t.request=initial_request;t.graph.target=initial_target;
+  if(mode==0)Find(t.after.at(t.other),0).allocation_uuid=Id(55000);
+  if(mode==1)++t.directory.records.front().verification_epoch;
+  if(mode==2)t.directory.records.back().locator_uuid=Id(55001);
+  if(mode==3){const auto n=t.before.at(Id(2)).front().header.page_number;Find(t.after.at(Id(2)),n).owner_uuid=Id(55002);}
+  if(mode==4)t.base.page_zero_images.pop_back();
+  if(mode==5)t.base.page_zero_images.push_back(t.base.page_zero_images.front());
+  if(mode==6)t.base.directory_images.front().back()^=1;
+  if(mode==7){auto& m=Cover(t.after.at(t.other),20);m.states[20-m.first_page]=State::quarantined;}
+  if(mode==8)t.request.locator_uuid=Id(55003);
+  if(mode==9)++t.request.directory_generation;
+  if(mode==10)++t.request.page_zero_generation;
+  if(mode==11)++t.request.map_generation;
+  if(mode==12)t.request.allocation_sha256[0]^=1;
+  if(mode==13)t.request.checkpoint_sha256[0]^=1;
+  if(mode==14)t.graph.target.stable_local_transaction_id=0;
+  if(mode==15){auto& z=t.base.page_zero_images.front();const auto decoded=d::DecodeFilespacePageZero(z.data(),z.size());Check(decoded.ok(),"original zero for exact mismatch");auto next=*decoded.record;++next.root_set_generation;const auto raw=d::EncodeFilespacePageZero(next);Check(raw.ok(),"canonical mismatched zero");z=*raw.bytes;}
+  t.SetExtent();t.Refresh();reject(mode);
+ }
+ t.after=initial_after;t.directory=initial_directory;t.base=initial_base;t.request=initial_request;t.graph.target=initial_target;t.SetExtent();t.Refresh();
+ if(profile!=2&&!target){
+  // First publication into a secondary member may still use its immutable
+  // original allocation root rather than an explicit directory descriptor.
+  auto& member=*std::find_if(t.old_directory.records.begin(),t.old_directory.records.end(),[&](const auto& r){return r.bootstrap.filespace_uuid==t.other;});
+  member.allocation_root.reset();const auto raw=DirectoryImageOracle(t.old_directory);Check(page::EncodeNativeFilespaceDirectory(t.old_directory).bytes==raw,"canonical implicit secondary root");
+  t.base.directory_images={raw};auto& role=*std::find_if(t.graph.base.roots.begin(),t.graph.base.roots.end(),[](const auto& r){return r.role==3;});role.sha256=Sha(raw);
+  t.base_cp=db::EncodeNativeCheckpointRoot(t.graph.base).bytes;t.graph.plan.base_checkpoint_sha256=Sha(t.base_cp);t.request.checkpoint_sha256=Sha(t.base_cp);t.SetExtent();t.Refresh();
+  Check(t.Validate()==CE::none,"original secondary allocation root remains supported");
+ }
+ Check(t.fixture.Read(0,512)==original,"immutable transition validation performs no I/O effects");
+}
+void DirectoryDeltaFaults(unsigned profile){
+ DirectoryTransition t(0,0,true,profile,true,true);
+ allocations=0;counting=true;const auto baseline=t.Validate();counting=false;const auto sites=allocations;Check(baseline==CE::none,"directory delta allocation baseline");
+ for(unsigned long at=0;at<=sites;++at){allocation_budget=at;const auto result=t.Validate();const auto remaining=allocation_budget;allocation_budget=-1;
+   if(at==sites)Check(remaining>=0&&result==CE::none,"directory delta complete allocation boundary");
+   else {if(remaining!=-1||result!=CE::resource_exhausted)std::cerr<<"directory allocation failure at="<<at<<" result="<<int(result)<<'\n';Check(remaining==-1&&result==CE::resource_exhausted,"directory delta required allocation failure preserved");}}
+ hash_counting=true;hash_seen=0;const auto measured=t.Validate();hash_counting=false;const auto hashes=hash_seen;Check(measured==CE::none,"directory delta hash baseline");
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto result=t.Validate();
+   Check(!hash_fault&&result==CE::hash_failure,"directory delta required digest failure preserved");}
+ std::cout<<"directory delta profile="<<profile<<" allocation_sites="<<sites<<" hash_sites="<<hashes<<'\n';
+}
 void DirectoryPlan(unsigned primary,unsigned secondary,bool reverse){
  Fixture f(primary);Graph g(f);DirectoryBundle source(f,secondary,reverse);
  const auto original=f.Read(0,256);
@@ -1867,4 +2052,4 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
  Integration(f,profile);
 }
 }
-int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==2&&std::string_view(argv[1])=="--native-preallocation-repeat"){for(unsigned p=0;p<5;++p)OwnedPreallocationRepeat(p);}else if(argc==5&&std::string_view(argv[1])=="--native-preallocation-reconcile-faults"){const auto stage=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);Check(stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==0?1:route==1?5:8),"reconciliation fault arguments");OwnedPreallocationReconciliationFaults(stage,route,shard);}else if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==3&&std::string_view(argv[1])=="--directory-delta-faults"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory fault profile");DirectoryDeltaFaults(profile);return 0;}if(argc==3&&std::string_view(argv[1])=="--directory-delta"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory delta profile");for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;DirectoryDelta(p,q,reverse,profile,target,reserve);}std::cout<<"PASS directory delta checks="<<checks<<" not_runtime_acceptance=true\n";return 0;}if(argc==2&&std::string_view(argv[1])=="--native-preallocation-repeat"){for(unsigned p=0;p<5;++p)OwnedPreallocationRepeat(p);}else if(argc==5&&std::string_view(argv[1])=="--native-preallocation-reconcile-faults"){const auto stage=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);Check(stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==0?1:route==1?5:8),"reconciliation fault arguments");OwnedPreallocationReconciliationFaults(stage,route,shard);}else if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}

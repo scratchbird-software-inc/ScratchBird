@@ -309,6 +309,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "storage;binary_uuid;real_files;partial_effects;not_runtime_acceptance")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
+  foreach(profile RANGE 2 4)
+    add_test(NAME native_directory_allocation_delta_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta ${profile})
+    set_tests_properties(native_directory_allocation_delta_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;immutable_transition;not_runtime_acceptance")
+    add_test(NAME native_directory_allocation_delta_faults_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta-faults ${profile})
+    set_tests_properties(native_directory_allocation_delta_faults_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;immutable_transition;fault_injection;not_runtime_acceptance")
+  endforeach()
   add_test(NAME native_preallocation_repeat_gate
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --native-preallocation-repeat)
   set_tests_properties(native_preallocation_repeat_gate PROPERTIES TIMEOUT 120

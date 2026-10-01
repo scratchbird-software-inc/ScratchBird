@@ -20,4 +20,20 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
   const std::vector<std::vector<byte>>& target_allocation, u64 maximum_input_image_bytes,
   const std::vector<std::vector<byte>>& control_bundle = {},
   const std::vector<std::vector<byte>>& base_inventory = {}) noexcept;
+struct NativeManagementDirectoryBase {
+  std::vector<std::vector<byte>> directory_images;
+  // Exact original images for every filespace represented in base_allocation.
+  // Immutable verification inputs, not caller assertions of live authority.
+  std::vector<std::vector<byte>> page_zero_images;
+};
+// Complete directory-bearing inventory/preallocation/growth image transition.
+// Requires actual base acquisition and separate physical/admission protocols.
+NativeManagementControlAllocationError ValidateNativeManagementDirectoryControlAllocation(
+  const std::vector<byte>& base_checkpoint, const std::vector<byte>& target_checkpoint,
+  const std::vector<byte>& plan, const std::vector<std::vector<byte>>& extent,
+  const std::vector<std::vector<byte>>& base_allocation,
+  const std::vector<std::vector<byte>>& target_allocation,
+  const NativeManagementDirectoryBase&, u64 maximum_input_image_bytes,
+  const std::vector<std::vector<byte>>& control_bundle,
+  const std::vector<std::vector<byte>>& base_inventory = {}) noexcept;
 } // namespace scratchbird::storage::database
