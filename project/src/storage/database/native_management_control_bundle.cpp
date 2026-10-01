@@ -269,7 +269,7 @@ NativeManagementControlBundleRead DecodeNativeManagementControlBundle(const Page
   try{return Decode(pages,r,db,bootstrap,budget);}catch(E e){return Fail<NativeManagementControlBundleRead>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleRead>(E::invalid_extent);}
 }
 namespace {
-NativeManagementControlBundleRead ReadBundle(const disk::NativeFilespaceDevice& file,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget,const Bytes* historical) noexcept {
+NativeManagementControlBundleRead ReadBundle(const disk::NativeFilespaceDevice& file,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget,const Bytes* historical,bool result_context=false) noexcept {
   try{
     const auto size=Shape(r,db,bootstrap,budget);Require(file.device&&file.filespace_uuid==r.first.filespace_uuid&&file.page_size_profile_uuid==r.first.page_size_profile_uuid,E::invalid_request);const auto guard=file.device->AcquireOperationGuard();Require(file.device->is_open(),E::invalid_request);
     const disk::FilespaceBootstrapBinding binding{db,file.filespace_uuid,file.page_size_profile_uuid};
@@ -289,7 +289,10 @@ NativeManagementControlBundleRead ReadBundle(const disk::NativeFilespaceDevice& 
     auto decoded=Decode(pages,r,db,bootstrap,budget);disk::FilespacePageZeroDecodeResult target;
     if(r.growth_image_count){target=disk::DecodeFilespacePageZero(decoded.growth_images[1].data(),decoded.growth_images[1].size());
       if(!target.ok())throw target.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:target.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::binding_mismatch;
-      if(target.record->bootstrap.filespace_uuid==file.filespace_uuid){if(historical)Require(*historical==decoded.growth_images[0],E::binding_mismatch);
+      if(target.record->bootstrap.filespace_uuid==file.filespace_uuid){if(historical){Require(*historical==decoded.growth_images[result_context?1:0],E::binding_mismatch);
+          if(result_context){const auto& raw=decoded.growth_images[0];const auto before=disk::DecodeFilespacePageZero(raw.data(),raw.size(),&binding);
+            if(!before.ok())throw before.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:before.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::binding_mismatch;
+            Require(r.first.page_number<before.record->total_pages&&r.page_count<=before.record->total_pages-r.first.page_number,E::invalid_extent);}}
         else {const auto actual=disk::EncodeFilespacePageZero(z);
         if(!actual.ok())throw actual.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:actual.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::binding_mismatch;
         Require(*actual.bytes==decoded.growth_images[1],E::binding_mismatch);}}}
@@ -313,5 +316,8 @@ NativeManagementControlBundleRead ReadNativeManagementControlBundleFromOpenDevic
 }
 NativeManagementControlBundleRead ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(const disk::NativeFilespaceDevice& file,const Root& r,const Uuid& db,const Uuid& bootstrap,const Bytes& historical,u64 budget) noexcept {
   return ReadBundle(file,r,db,bootstrap,budget,&historical);
+}
+NativeManagementControlBundleRead ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(const disk::NativeFilespaceDevice& file,const Root& r,const Uuid& db,const Uuid& bootstrap,const Bytes& historical,u64 budget) noexcept {
+  return ReadBundle(file,r,db,bootstrap,budget,&historical,true);
 }
 } // namespace scratchbird::storage::database

@@ -310,6 +310,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
   foreach(profile RANGE 2 4)
+    if(profile GREATER 2)
+      add_test(NAME native_directory_history_repeat_${profile}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat ${profile})
+      set_tests_properties(native_directory_history_repeat_${profile}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
+    endif()
+    add_test(NAME native_directory_history_faults_${profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-faults ${profile})
+    set_tests_properties(native_directory_history_faults_${profile}_gate PROPERTIES TIMEOUT 120
+      LABELS "storage;binary_uuid;real_files;historical_provenance;fault_injection;not_runtime_acceptance")
+    foreach(primary RANGE 0 4)
+      add_test(NAME native_directory_history_${profile}_${primary}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history ${profile} ${primary})
+      set_tests_properties(native_directory_history_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
+        LABELS "storage;binary_uuid;real_files;historical_provenance;not_runtime_acceptance")
+    endforeach()
     add_test(NAME native_directory_allocation_delta_${profile}_gate
       COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-delta ${profile})
     set_tests_properties(native_directory_allocation_delta_${profile}_gate PROPERTIES TIMEOUT 120

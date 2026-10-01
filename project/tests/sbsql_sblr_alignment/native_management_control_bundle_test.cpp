@@ -464,44 +464,63 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse,growing);
  const auto old_primary=f.Read(0);
  const auto historical=[&]{return db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget());};
+ const auto historical_result=[&]{return db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,growing?old_primary:b.growth_images[1],b.Budget());};
  const auto good=[&](const db::NativeManagementControlBundleRead& r){Check(r.ok()&&r.growth_images==b.growth_images&&r.allocation_images==b.map_images&&
    r.inventory_images==b.inventory_images&&r.directory_images==b.directory_images&&r.total_pages==(growing?256:260),"exact original growth reconstruction images");};
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent version4 frames and seals");good(b.Decode());
  Empty(b.Decode(b.Budget()-1));b.Install();good(historical());
+ if(!growing)Empty(historical_result());else good(historical_result());
  if(!growing){Empty(b.Read());const byte tail=0;Check(f.device.WriteAt(260*f.size-1,&tail,1).ok(),"fixture grown extent");
    Empty(b.Read());Check(f.device.WriteAt(0,b.growth_images[1].data(),b.growth_images[1].size()).ok()&&f.device.Sync().ok(),"fixture complete after metadata");}
- good(b.Read());good(historical());
+ good(b.Read());good(historical());good(historical_result());
+ Empty(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,growing?old_primary:b.growth_images[1],b.Budget()-1));
+ {const auto& raw=growing?old_primary:b.growth_images[1];const auto decoded=d::DecodeFilespacePageZero(raw.data(),raw.size());Check(decoded.ok(),"historical result context fixture");
+  for(unsigned field=0;field<3;++field){auto wrong=*decoded.record;if(!field)++wrong.page_generation;if(field==1)++wrong.root_set_generation;if(field==2)--wrong.free_pages;
+   const auto image=d::EncodeFilespacePageZero(wrong);Check(image.ok(),"canonical wrong historical result");
+   if(field==2&&growing)continue; // Non-growth counters are not directory authority.
+   Empty(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,*image.bytes,b.Budget()));}}
+ if(!growing)Empty(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget()));
  const auto intact=f.Read(0);
  for(unsigned variant=0;variant<3;++variant){auto torn=intact;
    if(variant==0)std::fill(torn.begin()+4096,torn.begin()+4480,0);
    if(variant==1)torn[4300]^=1;
    if(variant==2)std::copy_n(old_primary.begin()+4096,97,torn.begin()+4096);
    Check(f.device.WriteAt(0,torn.data(),torn.size()).ok()&&f.device.Sync().ok(),"actual torn mutable body fixture");
-   good(historical());Check(f.Read(0)==torn,"historical bundle read never repairs damaged metadata");
+   good(historical());good(historical_result());Check(f.Read(0)==torn,"historical bundle reads never repair damaged metadata");
  }
  Check(f.device.WriteAt(0,intact.data(),intact.size()).ok()&&f.device.Sync().ok(),"restore current metadata");
  for(unsigned at:{0u,4480u,static_cast<unsigned>(f.size-1)}){auto wrong=intact;wrong[at]^=1;
-   Check(f.device.WriteAt(0,wrong.data(),wrong.size()).ok(),"immutable damage fixture");Empty(historical());}
+   Check(f.device.WriteAt(0,wrong.data(),wrong.size()).ok(),"immutable damage fixture");Empty(historical());Empty(historical_result());}
  Check(f.device.WriteAt(0,intact.data(),intact.size()).ok()&&f.device.Sync().ok(),"restore immutable metadata");
- Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"growth bundle read-only reopen");good(b.Read());good(historical());
+ Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"growth bundle read-only reopen");good(b.Read());good(historical());good(historical_result());
  Check(f.device.Close().ok(),"growth bundle release before process");const auto child=fork();Check(child>=0,"growth bundle independent process");
  if(!child){d::FileDevice device;if(!device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);
    const auto r=db::ReadNativeManagementControlBundleFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,b.Budget());
    const auto h=db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget());
-   _exit(r.ok()&&h.ok()&&h.growth_images==b.growth_images&&h.directory_images==b.directory_images&&r.growth_images==b.growth_images&&r.directory_images==b.directory_images&&r.allocation_images==b.map_images?0:81);}
+   const auto a=db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,growing?old_primary:b.growth_images[1],b.Budget());
+   _exit(r.ok()&&h.ok()&&a.ok()&&a.growth_images==b.growth_images&&h.growth_images==b.growth_images&&h.directory_images==b.directory_images&&r.growth_images==b.growth_images&&r.directory_images==b.directory_images&&r.allocation_images==b.map_images?0:81);}
  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"growth images retained across independent reopen");
  Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"growth fixture reopen");
  const auto expected_size=(growing?256:260)*f.size;
+ {const auto decoded=d::DecodeFilespacePageZero(intact.data(),intact.size());Check(decoded.ok(),"canonical current result");auto newer=*decoded.record;
+  ++newer.page_generation;++newer.root_set_generation;newer.total_pages+=8;newer.free_pages+=8;
+  const auto image=d::EncodeFilespacePageZero(newer);Check(image.ok(),"canonical later capacity image");
+  std::filesystem::resize_file(f.path,newer.total_pages*f.size);Check(f.device.WriteAt(0,image.bytes->data(),image.bytes->size()).ok()&&f.device.Sync().ok(),"actual later capacity fixture");
+  Empty(b.Read());good(historical_result());good(historical());
+  Check(f.device.WriteAt(0,intact.data(),intact.size()).ok(),"restore prior exact result");std::filesystem::resize_file(f.path,expected_size);Check(f.device.Sync().ok(),"restored result barrier");}
  growth_extend_to=expected_size+1;const auto changed=historical();Check(!growth_extend_to&&changed.error==BE::physical_extent_changed,"actual mid-read physical extent change refuses");Empty(changed);
+ growth_extend_to=expected_size+2;const auto result_changed=historical_result();Check(!growth_extend_to&&result_changed.error==BE::physical_extent_changed,"historical result size race refuses");Empty(result_changed);
  good(historical()); // unchanged partial tail is observed, never granted as free capacity
- std::filesystem::resize_file(f.path,256*f.size-1);Empty(historical());
- std::filesystem::resize_file(f.path,expected_size);good(historical());
+ std::filesystem::resize_file(f.path,256*f.size-1);Empty(historical());Empty(historical_result());
+ std::filesystem::resize_file(f.path,expected_size);good(historical());good(historical_result());
 #ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
  historical_stats=0;historical_stat_counting=true;good(historical());historical_stat_counting=false;Check(historical_stats==2,"two actual historical extent observations");
  for(unsigned site=1;site<=2;++site){historical_stats=0;historical_stat_fault=site;historical_stat_counting=true;const auto r=historical();historical_stat_counting=false;historical_stat_fault=0;
    Check(r.error==BE::io_failure&&historical_stats>=site,"historical extent failure retained");Empty(r);}
+ for(unsigned site=1;site<=2;++site){historical_stats=0;historical_stat_fault=site;historical_stat_counting=true;const auto r=historical_result();historical_stat_counting=false;historical_stat_fault=0;
+   Check(r.error==BE::io_failure&&historical_stats>=site,"historical result extent failure retained");Empty(r);}
 #endif
- if(!reverse&&primary==secondary){historical_read_pause=1;auto reader=std::async(std::launch::async,historical);
+ if(!reverse&&primary==secondary)for(bool result_context:{false,true}){historical_read_pause=1;auto reader=std::async(std::launch::async,[&]{return result_context?historical_result():historical();});
    struct Release {~Release(){historical_read_pause=3;}} release;
    const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
    while(historical_read_pause!=2&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
@@ -539,8 +558,8 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  if(reverse||!(primary==secondary||(primary==0&&secondary==4)))return;
  byte scratch=0;for(unsigned i=0;i<4097;++i)Check(f.device.ReadAt(0,&scratch,1).ok(),"growth telemetry warmup");
  const auto original=f.Read(0,growing?256:260);
- for(unsigned route=0;route<4;++route){const auto call=[&]{if(!route){const auto r=b.Encode();if(!r.ok())Empty(r);return r.error;}
-     const auto r=route==1?b.Decode():route==2?b.Read():historical();if(!r.ok())Empty(r);return r.error;};
+ for(unsigned route=0;route<5;++route){const auto call=[&]{if(!route){const auto r=b.Encode();if(!r.ok())Empty(r);return r.error;}
+     const auto r=route==1?b.Decode():route==2?b.Read():route==3?historical():historical_result();if(!r.ok())Empty(r);return r.error;};
    counting=true;allocations=0;Check(call()==BE::none,"growth allocation baseline");counting=false;const auto sites=allocations;
    for(unsigned long at=0;at<=sites;++at){const auto loss=f.device.failed_io_latency_observations();allocation_budget=at;const auto r=call();const auto left=allocation_budget;allocation_budget=-1;
      Check(at==sites?(r==BE::none&&left>=0):(left<0&&(r==BE::resource_exhausted||(r==BE::none&&f.device.failed_io_latency_observations()==loss+1))),"growth allocation failure retained or measured telemetry loss");}
@@ -554,6 +573,10 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  for(unsigned at=1;at<=old_sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=historical();io_counting=false;read_fault=0;
    Check(r.error==BE::io_failure&&reads>=at,"historical bundle read error consumed");Empty(r);}
  Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"historical bundle failures preserve all physical bytes");
+ reads=writes=syncs=0;io_counting=true;good(historical_result());io_counting=false;const auto result_sites=reads;
+ for(unsigned at=1;at<=result_sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=historical_result();io_counting=false;read_fault=0;
+   Check(r.error==BE::io_failure&&reads>=at,"historical result read error consumed");Empty(r);}
+ Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"historical result failures preserve all physical bytes");
 }
 // Complete immutable transitions, not fabricated runtime admission. Primary
 // genesis is read from a real file; all candidate images have independent oracles.
@@ -565,6 +588,7 @@ struct DirectoryTransition {
  Pages before_images,after_images,inventory_before,inventory_after,growth,bundle,extent;
  std::vector<d::NativeCommonPageHeader> bundle_headers;Bytes base_cp,target_cp,plan_image;
  unsigned identity=30000;
+ Uuid extent_page_uuid=Id(29910);u64 extent_slot=102;
  DirectoryTransition(unsigned primary,unsigned secondary,bool reverse,unsigned recovery,bool secondary_target,bool preallocated)
    :fixture(primary,512),graph(fixture),other(reverse?Id(0):Id(7)),changed(secondary_target?other:Id(2)),profile(recovery),reserve(preallocated){
   auto& p=graph.plan;const auto& q=d::kCanonicalFilespacePageProfiles[secondary];
@@ -667,11 +691,11 @@ struct DirectoryTransition {
  }
  void SetExtent(){if(profile!=2){const auto encoded=db::EncodeNativeStorageActionIntent(request,fixture.budget);Check(encoded.ok(),"directory exact storage intent");operation.normalized_request_bytes=encoded.bytes;operation.normalized_request_sha256=Sha(encoded.bytes);}
   auto& p=graph.plan;p.intent={operation.initiator_uuid,operation.request_context_uuid,operation.policy_snapshot_uuid,operation.normalized_request_sha256,operation.initiator_kind,u16(profile)};
-  std::vector<d::NativeCommonPageHeader> headers{{u32(fixture.size),0x500,Id(1),Id(2),Id(29910),102,p.reserved_generation,0,graph.zero.bootstrap.page_size_profile_uuid}};
+  std::vector<d::NativeCommonPageHeader> headers{{u32(fixture.size),0x500,Id(1),Id(2),extent_page_uuid,extent_slot,p.reserved_generation,0,graph.zero.bootstrap.page_size_profile_uuid}};
   const auto encoded=db::EncodeNativeManagementExtent(operation,Id(5000),headers,fixture.budget);Check(encoded.ok(),"directory bound management extent");extent=encoded.pages;p.management_extent=encoded.root;
  }
  void Refresh(){after_images=MapsImages(after);BindMembers(directory,after);growth.clear();
-  if(profile==4){const auto& z=zeros.at(changed);auto next=z;++next.page_generation;++next.root_set_generation;next.total_pages=516;next.free_pages=next.preallocated_pages=0;
+  if(profile==4){const auto& z=zeros.at(changed);auto next=z;++next.page_generation;++next.root_set_generation;next.total_pages=z.total_pages+4;next.free_pages=next.preallocated_pages=0;
     for(const auto& m:after.at(changed)){next.free_pages+=std::count(m.states.begin(),m.states.end(),State::free);next.preallocated_pages+=std::count(m.states.begin(),m.states.end(),State::preallocated);}
     const auto first=d::EncodeFilespacePageZero(z),last=d::EncodeFilespacePageZero(next);Check(first.ok()&&last.ok(),"exact growth pair");growth={*first.bytes,*last.bytes};
     for(auto& r:directory.records)if(r.bootstrap.filespace_uuid==changed){r.page_zero_generation=next.page_generation;r.root_set_generation=next.root_set_generation;r.total_pages=next.total_pages;}}
@@ -686,6 +710,147 @@ struct DirectoryTransition {
   for(const auto* group:{&inventory_before,&inventory_after})for(const auto& raw:*group)total+=4*raw.size();return total;}
  CE Validate(u64 budget=0)const{return db::ValidateNativeManagementDirectoryControlAllocation(base_cp,target_cp,plan_image,extent,before_images,after_images,base,budget?budget:Budget(),bundle,inventory_before);}
 };
+struct DirectoryHistoryFixture {
+ DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
+ DirectoryHistoryFixture(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve)
+   :t(primary,secondary,reverse,profile,target,reserve),budget(8*t.fixture.budget){
+  auto& f=t.fixture;secondary_path=f.path.parent_path()/"secondary";untouched_path=f.path.parent_path()/"untouched";
+  Check(f.secondary.Open(secondary_path.string(),d::FileOpenMode::create_new).ok()&&untouched.Open(untouched_path.string(),d::FileOpenMode::create_new).ok(),"owned actual historical members");
+  auto z=t.zeros.at(t.other);auto extra=z;extra.bootstrap.filespace_uuid=Id(11);extra.page_uuid=Id(29009);extra.roots.front().filespace_uuid=Id(11);extra.roots.front().object_uuid=Id(29010);
+  const byte end=0;for(const auto& entry:{std::pair{&f.secondary,z},std::pair{&untouched,extra}}){const auto image=d::EncodeFilespacePageZero(entry.second);
+    Check(image.ok()&&entry.first->WriteAt(512*u64{entry.second.bootstrap.page_size_bytes}-1,&end,1).ok()&&entry.first->WriteAt(0,image.bytes->data(),image.bytes->size()).ok()&&entry.first->Sync().ok(),"canonical actual member files");}
+  f.devices.push_back({t.other,z.bootstrap.page_size_profile_uuid,&f.secondary});f.devices.push_back({Id(11),z.bootstrap.page_size_profile_uuid,&untouched});
+  for(const auto& raw:t.before_images)Write(raw);Write(t.base.directory_images.front());Write(t.base_cp);
+  for(const auto* group:{&t.after_images,&t.inventory_after,&t.extent,&t.bundle})for(const auto& raw:*group)Write(raw);
+  Write(DirectoryImageOracle(t.directory));Write(t.plan_image);Write(t.target_cp);
+  if(!t.growth.empty()){const auto decoded=d::DecodeFilespacePageZero(t.growth.back().data(),t.growth.back().size());Check(decoded.ok(),"growth result for actual history");
+    const auto& z=*decoded.record;auto* device=File(z.bootstrap.filespace_uuid);Check(device->WriteAt(z.total_pages*u64{z.bootstrap.page_size_bytes}-1,&end,1).ok()&&device->WriteAt(0,t.growth.back().data(),t.growth.back().size()).ok(),"actual historical growth result");}
+  Select();for(const auto& file:f.devices)Check(file.device->Sync().ok(),"actual fixture barrier");
+ }
+ void Select(){auto& f=t.fixture;for(unsigned n=0;n<2;++n){const auto root=std::find_if(t.graph.zero.roots.begin(),t.graph.zero.roots.end(),[&](const auto& r){return r.kind==18+n;});
+    auto decoded=db::DecodeNativeCheckpointSelection(f.Read(root->page_number));Check(decoded.ok(),"actual original selector");auto s=*decoded.selection;
+    s.previous_selection_generation=*t.graph.plan.base_selection_generation;s.previous_checkpoint=t.graph.plan.base_checkpoint;s.previous_checkpoint_object_uuid=t.graph.plan.base_checkpoint_object_uuid;s.previous_checkpoint_sha256=t.graph.plan.base_checkpoint_sha256;
+    s.selection_generation=s.previous_selection_generation+1;s.publication_uuid=t.graph.plan.operation_uuid;s.checkpoint=t.graph.plan.target_checkpoint;s.checkpoint_object_uuid=t.graph.plan.target_checkpoint_object_uuid;
+    s.checkpoint_sha256=Sha(t.target_cp);s.checkpoint_generation=t.graph.plan.reserved_generation;s.root_set_generation=t.graph.plan.target_root_set_generation;Write(SelectorOracle(s));}
+ }
+ d::FileDevice* File(const Uuid& id){for(const auto& f:t.fixture.devices)if(f.filespace_uuid==id)return f.device;throw std::runtime_error("missing fixture member");}
+ void Write(const Bytes& raw){const auto h=d::DecodeNativeCommonPageHeader(raw.data(),128);Check(h.ok(),"actual historical image header");const auto& v=*h.header;
+  const auto io=File(v.filespace_uuid)->WriteAt(v.page_number*u64{v.page_size_bytes},raw.data(),raw.size());Check(io.ok()&&io.bytes_transferred==raw.size(),"actual historical image fixture write");}
+ auto Read()const{return db::ReadNativeManagementHistoryFromOpenDevices(Id(1),t.fixture.devices,Id(2),budget);}
+ std::map<Uuid,Bytes> Context()const{std::map<Uuid,Bytes> result;for(const auto& file:t.fixture.devices){const auto* p=d::FindCanonicalFilespacePageProfile(file.page_size_profile_uuid);
+   Bytes raw(p->page_size_bytes);const auto io=file.device->ReadAt(0,raw.data(),raw.size());Check(io.ok()&&io.bytes_transferred==raw.size()&&d::DecodeFilespacePageZero(raw.data(),raw.size()).ok(),"exact canonical result context from actual files");result.emplace(file.filespace_uuid,std::move(raw));}return result;}
+ void NextGrowth(){Check(t.profile==3||t.profile==4,"storage-request predecessor");auto& p=t.graph.plan;const auto old=p;const auto old_plan=t.plan_image;
+  if(!t.growth.empty()){const auto& raw=t.growth.back();const auto decoded=d::DecodeFilespacePageZero(raw.data(),raw.size());Check(decoded.ok(),"previous growth result");t.zeros.at(t.changed)=*decoded.record;}
+  t.before=t.after;t.old_directory=t.directory;t.graph.base=*db::DecodeNativeCheckpointRoot(t.target_cp).root;
+  t.graph.target=t.graph.base;t.graph.target.header.page_uuid=Id(t.identity++);t.RefreshBase();t.profile=4;
+  ++p.reserved_generation;++p.target_root_set_generation;++*p.base_selection_generation;
+  p.previous_plan=Self(old.header);p.previous_plan_object_uuid=old.object_uuid;p.previous_plan_sha256=Sha(old_plan);
+  p.header.page_uuid=Id(t.identity++);p.header.page_number=120;p.header.page_generation=p.reserved_generation;p.operation_uuid=Id(t.identity++);
+  p.base_checkpoint=Self(t.graph.base.header);p.base_checkpoint_generation=t.graph.base.checkpoint_generation;p.base_root_set_generation=t.graph.base.root_set_generation;
+  p.target_checkpoint={Id(2),121,p.reserved_generation,p.header.page_size_profile_uuid};p.reservation_state_sha256.fill(37);
+  t.directory=t.old_directory;t.directory.header.page_uuid=Id(t.identity++);t.directory.header.page_number=240;
+  t.directory.header.page_generation=t.directory.directory_generation=p.reserved_generation;t.directory.creator_operation_uuid=p.operation_uuid;
+  t.after=t.before;for(auto& [fs,maps]:t.after){for(std::size_t n=0;n<maps.size();++n){auto& m=maps[n];m.header.page_number=48+n;m.header.page_uuid=Id(t.identity++);
+    m.header.page_generation=m.map_generation=p.reserved_generation;m.creator_operation_uuid=p.operation_uuid;
+    if(fs==t.changed){m.total_pages+=4;++m.capacity_generation;if(n+1==maps.size())m.states.resize(m.states.size()+4,State::free);}}}
+  const auto& z=t.zeros.at(t.changed);const auto& map=t.before.at(t.changed).front();auto& r=t.request;
+  r.request_uuid=Id(t.identity++);r.operation_uuid=Id(t.identity++);r.action=db::NativeStorageAction::physical_growth;
+  r.current_total_pages=z.total_pages;r.first_page=z.total_pages;r.maximum_total_pages=z.total_pages+4;r.page_count=4;
+  r.checkpoint={9,0x300,Id(2),p.base_checkpoint.page_number,p.base_checkpoint.page_generation,p.base_checkpoint.page_size_profile_uuid,p.base_checkpoint_object_uuid};
+  r.checkpoint_sha256=p.base_checkpoint_sha256;r.checkpoint_generation=p.base_checkpoint_generation;r.checkpoint_root_set_generation=p.base_root_set_generation;
+  r.allocation_root={3,3,t.changed,map.header.page_number,map.header.page_generation,map.header.page_size_profile_uuid,map.object_uuid};r.allocation_sha256=Sha(MapOracle(map));
+  r.map_generation=map.map_generation;r.capacity_generation=map.capacity_generation;r.directory_generation=t.old_directory.directory_generation;
+  r.page_zero_generation=z.page_generation;r.filespace_root_set_generation=z.root_set_generation;
+  t.operation.uuid=r.operation_uuid;t.operation.idempotency_key+="-second-growth";t.extent_page_uuid=Id(t.identity++);t.extent_slot=122;t.SetExtent();
+  ++Find(t.after.at(t.changed),0).page_generation;
+  if(t.reserve)for(u64 n=r.first_page;n<r.first_page+4;++n){auto& m=Cover(t.after.at(t.changed),n);m.states[n-m.first_page]=State::preallocated;
+    page::NativeAllocationRecord a;a.page_number=n;a.allocation_uuid=Id(t.identity++);a.owner_uuid=r.allocation_owner_uuid;a.page_type=r.allocation_page_type;a.creator_operation_uuid=p.operation_uuid;m.records.push_back(a);}
+  auto cp=t.graph.target.header;cp.page_number=121;cp.page_generation=p.reserved_generation;t.Add(t.after,cp,t.graph.target.object_uuid,p.operation_uuid);
+  t.Add(t.after,p.header,p.object_uuid,p.operation_uuid);t.Add(t.after,t.directory.header,t.directory.object_uuid,p.operation_uuid);
+  for(const auto& raw:t.extent){const auto h=d::DecodeNativeCommonPageHeader(raw.data(),128);Check(h.ok(),"successor extent header");t.Add(t.after,*h.header,p.management_extent->object_uuid,p.operation_uuid);}
+  for(const auto& [fs,maps]:t.after)for(const auto& m:maps)t.Add(t.after,m.header,m.object_uuid,p.operation_uuid);
+  u64 payload=t.fixture.size+8+2*(u64{z.bootstrap.page_size_bytes}+8);for(const auto& [fs,maps]:t.after)for(const auto& m:maps)payload+=m.header.page_size_bytes+8;
+  const auto count=(payload+t.fixture.size-385)/(t.fixture.size-384);t.bundle_headers.clear();Check(count<48,"equal-profile repeated fixture bundle fits original free run");
+  for(u64 n=0;n<count;++n){d::NativeCommonPageHeader h{u32(t.fixture.size),0x500,Id(1),Id(2),Id(t.identity++),150+n,p.reserved_generation,0,p.header.page_size_profile_uuid};
+    t.bundle_headers.push_back(h);t.Add(t.after,h,Id(29909),p.operation_uuid);}
+  t.Refresh();Check(t.Validate()==CE::none,"second growth preserves complete original allocation history");
+  for(const auto* group:{&t.after_images,&t.extent,&t.bundle})for(const auto& raw:*group)Write(raw);Write(DirectoryImageOracle(t.directory));Write(t.plan_image);Write(t.target_cp);
+  const auto decoded=d::DecodeFilespacePageZero(t.growth.back().data(),t.growth.back().size());Check(decoded.ok(),"successor result image");const auto& next=*decoded.record;const byte end=0;
+  auto* device=File(t.changed);Check(device->WriteAt(next.total_pages*u64{next.bootstrap.page_size_bytes}-1,&end,1).ok()&&device->WriteAt(0,t.growth.back().data(),t.growth.back().size()).ok(),"actual repeated growth fixture");
+  Select();for(const auto& file:t.fixture.devices)Check(file.device->Sync().ok(),"repeated growth barrier");
+ }
+ void Good(const db::NativeManagementGraphHistory& h)const{Check(h.ok()&&h.entries.size()==1&&h.entries.front().control_allocation_images==t.after_images&&
+    h.entries.front().control_inventory_images==t.inventory_after&&h.entries.front().control_directory_images==Pages{DirectoryImageOracle(t.directory)}&&
+    h.entries.front().control_growth_images==t.growth&&h.entries.front().record.normalized_request_bytes==t.operation.normalized_request_bytes,"complete actual directory/growth provenance");}
+ void Good(const db::NativeManagementHistory& h)const{Check(h.selection.has_value(),"actual selected history retains its selection");Good(static_cast<const db::NativeManagementGraphHistory&>(h));}
+ void Reopen(){auto& f=t.fixture;for(const auto& file:f.devices)if(file.device->is_open())Check(file.device->Close().ok(),"close historical fixtures");
+   Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok()&&f.secondary.Open(secondary_path.string(),d::FileOpenMode::open_existing_read_only).ok()&&
+     untouched.Open(untouched_path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only actual history reopen");}
+};
+void EmptyHistory(const db::NativeManagementHistory& h){Check(!h.ok()&&!h.anchor&&!h.selection&&h.entries.empty()&&h.latest.empty()&&h.idempotency.empty()&&!h.verified_image_bytes,"failed history has no provenance prefix");}
+void EmptyGraph(const db::NativeManagementGraphHistory& h){Check(!h.ok()&&!h.anchor&&h.entries.empty()&&h.latest.empty()&&h.idempotency.empty()&&!h.verified_image_bytes,"failed graph has no provenance prefix");}
+void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++size)for(bool target:{false,true}){
+ DirectoryHistoryFixture f(size,size,true,profile,target,true);const auto first=f.Read();f.Good(first);const auto original=first.entries.front();const auto context=f.Context();f.NextGrowth();
+ const auto next=f.Read();Check(next.ok()&&next.entries.size()==2&&next.entries[0].control_growth_images==original.control_growth_images&&
+   next.entries[0].control_directory_images==original.control_directory_images&&next.entries[1].control_growth_images==f.t.growth,"reverse growth history retains both exact generations");
+ const auto historical=[&](const std::map<Uuid,Bytes>& images){return db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,images,f.budget);};
+ const auto old=historical(context);Check(old.ok()&&old.entries.size()==1&&old.entries[0].control_growth_images==original.control_growth_images,"explicit older anchor uses its original result context after later growth");
+ auto missing=context;missing.erase(missing.begin());EmptyGraph(historical(missing));auto wrong=context;wrong.begin()->second.back()^=1;EmptyGraph(historical(wrong));
+ auto substituted=context;auto& image=substituted.begin()->second;const auto decoded=d::DecodeFilespacePageZero(image.data(),image.size());Check(decoded.ok(),"historical context negative source");
+ auto zero=*decoded.record;++zero.page_generation;const auto canonical=d::EncodeFilespacePageZero(zero);Check(canonical.ok(),"canonical substituted historical context");image=*canonical.bytes;EmptyGraph(historical(substituted));
+ const auto first_file=context.begin()->first;auto* first_device=f.File(first_file);const auto original_size=first_device->Size();Check(original_size.ok(),"historical race size source");
+ growth_extend_to=original_size.size_bytes+1;const auto raced=historical(context);Check(!growth_extend_to&&!raced.ok(),"whole historical graph rejects an actual changing filespace extent");EmptyGraph(raced);
+ std::filesystem::resize_file(first_file==Id(2)?f.t.fixture.path:f.secondary_path,original_size.size_bytes);
+ const auto actual=f.Context();auto torn=actual.at(f.t.changed);std::fill(torn.begin()+4096,torn.begin()+4480,0);auto* device=f.File(f.t.changed);
+ Check(device->WriteAt(0,torn.data(),torn.size()).ok()&&device->Sync().ok(),"actual torn later result fixture");EmptyHistory(f.Read());
+ const auto recovered=historical(context);Check(recovered.ok()&&recovered.entries.size()==1&&recovered.entries[0].control_directory_images==original.control_directory_images,"historical graph never needs a valid current mutable body");
+ Bytes observed(torn.size());Check(device->ReadAt(0,observed.data(),observed.size()).ok()&&observed==torn,"historical graph does not repair a torn body");
+ const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
+ f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
+}}
+void DirectoryHistory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve);reads=writes=syncs=0;io_counting=true;const auto first=f.Read();io_counting=false;
+ if(!first.ok())std::cerr<<"history profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" error="<<int(first.error)<<'\n';
+ f.Good(first);Check(!writes&&!syncs,"history never installs or selects candidate pages");
+ const auto anchored=db::ReadNativeManagementGraphHistoryFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,f.budget);
+ Check(anchored.ok()&&anchored.entries.size()==1&&anchored.entries.front().control_growth_images==f.t.growth,"exact graph anchor retains directory growth history");
+ const auto historical=db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,f.Context(),f.budget);f.Good(historical);
+ if(primary==secondary){auto files=f.t.fixture.devices;files.pop_back();EmptyHistory(db::ReadNativeManagementHistoryFromOpenDevices(Id(1),files,Id(2),f.budget));
+  const auto plan=f.t.graph.plan;const auto cp=f.t.target_cp;auto wrong=f.t.graph.target;
+  *std::find_if(wrong.roots.begin(),wrong.roots.end(),[](const auto& r){return r.role==3;})=*std::find_if(f.t.graph.base.roots.begin(),f.t.graph.base.roots.end(),[](const auto& r){return r.role==3;});
+  f.t.target_cp=Finish(f.t.graph.plan,wrong);f.Write(f.t.target_cp);f.Write(Oracle(f.t.graph.plan));f.Select();Check(f.t.fixture.device.Sync().ok(),"resealed wrong-directory graph fixture");
+  const auto mismatch=f.Read();Check(mismatch.error==db::NativeManagementHistoryError::history_mismatch,"self-consistent selector/plan/checkpoint cannot redirect the retained directory");EmptyHistory(mismatch);
+  f.t.graph.plan=plan;f.t.target_cp=cp;f.Write(cp);f.Write(f.t.plan_image);f.Select();Check(f.t.fixture.device.Sync().ok(),"restore complete graph");f.Good(f.Read());}
+ f.Reopen();f.Good(f.Read());
+ if(primary==secondary&&!reverse){for(const auto& file:f.t.fixture.devices)Check(file.device->Close().ok(),"release devices before cold history");
+  const auto child=fork();Check(child>=0,"independent historical process");if(!child){f.Reopen();const auto h=f.Read();_exit(h.ok()&&h.entries.size()==1&&h.entries.front().control_growth_images==f.t.growth?0:81);}
+  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process verifies actual mixed history");}
+}
+void DirectoryHistoryFaults(unsigned profile){for(bool target:{false,true})for(unsigned route=0;route<2;++route){
+ if(profile==2&&target)continue;DirectoryHistoryFixture f(0,0,true,profile,target,true);
+ const auto context=f.Context();const auto selected=f.Read();f.Good(selected);
+ const auto call=[&]() -> db::NativeManagementGraphHistory {if(route)return db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*selected.anchor,context,f.budget);
+   auto h=f.Read();if(!h.ok())EmptyHistory(h);else Check(h.selection.has_value(),"selected fault result retains its selection");return std::move(static_cast<db::NativeManagementGraphHistory&>(h));};
+ const auto loss=[&]{u64 total=0;for(const auto& file:f.t.fixture.devices)total+=file.device->failed_io_latency_observations();return total;};
+ byte scratch=0;for(const auto& file:f.t.fixture.devices)for(unsigned i=0;i<4097;++i)Check(file.device->ReadAt(0,&scratch,1).ok(),"history telemetry warmup");
+ allocations=0;counting=true;const auto baseline=call();counting=false;const auto sites=allocations;f.Good(baseline);
+ for(unsigned long at=0;at<=sites;++at){const auto old_loss=loss();allocation_budget=at;const auto h=call();const auto remaining=allocation_budget;allocation_budget=-1;
+  if(at==sites)Check(remaining>=0&&h.ok(),"history complete allocation boundary");
+  else{if(h.error!=db::NativeManagementHistoryError::resource_exhausted&&!h.ok())std::cerr<<"history allocation at="<<at<<" error="<<int(h.error)<<'\n';
+   Check(remaining==-1&&(h.error==db::NativeManagementHistoryError::resource_exhausted||(h.ok()&&loss()==old_loss+1)),"required history allocation or measured optional loss");if(!h.ok())EmptyGraph(h);}}
+ hash_counting=true;hash_seen=0;const auto measured=call();hash_counting=false;const auto hashes=hash_seen;f.Good(measured);
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto h=call();
+   Check(!hash_fault&&h.error==db::NativeManagementHistoryError::hash_failure,"every history digest failure preserved");EmptyGraph(h);}
+ reads=writes=syncs=0;io_counting=true;const auto actual=call();io_counting=false;const auto read_sites=reads;f.Good(actual);Check(!writes&&!syncs,"history baseline no effects");
+ for(unsigned at=1;at<=read_sites;++at){reads=writes=syncs=0;read_fault=at;io_counting=true;const auto h=call();io_counting=false;read_fault=0;
+   Check(reads>=at&&!writes&&!syncs&&h.error==db::NativeManagementHistoryError::io_failure,"all actual history read failures consumed without effects");EmptyGraph(h);}
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+ historical_stats=0;historical_stat_counting=true;const auto sized=call();historical_stat_counting=false;const auto size_sites=historical_stats;f.Good(sized);
+ for(unsigned at=1;at<=size_sites;++at){historical_stats=0;historical_stat_fault=at;historical_stat_counting=true;const auto h=call();historical_stat_counting=false;historical_stat_fault=0;
+  Check(historical_stats>=at&&h.error==db::NativeManagementHistoryError::io_failure,"every history size failure consumed");EmptyGraph(h);}
+#endif
+ std::cout<<"directory history profile="<<profile<<" target="<<target<<" route="<<route<<" allocations="<<sites<<" hashes="<<hashes<<" reads="<<read_sites<<'\n';
+}}
 void DirectoryDelta(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve){
  DirectoryTransition t(primary,secondary,reverse,profile,target,reserve);const auto original=t.fixture.Read(0,512);
  const auto result=t.Validate();if(result!=CE::none)std::cerr<<"directory delta primary="<<primary<<" secondary="<<secondary<<" profile="<<profile<<" target="<<target<<" error="<<int(result)<<'\n';
@@ -797,13 +962,31 @@ void DirectoryPlan(unsigned primary,unsigned secondary,bool reverse){
  }
  Check(f.Read(0,256)==original,"plan validation never modifies the actual device");
 }
+void HistoricalResultPlacement(unsigned profile){
+ Fixture f(profile);DirectoryBundle b(f,profile,false,0);
+ auto& map=*std::find_if(b.maps.begin(),b.maps.end(),[](const auto& m){return m.header.filespace_uuid==Id(2);});
+ map.total_pages=256+b.headers.size();map.states.resize(map.total_pages,State::free);
+ for(std::size_t n=0;n<b.headers.size();++n){auto& h=b.headers[n];const auto at=std::find_if(map.records.begin(),map.records.end(),[&](const auto& r){return r.page_number==h.page_number;});
+  Check(at!=map.records.end(),"original bundle allocation for placement negative");map.states[h.page_number]=State::free;h.page_number=256+n;
+  at->page_number=h.page_number;map.states[h.page_number]=State::allocated;}
+ std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});b.root.first=Self(b.headers.front());
+ auto after=*d::DecodeFilespacePageZero(b.growth_images[1].data(),b.growth_images[1].size()).record;after.total_pages=map.total_pages;
+ after.free_pages=std::count(map.states.begin(),map.states.end(),State::free);const auto image=d::EncodeFilespacePageZero(after);Check(image.ok(),"canonical misplaced growth result");b.growth_images[1]=*image.bytes;
+ for(auto& dir:b.directories)for(auto& member:dir.records)if(member.bootstrap.filespace_uuid==Id(2))member.total_pages=after.total_pages;
+ b.Refresh();Check(b.Encode().ok()&&b.Decode().ok(),"misplaced bundle remains a canonical image graph");b.Install();
+ Check(f.device.WriteAt(0,image.bytes->data(),image.bytes->size()).ok()&&f.device.Sync().ok(),"actual misplaced result fixture");
+ const auto before=f.Read(0,after.total_pages);const auto rejected=db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,*image.bytes,b.Budget());
+ Check(rejected.error==BE::invalid_extent,"result capacity cannot legitimize anchoring in its own growth suffix");Empty(rejected);Check(f.Read(0,after.total_pages)==before,"placement refusal has no effects");
+}
 void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
+ if(primary==secondary&&!reverse)HistoricalResultPlacement(primary);
  DirectoryPlan(primary,secondary,reverse);
  GrowthBundle(primary,secondary,reverse,0);GrowthBundle(primary,secondary,reverse,1);
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
  const auto original_zero=f.Read(0);
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent complete version3 framing bytes and full hashes");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"mixed bundle exact checked allowance");Empty(short_budget);b.Install();b.Good(b.Read());
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"mixed bundle actual read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"mixed bundle close before independent process");
  const auto child=fork();Check(child>=0,"mixed bundle independent process");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),b.zero.bootstrap.page_size_profile_uuid,&own};const auto result=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),b.zero.page_uuid,b.Budget());_exit(result.ok()&&result.directory_images==b.directory_images&&result.allocation_images==b.map_images&&result.inventory_images==b.inventory_images?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"mixed-size original bytes reconstructed in independent process");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"mixed bundle parent reopen");
  if(primary||secondary||reverse)return;
@@ -2006,6 +2189,7 @@ void InventoryBundle(unsigned profile){
  const auto historical_zero=f.Read(0);
  b.Install();const auto original=f.Read(0,256);reads=writes=syncs=0;io_counting=true;const auto actual=b.Read();io_counting=false;b.Good(actual);Check(!writes&&!syncs&&f.Read(0,256)==original,"inventory bundle actual reading never publishes or changes bytes");
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"version2 read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"version2 close before cold reader");const auto child=fork();Check(child>=0,"version2 independent process fork");if(!child){d::FileDevice owned;if(!owned.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&owned};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.inventory_images==b.inventory&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cold reconstruction retains exact original inventory images");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"version2 parent reopen");
  if(profile)return;
  const auto good_root=b.root;for(unsigned kind=0;kind<4;++kind){b.root=good_root;if(kind==0)b.root.inventory_count=0;if(kind==1)++b.root.inventory_count;if(kind==2)b.root.inventory_count=std::numeric_limits<u64>::max();if(kind==3)b.root.map_count=std::numeric_limits<u64>::max();Empty(b.Decode());}b.root=good_root;
@@ -2031,6 +2215,7 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
  const auto historical_zero=f.Read(0);
  b.Install();b.Good(b.Read());const auto untouched=f.Read(g.after.front().header.page_number);Check(std::all_of(untouched.begin(),untouched.end(),[](byte v){return !v;}),"bundle reconstructs target map not yet installed");
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"close before process reader");const auto child=fork();Check(child>=0,"fork independent bundle reader");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&own};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"independent process reconstruction");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"parent reopen");
  if(profile){Integration(f,profile);return;}
  for(unsigned mode=0;mode<2;++mode){const auto call=[&](){return mode?b.Decode().error:b.Encode().error;};counting=true;allocations=0;Check(call()==BE::none,"codec allocation baseline");counting=false;const auto sites=allocations;for(unsigned long at=0;at<sites;++at){allocation_budget=at;const auto e=call();allocation_budget=-1;Check(e==BE::resource_exhausted,"every bundle codec allocation fault");}
@@ -2052,4 +2237,4 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
  Integration(f,profile);
 }
 }
-int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==3&&std::string_view(argv[1])=="--directory-delta-faults"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory fault profile");DirectoryDeltaFaults(profile);return 0;}if(argc==3&&std::string_view(argv[1])=="--directory-delta"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory delta profile");for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;DirectoryDelta(p,q,reverse,profile,target,reserve);}std::cout<<"PASS directory delta checks="<<checks<<" not_runtime_acceptance=true\n";return 0;}if(argc==2&&std::string_view(argv[1])=="--native-preallocation-repeat"){for(unsigned p=0;p<5;++p)OwnedPreallocationRepeat(p);}else if(argc==5&&std::string_view(argv[1])=="--native-preallocation-reconcile-faults"){const auto stage=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);Check(stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==0?1:route==1?5:8),"reconciliation fault arguments");OwnedPreallocationReconciliationFaults(stage,route,shard);}else if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{std::cout<<std::unitbuf;if(argc==3&&std::string_view(argv[1])=="--directory-history-repeat"){const auto profile=std::stoi(argv[2]);Check(profile==3||profile==4,"repeat history profile");RepeatedDirectoryHistory(profile);return 0;}if(argc==3&&std::string_view(argv[1])=="--directory-history-faults"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"history fault profile");DirectoryHistoryFaults(profile);return 0;}if(argc==4&&std::string_view(argv[1])=="--directory-history"){const auto profile=std::stoi(argv[2]),p=std::stoi(argv[3]);Check(profile>=2&&profile<=4&&p>=0&&p<5,"directory history profile");for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;DirectoryHistory(p,q,reverse,profile,target,reserve);}std::cout<<"PASS directory history checks="<<checks<<" not_runtime_acceptance=true\n";return 0;}if(argc==3&&std::string_view(argv[1])=="--directory-delta-faults"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory fault profile");DirectoryDeltaFaults(profile);return 0;}if(argc==3&&std::string_view(argv[1])=="--directory-delta"){const auto profile=std::stoi(argv[2]);Check(profile>=2&&profile<=4,"directory delta profile");for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;DirectoryDelta(p,q,reverse,profile,target,reserve);}std::cout<<"PASS directory delta checks="<<checks<<" not_runtime_acceptance=true\n";return 0;}if(argc==2&&std::string_view(argv[1])=="--native-preallocation-repeat"){for(unsigned p=0;p<5;++p)OwnedPreallocationRepeat(p);}else if(argc==5&&std::string_view(argv[1])=="--native-preallocation-reconcile-faults"){const auto stage=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);Check(stage>=0&&stage<3&&route>=0&&route<3&&shard>=0&&shard<(route==0?1:route==1?5:8),"reconciliation fault arguments");OwnedPreallocationReconciliationFaults(stage,route,shard);}else if(argc==3&&std::string_view(argv[1])=="--native-preallocation-crashes"){const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"preallocation crash profile");OwnedPreallocationCrashes(profile);}else if(argc==4&&std::string_view(argv[1])=="--native-preallocation-sweep"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<=2&&shard>=0&&shard<(route==2?8:1),"preallocation sweep arguments");OwnedPreallocationSweeps(route,shard);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation-faults"){for(unsigned p=0;p<5;++p)OwnedPreallocationFaults(p);}else if(argc==2&&std::string_view(argv[1])=="--native-preallocation"){for(unsigned p=0;p<5;++p)OwnedPreallocationPublication(p);}else if(argc==2&&std::string_view(argv[1])=="--publication-effects"){for(unsigned p=0;p<5;++p){ReservationEffects(p);OwnedInventoryFaults(4,0,p);}}else if(argc==2&&std::string_view(argv[1])=="--owned-inventory-placement"){OwnedInventoryPlacement(1);OwnedInventoryPlacement(2);OwnedInventoryBudgetAndStale();}else if(argc==4&&std::string_view(argv[1])=="--owned-inventory-faults"){const auto route=std::stoi(argv[2]),shard=std::stoi(argv[3]);Check(route>=0&&route<4&&shard>=0&&shard<(route==2?32:route==1?5:1),"owned fault arguments");OwnedInventoryFaults(route,shard);}else if(argc==2&&(std::string_view(argv[1])=="--owned-inventory-publication"||std::string_view(argv[1])=="--owned-inventory-mixed")){for(unsigned p=0;p<5;++p)for(bool ro:{false,true})OwnedInventoryPublication(p,ro,std::string_view(argv[1])=="--owned-inventory-mixed");}else if(argc==2&&std::string_view(argv[1])=="--directory-bundle"){for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q)for(bool reverse:{false,true})MixedDirectoryBundle(p,q,reverse);}else if(argc==5&&std::string_view(argv[1])=="--inventory-consumer-faults"){inventory_publication_mode=inventory_staging_admission=true;inventory_consumer=std::stoi(argv[2]);inventory_consumer_fault=std::stoi(argv[3]);inventory_consumer_shard=std::stoi(argv[4]);Check(inventory_consumer>=0&&inventory_consumer<2&&inventory_consumer_fault>=0&&inventory_consumer_fault<3&&inventory_consumer_shard>=0&&inventory_consumer_shard<(inventory_consumer_fault==2?128:inventory_consumer_fault==1?40:8),"consumer fault arguments");InventoryAllocation(0);}else if(argc==3&&std::string_view(argv[1])=="--inventory-allocation-reads"){inventory_publication_mode=inventory_staging_admission=true;inventory_allocation_read_shard=std::stoi(argv[2]);Check(inventory_allocation_read_shard>=0&&inventory_allocation_read_shard<8,"allocation reader fault shard");InventoryAllocation(0);}else if(argc==2&&std::string_view(argv[1])=="--inventory-staging-admission"){inventory_publication_mode=inventory_staging_admission=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==2&&std::string_view(argv[1])=="--inventory-publication-mixed"){inventory_publication_mode=inventory_mixed_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&std::string_view(argv[1])=="--inventory-resolution-faults"){inventory_publication_mode=inventory_resolution_mode=true;inventory_resolution_stage=std::stoi(argv[2]);inventory_resolution_route=std::stoi(argv[3]);inventory_resolution_shard=std::stoi(argv[4]);Check(inventory_resolution_stage>=0&&inventory_resolution_stage<2&&inventory_resolution_route>=0&&inventory_resolution_route<5&&inventory_resolution_shard>=0&&inventory_resolution_shard<(inventory_resolution_route==2?(inventory_resolution_stage?32:8):inventory_resolution_route==1?5:1),"inventory resolution fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-resolution"||std::string_view(argv[1])=="--inventory-resolution-requests")){inventory_resolution_requests=std::string_view(argv[1])=="--inventory-resolution-requests";inventory_publication_mode=inventory_resolution_mode=true;for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==5&&(std::string_view(argv[1])=="--inventory-install-faults"||std::string_view(argv[1])=="--inventory-reconstruction-faults")){inventory_publication_mode=true;inventory_reconstruction_faults=std::string_view(argv[1])=="--inventory-reconstruction-faults";inventory_install_stage=std::stoi(argv[2]);inventory_install_route=std::stoi(argv[3]);inventory_install_shard=std::stoi(argv[4]);Check(inventory_install_stage>=0&&inventory_install_stage<2&&inventory_install_route>=0&&inventory_install_route<(inventory_reconstruction_faults?3:4)&&inventory_install_shard>=0&&inventory_install_shard<(inventory_install_route==2?(inventory_reconstruction_faults?(inventory_install_stage?64:16):(inventory_install_stage?32:8)):inventory_install_route==1?5:1),"inventory installer fault arguments");InventoryAllocation(0);}else if(argc==2&&(std::string_view(argv[1])=="--inventory-publication"||std::string_view(argv[1])=="--inventory-publication-cold"||std::string_view(argv[1])=="--inventory-publication-read-only")){inventory_publication_mode=true;inventory_publication_cold=std::string_view(argv[1])=="--inventory-publication-cold";inventory_read_only=std::string_view(argv[1])=="--inventory-publication-read-only";for(unsigned profile=0;profile<5;++profile)InventoryAllocation(profile);}else if(argc==4&&std::string_view(argv[1])=="--inventory-reader-allocations"){inventory_allocation_route=std::stoi(argv[2]);inventory_allocation_shard=std::stoi(argv[3]);Check(inventory_allocation_route>=0&&inventory_allocation_route<2&&inventory_allocation_shard>=0&&inventory_allocation_shard<4,"inventory reader allocation shard arguments");InventoryAllocation(0);}else{Check(argc==1,"test arguments");for(unsigned profile=0;profile<5;++profile){InventoryAllocation(profile);InventoryBundle(profile);Test(profile);}}std::cout<<"PASS management control bundle checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL management control bundle checks="<<checks<<" "<<e.what()<<'\n';return 1;}}

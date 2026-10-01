@@ -64,4 +64,11 @@ NativeManagementControlBundleRead ReadNativeManagementControlBundleAtHistoricalP
   const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
   const Uuid& database,const Uuid& bootstrap,
   const std::vector<byte>& retained_page_zero,u64 budget) noexcept;
+// Reverse-history counterpart: exact primary result context, not an original
+// execution grant. For primary growth the bundle's after image must match and
+// its original placement must still fit its retained before capacity.
+NativeManagementControlBundleRead ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(
+  const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
+  const Uuid& database,const Uuid& bootstrap,
+  const std::vector<byte>& retained_result_page_zero,u64 budget) noexcept;
 } // namespace scratchbird::storage::database
