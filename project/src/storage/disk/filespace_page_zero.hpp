@@ -35,6 +35,25 @@ enum class FilespacePageZeroError {
   invalid_root_directory, required_root_missing, probe_changed,
   device_not_open, io_failure, resource_exhausted
 };
+enum class FilespaceRecoveryRootError {
+  none, invalid_request, invalid_bootstrap, invalid_directory, invalid_extent,
+  encrypted_requires_authority, cluster_requires_authority, changed_observation,
+  io_failure, hash_failure, resource_exhausted
+};
+struct FilespaceRecoveryRootCandidates {
+  FilespaceRecoveryRootError error=FilespaceRecoveryRootError::invalid_request;
+  FilespacePageZeroError image_error=FilespacePageZeroError::none;
+  core::platform::DiagnosticRecord diagnostic;
+  std::optional<FilespaceBootstrap> bootstrap;
+  std::vector<FilespaceRootReference> roots;
+  u64 observed_size_bytes=0;
+  bool ok() const noexcept {return error==FilespaceRecoveryRootError::none&&bootstrap.has_value()&&!roots.empty();}
+};
+// UNTRUSTED recovery locations only. Does not validate the mutable page-zero
+// body or grant authority to repair it. The owner must bind actual durable
+// watermark/plan/original images before effects. Never used for ordinary open.
+FilespaceRecoveryRootCandidates ProbeFilespaceRecoveryRootCandidatesFromOpenDevice(
+    FileDevice&,const FilespaceBootstrapBinding&,u64 maximum_verification_image_bytes) noexcept;
 struct FilespacePageZeroDecodeResult {
   FilespacePageZeroError error = FilespacePageZeroError::invalid_family;
   std::optional<FilespacePageZero> record;

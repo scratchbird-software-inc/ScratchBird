@@ -280,6 +280,64 @@ FilespacePageZeroRecoveryObservation ObserveFilespacePageZeroForRecoveryFromOpen
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
    catch(...){return fail(Error::io_failure);}
 }
+FilespaceRecoveryRootCandidates ProbeFilespaceRecoveryRootCandidatesFromOpenDevice(
+    FileDevice& device,const FilespaceBootstrapBinding& binding,u64 budget) noexcept {
+  using E=FilespaceRecoveryRootError;
+  FilespaceRecoveryRootCandidates result;
+  const auto require=[](bool valid,E error){if(!valid)throw error;};
+  try {
+    require(budget>=kFilespaceBootstrapBytes,E::resource_exhausted);
+    const auto guard=device.AcquireOperationGuard();require(device.is_open(),E::invalid_request);
+    SerializedFilespaceBootstrap prefix{};
+    const auto read=[&](byte* out,std::size_t bytes){auto io=device.ReadAt(0,out,bytes);
+      if(!io.ok()||io.bytes_transferred!=bytes){result.diagnostic=std::move(io.diagnostic);throw E::io_failure;}};
+    read(prefix.data(),prefix.size());
+    const auto probe=DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
+    if(!probe.ok()){result.image_error=BootstrapError(probe.error);
+      throw probe.error==FilespaceBootstrapError::hash_provider_failure?E::hash_failure:
+            probe.error==FilespaceBootstrapError::resource_exhausted?E::resource_exhausted:E::invalid_bootstrap;}
+    const auto& bootstrap=*probe.preamble;const auto size=bootstrap.page_size_bytes;
+    require(bootstrap.filespace_role>=1&&bootstrap.filespace_role<=4,E::invalid_bootstrap);
+    require(!(bootstrap.flags&FilespaceBootstrapFlag::payload_encrypted),E::encrypted_requires_authority);
+    require(!(bootstrap.flags&FilespaceBootstrapFlag::cluster_authority_required),E::cluster_requires_authority);
+    require(size<=budget-kFilespaceBootstrapBytes,E::resource_exhausted);
+    const auto extent=[&]{auto value=device.Size();if(!value.ok()){result.diagnostic=std::move(value.diagnostic);throw E::io_failure;}return value.size_bytes;};
+    const auto observed=extent();require(observed>=size,E::invalid_extent);
+    std::vector<byte> image(size);read(image.data(),image.size());
+    require(std::equal(prefix.begin(),prefix.end(),image.begin()),E::changed_observation);
+    std::vector<FilespaceRootReference> roots;roots.reserve(32);u16 previous=0;u32 kinds=0;
+    std::size_t offset=directory_offset;
+    for(unsigned i=0;i<32;++i,offset+=80){const auto* entry=image.data()+offset;if(Zero(entry,80))break;
+      FilespaceRootReference r{LoadLittle16(entry),LoadLittle32(entry+4),GetUuid(entry+8),
+        LoadLittle64(entry+24),LoadLittle64(entry+32),GetUuid(entry+40),GetUuid(entry+56)};
+      require(r.kind>previous&&r.kind<=21&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
+        !LoadLittle16(entry+2)&&Zero(entry+72,8)&&V7(r.filespace_uuid)&&V7(r.object_uuid)&&r.page_number&&r.page_generation,E::invalid_directory);
+      const auto* profile=FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);require(profile,E::invalid_directory);
+      require(r.page_number<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&
+        CheckFileDeviceExtent(r.page_number*u64{profile->page_size_bytes},profile->page_size_bytes).ok(),E::invalid_directory);
+      if(r.filespace_uuid==binding.filespace_uuid)require(r.page_size_profile_uuid==binding.page_size_profile_uuid&&
+        r.page_number<observed/size,E::invalid_extent);
+      if(r.kind==3)require(r.filespace_uuid==binding.filespace_uuid,E::invalid_directory);
+      // Cluster-only roots cannot appear in this clear local recovery profile.
+      require(r.kind<15||r.kind>17,E::cluster_requires_authority);
+      for(const auto& old:roots)if(old.filespace_uuid==r.filespace_uuid){require(old.page_size_profile_uuid==r.page_size_profile_uuid,E::invalid_directory);
+        if(old.page_number==r.page_number)require(old.page_type==r.page_type&&old.page_generation==r.page_generation&&old.object_uuid==r.object_uuid,E::invalid_directory);}
+      previous=r.kind;kinds|=u32{1}<<r.kind;roots.push_back(r);
+    }
+    require(Zero(image.data()+offset,image.size()-offset),E::invalid_directory);
+    constexpr u32 required=0x3feu|(u32{15}<<18);require((kinds&required)==required,E::invalid_directory);
+    const auto root=[&](u16 kind)->const FilespaceRootReference&{return *std::find_if(roots.begin(),roots.end(),[&](const auto& r){return r.kind==kind;});};
+    for(u16 first:{u16{18},u16{20}}){const auto& a=root(first);const auto& b=root(first+1);
+      require(a.filespace_uuid==binding.filespace_uuid&&b.filespace_uuid==binding.filespace_uuid&&a.object_uuid==b.object_uuid&&a.page_number!=b.page_number,E::invalid_directory);}
+    require(root(18).object_uuid!=root(20).object_uuid,E::invalid_directory);
+    for(const auto& r:roots)if(r.kind<20&&r.filespace_uuid==binding.filespace_uuid)
+      require(r.page_number!=root(20).page_number&&r.page_number!=root(21).page_number,E::invalid_directory);
+    require(extent()==observed,E::changed_observation);
+    result.bootstrap=bootstrap;result.roots=std::move(roots);result.observed_size_bytes=observed;result.error=E::none;
+  }catch(E error){result.error=error;}catch(const std::bad_alloc&){result.error=E::resource_exhausted;}
+   catch(const std::length_error&){result.error=E::resource_exhausted;}catch(...){result.error=E::io_failure;}
+  return result;
+}
 namespace {
 FilespacePageZeroBodyResult MutateGrowthBody(FileDevice& device,
     const FilespaceBootstrapBinding& binding, const std::vector<byte>& before,
