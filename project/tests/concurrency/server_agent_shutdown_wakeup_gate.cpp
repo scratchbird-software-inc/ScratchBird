@@ -164,6 +164,27 @@ bool ReadStatusIdentities(const server::ServerAgentRuntimeSnapshot& snapshot,
   namespace result = scratchbird::wire::public_result;
   std::vector<result::Field> fields;
   if (!scratchbird::wire::binary_status::Decode(packet, &fields)) return false;
+  // SEARCH_KEY: SERVER_AGENT_STATUS_STOP_RESULT_PROJECTION
+  // Compare the actual packet's lifecycle projection with the public snapshot.
+  // This text fragment contains flags/codes, never rendered UUID identities.
+  const auto boolean = [](bool value) { return value ? "true" : "false"; };
+  std::string expected = "{\"server_agent_runtime\":{\"started\":";
+  expected += boolean(snapshot.started);
+  expected += ",\"stopping\":";
+  expected += boolean(snapshot.stopping);
+  expected += ",\"stop_attempted\":";
+  expected += boolean(snapshot.stop_result.attempted);
+  expected += ",\"durable_cleanup_complete\":";
+  expected += boolean(snapshot.stop_result.durable_cleanup_complete);
+  expected += ",\"stop_failed\":";
+  expected += boolean(!snapshot.stop_result.ok());
+  expected += ",\"stop_diagnostic_code\":\"";
+  expected += snapshot.stop_result.diagnostics.empty()
+      ? "" : snapshot.stop_result.diagnostics.front().code;
+  expected += "\",";
+  // Decode retains the contract discriminator at index zero.
+  if (fields.size() < 2 || fields[1].kind != result::Kind::text ||
+      !fields[1].value.starts_with(expected)) return false;
   identities->clear();
   for (std::size_t i = 1; i < fields.size(); ++i) {
     if (fields[i].kind != result::Kind::uuid) continue;
@@ -487,10 +508,23 @@ bool CheckConcurrentStop(server::ServerAgentRuntime& runtime, unsigned worker_co
   }
   const bool retained = same_result(second_result) && same_result(snapshot.stop_result) &&
       same_result(repeated);
+  std::vector<std::string> status_identities;
+  const bool status_matches = ReadStatusIdentities(snapshot, &status_identities);
+  // Negative oracle controls: the same real file must not match an inverted
+  // completion or attempted flag. Never rewrite production status evidence.
+  auto wrong_completion = snapshot;
+  wrong_completion.stop_result.durable_cleanup_complete =
+      !snapshot.stop_result.durable_cleanup_complete;
+  auto wrong_attempt = snapshot;
+  wrong_attempt.stop_result.attempted = !snapshot.stop_result.attempted;
+  const bool rejects_false_claims = !ReadStatusIdentities(wrong_completion, &status_identities) &&
+      !ReadStatusIdentities(wrong_attempt, &status_identities);
   std::cout << "concurrent_stop_failure=" << fail_cleanup
-            << " exact_result_retained=" << retained << '\n';
+            << " exact_result_retained=" << retained
+            << " status_result_preserved=" << status_matches
+            << " rejects_false_claims=" << rejects_false_claims << '\n';
   return second_waiting.load() && !second_returned_early.load() && expected_result && retained &&
-      !snapshot.started && !snapshot.stopping;
+      status_matches && rejects_false_claims && !snapshot.started && !snapshot.stopping;
 }
 
 // SEARCH_KEY: SERVER_AGENT_SPURIOUS_WAKE_RECHECK
