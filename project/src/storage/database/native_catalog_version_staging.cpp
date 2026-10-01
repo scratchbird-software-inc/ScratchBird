@@ -18,7 +18,6 @@ namespace uuid=scratchbird::core::uuid;
 using Uuid=scratchbird::core::platform::Uuid;
 using Kind=scratchbird::core::platform::UuidKind;
 using E=NativeCatalogVersionStageError;
-NativeCatalogVersionStageResult Fail(E error){NativeCatalogVersionStageResult r;r.error=error;return r;}
 bool Same(const TypedUuid& a,const TypedUuid& b){return a.kind==b.kind&&a.value==b.value;}
 }
 
@@ -28,6 +27,10 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     const NativeCatalogRelationBinding& binding,const mga::PublishedSnapshotPin& pin,
     const NativeCatalogVersionMutation& request,const NativeCatalogLeafPage& destination,u64 budget,
     const Uuid& policy_snapshot_uuid,uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  NativeCatalogVersionStageResult result;
+  // Keep issued identity, attempted residency and physical outcome across all
+  // post-admission failures, including exceptions. None grants publication.
+  const auto Fail=[&](E error){result.error=error;return std::move(result);};
   try {
     const auto& h=destination.header;const auto& owner=request.transaction;const auto& desired=request.metadata;
     if(!uuid::IsEngineIdentityUuid(policy_snapshot_uuid)||
@@ -96,6 +99,9 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
       r.identity_error=issued.error;return r;
     }
     const auto& version=issued.value->value;
+    result.issued_version_uuid=version;
+    result.identity_observation=issued.observation;
+    result.identity_clock_decision=issued.clock_decision;
     for(const auto& id:{h.database_uuid,h.filespace_uuid,h.page_uuid,h.page_size_profile_uuid,
         request.relation_uuid.value,owner.transaction_uuid.value,desired.record.header.row_uuid.value,
         desired.record.header.object_uuid.value,policy_snapshot_uuid})
@@ -124,13 +130,15 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     PhysicalMgaCowRowReceipt receipt;receipt.database_uuid={Kind::database,h.database_uuid};receipt.filespace_uuid={Kind::filespace,h.filespace_uuid};receipt.relation_uuid=request.relation_uuid;receipt.row_uuid=row.row_uuid;receipt.page_uuid={Kind::page,h.page_uuid};
     receipt.creator=owner;receipt.version_uuid=row.version_uuid;receipt.previous_version_uuid=row.previous_version_uuid;receipt.page_number=h.page_number;receipt.page_generation=h.page_generation;receipt.row_version=row.row_version;receipt.storage_generation=row.storage_generation;receipt.stable_slot_id=row.stable_slot_id;
     source=NativePinnedCatalogReadResult{};
-    const auto valid_pin=[&](){const auto current=pin.Resolve();return current.ok()&&current.descriptor.snapshot_uuid.value==snapshot_uuid&&Same(current.descriptor.owning_transaction_uuid,owner.transaction_uuid)&&current.descriptor.owning_transaction.value==owner.local_id.value;};
+    const auto valid_pin=[&](){auto current=pin.Resolve();
+      if(!current.ok()){result.diagnostic=std::move(current.diagnostic);return false;}
+      return current.descriptor.snapshot_uuid.value==snapshot_uuid&&Same(current.descriptor.owning_transaction_uuid,owner.transaction_uuid)&&current.descriptor.owning_transaction.value==owner.local_id.value;};
     if(!valid_pin())return Fail(E::snapshot_failure);
-    auto staged=StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget);
-    if(!staged.ok()){auto r=Fail(E::stage_failure);r.stage=std::move(staged);return r;}
+    result.attempted_row=receipt;
+    result.stage=StageNativeCatalogLeafFromOpenDevices(devices,checkpoint,owner,leaf,budget);
+    if(!result.stage.ok())return Fail(E::stage_failure);
     if(!valid_pin())return Fail(E::snapshot_failure);
-    NativeCatalogVersionStageResult result;result.error=E::none;result.stage=std::move(staged);result.row=receipt;
-    result.identity_observation=issued.observation;result.identity_clock_decision=issued.clock_decision;return result;
+    result.error=E::none;result.row=receipt;return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
