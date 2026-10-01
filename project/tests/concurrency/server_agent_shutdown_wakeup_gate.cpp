@@ -597,7 +597,8 @@ bool CheckSchedulerTimeout(server::ServerAgentRuntime& runtime) {
 bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
-                            std::vector<server::ServerDiagnostic>& diagnostics);
+                            std::vector<server::ServerDiagnostic>& diagnostics,
+                            bool repeat_active_start = false);
 
 // SEARCH_KEY: SERVER_AGENT_PARTIAL_STARTUP_UNWIND
 bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
@@ -677,7 +678,8 @@ bool CheckStartupFailure(server::ServerAgentRuntime& runtime,
 bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
                             const server::ServerBootstrapConfig& config,
                             const server::HostedEngineState& engine,
-                            std::vector<server::ServerDiagnostic>& diagnostics) {
+                            std::vector<server::ServerDiagnostic>& diagnostics,
+                            bool repeat_active_start) {
   startup_runtime = &runtime;
   capture_state_unlock = true;
   (void)runtime.Snapshot();
@@ -703,6 +705,32 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     const auto active = runtime.Snapshot();
     std::vector<std::string> active_identities;
     const bool active_status_valid = ReadStatusIdentities(active, &active_identities);
+    // SEARCH_KEY: SERVER_AGENT_ACTIVE_START_RETAINS_COHORT
+    // Sequential same-input calls only: Start/destruction still require external
+    // lifecycle ownership. Native observation remains armed to catch new threads.
+    bool active_start_preserved = true;
+    if (repeat_active_start && started) {
+      track_native_creates = true;
+      for (unsigned repeat = 0; repeat < 3; ++repeat) {
+        std::vector<server::ServerDiagnostic> repeat_diagnostics;
+        bool repeated_start = false;
+        try {
+          repeated_start = runtime.Start(config, engine, &repeat_diagnostics);
+        } catch (const std::exception& error) {
+          std::cerr << "active Start exception: " << error.what() << '\n';
+        }
+        const auto same_cohort = runtime.Snapshot();
+        std::vector<std::string> same_identities;
+        active_start_preserved = active_start_preserved && repeated_start &&
+            repeat_diagnostics.empty() && same_cohort.started && !same_cohort.stopping &&
+            same_cohort.worker_thread_count == active.worker_thread_count &&
+            same_cohort.durable_lease_count == active.durable_lease_count &&
+            HasBinarySnapshotIdentities(same_cohort, engine) &&
+            ReadStatusIdentities(same_cohort, &same_identities) &&
+            same_identities == active_identities && launch_attempts == 3;
+      }
+      track_native_creates = false;
+    }
     runtime.Stop();
     startup_probe = false;
     bool joined = launched_threads == startup_threads.size();
@@ -717,6 +745,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     std::cout << "restart_cycle=" << cycle << " started=" << started
               << " native_creates=" << launched_threads << " all_joined=" << joined
               << " binary_status_preserved=" << status_preserved
+              << " active_start_repeats=" << (repeat_active_start ? 3 : 0)
+              << " active_start_preserved=" << active_start_preserved
               << " stopped=" << (!stopped.started && !stopped.stopping) << '\n';
     for (const auto& diagnostic : diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -724,7 +754,8 @@ bool CheckSequentialRestart(server::ServerAgentRuntime& runtime,
     if (!started || !active.started || !HasBinarySnapshotIdentities(active, engine) ||
         active.worker_thread_count != 2 ||
         active.durable_lease_count < 2 || active.durable_catalog_root_digest.empty() ||
-        launch_attempts != 3 || !joined || !status_preserved || stopped.started || stopped.stopping) {
+        launch_attempts != 3 || !joined || !status_preserved || !active_start_preserved ||
+        stopped.started || stopped.stopping) {
       return false;
     }
   }
@@ -900,7 +931,9 @@ int main(int argc, char** argv) {
     Require(std::string_view(argv[2]) == "database" || std::string_view(argv[2]) == "filespace",
             "unknown missing identity target");
   }
-  const bool sequential_restart = binary_boundary ||
+  const bool active_start_repeat = argc == 2 &&
+      std::string_view(argv[1]) == "--active-start-repeat";
+  const bool sequential_restart = binary_boundary || active_start_repeat ||
       (argc == 2 && std::string_view(argv[1]) == "--sequential-restart");
   const bool active_destruction = argc == 2 && std::string_view(argv[1]) == "--active-destruction";
   const bool setup_database_failure = argc == 2 && std::string_view(argv[1]) == "--setup-database-failure";
@@ -999,7 +1032,7 @@ int main(int argc, char** argv) {
   } else if (active_destruction) {
     destruction_joined = CheckActiveDestruction(config, engine, diagnostics);
   } else if (sequential_restart) {
-    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics);
+    restarted = CheckSequentialRestart(runtime, config, engine, diagnostics, active_start_repeat);
   } else if (startup_failure) {
     startup_unwound = CheckStartupFailure(runtime, config, engine, diagnostics);
   } else if (!runtime.Start(config, engine, &diagnostics)) {
