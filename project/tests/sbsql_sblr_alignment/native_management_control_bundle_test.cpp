@@ -27,10 +27,17 @@
 #include <stdexcept>
 #include <cerrno>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <thread>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
 unsigned entropy_fault=0,entropy_calls=0;
 unsigned preallocation_fault=0,preallocation_calls=0;
 unsigned preallocation_death=0;
+off_t growth_extend_to=0;
+std::atomic<unsigned> historical_read_pause{0};
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+unsigned historical_stats=0,historical_stat_fault=0;bool historical_stat_counting=false;
+#endif
 bool repeated_entropy=false;
 std::atomic<bool> owned_clock_controlled{false};
 std::atomic<std::uint64_t> owned_clock_millis{1700000000123ULL},owned_clock_ticks{1};
@@ -71,10 +78,19 @@ extern "C" int __wrap_EVP_Digest(const void* data,size_t bytes,unsigned char* ou
   return result;
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+extern "C" int __real_fstat(int,struct stat*);
+extern "C" int __wrap_fstat(int fd,struct stat* value){
+ if(historical_stat_counting&&++historical_stats==historical_stat_fault){errno=EIO;return -1;}
+ return __real_fstat(fd,value);
+}
+#endif
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
+ if(at==0){unsigned expected=1;if(historical_read_pause.compare_exchange_strong(expected,2))while(historical_read_pause==2)std::this_thread::yield();}
  if(race_bytes&&at==race_offset&&n==race_length&&++race_seen==2&&__real_pwrite(fd,race_bytes,race_length,at)!=static_cast<ssize_t>(race_length)){errno=EIO;return -1;}
  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
+ if(growth_extend_to&&at==0&&result>0){const auto size=growth_extend_to;growth_extend_to=0;if(ftruncate(fd,size)){errno=EIO;return -1;}}
  if(io_counting&&reads==corrupt_read&&result>0){corrupt_offset=at;const auto* bytes=static_cast<const unsigned char*>(data);corrupt_was_zero=std::all_of(bytes,bytes+result,[](auto b){return !b;});static_cast<unsigned char*>(data)[result-1]^=1;}
  if(replacement_bytes&&at==replacement_offset&&n==replacement_length&&result==static_cast<ssize_t>(n)&&++replacement_seen==replacement_at)std::copy_n(replacement_bytes,n,static_cast<unsigned char*>(data));return result;
 }
@@ -445,20 +461,59 @@ struct DirectoryBundle {
 void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  std::cout<<"growth bundle primary="<<primary<<" secondary="<<secondary<<" reverse="<<reverse<<" growing="<<growing<<'\n';
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse,growing);
+ const auto old_primary=f.Read(0);
+ const auto historical=[&]{return db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget());};
  const auto good=[&](const db::NativeManagementControlBundleRead& r){Check(r.ok()&&r.growth_images==b.growth_images&&r.allocation_images==b.map_images&&
    r.inventory_images==b.inventory_images&&r.directory_images==b.directory_images&&r.total_pages==(growing?256:260),"exact original growth reconstruction images");};
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent version4 frames and seals");good(b.Decode());
- Empty(b.Decode(b.Budget()-1));b.Install();
+ Empty(b.Decode(b.Budget()-1));b.Install();good(historical());
  if(!growing){Empty(b.Read());const byte tail=0;Check(f.device.WriteAt(260*f.size-1,&tail,1).ok(),"fixture grown extent");
    Empty(b.Read());Check(f.device.WriteAt(0,b.growth_images[1].data(),b.growth_images[1].size()).ok()&&f.device.Sync().ok(),"fixture complete after metadata");}
- good(b.Read());Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"growth bundle read-only reopen");good(b.Read());
+ good(b.Read());good(historical());
+ const auto intact=f.Read(0);
+ for(unsigned variant=0;variant<3;++variant){auto torn=intact;
+   if(variant==0)std::fill(torn.begin()+4096,torn.begin()+4480,0);
+   if(variant==1)torn[4300]^=1;
+   if(variant==2)std::copy_n(old_primary.begin()+4096,97,torn.begin()+4096);
+   Check(f.device.WriteAt(0,torn.data(),torn.size()).ok()&&f.device.Sync().ok(),"actual torn mutable body fixture");
+   good(historical());Check(f.Read(0)==torn,"historical bundle read never repairs damaged metadata");
+ }
+ Check(f.device.WriteAt(0,intact.data(),intact.size()).ok()&&f.device.Sync().ok(),"restore current metadata");
+ for(unsigned at:{0u,4480u,static_cast<unsigned>(f.size-1)}){auto wrong=intact;wrong[at]^=1;
+   Check(f.device.WriteAt(0,wrong.data(),wrong.size()).ok(),"immutable damage fixture");Empty(historical());}
+ Check(f.device.WriteAt(0,intact.data(),intact.size()).ok()&&f.device.Sync().ok(),"restore immutable metadata");
+ Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"growth bundle read-only reopen");good(b.Read());good(historical());
  Check(f.device.Close().ok(),"growth bundle release before process");const auto child=fork();Check(child>=0,"growth bundle independent process");
  if(!child){d::FileDevice device;if(!device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);
    const auto r=db::ReadNativeManagementControlBundleFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,b.Budget());
-   _exit(r.ok()&&r.growth_images==b.growth_images&&r.directory_images==b.directory_images&&r.allocation_images==b.map_images?0:81);}
+   const auto h=db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice({Id(2),b.zero.bootstrap.page_size_profile_uuid,&device},b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget());
+   _exit(r.ok()&&h.ok()&&h.growth_images==b.growth_images&&h.directory_images==b.directory_images&&r.growth_images==b.growth_images&&r.directory_images==b.directory_images&&r.allocation_images==b.map_images?0:81);}
  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"growth images retained across independent reopen");
  Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"growth fixture reopen");
+ const auto expected_size=(growing?256:260)*f.size;
+ growth_extend_to=expected_size+1;const auto changed=historical();Check(!growth_extend_to&&changed.error==BE::physical_extent_changed,"actual mid-read physical extent change refuses");Empty(changed);
+ good(historical()); // unchanged partial tail is observed, never granted as free capacity
+ std::filesystem::resize_file(f.path,256*f.size-1);Empty(historical());
+ std::filesystem::resize_file(f.path,expected_size);good(historical());
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+ historical_stats=0;historical_stat_counting=true;good(historical());historical_stat_counting=false;Check(historical_stats==2,"two actual historical extent observations");
+ for(unsigned site=1;site<=2;++site){historical_stats=0;historical_stat_fault=site;historical_stat_counting=true;const auto r=historical();historical_stat_counting=false;historical_stat_fault=0;
+   Check(r.error==BE::io_failure&&historical_stats>=site,"historical extent failure retained");Empty(r);}
+#endif
+ if(!reverse&&primary==secondary){historical_read_pause=1;auto reader=std::async(std::launch::async,historical);
+   struct Release {~Release(){historical_read_pause=3;}} release;
+   const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+   while(historical_read_pause!=2&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
+   Check(historical_read_pause==2,"historical reader paused with device ownership");std::atomic<bool> close_entered=false;auto closer=std::async(std::launch::async,[&]{close_entered=true;return f.device.Close();});
+   while(!close_entered&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
+   const bool blocked=closer.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;historical_read_pause=3;
+   const auto result=reader.get();const auto closed=closer.get();Check(close_entered&&blocked&&closed.ok(),"concurrent Close waits for complete historical verification");good(result);
+   Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"historical concurrency reopen");historical_read_pause=0;
+ }
  const auto saved_images=b.growth_images,saved_pages=b.pages;const auto saved_root=b.root;
+ if(!growing){auto wrong=*d::DecodeFilespacePageZero(old_primary.data(),old_primary.size()).record;wrong.writer_identity_uuid=Id(18000);
+   const auto image=d::EncodeFilespacePageZero(wrong);Check(image.ok(),"canonical substituted before image");
+   Empty(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,*image.bytes,b.Budget()));}
  for(unsigned field=0;field<9;++field){auto after=*d::DecodeFilespacePageZero(saved_images[1].data(),saved_images[1].size()).record;
    if(field==0)++after.page_generation;if(field==1)++after.root_set_generation;if(field==2)--after.free_pages;
    if(field==3)after.writer_identity_uuid=Id(14001);if(field==4)after.roots.front().object_uuid=Id(14002);
@@ -483,8 +538,8 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  if(reverse||!(primary==secondary||(primary==0&&secondary==4)))return;
  byte scratch=0;for(unsigned i=0;i<4097;++i)Check(f.device.ReadAt(0,&scratch,1).ok(),"growth telemetry warmup");
  const auto original=f.Read(0,growing?256:260);
- for(unsigned route=0;route<3;++route){const auto call=[&]{if(!route){const auto r=b.Encode();if(!r.ok())Empty(r);return r.error;}
-     const auto r=route==1?b.Decode():b.Read();if(!r.ok())Empty(r);return r.error;};
+ for(unsigned route=0;route<4;++route){const auto call=[&]{if(!route){const auto r=b.Encode();if(!r.ok())Empty(r);return r.error;}
+     const auto r=route==1?b.Decode():route==2?b.Read():historical();if(!r.ok())Empty(r);return r.error;};
    counting=true;allocations=0;Check(call()==BE::none,"growth allocation baseline");counting=false;const auto sites=allocations;
    for(unsigned long at=0;at<=sites;++at){const auto loss=f.device.failed_io_latency_observations();allocation_budget=at;const auto r=call();const auto left=allocation_budget;allocation_budget=-1;
      Check(at==sites?(r==BE::none&&left>=0):(left<0&&(r==BE::resource_exhausted||(r==BE::none&&f.device.failed_io_latency_observations()==loss+1))),"growth allocation failure retained or measured telemetry loss");}
@@ -494,11 +549,17 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  reads=writes=syncs=0;io_counting=true;good(b.Read());io_counting=false;const auto sites=reads;
  for(unsigned at=1;at<=sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=b.Read();io_counting=false;read_fault=0;Check(r.error==BE::io_failure&&reads>=at,"growth read error consumed");Empty(r);}
  Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"growth reconstruction failures never mutate storage");
+ reads=writes=syncs=0;io_counting=true;good(historical());io_counting=false;const auto old_sites=reads;
+ for(unsigned at=1;at<=old_sites;++at){reads=0;read_fault=at;io_counting=true;const auto r=historical();io_counting=false;read_fault=0;
+   Check(r.error==BE::io_failure&&reads>=at,"historical bundle read error consumed");Empty(r);}
+ Check(!writes&&!syncs&&f.Read(0,growing?256:260)==original,"historical bundle failures preserve all physical bytes");
 }
 void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
  GrowthBundle(primary,secondary,reverse,0);GrowthBundle(primary,secondary,reverse,1);
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
+ const auto original_zero=f.Read(0);
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent complete version3 framing bytes and full hashes");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"mixed bundle exact checked allowance");Empty(short_budget);b.Install();b.Good(b.Read());
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"mixed bundle actual read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"mixed bundle close before independent process");
  const auto child=fork();Check(child>=0,"mixed bundle independent process");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),b.zero.bootstrap.page_size_profile_uuid,&own};const auto result=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),b.zero.page_uuid,b.Budget());_exit(result.ok()&&result.directory_images==b.directory_images&&result.allocation_images==b.map_images&&result.inventory_images==b.inventory_images?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"mixed-size original bytes reconstructed in independent process");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"mixed bundle parent reopen");
  if(primary||secondary||reverse)return;
@@ -1658,7 +1719,9 @@ void InventoryBundle(unsigned profile){
  Fixture f(profile);Graph g(f);Bundle b(g,3);const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent version2 bundle bytes include exact complete inventory");b.Good(b.Decode());Check(b.Decode(b.Budget()-1).error==BE::resource_exhausted,"version2 exact checked image allowance");
  auto forbidden=g.plan;forbidden.control_bundle=b.root;Failed(db::EncodeNativePublicationPlan(forbidden));
  InventoryPlan(g,b);
+ const auto historical_zero=f.Read(0);
  b.Install();const auto original=f.Read(0,256);reads=writes=syncs=0;io_counting=true;const auto actual=b.Read();io_counting=false;b.Good(actual);Check(!writes&&!syncs&&f.Read(0,256)==original,"inventory bundle actual reading never publishes or changes bytes");
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"version2 read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"version2 close before cold reader");const auto child=fork();Check(child>=0,"version2 independent process fork");if(!child){d::FileDevice owned;if(!owned.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&owned};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.inventory_images==b.inventory&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cold reconstruction retains exact original inventory images");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"version2 parent reopen");
  if(profile)return;
  const auto good_root=b.root;for(unsigned kind=0;kind<4;++kind){b.root=good_root;if(kind==0)b.root.inventory_count=0;if(kind==1)++b.root.inventory_count;if(kind==2)b.root.inventory_count=std::numeric_limits<u64>::max();if(kind==3)b.root.map_count=std::numeric_limits<u64>::max();Empty(b.Decode());}b.root=good_root;
@@ -1681,7 +1744,9 @@ void InventoryBundle(unsigned profile){
  Check(f.Read(0,256)==original,"all version2 reader failures preserve full node");
 }
 void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent bundle bytes and root");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"exact bundle allowance");Empty(short_budget);
+ const auto historical_zero=f.Read(0);
  b.Install();b.Good(b.Read());const auto untouched=f.Read(g.after.front().header.page_number);Check(std::all_of(untouched.begin(),untouched.end(),[](byte v){return !v;}),"bundle reconstructs target map not yet installed");
+ b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"close before process reader");const auto child=fork();Check(child>=0,"fork independent bundle reader");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&own};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"independent process reconstruction");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"parent reopen");
  if(profile){Integration(f,profile);return;}
  for(unsigned mode=0;mode<2;++mode){const auto call=[&](){return mode?b.Decode().error:b.Encode().error;};counting=true;allocations=0;Check(call()==BE::none,"codec allocation baseline");counting=false;const auto sites=allocations;for(unsigned long at=0;at<sites;++at){allocation_budget=at;const auto e=call();allocation_budget=-1;Check(e==BE::resource_exhausted,"every bundle codec allocation fault");}

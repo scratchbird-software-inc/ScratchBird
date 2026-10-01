@@ -21,7 +21,7 @@ enum class NativeManagementControlBundleError {
   none,invalid_request,invalid_identity,invalid_extent,invalid_header,
   invalid_allocation,invalid_integrity,binding_mismatch,resource_exhausted,
   hash_failure,io_failure,bootstrap_failure,encrypted_requires_authority,
-  cluster_requires_authority
+  cluster_requires_authority,physical_extent_changed
 };
 struct NativeManagementControlBundleImage {
   NativeManagementControlBundleError error=NativeManagementControlBundleError::invalid_request;
@@ -57,4 +57,11 @@ NativeManagementControlBundleRead DecodeNativeManagementControlBundle(
 NativeManagementControlBundleRead ReadNativeManagementControlBundleFromOpenDevice(
   const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
   const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept;
+// Read-only original-image context. The caller must authenticate the retained
+// image/root against the original publication before admitting any effects.
+// Can read an already anchored bundle with a torn current mutable metadata body.
+NativeManagementControlBundleRead ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(
+  const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
+  const Uuid& database,const Uuid& bootstrap,
+  const std::vector<byte>& retained_page_zero,u64 budget) noexcept;
 } // namespace scratchbird::storage::database
