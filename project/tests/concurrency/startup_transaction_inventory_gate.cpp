@@ -44,6 +44,8 @@ platform::TypedUuid NewId(platform::UuidKind kind) {
   return id.value;
 }
 
+#include "runtime_principal_observation_checks.hpp"
+
 void ColdRead(const api::StartupTransactionInventoryRequest& request,
               const api::StartupTransactionInventoryObservation& expected) {
   // Fresh exec, no inherited engine cache. Fixed binary identities cross the
@@ -290,6 +292,8 @@ void Run(const std::filesystem::path& root, std::uint32_t page_size) {
 
 int main(int argc, char** argv) {
   executable = argv[0];
+  if (argc == 3 && std::string(argv[1]) == "--cold-principal")
+    return runtime_principal_checks::ColdMain(argv[2]);
   if (argc == 3 && std::string(argv[1]) == "--cold") {
     api::StartupTransactionInventoryRequest request;
     request.database_path = argv[2];
@@ -316,9 +320,12 @@ int main(int argc, char** argv) {
   if (!mkdtemp(pattern.data())) return 2;
   const std::filesystem::path root(pattern);
   try {
-    for (const std::uint32_t profile : {8192U, 16384U, 32768U, 65536U, 131072U}) Run(root, profile);
+    for (const std::uint32_t profile : {8192U, 16384U, 32768U, 65536U, 131072U}) {
+      Run(root, profile);
+      runtime_principal_checks::Run(root, profile);
+    }
     std::filesystem::remove_all(root);
-    std::cout << "PASS " << checks << " checks; native inventory observation only\n";
+    std::cout << "PASS " << checks << " checks; native inventory/principal observation only\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL after " << checks << " checks: " << error.what()
