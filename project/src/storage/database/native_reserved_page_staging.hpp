@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <mutex>
 #include <set>
+#include <type_traits>
+#include <utility>
 
 namespace scratchbird::storage::database::detail {
 namespace disk=scratchbird::storage::disk;
@@ -153,8 +155,11 @@ std::optional<NativeReservedPage> PrepareNativeReservedPage(
 }
 template<class TResult,class E>
 TResult WriteNativeReservedPageImage(NativeReservedPage& prepared,
-    const std::vector<byte>& image,u64 budget,TResult result={}) {
-  const auto fail=[&](E error){result.error=error;return result;};
+    const std::vector<byte>& image,u64 budget) noexcept {
+  TResult result;
+  static_assert(std::is_nothrow_move_constructible_v<TResult>);
+  const auto fail=[&](E error){result.error=error;return std::move(result);};
+  try {
   const auto& h=prepared.header;
   if(prepared.retained_image_bytes>budget||2*u64{h.page_size_bytes}>budget-prepared.retained_image_bytes)
     return fail(E::resource_exhausted);
@@ -168,16 +173,39 @@ TResult WriteNativeReservedPageImage(NativeReservedPage& prepared,
   Receipt receipt{h.database_uuid,prepared.reservation.allocation_uuid,h.page_uuid,prepared.object_uuid,prepared.owner,
     {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},digest.digest};
   std::vector<byte> scratch(h.page_size_bytes);const u64 offset=h.page_number*u64{h.page_size_bytes};
-  const auto before=prepared.target->ReadAt(offset,scratch.data(),scratch.size());
-  if(!before.ok()||before.bytes_transferred!=scratch.size())return fail(E::io_failure);
-  if(scratch!=image){if(!std::all_of(scratch.begin(),scratch.end(),[](byte b){return b==0;}))return fail(E::destination_not_empty);
-    const auto write=prepared.target->WriteAt(offset,image.data(),image.size());
-    if(!write.ok()||write.bytes_transferred!=image.size())return fail(E::io_failure);
+  auto& effects=result.effects;effects.intent=receipt;effects.requested_bytes=image.size();
+  auto before=prepared.target->ReadAt(offset,scratch.data(),scratch.size());
+  if(!before.ok()||before.bytes_transferred!=scratch.size()){
+    effects.diagnostic=std::move(before.diagnostic);return fail(E::io_failure);
   }
-  if(!prepared.target->Sync().ok())return fail(E::io_failure);
-  const auto after=prepared.target->ReadAt(offset,scratch.data(),scratch.size());
-  if(!after.ok()||after.bytes_transferred!=scratch.size())return fail(E::io_failure);
+  if(scratch!=image){
+    if(!std::all_of(scratch.begin(),scratch.end(),[](byte b){return b==0;})){
+      effects.destination=NativeReservedPageDestination::conflicting;return fail(E::destination_not_empty);
+    }
+    effects.destination=NativeReservedPageDestination::zero;
+    effects.write_attempted=true;
+    auto write=prepared.target->WriteAt(offset,image.data(),image.size());
+    effects.write_reported_bytes=write.bytes_transferred;
+    if(!write.ok()||write.bytes_transferred!=image.size()){
+      effects.diagnostic=std::move(write.diagnostic);return fail(E::io_failure);
+    }
+    effects.write_completed=true;
+  }else effects.destination=NativeReservedPageDestination::exact_image;
+  effects.sync_attempted=true;
+  auto sync=prepared.target->Sync();
+  if(!sync.ok()){effects.diagnostic=std::move(sync.diagnostic);return fail(E::io_failure);}
+  effects.sync_completed=true;
+  effects.readback_attempted=true;
+  auto after=prepared.target->ReadAt(offset,scratch.data(),scratch.size());
+  if(!after.ok()||after.bytes_transferred!=scratch.size()){
+    effects.diagnostic=std::move(after.diagnostic);return fail(E::io_failure);
+  }
+  effects.readback_completed=true;
   if(scratch!=image)return fail(E::readback_mismatch);
+  effects.readback_matches=true;
   result.error=E::none;result.receipt=receipt;return result;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
+   catch(const std::length_error&){return fail(E::resource_exhausted);}
+   catch(...){return fail(E::io_failure);}
 }
 } // namespace scratchbird::storage::database::detail

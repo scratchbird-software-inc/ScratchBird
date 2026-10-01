@@ -10,8 +10,10 @@ using byte=scratchbird::core::platform::byte;
 namespace {
 using E=NativeInventoryStageError;
 using Result=NativeInventoryStageResult;
-struct PageResult : Result {std::optional<NativeInventoryStageReceipt> receipt;};
-Result Fail(E error){Result r;r.error=error;return r;}
+struct PageResult : Result {
+  std::optional<NativeInventoryStageReceipt> receipt;
+  NativeReservedPageStageEffects<NativeInventoryStageReceipt> effects;
+};
 disk::NativePageReference Ref(const page::NativeTransactionInventoryPage& p){
   const auto& h=p.header;return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
 }
@@ -20,6 +22,15 @@ NativeInventoryStageResult StageNativeInventorySuccessorFromOpenDevices(
     const std::vector<disk::NativeFilespaceDevice>& supplied,
     const disk::FilespaceRootReference& checkpoint,const mga::TransactionIdentity& owner,
     const std::vector<page::NativeTransactionInventoryPage>& chain,u64 budget) noexcept {
+  Result result;
+  const auto Fail=[&](E error){result.error=error;return std::move(result);};
+  const auto propagate=[&](const PageResult& failure){
+    result.checkpoint_error=failure.checkpoint_error;
+    result.directory_error=failure.directory_error;
+    result.inventory_error=failure.inventory_error;
+    result.allocation_error=failure.allocation_error;
+    return Fail(failure.error);
+  };
   try {
     if(chain.empty()||supplied.empty()||!budget)return Fail(E::invalid_request);
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
@@ -54,7 +65,7 @@ NativeInventoryStageResult StageNativeInventorySuccessorFromOpenDevices(
     // Full preflight precedes all writes. All guards remain held for both passes.
     for(std::size_t i=0;i<chain.size();++i){const auto& p=chain[i];PageResult failure;
       auto prepared=detail::PrepareNativeReservedPage<PageResult,E>(devices,checkpoint,owner,p.header,p.object_uuid,0x1e,budget-image_bytes,failure);
-      if(!prepared)return failure;
+      if(!prepared)return propagate(failure);
       const auto& current=prepared->authority.checkpoint_inventory;
       if(current.checkpoint->roots.front().object_uuid!=p.object_uuid)return Fail(E::root_mismatch);
       if(p.inventory_generation<=current.inventory_generation)return Fail(E::generation_mismatch);
@@ -67,17 +78,23 @@ NativeInventoryStageResult StageNativeInventorySuccessorFromOpenDevices(
       if(!io.ok()||io.bytes_transferred!=before.size())return Fail(E::io_failure);
       if(before!=images[i]&&!std::all_of(before.begin(),before.end(),[](byte b){return b==0;}))return Fail(E::destination_not_empty);
     }
-    Result result;result.receipts.reserve(chain.size());
+    // Allocate both collections before effects. Tentative successful receipts
+    // stay private until the complete chain succeeds; physical observations
+    // survive any later preparation/write/exception failure without allocation.
+    std::vector<NativeInventoryStageReceipt> completed;completed.reserve(chain.size());
+    result.page_effects.reserve(chain.size());
+    static_assert(std::is_nothrow_move_constructible_v<decltype(result.page_effects)::value_type>);
     for(std::size_t i=0;i<chain.size();++i){const auto& p=chain[i];PageResult failure;
       auto prepared=detail::PrepareNativeReservedPage<PageResult,E>(devices,checkpoint,owner,p.header,p.object_uuid,0x1e,budget-image_bytes,failure);
-      if(!prepared)return failure;
+      if(!prepared)return propagate(failure);
       // The candidate bytes are already charged. Common writer adds one scratch
       // image, and computes each receipt from actual reservation/image bytes.
       auto written=detail::WriteNativeReservedPageImage<PageResult,E>(*prepared,images[i],budget-image_bytes+p.header.page_size_bytes);
-      if(!written.receipt)return written;
-      result.receipts.push_back(*written.receipt);
+      result.page_effects.push_back(std::move(written.effects));
+      if(!written.receipt)return propagate(written);
+      completed.push_back(*written.receipt);
     }
-    result.error=E::none;return result;
+    result.receipts=std::move(completed);result.error=E::none;return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
