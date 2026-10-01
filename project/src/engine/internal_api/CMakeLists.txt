@@ -606,6 +606,7 @@ add_library(sb_engine_internal_api
   transaction/local_commit_publication.cpp
   transaction/transaction_inspect_api.cpp
   transaction/transaction_api.cpp
+  transaction/startup_transaction_inventory.cpp
   ../sblr/sblr_runtime.cpp
   ../sblr/sblr_sequence_runtime.cpp
   ../sblr/sblr_autonomous_frame_runtime.cpp

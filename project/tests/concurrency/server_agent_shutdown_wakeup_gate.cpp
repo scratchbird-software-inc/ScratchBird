@@ -90,6 +90,8 @@ std::atomic<bool> second_returned_early{false};
 // Startup probe data is accessed only by the test's Start caller; other threads
 // bypass it through the thread-local flags. Native joins verify actual handles.
 thread_local bool startup_probe = false;
+thread_local bool failed_restart_probe = false;
+unsigned failed_restart_creates = 0;
 thread_local bool capture_state_unlock = false;
 thread_local bool reading_startup_snapshot = false;
 pthread_mutex_t* runtime_state_mutex = nullptr;
@@ -320,6 +322,7 @@ extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
 
 extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
                                       void* (*entry)(void*), void* argument) {
+  if (failed_restart_probe) ++failed_restart_creates;
   const bool track = startup_probe && track_native_creates && runtime_threads_ready &&
                      !startup_failure_injected;
   if (track && ++launch_attempts == fail_launch) {
@@ -630,6 +633,7 @@ bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
   server::ServerAgentRuntimeSnapshot retained;
   server::ServerAgentRuntimeStopResult retained_result;
   bool isolated = false;
+  bool restart_refused = false;
   {
     server::ServerAgentRuntime owned;
     std::vector<server::ServerDiagnostic> diagnostics;
@@ -639,6 +643,54 @@ bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
     retained = owned.Snapshot();
     retained_result = owned.Stop();
     if (retained_result.diagnostics.size() != 1) return false;
+    // SEARCH_KEY: SERVER_AGENT_FAILED_STOP_RESTART_FENCE
+    // Restoring the file permits reads, not a new runtime incarnation. Exercise
+    // the real Start guard without supplying any recovery/cleanup success.
+    const auto read_bytes = [](const std::filesystem::path& path) {
+      std::ifstream input(path, std::ios::binary | std::ios::ate);
+      Require(input.good(), "failed-stop fixture could not be opened");
+      const auto size = input.tellg();
+      Require(size > 0 && size <= 64 * 1024 * 1024, "failed-stop fixture size invalid");
+      std::string bytes(static_cast<std::size_t>(size), '\0');
+      input.seekg(0);
+      Require(static_cast<bool>(input.read(bytes.data(), bytes.size())), "failed-stop fixture read failed");
+      return bytes;
+    };
+    const auto database_before = read_bytes(retained.database_path);
+    const auto status_before = read_bytes(retained.status_path);
+    const auto same_diagnostic = [&](const server::ServerDiagnostic& actual) {
+      const auto& expected = retained_result.diagnostics.front();
+      if (actual.code != expected.code || actual.message_key != expected.message_key ||
+          actual.severity != expected.severity || actual.safe_message != expected.safe_message ||
+          actual.occurrence_uuid != expected.occurrence_uuid ||
+          actual.fields.size() != expected.fields.size()) return false;
+      for (std::size_t i = 0; i < actual.fields.size(); ++i) {
+        if (actual.fields[i].key != expected.fields[i].key ||
+            actual.fields[i].value != expected.fields[i].value) return false;
+      }
+      return true;
+    };
+    restart_refused = true;
+    for (unsigned retry = 0; retry < 3; ++retry) {
+      diagnostics.clear();
+      failed_restart_probe = true;
+      const bool restarted = owned.Start(config, engine, &diagnostics);
+      const bool silent_restart = owned.Start(config, engine, nullptr);
+      failed_restart_probe = false;
+      const auto after = owned.Snapshot();
+      const auto repeated_stop = owned.Stop();
+      restart_refused = restart_refused && !restarted && !silent_restart &&
+          failed_restart_creates == 0 && diagnostics.size() == 1 &&
+          same_diagnostic(diagnostics.front()) && !after.started && !after.stopping &&
+          after.stop_result.attempted && !after.stop_result.durable_cleanup_complete &&
+          after.stop_result.diagnostics.size() == 1 &&
+          same_diagnostic(after.stop_result.diagnostics.front()) &&
+          repeated_stop.attempted && !repeated_stop.durable_cleanup_complete &&
+          repeated_stop.diagnostics.size() == 1 &&
+          same_diagnostic(repeated_stop.diagnostics.front()) &&
+          read_bytes(retained.database_path) == database_before &&
+          read_bytes(retained.status_path) == status_before;
+    }
     // Mutate only caller-owned copies, not runtime state or persisted evidence.
     auto edited_snapshot = owned.Snapshot();
     auto edited_result = owned.Stop();
@@ -672,9 +724,10 @@ bool CheckFailedSnapshotLifetime(const server::ServerBootstrapConfig& config,
         uuid::IsEngineIdentityUuid(occurrence) && !diagnostic.fields.empty();
   }
   std::cout << "failed_snapshot_after_destruction=" << retained_failure
+            << " failed_stop_restart_fenced=" << restart_refused
             << " value_copies_isolated=" << isolated
             << " retained_status_matches=" << retained_status << '\n';
-  return isolated && retained_failure && retained_status &&
+  return restart_refused && isolated && retained_failure && retained_status &&
       HasBinarySnapshotIdentities(retained, engine);
 }
 
