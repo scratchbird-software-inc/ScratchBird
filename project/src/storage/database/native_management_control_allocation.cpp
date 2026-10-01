@@ -24,7 +24,8 @@ const NativeCheckpointRootReference* Root(const NativeCheckpointRoot& cp,u16 rol
 void CheckpointError(NativeCheckpointError e){if(e==NativeCheckpointError::none)return;throw e==NativeCheckpointError::hash_failure?E::hash_failure:e==NativeCheckpointError::resource_exhausted?E::resource_exhausted:E::invalid_checkpoint;}
 void PlanError(NativePublicationPlanError e){if(e==NativePublicationPlanError::none)return;throw e==NativePublicationPlanError::hash_failure?E::hash_failure:e==NativePublicationPlanError::resource_exhausted?E::resource_exhausted:e==NativePublicationPlanError::cluster_requires_authority?E::cluster_requires_authority:E::invalid_plan;}
 const page::NativeAllocationRecord* Record(const Maps& maps,u64 n,S* state=nullptr){
-  for(const auto& m:maps)if(n>=m.first_page&&n-m.first_page<m.states.size()){
+  auto at=std::upper_bound(maps.begin(),maps.end(),n,[](u64 number,const auto& map){return number<map.first_page;});
+  if(at!=maps.begin()){const auto& m=*std::prev(at);Require(n-m.first_page<m.states.size(),E::invalid_allocation);
     if(state)*state=m.states[n-m.first_page];
     const auto it=std::lower_bound(m.records.begin(),m.records.end(),n,[](const auto& r,u64 v){return r.page_number<v;});return it==m.records.end()||it->page_number!=n?nullptr:&*it;}
   throw E::invalid_allocation;
@@ -95,7 +96,7 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     const auto unchanged=EncodeNativeCheckpointRoot(normalized);CheckpointError(unchanged.error);Require(unchanged.bytes==base_bytes,E::invalid_delta);
     const auto* old_root=Root(a,4);const auto* new_root=Root(b,4);Require(old_root&&new_root,E::invalid_allocation);
     const auto before=DecodeMaps(before_bytes,*old_root,p.header);const auto after=DecodeMaps(after_bytes,*new_root,p.header);
-    Require(before.size()==after.size()&&before.front().total_pages==after.front().total_pages&&before.front().object_uuid==after.front().object_uuid&&before.front().capacity_generation==after.front().capacity_generation&&after.front().map_generation>before.front().map_generation,E::invalid_delta);
+    Require(before.front().total_pages==after.front().total_pages&&before.front().object_uuid==after.front().object_uuid&&before.front().capacity_generation==after.front().capacity_generation&&after.front().map_generation>before.front().map_generation,E::invalid_delta);
     std::optional<NativeStorageActionIntent> preallocation;
     if(p.intent.recovery_profile==3){
       const auto operation=DecodeNativeManagementExtent(extent_bytes,extent,p.header.database_uuid,p.bootstrap_uuid,extent_budget);
@@ -126,18 +127,19 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     for(const auto& raw:extent_bytes){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::invalid_extent);add(*h.header,p.management_extent->object_uuid);}
     for(const auto& m:after){Require(m.map_generation==p.reserved_generation&&m.creator_transaction_uuid.is_nil()&&!m.creator_local_transaction_id&&m.creator_operation_uuid==p.operation_uuid,E::invalid_delta);add(m.header,m.object_uuid);}
     std::size_t matched=0;u64 reserved=0;
-    for(std::size_t n=0;n<before.size();++n){const auto& x=before[n];const auto& y=after[n];Require(x.first_page==y.first_page&&x.states.size()==y.states.size(),E::invalid_delta);std::size_t xi=0,yi=0;
-      for(std::size_t i=0;i<x.states.size();++i){const auto number=x.first_page+i;const auto* xr=xi<x.records.size()&&x.records[xi].page_number==number?&x.records[xi++]:nullptr;const auto* yr=yi<y.records.size()&&y.records[yi].page_number==number?&y.records[yi++]:nullptr;const auto found=controls.find(number);
+    for(const auto& x:before){std::size_t xi=0;
+      for(std::size_t i=0;i<x.states.size();++i){const auto number=x.first_page+i;const auto* xr=xi<x.records.size()&&x.records[xi].page_number==number?&x.records[xi++]:nullptr;
+        S next_state{};const auto* yr=Record(after,number,&next_state);const auto found=controls.find(number);
         const bool reserve=preallocation&&number>=preallocation->first_page&&number-preallocation->first_page<preallocation->page_count;
         if(reserve){
-          Require(found==controls.end()&&x.states[i]==S::free&&!xr&&y.states[i]==S::preallocated&&yr&&
+          Require(found==controls.end()&&x.states[i]==S::free&&!xr&&next_state==S::preallocated&&yr&&
             yr->page_uuid.is_nil()&&!yr->page_generation&&yr->owner_uuid==preallocation->allocation_owner_uuid&&
             yr->page_type==preallocation->allocation_page_type&&yr->creator_operation_uuid==p.operation_uuid&&
             yr->creator_transaction_uuid.is_nil()&&!yr->creator_local_transaction_id&&!yr->reuse_horizon&&
             !old_allocations.contains(yr->allocation_uuid),E::invalid_delta);++reserved;continue;
         }
-        if(found==controls.end()){Require(x.states[i]==y.states[i]&&bool(xr)==bool(yr)&&(!xr||*xr==*yr),E::invalid_delta);continue;}
-        const auto& c=found->second;Require(yr&&y.states[i]==S::allocated&&yr->page_uuid==c.header.page_uuid&&yr->page_generation==c.header.page_generation&&yr->page_type==c.header.page_type&&yr->owner_uuid==c.owner&&yr->creator_transaction_uuid.is_nil()&&!yr->creator_local_transaction_id&&yr->creator_operation_uuid==p.operation_uuid&&!yr->reuse_horizon&&!old_allocations.contains(yr->allocation_uuid),E::invalid_delta);++matched;
+        if(found==controls.end()){Require(x.states[i]==next_state&&bool(xr)==bool(yr)&&(!xr||*xr==*yr),E::invalid_delta);continue;}
+        const auto& c=found->second;Require(yr&&next_state==S::allocated&&yr->page_uuid==c.header.page_uuid&&yr->page_generation==c.header.page_generation&&yr->page_type==c.header.page_type&&yr->owner_uuid==c.owner&&yr->creator_transaction_uuid.is_nil()&&!yr->creator_local_transaction_id&&yr->creator_operation_uuid==p.operation_uuid&&!yr->reuse_horizon&&!old_allocations.contains(yr->allocation_uuid),E::invalid_delta);++matched;
       }
     }
     Require(matched==controls.size()&&reserved==(preallocation?preallocation->page_count:0),E::invalid_delta);return E::none;

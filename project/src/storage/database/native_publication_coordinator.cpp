@@ -483,7 +483,6 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     Require(SameBase(held,c->snapshot),E::stale_base);const auto& original=c->snapshot.watermark;
     Require(original.intent&&original.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
     Require(plan.header.filespace_uuid==c->zero.bootstrap.filespace_uuid&&plan.header.page_size_profile_uuid==c->zero.bootstrap.page_size_profile_uuid,E::invalid_request);
-    Require(c->bound.allocation.pages.size()==reconstruction.allocation_images.size(),E::allocation_mismatch);
     const auto base=EncodeNativeCheckpointRoot(*c->bound.checkpoint_inventory.checkpoint);ControlCheckpointError(base.error);Require(ControlHash(base.bytes)==c->bound.checkpoint_inventory.checkpoint_sha256,E::binding_mismatch);
     Pages before_maps;before_maps.reserve(c->bound.allocation.pages.size());for(const auto& p:c->bound.allocation.pages)before_maps.push_back(p.bytes);
     Pages before_inventory;
@@ -663,7 +662,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   const u64 size=zero.bootstrap.page_size_bytes, payload=size-384, per_inventory=payload/72;
   const auto ceil=[](u64 n,u64 d){return n/d+(n%d!=0);};
   const u64 inventory_count=preallocation?0:std::max<u64>(1,ceil(supplied_inventory.entries.size(),per_inventory));
-  const u64 map_count=context.bound.allocation.pages.size();
+  u64 map_count=context.bound.allocation.pages.size();
   const u64 extent_count=ceil(encoded_record.bytes.size(),payload);
   u64 charged=context.bound.retained_image_bytes;
   Require(charged<=budget,E::resource_exhausted);
@@ -671,7 +670,7 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   charge(20,size);charge(map_count,10*size);charge(inventory_count,14*size);
   charge(extent_count,4*size);charge(encoded_record.bytes.size(),4);
   // The preceding charges bound both addition and multiplication below.
-  const u64 bundle_count=ceil((map_count+inventory_count)*size,payload);
+  u64 bundle_count=ceil((map_count+inventory_count)*size,payload);
   charge(bundle_count,4*size);
   Require(inventory_count<=std::numeric_limits<std::size_t>::max()&&
     bundle_count<=std::numeric_limits<std::size_t>::max(),E::resource_exhausted);
@@ -717,11 +716,45 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     }
     throw E::allocation_exhausted;
   };
-  const auto extent_slots=allocate(extent_count),bundle_slots=allocate(bundle_count);
-  const auto plan_slot=allocate(1).front(),checkpoint_slot=allocate(1).front();
-  std::vector<u64> map_slots,inventory_slots;
-  for(u64 i=0;i<map_count;++i)map_slots.push_back(allocate(1).front());
-  for(u64 i=0;i<inventory_count;++i)inventory_slots.push_back(allocate(1).front());
+  struct Partition {std::size_t source;u64 first,count;};
+  std::vector<Partition> partitions;
+  for(std::size_t i=0;i<context.bound.allocation.pages.size();++i){const auto& m=*context.bound.allocation.pages[i].map;
+    partitions.push_back({i,m.first_page,m.states.size()});}
+  std::vector<u64> extent_slots,bundle_slots,map_slots,inventory_slots;
+  u64 plan_slot=0,checkpoint_slot=0;
+  for(;;){
+    selected.clear();map_slots.clear();inventory_slots.clear();
+    extent_slots=allocate(extent_count);bundle_slots=allocate(bundle_count);
+    plan_slot=allocate(1).front();checkpoint_slot=allocate(1).front();
+    for(u64 i=0;i<map_count;++i)map_slots.push_back(allocate(1).front());
+    for(u64 i=0;i<inventory_count;++i)inventory_slots.push_back(allocate(1).front());
+    // Placement can add records to any existing range. Refine only: preserving
+    // prior cuts bounds convergence even when a larger contiguous bundle moves.
+    std::vector<Partition> refined;refined.reserve(partitions.size());
+    for(const auto& part:partitions){const auto& m=*context.bound.allocation.pages[part.source].map;
+      auto record=std::lower_bound(m.records.begin(),m.records.end(),part.first,[](const auto& r,u64 n){return r.page_number<n;});
+      const u64 at=(384+(part.count+1)/2+7)&~u64{7};
+      bool overflow=at>size;u64 records=0;
+      for(u64 n=part.first;n-part.first<part.count;++n){
+        const bool old=record!=m.records.end()&&record->page_number==n;
+        const bool added=selected.contains(n)||(preallocation&&n>=preallocation->first_page&&n-preallocation->first_page<preallocation->page_count);
+        if(old||added)++records;if(old)++record;
+        if(overflow||records>(size-at)/128){overflow=true;break;}
+      }
+      if(overflow){Require(part.count>1,E::resource_exhausted);charge(1,10*size);
+        // A tightly packed prefix can overflow again on every added map's own
+        // record. Halving avoids that positive feedback; a fully populated
+        // small enough range eventually fits regardless of further placement.
+        const auto half=part.count/2;refined.push_back({part.source,part.first,half});
+        refined.push_back({part.source,part.first+half,part.count-half});
+      }else refined.push_back(part);
+    }
+    if(refined.size()==partitions.size())break;
+    Require(refined.size()>map_count&&refined.size()<=zero.total_pages,E::resource_exhausted);
+    map_count=refined.size();
+    const u64 next_bundle=ceil((map_count+inventory_count)*size,payload);
+    charge(next_bundle-bundle_count,4*size);bundle_count=next_bundle;partitions=std::move(refined);
+  }
 
   std::set<Uuid> identities;
   const auto retain=[&](const Uuid& id){if(!id.is_nil())identities.insert(id);};
@@ -751,7 +784,13 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   const auto extent_object=issue(UuidKind::object),bundle_object=issue(UuidKind::object);
   std::vector<page::NativeAllocationMap> maps;
   maps.reserve(map_count);
-  for(const auto& image:context.bound.allocation.pages)maps.push_back(*image.map);
+  for(const auto& part:partitions){const auto& source=*context.bound.allocation.pages[part.source].map;
+    auto map=source;map.first_page=part.first;
+    const auto begin=part.first-source.first_page;
+    map.states.assign(source.states.begin()+begin,source.states.begin()+begin+part.count);
+    const auto first=std::lower_bound(source.records.begin(),source.records.end(),part.first,[](const auto& r,u64 n){return r.page_number<n;});
+    const auto last=std::lower_bound(first,source.records.end(),part.first+part.count,[](const auto& r,u64 n){return r.page_number<n;});
+    map.records.assign(first,last);maps.push_back(std::move(map));}
   if(preallocation){
     for(const auto& map:maps){
       const u64 begin=std::max(map.first_page,preallocation->first_page);
