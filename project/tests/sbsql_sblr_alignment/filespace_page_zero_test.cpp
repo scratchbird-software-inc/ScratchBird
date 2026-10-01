@@ -4682,16 +4682,30 @@ void CheckpointCatalogRelations() {
         &&base.Sync().ok()&&first.Sync().ok()&&second.Sync().ok(),"persist actual checkpoint inventory and catalog role");};
     const db::NativeCatalogRelationBinding binding{Id(101),images.nodes[0].dependencies};const u64 budget=4*sizes[p]+4*sizes[q]+6*sizes[s];
     const auto read=[&](u64 limit){return db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,binding,limit);};
+    const auto committed_read=[&](u64 limit){return db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,binding,limit);};
+    const auto no_committed_rows=[](const auto& r){Check(!r.ok()&&r.rows.empty()&&r.observations.empty()&&
+      r.source.row_creators.empty()&&r.source.relation.catalogs.empty()&&!r.source.relation.index&&
+      r.source.checkpoint.catalogs.empty()&&!r.source.checkpoint.checkpoint_inventory.checkpoint,
+      "committed-only refusal retains no successful source prefix or rows");};
     persist();auto result=read(budget);Check(result.ok()&&result.retained_image_bytes==budget&&result.row_creators.size()==8
       &&result.navigation_creator_entries.size()==7&&result.relation.bindings.size()==9,"checkpoint actual catalog role and every creator joined error="+std::to_string(static_cast<unsigned>(result.error))
         +" checkpoint="+std::to_string(static_cast<unsigned>(result.checkpoint.error))+" catalog="+std::to_string(static_cast<unsigned>(result.checkpoint.catalog_error))
         +" inventory="+std::to_string(static_cast<unsigned>(result.checkpoint.checkpoint_inventory.inventory_error))+" relation="+std::to_string(static_cast<unsigned>(result.relation.error)));
     for(const auto& row:result.row_creators)Check(row.inventory_entry_index==1,"actual row creator entry");for(auto entry:result.navigation_creator_entries)Check(entry==2,"actual navigation creator entry");
+    const auto entropy_before=initialization_entropy_calls;stage_writes=stage_syncs=0;
+    auto committed_rows=committed_read(budget);
+    Check(committed_rows.ok()&&committed_rows.rows.size()==8&&committed_rows.source.retained_image_bytes==budget&&
+      !stage_writes&&!stage_syncs&&initialization_entropy_calls==entropy_before,
+      "actual committed catalog requires no active reader or invented transaction/snapshot identity and has no physical effects");
+    for(const auto& row:committed_rows.rows)Check(!row.provisional,"committed-only selection never exposes provisional row");
+    no_committed_rows(committed_read(budget-1));
     result=read(budget-1);empty(result);Check(result.error==E::relation_failure&&result.relation.error==db::NativeCatalogRelationError::resource_exhausted,"combined exact budget enforced");
     result=read(3*sizes[s]);empty(result);Check(result.error==E::resource_exhausted,"no relation allowance remains");
     result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,1,binding,budget);Check(result.ok()&&result.checkpoint.feature_root_index==0,"shared feature role selected");
     persist(true);result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,6,{Id(101),{}},5*sizes[s]);
     Check(result.ok()&&result.row_creators.size()==2&&result.navigation_creator_entries.empty()&&result.retained_image_bytes==5*sizes[s],"distinct feature direct route follows stored role");
+    committed_rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,6,{Id(101),{}},5*sizes[s]);
+    Check(committed_rows.ok()&&committed_rows.rows.size()==2,"committed-only direct feature route follows actual stored head");
     result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,1,binding,budget);empty(result);Check(result.error==E::missing_relation,"absent feature role has no catalog fallback");
     if(p==0){const auto saved=inventory.inventory.entries[1];
       for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal,mga::TransactionState::archived}){
@@ -4727,6 +4741,10 @@ void CheckpointCatalogRelations() {
     auto loaded=read(budget);Check(loaded.ok(),"actual own-writer inventory loaded");const auto own_identity=loaded.checkpoint.checkpoint_inventory.inventory.entries[1].identity;
     CatalogTestPin own_pin(loaded.checkpoint.checkpoint_inventory.inventory,13);
     auto selected=pinned(own_pin.pin,own_identity);Check(selected.ok()&&selected.rows.size()==8&&selected.snapshot_uuid==own_pin.published.descriptor.snapshot_uuid.value,"native pinned own versions selected across filespaces");
+    committed_rows=committed_read(budget);Check(committed_rows.ok()&&committed_rows.rows.empty()&&committed_rows.observations.size()==8,
+      "committed-only read cannot inherit any existing caller's own-uncommitted privilege");
+    for(const auto& observation:committed_rows.observations)Check(observation.decision==mga::VisibilityDecision::wait_for_transaction,
+      "uncommitted absence retains actual wait observation");
     for(const auto& row:selected.rows)Check(row.provisional&&row.effective_lifecycle==catalog::CatalogObjectLifecycle::creating&&row.effective_status==catalog::CatalogObjectStatus::proposed,"own creating versions never inherit committed checkpoint status");
     mga::ReleasePublishedSnapshotVector(own_pin.published.descriptor.snapshot_uuid);selected=pinned(own_pin.pin,own_identity);Check(selected.ok(),"retained pin survives publication owner release");
     mga::PublishedSnapshotPin absent;selected=pinned(absent,own_identity);no_rows(selected);Check(selected.error==PE::snapshot_failure&&selected.diagnostic.diagnostic_code=="SB-MGA-SNAPSHOT-VECTOR-UNKNOWN","absent pin keeps native diagnostic");
@@ -4759,17 +4777,27 @@ void CheckpointCatalogRelations() {
         const auto found=std::find_if(value.rows.begin(),value.rows.end(),[&](const auto& row){return row.metadata.record.header.row_uuid.value==old.row_uuid.value;});
         Check(found!=value.rows.end()&&found->version_uuid==version&&found->metadata.record.header.deleted==retirement&&found->provisional==provisional,"independent expected catalog version and retirement outcome");};
       selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);Check(std::any_of(selected.observations.begin(),selected.observations.end(),[](const auto& o){return o.decision==mga::VisibilityDecision::wait_for_transaction;}),"other writer wait observation retained");
+      expected(committed_read(budget),old.version_uuid);
+      const auto navigation=images.nodes.back();images.nodes.back().creator_local_transaction_id=writer.identity.local_id.value;
+      images.nodes.back().creator_transaction_uuid=writer.identity.transaction_uuid.value;persist(false,15,15);
+      committed_rows=committed_read(budget);no_committed_rows(committed_rows);
+      Check(committed_rows.error==db::NativeCommittedCatalogReadError::navigation_not_committed,
+        "uncommitted navigation cannot authorize committed catalog membership");images.nodes.back()=navigation;persist(false,15,15);
       inventory.inventory.entries[2].state=mga::TransactionState::committed;inventory.inventory.entries[2].commit_sequence=4;inventory.inventory.next_commit_sequence=5;persist(false,19,19);
       selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);
       selected=pinned(doubt_pin.pin,reader.identity);expected(selected,old.version_uuid);
+      expected(committed_read(budget),next_version);
       loaded=read(budget);Check(loaded.ok(),"actual later committed catalog inventory");CatalogTestPin fresh_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);
       selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
       inventory.inventory.entries[2].state=mga::TransactionState::archived;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::committed;persist(false,19,19);
       selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
+      expected(committed_read(budget),next_version);
       rewrite(images.leaves[3].body.rows[0],[](auto& metadata){metadata.record.header.deleted=true;metadata.retired_transaction_uuid=metadata.creator_transaction_uuid;metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;metadata.status=catalog::CatalogObjectStatus::retired;});persist(false,19,19);
       selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version,true);
+      expected(committed_read(budget),next_version,true);
       auto& owned=images.leaves[3].body.rows[0];owned.transaction_uuid=reader.identity.transaction_uuid;owned.local_transaction_id=19;rewrite(owned,[](auto& metadata){metadata.retired_transaction_uuid=metadata.creator_transaction_uuid;});persist(false,19,19);
       selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,true,true);
+      expected(committed_read(budget),old.version_uuid);
       for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.effective_lifecycle==catalog::CatalogObjectLifecycle::dropping&&row.effective_status==catalog::CatalogObjectStatus::proposed,"own retirement remains provisional dropping");
       rewrite(owned,[](auto& metadata){metadata.record.header.deleted=false;metadata.retired_transaction_uuid={};metadata.lifecycle=catalog::CatalogObjectLifecycle::active;metadata.status=catalog::CatalogObjectStatus::active;});persist(false,19,19);
       selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,false,true);
@@ -4793,6 +4821,7 @@ void CheckpointCatalogRelations() {
       as_schema(images.leaves[3].body.rows[0],writer.identity.transaction_uuid,15);
       persist(false,19,19);loaded=read(budget);Check(loaded.ok(),"origin corruption remains individually valid on separate pages");
       selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"cross-page schema origin replacement refused");
+      no_committed_rows(committed_read(budget));
       selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page schema origin replacement refused");
       images=history_images;
       // Names bind the actual resident context on both filespaces and retain
@@ -4867,6 +4896,9 @@ void CheckpointCatalogRelations() {
         const bool released=outcome==mga::TransactionState::rolled_back||outcome==mga::TransactionState::failed_terminal;
         if(released)expected(selected,old.version_uuid);
         else {no_rows(selected);Check(selected.error==PE::duplicate_identity,"hidden cross-row object UUID collision cannot publish catalog rows");}
+        committed_rows=committed_read(budget);
+        if(released)expected(committed_rows,old.version_uuid);
+        else {no_committed_rows(committed_rows);Check(committed_rows.error==PE::duplicate_identity,"committed-only source preserves actual inventory object reservations");}
       }
       inventory=duplicate_inventory;images=history_images;
       for(unsigned fault=0;fault<6;++fault){images=history_images;auto& bad=images.leaves[3].body.rows[0];
@@ -4879,12 +4911,40 @@ void CheckpointCatalogRelations() {
         persist(false,19,19);selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page catalog identity/sequence mismatch");}
       images=history_images;images.leaves[0].body.rows.erase(images.leaves[0].body.rows.begin());images.leaves[0].body.rows[0].internal_row_ordinal=1;
       images.nodes[3].cells.erase(images.nodes[3].cells.begin(),images.nodes[3].cells.begin()+2);persist(false,19,19);selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::missing_version,"missing excluded successor predecessor is not invented absence");
+      inventory.inventory.entries[2].state=mga::TransactionState::active;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::none;inventory.inventory.entries[2].commit_sequence=0;persist(false,15,15);
+      committed_rows=committed_read(budget);no_committed_rows(committed_rows);Check(committed_rows.error==PE::missing_version,"committed-only source cannot invent absence behind an uncommitted successor with a missing predecessor");
       images=history_images;inventory.inventory.entries[2].state=mga::TransactionState::limbo;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::none;inventory.inventory.entries[2].commit_sequence=0;persist(false,15,19);
       selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::requires_recovery,"traversed limbo metadata requires recovery without prefix");
+      committed_rows=committed_read(budget);no_committed_rows(committed_rows);
+      Check(committed_rows.error==PE::requires_recovery&&committed_rows.diagnostic.diagnostic_code==selected.diagnostic.diagnostic_code,
+        "committed-only traversal preserves actual recovery refusal diagnostic");
       inventory.inventory.entries[2].state=mga::TransactionState::committed;inventory.inventory.entries[2].commit_sequence=4;persist(false,19,19);
       inventory.inventory.entries.back().state=mga::TransactionState::committed;inventory.inventory.entries.back().commit_sequence=5;inventory.inventory.next_commit_sequence=6;persist(false,20,20);
       selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::reader_mismatch,"terminal actual reader cannot reuse a live pin");
       inventory.inventory.entries.back().state=mga::TransactionState::active;inventory.inventory.entries.back().commit_sequence=0;persist(false,19,19);
+      byte warm=0;for(unsigned n=0;n<4097;++n)Check(first.ReadAt(0,&warm,1).ok()&&second.ReadAt(0,&warm,1).ok()&&base.ReadAt(0,&warm,1).ok(),"warm bounded read telemetry before committed fault measurement");
+      reads=observed_full_digests=0;observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
+      committed_rows=committed_read(budget);track_reads=count_full_digests=count_allocations=false;
+      const auto committed_reads=reads,committed_hashes=observed_full_digests;const auto committed_allocations=observed_allocations;
+      expected(committed_rows,next_version);
+      for(unsigned n=1;n<=committed_reads;++n){reads=0;read_fault=n;track_reads=true;committed_rows=committed_read(budget);track_reads=false;
+        Check(!read_fault,"every committed-only physical read fault consumed");no_committed_rows(committed_rows);}
+      for(unsigned n=1;n<=committed_hashes;++n){full_digest_fault=n;committed_rows=committed_read(budget);
+        Check(!full_digest_fault,"every committed-only digest fault consumed");no_committed_rows(committed_rows);}
+      for(unsigned long n=0;n<=committed_allocations;++n){const auto loss=first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations();
+        allocation_budget=n;committed_rows=committed_read(budget);const auto remaining=allocation_budget;allocation_budget=-1;
+        Check(n==committed_allocations?remaining>=0:remaining<0,"complete committed-only allocation sweep including terminal control");
+        if(committed_rows.ok()){expected(committed_rows,next_version);if(remaining<0)Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations()==loss+1,"only isolated recorded telemetry allocation loss permits success");}
+        else no_committed_rows(committed_rows);
+        if(n==committed_allocations)Check(committed_rows.ok(),"committed-only allocation terminal success");}
+      std::cout<<"committed catalog reads="<<committed_reads<<" hashes="<<committed_hashes<<" allocations="<<committed_allocations<<'\n';
+      const auto mutex_of=[](auto& device){auto guard=device.AcquireOperationGuard();return guard.mutex();};const std::array mutexes{mutex_of(first),mutex_of(second),mutex_of(base)};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> committed_done=false;db::NativeCommittedCatalogReadResult committed_paused;
+      std::thread committed_reader([&]{committed_paused=committed_read(budget);committed_done=true;});
+      while(!tree_read_paused.load()&&!committed_done.load())std::this_thread::yield();bool committed_held=tree_read_paused.load();
+      for(auto* mutex:mutexes)if(mutex->try_lock()){committed_held=false;mutex->unlock();}
+      resume_tree_read=true;committed_reader.join();pause_next_tree_read=false;
+      Check(committed_held,"complete filespace guards retained across committed-only physical source and version selection");expected(committed_paused,next_version);
       reads=0;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;const auto read_count=reads;expected(selected,old.version_uuid);
       for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;Check(!read_fault,"pinned physical read fault consumed");no_rows(selected);}
       observed_allocations=0;count_allocations=true;selected=pinned(history_pin.pin,reader.identity);count_allocations=false;const auto allocations=observed_allocations;expected(selected,old.version_uuid);bool success=false;
@@ -5670,6 +5730,9 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--catalog-committed-only"){
+    try{CheckpointCatalogRelations();std::cout<<"committed and pinned catalog checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==4&&std::string_view(argv[1])=="--directory-graph-probe"){
     try{const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
       disk::FileDevice first,second;if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
@@ -5836,6 +5899,10 @@ int main(int argc,char** argv) {
     const auto r=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
       {Id(101),expected.nodes[0].dependencies},4*sizes[p]+4*sizes[q]+6*sizes[s]);
     if(!r.ok()||r.row_creators.size()!=8||r.navigation_creator_entries.size()!=7||r.relation.bindings.size()!=9)return 3;
+    const auto committed=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
+      {Id(101),expected.nodes[0].dependencies},4*sizes[p]+4*sizes[q]+6*sizes[s]);
+    if(!committed.ok()||!committed.rows.empty()||committed.observations.size()!=8||
+      !std::all_of(committed.observations.begin(),committed.observations.end(),[](const auto& observation){return observation.decision==mga::VisibilityDecision::wait_for_transaction;}))return 5;
     CatalogTestPin pin(r.checkpoint.checkpoint_inventory.inventory,13);
     const auto selected=db::ReadNativePinnedCatalogVersionsFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
       {Id(101),expected.nodes[0].dependencies},r.checkpoint.checkpoint_inventory.inventory.entries[1].identity,pin.pin,4*sizes[p]+4*sizes[q]+6*sizes[s]);

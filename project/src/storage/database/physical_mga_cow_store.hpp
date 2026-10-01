@@ -365,7 +365,8 @@ struct NativeCatalogVersionReadResult {
 enum class NativePinnedCatalogReadError {
   none, invalid_reader, invalid_filespace, snapshot_failure, reader_mismatch,
   source_failure, invalid_chain, missing_version, visibility_failure,
-  requires_recovery, resource_exhausted, io_failure, duplicate_identity
+  requires_recovery, resource_exhausted, io_failure, duplicate_identity,
+  navigation_not_committed
 };
 struct NativeCatalogVisibilityObservation {
   std::size_t retained_row_index = 0;
@@ -389,6 +390,26 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::TransactionIdentity& reader,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    u64 maximum_retained_image_bytes) noexcept;
+
+using NativeCommittedCatalogReadError=NativePinnedCatalogReadError;
+struct NativeCommittedCatalogReadResult {
+  NativeCommittedCatalogReadError error=NativeCommittedCatalogReadError::source_failure;
+  NativeCheckpointCatalogRelationResult source;
+  std::vector<NativeCatalogVersionRow> rows;
+  std::vector<NativeCatalogVisibilityObservation> observations;
+  DiagnosticRecord diagnostic;
+  bool ok() const noexcept {return error==NativeCommittedCatalogReadError::none&&source.ok();}
+};
+// Latest committed versions in the supplied, actually verified checkpoint.
+// No caller transaction/pin or own-uncommitted visibility. The owning engine
+// must separately establish current root selection and retain its publication
+// fence for security admission; this read alone is not authorization/freshness.
+NativeCommittedCatalogReadResult ReadNativeCommittedCatalogVersionsFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
     u64 maximum_retained_image_bytes) noexcept;
 
 enum class NativeMetricCatalogReadError {

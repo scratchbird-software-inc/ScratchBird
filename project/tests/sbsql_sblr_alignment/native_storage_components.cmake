@@ -105,7 +105,7 @@ target_link_options(sbsql_sblr_alignment_native_storage_components PRIVATE
 
 foreach(native_component IN ITEMS
     catalog-metric-series-stage catalog-metric-retention-stage catalog-storage-policy-stage catalog-version-stage row-data-stage
-    catalog-stage catalog-root-stage btree-stage inventory-stage
+    catalog-stage catalog-root-stage catalog-committed btree-stage inventory-stage
     inventory-stage-mixed checkpoint-owner checkpoint-horizon checkpoint-system
     checkpoint-directory directory-stage directory-controls directory-graph
     directory-allocation checkpoint-directory-allocation policy-roots
