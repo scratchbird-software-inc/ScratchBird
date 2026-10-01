@@ -98,13 +98,16 @@ struct Context {
 };
 void Index(const std::vector<NativeManagementHistoryEntry>& entries,
     std::map<Uuid,std::size_t>& latest,std::map<std::pair<u16,std::string>,Uuid>& idempotency,
-    const NativeManagementOperation* append=nullptr){
+    const NativeManagementOperation* append=nullptr,const std::optional<NativeStartupBinding>& appended_binding={}){
   using Semantic=std::tuple<Uuid,u16,Uuid,Uuid,Uuid,Uuid,Uuid,std::optional<u64>,std::array<byte,32>>;
   std::map<Semantic,Uuid> semantics;std::map<Uuid,Uuid> steps;
   for(std::size_t i=0;i<entries.size()+(append?1:0);++i){const auto& o=i==entries.size()?*append:entries[i].record;
+    const auto& binding=i==entries.size()?appended_binding:entries[i].plan.intent.startup_binding;
+    if(binding)Require(binding->operation_uuid==o.uuid&&!o.normalized_request_bytes.empty(),E::history_mismatch);
     const auto old=latest.find(o.uuid);
     if(old==latest.end())Require(o.revision==1&&o.state==NativeManagementState::created,E::transition_failure);
-    else{const auto e=ValidateNativeManagementOperationEvolution(entries[old->second].record,o);
+    else{Require(entries[old->second].plan.intent.startup_binding==binding,E::history_mismatch);
+      const auto e=ValidateNativeManagementOperationEvolution(entries[old->second].record,o);
       if(e==NativeManagementOperationError::hash_failure)throw E::hash_failure;
       if(e==NativeManagementOperationError::resource_exhausted)throw E::resource_exhausted;
       Require(e==NativeManagementOperationError::none,E::transition_failure);}
@@ -230,7 +233,7 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
 }
 } // namespace
 NativeManagementHistoryError ValidateNativeManagementHistoryAppend(const NativeManagementGraphHistory& history,
-    const NativeManagementOperation& record,u64 budget) noexcept {
+    const NativeManagementOperation& record,u64 budget,const std::optional<NativeStartupBinding>& startup_binding) noexcept {
   try{
     Require(history.ok(),E::invalid_request);
     // Bound index nodes, retained strings and steps before constructing indexes.
@@ -242,7 +245,7 @@ NativeManagementHistoryError ValidateNativeManagementHistoryAppend(const NativeM
     const auto valid=ValidateNativeManagementOperation(record);
     if(valid!=NativeManagementOperationError::none)throw valid==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:valid==NativeManagementOperationError::hash_failure?E::hash_failure:E::transition_failure;
     std::map<Uuid,std::size_t> latest;std::map<std::pair<u16,std::string>,Uuid> idempotency;
-    Index(history.entries,latest,idempotency,&record);return E::none;
+    Index(history.entries,latest,idempotency,&record,startup_binding);return E::none;
   }catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::history_mismatch;}
 }
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,u64 budget) noexcept {

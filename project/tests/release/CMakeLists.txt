@@ -594,6 +594,37 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --publication-effects)
   set_tests_properties(native_publication_effect_receipt_gate PROPERTIES
     LABELS "storage;actual_files;partial_effects;binary_uuid;not_runtime_acceptance" TIMEOUT 600)
+  foreach(startup_profile RANGE 0 4)
+    add_test(NAME native_startup_binding_${startup_profile}_gate
+      COMMAND sbsql_sblr_alignment_native_management_control_bundle --startup-binding ${startup_profile})
+    set_tests_properties(native_startup_binding_${startup_profile}_gate PROPERTIES
+      LABELS "storage;startup;actual_files;partial_effects;binary_uuid;not_runtime_acceptance" TIMEOUT 600)
+    foreach(startup_phase RANGE 0 1)
+      foreach(startup_fault_route IN ITEMS 3 4)
+        add_test(NAME native_startup_binding_faults_${startup_profile}_${startup_phase}_${startup_fault_route}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --startup-binding-faults ${startup_profile} ${startup_phase} ${startup_fault_route})
+        set_tests_properties(native_startup_binding_faults_${startup_profile}_${startup_phase}_${startup_fault_route} PROPERTIES
+          LABELS "storage;startup;actual_files;fault_injection;binary_uuid;not_runtime_acceptance" TIMEOUT 600)
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(startup_phase RANGE 0 1)
+    foreach(startup_route RANGE 0 2)
+      if(startup_route EQUAL 2)
+        set(startup_last_shard 31)
+      elseif(startup_route EQUAL 1)
+        set(startup_last_shard 4)
+      else()
+        set(startup_last_shard 0)
+      endif()
+      foreach(startup_shard RANGE 0 ${startup_last_shard})
+        add_test(NAME native_startup_binding_sweep_${startup_phase}_${startup_route}_${startup_shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --startup-binding-sweep ${startup_phase} ${startup_route} ${startup_shard})
+        set_tests_properties(native_startup_binding_sweep_${startup_phase}_${startup_route}_${startup_shard} PROPERTIES
+          LABELS "storage;startup;actual_files;allocation_faults;hash_faults;binary_uuid;not_runtime_acceptance" TIMEOUT 600)
+      endforeach()
+    endforeach()
+  endforeach()
 endif()
 
 add_executable(catalog_storage_action_policy_gate catalog_storage_action_policy_gate.cpp)

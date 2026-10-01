@@ -145,7 +145,7 @@ void PlanSeal(Bytes& b){std::fill(b.begin()+688,b.begin()+720,0);const auto h=Sh
 Bytes Oracle(const db::NativePublicationPlan& p){
  const auto& h=p.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);
  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
-const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value(),v5=p.intent.recovery_profile!=0,v6=p.intent.recovery_profile==2,v7=p.intent.recovery_profile==3,v8=v3&&p.control_bundle->directory_count;std::copy_n(v8?"SBPPM008":v7?"SBPPM007":v6?"SBPPM006":v5?"SBPPM005":v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v8?8:v7?7:v6?6:v5?5:v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
+const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value(),v5=p.intent.recovery_profile!=0,v6=p.intent.recovery_profile==2,v7=p.intent.recovery_profile==3,v8=v3&&p.control_bundle->directory_count,v9=p.intent.startup_binding.has_value();std::copy_n(v9?"SBPPM009":v8?"SBPPM008":v7?"SBPPM007":v6?"SBPPM006":v5?"SBPPM005":v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v9?9:v8?8:v7?7:v6?6:v5?5:v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
  Put(b,144,p.object_uuid);Put(b,160,p.bootstrap_uuid);Put(b,176,p.timeline_uuid);Put(b,192,p.operation_uuid);Put(b,208,p.intent.initiator_uuid);Put(b,224,p.intent.request_context_uuid);Put(b,240,p.intent.policy_snapshot_uuid);Put(b,256,p.security_snapshot_uuid);
  std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),b.begin()+272);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+304);
  Num(b,336,8,p.reserved_generation);Num(b,344,8,p.base_checkpoint_generation);Num(b,352,8,p.base_root_set_generation);Num(b,360,8,p.target_root_set_generation);
@@ -155,10 +155,38 @@ const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4
  if(p.management_extent){const auto& r=*p.management_extent;Num(b,720,4,p.generation_guard_flags);Ref(b,736,r.first);Put(b,784,r.object_uuid);Put(b,800,r.operation_uuid);Num(b,816,8,r.revision);Num(b,824,4,r.aggregate_bytes);Num(b,828,4,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+832);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+864);}
  if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}
  if(v4)Num(b,1040,8,*p.base_selection_generation);if(v5)Num(b,1048,2,p.intent.recovery_profile);if((v6||v8)&&p.control_bundle)Num(b,1056,8,p.control_bundle->inventory_count);
- if(v8){Num(b,1064,8,p.control_bundle->directory_count);Num(b,1072,8,p.control_bundle->payload_bytes);Num(b,1080,8,p.control_bundle->growth_image_count);}PlanSeal(b);return b;
+ if(v8){Num(b,1064,8,p.control_bundle->directory_count);Num(b,1072,8,p.control_bundle->payload_bytes);Num(b,1080,8,p.control_bundle->growth_image_count);}
+ if(v9){const auto& binding=*p.intent.startup_binding;Put(b,1088,binding.operation_uuid);Put(b,1104,binding.session_uuid);Put(b,1120,binding.transaction_uuid);Num(b,1136,8,binding.local_transaction_id);Num(b,1144,8,binding.fence_generation);}
+ PlanSeal(b);return b;
 }
 void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed plan prefix");}
 void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
+void StartupPlan(db::NativePublicationPlan p) {
+ p.intent.startup_binding=db::NativeStartupBinding{p.management_extent->operation_uuid,Id(31000),Id(31001),13,19};
+ const auto raw=Oracle(p);const auto encoded=db::EncodeNativePublicationPlan(p);
+ Check(encoded.ok()&&encoded.bytes==raw&&encoded.sha256==Sha(raw),"version9 complete independent startup binding bytes");
+ const auto decoded=db::DecodeNativePublicationPlan(raw);
+ Check(decoded.ok()&&decoded.plan->intent==p.intent&&decoded.plan->management_extent==p.management_extent&&
+   decoded.plan->control_bundle==p.control_bundle&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==raw,"startup plan preserves exact binding and reconstruction inputs");
+ for(unsigned field=0;field<3;++field)for(unsigned invalid=0;invalid<3;++invalid){auto bad=p;auto& b=*bad.intent.startup_binding;
+   auto& id=field==0?b.operation_uuid:field==1?b.session_uuid:b.transaction_uuid;
+   if(!invalid)id={};if(invalid==1)id.bytes[6]=0x40;if(invalid==2)id.bytes[8]=0xc0;Bad(bad);}
+ for(unsigned field=0;field<4;++field){auto bad=p;auto& b=*bad.intent.startup_binding;
+   if(!field)b.local_transaction_id=0;if(field==1)b.local_transaction_id=UINT64_MAX;if(field==2)b.fence_generation=0;if(field==3)b.operation_uuid=Id(31002);Bad(bad);}
+ for(u16 profile:{0,1,3,4,5}){auto bad=p;bad.intent.recovery_profile=profile;Bad(bad);}
+ for(unsigned version=1;version<9;++version){auto bad=raw;bad[135]='0'+version;Num(bad,136,2,version);PlanSeal(bad);Failed(db::DecodeNativePublicationPlan(bad));}
+ for(unsigned at=1088;at<1152;++at){auto bad=raw;bad[at]^=1;const auto r=db::DecodeNativePublicationPlan(bad);Failed(r);Check(r.error==E::invalid_integrity,"every binary startup byte is sealed");}
+ auto maximum=p;maximum.intent.startup_binding->local_transaction_id=UINT64_MAX-1;maximum.intent.startup_binding->fence_generation=UINT64_MAX;
+ Check(db::EncodeNativePublicationPlan(maximum).bytes==Oracle(maximum)&&db::DecodeNativePublicationPlan(Oracle(maximum)).ok(),"startup plan exact unsigned integer bounds");
+ for(unsigned route=0;route<2;++route){const auto call=[&]{return route?db::DecodeNativePublicationPlan(raw):db::EncodeNativePublicationPlan(p);};
+   allocations=0;counting=true;Check(call().ok(),"startup plan allocation baseline");counting=false;const auto sites=allocations;
+   for(unsigned long at=0;at<sites;++at){allocation_budget=at;const auto r=call();const auto left=allocation_budget;allocation_budget=-1;
+     Check(left==-1&&r.error==E::resource_exhausted,"startup plan exact allocation failure consumed");Failed(r);}
+   hash_counting=true;hash_seen=0;Check(call().ok(),"startup plan hash baseline");hash_counting=false;const auto hashes=hash_seen;
+   for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto r=call();
+     Check(!hash_fault&&r.error==E::hash_failure,"startup plan every provider fault consumed");Failed(r);}
+ }
+}
 struct Fixture {
  std::filesystem::path path;d::FileDevice device,secondary;Bytes secondary_before;std::vector<d::NativeFilespaceDevice> devices;u64 size,budget,total_pages;
  std::unique_ptr<scratchbird::core::uuid::StandaloneUuidV7Issuer> issuer;
@@ -1369,6 +1397,7 @@ void DirectoryPlan(unsigned primary,unsigned secondary,bool reverse){
   Check(decoded.ok()&&decoded.plan->control_bundle==p.control_bundle&&decoded.plan->intent==p.intent&&
     decoded.plan->base_selection_generation==p.base_selection_generation&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==raw,
     "version8 retains all mixed-profile/growth commitments");
+  if(profile==2)StartupPlan(p);
   Check(db::ValidateNativeManagementControlAllocation(g.base_bytes,g.target_bytes,raw,g.extent,g.before_bytes,g.after_bytes,f.budget)==CE::invalid_plan,
     "primary-only validator cannot silently ignore a directory delta");
   const auto invalid=[&](const db::NativePublicationPlan& bad,unsigned field){const auto encoded_bad=db::EncodeNativePublicationPlan(bad);
@@ -1845,13 +1874,13 @@ bool SameOwnedInventory(const mga::LocalTransactionInventory& actual,const mga::
  }
  return true;
 }
-void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false) {
+void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false,bool startup=false) {
  Fixture f(profile);f.budget*=mixed?16:4;
  if(mixed)MixedInventoryPredecessor(f,profile);
  const auto initial=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
  Check(initial.ok(),"owned constructor actual initial checkpoint");
  auto inventory=initial.checkpoint_inventory.inventory;
- const unsigned count=profile==0?(f.size-384)/72+1:2;
+ const unsigned count=startup?1:profile==0?(f.size-384)/72+1:2;
  for(unsigned i=0;i<count;++i) {
   auto begun=read_only?mga::BeginLocalReadOnlyTransaction(inventory,{UuidKind::transaction,Id(19000+i)},3000+i):
     mga::BeginLocalTransaction(inventory,{UuidKind::transaction,Id(19000+i)},3000+i);
@@ -1865,14 +1894,46 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   record.revision=phase+1;record.updated_at=Id(2000+phase);
   if(!phase){record.security_snapshot_uuid={};record.generation_guards={};}
   record.idempotency_key="owned-inventory";
+  if(startup){record.normalized_request_bytes=Bytes(64);record.request_context_uuid=Id(21000);
+    Put(record.normalized_request_bytes,0,record.uuid);Put(record.normalized_request_bytes,16,record.request_context_uuid);
+    Put(record.normalized_request_bytes,32,inventory.entries[1].identity.transaction_uuid.value);
+    Num(record.normalized_request_bytes,48,8,inventory.entries[1].identity.local_id.value);Num(record.normalized_request_bytes,56,8,19);
+    record.normalized_request_sha256=Sha(record.normalized_request_bytes);}
   if(phase==2)for(unsigned n=0;n<40;++n){auto step=records::Step(1,n+1);step.operation_uuid=record.uuid;record.steps.push_back(step);}
   db::NativePublicationIntent intent{record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,
     record.normalized_request_sha256,record.initiator_kind};intent.recovery_profile=2;
+  if(startup)intent.startup_binding=db::NativeStartupBinding{record.uuid,record.request_context_uuid,
+    inventory.entries[1].identity.transaction_uuid.value,inventory.entries[1].identity.local_id.value,19};
   const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(before.ok(),"owned constructor actual selected base");
+  if(startup){const auto untouched=f.Read(0,256);
+    for(unsigned wrong=0;wrong<2;++wrong){auto forged=intent;
+      if(!wrong)++forged.startup_binding->local_transaction_id;
+      else forged.startup_binding->transaction_uuid=initial.checkpoint_inventory.inventory.entries.front().identity.transaction_uuid.value;
+      const auto refused=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(20100+phase),f.budget,&forged);
+      Check(!refused.ok()&&!refused.effects.write_attempts&&f.Read(0,256)==untouched,"startup binding must match actual allocation or exact next local number");}}
   auto held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(20100+phase),f.budget,&intent);
   Check(held.ok(),"owned constructor actual generation reservation");
   const auto pending=f.Read(0,256);
+  if(startup){const auto snapshot=held.lease->snapshot();
+    Check(snapshot.watermark.intent==intent&&snapshot.selection.checkpoint_generation==before.snapshot->selection.checkpoint_generation,
+      "complete startup tuple durable before inventory selection changes");
+    held.lease.reset();
+    const auto abandoned=db::AbandonNativeInventoryPublicationOnOpenDevices(Id(1),f.devices,Id(2),snapshot,Id(20100+phase),intent,Id(21200+phase),f.budget);
+    Check(!abandoned.ok()&&!abandoned.effects.write_attempts&&f.Read(0,256)==pending,"generic physical abandonment cannot reconcile startup");
+    const auto displaced=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),snapshot,Id(21300+phase),f.budget,&intent);
+    Check(displaced.error==db::NativePublicationError::operation_pending&&!displaced.effects.write_attempts,"fresh attempt cannot erase pending startup binding");
+    for(unsigned field=0;field<5;++field){auto forged=intent;auto& b=*forged.startup_binding;
+      if(!field)b.operation_uuid=Id(21400);if(field==1)b.session_uuid=Id(21400);if(field==2)b.transaction_uuid=Id(21400);
+      if(field==3)++b.local_transaction_id;if(field==4)++b.fence_generation;
+      const auto refused=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),snapshot,Id(20100+phase),forged,f.budget);
+      Check(refused.error==db::NativePublicationError::request_mismatch&&!refused.effects.write_attempts&&f.Read(0,256)==pending,"exact retry compares every binary startup binding field");}
+    held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),snapshot,Id(20100+phase),intent,f.budget);
+    Check(held.ok()&&held.lease->snapshot().watermark.intent==intent,"exact original startup attempt resumes without new identity");
+    auto wrong_inventory=inventory;wrong_inventory.entries[1].identity.transaction_uuid.value=Id(21500);
+    const auto mismatch=db::PublishNativeInventoryOnLease(*held.lease,record,wrong_inventory,f.budget,*f.issuer);
+    Check(!mismatch.ok()&&!mismatch.effects.selector_write_attempted&&f.Read(0,256)==pending,"startup publication cannot install a different transaction");
+  }
   auto wrong=record;wrong.request_context_uuid=Id(20200);
   const auto mismatch=db::PublishNativeInventoryOnLease(*held.lease,wrong,inventory,f.budget,*f.issuer);
   if(mismatch.error!=db::NativePublicationError::request_mismatch)std::cerr<<"owned mismatch error="<<int(mismatch.error)<<'\n';
@@ -1909,6 +1970,19 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok()&&SameOwnedInventory(selected.checkpoint_inventory.inventory,inventory),
     "ordinary selected admission sees exact generated inventory");
+  if(startup){const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+    Check(history.ok()&&history.entries.size()==phase+1,"startup exact retained publication history");
+    for(const auto& entry:history.entries)Check(entry.plan.intent.startup_binding==intent.startup_binding&&
+      entry.record.normalized_request_bytes==record.normalized_request_bytes,"startup binding and full request survive subsequent publication phases");
+    auto next=record;const auto absent=db::ValidateNativeManagementHistoryAppend(history,next,f.budget);
+    Check(absent==db::NativeManagementHistoryError::history_mismatch,"bare replay cannot omit startup binding");
+    for(unsigned field=0;field<5;++field){auto changed=intent.startup_binding;auto& b=*changed;
+      if(!field)b.operation_uuid=Id(21600);if(field==1)b.session_uuid=Id(21600);if(field==2)b.transaction_uuid=Id(21600);
+      if(field==3)++b.local_transaction_id;if(field==4)++b.fence_generation;
+      Check(db::ValidateNativeManagementHistoryAppend(history,next,f.budget,changed)==db::NativeManagementHistoryError::history_mismatch,
+        "retained history cannot rebind startup tuple or fence generation");}
+    Check(db::ValidateNativeManagementHistoryAppend(history,next,f.budget,intent.startup_binding)==db::NativeManagementHistoryError::none,
+      "exact startup revision replay remains permitted");}
   for(const auto& root:initial.checkpoint_inventory.checkpoint->roots)if(root.role==3&&mixed){
    const auto old=page::DecodeNativeFilespaceDirectory(f.Read(root.page.page_number));Check(old.ok()&&!old.directory->next,"independent original mixed directory");
    const auto found=std::find_if(selected.checkpoint_inventory.checkpoint->roots.begin(),selected.checkpoint_inventory.checkpoint->roots.end(),[](const auto& r){return r.role==3;});Check(found!=selected.checkpoint_inventory.checkpoint->roots.end(),"new directory root retained");
@@ -1940,6 +2014,12 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   if(mixed){if(!second.Open((f.path.parent_path()/"secondary").string(),d::FileOpenMode::open_existing_read_only).ok())_exit(82);
     files.push_back({Id(16000),d::kCanonicalFilespacePageProfiles[(profile+1)%5].uuid,&second});}
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),files,Id(2),f.budget);
+  if(startup){const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),files,Id(2),f.budget);
+    if(!history.ok()||history.entries.size()!=3)_exit(83);
+    for(const auto& entry:history.entries)if(!entry.plan.intent.startup_binding||
+      entry.plan.intent.startup_binding->operation_uuid!=Id(20000)||entry.plan.intent.startup_binding->session_uuid!=Id(21000)||
+      entry.plan.intent.startup_binding->transaction_uuid!=Id(19000)||entry.plan.intent.startup_binding->fence_generation!=19||
+      entry.record.normalized_request_bytes.size()!=64)_exit(84);}
   _exit(selected.ok()&&selected.selection->selection_generation==4&&SameOwnedInventory(selected.checkpoint_inventory.inventory,inventory)?0:81);
  }
  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
@@ -1947,7 +2027,7 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
  if(mixed){Check(f.secondary.Open((f.path.parent_path()/"secondary").string(),d::FileOpenMode::open_existing_read_only).ok(),"reopen preserved secondary");
   Bytes actual(f.secondary_before.size());const auto read=f.secondary.ReadAt(0,actual.data(),actual.size());
   Check(read.ok()&&read.bytes_transferred==actual.size()&&actual==f.secondary_before,"owned constructor preserves every secondary byte");}
- std::cout<<"owned inventory profile="<<profile<<" read_only="<<read_only<<" mixed="<<mixed<<" PASS\n";
+ std::cout<<"owned inventory profile="<<profile<<" read_only="<<read_only<<" mixed="<<mixed<<" startup="<<startup<<" PASS\n";
 }
 struct OwnedInventoryRequest {
  mga::LocalTransactionInventory inventory;
@@ -1955,7 +2035,7 @@ struct OwnedInventoryRequest {
  db::NativePublicationIntent intent;
  db::NativePublicationSnapshot pending;
  db::NativePublicationReservation held;
- explicit OwnedInventoryRequest(Fixture& f,unsigned sequence=0,bool original_context=false) {
+ explicit OwnedInventoryRequest(Fixture& f,unsigned sequence=0,bool original_context=false,bool startup=false,bool activation=false) {
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok(),"owned failure fixture actual selected inventory");
   auto begun=mga::BeginLocalTransaction(selected.checkpoint_inventory.inventory,{UuidKind::transaction,Id(19000+sequence)},3000);
@@ -1965,12 +2045,26 @@ struct OwnedInventoryRequest {
   record=records::Example(1);record.uuid=Id(20000+sequence);record.bootstrap_uuid=zero.record->page_uuid;
   record.security_snapshot_uuid={};record.generation_guards={};record.idempotency_key="owned-failure";
   if(sequence){record.idempotency_key+=std::to_string(sequence);if(!original_context)record.request_context_uuid=Id(21000+sequence);}
+  if(startup){record.normalized_request_bytes=Bytes(64);
+    Put(record.normalized_request_bytes,0,record.uuid);Put(record.normalized_request_bytes,16,record.request_context_uuid);
+    Put(record.normalized_request_bytes,32,inventory.entries.back().identity.transaction_uuid.value);
+    Num(record.normalized_request_bytes,48,8,inventory.entries.back().identity.local_id.value);Num(record.normalized_request_bytes,56,8,19);
+    record.normalized_request_sha256=Sha(record.normalized_request_bytes);}
   intent={record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,
     record.normalized_request_sha256,record.initiator_kind};intent.recovery_profile=2;
+  if(startup)intent.startup_binding=db::NativeStartupBinding{record.uuid,record.request_context_uuid,
+    inventory.entries.back().identity.transaction_uuid.value,inventory.entries.back().identity.local_id.value,19};
   const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(before.ok(),"owned failure fixture actual base");
   held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(20100+sequence),f.budget,&intent);
   Check(held.ok(),"owned failure fixture actual reservation");pending=held.lease->snapshot();
+  if(activation){Check(startup&&db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget,*f.issuer).ok(),"durable startup starting before activation fault fixture");
+    held.lease.reset();inventory.entries.back().state=mga::TransactionState::active;
+    record.revision=2;record.state=db::NativeManagementState::authorized;record.updated_at=Id(2001);
+    const auto authorized=records::Example(2);record.security_snapshot_uuid=authorized.security_snapshot_uuid;record.generation_guards=authorized.generation_guards;
+    const auto actual=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(actual.ok(),"startup selected starting base");
+    held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*actual.snapshot,Id(20120),f.budget,&intent);
+    Check(held.ok(),"startup activation retains original operation binding");pending=held.lease->snapshot();}
  }
 };
 void OwnedDirectoryInventory(unsigned primary){
@@ -2986,12 +3080,15 @@ void OwnedInventoryBudgetAndStale() {
    "constructor rereads actual state and refuses obsolete retained lease");
  std::cout<<"owned inventory exact construction allowance="<<allowance<<" stale-base PASS\n";
 }
-void ReservationEffects(unsigned profile) {
+void ReservationEffects(unsigned profile,bool startup=false) {
  Fixture f(profile);f.budget*=4;
  const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
  Check(base.ok()&&base.effects.observed&&!base.effects.write_attempts&&!base.effects.sync_attempts,"inspection records known zero effects");
  const auto before=f.Read(0,256);
  db::NativePublicationIntent intent{Id(20101),Id(20102),Id(20103),{},4,2};intent.normalized_request_sha256.fill(7);
+ if(startup){const auto actual=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+   Check(actual.ok(),"actual next transaction before startup reservation");
+   intent.startup_binding=db::NativeStartupBinding{Id(20110),Id(20102),Id(20111),actual.checkpoint_inventory.inventory.next_local_transaction_id,19};}
  for(unsigned fault=0;fault<8;++fault){
   const auto restored=f.device.WriteAt(0,before.data(),before.size());Check(restored.ok()&&f.device.Sync().ok(),"isolated reservation effect fixture restore");
   reads=writes=syncs=0;write_fault=fault>=1&&fault<=4?1+(fault-1)%2:0;
@@ -3009,9 +3106,36 @@ void ReservationEffects(unsigned profile) {
       resumed.lease->effects()==resumed.effects,"resume starts a new interval without erasing the original durable pending request");
   }else Check(result.error==db::NativePublicationError::io_failure&&!result.lease,"failed reservation returns no live lease");
   if(fault==3||fault==4)Check(f.Read(0,256)!=before,"torn reservation retains real changed bytes");
+  if(startup){result.lease.reset();const auto recovered=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+    Check(recovered.ok(),"startup reservation duplex is recoverable after every write and sync fault");
+    const auto& w=recovered.snapshot->watermark;
+    Check((w.operation_uuid==Id(20100)&&w.intent==intent)||
+      (w.operation_uuid==base.snapshot->watermark.operation_uuid&&!w.intent),"recovery preserves exact startup tuple or proves no new reservation selected");
+    Check(recovered.snapshot->selection.checkpoint==base.snapshot->selection.checkpoint&&
+      recovered.snapshot->selection.checkpoint_sha256==base.snapshot->selection.checkpoint_sha256,"reservation faults do not allocate or activate a transaction");}
+ }
+ if(startup)for(unsigned kind=0;kind<4;++kind)for(unsigned at=1;at<=(kind<2?2u:3u);++at){
+   Check(f.device.WriteAt(0,before.data(),before.size()).ok()&&f.device.Sync().ok()&&f.device.Close().ok(),"restore and release own startup crash fixture");
+   const auto child=fork();Check(child>=0,"fork startup reservation interruption");
+   if(!child){if(!f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
+     writes=syncs=reads=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;kill_after_sync=kind==3;torn_bytes=kind==1?f.size/2:0;io_counting=true;
+     (void)db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,Id(20100),f.budget,&intent);_exit(87);}
+   int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"startup writer dies at requested physical barrier");
+   const auto reader=fork();Check(reader>=0,"fork independent startup binding recovery");
+   if(!reader){d::FileDevice device;if(!device.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
+     std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[profile].uuid,&device}};
+     const auto recovered=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),f.budget);
+     if(!recovered.ok())_exit(81);const auto& w=recovered.snapshot->watermark;
+     if(!((w.operation_uuid==Id(20100)&&w.intent==intent)||(w.operation_uuid==base.snapshot->watermark.operation_uuid&&!w.intent)))_exit(82);
+     if(recovered.snapshot->selection.checkpoint_sha256!=base.snapshot->selection.checkpoint_sha256)_exit(83);
+     if(w.intent){auto resumed=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),*recovered.snapshot,Id(20100),intent,f.budget);
+       if(!resumed.ok()||resumed.lease->snapshot().watermark.intent!=intent)_exit(84);}
+     _exit(0);}
+   Check(waitpid(reader,&status,0)==reader&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"independent reopen retains exact original binding before any BEGIN inventory effects");
+   Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"startup parent reopens after independent recovery");
  }
 }
-void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool directory=false,bool retained_history=false) {
+void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool directory=false,bool retained_history=false,bool startup=false,bool activation=false) {
  using PE=db::NativePublicationError;
  std::unique_ptr<DirectoryHistoryFixture> mixed;std::unique_ptr<Fixture> single;
  if(directory)mixed=std::make_unique<DirectoryHistoryFixture>(profile,(profile+1)%5,true,2,false,true,true,false);
@@ -3019,7 +3143,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
  auto& f=directory?mixed->t.fixture:*single;f.budget*=directory?32:4;
  if(retained_history){Check(route<3,"retained history fault routes");f.budget*=4;OwnedInventoryRequest original(f);
   Check(db::PublishNativeInventoryOnLease(*original.held.lease,original.record,original.inventory,f.budget,*f.issuer).ok(),"actual prior selected record for append fault coverage");}
- OwnedInventoryRequest request(f,retained_history?1:0);
+ OwnedInventoryRequest request(f,retained_history?1:0,false,startup,activation);
  const auto loss=[&]{u64 total=0;for(const auto& file:f.devices)total+=file.device->failed_io_latency_observations();return total;};
  const auto before=f.Read(0,f.total_pages);
  const auto reset=[&] {
@@ -3039,6 +3163,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
  const auto initial_effects=request.held.lease->effects();
  counting=hash_counting=io_counting=true;const auto good=call(f.budget);counting=hash_counting=io_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen,ne=entropy_calls;const auto na=allocations;
+ if(!good.ok())std::cerr<<"owned baseline startup="<<startup<<" activation="<<activation<<" error="<<int(good.error)<<'\n';
  Check(good.ok()&&nr&&nw&&ns&&nh&&ne&&na,"owned complete publication fault baseline");
  Check(good.effects==request.held.lease->effects()&&good.effects.observed&&
    good.effects.write_attempts==initial_effects.write_attempts+nw&&good.effects.sync_attempts==initial_effects.sync_attempts+ns&&
@@ -3071,7 +3196,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
     Check(selected.ok()&&selected.checkpoint_inventory.inventory.entries.size()==request.inventory.entries.size()&&
       selected.checkpoint_inventory.inventory.entries.back().identity.transaction_uuid.value==request.inventory.entries.back().identity.transaction_uuid.value&&
       selected.checkpoint_inventory.inventory.entries.back().identity.local_id.value==request.inventory.entries.back().identity.local_id.value&&
-      selected.checkpoint_inventory.inventory.entries.back().state==mga::TransactionState::created,
+      selected.checkpoint_inventory.inventory.entries.back().state==request.inventory.entries.back().state,
       "dirty-probe substitution still publishes exact complete requested inventory");
     bool remains_free=false;
     for(const auto& image:selected.allocation.pages)if(page_number>=image.map->first_page&&page_number-image.map->first_page<image.map->states.size())
@@ -3114,8 +3239,8 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
    const auto child=fork();Check(child>=0,"fork actual owned writer");
    if(!child) {
     d::FileDevice file;if(!file.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
-    std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[0].uuid,&file}};
-    auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),request.pending,Id(20100),request.intent,f.budget);
+    std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[profile].uuid,&file}};
+    auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),request.pending,request.pending.watermark.operation_uuid,request.intent,f.budget);
     if(!held.ok())_exit(81);f.ResetIssuer();reads=writes=syncs=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;
     kill_after_sync=kind==3;torn_bytes=kind==1?f.size/2:0;io_counting=true;
     (void)db::PublishNativeInventoryOnLease(*held.lease,request.record,request.inventory,f.budget,*f.issuer);_exit(87);
@@ -3124,25 +3249,36 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
    const auto recovery=fork();Check(recovery>=0,"fresh owned publication recovery process");
    if(!recovery) {
     d::FileDevice file;if(!file.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
-    std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[0].uuid,&file}};
+    std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[profile].uuid,&file}};
     auto observed=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),f.budget);
     db::NativePublicationInspection result;
     if(observed.ok()) {
-     if(observed.snapshot->selection.selection_generation==2)result=observed;
+     if(observed.snapshot->selection.selection_generation==request.pending.selection.selection_generation+1)result=observed;
      else if(observed.snapshot->watermark.publication_plan) {
-      auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),*observed.snapshot,Id(20100),request.intent,f.budget);
+      auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),*observed.snapshot,request.pending.watermark.operation_uuid,request.intent,f.budget);
       if(held.ok()) {
        result=db::ResumeNativeManagementControlGraphOnLease(*held.lease,f.budget);
        if(result.ok())result=db::PublishNativeManagementControlGraphOnLease(*held.lease,f.budget);
       }
+     }else if(startup){
+      if(observed.snapshot->watermark.intent!=request.intent)_exit(90);
+      auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),*observed.snapshot,request.pending.watermark.operation_uuid,request.intent,f.budget);
+      if(!held.ok())_exit(91);f.ResetIssuer();
+      // Owning family request is supplied, never parent-built target pages or
+      // replacement transaction/operation identities. This is storage proof,
+      // not the 01f startup family's recovery/admission implementation.
+      result=db::PublishNativeInventoryOnLease(*held.lease,request.record,request.inventory,f.budget,*f.issuer);
      }
-    }else result=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),files,Id(2),Id(20100),request.intent,f.budget);
+    }else result=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),files,Id(2),request.pending.watermark.operation_uuid,request.intent,f.budget);
     if(result.ok()) {
      if(!result.effects.observed)_exit(89);
      const auto final=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),files,Id(2),f.budget);
-     _exit(final.ok()&&final.selection->selection_generation==2&&final.checkpoint_inventory.inventory.entries.size()==2&&
-       final.checkpoint_inventory.inventory.entries[1].state==mga::TransactionState::created?0:82);
+     if(startup){const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),files,Id(2),f.budget);
+       if(!history.ok()||history.entries.empty()||history.entries.back().plan.intent.startup_binding!=request.intent.startup_binding||
+         history.entries.back().record.normalized_request_bytes!=request.record.normalized_request_bytes)_exit(92);}
+     _exit(final.ok()&&final.selection->selection_generation==request.pending.selection.selection_generation+1&&SameOwnedInventory(final.checkpoint_inventory.inventory,request.inventory)?0:82);
     }
+    if(startup)_exit(93); // Startup may not use unbound physical abandonment.
     if(result.snapshot)_exit(83);
     // Incomplete immutable inputs cannot be invented. The original selected
     // inventory must still be intact and the pending generation resolvable.
@@ -3158,7 +3294,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
    WEXITSTATUS(status)==0?++completed:++incomplete;
    Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"parent reopens recovered owned file");
   }
-  Check(completed&&incomplete,"owned death sweep covers complete and incomplete graphs");
+  Check(completed&&(startup?!incomplete:bool(incomplete)),"owned death sweep retains expected reconstruction and incomplete-input boundaries");
   std::cout<<"owned recovery completed="<<completed<<" incomplete="<<incomplete<<'\n';
  }
  owned_clock_controlled=false;
@@ -3166,6 +3302,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard,unsigned profile=0,bool 
 }
 void InventoryPlan(Graph& g,const Bundle& b){
  auto p=g.plan;p.control_bundle=b.root;p.base_selection_generation=1;p.intent.recovery_profile=2;
+ StartupPlan(p);
  const auto raw=Oracle(p),encoded=db::EncodeNativePublicationPlan(p).bytes;Check(encoded==raw,"independent complete inventory plan version6 bytes");
  const auto decoded=db::DecodeNativePublicationPlan(raw);Check(decoded.ok()&&decoded.plan->intent==p.intent&&decoded.plan->control_bundle==p.control_bundle&&decoded.plan->base_selection_generation==p.base_selection_generation&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==raw,"version6 preserves complete descriptor and request");
  for(unsigned kind=0;kind<13;++kind){auto bad=p;switch(kind){case 0:bad.intent.recovery_profile=0;break;case 1:bad.intent.recovery_profile=1;break;case 2:bad.intent.recovery_profile=3;break;case 3:bad.control_bundle.reset();break;case 4:bad.management_extent.reset();break;case 5:bad.base_selection_generation.reset();break;case 6:bad.base_selection_generation=0;break;case 7:bad.base_selection_generation=std::numeric_limits<u64>::max();break;case 8:bad.control_bundle->inventory_count=0;break;case 9:bad.control_bundle->inventory_count=std::numeric_limits<u64>::max();break;case 10:++bad.control_bundle->inventory_count;break;case 11:bad.control_bundle->map_count=std::numeric_limits<u64>::max();break;case 12:++bad.control_bundle->page_count;break;}Bad(bad);}
@@ -3236,6 +3373,22 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ if(argc==3&&std::string_view(argv[1])=="--startup-binding"){
+   const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"startup binding profile");
+   ReservationEffects(profile,true);
+   for(bool read_only:{false,true})for(bool mixed:{false,true})OwnedInventoryPublication(profile,read_only,mixed,true);
+   std::cout<<"PASS startup native binding checks="<<checks<<" not_runtime_recovery_acceptance=true\n";return 0;
+ }
+ if(argc==5&&std::string_view(argv[1])=="--startup-binding-faults"){
+   const auto profile=std::stoi(argv[2]),phase=std::stoi(argv[3]),route=std::stoi(argv[4]);
+   Check(profile>=0&&profile<5&&phase>=0&&phase<2&&(route==3||route==4),"startup publication fault profile");
+   OwnedInventoryFaults(route,0,profile,false,false,true,phase!=0);return 0;
+ }
+ if(argc==5&&std::string_view(argv[1])=="--startup-binding-sweep"){
+   const auto phase=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);
+   Check(phase>=0&&phase<2&&route>=0&&route<3&&shard>=0&&shard<(route==2?32:route==1?5:1),"startup complete backend sweep arguments");
+   OwnedInventoryFaults(route,shard,0,false,false,true,phase!=0);return 0;
+ }
  if(argc==3&&(std::string_view(argv[1])=="--owned-directory-preallocation"||std::string_view(argv[1])=="--owned-secondary-preallocation"||std::string_view(argv[1])=="--owned-secondary-subdivision")){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"owned preallocation directory profile");OwnedDirectoryPreallocation(profile,std::string_view(argv[1])!="--owned-directory-preallocation",std::string_view(argv[1])=="--owned-secondary-subdivision");return 0;
  }

@@ -15,6 +15,13 @@ using core::platform::u64;
 
 // MGA-NATIVE-PUBLICATION-WATERMARK-IMAGE-001.
 // Durable operation-state IMAGE only. No live allocator/transaction authority.
+// MGA-NATIVE-STARTUP-PUBLICATION-BINDING-001. These are binary identities,
+// not authorization, allocated-inventory proof or a restart/recovery receipt.
+struct NativeStartupBinding {
+  Uuid operation_uuid, session_uuid, transaction_uuid;
+  u64 local_transaction_id=0, fence_generation=0;
+  bool operator==(const NativeStartupBinding&) const = default;
+};
 struct NativePublicationIntent {
   Uuid initiator_uuid, request_context_uuid, policy_snapshot_uuid;
   std::array<byte,32> normalized_request_sha256{};
@@ -24,6 +31,7 @@ struct NativePublicationIntent {
   // 4: native physical growth/control publication (no abandonment).
   // A durable restriction, never authentication or user-effect authority.
   core::platform::u16 recovery_profile=0;
+  std::optional<NativeStartupBinding> startup_binding;
   bool operator==(const NativePublicationIntent&) const = default;
 };
 struct NativePublicationWatermark {
