@@ -56,9 +56,13 @@ sem_t completion_park;
 sem_t release_completion;
 sem_t worker_entry;
 sem_t release_worker_entry;
+sem_t release_acknowledging_worker;
+sem_t worker_acknowledged;
 sem_t completion_stop_published;
 bool completion_wait_mode = false;
+bool partial_completion_mode = false;
 thread_local bool completion_scheduler = false;
+thread_local bool completion_acknowledging_worker = false;
 bool spurious_wake = false;
 bool scheduler_timeout_mode = false;
 thread_local bool observed_waiter = false;
@@ -294,8 +298,11 @@ extern "C" int __wrap_pthread_setname_np(pthread_t thread, const char* name) {
   if (completion_wait_mode) {
     if (std::string_view(name) == "sb-agent-sch") completion_scheduler = true;
     if (std::string_view(name).starts_with("sb-agent-w")) {
+      completion_acknowledging_worker = partial_completion_mode &&
+          std::string_view(name) == "sb-agent-w01";
       Signal(worker_entry);
-      Wait(release_worker_entry, "controller did not release worker entry");
+      Wait(completion_acknowledging_worker ? release_acknowledging_worker : release_worker_entry,
+           "controller did not release worker entry");
     }
   }
   if (scheduler_timeout_mode && std::string_view(name) == "sb-agent-sch") {
@@ -449,6 +456,12 @@ extern "C" int __wrap_pthread_join(pthread_t thread, void** result) {
 
 extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* condition) {
   const int result = __real_pthread_cond_broadcast(condition);
+  if (completion_acknowledging_worker && condition == schedule_condition) {
+    // WorkerLoop has published its own generation under the real mutex. This
+    // worker acknowledges generation one without executing its selected tick.
+    completion_acknowledging_worker = false;
+    Signal(worker_acknowledged);
+  }
   if (completion_wait_mode && stop_thread && condition == schedule_condition) {
     Signal(completion_stop_published);
   }
@@ -466,10 +479,15 @@ bool CheckSchedulerCompletionWait(server::ServerAgentRuntime& runtime) {
   Wait(worker_entry, "first worker did not reach real native entry");
   Wait(worker_entry, "second worker did not reach real native entry");
   Wait(completion_park, "scheduler did not wait for worker completion");
+  if (partial_completion_mode) {
+    Signal(release_completion);
+    Signal(release_acknowledging_worker);
+    Wait(worker_acknowledged, "second worker did not publish actual completion");
+  }
   bool no_advance = true;
   constexpr unsigned notifications = 8;
   for (unsigned wake = 0; wake < notifications; ++wake) {
-    Signal(release_completion);
+    if (!partial_completion_mode || wake != 0) Signal(release_completion);
     // Acquisition proves the real cond_wait released the bound predicate mutex.
     Require(__real_pthread_mutex_lock(schedule_mutex) == 0, "completion probe lock failed");
     notifications_sent.fetch_add(1);
@@ -495,11 +513,12 @@ bool CheckSchedulerCompletionWait(server::ServerAgentRuntime& runtime) {
   // after the stopper has attempted to acquire the predicate mutex.
   Wait(completion_stop_published, "Stop did not publish completion-wait cancellation");
   Signal(release_worker_entry);
-  Signal(release_worker_entry);
+  if (!partial_completion_mode) Signal(release_worker_entry);
   Wait(stop_finished, "Stop did not join completion waiter and held workers");
   stopper.join();
   const auto stopped = runtime.Snapshot();
   std::cout << "completion_notifications=" << notifications
+            << " one_worker_acknowledged=" << partial_completion_mode
             << " false_completion_rejected=" << no_advance << '\n';
   return no_advance && publication_serialized.load() && !stopped.started &&
       !stopped.stopping && stopped.scheduler_ticks == 1 && stopped.total_worker_ticks == 0 &&
@@ -1042,8 +1061,10 @@ bool CheckActiveDestruction(const server::ServerBootstrapConfig& config,
 }
 
 int main(int argc, char** argv) {
-  completion_wait_mode = argc == 2 &&
-      std::string_view(argv[1]) == "--scheduler-completion-wake";
+  partial_completion_mode = argc == 2 &&
+      std::string_view(argv[1]) == "--scheduler-partial-completion";
+  completion_wait_mode = partial_completion_mode || (argc == 2 &&
+      std::string_view(argv[1]) == "--scheduler-completion-wake");
   spurious_wake = argc == 2 && std::string_view(argv[1]) == "--spurious-wake";
   scheduler_timeout_mode = argc == 2 && std::string_view(argv[1]) == "--scheduler-timeout";
   const bool concurrent_stop_failure = argc == 2 &&
@@ -1089,7 +1110,8 @@ int main(int argc, char** argv) {
                        &second_stop_finished, &scheduler_at_entry, &allow_scheduler,
                        &worker_repark, &scheduler_after_tick, &scheduler_timeout,
                        &scheduler_next_wait, &completion_park, &release_completion,
-                       &worker_entry, &release_worker_entry, &completion_stop_published};
+                       &worker_entry, &release_worker_entry, &release_acknowledging_worker,
+                       &worker_acknowledged, &completion_stop_published};
   for (auto* event : events) {
     Require(sem_init(event, 0, 0) == 0, "sem_init failed");
   }
