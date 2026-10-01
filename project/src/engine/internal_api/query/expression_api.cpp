@@ -63,6 +63,9 @@ void PublishScalarCastValue(const core::datatypes::DatatypeOperationValue& cast,
               ? "true"
               : "false";
     }
+  } else if (cast.type_id == core::datatypes::CanonicalTypeId::int8) {
+    core::datatypes::DecodeCanonicalInt8Value(
+        cast.encoded_value, &output->encoded_value);
   } else if (cast.type_id == core::datatypes::CanonicalTypeId::uuid ||
       cast.type_id == core::datatypes::CanonicalTypeId::binary) {
     output->binary_value.assign(cast.encoded_value.begin(), cast.encoded_value.end());
@@ -96,6 +99,17 @@ bool ScalarCastInputEncoding(const EngineTypedValue& input,
       return true;
     }
     return false;
+  }
+  if (type == core::datatypes::CanonicalTypeId::int8) {
+    if (!input.binary_value.empty()) {
+      if (!input.encoded_value.empty() || input.binary_value.size() != 1) {
+        return false;
+      }
+      bytes->assign(1, static_cast<char>(input.binary_value[0]));
+      return true;
+    }
+    return core::datatypes::EncodeCanonicalInt8Value(input.encoded_value,
+                                                      bytes);
   }
   const bool binary = type == core::datatypes::CanonicalTypeId::uuid ||
                       type == core::datatypes::CanonicalTypeId::binary;
@@ -258,6 +272,9 @@ bool QowCanonicalComparableEncodingV1(
   namespace dt = scratchbird::core::datatypes;
   if (encoded_value == nullptr) return false;
   encoded_value->clear();
+  if (type_id == dt::CanonicalTypeId::int8) {
+    return ScalarCastInputEncoding(value, type_id, encoded_value);
+  }
   if (type_id == dt::CanonicalTypeId::boolean) {
     if (!value.binary_value.empty()) {
       if (!value.encoded_value.empty() || value.binary_value.size() != 1 ||
@@ -1126,12 +1143,14 @@ bool QowApplyCanonicalNumericScalarV1(
       if (!parse(value.encoded_value, decoded)) return false;
       dt::DatatypeCastRequest canonical_request;
       canonical_request.value.type_id = result_type;
-      canonical_request.value.encoded_value = value.encoded_value;
+      if (!ScalarCastInputEncoding(value, result_type,
+                                   &canonical_request.value.encoded_value)) {
+        return false;
+      }
       canonical_request.target_type_id = result_type;
       canonical_request.explicit_cast = true;
       const auto canonical = dt::CastDatatypeValue(canonical_request);
-      return canonical.ok() &&
-             canonical.value.encoded_value == value.encoded_value;
+      return canonical.ok();
     };
     if (!canonical_integer(left_value, &left) ||
         !canonical_integer(right_value, &right)) {
@@ -1176,7 +1195,9 @@ bool QowApplyCanonicalNumericScalarV1(
       return false;
     }
     dt::DatatypeCastRequest result_request;
-    result_request.value.type_id = result_type;
+    result_request.value.type_id = result_type == dt::CanonicalTypeId::int8
+        ? dt::CanonicalTypeId::character
+        : result_type;
     result_request.value.encoded_value = std::to_string(computed);
     result_request.target_type_id = result_type;
     result_request.explicit_cast = true;
@@ -1187,11 +1208,8 @@ bool QowApplyCanonicalNumericScalarV1(
           " arithmetic overflow";
       return false;
     }
-    output_value->descriptor = result_descriptor;
-    output_value->encoded_value = canonical_result.value.encoded_value;
-    output_value->binary_value.clear();
-    output_value->is_null = false;
-    output_value->state = EngineValueState::value;
+    PublishScalarCastValue(canonical_result.value, result_descriptor,
+                           output_value);
     return true;
   }
   if (bounded_real_context) {
@@ -1917,12 +1935,14 @@ bool QowEvaluateCanonicalTypedExpressionV1(
         if (!parse(value.encoded_value, decoded)) return false;
         dt::DatatypeCastRequest canonical_request;
         canonical_request.value.type_id = result_type;
-        canonical_request.value.encoded_value = value.encoded_value;
+        if (!ScalarCastInputEncoding(value, result_type,
+                                     &canonical_request.value.encoded_value)) {
+          return false;
+        }
         canonical_request.target_type_id = result_type;
         canonical_request.explicit_cast = true;
         const auto canonical = dt::CastDatatypeValue(canonical_request);
-        return canonical.ok() &&
-               canonical.value.encoded_value == value.encoded_value;
+        return canonical.ok();
       };
       if (!parse_canonical(request.left_value, &left) ||
           !parse_canonical(request.right_value, &right)) {
@@ -1940,8 +1960,23 @@ bool QowEvaluateCanonicalTypedExpressionV1(
           left == std::numeric_limits<std::int64_t>::min() && right == -1
               ? 0
               : left % right;
-      result->value.encoded_value = std::to_string(remainder);
-      result->value.setState(EngineValueState::value);
+      if (result_type == dt::CanonicalTypeId::int8) {
+        dt::DatatypeCastRequest canonical_result;
+        canonical_result.value.type_id = dt::CanonicalTypeId::character;
+        canonical_result.value.encoded_value = std::to_string(remainder);
+        canonical_result.target_type_id = result_type;
+        canonical_result.explicit_cast = true;
+        const auto cast = dt::CastDatatypeValue(canonical_result);
+        if (!cast.ok()) {
+          *refusal_detail = "canonical int8 modulo result is out of range";
+          return false;
+        }
+        PublishScalarCastValue(cast.value, request.result_descriptor,
+                               &result->value);
+      } else {
+        result->value.encoded_value = std::to_string(remainder);
+        result->value.setState(EngineValueState::value);
+      }
       return true;
     }
     case EngineCanonicalExpressionOperation::text_concat: {
@@ -2196,7 +2231,15 @@ bool QowEvaluateCanonicalTypedExpressionV1(
       }
       dt::DatatypeCastRequest cast_request;
       cast_request.value.type_id = source_type;
-      cast_request.value.encoded_value = function_value.encoded_value;
+      if (source_type == dt::CanonicalTypeId::int8) {
+        if (!ScalarCastInputEncoding(function_value, source_type,
+                                     &cast_request.value.encoded_value)) {
+          *refusal_detail = "bound function result encoding is invalid";
+          return false;
+        }
+      } else {
+        cast_request.value.encoded_value = function_value.encoded_value;
+      }
       cast_request.value.is_null = function_value.isSqlNull();
       cast_request.target_type_id = result_type;
       cast_request.explicit_cast = false;
@@ -2207,16 +2250,22 @@ bool QowEvaluateCanonicalTypedExpressionV1(
                               : cast.diagnostic.diagnostic_code;
         return false;
       }
-      result->value.descriptor = request.result_descriptor;
-      result->value.encoded_value = cast.value.encoded_value;
-      if (source_type == result_type && !cast.value.is_null) {
-        result->value.binary_value = function_value.binary_value;
+      if (source_type == dt::CanonicalTypeId::int8 ||
+          result_type == dt::CanonicalTypeId::int8) {
+        PublishScalarCastValue(cast.value, request.result_descriptor,
+                               &result->value);
       } else {
-        result->value.binary_value.clear();
+        result->value.descriptor = request.result_descriptor;
+        result->value.encoded_value = cast.value.encoded_value;
+        if (source_type == result_type && !cast.value.is_null) {
+          result->value.binary_value = function_value.binary_value;
+        } else {
+          result->value.binary_value.clear();
+        }
+        result->value.setState(cast.value.is_null
+                                   ? EngineValueState::sql_null
+                                   : EngineValueState::value);
       }
-      result->value.setState(cast.value.is_null
-                                 ? EngineValueState::sql_null
-                                 : EngineValueState::value);
       return true;
     }
     case EngineCanonicalExpressionOperation::unspecified:
