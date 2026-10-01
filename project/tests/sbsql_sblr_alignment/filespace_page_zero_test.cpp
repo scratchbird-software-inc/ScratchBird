@@ -17,6 +17,7 @@
 #include "native_storage_policy_resolution.hpp"
 #include "native_storage_action_range.hpp"
 #include "native_storage_growth_proposal.hpp"
+#include "native_storage_preallocation_proposal.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -44,6 +45,7 @@ long allocation_budget=-1;
 unsigned long observed_allocations=0;
 bool count_allocations=false;
 unsigned hash_fault=0,reads=0,read_fault=0;
+unsigned allocation_failure_reads=0;
 unsigned full_digest_fault=0;
 unsigned stage_write_fault=0,stage_sync_fault=0,stage_writes=0,stage_syncs=0;
 unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
@@ -67,7 +69,7 @@ bool extend_on_second_read=false;
 }
 void* operator new(std::size_t bytes) {
   if(count_allocations) ++observed_allocations;
-  if(allocation_budget==0) { allocation_budget=-1; throw std::bad_alloc(); }
+  if(allocation_budget==0) { allocation_budget=-1; allocation_failure_reads=reads; throw std::bad_alloc(); }
   if(allocation_budget>0) --allocation_budget;
   if(auto* p=std::malloc(bytes?bytes:1)) return p;
   throw std::bad_alloc();
@@ -3908,6 +3910,120 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
                 {pre.database_uuid,pre.operation_uuid,pre.initiator_uuid,pre.request_context_uuid},grant.resource);
               Check(owned.ok(),"adopt exact binary storage memory binding");return std::move(owned.memory);};
             auto memory=acquire();
+            using PE=db::NativeStoragePreallocationProposalError;
+            const db::NativeStorageActionContext pre_context{pre.policy_snapshot_uuid,pre.initiator_uuid,pre.request_context_uuid,901,902};
+            const db::NativeStoragePreallocationDemand demand{32,8,Id(231),1};
+            const auto propose_pre=[&](const auto& ctx,const auto& demand_value,u64 limit,const auto& files){
+              return db::ResolveNativeStoragePreallocationIntentFromOpenDevices(Id(226),Id(227),Id(1),files,
+                CheckpointRef(cp),fs,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ctx,demand_value,limit,memory);};
+            const auto proposal_bad=[&](const auto& r){Check(!r.ok()&&!r.image.intent&&r.image.bytes.empty()&&
+                !r.range.ok()&&!r.range.policy.resolution.selection&&!r.source_failure.selection&&
+                !manager.Snapshot().current_bytes,"failed preallocation proposal exposes no intent or usable source and releases probe");};
+            // Independent bytes from fixture roots and policy, not a production
+            // intent encoded to obtain its own expected result.
+            const auto pre_oracle=[&](u64 limit){
+              Bytes b(768,0);const std::string magic="SBSINT04";std::copy(magic.begin(),magic.end(),b.begin());
+              Number(b,8,2,4);Number(b,10,2,2);Number(b,12,4,768);
+              const std::array ids{Id(226),Id(227),Id(1),fs,Id(primary?190:191),zero.page_uuid,Profile(profile),
+                policy_uuid,Id(233),Id(228),Id(229)};
+              for(unsigned n=0;n<ids.size();++n)PutUuid(b,16+16*n,ids[n]);
+              const auto root=[&](unsigned at,const auto& r){Number(b,at,2,r.kind);Number(b,at+4,4,r.page_type);
+                PutUuid(b,at+8,r.filespace_uuid);Number(b,at+24,8,r.page_number);Number(b,at+32,8,r.page_generation);
+                PutUuid(b,at+40,r.page_size_profile_uuid);PutUuid(b,at+56,r.object_uuid);};
+              root(192,CheckpointRef(cp));root(272,disk::FilespaceRootReference{3,3,fs,13,103,Profile(profile),Id(43)});
+              const auto cp_hash=WholeRootHash(CheckpointOracle(cp)),map_hash=WholeRootHash(AllocationOracle(map));
+              std::copy(cp_hash.begin(),cp_hash.end(),b.begin()+352);std::copy(map_hash.begin(),map_hash.end(),b.begin()+384);
+              const std::array<u64,16> numbers{cp.checkpoint_generation,cp.root_set_generation,directory.directory_generation,
+                zero.root_set_generation,zero.page_generation,map.map_generation,map.capacity_generation,catalog_root.catalog_generation,
+                enabled.generation,902,64,32,8,128,8*sizes[profile],std::min(limit,enabled.maximum_retained_image_bytes)};
+              for(unsigned n=0;n<numbers.size();++n)Number(b,416+8*n,8,numbers[n]);
+              Number(b,544,4,sizes[profile]);Number(b,548,2,7);Number(b,552,8,901);
+              const std::array selected{enabled.policy_uuid,Id(170),Id(240),Id(243),Id(245)};
+              for(unsigned n=0;n<selected.size();++n)PutUuid(b,560+16*n,selected[n]);
+              Number(b,640,8,1);Number(b,648,8,1);PutUuid(b,656,Id(231));Number(b,672,4,1);
+              const auto seal=WholeRootHash(Bytes(b.begin(),b.begin()+736));std::copy(seal.begin(),seal.end(),b.begin()+736);return b;
+            };
+            const auto proposal_good=[&](const auto& r,u64 limit){Check(r.ok()&&r.image.bytes==pre_oracle(limit)&&
+                r.range.inspected_pages==8&&r.range.retained_image_bytes<=limit&&!r.range.blocked_page&&
+                !manager.Snapshot().current_bytes,"preallocation demand resolves exact independent native image and governed probe");};
+            stage_writes=stage_syncs=0;
+            const auto file_before1=actual(first,0,64*sizes[p]),file_before2=actual(second,0,64*sizes[q]);
+            auto proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_good(proposed,ceiling);
+            proposal_good(propose_pre(pre_context,demand,ceiling,reversed),ceiling);
+            proposal_good(propose_pre(pre_context,demand,proposed.range.retained_image_bytes,devices),proposed.range.retained_image_bytes);
+            proposal_bad(propose_pre(pre_context,demand,proposed.range.retained_image_bytes-1,devices));
+            for(unsigned bad=0;bad<7;++bad){auto d=demand;auto ctx=pre_context;
+              if(bad==0)d.first_page=0;if(bad==1)d.page_count=0;if(bad==2)d.allocation_owner_uuid={};
+              if(bad==3)d.allocation_page_type=0;if(bad==4)ctx.policy_snapshot_uuid={};
+              if(bad==5)ctx.initiator_uuid=Id(252);if(bad==6)ctx.request_context_uuid=Id(252);
+              reads=0;track_reads=true;proposed=propose_pre(ctx,d,ceiling,devices);track_reads=false;
+              proposal_bad(proposed);Check(!reads,"invalid preallocation request or grant binding refuses before I/O");}
+            for(unsigned bad=0;bad<4;++bad){auto rq=Id(226),op=Id(227),node=Id(1),space=fs;
+              if(bad==0)rq={};if(bad==1)op={};if(bad==2)node={};if(bad==3)space={};
+              reads=0;track_reads=true;
+              proposed=db::ResolveNativeStoragePreallocationIntentFromOpenDevices(rq,op,node,devices,
+                CheckpointRef(cp),space,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,pre_context,demand,ceiling,memory);
+              track_reads=false;proposal_bad(proposed);Check(!reads,"nil request operation database or target rejected before source access");}
+            for(unsigned bad=0;bad<4;++bad){auto supplied=devices;
+              if(bad==0)supplied.clear();if(bad==1)supplied.push_back(supplied.front());
+              if(bad==2)supplied.front().device=nullptr;if(bad==3)supplied.front().device=supplied.back().device;
+              reads=0;track_reads=true;proposed=propose_pre(pre_context,demand,ceiling,supplied);track_reads=false;
+              proposal_bad(proposed);Check(!reads,"invalid complete device set rejected before locking or reads");}
+            for(unsigned bad=0;bad<3;++bad){auto d=demand;if(bad==0)d.first_page=63;if(bad==1)d.page_count=9;if(bad==2)d.first_page=13;
+              proposal_bad(propose_pre(pre_context,d,ceiling,devices));}
+            auto blocked_policy=enabled;blocked_policy.enabled=false;set_policy(blocked_policy);
+            proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
+            Check(proposed.error==PE::range_failure&&proposed.range.policy.error==db::NativeStorageIntentPolicyError::policy_disabled,"disabled policy is refusal for explicit demand");
+            blocked_policy=enabled;blocked_policy.preallocation_allowed=false;set_policy(blocked_policy);
+            proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
+            Check(proposed.error==PE::range_failure&&proposed.range.policy.error==db::NativeStorageIntentPolicyError::action_disallowed,"persisted policy refuses preallocation proposal");
+            set_policy(enabled);
+            const byte dirt=0x7d;Check(target.WriteAt(39*u64{sizes[profile]}+3,&dirt,1).ok(),"dirty actual free page");
+            proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
+            Check(proposed.range.error==R::page_not_empty&&proposed.range.blocked_page==39&&proposed.range.inspected_pages==8,
+              "proposal retains exact dirty free page without substituting or clearing it");
+            const byte clean=0;Check(target.WriteAt(39*u64{sizes[profile]}+3,&clean,1).ok(),"restore test-owned dirty byte");
+            stage_writes=stage_syncs=0;
+            if(p==0&&role==1){
+              reads=0;track_reads=true;proposed=propose_pre(pre_context,demand,ceiling,devices);track_reads=false;const auto nr=reads;proposal_good(proposed,ceiling);
+              for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;
+                proposed=propose_pre(pre_context,demand,ceiling,devices);track_reads=false;Check(!read_fault,"consume every preallocation proposal read fault");proposal_bad(proposed);}
+              observed_full_digests=0;count_full_digests=true;proposed=propose_pre(pre_context,demand,ceiling,devices);count_full_digests=false;
+              const auto nh=observed_full_digests;proposal_good(proposed,ceiling);
+              for(unsigned fault=1;fault<=nh;++fault){full_digest_fault=fault;proposed=propose_pre(pre_context,demand,ceiling,devices);
+                Check(!full_digest_fault,"consume every preallocation proposal hash fault");proposal_bad(proposed);}
+              observed_allocations=0;count_allocations=true;proposed=propose_pre(pre_context,demand,ceiling,devices);count_allocations=false;
+              const auto na=observed_allocations;proposal_good(proposed,ceiling);
+              for(unsigned long fault=0;fault<=na;++fault){const auto lost=first.failed_io_latency_observations()+second.failed_io_latency_observations();
+                const auto before_memory=manager.Snapshot();reads=0;track_reads=true;allocation_budget=fault;
+                proposed=propose_pre(pre_context,demand,ceiling,devices);const auto left=allocation_budget;allocation_budget=-1;track_reads=false;
+                Check(fault==na?left>=0:left<0,"consume all measured preallocation proposal allocations");
+                if(proposed.ok()){proposal_good(proposed,ceiling);if(left<0){
+                  const auto after_memory=manager.Snapshot();
+                  const bool io_telemetry=first.failed_io_latency_observations()+second.failed_io_latency_observations()==lost+1;
+                  // The shared allocator also preserves a successful allocation
+                  // when optional telemetry fails. Prove the exact probe phase,
+                  // loss counter and authoritative allocation/release accounting.
+                  const bool memory_telemetry=allocation_failure_reads==nr-8&&reads==nr&&
+                    after_memory.telemetry_truncation_count==before_memory.telemetry_truncation_count+1&&
+                    after_memory.allocation_count==before_memory.allocation_count+1&&
+                    after_memory.deallocation_count==before_memory.deallocation_count+1&&
+                    !after_memory.active_allocation_count&&!after_memory.current_bytes;
+                  Check(io_telemetry||memory_telemetry,"successful injected failure must be recorded optional I/O or probe-allocation telemetry");}}
+                else proposal_bad(proposed);}
+              std::cout<<"preallocation proposal faults: reads="<<nr<<" hashes="<<nh<<" allocations="<<na<<'\n';
+              std::atomic<unsigned> completed=0;
+              const auto concurrent=[&](const auto& files){for(unsigned n=0;n<4;++n)if(propose_pre(pre_context,demand,ceiling,files).ok())++completed;};
+              std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
+              Check(completed==8,"preallocation resolution retains complete ordered guards across both source reads");
+            }
+            Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==file_before1&&actual(second,0,64*sizes[q])==file_before2,
+              "preallocation resolution and faults leave every file byte unchanged");
+            Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&
+              second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"reopen preallocation proposal files read-only");
+            proposal_good(propose_pre(pre_context,demand,ceiling,devices),ceiling);
+            Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing).ok()&&
+              second.Open(path2,disk::FileOpenMode::open_existing).ok(),"restore range fixture after preallocation resolution");
             const auto governed=[&](const auto& candidate){return db::InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
               candidate,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling,memory);};
             reads=0;track_reads=true;auto actual=governed(pre);track_reads=false;const auto probe_reads=reads;
@@ -3923,12 +4039,15 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
             failed(actual,R::memory_binding_failure);Check(!reads&&actual.memory_error==db::NativeStorageMemoryError::invalid_binding,"wrong database grant refuses before device reads");
             memory={};Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"complete page grant cleanup");
             --request.requested_bytes;memory=acquire();actual=governed(pre);failed(actual,R::resource_exhausted);
+            proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
+            Check(proposed.range.memory_error==db::NativeStorageMemoryError::resource_exhausted,"preallocation proposal consumes actual short grant failure");
             Check(actual.memory_error==db::NativeStorageMemoryError::resource_exhausted&&
               actual.memory_diagnostic.diagnostic_code=="SB_CEIC_012_MEMORY_RESOURCE.RESERVATION_EXCEEDED"&&
               !actual.inspected_pages&&!manager.Snapshot().current_bytes,"short actual grant preserves typed memory failure before page probing");
             memory={};++request.requested_bytes;memory=acquire();
             const auto revoked=ledger.CleanupOwner(pre.initiator_uuid.bytes);Check(revoked.retained_bytes==pre.page_size_bytes,"revocation retains owning workspace");
             reads=0;track_reads=true;actual=governed(pre);track_reads=false;failed(actual,R::memory_binding_failure);
+            reads=0;track_reads=true;proposed=propose_pre(pre_context,demand,ceiling,devices);track_reads=false;proposal_bad(proposed);
             Check(!reads&&!manager.Snapshot().current_bytes&&actual.memory_error==db::NativeStorageMemoryError::invalid_grant,"revoked grant cannot begin range inspection");memory={};
             Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"revoked grant released by owner");
           }
