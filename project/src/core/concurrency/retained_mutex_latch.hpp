@@ -4,6 +4,7 @@
 
 #include "checked_fifo_mutex.hpp"
 #include "memory_safe_retirement.hpp"
+#include <algorithm>
 #include <system_error>
 
 namespace scratchbird::core::concurrency {
@@ -71,6 +72,19 @@ struct MutexLatchWaitSetObservation {
   std::uint64_t generation = 0;
   platform::CheckedFifoMutex::WaitObservation wait;
   std::size_t offset = 0;
+};
+struct MutexLatchCycleEdge {
+  std::size_t latch_index = 0;
+  std::size_t waiter_index = 0;
+  std::size_t next = 0;
+  std::size_t visit = 0;
+};
+enum class MutexLatchCycleStatus { capture_failed, exhausted, invalid_observation, execution_binding_required, no_cycle_in_set, cycle };
+struct MutexLatchCycleResult {
+  MutexLatchCycleStatus status = MutexLatchCycleStatus::capture_failed;
+  platform::CheckedFifoMutex::WaitSetResult capture = platform::CheckedFifoMutex::WaitSetResult::invalid;
+  std::size_t edge_count = 0;
+  std::size_t cycle_size = 0;
 };
 
 namespace detail {
@@ -179,6 +193,80 @@ class MutexLatchGrant {
 class MutexLatchOwner;
 class MutexLatchOperation {
  public:
+  // Always capture from real guarded objects; never consume caller-asserted
+  // graph edges. Scratch spans are exclusively borrowed, admitted by the caller.
+  // Nodes bind BOTH native thread and binary task: a task with concurrent
+  // executions must not create a false cycle by collapsing those executions.
+  // Closed/cancelled/expired waits cannot contribute a continuing wait edge.
+  // O(W^2) bounded edge linking, O(W) functional-graph walk, no allocation,
+  // recursion or polling. cycle[0..cycle_size) indexes edges from this call.
+  // This is a supplied-set observation, not global absence proof, current phase
+  // eligibility, a victim choice, cancellation acknowledgement or resolution.
+  // The owner MUST freshly revalidate graph/execution/phase before any action.
+  static MutexLatchCycleResult CaptureWaitCycle(
+      std::span<MutexLatchOperation* const> operations,
+      std::span<platform::CheckedFifoMutex::WaitSetEntry> frames,
+      std::span<MutexLatchWaitSetObservation> observations,
+      std::span<platform::CheckedFifoMutex::WaiterObservation> waiters,
+      std::span<MutexLatchCycleEdge> edges, std::span<std::size_t> cycle,
+      std::uint32_t max_latches, std::uint32_t max_waiters) {
+    using C = MutexLatchCycleStatus;
+    using R = platform::CheckedFifoMutex::WaitSetResult;
+    if (!max_waiters) return {};
+    const auto capture=SnapshotWaitSet(operations,frames,observations,
+        waiters.first(std::min<std::size_t>(waiters.size(),max_waiters)),max_latches);
+    if (capture!=R::captured) return {C::capture_failed,capture};
+    std::size_t count=0;
+    for (std::size_t i=0;i<operations.size();++i) count+=observations[i].wait.state.waiters;
+    if (edges.size()<count || cycle.size()<count) return {C::exhausted,capture};
+    const auto now=MutexClock::now();
+    std::size_t used=0;
+    for (std::size_t i=0;i<operations.size();++i) {
+      const auto& latch=observations[i]; const auto& owner=latch.wait;
+      if (owner.state.held && (owner.holder==std::thread::id{} || !owner.owner ||
+          !memory::MemorySystemUuidValid(*owner.owner))) return {C::invalid_observation,capture};
+      for (std::size_t j=0;j<owner.state.waiters;++j) {
+        const auto index=latch.offset+j; const auto& wait=waiters[index];
+        if (wait.thread==std::thread::id{} || !wait.owner ||
+            !memory::MemorySystemUuidValid(*wait.owner)) return {C::invalid_observation,capture};
+        if (!owner.state.held || owner.state.closed || wait.cancellation_requested ||
+            (wait.deadline && now>=*wait.deadline)) continue;
+        for (std::size_t k=0;k<used;++k)
+          if (waiters[edges[k].waiter_index].thread==wait.thread)
+            return {C::invalid_observation,capture};
+        edges[used++]={i,index,count,0};
+      }
+    }
+    // Each native execution can have at most one blocking outgoing wait.
+    // Missing successors terminate a path; no unobserved edge is manufactured.
+    for (std::size_t i=0;i<used;++i) {
+      const auto& owner=observations[edges[i].latch_index].wait;
+      for (std::size_t j=0;j<used;++j) {
+        const auto& wait=waiters[edges[j].waiter_index];
+        if (owner.holder==wait.thread) {
+          // A native thread reused/rebound across different tasks is not proof
+          // of either a bound cycle or its absence. Its owner must resolve the
+          // execution binding; do not splice tasks or silently drop this edge.
+          if (owner.owner!=wait.owner) return {C::execution_binding_required,capture,used,0};
+          edges[i].next=j; break;
+        }
+      }
+    }
+    for (std::size_t start=0;start<used;++start) {
+      if (edges[start].visit) continue;
+      const auto mark=start+1;
+      auto current=start;
+      while (current<used && !edges[current].visit) {
+        edges[current].visit=mark; current=edges[current].next;
+      }
+      if (current>=used || edges[current].visit!=mark) continue;
+      const auto first=current;
+      std::size_t length=0;
+      do { cycle[length++]=current; current=edges[current].next; } while (current!=first);
+      return {C::cycle,capture,used,length};
+    }
+    return {C::no_cycle_in_set,capture,used,0};
+  }
   // All operations must remain alive and must not be moved/reset concurrently.
   // Their existing real guards retain every native mutex throughout capture.
   // Caller-owned frames/output are bounded borrowed scratch, not a registry or

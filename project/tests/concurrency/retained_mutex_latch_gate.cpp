@@ -15,6 +15,8 @@ struct Park {
   std::binary_semaphore entered{0}, committed{0}, resume{0};
   bool observed = false;
   bool pause_delivery = false;
+  bool pause_recheck = false;
+  int pause_result = -1;
 };
 thread_local Park* park = nullptr;
 thread_local pthread_mutex_t* pause_unlock = nullptr;
@@ -27,12 +29,21 @@ extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t*);
 void ObservePark() {
   if (park && !park->observed) { park->observed = true; park->entered.release(); }
 }
+int PauseRecheck(int result,pthread_mutex_t* mutex) {
+  if (park && park->pause_recheck && (park->pause_result<0 || result==park->pause_result)) {
+    park->pause_recheck=false;
+    if (__real_pthread_mutex_unlock(mutex)!=0) std::abort();
+    park->committed.release(); park->resume.acquire();
+    if (__real_pthread_mutex_lock(mutex)!=0) std::abort();
+  }
+  return result;
+}
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex) {
   if (std::exchange(fail_wait, false)) return EINVAL;
   ObservePark();
   const auto result=__real_pthread_cond_wait(condition, mutex);
   if (!result && park && park->pause_delivery) pause_unlock=mutex;
-  return result;
+  return PauseRecheck(result,mutex);
 }
 extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
                                            const timespec* deadline) {
@@ -40,7 +51,7 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* condition, pthread_
   ObservePark();
   const auto result=__real_pthread_cond_timedwait(condition, mutex, deadline);
   if (!result && park && park->pause_delivery) pause_unlock=mutex;
-  return result;
+  return PauseRecheck(result,mutex);
 }
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
   if (fail_lock && --fail_lock == 0) return EINVAL;
@@ -325,7 +336,114 @@ void Publication() {
   });
 }
 #if defined(SB_MUTEX_NATIVE_FAULT_GATE)
+void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned expected,unsigned terminal=0,bool alias=false,bool rebound=false) {
+  using N=scratchbird::core::platform::CheckedFifoMutex;
+  Fixture fixture;
+  {
+    m::MemorySafeRetirement domain(*fixture.resource,Id(10),count,64);
+    Check(domain.Initialize()==S::ok,"topology real memory domain");
+    std::array<std::optional<c::MutexLatchOwner>,8> owners;
+    std::array<c::MutexLatchOperation,8> observers;
+    std::array<c::MutexLatchOperation*,8> operations;
+    for (unsigned i=0;i<count;++i) {
+      owners[i].emplace(domain); auto d=Descriptor(); d.primitive_id=Id(700+i); d.generation=7+i;
+      Check(owners[i]->Initialize(d,{8,8},Hazard(800+i))==S::ok,"topology actual backing initialized");
+      Check(owners[i]->AcquireOperation(d.primitive_id,d.generation,Hazard(900+i,97),observers[i])==S::ok,
+            "topology actual observation guard"); operations[i]=&observers[i];
+    }
+    std::array<Park,8> probes;
+    if (terminal) { probes[0].pause_recheck=true; probes[0].pause_result=terminal==3?ETIMEDOUT:-1; }
+    std::array<std::stop_source,8> stops;
+    std::array<std::thread,8> threads;
+    std::counting_semaphore<8> ready(0),proceed(0),idle(0),release_holders(0);
+    for (unsigned i=0;i<count;++i) threads[i]=std::thread([&,i] {
+      const auto task=1000+(alias && i==2?0:i);
+      c::MutexLatchOperation op,waiting_op; c::MutexLatchGrant grant,waiting_grant;
+      c::MutexLatchRequest request{Id(700+i),7+i,Id(task),Id(1500+i)};
+      Check(owners[i]->AcquireOperation(request.primitive_id,request.generation,Hazard(1100+i,task),op)==S::ok &&
+            op.Acquire(request,Hazard(1300+i,task),grant,{}, {},true).code==C::acquired,"topology actual holder");
+      ready.release(); proceed.acquire();
+      if (targets[i]<count) {
+        const auto target=targets[i];
+        const auto waiting_task=task+(rebound && i==0?20:0);
+        c::MutexLatchRequest wait{Id(700+target),7+target,Id(waiting_task),Id(1600+i)};
+        Check(owners[target]->AcquireOperation(wait.primitive_id,wait.generation,Hazard(1200+i,waiting_task),waiting_op)==S::ok,
+              "topology retained blocking request"); park=&probes[i];
+        const auto deadline=(terminal==3 && i==0)?std::optional(c::MutexClock::now()+1s):std::nullopt;
+        const auto code=waiting_op.Acquire(wait,Hazard(1400+i,waiting_task),waiting_grant,deadline,stops[i].get_token()).code;
+        Check(code==(i==0 && terminal==1?C::closed:i==0 && terminal==3?C::timed_out:C::cancelled),
+              "topology terminal result preserves actual ownership");
+      } else idle.acquire();
+      release_holders.acquire();
+      Check(grant.Release(request).code==C::released,"topology holder performs own release");
+    });
+    for (unsigned i=0;i<count;++i) Check(ready.try_acquire_for(5s),"topology holders ready");
+    proceed.release(count);
+    for (unsigned i=0;i<count;++i) if (targets[i]<count)
+      Check(probes[i].entered.try_acquire_for(5s),"topology waits actually parked");
+    std::array<N::WaitSetEntry,8> frames;
+    std::array<c::MutexLatchWaitSetObservation,8> observations;
+    std::array<N::WaiterObservation,8> waits;
+    std::array<c::MutexLatchCycleEdge,8> edges;
+    std::array<std::size_t,8> cycle;
+    if (terminal) {
+      if (terminal==1) Check(owners[targets[0]]->Close(Id(1900)),"close actual cycle edge");
+      if (terminal==2) stops[0].request_stop();
+      Check(probes[0].committed.try_acquire_for(5s),"terminal waiter paused before actual unlink");
+    }
+    for (bool reverse:{false,true}) {
+      if (reverse) std::reverse(operations.begin(),operations.begin()+count);
+      const auto found=c::MutexLatchOperation::CaptureWaitCycle(std::span(operations).first(count),frames,observations,waits,edges,cycle,8,8);
+      if (alias) Check(found.status==c::MutexLatchCycleStatus::no_cycle_in_set &&
+          observations[0].wait.owner==observations[2].wait.owner &&
+          observations[0].wait.holder!=observations[2].wait.holder,
+          "concurrent executions sharing task UUID do not manufacture a thread cycle");
+      if (rebound) Check(found.status==c::MutexLatchCycleStatus::execution_binding_required,
+          "different binary task bindings on one native thread are not spliced");
+      if (terminal) Check(found.status==c::MutexLatchCycleStatus::no_cycle_in_set,
+          "terminal wait cannot contribute a continuing cycle before unlink");
+      Check(found.status==(rebound?c::MutexLatchCycleStatus::execution_binding_required:
+            expected?c::MutexLatchCycleStatus::cycle:c::MutexLatchCycleStatus::no_cycle_in_set) &&
+            found.cycle_size==expected,"actual topology yields exact cycle length independent of input permutation");
+      if (terminal) {
+        unsigned registered=0; for (unsigned i=0;i<count;++i) registered+=observations[i].wait.state.waiters;
+        Check(registered==count,"terminal filtering precedes actual edge unlink");
+      }
+      for (unsigned i=0;i<expected;++i) {
+        const auto& held=observations[edges[cycle[i]].latch_index].wait;
+        const auto& next=waits[edges[cycle[(i+1)%expected]].waiter_index];
+        Check(held.holder==next.thread && held.owner==next.owner,"independent topology witness closes every execution edge");
+      }
+    }
+    // The selected terminal edge already has its close/stop/deadline outcome.
+    // Do not inject cancellation ahead of an expired deadline during teardown.
+    for (unsigned i=0;i<count;++i) if (!terminal || i!=0) stops[i].request_stop();
+    if (terminal) probes[0].resume.release();
+    idle.release(count);
+    release_holders.release(count);
+    for (unsigned i=0;i<count;++i) threads[i].join();
+    for (unsigned i=0;i<count;++i) { observers[i].Reset(); Finish(*owners[i]); owners[i].reset(); }
+    Check(domain.Collect()==S::ok && domain.Snapshot().retired==0,"topology backing reclaimed by real memory owner");
+  }
+  fixture.Empty();
+}
 void NativeBoundaries() {
+  // All 27 nonrecursive three-execution wait topologies, including missing
+  // edges, chains, merging paths, cycles and tails into cycles. Oracle uses
+  // the small graph's independent two-pair/three-ring characterization.
+  for (unsigned a=0;a<3;++a) for (unsigned b=0;b<3;++b) for (unsigned d=0;d<3;++d) {
+    const std::array<unsigned,3> choices{a,b,d}; std::array<unsigned,8> targets{};
+    bool all=true; unsigned expected=0;
+    for (unsigned i=0;i<3;++i) { targets[i]=choices[i]==2?3:(i+1+choices[i])%3; all&=targets[i]<3; }
+    for (unsigned i=0;i<3;++i) for (unsigned j=i+1;j<3;++j)
+      if (targets[i]==j && targets[j]==i) expected=2;
+    if (!expected && all) expected=3;
+    CycleTopology(3,targets,expected);
+  }
+  CycleTopology(8,{1,2,3,4,5,6,7,0},8);
+  CycleTopology(3,{1,2,3},0,0,true);
+  CycleTopology(2,{1,0},0,0,false,true);
+  for (unsigned terminal:{1U,2U,3U}) CycleTopology(2,{1,0},0,terminal);
   Run([](auto& left,auto& domain) {
     c::MutexLatchOwner right(domain); auto d=Descriptor(); d.primitive_id=Id(21); d.generation=8;
     Check(right.Initialize(d,{4,8},Hazard(40))==S::ok,"second real retained latch published");
@@ -358,6 +476,38 @@ void NativeBoundaries() {
     std::array<c::MutexLatchWaitSetObservation,2> observations;
     std::array<N::WaiterObservation,2> waits;
     const auto readers=domain.Snapshot().readers;
+    std::array<c::MutexLatchCycleEdge,2> edges;
+    std::array<std::size_t,2> cycle;
+    const auto detected=c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,2);
+    Check(detected.status==c::MutexLatchCycleStatus::cycle && detected.cycle_size==2,
+          "detect a cycle from actual retained waits not caller asserted edges");
+    for (unsigned failure:{1U,2U}) {
+      fail_lock=failure;
+      const auto failed=c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,2);
+      Check(failed.status==c::MutexLatchCycleStatus::capture_failed && failed.capture==R::synchronization_failed &&
+            !failed.cycle_size,"capture failure never becomes a no-cycle receipt");
+    }
+    Check(c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,0).status==
+          c::MutexLatchCycleStatus::capture_failed,"zero waiter bound fails before graph analysis");
+    const auto limited=c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,1);
+    Check(limited.status==c::MutexLatchCycleStatus::capture_failed && limited.capture==R::insufficient_capacity,
+          "waiter admission bound cannot produce a truncated graph");
+    Check(c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,std::span(edges).first(1),cycle,2,2).status==
+          c::MutexLatchCycleStatus::exhausted,"edge scratch exhaustion cannot become no-cycle evidence");
+    Check(c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,2).status==
+          c::MutexLatchCycleStatus::cycle,"fresh capture rebuilds graph after bounded failures");
+    for (unsigned i=0;i<2;++i) {
+      const auto& edge=edges[cycle[i]];
+      const auto& successor=edges[cycle[(i+1)%2]];
+      const auto& held=observations[edge.latch_index].wait;
+      const auto& next_wait=waits[successor.waiter_index];
+      Check(held.holder==next_wait.thread && held.owner==next_wait.owner,
+            "cycle witness links exact native thread and binary execution owner");
+    }
+    Check(c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,std::span(cycle).first(1),2,2).status==
+          c::MutexLatchCycleStatus::exhausted,"cycle scratch capacity cannot silently hide a real cycle");
+    Check(c::MutexLatchOperation::CaptureWaitCycle(std::span(operations).first(1),frames,observations,waits,edges,cycle,2,2).status==
+          c::MutexLatchCycleStatus::no_cycle_in_set,"incomplete supplied latch set never manufactures missing edges");
     Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,waits,2)==R::captured,
           "capture actual retained two-latch set");
     Check(observations[0].primitive_id==Id(21) && observations[0].generation==8 &&
@@ -389,6 +539,8 @@ void NativeBoundaries() {
     Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,{},2)==R::captured &&
           observations[0].wait.state.closed && observations[1].wait.state.closed,
           "retained capture stays valid after fence without permitting new grants");
+    Check(c::MutexLatchOperation::CaptureWaitCycle(operations,frames,observations,waits,edges,cycle,2,2).status==
+          c::MutexLatchCycleStatus::no_cycle_in_set,"resolved cycle is not replayed from stale scratch");
     Check(right.Drain(c::MutexClock::now()).code==C::timed_out,"observation guard is not a drained runtime");
     observe_left.Reset(); observe_right.Reset(); Finish(right);
   });
