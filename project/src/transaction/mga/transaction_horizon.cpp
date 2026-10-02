@@ -8,6 +8,7 @@
 
 #include "transaction_horizon.hpp"
 #include "transaction_inventory_validation.hpp"
+#include "transaction_horizon_projection.hpp"
 
 #include "metric_producer.hpp"
 
@@ -33,16 +34,7 @@ Status HorizonErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::transaction_mga};
 }
 
-bool IsInteresting(TransactionState state) {
-  return state == TransactionState::created || state == TransactionState::active || state == TransactionState::read_only_active ||
-         state == TransactionState::preparing || state == TransactionState::prepared || state == TransactionState::committing ||
-         state == TransactionState::rolling_back || state == TransactionState::limbo || state == TransactionState::recovering ||
-         state == TransactionState::failed_terminal;
-}
-
-bool IsActiveForOat(TransactionState state) {
-  return state == TransactionState::active || state == TransactionState::read_only_active;
-}
+using detail::IsActiveForOat;
 
 u64 OldestActiveBeginMillis(const LocalTransactionInventory& inventory) {
   u64 oldest = 0;
@@ -68,61 +60,10 @@ TransactionHorizonResult CalculateLocalHorizons(const LocalTransactionInventory&
     return result;
   }
 
-  u64 oit = inventory.next_local_transaction_id;
-  u64 oat = inventory.next_local_transaction_id;
-  u64 ost = inventory.next_local_transaction_id;
-
-  for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if (IsInteresting(InventoryVisibilityState(entry))) {
-      oit = std::min(oit, entry.identity.local_id.value);
-    }
-    if (IsActiveForOat(entry.state)) {
-      oat = std::min(oat, entry.identity.local_id.value);
-    }
+  if(const auto* error=detail::ProjectValidatedLocalHorizons(inventory,snapshot_horizons,result.horizons)) {
+    result.status=HorizonErrorStatus();
+    result.diagnostic=MakeTransactionHorizonDiagnostic(result.status,"SB-TXN-HORIZON-INVALID",error);
   }
-
-  // Without a retained snapshot, OST follows OAT, not the next transaction
-  // counter. Otherwise an active reader can disappear from snapshot age.
-  if (snapshot_horizons.empty()) ost = oat;
-  for (const LocalTransactionId& snapshot_horizon : snapshot_horizons) {
-    if (!snapshot_horizon.valid()) {
-      result.status = HorizonErrorStatus();
-      result.diagnostic = MakeTransactionHorizonDiagnostic(result.status,
-                                                           "SB-TXN-HORIZON-INVALID",
-                                                           "transaction.horizon.invalid_snapshot_horizon");
-      return result;
-    }
-    if (snapshot_horizon.value > inventory.next_local_transaction_id) {
-      result.status = HorizonErrorStatus();
-      result.diagnostic = MakeTransactionHorizonDiagnostic(result.status,
-                                                           "SB-TXN-HORIZON-INVALID",
-                                                           "transaction.horizon.future_snapshot_horizon");
-      return result;
-    }
-    ost = std::min(ost, snapshot_horizon.value);
-  }
-
-  // Stable readers retain versions hidden by commits after their BEGIN,
-  // including writers with lower local numbers. This applies between
-  // statements as well as while a published statement snapshot is pinned.
-  u64 stable_commit_boundary = inventory.next_commit_sequence;
-  for (const auto& entry : inventory.entries)
-    if (entry.stable_snapshot && IsActiveForOat(entry.state))
-      stable_commit_boundary = std::min(stable_commit_boundary,
-                                       entry.begin_visible_through_commit_sequence);
-  if (stable_commit_boundary != inventory.next_commit_sequence) {
-    ost = std::min(ost, oit);
-    for (const auto& entry : inventory.entries)
-      if (HasCommittedInventoryOutcome(entry) &&
-          entry.commit_sequence > stable_commit_boundary)
-        ost = std::min(ost, entry.identity.local_id.value);
-  }
-
-  result.horizons.next_transaction_id = MakeLocalTransactionId(inventory.next_local_transaction_id);
-  result.horizons.oldest_interesting_transaction = MakeLocalTransactionId(oit);
-  result.horizons.oldest_active_transaction = MakeLocalTransactionId(oat);
-  result.horizons.oldest_snapshot_transaction = MakeLocalTransactionId(ost);
-  result.horizons.valid = true;
   return result;
 }
 

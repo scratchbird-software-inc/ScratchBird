@@ -8,6 +8,8 @@
 
 #include "transaction_inventory_page.hpp"
 #include "transaction_inventory_validation.hpp"
+#include "transaction_horizon_projection.hpp"
+#include "native_decoded_storage_ranges.hpp"
 
 #include "hash_digest.hpp"
 #include "hash_digest_parts.hpp"
@@ -23,6 +25,7 @@
 #include <set>
 #include <utility>
 #include <vector>
+#include <type_traits>
 
 namespace scratchbird::storage::page {
 using scratchbird::core::platform::Uuid;
@@ -473,11 +476,11 @@ bool SameSlot(const disk::NativePageReference& a,const disk::NativePageReference
 bool ProfilesAgree(const disk::NativePageReference& a,const disk::NativePageReference& b) {
   return a.filespace_uuid!=b.filespace_uuid || a.page_size_profile_uuid==b.page_size_profile_uuid;
 }
-disk::NativePageReference Self(const NativeTransactionInventoryPage& p) {
+template<class Page> disk::NativePageReference Self(const Page& p) {
   return {p.header.filespace_uuid,p.header.page_number,p.header.page_generation,p.header.page_size_profile_uuid};
 }
 NativeTransactionInventoryPageResult Fail(Error error) { return {error,std::nullopt,{}}; }
-Error Validate(const NativeTransactionInventoryPage& p) {
+template<class Page,class Validator> Error Validate(const Page& p,Validator validate_inventory) {
   if (!disk::EncodeNativeCommonPageHeader(p.header).ok() || p.header.page_type!=0x0301)
     return Error::invalid_header;
   if (!V7(p.object_uuid) || !p.inventory_generation
@@ -490,7 +493,7 @@ Error Validate(const NativeTransactionInventoryPage& p) {
       return Error::invalid_reference;
   if (p.previous && p.next && (SameSlot(*p.previous,*p.next) || !ProfilesAgree(*p.previous,*p.next)))
     return Error::invalid_reference;
-  if (*mga::ValidateLocalTransactionInventoryStructure(p.inventory)) return Error::invalid_inventory;
+  if (*validate_inventory(p.inventory)) return Error::invalid_inventory;
   u64 prior=0;
   for (const auto& entry:p.inventory.entries) {
     if (entry.identity.local_id.value<=prior) return Error::invalid_inventory;
@@ -498,7 +501,31 @@ Error Validate(const NativeTransactionInventoryPage& p) {
   }
   return Error::none;
 }
-core_hash::HashDigestResult Digest(const std::vector<byte>& bytes) {
+Error Validate(const NativeTransactionInventoryPage& p) {
+  return Validate(p,[](const auto& inventory){return mga::ValidateLocalTransactionInventoryStructure(inventory);});
+}
+// Sort caller-owned indices, never records. Mark duplicates at their original
+// positions so the shared rule loop preserves the owning validator's first error.
+const char* ValidateBorrowed(const NativeTransactionInventoryView& inventory,
+    std::span<std::size_t> indices,std::span<byte> markers) {
+  const auto rows=inventory.entries;const auto count=rows.size();
+  for(std::size_t i=0;i<count;++i){indices[i]=i;markers[i]=0;}
+  const auto mark=[&](auto key,byte bit){
+    if(count<2)return;
+    std::sort(indices.begin(),indices.begin()+count,[&](auto a,auto b){
+      const auto& x=key(rows[a]);const auto& y=key(rows[b]);return x<y||(x==y&&a<b);});
+    for(std::size_t i=1;i<count;++i)
+      if(key(rows[indices[i]])==key(rows[indices[i-1]]))markers[indices[i]]|=bit;
+  };
+  mark([](const auto& e){return e.commit_sequence;},1);
+  mark([](const auto& e){return e.identity.local_id.value;},2);
+  mark([](const auto& e)->const auto&{return e.identity.transaction_uuid.value.bytes;},4);
+  return mga::detail::ValidateInventoryStructure(inventory,
+      [&](const auto& e){return !(markers[&e-rows.data()]&1);},
+      [&](const auto& e){return !(markers[&e-rows.data()]&2);},
+      [&](const auto& e){return !(markers[&e-rows.data()]&4);});
+}
+core_hash::HashDigestResult Digest(std::span<const byte> bytes) {
   const std::array<byte,32> zero{};
   const core_hash::HashDigestSegment parts[]={{bytes.data(),digest_at},{zero.data(),zero.size()},
       {bytes.data()+digest_at+32,bytes.size()-digest_at-32}};
@@ -548,33 +575,36 @@ NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
     catch (...) { return Fail(Error::invalid_inventory); }
 }
 
-NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const std::vector<byte>& bytes) noexcept {
+namespace {
+template<class Page,class Validator> NativeInventoryError DecodeInventoryValues(
+    std::span<const byte> bytes,Page& p,Validator validate_inventory) {
   using namespace native_inventory;
   try {
     const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),std::min<std::size_t>(bytes.size(),128));
     if (!header.ok() || header.header->page_type!=0x0301 || bytes.size()!=header.header->page_size_bytes)
-      return Fail(Error::invalid_header);
-    const auto digest=Digest(bytes); if (!digest.ok()) return Fail(Error::hash_failure);
-    if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.begin()+digest_at)) return Fail(Error::invalid_integrity);
+      return Error::invalid_header;
+    const auto digest=Digest(bytes); if (!digest.ok()) return Error::hash_failure;
+    if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.begin()+digest_at)) return Error::invalid_integrity;
     const auto* f=bytes.data()+family; const auto count=LoadLittle32(f+56);
     if (!std::equal(magic.begin(),magic.end(),f) || LoadLittle16(f+8)!=1 || LoadLittle16(f+10)!=256
         || count>(bytes.size()-entries)/kEntryBytes || LoadLittle32(f+12)!=entries+kEntryBytes*count
         || !Zero(f+60,4) || !Zero(f+184,8) || !Zero(f+224,32)
         || !Zero(bytes.data()+entries+kEntryBytes*count,bytes.size()-entries-kEntryBytes*count))
-      return Fail(Error::invalid_family);
-    NativeTransactionInventoryPage p; p.header=*header.header; p.object_uuid=Get(f+16);
+      return Error::invalid_family;
+    p.header=*header.header; p.object_uuid=Get(f+16);
     p.inventory_generation=LoadLittle64(f+32); p.inventory.next_local_transaction_id=LoadLittle64(f+40);
     p.inventory.next_commit_sequence=LoadLittle64(f+48);
     if (!Zero(f+64,48)) p.previous=GetRef(f+64);
     if (!Zero(f+112,48)) p.next=GetRef(f+112);
-    p.inventory.entries.reserve(count);
+    if constexpr(std::is_same_v<Page,NativeTransactionInventoryPage>)p.inventory.entries.resize(count);
+    else {if(count>p.inventory.entries.size())return Error::resource_exhausted;p.inventory.entries=p.inventory.entries.first(count);}
     for (u32 i=0;i<count;++i) {
       const auto* in=bytes.data()+entries+kEntryBytes*i; TransactionInventoryEntry e;
       e.identity.local_id=MakeLocalTransactionId(LoadLittle64(in));
       e.identity.transaction_uuid={UuidKind::transaction,Get(in+8)};
       e.identity.scope=static_cast<TransactionScope>(LoadLittle16(in+24));
       e.state=static_cast<TransactionState>(LoadLittle16(in+26));
-      const auto flags=LoadLittle32(in+28); if (flags&~63u) return Fail(Error::invalid_inventory);
+      const auto flags=LoadLittle32(in+28); if (flags&~63u) return Error::invalid_inventory;
       e.evidence_record_required=flags&1; e.evidence_record_written=flags&2; e.rollback_only=flags&4; e.stable_snapshot=flags&32;
       const auto origin=(flags>>3)&3;
       e.archived_from_state=origin==1?TransactionState::committed:origin==2?TransactionState::rolled_back:
@@ -582,18 +612,39 @@ NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const 
       e.begin_unix_epoch_millis=LoadLittle64(in+32); e.final_unix_epoch_millis=LoadLittle64(in+40);
       e.begin_visible_through_local_transaction_id=LoadLittle64(in+48);
       e.begin_visible_through_commit_sequence=LoadLittle64(in+56); e.commit_sequence=LoadLittle64(in+64);
-      p.inventory.entries.push_back(e);
+      p.inventory.entries[i]=e;
     }
-    const auto valid=Validate(p); if (valid!=Error::none) return Fail(valid);
-    const auto horizons=ComputeLocalTransactionHorizons(p.inventory);
-    if (!horizons.ok() || LoadLittle64(f+160)!=horizons.horizons.oldest_interesting_transaction.value
-        || LoadLittle64(f+168)!=horizons.horizons.oldest_active_transaction.value
-        || LoadLittle64(f+176)!=horizons.horizons.oldest_snapshot_transaction.value)
-      return Fail(Error::invalid_inventory);
-    return {Error::none,std::move(p),bytes};
-  } catch (const std::bad_alloc&) { return Fail(Error::resource_exhausted); }
-    catch (const std::length_error&) { return Fail(Error::resource_exhausted); }
-    catch (...) { return Fail(Error::invalid_inventory); }
+    const auto valid=Validate(p,validate_inventory); if (valid!=Error::none) return valid;
+    LocalTransactionHorizons horizons;
+    if(mga::detail::ProjectValidatedLocalHorizons(p.inventory,{},horizons)||
+        LoadLittle64(f+160)!=horizons.oldest_interesting_transaction.value||
+        LoadLittle64(f+168)!=horizons.oldest_active_transaction.value||
+        LoadLittle64(f+176)!=horizons.oldest_snapshot_transaction.value)
+      return Error::invalid_inventory;
+    return Error::none;
+  } catch (const std::bad_alloc&) { return Error::resource_exhausted; }
+    catch (const std::length_error&) { return Error::resource_exhausted; }
+    catch (...) { return Error::invalid_inventory; }
+}
+} // namespace
+NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const std::vector<byte>& bytes) noexcept {
+  NativeTransactionInventoryPage page;
+  const auto error=DecodeInventoryValues(bytes,page,[](const auto& inventory){return scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(inventory);});
+  if(error!=NativeInventoryError::none)return native_inventory::Fail(error);
+  try {return {NativeInventoryError::none,std::move(page),bytes};}
+  catch(const std::bad_alloc&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
+  catch(const std::length_error&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
+}
+NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInto(
+    std::span<const byte> bytes,std::span<TransactionInventoryEntry> entries,
+    std::span<std::size_t> indices,std::span<byte> markers) noexcept {
+  using E=NativeInventoryError;
+  if(!detail::DisjointNativeDecodeRegions(bytes,entries,indices,markers))return {E::invalid_backing,std::nullopt};
+  NativeTransactionInventoryPageView page;
+  page.inventory.entries=entries.first(std::min({entries.size(),indices.size(),markers.size()}));
+  const auto error=DecodeInventoryValues(bytes,page,[&](const auto& inventory){return native_inventory::ValidateBorrowed(inventory,indices,markers);});
+  if(error!=E::none)return {error,std::nullopt};
+  return {E::none,page};
 }
 
 namespace {

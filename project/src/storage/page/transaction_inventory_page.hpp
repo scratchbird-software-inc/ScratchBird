@@ -18,6 +18,7 @@
 #include <array>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -41,10 +42,23 @@ struct NativeTransactionInventoryPage {
   std::optional<scratchbird::storage::disk::NativePageReference> next;
   LocalTransactionInventory inventory;
 };
+struct NativeTransactionInventoryView {
+  u64 next_local_transaction_id=1,next_commit_sequence=1;
+  std::span<scratchbird::transaction::mga::TransactionInventoryEntry> entries;
+  // Intentionally no publication-CAS base: inspection is not publication admission.
+};
+struct NativeTransactionInventoryPageView {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::Uuid object_uuid;
+  u64 inventory_generation=0;
+  std::optional<scratchbird::storage::disk::NativePageReference> previous,next;
+  NativeTransactionInventoryView inventory;
+};
 enum class NativeInventoryError {
   none, invalid_header, invalid_family, invalid_reference, invalid_inventory,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, io_failure, encrypted_requires_crypto_authority, chain_mismatch
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority, chain_mismatch,
+  invalid_backing
 };
 struct NativeTransactionInventoryPageResult {
   NativeInventoryError error = NativeInventoryError::invalid_family;
@@ -56,6 +70,16 @@ NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
     const NativeTransactionInventoryPage&) noexcept;
 NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(
     const std::vector<byte>&) noexcept;
+struct NativeTransactionInventoryPageViewResult {
+  NativeInventoryError error=NativeInventoryError::invalid_family;
+  std::optional<NativeTransactionInventoryPageView> page;
+  bool ok() const noexcept {return error==NativeInventoryError::none&&page.has_value();}
+};
+// Entries must outlive the view. Scratch and input may be discarded after decode.
+// All regions must be disjoint; failures return no usable view or authority.
+NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInto(
+    std::span<const byte>,std::span<scratchbird::transaction::mga::TransactionInventoryEntry>,
+    std::span<std::size_t> uniqueness_indices,std::span<byte> duplicate_markers) noexcept;
 struct NativeTransactionInventoryChainResult {
   NativeInventoryError error = NativeInventoryError::invalid_reference;
   std::vector<NativeTransactionInventoryPageResult> pages;
