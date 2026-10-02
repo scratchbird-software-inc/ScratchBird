@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_filespace_directory.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include <algorithm>
@@ -24,7 +25,7 @@ disk::NativePageReference GetRef(const byte* p){return {GetUuid(p),LoadLittle64(
 void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uuid);StoreLittle64(p+16,r.page_number);StoreLittle64(p+24,r.page_generation);PutUuid(p+32,r.page_size_profile_uuid);}
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
-auto Digest(const std::vector<byte>& b,bool clear){const std::array<byte,32> zero{};
+auto Digest(std::span<const byte> b,bool clear){const std::array<byte,32> zero{};
   const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
   return hash::ComputeSha256DigestParts(parts,3);}
 NativeFilespaceDirectoryResult Fail(E e){NativeFilespaceDirectoryResult r;r.error=e;return r;}
@@ -34,9 +35,9 @@ bool SameBootstrap(const disk::FilespaceBootstrap& a,const disk::FilespaceBootst
     a.checksum_profile_uuid==b.checksum_profile_uuid&&a.encryption_profile_uuid==b.encryption_profile_uuid&&
     a.page_size_bytes==b.page_size_bytes&&a.durable_format_generation==b.durable_format_generation&&
     a.flags==b.flags&&a.filespace_role==b.filespace_role&&a.lifecycle_state==b.lifecycle_state;}
-bool Extended(const NativeFilespaceDirectory& d){return !d.creator_operation_uuid.is_nil()||
+template<class Directory> bool Extended(const Directory& d){return !d.creator_operation_uuid.is_nil()||
   std::any_of(d.records.begin(),d.records.end(),[](const auto& r){return r.allocation_root.has_value();});}
-E Validate(const NativeFilespaceDirectory& d){const auto& h=d.header;
+template<class Directory> E Validate(const Directory& d,std::span<Uuid> zero_ids={}){const auto& h=d.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=9||h.flags)return E::invalid_header;
   const bool transaction=V7(d.creator_transaction_uuid)&&d.creator_local_transaction_id&&d.creator_operation_uuid.is_nil();
   const bool operation=V7(d.creator_operation_uuid)&&d.creator_transaction_uuid.is_nil()&&!d.creator_local_transaction_id;
@@ -47,10 +48,17 @@ E Validate(const NativeFilespaceDirectory& d){const auto& h=d.header;
   if((d.records.size()==d.total_records-d.first_record)==d.next.has_value()||d.next.has_value()==Zero(d.next_sha256.data(),32))return E::invalid_reference;
   if(d.next&&(!Ref(*d.next)||(d.next->filespace_uuid==h.filespace_uuid&&
       (d.next->page_number==h.page_number||d.next->page_size_profile_uuid!=h.page_size_profile_uuid))))return E::invalid_reference;
-  Uuid previous;std::set<Uuid> zero_ids;
+  std::vector<Uuid> owning_scratch;
+  if(zero_ids.empty()){owning_scratch.resize(d.records.size());zero_ids=owning_scratch;}
+  if(zero_ids.size()<d.records.size())return E::resource_exhausted;
+  zero_ids=zero_ids.first(d.records.size());
+  for(std::size_t i=0;i<d.records.size();++i)zero_ids[i]=d.records[i].page_zero_uuid;
+  std::sort(zero_ids.begin(),zero_ids.end());
+  if(std::adjacent_find(zero_ids.begin(),zero_ids.end())!=zero_ids.end())return E::invalid_record;
+  Uuid previous;
   for(const auto& r:d.records){const auto& b=r.bootstrap;
     if(disk::ValidateFilespaceBootstrap(b)!=disk::FilespaceBootstrapError::none||b.database_uuid!=h.database_uuid||
-        !(previous<b.filespace_uuid)||!V7(r.locator_uuid)||!V7(r.page_zero_uuid)||!zero_ids.insert(r.page_zero_uuid).second||
+        !(previous<b.filespace_uuid)||!V7(r.locator_uuid)||!V7(r.page_zero_uuid)||
         r.page_zero_uuid==h.page_uuid||!r.page_zero_generation||!r.root_set_generation||!r.total_pages||
         r.total_pages>std::numeric_limits<u64>::max()/b.page_size_bytes)return E::invalid_record;
     if(r.operation&&!Ref(*r.operation))return E::invalid_reference;
@@ -87,35 +95,60 @@ NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilesp
     return {E::none,d,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeFilespaceDirectoryResult DecodeNativeFilespaceDirectory(const std::vector<byte>& b) noexcept {
-  try{if(b.size()<start)return Fail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!h.ok()||h.header->page_type!=9||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto digest=Digest(b,true);if(!digest.ok())return Fail(E::hash_failure);
-    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return Fail(E::invalid_integrity);
+namespace {
+template<class Directory,class Prepare> E DecodeValues(std::span<const byte> b,Directory& d,
+    Prepare prepare,std::span<Uuid> uniqueness_scratch={}) {
+    if(b.size()<start)return E::invalid_header;const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!h.ok()||h.header->page_type!=9||h.header->flags||b.size()!=h.header->page_size_bytes)return E::invalid_header;
+    const auto digest=Digest(b,true);if(!digest.ok())return E::hash_failure;
+    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return E::invalid_integrity;
     const auto* f=b.data()+128;const auto count=LoadLittle32(f+80),used=LoadLittle32(f+12);
     const std::string_view magic(reinterpret_cast<const char*>(f),8);const auto version=LoadLittle16(f+8);
     const bool extended=magic=="SBFDIR02"&&version==2;
     const auto width=extended?extended_width:base_width;
     if((!extended&&(magic!="SBFDIR01"||version!=1))||LoadLittle16(f+10)!=256||
         !count||count>(b.size()-start)/width||used!=start+count*width||!Zero(b.data()+used,b.size()-used)||
-        (extended?(LoadLittle32(f+84)!=extended_width||!Zero(f+216,40)):(!Zero(f+84,4)||!Zero(f+200,56))))return Fail(E::invalid_family);
-    NativeFilespaceDirectory d;d.header=*h.header;d.object_uuid=GetUuid(f+16);d.directory_generation=LoadLittle64(f+32);
+        (extended?(LoadLittle32(f+84)!=extended_width||!Zero(f+216,40)):(!Zero(f+84,4)||!Zero(f+200,56))))return E::invalid_family;
+    if(!prepare(d,count))return E::resource_exhausted;
+    d.header=*h.header;d.object_uuid=GetUuid(f+16);d.directory_generation=LoadLittle64(f+32);
     d.creator_transaction_uuid=GetUuid(f+40);d.creator_local_transaction_id=LoadLittle64(f+56);d.total_records=LoadLittle64(f+64);d.first_record=LoadLittle64(f+72);
     if(extended)d.creator_operation_uuid=GetUuid(f+200);
-    if(!Zero(f+88,48))d.next=GetRef(f+88);std::copy_n(f+136,32,d.next_sha256.begin());d.records.reserve(count);
+    if(!Zero(f+88,48))d.next=GetRef(f+88);std::copy_n(f+136,32,d.next_sha256.begin());
     for(u32 i=0;i<count;++i){const auto* p=b.data()+start+i*width;NativeFilespaceDirectoryRecord r;auto& a=r.bootstrap;
       a.database_uuid=h.header->database_uuid;a.filespace_uuid=GetUuid(p);a.page_size_profile_uuid=GetUuid(p+16);a.checksum_profile_uuid=GetUuid(p+32);a.encryption_profile_uuid=GetUuid(p+48);
       r.locator_uuid=GetUuid(p+64);r.page_zero_uuid=GetUuid(p+80);r.page_zero_generation=LoadLittle64(p+96);r.root_set_generation=LoadLittle64(p+104);
       r.total_pages=LoadLittle64(p+112);r.verification_epoch=LoadLittle64(p+120);a.filespace_role=LoadLittle16(p+128);a.lifecycle_state=LoadLittle16(p+130);
       a.flags=LoadLittle32(p+132);a.page_size_bytes=LoadLittle32(p+136);a.durable_format_generation=LoadLittle32(p+140);if(!Zero(p+144,48))r.operation=GetRef(p+144);
-      if(extended){if(!Zero(p+304,16))return Fail(E::invalid_record);
+      if(extended){if(!Zero(p+304,16))return E::invalid_record;
         if(!Zero(p+192,112)){NativeFilespaceAllocationRoot root;root.page=GetRef(p+192);root.object_uuid=GetUuid(p+240);
           std::copy_n(p+256,32,root.sha256.begin());root.map_generation=LoadLittle64(p+288);root.capacity_generation=LoadLittle64(p+296);r.allocation_root=std::move(root);}}
-      d.records.push_back(std::move(r));
+      d.records[i]=std::move(r);
     }
-    if(Extended(d)!=extended)return Fail(E::invalid_family);
-    const auto valid=Validate(d);if(valid!=E::none)return Fail(valid);return {E::none,std::move(d),b};
+    if(Extended(d)!=extended)return E::invalid_family;
+    return Validate(d,uniqueness_scratch);
+}
+} // namespace
+NativeFilespaceDirectoryResult DecodeNativeFilespaceDirectory(const std::vector<byte>& b) noexcept {
+  try{
+    NativeFilespaceDirectory d;
+    const auto valid=DecodeValues(b,d,[](auto& out,std::size_t count){out.records.resize(count);return true;});
+    if(valid!=E::none)return Fail(valid);return {E::none,std::move(d),b};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+}
+
+NativeFilespaceDirectoryViewResult DecodeNativeFilespaceDirectoryInto(std::span<const byte> b,
+    std::span<NativeFilespaceDirectoryRecord> records,std::span<Uuid> scratch) noexcept {
+  try{
+    if(!detail::DisjointNativeDecodeRegions(b,records,scratch))return {E::invalid_backing,{}};
+    NativeFilespaceDirectoryView d;
+    const auto valid=DecodeValues(b,d,[&](auto& out,std::size_t count){
+      if(count>records.size()||count>scratch.size())return false;
+      out.records=records.first(count);return true;
+    },scratch);
+    if(valid!=E::none)return {valid,{}};return {E::none,std::move(d)};
+  }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}
+   catch(...){return {E::invalid_family,{}};}
 }
 
 static NativeFilespaceDirectoryChainResult ReadDirectory(

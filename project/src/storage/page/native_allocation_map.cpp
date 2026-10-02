@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_allocation_map.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include "disk_device.hpp"
 #include "filespace_page_zero.hpp"
 #include "hash_digest_parts.hpp"
@@ -212,21 +213,7 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
 NativeAllocationMapViewResult DecodeNativeAllocationMapInto(std::span<const byte> bytes,
     std::span<NativeAllocationState> states,std::span<NativeAllocationRecord> records) noexcept {
   try {
-    if(states.size()>std::numeric_limits<std::size_t>::max()/sizeof(NativeAllocationState)||
-       records.size()>std::numeric_limits<std::size_t>::max()/sizeof(NativeAllocationRecord))return {E::invalid_range,{}};
-    const auto valid_region=[](const void* p,std::size_t size){
-      return !size||(p&&size<=std::numeric_limits<std::uintptr_t>::max()-reinterpret_cast<std::uintptr_t>(p));
-    };
-    const auto overlaps=[](const void* a,std::size_t size_a,const void* b,std::size_t size_b){
-      if(!size_a||!size_b)return false;
-      const auto x=reinterpret_cast<std::uintptr_t>(a),y=reinterpret_cast<std::uintptr_t>(b);
-      return x<=y?size_a>y-x:size_b>x-y;
-    };
-    if(!valid_region(bytes.data(),bytes.size_bytes())||!valid_region(states.data(),states.size_bytes())||
-       !valid_region(records.data(),records.size_bytes())||
-       overlaps(bytes.data(),bytes.size_bytes(),states.data(),states.size_bytes())||
-       overlaps(bytes.data(),bytes.size_bytes(),records.data(),records.size_bytes())||
-       overlaps(states.data(),states.size_bytes(),records.data(),records.size_bytes()))return {E::invalid_range,{}};
+    if(!detail::DisjointNativeDecodeRegions(bytes,states,records))return {E::invalid_range,{}};
     NativeAllocationMapView map;
     const auto error=DecodeValues(bytes,map,[&](auto& out,std::size_t state_count,std::size_t record_count){
       if(state_count>states.size()||record_count>records.size())return false;
