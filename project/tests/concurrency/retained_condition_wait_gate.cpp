@@ -367,6 +367,115 @@ void Measurements() {
             << " actual_memory_and_reservation_charges=0\n";
 }
 
+// Caller-owned slots are measurement payloads, not production queue credits.
+// Every consumer shares the real predicate mutex. Unequal bounded payloads
+// exercise mixed contention without inferring FIFO or scheduler fairness.
+template<std::size_t Workers>
+void MixedMeasurements() {
+  constexpr std::size_t samples = 256, warmup = 16;
+  const auto nanos = [](auto duration) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  };
+  std::array<std::int64_t, samples> durations{};
+  std::optional<c::WaitClock::time_point> cleanup_started;
+  Run([&](auto& owner, auto& domain) {
+    struct Slot {
+      std::array<std::uint64_t, 32> payload{};
+      std::uint64_t acknowledgement = 0;
+      std::size_t completed = 0;
+    };
+    std::array<Slot, Workers> slots{};
+    std::size_t sequence = 0, completed = Workers;
+    std::latch ready(Workers);
+    std::array<std::future<void>, Workers> consumers;
+    auto producer = Acquire(owner, 31);
+    for (std::size_t worker = 0; worker < Workers; ++worker) {
+      consumers[worker] = std::async(std::launch::async, [&, worker] {
+        bool announced = false;
+        try {
+          auto reader = Acquire(owner, static_cast<unsigned>(40 + worker));
+          for (std::size_t expected = 1; expected <= samples + warmup; ++expected) {
+            auto lock = reader.LockPredicate();
+            if (!announced) { announced = true; ready.count_down(); }
+            const auto result = reader.Wait(lock, [&] { return sequence >= expected; }, {},
+                c::WaitClock::now() + 5s, "bounded mixed consumer");
+            Check(result.outcome == O::satisfied && sequence == expected,
+                  "mixed consumer observes exact publication sequence");
+            std::uint64_t sum = 0;
+            const std::size_t count = 4 * (worker + 1);
+            for (std::size_t item = 0; item < count; ++item) {
+              Check(slots[worker].payload[item] == expected * 1000 + worker * 32 + item,
+                    "mixed consumer observes complete protected payload");
+              sum += slots[worker].payload[item];
+            }
+            slots[worker].acknowledgement = sum;
+            ++slots[worker].completed;
+            ++completed;
+            Check(reader.NotifyAll(), "mixed consumer publishes acknowledgement");
+          }
+        } catch (...) {
+          // Admission failure must not strand the producer's startup barrier.
+          if (!announced) ready.count_down();
+          throw;
+        }
+      });
+    }
+    ready.wait();
+    const auto exchange = [&](std::size_t next) {
+      auto lock = producer.LockPredicate();
+      Check(completed == Workers, "mixed previous round fully acknowledged");
+      for (std::size_t worker = 0; worker < Workers; ++worker)
+        for (std::size_t item = 0; item < 4 * (worker + 1); ++item)
+          slots[worker].payload[item] = next * 1000 + worker * 32 + item;
+      sequence = next; completed = 0;
+      Check(producer.NotifyAll(), "mixed producer publishes all slots");
+      const auto result = producer.Wait(lock, [&] { return completed == Workers; }, {},
+          c::WaitClock::now() + 5s, "bounded mixed producer");
+      Check(result.outcome == O::satisfied, "mixed round completes every real consumer");
+      for (std::size_t worker = 0; worker < Workers; ++worker) {
+        const std::uint64_t count = 4 * (worker + 1);
+        Check(slots[worker].completed == next && slots[worker].acknowledgement ==
+              count * (next * 1000 + worker * 32) + count * (count - 1) / 2,
+              "mixed independent acknowledgement and per-worker progress");
+      }
+    };
+    for (std::size_t i = 1; i <= warmup; ++i) exchange(i);
+    const auto began = c::WaitClock::now();
+    const auto cpu_began = std::clock();
+    Check(cpu_began != std::clock_t(-1), "mixed process CPU clock available");
+    for (std::size_t i = 0; i < samples; ++i) {
+      const auto before = c::WaitClock::now(); exchange(i + warmup + 1);
+      durations[i] = nanos(c::WaitClock::now() - before);
+    }
+    for (auto& consumer : consumers) consumer.get();
+    const auto cpu_ended = std::clock();
+    Check(cpu_ended != std::clock_t(-1), "mixed final CPU clock available");
+    const auto wall = nanos(c::WaitClock::now() - began);
+    const auto snapshot = owner.Snapshot();
+    Check(snapshot.registered_waits >= Workers && snapshot.waiter_count == 0 &&
+          snapshot.operation_ref_count == 1 && snapshot.selected_timeouts == 0,
+          "mixed actual parks complete with no worker references or timeouts");
+    std::sort(durations.begin(), durations.end());
+    std::cout << "measurement=mixed_round_trip consumers=" << Workers
+              << " rounds=" << samples << " warmup_rounds=" << warmup
+              << " each_worker_completed=" << samples + warmup
+              << " p50_ns=" << durations[(samples - 1) / 2]
+              << " p99_ns=" << durations[(samples - 1) * 99 / 100]
+              << " max_ns=" << durations.back() << " wall_ns=" << wall
+              << " process_cpu_ns=" << (static_cast<double>(cpu_ended - cpu_began) * 1e9 / CLOCKS_PER_SEC)
+              << " payloads_per_second=" << (samples * Workers * 1e9 / wall)
+              << " caller_slot_bytes=" << sizeof(slots)
+              << " metadata_bytes=" << domain.Snapshot().metadata_bytes
+              << " retained_payload_bytes=" << domain.Snapshot().retained_payload_bytes
+              << " registered_waits=" << snapshot.registered_waits
+              << " clock_and_checks_included=true fairness_slo_claimed=false\n";
+    producer.Reset(); cleanup_started = c::WaitClock::now();
+  });
+  std::cout << "mixed_consumers=" << Workers << " physical_cleanup_ns="
+            << nanos(c::WaitClock::now() - *cleanup_started)
+            << " actual_memory_and_reservation_charges=0\n";
+}
+
 void Precedence() {
   for (unsigned mask = 1; mask < 16; ++mask) Run([&](auto& owner, auto&) {
     std::stop_source stop;
@@ -936,7 +1045,7 @@ void PrematureDestruction() {
 int main(int argc, char** argv) {
   try {
     if (argc == 2 && std::string_view(argv[1]) == "--measure") {
-      Measurements(); return 0;
+      Measurements(); MixedMeasurements<4>(); MixedMeasurements<8>(); return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--native-construction") {
       NativeConstructionFailure(); return 0;
