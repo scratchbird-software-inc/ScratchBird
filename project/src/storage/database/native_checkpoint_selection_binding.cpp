@@ -54,8 +54,9 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
     const auto second=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==19;});
     if(first==z.roots.end()||second==z.roots.end())return Fail(E::slot_binding_mismatch);
     const u64 size=z.bootstrap.page_size_bytes;
-    // Pair classification temporarily decodes two additional owned images.
-    if(budget<4*size)return Fail(E::resource_exhausted);
+    // Classification decodes fixed values directly from these two images.
+    // It does not allocate two additional untracked copies of the payloads.
+    if(budget<2*size)return Fail(E::resource_exhausted);
     NativeBoundCheckpointSelection result;std::array<disk::NativeCommonPageHeader,2> headers;
     const disk::FilespaceRootReference* refs[]={&*first,&*second};
     for(unsigned i=0;i<2;++i){auto& bytes=result.slots[i];bytes.resize(size);const auto& ref=*refs[i];

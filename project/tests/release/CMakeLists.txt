@@ -635,6 +635,17 @@ if(TARGET sbsql_sblr_alignment_native_storage_components)
     TIMEOUT 600 LABELS "storage;memory;binary_uuid;actual_files;not_runtime_acceptance")
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(native_checkpoint_selection_memory_gate
+    ../sbsql_sblr_alignment/native_checkpoint_selection_test.cpp)
+  target_compile_features(native_checkpoint_selection_memory_gate PRIVATE cxx_std_23)
+  target_compile_definitions(native_checkpoint_selection_memory_gate PRIVATE SB_NATIVE_SELECTOR_MEMORY_TESTS=1)
+  target_link_libraries(native_checkpoint_selection_memory_gate PRIVATE sb_storage_database)
+  target_link_options(native_checkpoint_selection_memory_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME native_checkpoint_selection_memory_gate COMMAND native_checkpoint_selection_memory_gate)
+  set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   add_executable(native_storage_memory_buffer_gate native_storage_memory_buffer_gate.cpp)
   target_compile_features(native_storage_memory_buffer_gate PRIVATE cxx_std_23)
   target_include_directories(native_storage_memory_buffer_gate PRIVATE ../../src/storage/database)

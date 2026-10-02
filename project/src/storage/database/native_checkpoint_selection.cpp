@@ -24,7 +24,7 @@ bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFi
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes&&
     disk::CheckFileDeviceExtent(r.page_number*p->page_size_bytes,p->page_size_bytes).ok();}
 NativeCheckpointSelectionImage Fail(E e){NativeCheckpointSelectionImage r;r.error=e;return r;}
-auto Digest(const std::vector<byte>& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),seal},{zero.data(),32},{b.data()+seal+32,b.size()-seal-32}};
+auto Digest(std::span<const byte> b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),seal},{zero.data(),32},{b.data()+seal+32,b.size()-seal-32}};
   return core::hash::ComputeSha256DigestParts(parts,3);}
 E Validate(const NativeCheckpointSelection& s){
   const auto& h=s.header;
@@ -67,26 +67,34 @@ NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheck
     return {E::none,s,std::move(bytes)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeCheckpointSelectionImage DecodeNativeCheckpointSelection(const std::vector<byte>& bytes) noexcept {
+NativeCheckpointSelectionValue DecodeNativeCheckpointSelectionValue(std::span<const byte> bytes) noexcept {
+  const auto fail=[](E e){NativeCheckpointSelectionValue r;r.error=e;return r;};
   try {
-    if(bytes.size()<used)return Fail(E::invalid_header);const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
-    if(!header.ok()||header.header->page_type!=0x30e||header.header->flags||bytes.size()!=header.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto digest=Digest(bytes);if(!digest.ok())return Fail(E::hash_failure);
-    if(!std::equal(digest.digest.begin(),digest.digest.end(),bytes.begin()+seal))return Fail(E::invalid_integrity);
+    if(bytes.size()<used)return fail(E::invalid_header);const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
+    if(!header.ok()||header.header->page_type!=0x30e||header.header->flags||bytes.size()!=header.header->page_size_bytes)return fail(E::invalid_header);
+    const auto digest=Digest(bytes);if(!digest.ok())return fail(E::hash_failure);
+    if(!std::equal(digest.digest.begin(),digest.digest.end(),bytes.begin()+seal))return fail(E::invalid_integrity);
     const auto* f=bytes.data()+128;
     if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBDCP001"||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=384||LoadLittle32(f+12)!=used||
-        !Zero(f+336,48)||!Zero(bytes.data()+used,bytes.size()-used))return Fail(E::invalid_family);
+        !Zero(f+336,48)||!Zero(bytes.data()+used,bytes.size()-used))return fail(E::invalid_family);
     NativeCheckpointSelection s;s.header=*header.header;s.object_uuid=GetUuid(f+16);s.bootstrap_uuid=GetUuid(f+32);s.selection_generation=LoadLittle64(f+48);s.publication_uuid=GetUuid(f+56);
     s.checkpoint=GetRef(f+72);s.checkpoint_object_uuid=GetUuid(f+120);std::copy_n(f+136,32,s.checkpoint_sha256.begin());
     s.checkpoint_generation=LoadLittle64(f+168);s.root_set_generation=LoadLittle64(f+176);s.timeline_uuid=GetUuid(f+184);s.previous_selection_generation=LoadLittle64(f+200);
     if(!Zero(f+208,48))s.previous_checkpoint=GetRef(f+208);s.previous_checkpoint_object_uuid=GetUuid(f+256);std::copy_n(f+272,32,s.previous_checkpoint_sha256.begin());
-    const auto valid=Validate(s);if(valid!=E::none)return Fail(valid);return {E::none,std::move(s),bytes};
+    const auto valid=Validate(s);if(valid!=E::none)return fail(valid);return {E::none,std::move(s)};
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
+}
+NativeCheckpointSelectionImage DecodeNativeCheckpointSelection(const std::vector<byte>& bytes) noexcept {
+  try {
+    auto decoded=DecodeNativeCheckpointSelectionValue(bytes);
+    if(!decoded.ok())return Fail(decoded.error);
+    return {E::none,std::move(decoded.selection),bytes};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeCheckpointSelectionPair ClassifyNativeCheckpointSelectionPair(const std::vector<byte>& first,const std::vector<byte>& second) noexcept {
+NativeCheckpointSelectionPair ClassifyNativeCheckpointSelectionPair(std::span<const byte> first,std::span<const byte> second) noexcept {
   const auto fail=[](E e){NativeCheckpointSelectionPair r;r.error=e;return r;};
   try {
-    const auto left=DecodeNativeCheckpointSelection(first),right=DecodeNativeCheckpointSelection(second);
+    const auto left=DecodeNativeCheckpointSelectionValue(first),right=DecodeNativeCheckpointSelectionValue(second);
     for(const auto* result:{&left,&right})if(result->error==E::hash_failure||result->error==E::resource_exhausted)return fail(result->error);
     if(!left.ok()||!right.ok())return fail(left.ok()||right.ok()?E::repair_required:E::invalid_pair);
     const auto& a=*left.selection;const auto& b=*right.selection;
