@@ -24,7 +24,7 @@ void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uu
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
 NativeSystemStateResult Fail(E e){NativeSystemStateResult r;r.error=e;return r;}
-auto Digest(const std::vector<byte>& b,bool clear=true){const std::array<byte,32> zero{};const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
+auto Digest(std::span<const byte> b,bool clear=true){const std::array<byte,32> zero{};const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
   return hash::ComputeSha256DigestParts(parts,3);}
 E Validate(const NativeSystemState& s){const auto& h=s.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=8||h.flags)return E::invalid_header;
@@ -60,18 +60,26 @@ NativeSystemStateResult EncodeNativeSystemState(const NativeSystemState& s) noex
     return {E::none,s,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeSystemStateResult DecodeNativeSystemState(const std::vector<byte>& b) noexcept {
-  try{if(b.size()<used)return Fail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!h.ok()||h.header->page_type!=8||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto digest=Digest(b);if(!digest.ok())return Fail(E::hash_failure);if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return Fail(E::invalid_integrity);
-    const auto* f=b.data()+128;if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBSYS001"||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=384||LoadLittle32(f+12)!=512||!Zero(f+312,72)||!Zero(b.data()+used,b.size()-used))return Fail(E::invalid_family);
+namespace { NativeSystemStateValueResult ValueFail(E e){return {e,std::nullopt};} }
+NativeSystemStateValueResult DecodeNativeSystemStateValue(std::span<const byte> b) noexcept {
+  try{if(b.size()<used)return ValueFail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!h.ok()||h.header->page_type!=8||h.header->flags||b.size()!=h.header->page_size_bytes)return ValueFail(E::invalid_header);
+    const auto digest=Digest(b);if(!digest.ok())return ValueFail(E::hash_failure);if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return ValueFail(E::invalid_integrity);
+    const auto* f=b.data()+128;if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBSYS001"||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=384||LoadLittle32(f+12)!=512||!Zero(f+312,72)||!Zero(b.data()+used,b.size()-used))return ValueFail(E::invalid_family);
     NativeSystemState s;s.header=*h.header;s.object_uuid=GetUuid(f+16);s.state_generation=LoadLittle64(f+32);s.restart_generation=LoadLittle64(f+40);s.startup_counter=LoadLittle64(f+48);
     s.creator_transaction_uuid=GetUuid(f+56);s.creator_local_transaction_id=LoadLittle64(f+72);s.lifecycle=static_cast<NativeSystemLifecycle>(LoadLittle16(f+80));s.recovery=static_cast<NativeSystemRecovery>(LoadLittle16(f+82));s.flags=LoadLittle32(f+84);
     s.checkpoint_generation=LoadLittle64(f+88);if(!Zero(f+96,48))s.checkpoint=GetRef(f+96);s.checkpoint_object_uuid=GetUuid(f+144);
     s.clean_transaction_uuid=GetUuid(f+160);s.clean_local_transaction_id=LoadLittle64(f+176);s.transition_operation_uuid=GetUuid(f+184);
-    if(!Zero(f+200,48))s.predecessor=GetRef(f+200);std::copy_n(f+248,32,s.predecessor_sha256.begin());const auto valid=Validate(s);if(valid!=E::none)return Fail(valid);
-    return {E::none,std::move(s),b};
-  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+    if(!Zero(f+200,48))s.predecessor=GetRef(f+200);std::copy_n(f+248,32,s.predecessor_sha256.begin());const auto valid=Validate(s);if(valid!=E::none)return ValueFail(valid);
+    return {E::none,std::move(s)};
+  }catch(const std::bad_alloc&){return ValueFail(E::resource_exhausted);}catch(const std::length_error&){return ValueFail(E::resource_exhausted);}catch(...){return ValueFail(E::invalid_family);}
+}
+NativeSystemStateResult DecodeNativeSystemState(const std::vector<byte>& b) noexcept {
+  auto decoded=DecodeNativeSystemStateValue(b);
+  if(!decoded.ok())return Fail(decoded.error);
+  try{return {E::none,std::move(decoded.state),b};}
+  catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+  catch(const std::length_error&){return Fail(E::resource_exhausted);}
 }
 NativeSystemStateResult ReadNativeSystemStateFromOpenDevice(disk::FileDevice& device,const Uuid& database_uuid,const disk::FilespaceRootReference& ref) noexcept {
   try{if(!V7(database_uuid)||!V7(ref.object_uuid)||ref.kind!=1||ref.page_type!=8||!Ref({ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid}))return Fail(E::invalid_reference);

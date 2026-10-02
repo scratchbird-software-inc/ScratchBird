@@ -5,6 +5,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -38,7 +39,7 @@ struct NativeRetentionPage {
 enum class NativeRetentionError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, chain_mismatch, summary_mismatch, io_failure
+  binding_mismatch, chain_mismatch, summary_mismatch, io_failure, invalid_backing
 };
 struct NativeRetentionPageResult {
   NativeRetentionError error=NativeRetentionError::invalid_family;
@@ -48,6 +49,25 @@ struct NativeRetentionPageResult {
 };
 NativeRetentionPageResult EncodeNativeRetentionPage(const NativeRetentionPage&) noexcept;
 NativeRetentionPageResult DecodeNativeRetentionPage(const std::vector<byte>&) noexcept;
+struct NativeRetentionPageView {
+  disk::NativeCommonPageHeader header;
+  Uuid object_uuid;
+  u64 epoch=0;
+  Uuid creator_transaction_uuid;
+  u64 creator_local_transaction_id=0, flags=0, total_pins=0, first_record=0;
+  std::optional<disk::NativePageReference> next;
+  std::array<byte,32> next_sha256{};
+  u64 legal_hold_pins=0, lowest_start=0, highest_end=0;
+  std::span<NativeRetentionPin> records;
+};
+struct NativeRetentionPageViewResult {
+  NativeRetentionError error=NativeRetentionError::invalid_family;
+  std::optional<NativeRetentionPageView> page;
+  bool ok() const noexcept {return error==NativeRetentionError::none&&page.has_value();}
+};
+// Image and records are caller-owned; no selected-chain or release authority.
+NativeRetentionPageViewResult DecodeNativeRetentionPageInto(
+    std::span<const byte>,std::span<NativeRetentionPin>) noexcept;
 struct NativeRetentionChainResult {
   NativeRetentionError error=NativeRetentionError::invalid_reference;
   // Root first, followed by every actual leaf in order.
