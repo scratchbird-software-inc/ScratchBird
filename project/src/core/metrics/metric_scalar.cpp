@@ -20,7 +20,7 @@ bool Numeric(MetricScalarType t) noexcept {
   return t >= MetricScalarType::uint64 && t <= MetricScalarType::decimal128;
 }
 template<class T> int Compare(const T& a, const T& b) noexcept { return a < b ? -1 : a > b ? 1 : 0; }
-bool Utf8(const std::string& text) noexcept {
+bool Utf8(std::string_view text) noexcept {
   for (std::size_t i=0; i<text.size();) {
     const auto first=static_cast<unsigned char>(text[i++]);
     if (first<0x80) continue;
@@ -199,6 +199,7 @@ MetricScalarType MetricScalarTypeOf(const MetricScalar& value) noexcept {
     case 9:return MetricScalarType::enumeration;default:return MetricScalarType::invalid;
   }
 }
+bool MetricTextValid(std::string_view text) noexcept { return Utf8(text); }
 bool MetricScalarValid(const MetricScalar& value) noexcept {
   switch(MetricScalarTypeOf(value)){
     case MetricScalarType::uint64:case MetricScalarType::int64:case MetricScalarType::boolean:
@@ -206,7 +207,7 @@ bool MetricScalarValid(const MetricScalar& value) noexcept {
     case MetricScalarType::float64:return std::isfinite(std::get<double>(value));
     case MetricScalarType::float128:{const auto& bytes=std::get<MetricFloat128>(value).bytes;return ((High(bytes)>>48)&0x7fff)!=0x7fff;}
     case MetricScalarType::decimal128:{const auto& v=std::get<MetricDecimal128>(value);return Exponent(v)<=12287&&Coefficient(v)<DecimalLimit();}
-    case MetricScalarType::text:return Utf8(std::get<std::string>(value));
+    case MetricScalarType::text:return MetricTextValid(std::get<std::string>(value));
     case MetricScalarType::uuid:{const auto& v=std::get<MetricUuid>(value);return (v.bytes[8]&0xc0)==0x80&&(v.bytes[6]>>4)>=1&&(v.bytes[6]>>4)<=7;}
     default:return false;
   }

@@ -20,15 +20,21 @@ inline bool MetricOwnerLabel(std::string_view key) noexcept {
 // Reserved ownership labels repeat native scope. Other labels may describe
 // related objects or user UUID data and are not silently reinterpreted here.
 inline bool MetricOwnerLabelMatchesScope(std::string_view key,
-    const MetricLabelValue& value, const MetricUuid& database_uuid,
+    const MetricUuid* identity, const MetricUuid& database_uuid,
     const MetricUuid& node_uuid, const MetricUuid& cluster_uuid) noexcept {
   const MetricUuid* expected = nullptr;
   if (key == "database_uuid") expected = &database_uuid;
   else if (key == "node_uuid") expected = &node_uuid;
   else if (key == "cluster_uuid") expected = &cluster_uuid;
   if (!expected) return true;
-  const auto* identity = std::get_if<MetricUuid>(&value);
   return identity && MetricSystemUuidValid(*identity) && *identity == *expected;
+}
+
+inline bool MetricOwnerLabelMatchesScope(std::string_view key,
+    const MetricLabelValue& value, const MetricUuid& database_uuid,
+    const MetricUuid& node_uuid, const MetricUuid& cluster_uuid) noexcept {
+  return MetricOwnerLabelMatchesScope(key, std::get_if<MetricUuid>(&value),
+      database_uuid, node_uuid, cluster_uuid);
 }
 
 inline bool MetricOwnerLabelsMatchScope(const MetricLabelSet& labels,
