@@ -948,6 +948,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE
+    -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
     -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new
     -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex
     -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync)
