@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog_page.hpp"
+#include "native_decoded_storage_ranges.hpp"
+#include <type_traits>
 
 #include "database_format.hpp"
 #include "page_header.hpp"
@@ -357,7 +359,7 @@ bool SameSlot(const NativeCatalogPageReference& a, const NativeCatalogPageRefere
 bool ProfilesAgree(const NativeCatalogPageReference& a, const NativeCatalogPageReference& b) {
   return !Same(a.filespace_uuid,b.filespace_uuid) || Same(a.page_size_profile_uuid,b.page_size_profile_uuid);
 }
-Error Validate(const NativeCatalogRoot& r) {
+template<class Root> Error Validate(const Root& r) {
   const auto type=disk::CanonicalPageZeroRootPageType(r.root_kind);
   if (!disk::EncodeNativeCommonPageHeader(r.header).ok() || r.header.page_type!=type)
     return Error::invalid_header;
@@ -388,7 +390,7 @@ Error Validate(const NativeCatalogRoot& r) {
   }
   return Error::none;
 }
-scratchbird::core::hash::HashDigestResult Digest(const std::vector<byte>& b) {
+scratchbird::core::hash::HashDigestResult Digest(std::span<const byte> b) {
   const std::array<byte,32> zero{};
   const scratchbird::core::hash::HashDigestSegment parts[] = {
       {b.data(),digest_at},{zero.data(),zero.size()},
@@ -427,24 +429,25 @@ NativeCatalogRootResult EncodeNativeCatalogRoot(const NativeCatalogRoot& r) noex
     catch (...) { return Fail(Error::invalid_family); }
 }
 
-NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<byte>& b) noexcept {
+namespace native_catalog {
+template<class Root> Error DecodeValues(std::span<const byte> b,Root& r) noexcept {
   using namespace native_catalog;
   try {
-    if (b.size()<entries) return Fail(Error::invalid_header);
+    if (b.size()<entries) return Error::invalid_header;
     const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);
     if (!common.ok() || (common.header->page_type!=5 && common.header->page_type!=10 && common.header->page_type!=11)
         || b.size()!=common.header->page_size_bytes)
-      return Fail(Error::invalid_header);
+      return Error::invalid_header;
     const byte* f=b.data()+family;
     const auto count=LoadLittle16(f+18); const std::size_t used=entries+80*count;
     if (!std::equal(magic.begin(),magic.end(),f) || LoadLittle16(f+8)!=1
         || LoadLittle16(f+10)!=256 || used>b.size() || LoadLittle32(f+12)!=used
         || !Zero(f+20,4) || !Zero(f+208,48) || !Zero(b.data()+used,b.size()-used))
-      return Fail(Error::invalid_family);
-    const auto digest=Digest(b); if (!digest.ok()) return Fail(Error::hash_failure);
+      return Error::invalid_family;
+    const auto digest=Digest(b); if (!digest.ok()) return Error::hash_failure;
     if (!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+digest_at))
-      return Fail(Error::invalid_integrity);
-    NativeCatalogRoot r; r.header=*common.header; r.root_kind=LoadLittle16(f+16);
+      return Error::invalid_integrity;
+    r.header=*common.header; r.root_kind=LoadLittle16(f+16);
     r.catalog_generation=LoadLittle64(f+24); r.schema_epoch=LoadLittle64(f+32);
     r.security_epoch=LoadLittle64(f+40); r.resource_epoch=LoadLittle64(f+48);
     r.creator_local_transaction_id=LoadLittle64(f+56); r.object_uuid=Get(f+64);
@@ -453,17 +456,35 @@ NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<byte>& b) noex
     std::copy_n(f+144,32,r.predecessor_sha256.begin());
     // Bound cardinality before allocating or interpreting any target.
     if ((r.root_kind==2 && count!=6) || (r.root_kind!=2 && count!=1)
-        || (r.root_kind!=2 && r.root_kind!=6 && r.root_kind!=7 && r.root_kind!=8)) return Fail(Error::invalid_roots);
+        || (r.root_kind!=2 && r.root_kind!=6 && r.root_kind!=7 && r.root_kind!=8)) return Error::invalid_roots;
+    if constexpr(std::is_same_v<Root,NativeCatalogRoot>)r.roots.resize(count);
+    else {if(count>r.roots.size())return Error::resource_exhausted;r.roots=r.roots.first(count);}
     for (unsigned i=0;i<count;++i) {
       const byte* e=b.data()+entries+80*i;
-      if (!Zero(e+2,2) || !Zero(e+72,8)) return Fail(Error::invalid_roots);
-      r.roots.push_back({LoadLittle16(e),LoadLittle32(e+4),GetRef(e+8),Get(e+56)});
+      if (!Zero(e+2,2) || !Zero(e+72,8)) return Error::invalid_roots;
+      r.roots[i]={LoadLittle16(e),LoadLittle32(e+4),GetRef(e+8),Get(e+56)};
     }
-    const auto error=Validate(r); if (error!=Error::none) return Fail(error);
-    return {Error::none,std::move(r),b};
-  } catch (const std::bad_alloc&) { return Fail(Error::resource_exhausted); }
-    catch (const std::length_error&) { return Fail(Error::resource_exhausted); }
-    catch (...) { return Fail(Error::invalid_family); }
+    return Validate(r);
+  } catch (const std::bad_alloc&) { return Error::resource_exhausted; }
+    catch (const std::length_error&) { return Error::resource_exhausted; }
+    catch (...) { return Error::invalid_family; }
+}
+}
+NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<byte>& b) noexcept {
+  using namespace native_catalog;
+  NativeCatalogRoot r;const auto error=DecodeValues(b,r);
+  if(error!=Error::none)return Fail(error);
+  try{return {Error::none,std::move(r),b};}
+  catch(const std::bad_alloc&){return Fail(Error::resource_exhausted);}
+  catch(const std::length_error&){return Fail(Error::resource_exhausted);}
+}
+NativeCatalogRootViewResult DecodeNativeCatalogRootInto(std::span<const byte> b,
+    std::span<NativeCatalogRootReference> roots) noexcept {
+  using namespace native_catalog;
+  if(!detail::DisjointNativeDecodeRegions(b,roots))return {Error::invalid_backing,std::nullopt};
+  NativeCatalogRootView r;r.roots=roots;const auto error=DecodeValues(b,r);
+  if(error!=Error::none)return {error,std::nullopt};
+  return {Error::none,r};
 }
 
 NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
