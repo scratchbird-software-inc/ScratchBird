@@ -92,6 +92,24 @@ dt::DatatypeOperationValue Uint64Value(std::uint64_t number) {
   return value;
 }
 
+dt::DatatypeOperationValue Int128Value(std::string_view number) {
+  std::string encoded;
+  Require(dt::EncodeCanonicalInt128Value(number, &encoded),
+          "MDF-014 int128 fixture encoding failed");
+  auto value = Value(dt::CanonicalTypeId::int128, std::move(encoded));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::int128);
+  value.descriptor = descriptor;
+  return value;
+}
+
+bool IsCanonicalInt128(const dt::DatatypeOperationValue& value,
+                       std::string_view expected) {
+  std::string decoded;
+  return value.type_id == dt::CanonicalTypeId::int128 && !value.is_null &&
+      dt::DecodeCanonicalInt128Value(value.encoded_value, &decoded) &&
+      decoded == expected;
+}
+
 bool IsCanonicalUint64(const dt::DatatypeOperationValue& value,
                        std::uint64_t expected) {
   std::uint64_t decoded = 0;
@@ -365,13 +383,11 @@ void TestNumericOperationsUseTypedSemantics() {
   dt::DatatypeNumericOperationRequest add;
   add.operation = dt::DatatypeNumericOperationKind::add;
   add.type_id = dt::CanonicalTypeId::int128;
-  add.left = Value(dt::CanonicalTypeId::int128,
-                   "170141183460469231731687303715884105726");
-  add.right = Value(dt::CanonicalTypeId::int128, "1");
+  add.left = Int128Value("170141183460469231731687303715884105726");
+  add.right = Int128Value("1");
   const auto added = dt::ApplyNumericOperation(add);
-  Require(added.ok() &&
-              added.value.encoded_value ==
-                  "170141183460469231731687303715884105727",
+  Require(added.ok() && IsCanonicalInt128(
+              added.value, "170141183460469231731687303715884105727"),
           "MDF-014 int128 numeric add drifted");
 
   dt::DatatypeNumericOperationRequest compare;
@@ -390,15 +406,20 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
                      "170141183460469231731687303715884105727");
   cast.target_type_id = dt::CanonicalTypeId::int128;
   cast.explicit_cast = true;
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::int128);
   const auto int128_cast = dt::CastDatatypeValue(cast);
-  Require(int128_cast.ok(), "MDF-014 int128 cast failed");
+  Require(int128_cast.ok() && IsCanonicalInt128(
+              int128_cast.value,
+              "170141183460469231731687303715884105727"),
+          "MDF-014 int128 cast failed");
 
   const auto serialized =
       dt::SerializeDatatypeValue({int128_cast.value});
   Require(serialized.ok(), "MDF-014 cast serialization failed");
   const auto deserialized =
       dt::DeserializeDatatypeValue({dt::CanonicalTypeId::int128,
-                                    serialized.serialized_value});
+                                    serialized.serialized_value,
+                                    int128_cast.value.descriptor});
   Require(deserialized.ok(), "MDF-014 cast persistence decode failed");
   Require(deserialized.value.type_id == dt::CanonicalTypeId::int128,
           "MDF-014 persisted cast target type mismatch");
@@ -407,6 +428,7 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
 
   cast.value = Value(dt::CanonicalTypeId::int32, "1000");
   cast.target_type_id = dt::CanonicalTypeId::int8;
+  cast.target_descriptor = {};
   cast.explicit_cast = true;
   const auto precision_loss = dt::CastDatatypeValue(cast);
   Require(!precision_loss.ok(), "MDF-014 accepted precision-losing int8 cast");
@@ -1007,11 +1029,51 @@ void TestIntegerPhysicalSortKeyBytes() {
               !dt::RenderDatatypeValueForDisplay({Uint64Value(0)}).ok(),
           "uint64 unresolved NULL comparison, hash, or display policy did not fail closed");
 
+  const std::vector<std::string> int128_ordered{
+      "-170141183460469231731687303715884105728", "-1", "0", "1",
+      "170141183460469231731687303715884105727"};
+  for (std::size_t left = 0; left < int128_ordered.size(); ++left) {
+    for (std::size_t right = 0; right < int128_ordered.size(); ++right) {
+      const int expected = left < right ? -1 : left > right ? 1 : 0;
+      const auto compared = dt::CompareDatatypeValues(
+          {Int128Value(int128_ordered[left]),
+           Int128Value(int128_ordered[right])});
+      Require(compared.ok() && compared.comparison == expected,
+              "int128 LE16 comparison disagrees with signed order");
+    }
+  }
+  for (const auto width : {0U, 1U, 8U, 15U, 17U}) {
+    auto malformed = Value(dt::CanonicalTypeId::int128,
+                           std::string(width, '\0'));
+    malformed.descriptor = Descriptor(dt::CanonicalTypeId::int128);
+    Require(!dt::CompareDatatypeValues(
+                 {malformed, Int128Value("0")}).ok() &&
+                !dt::CompareDatatypeValues(
+                 {Int128Value("0"), malformed}).ok() &&
+                !dt::HashDatatypeValue({malformed}).ok() &&
+                !dt::MakeDatatypeSortKey({malformed}).ok(),
+            "int128 operation admitted malformed LE16");
+  }
+  const auto int128_zero = Int128Value("0");
+  const auto int128_null = TypedNull(dt::CanonicalTypeId::int128);
+  const auto int128_null_first = dt::MakeDatatypeSortKey({int128_null});
+  dt::DatatypeSortKeyRequest int128_null_last_request;
+  int128_null_last_request.value = int128_null;
+  int128_null_last_request.null_ordering =
+      dt::DatatypeNullOrdering::nulls_last;
+  const auto int128_null_last =
+      dt::MakeDatatypeSortKey(int128_null_last_request);
+  Require(!dt::MakeDatatypeSortKey({int128_zero}).ok() &&
+              !dt::HashDatatypeValue({int128_zero}).ok() &&
+              int128_null_first.ok() && int128_null_last.ok() &&
+              int128_null_first.sort_key == std::string(1, '\0') &&
+              int128_null_last.sort_key == std::string(1, '\2') &&
+              !dt::CompareDatatypeValues({int128_null, int128_zero}).ok(),
+          "int128 unresolved key/hash/NULL comparison policy did not fail closed");
+
   struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
     const char* minimum; const char* maximum; const char* overflow; };
   const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::int128, 16, true, "-170141183460469231731687303715884105728",
-       "170141183460469231731687303715884105727", "170141183460469231731687303715884105728"},
       {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
        "340282366920938463463374607431768211456"}};
   for (const auto& item : cases) {

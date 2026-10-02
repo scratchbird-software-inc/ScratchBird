@@ -356,12 +356,18 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
       value.type_id == CanonicalTypeId::int32 ||
       value.type_id == CanonicalTypeId::uint32 ||
       value.type_id == CanonicalTypeId::int64 ||
-      value.type_id == CanonicalTypeId::uint64) {
+      value.type_id == CanonicalTypeId::uint64 ||
+      value.type_id == CanonicalTypeId::int128) {
     // Every fixed-width pattern is one canonical little-endian integer value.
     // Signedness belongs to the descriptor.
     if (value.type_id == CanonicalTypeId::int64 ||
         value.type_id == CanonicalTypeId::uint64) {
       return value.encoded_value.size() == 8;
+    }
+    if (value.type_id == CanonicalTypeId::int128) {
+      return ExecutionDescriptorPresent(value.descriptor) &&
+          ExecutionDescriptorValidForType(value.descriptor, value.type_id) &&
+          value.encoded_value.size() == 16;
     }
     return value.encoded_value.size() ==
         ((value.type_id == CanonicalTypeId::int32 ||
@@ -779,6 +785,10 @@ std::string IntegerOperationText(CanonicalTypeId type_id,
                                  std::string_view value) {
   if (type_id == CanonicalTypeId::int8) return Int8DecimalText(value);
   if (type_id == CanonicalTypeId::uint8) return Uint8DecimalText(value);
+  if (type_id == CanonicalTypeId::int128) {
+    std::string decoded;
+    return DecodeCanonicalInt128Value(value, &decoded) ? decoded : std::string{};
+  }
   return std::string(value);
 }
 
@@ -794,6 +804,7 @@ bool IntegerOperationValueValid(CanonicalTypeId type_id,
       type_id == CanonicalTypeId::uint32) return value.size() == 4;
   if (type_id == CanonicalTypeId::int64 ||
       type_id == CanonicalTypeId::uint64) return value.size() == 8;
+  if (type_id == CanonicalTypeId::int128) return value.size() == 16;
   return IntegerFits(type_id, std::string(value));
 }
 
@@ -2198,6 +2209,40 @@ bool DecodeCanonicalUint64Value(std::string_view canonical_bytes,
   return true;
 }
 
+bool EncodeCanonicalInt128Value(std::string_view canonical_decimal,
+                                std::string* canonical_bytes) {
+  if (canonical_bytes == nullptr) return false;
+  const auto encoded =
+      libraries::sbl_numeric::EncodeInt128LittleEndian(canonical_decimal);
+  if (encoded.status != libraries::sbl_numeric::NumericStatusCode::ok ||
+      encoded.payload.size() != 16) {
+    return false;
+  }
+  std::string staged;
+  staged.assign(reinterpret_cast<const char*>(encoded.payload.data()),
+                encoded.payload.size());
+  *canonical_bytes = std::move(staged);
+  return true;
+}
+
+bool DecodeCanonicalInt128Value(std::string_view canonical_bytes,
+                                std::string* canonical_decimal) {
+  if (canonical_decimal == nullptr || canonical_bytes.size() != 16) {
+    return false;
+  }
+  const std::vector<std::uint8_t> payload(canonical_bytes.begin(),
+                                          canonical_bytes.end());
+  const auto decoded =
+      libraries::sbl_numeric::DecodeInt128LittleEndian(payload);
+  if (decoded.status != libraries::sbl_numeric::NumericStatusCode::ok ||
+      decoded.value.type != libraries::sbl_numeric::NumericType::int128 ||
+      decoded.value.is_null) {
+    return false;
+  }
+  *canonical_decimal = decoded.value.encoded;
+  return true;
+}
+
 bool EncodeCanonicalInt32BulkImportTextV1(
     std::string_view decimal_text,
     std::string* canonical_bytes) {
@@ -2433,6 +2478,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
+  if (!result_is_null &&
+      request.target_type_id == CanonicalTypeId::int128 &&
+      !ExecutionDescriptorPresent(request.target_descriptor)) {
+    return CastFailure("int128_target_descriptor_required",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
   const bool typed_null_identity =
       request.value.is_null &&
       (request.value.type_id == CanonicalTypeId::int16 ||
@@ -2440,8 +2492,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::int32 ||
        request.value.type_id == CanonicalTypeId::uint32 ||
        request.value.type_id == CanonicalTypeId::int64 ||
-       request.value.type_id == CanonicalTypeId::uint64) &&
+       request.value.type_id == CanonicalTypeId::uint64 ||
+       request.value.type_id == CanonicalTypeId::int128) &&
       request.value.type_id == request.target_type_id;
+  const bool int128_present_identity =
+      !request.value.is_null &&
+      request.value.type_id == CanonicalTypeId::int128 &&
+      request.target_type_id == CanonicalTypeId::int128;
   if (typed_null_identity &&
       !ExecutionDescriptorEquals(request.value.descriptor,
                                  request.target_descriptor)) {
@@ -2509,6 +2566,21 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         null_identity.status, "SB_DATATYPE_OK", "datatype.ok");
     return null_identity;
   }
+  if (int128_present_identity) {
+    if (!ExecutionDescriptorEquals(request.value.descriptor,
+                                   request.target_descriptor)) {
+      return CastFailure("int128_identity_descriptor_mismatch",
+                         DatatypeCastCategory::forbidden,
+                         "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    DatatypeCastResult identity;
+    identity.status = OkStatus();
+    identity.category = DatatypeCastCategory::identity;
+    identity.value = request.value;
+    identity.diagnostic = MakeDatatypeOperationDiagnostic(
+        identity.status, "SB_DATATYPE_OK", "datatype.ok");
+    return identity;
+  }
   DatatypeCastResult result;
   result.category = ClassifyDatatypeCast(request.value.type_id, request.target_type_id, request.reference_compatibility_profile);
   if (result.category == DatatypeCastCategory::forbidden) {
@@ -2552,9 +2624,15 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     DatatypeNumericOperationRequest numeric;
     numeric.type_id = CanonicalTypeId::real128;
     numeric.operation = DatatypeNumericOperationKind::canonicalize;
-    numeric.left = {CanonicalTypeId::real128,
-                    request.value.encoded_value,
-                    request.value.is_null};
+    numeric.left = {
+        CanonicalTypeId::real128,
+        request.value.is_null
+            ? std::string{}
+            : request.value.type_id == CanonicalTypeId::int128
+                ? IntegerOperationText(request.value.type_id,
+                                       request.value.encoded_value)
+                : request.value.encoded_value,
+        request.value.is_null};
     if (request.value.is_null) {
       numeric.left.descriptor = request.target_descriptor;
     }
@@ -2567,6 +2645,10 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (canonical.ok()) {
       result.value = std::move(canonical.value);
       result.value.type_id = CanonicalTypeId::real128;
+      if (request.value.type_id == CanonicalTypeId::int128 &&
+          ExecutionDescriptorPresent(request.target_descriptor)) {
+        result.value.descriptor = request.target_descriptor;
+      }
     }
     return result;
   }
@@ -2590,6 +2672,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 
   const std::string value = IntegerOperationText(
       request.value.type_id, request.value.encoded_value);
+  if (request.value.type_id == CanonicalTypeId::int128 &&
+      request.target_type_id != CanonicalTypeId::int128) {
+    // Preserve previously admitted boundary-text conversions without leaking
+    // the native LE16 carrier into another datatype's representation.
+    result.value.encoded_value = value;
+  }
   if (request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) {
     if (value.size() != 16) return CastFailure("uuid_binary_length_invalid", result.category);
     return result;  // UUID identity and UUID/binary casts retain all 128 bits.
@@ -2609,7 +2697,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       result.value.encoded_value =
           static_cast<unsigned char>(value[0]) == 1u ? "TRUE" : "FALSE";
     } else if (request.value.type_id == CanonicalTypeId::int8 ||
-               request.value.type_id == CanonicalTypeId::uint8) {
+               request.value.type_id == CanonicalTypeId::uint8 ||
+               request.value.type_id == CanonicalTypeId::int128) {
       result.value.encoded_value = value;
     }
     return result;
@@ -2652,7 +2741,15 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                              : backend_result.diagnostic_code,
                          result.category);
     }
-    result.value.encoded_value = backend_result.value.encoded;
+    if (request.target_type_id == CanonicalTypeId::int128) {
+      if (!EncodeCanonicalInt128Value(backend_result.value.encoded,
+                                      &result.value.encoded_value)) {
+        return CastFailure("NUMERIC.ENCODING.NONCANONICAL",
+                           result.category);
+      }
+    } else {
+      result.value.encoded_value = backend_result.value.encoded;
+    }
     return result;
   }
   if (IsInteger(request.target_type_id)) {
@@ -2687,7 +2784,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (IsReal(request.target_type_id)) {
     if (!FloatingText(value)) { return CastFailure("real_or_decimal_invalid", result.category); }
     if (request.value.type_id == CanonicalTypeId::int8 ||
-        request.value.type_id == CanonicalTypeId::uint8) {
+        request.value.type_id == CanonicalTypeId::uint8 ||
+        request.value.type_id == CanonicalTypeId::int128) {
       result.value.encoded_value = value;
     }
     return result;
@@ -3036,6 +3134,13 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   result.value = {request.type_id, {}, false};
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
 
+  if (request.type_id == CanonicalTypeId::int128 &&
+      (request.left.type_id != request.type_id ||
+       (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        request.right.type_id != request.type_id))) {
+    return invalid_request("numeric_argument_type_mismatch");
+  }
+
   if (!CanonicalOperationValueValid(request.left) ||
       (request.operation != DatatypeNumericOperationKind::canonicalize &&
        !CanonicalOperationValueValid(request.right))) {
@@ -3045,11 +3150,38 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
         invalid_value.type_id == CanonicalTypeId::unknown ||
         invalid_value.type_id == CanonicalTypeId::null_type ||
         invalid_value.is_null;
+    const bool malformed_int128_payload =
+        invalid_value.type_id == CanonicalTypeId::int128 &&
+        !invalid_value.is_null &&
+        ExecutionDescriptorValidForType(invalid_value.descriptor,
+                                        CanonicalTypeId::int128) &&
+        invalid_value.encoded_value.size() != 16;
+    const bool invalid_int128_descriptor =
+        invalid_value.type_id == CanonicalTypeId::int128 &&
+        !invalid_value.is_null &&
+        !ExecutionDescriptorValidForType(invalid_value.descriptor,
+                                         CanonicalTypeId::int128);
     return invalid_request(
         "numeric_argument_value_invalid",
-        descriptor_or_null_state_failure
+        malformed_int128_payload
+            ? "NUMERIC.ENCODING.NONCANONICAL"
+            : invalid_int128_descriptor
+            ? "DATATYPE.DESCRIPTOR.INVALID"
+            : descriptor_or_null_state_failure
             ? CanonicalOperationValueDiagnosticCode(invalid_value)
             : nullptr);
+  }
+  if (request.type_id == CanonicalTypeId::int128 &&
+      request.operation == DatatypeNumericOperationKind::compare &&
+      (request.left.is_null || request.right.is_null)) {
+    return invalid_request("int128_null_comparison_policy_unresolved");
+  }
+  if (request.type_id == CanonicalTypeId::int128 &&
+      request.operation != DatatypeNumericOperationKind::canonicalize &&
+      !ExecutionDescriptorEquals(request.left.descriptor,
+                                 request.right.descriptor)) {
+    return invalid_request("int128_operand_descriptor_mismatch",
+                           "DATATYPE.DESCRIPTOR.INVALID");
   }
   const CanonicalTypeId declared_result_type =
       request.operation == DatatypeNumericOperationKind::compare
@@ -3068,12 +3200,44 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     return invalid_request("numeric_result_descriptor_not_nullable",
                            "DATATYPE.NULL_NOT_ADMITTED");
   }
+  if (request.type_id == CanonicalTypeId::int128 &&
+      request.operation != DatatypeNumericOperationKind::compare &&
+      ExecutionDescriptorPresent(request.result_descriptor) &&
+      !ExecutionDescriptorValidForType(request.result_descriptor,
+                                       CanonicalTypeId::int128)) {
+    return invalid_request("int128_result_descriptor_invalid",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (request.type_id == CanonicalTypeId::int128 &&
+      request.operation != DatatypeNumericOperationKind::compare &&
+      ExecutionDescriptorPresent(request.result_descriptor) &&
+      !ExecutionDescriptorEquals(request.left.descriptor,
+                                 request.result_descriptor)) {
+    return invalid_request("int128_result_descriptor_mismatch",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
 
   numeric::NumericRequest backend_request;
   backend_request.left.is_null = request.left.is_null;
-  backend_request.left.encoded = request.left.encoded_value;
   backend_request.right.is_null = request.right.is_null;
-  backend_request.right.encoded = request.right.encoded_value;
+  if (request.type_id == CanonicalTypeId::int128) {
+    if (!request.left.is_null &&
+        !DecodeCanonicalInt128Value(request.left.encoded_value,
+                                    &backend_request.left.encoded)) {
+      return invalid_request("int128_left_payload_invalid",
+                             "NUMERIC.ENCODING.NONCANONICAL");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        !request.right.is_null &&
+        !DecodeCanonicalInt128Value(request.right.encoded_value,
+                                    &backend_request.right.encoded)) {
+      return invalid_request("int128_right_payload_invalid",
+                             "NUMERIC.ENCODING.NONCANONICAL");
+    }
+  } else {
+    backend_request.left.encoded = request.left.encoded_value;
+    backend_request.right.encoded = request.right.encoded_value;
+  }
   backend_request.context.precision = request.context.precision;
   backend_request.context.scale = request.context.scale;
   backend_request.context.allow_special_values = request.context.allow_special_values;
@@ -3127,11 +3291,24 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     return result;
   }
   if (backend_result.status != numeric::NumericStatusCode::ok) {
+    const bool int128_overflow =
+        request.type_id == CanonicalTypeId::int128 &&
+        backend_result.status == numeric::NumericStatusCode::overflow;
     auto failed = NumericFailure(
         backend_result.diagnostic_code.empty() ? "numeric_backend_failed" : backend_result.diagnostic_code,
-        request.type_id == CanonicalTypeId::real128 && !backend_result.diagnostic_code.empty()
-            ? backend_result.diagnostic_code : "SB_DATATYPE_NUMERIC_OPERATION_REJECTED");
+        int128_overflow
+            ? "NUMERIC.INT128.OVERFLOW"
+            : request.type_id == CanonicalTypeId::real128 &&
+                    !backend_result.diagnostic_code.empty()
+                ? backend_result.diagnostic_code
+                : "SB_DATATYPE_NUMERIC_OPERATION_REJECTED");
     failed.numeric_facts = result.numeric_facts;
+    failed.numeric_facts.overflow =
+        failed.numeric_facts.overflow || int128_overflow;
+    failed.numeric_facts.divide_by_zero =
+        failed.numeric_facts.divide_by_zero ||
+        (request.type_id == CanonicalTypeId::int128 &&
+         backend_result.status == numeric::NumericStatusCode::divide_by_zero);
     return failed;
   }
   result.comparison = backend_result.comparison;
@@ -3147,7 +3324,21 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     }
     return result;
   }
-  result.value.encoded_value = backend_result.value.encoded;
+  if (request.type_id == CanonicalTypeId::int128) {
+    if (!EncodeCanonicalInt128Value(backend_result.value.encoded,
+                                    &result.value.encoded_value)) {
+      return invalid_request("int128_result_encoding_failed",
+                             "NUMERIC.ENCODING.NONCANONICAL");
+    }
+  } else {
+    result.value.encoded_value = backend_result.value.encoded;
+  }
+  if (request.type_id == CanonicalTypeId::int128) {
+    result.value.descriptor =
+        ExecutionDescriptorPresent(request.result_descriptor)
+            ? request.result_descriptor
+            : request.left.descriptor;
+  }
   return result;
 }
 
@@ -3166,12 +3357,13 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         "datatype.comparison.rejected", "canonical_value_encoding_invalid");
     return result;
   }
-  const bool strict_64_bit_descriptor_type =
+  const bool strict_binary_descriptor_type =
       request.right.type_id == request.left.type_id &&
       (request.left.type_id == CanonicalTypeId::int64 ||
-       request.left.type_id == CanonicalTypeId::uint64);
-  const bool strict_64_bit_descriptors_invalid =
-      strict_64_bit_descriptor_type &&
+       request.left.type_id == CanonicalTypeId::uint64 ||
+       request.left.type_id == CanonicalTypeId::int128);
+  const bool strict_binary_descriptors_invalid =
+      strict_binary_descriptor_type &&
       (!ExecutionDescriptorPresent(request.left.descriptor) ||
        !ExecutionDescriptorPresent(request.right.descriptor) ||
        !ExecutionDescriptorValidForType(request.left.descriptor,
@@ -3180,11 +3372,12 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                         request.right.type_id));
   if (((request.left.type_id == CanonicalTypeId::uint32 ||
         request.left.type_id == CanonicalTypeId::int64 ||
-        request.left.type_id == CanonicalTypeId::uint64) &&
+        request.left.type_id == CanonicalTypeId::uint64 ||
+        request.left.type_id == CanonicalTypeId::int128) &&
        request.right.type_id == request.left.type_id &&
        !ExecutionDescriptorEquals(request.left.descriptor,
                                   request.right.descriptor)) ||
-      strict_64_bit_descriptors_invalid) {
+      strict_binary_descriptors_invalid) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "DATATYPE.DESCRIPTOR.INVALID",
@@ -3193,7 +3386,9 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
             ? "uint32_descriptor_mismatch"
             : request.left.type_id == CanonicalTypeId::int64
                 ? "int64_descriptor_mismatch"
-                : "uint64_descriptor_mismatch");
+                : request.left.type_id == CanonicalTypeId::uint64
+                    ? "uint64_descriptor_mismatch"
+                    : "int128_descriptor_mismatch");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -3234,7 +3429,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   if ((request.left.type_id == CanonicalTypeId::int32 ||
        request.left.type_id == CanonicalTypeId::uint32 ||
        request.left.type_id == CanonicalTypeId::int64 ||
-       request.left.type_id == CanonicalTypeId::uint64) &&
+       request.left.type_id == CanonicalTypeId::uint64 ||
+       request.left.type_id == CanonicalTypeId::int128) &&
       (request.left.is_null || request.right.is_null)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -3246,7 +3442,9 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                 ? "uint32_null_comparison_policy_unresolved"
                 : request.left.type_id == CanonicalTypeId::int64
                     ? "int64_null_comparison_policy_unresolved"
-                    : "uint64_null_comparison_policy_unresolved");
+                    : request.left.type_id == CanonicalTypeId::uint64
+                        ? "uint64_null_comparison_policy_unresolved"
+                        : "int128_null_comparison_policy_unresolved");
     return result;
   }
   if (request.left.is_null || request.right.is_null) {
@@ -3259,7 +3457,6 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::real128 ||
-      request.left.type_id == CanonicalTypeId::int128 ||
       request.left.type_id == CanonicalTypeId::uint128) {
     DatatypeNumericOperationRequest numeric;
     numeric.operation = DatatypeNumericOperationKind::compare;
@@ -3272,6 +3469,40 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     result.comparison = compared.comparison;
     result.diagnostic = compared.diagnostic;
     result.numeric_facts = compared.numeric_facts;
+    return result;
+  }
+  if (request.left.type_id == CanonicalTypeId::int128) {
+    std::string left_decimal;
+    std::string right_decimal;
+    if (!DecodeCanonicalInt128Value(request.left.encoded_value,
+                                    &left_decimal) ||
+        !DecodeCanonicalInt128Value(request.right.encoded_value,
+                                    &right_decimal)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected", "int128_payload_invalid");
+      return result;
+    }
+    libraries::sbl_numeric::NumericRequest numeric;
+    numeric.operation = libraries::sbl_numeric::NumericOperation::compare;
+    numeric.type = libraries::sbl_numeric::NumericType::int128;
+    numeric.left = {numeric.type, std::move(left_decimal), false};
+    numeric.right = {numeric.type, std::move(right_decimal), false};
+    const auto compared =
+        libraries::sbl_numeric::ApplyNumericOperation(numeric);
+    if (compared.status !=
+        libraries::sbl_numeric::NumericStatusCode::ok) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected",
+          compared.diagnostic_code.empty()
+              ? "int128_comparison_failed"
+              : compared.diagnostic_code);
+      return result;
+    }
+    result.comparison = compared.comparison;
     return result;
   }
   if (IsOpaqueRenderOnly(request.left.type_id)) {
@@ -3580,7 +3811,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
       value.type_id == CanonicalTypeId::int32 ||
       value.type_id == CanonicalTypeId::uint32 ||
       value.type_id == CanonicalTypeId::int64 ||
-      value.type_id == CanonicalTypeId::uint64) {
+      value.type_id == CanonicalTypeId::uint64 ||
+      value.type_id == CanonicalTypeId::int128) {
     *failure_detail = value.type_id == CanonicalTypeId::int16
         ? "int16_hash_profile_unresolved"
         : value.type_id == CanonicalTypeId::uint16
@@ -3591,7 +3823,9 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
                     ? "uint32_hash_profile_unresolved"
                     : value.type_id == CanonicalTypeId::int64
                         ? "int64_hash_profile_unresolved"
-                        : "uint64_hash_profile_unresolved";
+                        : value.type_id == CanonicalTypeId::uint64
+                            ? "uint64_hash_profile_unresolved"
+                            : "int128_hash_profile_unresolved";
     return false;
   }
   if (value.is_null) {
@@ -3708,6 +3942,18 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         for (int byte = 7; byte >= 0; --byte) {
           result.sort_key.push_back(request.value.encoded_value[byte]);
         }
+      } else if (request.value.type_id == CanonicalTypeId::int128) {
+        // Core requires comparison-key behavior for mandatory 128-bit values
+        // to cross the sbl_numeric boundary. That backend does not yet expose
+        // an INT128 binary-key API, so the adapter cannot independently
+        // implement the otherwise specified sign-transformed BE16 key.
+        result.status = ErrorStatus();
+        result.sort_key.clear();
+        result.diagnostic = MakeDatatypeOperationDiagnostic(
+            result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+            "datatype.sort_key.rejected",
+            "int128_sort_key_backend_api_unavailable");
+        return result;
       } else {
         const std::string value = IntegerOperationText(
             request.value.type_id, request.value.encoded_value);
@@ -4123,6 +4369,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);
   if (request.value.is_null) {
     result.display_value = "NULL";
+    return result;
+  }
+  if (request.value.type_id == CanonicalTypeId::int128) {
+    if (!DecodeCanonicalInt128Value(request.value.encoded_value,
+                                    &result.display_value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "NUMERIC.ENCODING.NONCANONICAL",
+          "datatype.display_render.rejected", "int128_payload_invalid");
+    }
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::int16 ||
