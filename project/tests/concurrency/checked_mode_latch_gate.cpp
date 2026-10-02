@@ -47,18 +47,19 @@ void Empty(L& latch) {
   Check(state.holders == 0 && state.waiters == 0 && state.calls == 0);
 }
 void Matrix() {
+  L::OwnerIdentity shared_task{}; shared_task[0]=42;
   for (unsigned held=0; held<11; ++held) for (unsigned requested=0; requested<11; ++requested) {
     L latch(4, 4);
     L::Grant first;
-    Check(latch.TryAcquire(first, Mode(held)) == R::acquired);
+    Check(latch.TryAcquire(first, Mode(held), {}, {}, shared_task) == R::acquired);
     std::thread contender([&] {
       L::Grant second;
-      const auto result = latch.TryAcquire(second, Mode(requested));
+      const auto result = latch.TryAcquire(second, Mode(requested), {}, {}, shared_task);
       Check(result == (matrix[requested][held] == 'Y' ? R::acquired : R::busy));
-      if (result == R::acquired) Check(latch.Release(second));
+      if (result == R::acquired) Check(latch.Release(second, shared_task));
     });
     contender.join();
-    Check(latch.Release(first));
+    Check(latch.Release(first, shared_task));
     Empty(latch);
   }
   // Every compatible pair of existing holders: the requested mode must agree
@@ -116,6 +117,25 @@ void Terminal() {
       Empty(latch);
     }
 }
+void Recursion() {
+  for (unsigned held=0;held<11;++held) for (unsigned requested=0;requested<11;++requested)
+    for (unsigned state=0;state<8;++state) for (bool rebound : {false,true}) {
+      L latch(4,4);
+      L::Grant grant, refused;
+      L::OwnerIdentity owner{}, changed{}; owner[0]=1; changed[0]=2;
+      Check(latch.TryAcquire(grant,Mode(held),{}, {},owner)==R::acquired);
+      std::stop_source stop;
+      if (state&1) latch.Close();
+      if (state&2) stop.request_stop();
+      const auto deadline=state&4 ? L::Clock::now() : L::Clock::now()+1s;
+      Check(latch.Preflight(deadline,stop.get_token())==R::recursive);
+      Check(latch.TryAcquire(refused,Mode(requested),deadline,stop.get_token(),rebound ? changed : owner)==R::recursive);
+      Check(latch.Acquire(refused,Mode(requested),0,deadline,stop.get_token(),rebound ? changed : owner)==R::recursive);
+      const auto snapshot=latch.Observe();
+      Check(snapshot.holders==1 && !snapshot.waiters && !snapshot.calls);
+      Check(latch.Release(grant,owner)); Empty(latch);
+    }
+}
 void Queues() {
   // Priority rank chosen by the caller, FIFO ties, no immediate barging. Each
   // grant is held until the driver releases it, making the order observable.
@@ -146,7 +166,8 @@ void Queues() {
     Check(latch.Observe().waiters == i+1);
   }
   L::Grant barger;
-  Check(latch.TryAcquire(barger, M::shared_read) == R::busy);
+  std::thread immediate([&] { Check(latch.TryAcquire(barger, M::shared_read) == R::busy); });
+  immediate.join();
   Check(latch.Release(blocker));
   for (auto i : order) { Check(granted[i].try_acquire_for(2s)); release[i].release(); }
   for (auto& thread : threads) thread.join();
@@ -194,10 +215,15 @@ void Boundaries() {
   Check(!latch.Release(grant, wrong));
   std::thread nonowner([&] { Check(!latch.Release(grant, owner)); });
   nonowner.join();
-  Check(latch.TryAcquire(extra, M::shared_read) == R::exhausted);
-  Check(latch.Acquire(extra, M::shared_read, 0) == R::exhausted);
+  Check(latch.TryAcquire(extra, M::shared_read) == R::recursive);
+  Check(latch.Acquire(extra, M::shared_read, 0) == R::recursive);
+  std::thread capacity([&] {
+    Check(latch.TryAcquire(extra, M::shared_read) == R::exhausted);
+    Check(latch.Acquire(extra, M::shared_read, 0) == R::exhausted);
+  });
+  capacity.join();
   latch.Close();
-  Check(latch.TryAcquire(extra, M::shared_read) == R::closed);
+  Check(latch.TryAcquire(extra, M::shared_read) == R::recursive);
   Check(latch.Release(grant, owner));
   Check(!latch.Release(grant, owner)); Empty(latch);
   // Native wait errors remove registrations and retain existing ownership.
@@ -270,7 +296,8 @@ void BatchAndHeadRemoval() {
   });
   Check(second_entered.try_acquire_for(2s));
   L::Grant overflow;
-  Check(latch.Acquire(overflow, M::shared_read, 0)==R::exhausted);
+  std::thread capacity([&] { Check(latch.Acquire(overflow, M::shared_read, 0)==R::exhausted); });
+  capacity.join();
   Check(latch.Observe().waiters==2);
   stop.request_stop();
   Check(second_granted.try_acquire_for(2s));
@@ -339,6 +366,6 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex
   return fail_wait ? EINVAL : AfterWake(__real_pthread_cond_timedwait(cond, mutex, time), mutex);
 }
 int main() {
-  Matrix(); Terminal(); Queues(); ParkedOutcomes(); Boundaries(); BatchAndHeadRemoval(); WakeSelection();
+  Matrix(); Terminal(); Recursion(); Queues(); ParkedOutcomes(); Boundaries(); BatchAndHeadRemoval(); WakeSelection();
   std::printf("PASS checked mode latch: %u checks\n", checks.load());
 }

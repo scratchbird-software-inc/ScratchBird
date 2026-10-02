@@ -18,6 +18,14 @@ thread_local pthread_mutex_t* pause_unlock = nullptr;
 thread_local bool fail_wait = false;
 struct PreparationGap { std::binary_semaphore entered{0}, resume{0}; };
 thread_local PreparationGap* preparation_gap = nullptr;
+struct PreparationReentry {
+  scratchbird::core::concurrency::ModeLatchOperation* operation;
+  scratchbird::core::concurrency::ModeLatchGrant* grant;
+  scratchbird::core::concurrency::ModeLatchRequest request;
+  scratchbird::core::concurrency::ModeLatchGrantMemory memory;
+  bool reached = false;
+};
+thread_local PreparationReentry* preparation_reentry = nullptr;
 namespace mode_memory = scratchbird::core::memory;
 extern "C" mode_memory::SafeRetirementStatus RealModeProtect(mode_memory::MemorySafeRetirement*,
     const mode_memory::SafeRetirementHandle&, mode_memory::SafeRetirementHazard, mode_memory::SafeRetirementGuard&)
@@ -28,6 +36,12 @@ extern "C" mode_memory::SafeRetirementStatus WrapModeProtect(mode_memory::Memory
 extern "C" mode_memory::SafeRetirementStatus WrapModeProtect(mode_memory::MemorySafeRetirement* domain,
     const mode_memory::SafeRetirementHandle& handle, mode_memory::SafeRetirementHazard hazard,
     mode_memory::SafeRetirementGuard& guard) {
+  if (preparation_reentry && hazard.hazard_id[15]==112) {
+    auto* reentry=std::exchange(preparation_reentry,nullptr);
+    reentry->reached=true;
+    if (reentry->operation->Acquire(reentry->request,reentry->memory,*reentry->grant,{}).code !=
+        scratchbird::core::concurrency::ModeLatchCode::acquired) std::abort();
+  }
   if (preparation_gap && hazard.hazard_id[15]==112) {
     auto* gap=std::exchange(preparation_gap,nullptr);
     gap->entered.release(); gap->resume.acquire();
@@ -158,10 +172,10 @@ void Matrix() {
     auto request=Request(50,static_cast<M>(a+1));
     Check(operation.Acquire(request,Memory(100),first,{}, {},true).code==C::acquired,"first real holder");
     std::thread second([&] {
-      auto op=Operation(owner,41,98);
+      auto op=Operation(owner,41,99);
       c::ModeLatchGrant grant;
-      auto r=Request(51,static_cast<M>(b+1),98);
-      const auto code=op.Acquire(r,Memory(110,98),grant,{}, {},true).code;
+      auto r=Request(51,static_cast<M>(b+1),99);
+      const auto code=op.Acquire(r,Memory(110,99),grant,{}, {},true).code;
       Check(code==(matrix[b][a]=='Y' ? C::acquired : C::busy),"independent held-mode compatibility");
       if (grant) Check(grant.Release(r).code==C::released,"second exact release");
     });
@@ -203,6 +217,35 @@ void Ownership() {
     Check(domain.Collect()==S::ok,"released private record collects");
     Check(fixture.manager.Snapshot().current_bytes==baseline,"only owner retains latch payload");
   });
+}
+void Nonrecursive() {
+  for (unsigned held=1;held<=11;++held) for (unsigned requested=1;requested<=11;++requested)
+    for (unsigned state=0;state<8;++state) Run([&](auto& owner,auto& domain,auto& fixture) {
+      auto op=Operation(owner,40);
+      c::ModeLatchGrant grant, refused;
+      auto original=Request(50,static_cast<M>(held));
+      Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"original grant before recursive attempt");
+      std::stop_source stop;
+      if (state&1) Check(owner.Close(),"close before recursion validation");
+      if (state&2) stop.request_stop();
+      const auto deadline=state&4 ? c::ModeLatchClock::now() : c::ModeLatchClock::now()+1s;
+      const auto before=domain.Snapshot();
+      const auto physical=fixture.manager.Snapshot().current_bytes;
+      for (bool immediate : {false,true}) for (unsigned id : {50U,51U}) {
+        auto request=Request(id,static_cast<M>(requested));
+        Check(op.Acquire(request,Memory(110),refused,deadline,stop.get_token(),immediate).code==C::recursive,
+              "all recursive mode pairs refused before terminals and physical preparation");
+        Check(!refused && grant && grant.request()==original,"recursive refusal preserves exact original grant");
+        const auto after=domain.Snapshot();
+        Check(before.readers==after.readers && before.retired==after.retired &&
+              before.retained_payload_bytes==after.retained_payload_bytes &&
+              physical==fixture.manager.Snapshot().current_bytes,"recursive refusal unchanged real memory ownership");
+      }
+      const auto snapshot=owner.Snapshot();
+      Check(snapshot.grants==1 && snapshot.native.holders==1 && !snapshot.native.waiters && !snapshot.native.calls,
+            "recursive refusal registers no waiter or additional holder");
+      Check(grant.Release(original).code==C::released,"original release after recursive refusal");
+    });
 }
 void Exhaustion() {
   for (unsigned readers : {2U,3U,32U}) Run([&](auto& owner,auto& domain,auto&) {
@@ -357,13 +400,29 @@ void DomainClosesBeforeProtection() {
     Check(owner.Snapshot().grants==0 && owner.Snapshot().native.holders==0,"no effect after lost preparation");
   });
 }
+void PreparationOwnershipRecheck() {
+  for (unsigned held=1;held<=11;++held) for (unsigned requested=1;requested<=11;++requested)
+    Run([&](auto& owner,auto& domain,auto&) {
+      auto outer=Operation(owner,40);
+      auto inner=Operation(owner,41);
+      c::ModeLatchGrant first, refused;
+      PreparationReentry hook{&inner,&first,Request(50,static_cast<M>(held)),Memory(120)};
+      preparation_reentry=&hook;
+      const auto result=outer.Acquire(Request(51,static_cast<M>(requested)),Memory(110),refused,{});
+      Check(hook.reached && result.code==C::recursive && !refused && first,
+            "ownership rechecked after actual record preparation for every mode pair");
+      Check(domain.Collect()==S::ok && domain.Snapshot().retired==1,"refused outer record collected without touching nested holder");
+      Check(first.Release(hook.request).code==C::released,"prepared nested holder retains exact release path");
+    });
+}
 #endif
 } // namespace
 int main() {
-  Matrix(); Ownership(); Exhaustion(); MultipleRetainedHolders(); RetainedTerminals();
+  Matrix(); Ownership(); Nonrecursive(); Exhaustion(); MultipleRetainedHolders(); RetainedTerminals();
 #if defined(SB_MODE_NATIVE_FAULT_GATE)
   ParkedLifetime();
   DomainClosesBeforeProtection();
+  PreparationOwnershipRecheck();
 #endif
   std::printf("PASS retained mode latch: %u checks\n",checks.load());
 }
