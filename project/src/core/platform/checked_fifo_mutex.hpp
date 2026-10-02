@@ -18,7 +18,7 @@ namespace scratchbird::core::platform {
 class CheckedFifoMutex {
  public:
   using Clock = std::chrono::steady_clock;
-  enum class Result { acquired, busy, recursive, exhausted, timed_out, cancelled, failed };
+  enum class Result { acquired, busy, recursive, exhausted, timed_out, cancelled, closed, failed };
   explicit CheckedFifoMutex(std::uint32_t waiter_limit) : limit_(waiter_limit) {}
   CheckedFifoMutex(const CheckedFifoMutex&) = delete;
   CheckedFifoMutex& operator=(const CheckedFifoMutex&) = delete;
@@ -27,23 +27,22 @@ class CheckedFifoMutex {
     if (held_ || head_ || tail_ || waiters_ || calls_) std::terminate();
   }
 
-  Result TryLock() {
+  Result TryLock(std::optional<Clock::time_point> deadline = {}, std::stop_token stop = {}) {
     std::lock_guard lock(mutex_);
     if (held_ && holder_ == std::this_thread::get_id()) return Result::recursive;
+    if (const auto terminal = Terminal(deadline, stop)) return *terminal;
     if (held_ || head_) return Result::busy;
     Grant();
     return Result::acquired;
   }
 
-  // Matches ordinary latch conflict-wait semantics: a grantable request need
-  // not wait; while conflicting, expiry precedes cancellation. This is NOT the
-  // semaphore terminal-selection API. The owning layer validates wait policy.
+  // For a valid ungranted request, select closed, cancelled, expired, then grant
+  // under the commit mutex. The owning layer still validates identity/policy.
   Result Lock(std::optional<Clock::time_point> deadline, std::stop_token stop = {}) {
     std::unique_lock lock(mutex_);
     if (held_ && holder_ == std::this_thread::get_id()) return Result::recursive;
+    if (const auto terminal = Terminal(deadline, stop)) return *terminal;
     if (!held_ && !head_) { Grant(); return Result::acquired; }
-    if (deadline && Clock::now() >= *deadline) return Result::timed_out;
-    if (stop.stop_requested()) return Result::cancelled;
     if (waiters_ == limit_ || calls_ == limit_)
       return Result::exhausted;
     Node node{tail_, nullptr};
@@ -60,9 +59,8 @@ class CheckedFifoMutex {
     Result result = Result::failed;
     try {
       for (;;) {
+        if (const auto terminal = Terminal(deadline, stop)) { result = *terminal; break; }
         if (!held_ && head_ == &node) { Grant(); result = Result::acquired; break; }
-        if (deadline && Clock::now() >= *deadline) { result = Result::timed_out; break; }
-        if (stop.stop_requested()) { result = Result::cancelled; break; }
         if (!changed_.Wait(lock, deadline)) break;
       }
     } catch (...) {
@@ -89,10 +87,17 @@ class CheckedFifoMutex {
     Notify();
     return true;
   }
-  struct Observation { bool held; std::uint32_t waiters; std::uint32_t calls; };
+  // Serialized with grant commit. This acknowledges close publication and wake
+  // initiation only, not holder release, callback join or safe destruction.
+  void Close() {
+    std::lock_guard lock(mutex_);
+    closed_ = true;
+    Notify();
+  }
+  struct Observation { bool held; std::uint32_t waiters; std::uint32_t calls; bool closed; };
   Observation Observe() {
     std::lock_guard lock(mutex_);
-    return {held_, waiters_, calls_};
+    return {held_, waiters_, calls_, closed_};
   }
  private:
   struct Node { Node* previous; Node* next; };
@@ -106,6 +111,13 @@ class CheckedFifoMutex {
   static void Relock(std::unique_lock<std::mutex>& lock) noexcept {
     try { lock.lock(); } catch (...) { std::terminate(); }
   }
+  std::optional<Result> Terminal(std::optional<Clock::time_point> deadline,
+                                  std::stop_token stop) const noexcept {
+    if (closed_) return Result::closed;
+    if (stop.stop_requested()) return Result::cancelled;
+    if (deadline && Clock::now() >= *deadline) return Result::timed_out;
+    return std::nullopt;
+  }
   void Notify() noexcept { if (!changed_.NotifyAll()) std::terminate(); }
   void Grant() noexcept { held_ = true; holder_ = std::this_thread::get_id(); }
   const std::uint32_t limit_;
@@ -117,5 +129,6 @@ class CheckedFifoMutex {
   std::uint32_t waiters_ = 0;
   std::uint32_t calls_ = 0;
   bool held_ = false;
+  bool closed_ = false;
 };
 } // namespace scratchbird::core::platform
