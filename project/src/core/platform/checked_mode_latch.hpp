@@ -11,7 +11,7 @@
 namespace scratchbird::core::platform {
 
 // Native mechanism, not an engine latch descriptor or admission authority.
-// The owner validates allowed modes, recursion, order, current execution and
+// The owner validates allowed modes, order, current execution and
 // policy before entry, retains this object and every grant, and joins all calls
 // before destruction. No conversion API: conversion barriers/generations belong
 // to the owning layer. A rank is an already-admitted arbitration rank (smaller
@@ -24,7 +24,7 @@ class CheckedModeLatch {
     none, shared_read, intent_read, intent_write, exclusive_write, upgrade,
     cleanup, recovery, flush, eviction, publication, verification
   };
-  enum class Result { acquired, busy, invalid, exhausted, timed_out, cancelled, closed, failed };
+  enum class Result { acquired, busy, invalid, recursive, exhausted, timed_out, cancelled, closed, failed };
 
   // Intrusive, nonmoving caller-owned record. Exclusive borrow for Acquire and
   // Release; do not destroy or reuse until the call completes. An active record
@@ -71,6 +71,7 @@ class CheckedModeLatch {
       std::optional<OwnerIdentity> owner = {}) {
     std::lock_guard lock(mutex_);
     if (!Valid(mode) || grant.latch_) return Result::invalid;
+    if (Recursive()) return Result::recursive;
     if (auto result = Terminal(deadline, stop)) return *result;
     if (holder_count_ == holder_limit_) return Result::exhausted;
     if (head_ || !CanGrant(mode)) return Result::busy;
@@ -83,6 +84,7 @@ class CheckedModeLatch {
       std::optional<OwnerIdentity> owner = {}) {
     std::unique_lock lock(mutex_);
     if (!Valid(mode) || grant.latch_) return Result::invalid;
+    if (Recursive()) return Result::recursive;
     if (auto result = Terminal(deadline, stop)) return *result;
     if (!holder_limit_) return Result::exhausted;
     if (!head_ && holder_count_ < holder_limit_ && CanGrant(mode)) {
@@ -108,6 +110,7 @@ class CheckedModeLatch {
     Result result = Result::failed;
     try {
       for (;;) {
+        if (Recursive()) { result = Result::recursive; break; }
         if (auto terminal = Terminal(deadline, stop)) { result = *terminal; break; }
         if (head_ == &node && holder_count_ < holder_limit_ && CanGrant(mode)) {
           Commit(grant, mode, owner);
@@ -156,6 +159,7 @@ class CheckedModeLatch {
   std::optional<Result> Preflight(std::optional<Clock::time_point> deadline,
                                    std::stop_token stop = {}) {
     std::lock_guard lock(mutex_);
+    if (Recursive()) return Result::recursive;
     return Terminal(deadline, stop);
   }
   // Observation is not a lifetime fence, a drain receipt, or engine authority.
@@ -188,6 +192,14 @@ class CheckedModeLatch {
     for (auto* holder = holders_; holder; holder = holder->next_)
       if (!Compatible(mode, holder->mode_)) return false;
     return true;
+  }
+  bool Recursive() const noexcept {
+    // Native grants are thread-affine. A changed request/task token cannot
+    // authorize reentry on the holding execution. A task UUID shared by two
+    // different native executions is not by itself recursive ownership.
+    for (auto* holder = holders_; holder; holder = holder->next_)
+      if (holder->thread_ == std::this_thread::get_id()) return true;
+    return false;
   }
   void Commit(Grant& grant, Mode mode, const std::optional<OwnerIdentity>& owner) noexcept {
     grant.latch_ = this;

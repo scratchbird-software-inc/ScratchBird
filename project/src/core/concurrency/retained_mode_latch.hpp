@@ -7,7 +7,7 @@
 namespace scratchbird::core::concurrency {
 
 // Retained native mechanism, NOT an admitted reader/writer or intent descriptor.
-// Its owning adapter must validate class/mode/recursion/order, current execution
+// Its owning adapter must validate class/mode/order, current execution
 // authority and admitted arbitration rank. No conversion or bypass is exposed.
 // Binary instance/generation and exact request bindings prevent stale/mismatched
 // use; they do not manufacture authority. Domain/resource outlive all wrappers.
@@ -35,7 +35,7 @@ struct ModeLatchGrantMemory {
   memory::SafeRetirementHazard latch_hazard, record_hazard;
 };
 enum class ModeLatchCode {
-  acquired, released, drained, invalid, wrong_owner, no_grant, busy, exhausted,
+  acquired, released, drained, invalid, wrong_owner, no_grant, busy, recursive, exhausted,
   closed, cancelled, timed_out, memory_failed, synchronization_failed
 };
 struct ModeLatchResult {
@@ -61,6 +61,7 @@ inline ModeLatchCode ModeNativeCode(ModeLatchNative::Result result) noexcept {
     case N::acquired: return C::acquired;
     case N::busy: return C::busy;
     case N::invalid: return C::invalid;
+    case N::recursive: return C::recursive;
     case N::exhausted: return C::exhausted;
     case N::closed: return C::closed;
     case N::cancelled: return C::cancelled;
