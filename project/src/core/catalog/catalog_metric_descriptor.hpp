@@ -113,6 +113,7 @@ CatalogValueEncodeResult EncodeCatalogMetricDescriptor(const CatalogMetricDescri
 CatalogMetricDescriptorResult DecodeCatalogMetricDescriptor(std::string_view);
 bool IsCatalogMetricDescriptorPayload(std::string_view);
 bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord&);
+bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
 }  // namespace scratchbird::core::catalog

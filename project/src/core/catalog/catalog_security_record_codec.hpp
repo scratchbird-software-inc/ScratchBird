@@ -54,5 +54,6 @@ CatalogValueEncodeResult EncodeCatalogSecurityRecord(const CatalogSecurityRecord
 CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
     CatalogRecordKind kind, std::string_view bytes);
 bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecord& record);
+bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecordView& record);
 
 }  // namespace scratchbird::core::catalog

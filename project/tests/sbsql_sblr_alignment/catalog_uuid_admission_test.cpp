@@ -30,6 +30,40 @@ void Check(bool condition, const char* message) {
   ++checks;
   if (!condition && ++failures <= 12) std::cerr << "FAIL " << message << '\n';
 }
+void DiagnosticParity(const cat::CatalogRecordDiagnosticView& view,const p::DiagnosticRecord& owned) {
+  Check(view.status.code==owned.status.code&&view.status.severity==owned.status.severity&&
+      view.status.subsystem==owned.status.subsystem,"borrowed diagnostic status parity");
+  Check(view.diagnostic_code==owned.diagnostic_code&&view.message_key==owned.message_key&&
+      view.origin==owned.source_component,"borrowed diagnostic identity parity");
+  Check(owned.arguments.size()==(view.detail.empty()?0u:1u),"borrowed diagnostic argument count");
+  if(!view.detail.empty()&&owned.arguments.size()==1)Check(owned.arguments[0].key=="detail"&&
+      owned.arguments[0].text()&&*owned.arguments[0].text()==view.detail,"borrowed diagnostic detail parity");
+}
+template<class F> auto BorrowedCheck(F action) {
+#ifdef SB_CATALOG_TYPED_BORROWED_MEMORY_GATE
+  return WithoutRecordHeap(action);
+#else
+  return action();
+#endif
+}
+cat::CatalogRecordCodecResult CheckedEncode(const cat::CatalogTypedRecord& record,p::u32 ordinal) {
+  auto result=cat::EncodeCatalogTypedRecord(record,ordinal);
+  const auto view=BorrowedCheck([&]{return cat::ValidateCatalogTypedRecordView(cat::BorrowCatalogTypedRecord(record));});
+  Check(view.ok()==result.ok(),"borrowed typed admission parity");
+  if(!view.ok())DiagnosticParity(view.diagnostic,result.diagnostic);
+  else Check(view.record->payload.data()==record.payload.data()&&view.record->payload==record.payload,
+      "validation borrows original payload");
+  return result;
+}
+cat::CatalogRecordCodecResult CheckedDecode(const cat::CatalogPageRow& row) {
+  auto result=cat::DecodeCatalogTypedRecord(row);
+  const auto view=BorrowedCheck([&]{return cat::DecodeCatalogTypedRecordView(row.kind,row.payload);});
+  Check(view.ok()==result.ok(),"borrowed typed decode parity");
+  if(!view.ok())DiagnosticParity(view.diagnostic,result.diagnostic);
+  else Check(view.record->payload.data()==row.payload.data()+96&&view.record->payload==result.record.payload,
+      "decode borrows original input");
+  return result;
+}
 void Refused(const cat::CatalogRecordCodecResult& result) {
   Check(!result.ok(), "malformed supplied catalog UUID encoded successfully");
   Check(!result.diagnostic.diagnostic_code.empty(), "missing catalog refusal diagnostic");
@@ -58,11 +92,11 @@ std::string Golden(const cat::CatalogTypedRecord& record) {
   return out;
 }
 void Roundtrip(const cat::CatalogTypedRecord& record) {
-  const auto encoded = cat::EncodeCatalogTypedRecord(record, 17);
+  const auto encoded = CheckedEncode(record, 17);
   Check(encoded.ok(), "valid catalog header refused");
   if (!encoded.ok()) return;
   Check(encoded.row.payload == Golden(record), "writer differs from independent full-byte oracle");
-  const auto decoded = cat::DecodeCatalogTypedRecord(encoded.row);
+  const auto decoded = CheckedDecode(encoded.row);
   Check(decoded.ok(), "writer emitted a record its decoder rejects");
   if (!decoded.ok()) return;
   Check(decoded.row.ordinal == 17 && decoded.record.header.kind == record.header.kind &&
@@ -80,22 +114,22 @@ void Roundtrip(const cat::CatalogTypedRecord& record) {
         "writer still uses text identity header");
 }
 void DecodeAdmission(const cat::CatalogTypedRecord& base) {
-  const auto encoded = cat::EncodeCatalogTypedRecord(base, 17);
+  const auto encoded = CheckedEncode(base, 17);
   Check(encoded.ok(), "decode admission fixture did not encode");
   if (!encoded.ok()) return;
   auto row = encoded.row;
   const auto valid = row.payload;
   for (std::size_t length = 0; length < valid.size(); ++length) {
     row.payload = valid.substr(0, length);
-    Refused(cat::DecodeCatalogTypedRecord(row));
+    Refused(CheckedDecode(row));
   }
-  row.payload = valid + "tail"; Refused(cat::DecodeCatalogTypedRecord(row));
+  row.payload = valid + "tail"; Refused(CheckedDecode(row));
   row.payload = "kind=1\nrecord_version=1\nrow_uuid=old\n" + std::string(100, 'x');
-  Refused(cat::DecodeCatalogTypedRecord(row));
+  Refused(CheckedDecode(row));
   const auto bad = [&](std::size_t offset, p::u64 value, std::size_t count) {
     row.payload = valid;
     Put(row.payload, offset, value, count);
-    Refused(cat::DecodeCatalogTypedRecord(row));
+    Refused(CheckedDecode(row));
   };
   for (std::size_t offset = 0; offset < 8; ++offset) bad(offset, 0, 1);
   bad(8, 1, 2); bad(10, 95, 2); bad(12, 0, 4); bad(12, 0xffffffffu, 4);
@@ -111,7 +145,7 @@ void DecodeAdmission(const cat::CatalogTypedRecord& base) {
           std::find(durable_kinds.begin(), durable_kinds.end(), typed) != durable_kinds.end();
       row.payload = valid;
       Put(row.payload, 32 + slot, kind, 1);
-      const auto decoded = cat::DecodeCatalogTypedRecord(row);
+      const auto decoded = CheckedDecode(row);
       if (!accepted) Refused(decoded);
       else Check(decoded.ok() && (decoded.record.header.*fields[slot]).kind == typed,
                  "valid decoded durable kind changed");
@@ -123,17 +157,17 @@ void DecodeAdmission(const cat::CatalogTypedRecord& base) {
         const auto offset = 40 + slot * 16;
         row.payload[offset + 6] = static_cast<char>((static_cast<unsigned char>(valid[offset + 6]) & 15) | version << 4);
         row.payload[offset + 8] = static_cast<char>((static_cast<unsigned char>(valid[offset + 8]) & 63) | variant << 6);
-        Refused(cat::DecodeCatalogTypedRecord(row));
+        Refused(CheckedDecode(row));
       }
     row.payload = valid;
     row.payload.replace(40 + slot * 16, 16, std::string(16, '\0'));
-    Refused(cat::DecodeCatalogTypedRecord(row));
+    Refused(CheckedDecode(row));
   }
 }
 
 void PageContainer(const cat::CatalogTypedRecord& record) {
   namespace page = scratchbird::storage::page;
-  const auto row = cat::EncodeCatalogTypedRecord(record, 17);
+  const auto row = CheckedEncode(record, 17);
   const auto pages = page::BuildCatalogPageSet({row.row}, 16384, 10, 11);
   Check(pages.ok() && pages.pages.size() == 1, "binary record does not pack into real catalog page");
   if (!pages.ok() || pages.pages.size() != 1) return;
@@ -141,7 +175,7 @@ void PageContainer(const cat::CatalogTypedRecord& record) {
   Check(parsed.ok() && parsed.body.rows.size() == 1, "real catalog page failed to parse");
   if (!parsed.ok() || parsed.body.rows.size() != 1) return;
   Check(parsed.body.rows[0].payload == row.row.payload, "catalog page changed binary header or payload");
-  const auto decoded = cat::DecodeCatalogTypedRecord(parsed.body.rows[0]);
+  const auto decoded = CheckedDecode(parsed.body.rows[0]);
   Check(decoded.ok() && decoded.record.payload == record.payload, "page-to-record payload changed");
   auto corrupted = pages.pages.front().body;
   corrupted[page::kCatalogPageBodyHeaderBytes + 20 + 40] ^= 1;
@@ -271,7 +305,7 @@ int main() {
           value.bytes[6] = static_cast<p::byte>((value.bytes[6] & 15) | (version << 4));
           value.bytes[8] = static_cast<p::byte>((value.bytes[8] & 63) | (variant << 6));
           if (version == 7 && variant == 2) Roundtrip(record);
-          else Refused(cat::EncodeCatalogTypedRecord(record, 17));
+          else Refused(CheckedEncode(record, 17));
         }
       }
       for (unsigned raw = 0; raw < 256; ++raw) {
@@ -282,12 +316,12 @@ int main() {
         const bool accepted = slot == 0 ? kind == UuidKind::row : slot == 1 ? kind == UuidKind::object :
             std::find(durable_kinds.begin(), durable_kinds.end(), kind) != durable_kinds.end();
         if (accepted) Roundtrip(record);
-        else Refused(cat::EncodeCatalogTypedRecord(record, 17));
+        else Refused(CheckedEncode(record, 17));
       }
       ++cases;
       auto nil = base;
       (nil.header.*fields[slot]).value = {};
-      Refused(cat::EncodeCatalogTypedRecord(nil, 17));
+      Refused(CheckedEncode(nil, 17));
     }
     // UUID-looking ordinary payloads are not header authority.
     for (unsigned version = 1; version <= 7; ++version) {
@@ -299,7 +333,7 @@ int main() {
       if (HasTypedFamilyPayload(record.header.kind)) {
         // A registered typed family rejects arbitrary text, even when it
         // contains a valid UUID. Annotation text within that family is data.
-        Refused(cat::EncodeCatalogTypedRecord(record, 17));
+        Refused(CheckedEncode(record, 17));
         SetFamilyPayload(record, record.payload);
       }
       Roundtrip(record);
@@ -307,7 +341,7 @@ int main() {
   }
   base.payload.clear(); Roundtrip(base);
   base.payload.assign(131072 - 96, '\0'); Roundtrip(base);
-  base.payload.push_back('x'); Refused(cat::EncodeCatalogTypedRecord(base, 17));
+  base.payload.push_back('x'); Refused(CheckedEncode(base, 17));
   std::cout << "checks=" << checks << " failures=" << failures << " record_kinds=" << descriptors.size()
             << " header_cases=" << cases << '\n';
   return failures == 0 ? 0 : 1;

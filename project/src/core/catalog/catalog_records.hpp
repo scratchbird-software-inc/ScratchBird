@@ -13,6 +13,8 @@
 #include "runtime_platform.hpp"
 
 #include <string>
+#include <string_view>
+#include <span>
 #include <vector>
 
 namespace scratchbird::core::catalog {
@@ -95,6 +97,18 @@ struct CatalogRecordDescriptor {
   CatalogRecordKind kind = CatalogRecordKind::unknown;
   CatalogRecordScope scope = CatalogRecordScope::unknown;
   std::string stable_name;
+  bool requires_row_uuid = true;
+  bool requires_object_uuid = false;
+  bool requires_parent_uuid = false;
+  bool may_reference_toast = false;
+  bool mutable_after_create = false;
+  bool parser_visible = false;
+  bool engine_authority = true;
+};
+struct CatalogRecordDescriptorView {
+  CatalogRecordKind kind = CatalogRecordKind::unknown;
+  CatalogRecordScope scope = CatalogRecordScope::unknown;
+  std::string_view stable_name;
   bool requires_row_uuid = true;
   bool requires_object_uuid = false;
   bool requires_parent_uuid = false;
@@ -193,6 +207,10 @@ struct CatalogRecordValidationResult {
 const char* CatalogRecordKindName(CatalogRecordKind kind);
 const char* CatalogRecordScopeName(CatalogRecordScope scope);
 const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors();
+// Immutable process-lifetime views of the same builtin registry, without
+// first-use allocation. A missing kind never acquires a default descriptor.
+std::span<const CatalogRecordDescriptorView> BuiltinCatalogRecordDescriptorViews() noexcept;
+const CatalogRecordDescriptorView* FindBuiltinCatalogRecordDescriptor(CatalogRecordKind) noexcept;
 CatalogRecordValidationResult LookupCatalogRecordDescriptor(CatalogRecordKind kind);
 CatalogRecordValidationResult ValidateCatalogRecordDescriptor(const CatalogRecordDescriptor& descriptor);
 DiagnosticRecord MakeCatalogRecordDiagnostic(Status status,

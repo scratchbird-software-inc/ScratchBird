@@ -47,6 +47,7 @@ CatalogValueEncodeResult EncodeCatalogMetricVisibilityPolicy(const CatalogMetric
 CatalogMetricVisibilityPolicyResult DecodeCatalogMetricVisibilityPolicy(std::string_view);
 bool IsCatalogMetricVisibilityPolicyPayload(std::string_view);
 bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecord&);
+bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricVisibilityPolicyPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
 }  // namespace scratchbird::core::catalog

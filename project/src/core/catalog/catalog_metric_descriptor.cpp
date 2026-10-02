@@ -250,10 +250,13 @@ bool IsCatalogMetricDescriptorPayload(std::string_view bytes) {
   return bytes.size()>=kCatalogValueBlockHeaderBytes && bytes.substr(0,4)=="SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16)==65544;
 }
-bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind!=CatalogRecordKind::metric_descriptor || !Identity(r.header.object_uuid,UuidKind::object)) return false;
   const auto decoded=DecodeCatalogMetricDescriptorView(r.payload);
   return decoded.ok() && decoded.record->binding.metric_uuid==r.header.object_uuid.value;
+}
+bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricDescriptorMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
   if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!="metric_descriptor" ||

@@ -39,4 +39,5 @@ const CatalogValueSchema& CatalogStorageRecordSchema();
 CatalogValueEncodeResult EncodeCatalogStorageRecord(const CatalogStorageRecord& record);
 CatalogStorageRecordDecodeResult DecodeCatalogStorageRecord(std::string_view bytes);
 bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecord& record);
+bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecordView& record);
 }  // namespace scratchbird::core::catalog

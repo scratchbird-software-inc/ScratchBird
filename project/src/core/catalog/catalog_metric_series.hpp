@@ -92,6 +92,7 @@ CatalogValueEncodeResult EncodeCatalogMetricSeries(const CatalogMetricSeries&);
 CatalogMetricSeriesResult DecodeCatalogMetricSeries(std::string_view);
 bool IsCatalogMetricSeriesPayload(std::string_view);
 bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecord&);
+bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
 // Structural construction from explicitly selected definitions. Never looks

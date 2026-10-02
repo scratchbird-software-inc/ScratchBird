@@ -88,6 +88,7 @@ CatalogValueEncodeResult EncodeCatalogMetricLabelSchema(const CatalogMetricLabel
 CatalogMetricLabelSchemaResult DecodeCatalogMetricLabelSchema(std::string_view);
 bool IsCatalogMetricLabelSchemaPayload(std::string_view);
 bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecord&);
+bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
 // Structural comparison only. The caller still owns actual catalog snapshot,

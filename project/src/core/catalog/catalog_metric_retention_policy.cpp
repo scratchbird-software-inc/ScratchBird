@@ -135,11 +135,14 @@ bool IsCatalogMetricRetentionPolicyPayload(std::string_view bytes) {
   return bytes.size() >= kCatalogValueBlockHeaderBytes && bytes.substr(0, 4) == "SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16) == 65543;
 }
-bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::policy ||
       !Identity(r.header.object_uuid, UuidKind::object)) return false;
   const auto decoded = DecodeCatalogMetricRetentionPolicyView(r.payload);
   return decoded.ok() && decoded.record->policy_uuid == r.header.object_uuid.value;
+}
+bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricRetentionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
   if (!CatalogMetricRetentionPolicyMatchesHeader(m.record) ||
