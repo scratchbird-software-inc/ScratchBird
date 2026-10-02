@@ -40,7 +40,8 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRange(
   const auto fail=[&](E e){result.error=e;return std::move(result);};
   try {
     if(memory){
-      result.memory_error=memory->CheckBinding(intent.database_uuid,intent.operation_uuid);
+      result.memory_error=memory->CheckBinding({intent.database_uuid,intent.operation_uuid,
+        intent.initiator_uuid,intent.request_context_uuid});
       if(result.memory_error!=NativeStorageMemoryError::none)return fail(E::memory_binding_failure);
     }
     auto devices=supplied;

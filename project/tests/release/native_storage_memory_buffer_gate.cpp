@@ -105,11 +105,27 @@ void Refusals(){
     grant.reset();f.Empty();
   }
   Fixture f(p.page_size_bytes-1);auto memory=f.Memory();
-  Check(memory.Matches(f.binding.database_uuid,f.binding.operation_uuid)&&!memory.Matches(Id(99),f.binding.operation_uuid)&&
-    !memory.Matches(f.binding.database_uuid,Id(99)),"exact database and operation binding");
+  Check(memory.Matches(f.binding)&&memory.CheckBinding(f.binding)==E::none,"exact full native memory binding");
+  for(unsigned field=0;field<4;++field)for(unsigned variant=0;variant<3;++variant){
+    auto wrong=f.binding;
+    const std::array<Uuid*,4> fields{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+    if(variant==0)*fields[field]=Id(99);
+    if(variant==1)*fields[field]={};
+    if(variant==2)fields[field]->bytes[6]=0x40;
+    const auto physical=f.manager.Snapshot();const auto grant=memory.Snapshot();
+    fail_after=0;const auto result=memory.CheckBinding(wrong);const auto remaining=fail_after;fail_after=-1;
+    Check(result==E::invalid_binding&&remaining==0&&!memory.Matches(wrong),"all four mismatched or invalid native identities refuse without allocation");
+    Check(memory.Matches(f.binding)&&memory.Snapshot().allocated_bytes==grant.allocated_bytes&&
+      memory.Snapshot().reserved_bytes==grant.reserved_bytes&&
+      f.manager.Snapshot().allocation_count==physical.allocation_count,"foreign check leaves original resource owner unchanged");
+  }
   auto bad=memory.AllocatePage(Id(99));Check(!bad.ok()&&bad.error==E::invalid_profile&&!f.manager.Snapshot().current_bytes,"unknown profile no payload");
   bad=memory.AllocatePage(p.uuid);Check(!bad.ok()&&bad.error==E::resource_exhausted&&!f.manager.Snapshot().current_bytes,"one byte short cannot allocate");
+  const auto revoked=f.ledger.CleanupOwner(f.binding.owner_uuid.bytes);
+  Check(revoked.retained_bytes==p.page_size_bytes-1&&memory.CheckBinding(f.binding)==E::invalid_grant&&
+    !memory.Matches(f.binding),"matching full binding cannot revive a revoked grant");
   memory={};f.Empty();
+  Check(memory.CheckBinding(f.binding)==E::invalid_grant&&!memory.Matches(f.binding),"released workspace has no binding authority");
   std::unique_ptr<m::ReservationBackedMemoryResource> missing;
   auto none=db::AdoptNativeStorageMemory(f.binding,missing);Check(!none.ok(),"no fabricated grant");
 }

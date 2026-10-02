@@ -45,10 +45,7 @@ inline NativeStoragePreallocationProposalResult ResolveNativeStoragePreallocatio
       if(!core::uuid::IsEngineIdentityUuid(*id))return result;
     if(!demand.first_page||!demand.page_count||!demand.allocation_page_type||
         !disk::IsRegisteredNativePageType(demand.allocation_page_type))return result;
-    result.memory_error=memory.CheckBinding(database,operation);
-    if(result.memory_error==NativeStorageMemoryError::none&&
-        (memory.binding().owner_uuid!=context.initiator_uuid||memory.binding().context_uuid!=context.request_context_uuid))
-      result.memory_error=NativeStorageMemoryError::invalid_binding;
+    result.memory_error=memory.CheckBinding({database,operation,context.initiator_uuid,context.request_context_uuid});
     if(result.memory_error!=NativeStorageMemoryError::none)return fail(E::memory_binding_failure);
     if(budget<=kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
     auto devices=supplied;
