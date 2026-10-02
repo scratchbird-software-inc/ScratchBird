@@ -134,7 +134,14 @@ class RuntimeSemaphoreGrant {
     if (!state_) { last_code_ = C::no_grant; return last_code_; }
     auto* state = state_;
     {
-      std::lock_guard lock(state->lifetime);
+      std::unique_lock lock(state->lifetime,std::defer_lock);
+      try { lock.lock(); }
+      catch (const std::system_error&) {
+        // No state was touched. Retain the real capability and memory guard;
+        // the owning caller can inspect Diagnostic() and retry after recovery.
+        // A mutex we could not acquire cannot protect an occurrence-slot write.
+        last_code_ = C::synchronization_failed; return last_code_;
+      }
       last_code_ = permit_.Release(expected);
       if (last_code_ != C::released) { state->RecordFailureLocked(Diagnostic()); return last_code_; }
       if (!state->retained_grants) std::terminate();

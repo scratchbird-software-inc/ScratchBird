@@ -696,6 +696,23 @@ void RetainedPhysicalReleaseFailure(bool worker) {
         "local semaphore drain never fabricates physical release receipt");
   f.Finish();
 }
+void RetainedLifetimeLockFailure(bool worker) {
+  RetainedFixture f(worker); auto grant = f.Grant(20); f.Close();
+  ParkProbe park; park.fail = true; probe = &park;
+  const auto drain = f.owner->Drain(Clock::now()+std::chrono::seconds(5)); probe = nullptr;
+  Check(drain.code == Code::synchronization_failed && park.native_mutex,
+        "actual drain exposes lifetime mutex for native lock fault");
+  const auto bytes = f.f.manager.Snapshot().current_bytes;
+  fail_lock_target = park.native_mutex;
+  std::cerr << "actual retained release lifetime-lock fault armed\n";
+  const auto released = grant.permit.Release(f.f.Request(worker));
+  Check(released == Code::synchronization_failed && grant.permit && grant.permit.Diagnostic(),
+        "failed lifetime lock returns typed failure with original owning grant");
+  Check(f.owner->Snapshot().governor.holders == 1 && f.f.manager.Snapshot().current_bytes == bytes,
+        "failed lifetime lock never changes native unit or physical storage");
+  Check(grant.permit.Release(f.f.Request(worker)) == Code::released, "lifetime lock failure permits actual owning retry");
+  f.Finish();
+}
 // Fresh executable children test the actual owner destructor. The observer
 // examines the protected occurrence and real charges before process exit;
 // OS cleanup is deliberately not interpreted as an owning release receipt.
@@ -888,6 +905,7 @@ int main(int argc, char** argv) {
     RetainedLateDelivery(worker,false); RetainedLateDelivery(worker,true);
     RetainedDeliveryFailure(worker); RetainedReleaseFailure(worker);
     RetainedInvalidRelease(worker); RetainedPhysicalReleaseFailure(worker);
+    RetainedLifetimeLockFailure(worker);
     RetainedReferenceBounds(worker); RetainedHazardBounds(worker); RetainedInitializationFailure(worker);
     RetainedAllocationFailures(worker);
     for (unsigned mode = 0; mode != 3; ++mode) RetainedDrainFailure(worker,mode);
