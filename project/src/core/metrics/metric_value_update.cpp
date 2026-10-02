@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "metric_value_update.hpp"
 #include "metric_descriptor_validation.hpp"
+#include "metric_value_validation.hpp"
 #include "metric_label_key.hpp"
 #include <limits>
 #include <new>
@@ -17,7 +18,6 @@ E ArithmeticError(MetricScalarError error) {
     default:return E::invalid_observation;
   }
 }
-bool Numeric(MetricScalarType type) {return type>=MetricScalarType::uint64&&type<=MetricScalarType::decimal128;}
 bool Negative(const MetricScalar& value) {
   const auto zero=MetricScalarZero(MetricScalarTypeOf(value));
   if(!zero)return false;
@@ -29,48 +29,16 @@ bool ValidateMetricHistogramDescriptor(const MetricDescriptorDefinition& d) noex
   return detail::ValidateHistogramDescriptor(d);
 }
 bool ValidateMetricValueDescriptor(const MetricDescriptorDefinition& d) noexcept {
-  return ValidateMetricScalarDescriptor(d)==MetricScalarError::none&&ValidateMetricHistogramDescriptor(d)&&
-      (d.type!=MetricType::counter||Numeric(d.value_type))&&
-      (d.type!=MetricType::state||d.value_type==MetricScalarType::enumeration)&&
-      (d.type==MetricType::counter||d.type==MetricType::gauge||d.type==MetricType::histogram||
-       d.type==MetricType::state||d.type==MetricType::sample)&&!d.rate_window_nanoseconds;
+  return detail::ValueDescriptor(d,false);
 }
 bool ValidateStoredMetricValueDescriptor(const MetricDescriptorDefinition& d) noexcept {
-  return d.type==MetricType::rate ? Numeric(d.value_type)&&d.rate_window_nanoseconds&&
-      ValidateMetricScalarDescriptor(d)==MetricScalarError::none&&ValidateMetricHistogramDescriptor(d) :
-      ValidateMetricValueDescriptor(d);
-}
-namespace {
-bool ValueShape(const MetricDescriptorDefinition& d,const MetricValue& v,bool stored) {
-  const bool rate=stored&&d.type==MetricType::rate;
-  const bool descriptor_valid=stored?ValidateStoredMetricValueDescriptor(d):ValidateMetricValueDescriptor(d);
-  if(!descriptor_valid||
-      v.family!=d.family||v.type!=d.type||!ValidateMetricLabelSet(d,v.labels).ok||
-      ValidateMetricObservationScalar(d,v.value)!=MetricScalarError::none)return false;
-  if((d.type==MetricType::counter||rate)&&(!Numeric(d.value_type)||Negative(v.value)))return false;
-  if(d.type==MetricType::state&&d.value_type!=MetricScalarType::enumeration)return false;
-  if(d.type!=MetricType::state&&!v.state_text.empty())return false;
-  if(!MetricScalarValid(MetricScalar(v.state_text)))return false;
-  if(d.type!=MetricType::histogram)return v.count==0&&v.buckets.empty()&&v.bucket_bounds.empty()&&v.buckets_cumulative&&
-      std::holds_alternative<std::monostate>(v.sum)&&
-      (d.type==MetricType::counter||rate||!v.arithmetic_inexact);
-  if(!v.count||v.buckets.size()!=d.histogram_buckets.size()+1||
-      v.bucket_bounds!=d.histogram_buckets||v.buckets_cumulative!=d.histogram_cumulative||
-      MetricScalarTypeOf(v.sum)!=d.value_type||!MetricScalarValid(v.sum))return false;
-  u64 accumulated=0;
-  for(std::size_t i=0;i<v.buckets.size();++i){
-    const auto count=v.buckets[i];if(count>v.count)return false;
-    if(d.histogram_cumulative){if(i&&count<v.buckets[i-1])return false;}
-    else {if(count>std::numeric_limits<u64>::max()-accumulated)return false;accumulated+=count;}
-  }
-  return d.histogram_cumulative?v.buckets.back()==v.count:accumulated==v.count;
-}
+  return detail::ValueDescriptor(d,true);
 }
 bool ValidateMetricValueShape(const MetricDescriptorDefinition& d,const MetricValue& v) {
-  return ValueShape(d,v,false);
+  return detail::ValueShape(d,v,false);
 }
 bool ValidateStoredMetricValueShape(const MetricDescriptorDefinition& d,const MetricValue& v) {
-  return ValueShape(d,v,true);
+  return detail::ValueShape(d,v,true);
 }
 MetricValueUpdateResult StageMetricValueUpdate(const MetricDescriptorDefinition& d,
     const MetricLabelSet& labels,const MetricValue* previous,const MetricScalar& observation,

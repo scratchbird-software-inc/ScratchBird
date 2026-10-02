@@ -69,29 +69,40 @@ inline bool MetricDescriptorReferencesValid(const Definition& d,
   return b.rate_source_counter_uuid.is_nil() && !b.rate_source_counter_generation && !d.rate_window_nanoseconds;
 }
 
-inline MetricValidationResult ValidateMetricLabelSet(
-    const MetricDescriptorDefinition& descriptor, const MetricLabelSet& labels) {
-  for (std::size_t i = 0; i < labels.size(); ++i) {
-    const auto& value = labels[i];
+namespace detail {
+enum class LabelIssue { none, empty_key, duplicate, unknown, invalid, missing };
+struct LabelValidation { LabelIssue issue = LabelIssue::none; std::string_view key; };
+inline bool LabelTextPresent(const MetricLabelValue& value) {
+  const auto* text = std::get_if<std::string>(&value);
+  return text && !text->empty();
+}
+inline bool LabelTextPresent(const std::variant<std::string_view, MetricUuid>& value) {
+  const auto* text = std::get_if<std::string_view>(&value);
+  return text && !text->empty();
+}
+template<class Definition, class Labels>
+LabelValidation ValidateLabels(const Definition& descriptor, const Labels& labels) {
+  for (auto at = labels.begin(); at != labels.end(); ++at) {
+    const auto& value = *at;
     if (value.key.empty())
-      return {false, "SB-METRICS-LABEL-INVALID", descriptor.family};
-    for (std::size_t n = 0; n < i; ++n)
-      if (labels[n].key == value.key)
-        return {false, "SB-METRICS-LABEL-INVALID", descriptor.family + ":duplicate:" + value.key};
+      return {LabelIssue::empty_key, {}};
+    for (auto previous = labels.begin(); previous != at; ++previous)
+      if ((*previous).key == value.key)
+        return {LabelIssue::duplicate, value.key};
     const auto schema = std::find_if(descriptor.labels.begin(), descriptor.labels.end(),
         [&](const auto& label) { return label.key == value.key; });
     if (schema == descriptor.labels.end())
-      return {false, "SB-METRICS-LABEL-UNKNOWN", descriptor.family + ":" + value.key};
-    if (MetricOwnerLabel(value.key) && schema->value_type != MetricLabelType::system_uuid)
-      return {false, "SB-METRICS-LABEL-INVALID", descriptor.family + ":" + value.key};
+      return {LabelIssue::unknown, value.key};
+    const auto& definition = *schema;
+    if (MetricOwnerLabel(value.key) && definition.value_type != MetricLabelType::system_uuid)
+      return {LabelIssue::invalid, value.key};
     bool valid = false;
-    if (schema->value_type == MetricLabelType::text) {
-      const auto* text = std::get_if<std::string>(&value.value);
-      valid = text && !text->empty();
-    } else if (schema->value_type == MetricLabelType::system_uuid) {
+    if (definition.value_type == MetricLabelType::text) {
+      valid = LabelTextPresent(value.value);
+    } else if (definition.value_type == MetricLabelType::system_uuid) {
       const auto* uuid = std::get_if<MetricUuid>(&value.value);
       valid = uuid && MetricSystemUuidValid(*uuid);
-    } else if (schema->value_type == MetricLabelType::uuid_value) {
+    } else if (definition.value_type == MetricLabelType::uuid_value) {
       // A UUID-valued data label is not a system identity. Older supported
       // UUID versions remain legal data and are never rewritten to v7.
       const auto* uuid = std::get_if<MetricUuid>(&value.value);
@@ -99,13 +110,24 @@ inline MetricValidationResult ValidateMetricLabelSet(
               (uuid->bytes[6] >> 4) >= 1 && (uuid->bytes[6] >> 4) <= 7;
     }
     if (!valid)
-      return {false, "SB-METRICS-LABEL-INVALID", descriptor.family + ":" + value.key};
+      return {LabelIssue::invalid, value.key};
   }
   for (const auto& schema : descriptor.labels)
     if (schema.required && std::none_of(labels.begin(), labels.end(),
         [&](const auto& label) { return label.key == schema.key; }))
-      return {false, "SB-METRICS-LABEL-REQUIRED-MISSING", descriptor.family + ":" + schema.key};
-  return {true, {}, {}};
+      return {LabelIssue::missing, schema.key};
+  return {};
+}
+}  // namespace detail
+inline MetricValidationResult ValidateMetricLabelSet(
+    const MetricDescriptorDefinition& descriptor, const MetricLabelSet& labels) {
+  const auto result = detail::ValidateLabels(descriptor, labels);
+  using I = detail::LabelIssue;
+  if (result.issue == I::none) return {true, {}, {}};
+  if (result.issue == I::empty_key) return {false, "SB-METRICS-LABEL-INVALID", descriptor.family};
+  const char* code = result.issue == I::unknown ? "SB-METRICS-LABEL-UNKNOWN" :
+      result.issue == I::missing ? "SB-METRICS-LABEL-REQUIRED-MISSING" : "SB-METRICS-LABEL-INVALID";
+  return {false, code, descriptor.family + (result.issue == I::duplicate ? ":duplicate:" : ":") + std::string(result.key)};
 }
 
 inline MetricSeriesKey MakeMetricSeriesKey(const std::string& family,

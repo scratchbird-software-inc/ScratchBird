@@ -23,27 +23,14 @@ template<class T,std::size_t N> byte Code(T t,const std::array<T,N>& values) {
   const auto it=std::find(values.begin(),values.end(),t);
   return it==values.end()?0:static_cast<byte>(it-values.begin()+1);
 }
-bool Text(const std::string& s) {return MetricScalarValid(MetricScalar(s));}
-bool Key(const std::string& s) {
-  return !s.empty()&&s.size()<=4096&&s.find('\0')==s.npos&&Text(s);
-}
-bool Less(const std::string& a,const std::string& b) {
-  return std::lexicographical_compare(a.begin(),a.end(),b.begin(),b.end(),
-      [](unsigned char x,unsigned char y){return x<y;});
-}
+bool Text(std::string_view s) { return MetricTextValid(s); }
+bool Key(std::string_view s) { return detail::ValueKey(s); }
+bool Less(std::string_view a,std::string_view b) { return detail::ValueKeyLess(a,b); }
 const MetricLabelDescriptor* Label(const MetricDescriptorDefinition& d,const std::string& key) {
   const auto it=std::find_if(d.labels.begin(),d.labels.end(),[&](const auto& l){return l.key==key;});
   return it==d.labels.end()?nullptr:&*it;
 }
-bool Definition(const MetricDescriptorDefinition& d) {
-  if(!Code(d.type,classes)||!Code(d.value_type,types)||d.labels.size()>1024||d.histogram_buckets.size()>4096)
-    return false;
-  for(std::size_t i=0;i<d.labels.size();++i) {
-    if(!Key(d.labels[i].key)||!Code(d.labels[i].value_type,labels))return false;
-    for(std::size_t j=0;j<i;++j)if(d.labels[j].key==d.labels[i].key)return false;
-  }
-  return true;
-}
+bool Definition(const MetricDescriptorDefinition& d) { return detail::ValueCodecDefinition(d); }
 struct Writer {
   std::vector<byte> bytes=std::vector<byte>(kMetricValueHeaderBytes);
   void Raw(const byte* p,std::size_t n) {
@@ -68,33 +55,6 @@ struct Writer {
       case MetricScalarType::text:String(std::get<std::string>(v));break;
       case MetricScalarType::uuid:Raw(std::get<MetricUuid>(v).bytes.data(),16);break;
       case MetricScalarType::enumeration:U64(std::get<MetricEnumValue>(v).code);break;
-      default:throw E::invalid_value;
-    }
-  }
-};
-struct Reader {
-  std::span<const byte> bytes;
-  std::size_t offset=kMetricValueHeaderBytes;
-  std::span<const byte> Raw(std::size_t n) {
-    if(n>bytes.size()-offset)throw E::invalid_framing;
-    auto r=bytes.subspan(offset,n);offset+=n;return r;
-  }
-  byte U8(){return Raw(1)[0];}
-  std::uint32_t U32(){return platform::LoadLittle32(Raw(4).data());}
-  u64 U64(){return platform::LoadLittle64(Raw(8).data());}
-  std::string String(){auto b=Raw(U32());return {reinterpret_cast<const char*>(b.data()),b.size()};}
-  MetricUuid Uuid(){MetricUuid id;auto b=Raw(16);std::copy(b.begin(),b.end(),id.bytes.begin());return id;}
-  MetricScalar Scalar(MetricScalarType t) {
-    switch(t) {
-      case MetricScalarType::uint64:return U64();
-      case MetricScalarType::int64:return std::bit_cast<std::int64_t>(U64());
-      case MetricScalarType::float64:return std::bit_cast<double>(U64());
-      case MetricScalarType::float128:{MetricFloat128 v;auto b=Raw(16);std::copy(b.begin(),b.end(),v.bytes.begin());return v;}
-      case MetricScalarType::decimal128:{MetricDecimal128 v;auto b=Raw(16);std::copy(b.begin(),b.end(),v.bytes.begin());return v;}
-      case MetricScalarType::boolean:{auto b=U8();if(b>1)throw E::invalid_value;return b!=0;}
-      case MetricScalarType::text:return String();
-      case MetricScalarType::uuid:return Uuid();
-      case MetricScalarType::enumeration:return MetricEnumValue{U64()};
       default:throw E::invalid_value;
     }
   }
@@ -142,40 +102,60 @@ MetricValueEncodeResult EncodeMetricValue(const MetricDescriptorDefinition& d,co
 }
 MetricValueDecodeResult DecodeMetricValue(const MetricDescriptorDefinition& d,std::span<const byte> b) noexcept {
   try {
-    if(b.size()>kMetricValueMaxBytes)return {E::size_limit,{}};
-    if(b.size()<kMetricValueHeaderBytes||std::memcmp(b.data(),"SBMV",4)||
-        platform::LoadLittle16(b.data()+6)!=kMetricValueHeaderBytes||
-        platform::LoadLittle32(b.data()+8)!=b.size()||b[15]||(b[14]&~3u))return {E::invalid_framing,{}};
-    if(platform::LoadLittle16(b.data()+4)!=1)return {E::unsupported_version,{}};
-    const auto count=platform::LoadLittle32(b.data()+16),bounds=platform::LoadLittle32(b.data()+20);
-    if(count>1024||bounds>4096)return {E::size_limit,{}};
-    if(!Definition(d)||b[12]!=Code(d.type,classes)||b[13]!=Code(d.value_type,types)||
-        bounds!=d.histogram_buckets.size())return {E::descriptor_mismatch,{}};
-    Reader r{b};MetricValue v;v.family=d.family;v.type=d.type;
-    v.buckets_cumulative=b[14]&1;v.arithmetic_inexact=b[14]&2;
-    v.value=r.Scalar(d.value_type);v.count=r.U64();
-    if(d.type==MetricType::histogram) {
-      v.sum=r.Scalar(d.value_type);
-      for(std::size_t i=0;i<bounds;++i){v.bucket_bounds.push_back(r.Scalar(d.value_type));v.buckets.push_back(r.U64());}
-      v.buckets.push_back(r.U64());
-    }
-    v.state_text=r.String();
-    for(std::size_t i=0;i<count;++i) {
-      auto key=r.String();
-      if(!Key(key)||(i&&!Less(v.labels.back().key,key)))return {};
-      const auto* schema=Label(d,key);const auto tag=r.U8();
-      if(!schema||tag!=Code(schema->value_type,labels))return {E::descriptor_mismatch,{}};
-      MetricLabelValue value;
-      if(tag==1){auto text=r.String();if(!Text(text))return {};value=std::move(text);}
-      else value=r.Uuid();
-      v.labels.push_back({std::move(key),std::move(value)});
-    }
-    if(r.offset!=b.size())return {E::invalid_framing,{}};
-    if(!ValidateStoredMetricValueShape(d,v))return {};
-    return {E::none,std::move(v)};
+    const auto decoded=DecodeMetricValueView(d,b);
+    if(!decoded.ok())return {decoded.error,{}};
+    return {E::none,MaterializeMetricValue(*decoded.value)};
   } catch(E e){return {e,{}};}
     catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
     catch(const std::length_error&){return {E::resource_exhausted,{}};}
     catch(...){return {};}
+}
+MetricScalar MetricHistogramView::bound(std::size_t index) const {
+  const auto width=type_==MetricScalarType::float128||type_==MetricScalarType::decimal128?16:8;
+  detail::ValueViewReader reader{bytes_,index*(width+8)};
+  return reader.Scalar(type_).native;
+}
+u64 MetricHistogramView::bucket(std::size_t index) const {
+  const auto width=type_==MetricScalarType::float128||type_==MetricScalarType::decimal128?16:8;
+  return platform::LoadLittle64(bytes_.data()+index*(width+8)+(index<count_?width:0));
+}
+MetricValueLabelView MetricValueLabelsView::Iterator::operator*() const {
+  MetricValueLabelView label;
+  const auto length=platform::LoadLittle32(at_);
+  label.key={reinterpret_cast<const char*>(at_+4),length};
+  const auto* data=at_+4+length;
+  if(*data++==1)label.value=std::string_view(reinterpret_cast<const char*>(data+4),platform::LoadLittle32(data));
+  else {MetricUuid id;std::copy_n(data,16,id.bytes.begin());label.value=id;}
+  return label;
+}
+MetricValueLabelsView::Iterator& MetricValueLabelsView::Iterator::operator++() {
+  const auto* data=at_+4+platform::LoadLittle32(at_);
+  const auto type=*data++;
+  at_=data+(type==1?4+platform::LoadLittle32(data):16);
+  return *this;
+}
+MetricValue MaterializeMetricValue(const MetricValueView& view) {
+  auto scalar=[](const MetricScalarView& v)->MetricScalar {
+    return v.text?MetricScalar(std::string(*v.text)):v.native;
+  };
+  MetricValue value;value.family=view.family;value.type=view.type;
+  value.value=scalar(view.value);value.count=view.count;value.sum=scalar(view.sum);
+  value.buckets_cumulative=view.buckets_cumulative;value.arithmetic_inexact=view.arithmetic_inexact;
+  value.state_text=view.state_text;
+  if(!view.histogram.empty()){
+    value.bucket_bounds.reserve(view.histogram.size());value.buckets.reserve(view.histogram.size()+1);
+    for(std::size_t i=0;i<view.histogram.size();++i){
+      value.bucket_bounds.push_back(view.histogram.bound(i));value.buckets.push_back(view.histogram.bucket(i));
+    }
+    value.buckets.push_back(view.histogram.bucket(view.histogram.size()));
+  }
+  value.labels.reserve(view.labels.size());
+  for(const auto label:view.labels){
+    MetricLabel owned;owned.key=label.key;
+    if(const auto* text=std::get_if<std::string_view>(&label.value))owned.value=std::string(*text);
+    else owned.value=std::get<MetricUuid>(label.value);
+    value.labels.push_back(std::move(owned));
+  }
+  return value;
 }
 }  // namespace scratchbird::core::metrics

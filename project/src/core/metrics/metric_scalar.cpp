@@ -77,26 +77,7 @@ int Decimal128Compare(const MetricDecimal128& a, const MetricDecimal128& b) noex
   }
   return an?-c:c;
 }
-MetricScalar IntegerConstant(MetricScalarType type, unsigned n) {
-  switch(type){
-    case MetricScalarType::uint64:return std::uint64_t(n);
-    case MetricScalarType::int64:return std::int64_t(n);
-    case MetricScalarType::float64:return double(n);
-    case MetricScalarType::float128:{
-      MetricFloat128 value;
-      // The only callers require exactly0 and100. 100 =1.5625 *2^6.
-      if(n){value.bytes[13]=0x90;value.bytes[14]=0x05;value.bytes[15]=0x40;}
-      return value;
-    }
-    case MetricScalarType::decimal128:{
-      MetricDecimal128 value;value.bytes[0]=static_cast<std::uint8_t>(n);
-      const std::uint64_t high=std::uint64_t(6176)<<49;
-      for(unsigned i=0;i<8;++i)value.bytes[i+8]=static_cast<std::uint8_t>(high>>(i*8));
-      return value;
-    }
-    default:return {};
-  }
-}
+using detail::IntegerConstant;
 Big Power(unsigned radix,unsigned exponent) {
   Big value=1,base=radix;
   while(exponent){if(exponent&1)value*=base;exponent>>=1;if(exponent)base*=base;}
@@ -228,18 +209,6 @@ MetricScalarError ValidateMetricScalarDescriptor(const MetricDescriptorDefinitio
   return detail::ValidateScalarDescriptor(d);
 }
 MetricScalarError ValidateMetricObservationScalar(const MetricDescriptorDefinition& d,const MetricScalar& value) noexcept {
-  const auto definition=ValidateMetricScalarDescriptor(d);if(definition!=E::none)return definition;
-  if(MetricScalarTypeOf(value)!=d.value_type)return E::type_mismatch;
-  if(!MetricScalarValid(value))return E::invalid_value;
-  if(d.value_type==MetricScalarType::enumeration){
-    const auto code=std::get<MetricEnumValue>(value).code;
-    for(auto member:d.enum_values)if(member==code)return E::none;
-    return E::out_of_range;
-  }
-  if(d.min_value&&*CompareMetricScalars(value,*d.min_value)<0)return E::out_of_range;
-  if(d.max_value&&*CompareMetricScalars(value,*d.max_value)>0)return E::out_of_range;
-  if(d.unit==MetricUnit::percent&&(*CompareMetricScalars(value,IntegerConstant(d.value_type,0))<0||
-      *CompareMetricScalars(value,IntegerConstant(d.value_type,100))>0))return E::out_of_range;
-  return E::none;
+  return detail::ValidateObservationScalar(d,value);
 }
 }  // namespace scratchbird::core::metrics
