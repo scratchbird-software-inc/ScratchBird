@@ -36,7 +36,8 @@ struct ParentPublicationState {
 };
 ParentPublicationState PublishParent(d::FileDevice& device,
     const std::vector<d::NativeFilespaceDevice>& devices,u64 budget,
-    scratchbird::core::uuid::StandaloneUuidV7Issuer& issuer,unsigned profile,unsigned death=0) {
+    scratchbird::core::uuid::StandaloneUuidV7Issuer& issuer,unsigned profile,unsigned death=0,
+    bool resume=false) {
   const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget);
   Check(selected.ok(),"actual initial inventory");
   const auto inventory=selected.checkpoint_inventory.inventory;
@@ -51,8 +52,33 @@ ParentPublicationState PublishParent(d::FileDevice& device,
   const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),budget);
   Check(before.ok(),"actual parent publication base");
   if(death==1)_exit(41); // No reservation/publication was attempted.
-  auto held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),*before.snapshot,Id(24100),budget,&intent);
+  if(resume) {
+    Check(before.snapshot->watermark.operation_uuid==Id(24100)&&
+        before.snapshot->watermark.intent==intent&&!before.snapshot->watermark.publication_plan&&
+        before.snapshot->watermark.watermark>before.snapshot->selection.checkpoint_generation,
+        "cold inspection retains exact pending reservation without a selected parent");
+    const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),devices,Id(2),budget);
+    Check(history.ok()&&history.entries.empty(),"reservation is not complete parent request persistence");
+    auto wrong=intent;wrong.normalized_request_sha256.back()^=1;
+    reads=writes=syncs=0;io_counting=true;
+    const auto replacement=db::ReserveNativePublicationGenerationOnOpenDevices(
+        Id(1),devices,Id(2),*before.snapshot,Id(24101),budget,&intent);
+    const auto wrong_attempt=db::ResumeNativePublicationGenerationOnOpenDevices(
+        Id(1),devices,Id(2),*before.snapshot,Id(24101),intent,budget);
+    const auto wrong_request=db::ResumeNativePublicationGenerationOnOpenDevices(
+        Id(1),devices,Id(2),*before.snapshot,Id(24100),wrong,budget);
+    io_counting=false;
+    Check(replacement.error==db::NativePublicationError::operation_pending&&
+        !wrong_attempt.ok()&&!wrong_request.ok()&&!writes&&!syncs,
+        "new identity or changed request cannot displace pending parent or write storage");
+  }
+  auto held=resume?db::ResumeNativePublicationGenerationOnOpenDevices(
+      Id(1),devices,Id(2),*before.snapshot,Id(24100),intent,budget):
+      db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),*before.snapshot,Id(24100),budget,&intent);
   Check(held.ok(),"reserve parent independently of child BEGIN");
+  if(resume)Check(held.lease->snapshot().watermark.watermark==before.snapshot->watermark.watermark,
+      "exact parent resume consumes no replacement generation");
+  if(death==3)_exit(43); // Durable reservation, before the complete request is installed.
   const auto published=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,budget,issuer);
   if(!published.ok())std::cerr<<"parent profile="<<profile<<" error="<<int(published.error)<<'\n';
   Check(published.ok()&&published.effects.selected_graph_verified&&published.effects.successful_syncs,
@@ -108,29 +134,46 @@ void ParentPublisherDeath(unsigned profile,unsigned death) {
   if(death==2)CheckParentHistory(f.devices,f.budget);
   else {
     const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
-    Check(history.ok()&&history.entries.empty(),"death before reservation invents no retained parent request");
+    Check(history.ok()&&history.entries.empty(),"death before parent selection invents no retained parent request");
+  }
+  if(death==3) {
+    Check(f.device.Close().ok(),"release observer before fresh recovery owner");
+    const auto recovery=fork();Check(recovery>=0,"spawn independent exact parent recovery");
+    if(recovery==0){execl("/proc/self/exe","startup-parent","--resume-parent",f.path.c_str(),p.c_str(),nullptr);_exit(125);}
+    Check(waitpid(recovery,&status,0)==recovery&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+        "fresh recovery consumes original caller-retained request without a new identity");
+    Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),
+        "independent reopen after exact parent recovery");
+    CheckParentHistory(f.devices,f.budget);
+    const auto recovered=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+    Check(recovered.ok()&&SameOwnedInventory(recovered.checkpoint_inventory.inventory,initial.checkpoint_inventory.inventory),
+        "recovered parent preserves every original transaction field");
   }
 }
 }
 int main(int argc,char** argv) {
   try {
-    if(argc==5&&std::string_view(argv[1])=="--publisher-death") {
-      const auto profile=std::stoul(argv[3]),death=std::stoul(argv[4]);
-      Check(profile<5&&(death==1||death==2),"publisher death arguments");
+    if((argc==5&&std::string_view(argv[1])=="--publisher-death")||
+        (argc==4&&std::string_view(argv[1])=="--resume-parent")) {
+      const bool resume=argc==4;
+      const auto profile=std::stoul(argv[3]),death=resume?0:std::stoul(argv[4]);
+      Check(profile<5&&(resume||death==1||death==2||death==3),"publisher death arguments");
       d::FileDevice device;Check(device.Open(argv[2],d::FileOpenMode::open_existing).ok(),"fresh publisher owns actual file");
       const auto& page=d::kCanonicalFilespacePageProfiles[profile];
       scratchbird::core::uuid::StandaloneUuidV7Issuer issuer(
           scratchbird::core::uuid::StandaloneUuidV7Binding{Id(1),Id(10)},
           scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});
-      (void)PublishParent(device,{{Id(2),page.uuid,&device}},4096*u64{page.page_size_bytes},issuer,profile,death);
-      return 126;
+      // Test supplies the ORIGINAL complete request; a reservation digest alone
+      // cannot reconstruct a registered startup family or authorize recovery.
+      (void)PublishParent(device,{{Id(2),page.uuid,&device}},4096*u64{page.page_size_bytes},issuer,profile,death,resume);
+      return resume?0:126;
     }else if(argc==4&&std::string_view(argv[1])=="--read-parent") {
       const auto profile=std::stoul(argv[3]);Check(profile<5,"cold reader page profile");
       d::FileDevice device;Check(device.Open(argv[2],d::FileOpenMode::open_existing_read_only).ok(),"cold read-only open");
       const auto& page=d::kCanonicalFilespacePageProfiles[profile];
       CheckParentHistory({{Id(2),page.uuid,&device}},4096*u64{page.page_size_bytes});
     }else {Check(argc==1,"parent gate arguments");for(unsigned p=0;p<5;++p){
-      ParentPublication(p);ParentPublisherDeath(p,1);ParentPublisherDeath(p,2);}}
+      ParentPublication(p);for(unsigned death=1;death<=3;++death)ParentPublisherDeath(p,death);}}
     std::cout<<"startup parent publication checks="<<checks<<" PASS; storage seam only\n";return 0;
   }catch(const std::exception& e){std::cerr<<"startup parent publication FAIL: "<<e.what()<<'\n';return 1;}
 }
