@@ -351,6 +351,23 @@ bool IsDecimal(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::decimal;
 }
 
+bool IsDecimalFloat(CanonicalTypeId type_id) noexcept {
+  return type_id == CanonicalTypeId::decimal_float;
+}
+
+bool DecimalFloatDescriptorValidForPresent(
+    const ExecutionTypeDescriptor& descriptor) {
+  return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+      descriptor, CanonicalTypeId::decimal_float);
+}
+
+bool DecimalFloatCarrierStructurallyCanonical(std::string_view encoded) {
+  return scratchbird::libraries::sbl_numeric::DecodeDecimal128LittleEndian(
+             reinterpret_cast<const std::uint8_t*>(encoded.data()),
+             encoded.size(), true)
+      .value.has_value();
+}
+
 bool DecimalDescriptorValidForPresent(
     const ExecutionTypeDescriptor& descriptor) {
   return !DescriptorHasDomainBinding(descriptor) &&
@@ -461,6 +478,10 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
     return DecimalDescriptorValidForPresent(value.descriptor) &&
         DecimalCarrierStructurallyCanonical(value.encoded_value);
   }
+  if (IsDecimalFloat(value.type_id)) {
+    return DecimalFloatDescriptorValidForPresent(value.descriptor) &&
+        DecimalFloatCarrierStructurallyCanonical(value.encoded_value);
+  }
   if (value.type_id == CanonicalTypeId::real128) {
     return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                value.descriptor, value.type_id) &&
@@ -546,6 +567,14 @@ const char* CanonicalOperationValueDiagnosticCode(
   }
   if (IsDecimal(value.type_id) && !value.is_null &&
       !DecimalCarrierStructurallyCanonical(value.encoded_value)) {
+    return "NUMERIC.ENCODING.NONCANONICAL";
+  }
+  if (IsDecimalFloat(value.type_id) && !value.is_null &&
+      !DecimalFloatDescriptorValidForPresent(value.descriptor)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (IsDecimalFloat(value.type_id) && !value.is_null &&
+      !DecimalFloatCarrierStructurallyCanonical(value.encoded_value)) {
     return "NUMERIC.ENCODING.NONCANONICAL";
   }
   if (ExecutionDescriptorPresent(value.descriptor) &&
@@ -2126,7 +2155,10 @@ bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
                    2u) ||
           (IsDecimal(frame->element_type_id) &&
            (!DecodeCanonicalLowerHex(hex, &decoded_item) ||
-            !DecimalCarrierStructurallyCanonical(decoded_item)))) {
+            !DecimalCarrierStructurallyCanonical(decoded_item))) ||
+          (IsDecimalFloat(frame->element_type_id) &&
+           (!DecodeCanonicalLowerHex(hex, &decoded_item) ||
+            !DecimalFloatCarrierStructurallyCanonical(decoded_item)))) {
         return false;
       }
     } else {
@@ -2660,6 +2692,9 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (IsDecimal(source_type_id) || IsDecimal(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
+  if (IsDecimalFloat(source_type_id) || IsDecimalFloat(target_type_id)) {
+    return DatatypeCastCategory::forbidden;
+  }
   // REAL128 has an exact descriptor-bound LE16 identity operation, but Core
   // has not registered any cross-type PRESENT cast UUID involving it.
   if (IsReal128(source_type_id) || IsReal128(target_type_id)) {
@@ -2762,6 +2797,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       !request.value.is_null &&
       ((IsDecimal(request.value.type_id) &&
         !DecimalDescriptorValidForPresent(request.value.descriptor)) ||
+       (IsDecimalFloat(request.value.type_id) &&
+        !DecimalFloatDescriptorValidForPresent(request.value.descriptor)) ||
        ((IsUnresolvedRealSemantics(request.value.type_id) ||
          IsReal128(request.value.type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2802,6 +2839,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       !result_is_null &&
       ((IsDecimal(request.target_type_id) &&
         !DecimalDescriptorValidForPresent(request.target_descriptor)) ||
+       (IsDecimalFloat(request.target_type_id) &&
+        !DecimalFloatDescriptorValidForPresent(request.target_descriptor)) ||
        ((IsUnresolvedRealSemantics(request.target_type_id) ||
          IsReal128(request.target_type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2829,7 +2868,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (!result_is_null &&
       (IsCanonical128Integer(request.target_type_id) ||
        IsReal128(request.target_type_id) ||
-       IsDecimal(request.target_type_id)) &&
+       IsDecimal(request.target_type_id) ||
+       IsDecimalFloat(request.target_type_id)) &&
       !ExecutionDescriptorPresent(request.target_descriptor)) {
     return CastFailure(
         request.target_type_id == CanonicalTypeId::int128
@@ -2838,7 +2878,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                 ? "uint128_target_descriptor_required"
                 : request.target_type_id == CanonicalTypeId::real128
                     ? "real128_target_descriptor_required"
-                    : "decimal_target_descriptor_required",
+                    : request.target_type_id == CanonicalTypeId::decimal
+                        ? "decimal_target_descriptor_required"
+                        : "decimal_float_target_descriptor_required",
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
@@ -2857,7 +2899,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::real32 ||
        request.value.type_id == CanonicalTypeId::real64 ||
        request.value.type_id == CanonicalTypeId::real128 ||
-       request.value.type_id == CanonicalTypeId::decimal) &&
+       request.value.type_id == CanonicalTypeId::decimal ||
+       request.value.type_id == CanonicalTypeId::decimal_float) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
@@ -2880,6 +2923,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (!result_is_null && IsDecimal(request.value.type_id) &&
       !DecimalCarrierStructurallyCanonical(request.value.encoded_value)) {
     return CastFailure("decimal_source_value_noncanonical",
+                       DatatypeCastCategory::forbidden,
+                       "NUMERIC.ENCODING.NONCANONICAL");
+  }
+  if (!result_is_null && IsDecimalFloat(request.value.type_id) &&
+      !DecimalFloatCarrierStructurallyCanonical(
+          request.value.encoded_value)) {
+    return CastFailure("decimal_float_source_value_noncanonical",
                        DatatypeCastCategory::forbidden,
                        "NUMERIC.ENCODING.NONCANONICAL");
   }
@@ -3038,6 +3088,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         result_is_null
             ? "decimal_cross_type_typed_null_cast_policy_unresolved"
             : "decimal_present_cast_policy_unresolved");
+  }
+  if (IsDecimalFloat(request.value.type_id) ||
+      IsDecimalFloat(request.target_type_id)) {
+    return CastFailure(
+        result_is_null
+            ? "decimal_float_cross_type_typed_null_cast_policy_unresolved"
+            : "decimal_float_present_cast_policy_unresolved");
   }
   if (canonical_128_present_identity) {
     if (!ExecutionDescriptorEquals(request.value.descriptor,
@@ -3332,12 +3389,13 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     const bool real64_value =
         request.value.type_id == CanonicalTypeId::real64;
     const bool decimal_value = IsDecimal(request.value.type_id);
+    const bool decimal_float_value = IsDecimalFloat(request.value.type_id);
     const bool descriptor_or_null_state_failure =
         request.value.type_id == CanonicalTypeId::unknown ||
         request.value.type_id == CanonicalTypeId::null_type ||
         request.value.is_null ||
         bfloat16_value || real16_value || real32_value || real64_value ||
-        decimal_value;
+        decimal_value || decimal_float_value;
     const char* diagnostic_code = descriptor_or_null_state_failure
         ? CanonicalOperationValueDiagnosticCode(
               request.value, "SB_DATATYPE_EXTRACT_REJECTED")
@@ -3371,6 +3429,14 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
                                  "NUMERIC.ENCODING.NONCANONICAL"
                            ? "decimal_extract_value_noncanonical"
                            : "decimal_extract_policy_unresolved")
+            : decimal_float_value
+                ? (std::string_view(diagnostic_code) ==
+                           "DATATYPE.DESCRIPTOR.INVALID"
+                       ? "decimal_float_extract_descriptor_invalid"
+                       : std::string_view(diagnostic_code) ==
+                                 "NUMERIC.ENCODING.NONCANONICAL"
+                           ? "decimal_float_extract_value_noncanonical"
+                           : "decimal_float_extract_policy_unresolved")
             : request.value.is_null ? "null_or_descriptor_state_invalid"
                                     : "canonical_value_invalid",
         diagnostic_code);
@@ -3388,6 +3454,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   }
   if (IsDecimal(request.value.type_id) && !request.value.is_null) {
     return ExtractFailure("decimal_extract_policy_unresolved");
+  }
+  if (IsDecimalFloat(request.value.type_id) && !request.value.is_null) {
+    return ExtractFailure("decimal_float_extract_policy_unresolved");
   }
   DatatypeExtractResult result;
   result.status = OkStatus();
@@ -3504,12 +3573,16 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
       ExecutionDescriptorPresent(descriptor.element_descriptor);
   if ((IsPolicyRestrictedReal(descriptor.element_type_id) ||
        IsDecimal(descriptor.element_type_id) ||
+       IsDecimalFloat(descriptor.element_type_id) ||
        descriptor.allow_null_elements || element_descriptor_present) &&
       !(IsPolicyRestrictedReal(descriptor.element_type_id)
             ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                   descriptor.element_descriptor, descriptor.element_type_id)
             : IsDecimal(descriptor.element_type_id)
                 ? DecimalDescriptorValidForPresent(
+                      descriptor.element_descriptor)
+            : IsDecimalFloat(descriptor.element_type_id)
+                ? DecimalFloatDescriptorValidForPresent(
                       descriptor.element_descriptor)
             : ExecutionDescriptorValidForType(descriptor.element_descriptor,
                                               descriptor.element_type_id))) {
@@ -3547,6 +3620,8 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                       ? "real64_set_element_policy_unresolved"
                   : IsDecimal(value.type_id)
                       ? "decimal_set_element_invalid"
+                  : IsDecimalFloat(value.type_id)
+                      ? "decimal_float_set_element_invalid"
                       : "set_element_value_invalid";
       return SetFailure(failure_detail,
                         CanonicalOperationValueDiagnosticCode(
@@ -3575,6 +3650,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   }
   if (IsDecimal(descriptor.element_type_id)) {
     return SetFailure("decimal_set_semantics_policy_unresolved");
+  }
+  if (IsDecimalFloat(descriptor.element_type_id)) {
+    return SetFailure("decimal_float_set_semantics_policy_unresolved");
   }
   if (!descriptor.ordered) { std::sort(encoded_items.begin(), encoded_items.end()); }
   std::ostringstream out;
@@ -3609,12 +3687,18 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
     return SetFailure("opaque_set_operation_rejected");
   }
   const bool decimal_set = IsDecimal(request.descriptor.element_type_id);
+  const bool decimal_float_set =
+      IsDecimalFloat(request.descriptor.element_type_id);
   const bool policy_restricted_set =
-      IsPolicyRestrictedReal(request.descriptor.element_type_id) || decimal_set;
+      IsPolicyRestrictedReal(request.descriptor.element_type_id) ||
+      decimal_set || decimal_float_set;
   if (policy_restricted_set &&
       !(decimal_set
             ? DecimalDescriptorValidForPresent(
                   request.descriptor.element_descriptor)
+            : decimal_float_set
+                ? DecimalFloatDescriptorValidForPresent(
+                      request.descriptor.element_descriptor)
             : ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                   request.descriptor.element_descriptor,
                   request.descriptor.element_type_id))) {
@@ -3649,6 +3733,9 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
     if (!(decimal_set
               ? DecimalDescriptorValidForPresent(
                     request.right_value.descriptor)
+              : decimal_float_set
+              ? DecimalFloatDescriptorValidForPresent(
+                    request.right_value.descriptor)
               : IsReal128(request.descriptor.element_type_id)
               ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                     request.right_value.descriptor,
@@ -3678,12 +3765,16 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
         (decimal_set
              ? !DecimalCarrierStructurallyCanonical(
                    request.right_value.encoded_value)
+             : decimal_float_set
+             ? !DecimalFloatCarrierStructurallyCanonical(
+                   request.right_value.encoded_value)
              : request.right_value.encoded_value.size() !=
                    PolicyRestrictedRealCarrierByteWidth(
                        request.descriptor.element_type_id))) {
       return SetFailure(
           "set_membership_value_invalid",
-          decimal_set ? "NUMERIC.ENCODING.NONCANONICAL"
+          (decimal_set || decimal_float_set)
+              ? "NUMERIC.ENCODING.NONCANONICAL"
                       : "SB_DATATYPE_SET_OPERATION_REJECTED");
     }
   }
@@ -3691,6 +3782,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
     return SetFailure(
         decimal_set
             ? "decimal_set_semantics_policy_unresolved"
+            : decimal_float_set
+            ? "decimal_float_set_semantics_policy_unresolved"
             : IsReal128(request.descriptor.element_type_id)
             ? "real128_set_semantics_policy_unresolved"
             : UnresolvedRealDetail(
@@ -3843,6 +3936,51 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
                              "DATATYPE.DESCRIPTOR.INVALID");
     }
   }
+  if (IsDecimalFloat(request.type_id)) {
+    if (!IsDecimalFloat(request.left.type_id) ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         !IsDecimalFloat(request.right.type_id))) {
+      return invalid_request("numeric_argument_type_mismatch");
+    }
+    const auto valid_decimal_float_operand = [](
+        const DatatypeOperationValue& value) {
+      return value.is_null
+          ? ExecutionDescriptorValidForType(
+                value.descriptor, CanonicalTypeId::decimal_float)
+          : DecimalFloatDescriptorValidForPresent(value.descriptor);
+    };
+    if (!valid_decimal_float_operand(request.left)) {
+      return invalid_request("decimal_float_left_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        !valid_decimal_float_operand(request.right)) {
+      return invalid_request("decimal_float_right_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        !ExecutionDescriptorEquals(request.left.descriptor,
+                                   request.right.descriptor)) {
+      return invalid_request("decimal_float_operand_descriptor_mismatch",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    const bool decimal_float_null_result_possible = request.left.is_null ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         request.right.is_null);
+    if (ExecutionDescriptorPresent(request.result_descriptor) &&
+        !(request.operation == DatatypeNumericOperationKind::compare
+              ? ExecutionDescriptorValidForType(
+                    request.result_descriptor, CanonicalTypeId::boolean)
+              : decimal_float_null_result_possible
+                  ? ExecutionDescriptorValidForType(
+                        request.result_descriptor,
+                        CanonicalTypeId::decimal_float)
+                  : DecimalFloatDescriptorValidForPresent(
+                        request.result_descriptor))) {
+      return invalid_request("decimal_float_result_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+  }
 
   const auto unresolved_real_present_descriptor_invalid = [](
       const DatatypeOperationValue& value) {
@@ -3897,7 +4035,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     const bool descriptor_or_null_state_failure =
         invalid_value.type_id == CanonicalTypeId::unknown ||
         invalid_value.type_id == CanonicalTypeId::null_type ||
-        invalid_value.is_null || IsDecimal(invalid_value.type_id);
+        invalid_value.is_null || IsDecimal(invalid_value.type_id) ||
+        IsDecimalFloat(invalid_value.type_id);
     const bool malformed_128_bit_payload =
         (IsCanonical128Integer(invalid_value.type_id) ||
          IsReal128(invalid_value.type_id)) &&
@@ -3923,6 +4062,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
                   "real64_numeric_policy_unresolved")
             : IsDecimal(invalid_value.type_id)
                 ? "decimal_numeric_argument_invalid"
+            : IsDecimalFloat(invalid_value.type_id)
+                ? "decimal_float_numeric_argument_invalid"
                 : "numeric_argument_value_invalid",
         malformed_128_bit_payload
             ? "NUMERIC.ENCODING.NONCANONICAL"
@@ -3991,6 +4132,12 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
       (request.operation != DatatypeNumericOperationKind::canonicalize &&
        IsDecimal(request.right.type_id))) {
     return invalid_request("decimal_numeric_policy_unresolved");
+  }
+  if (IsDecimalFloat(request.type_id) ||
+      IsDecimalFloat(request.left.type_id) ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       IsDecimalFloat(request.right.type_id))) {
+    return invalid_request("decimal_float_numeric_policy_unresolved");
   }
   if (IsCanonical128Integer(request.type_id) &&
       request.operation != DatatypeNumericOperationKind::compare &&
@@ -4323,6 +4470,32 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
       return result;
     }
   }
+  const bool decimal_float_incident =
+      IsDecimalFloat(request.left.type_id) ||
+      IsDecimalFloat(request.right.type_id);
+  if (decimal_float_incident) {
+    const auto decimal_float_descriptor_invalid = [](
+        const DatatypeOperationValue& value) {
+      return IsDecimalFloat(value.type_id) &&
+          !(value.is_null
+                ? ExecutionDescriptorValidForType(
+                      value.descriptor, CanonicalTypeId::decimal_float)
+                : DecimalFloatDescriptorValidForPresent(value.descriptor));
+    };
+    if (decimal_float_descriptor_invalid(request.left) ||
+        decimal_float_descriptor_invalid(request.right) ||
+        (IsDecimalFloat(request.left.type_id) &&
+         IsDecimalFloat(request.right.type_id) &&
+         !ExecutionDescriptorEquals(request.left.descriptor,
+                                    request.right.descriptor))) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.comparison.rejected",
+          "decimal_float_operand_descriptor_invalid_or_mismatch");
+      return result;
+    }
+  }
   const bool real128_incident =
       IsReal128(request.left.type_id) || IsReal128(request.right.type_id);
   if (real128_incident &&
@@ -4423,6 +4596,14 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         result.status, "SB_DATATYPE_COMPARISON_REJECTED",
         "datatype.comparison.rejected",
         "decimal_comparison_policy_unresolved");
+    return result;
+  }
+  if (decimal_float_incident) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+        "datatype.comparison.rejected",
+        "decimal_float_comparison_policy_unresolved");
     return result;
   }
   const bool strict_binary_descriptor_type =
@@ -4925,6 +5106,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
     *failure_detail = "decimal_hash_policy_unresolved";
     return false;
   }
+  if (IsDecimalFloat(value.type_id)) {
+    *failure_detail = "decimal_float_hash_policy_unresolved";
+    return false;
+  }
   if (value.type_id == CanonicalTypeId::int16 ||
       value.type_id == CanonicalTypeId::uint16 ||
       value.type_id == CanonicalTypeId::int32 ||
@@ -5055,6 +5240,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
         "datatype.sort_key.rejected",
         "decimal_sort_key_policy_unresolved");
+    return result;
+  }
+  if (IsDecimalFloat(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+        "datatype.sort_key.rejected",
+        "decimal_float_sort_key_policy_unresolved");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -5316,6 +5509,14 @@ DatatypeSerializationResult SerializeDatatypeValue(
         "decimal_serialization_policy_unresolved");
     return result;
   }
+  if (IsDecimalFloat(request.value.type_id) && !request.value.is_null) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
+        "datatype.serialization.rejected",
+        "decimal_float_serialization_policy_unresolved");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::unknown) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -5524,6 +5725,15 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "datatype.deserialization.rejected", "expected_descriptor_invalid");
     return result;
   }
+  if (!staged.is_null && IsDecimalFloat(type_id) &&
+      !DecimalFloatDescriptorValidForPresent(
+          request.expected_descriptor)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
   if (!staged.is_null && IsUnresolvedRealSemantics(type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.expected_descriptor, type_id)) {
@@ -5617,6 +5827,14 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "decimal_deserialization_policy_unresolved");
     return result;
   }
+  if (IsDecimalFloat(staged.type_id) && !staged.is_null) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "decimal_float_deserialization_policy_unresolved");
+    return result;
+  }
   result.value = std::move(staged);
   return result;
 }
@@ -5685,6 +5903,14 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
         "datatype.display_render.rejected",
         "decimal_display_policy_unresolved");
+    return result;
+  }
+  if (IsDecimalFloat(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "decimal_float_display_policy_unresolved");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);

@@ -420,6 +420,53 @@ scratchbird::engine::ExecutionTypeDescriptor DecimalExecutionDescriptor() {
   return built.descriptor;
 }
 
+scratchbird::engine::ExecutionTypeDescriptor DecimalFloatExecutionDescriptor() {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!Expect(manifest.ok(),
+              "decimal_float datatype catalog authority unavailable")) {
+    return {};
+  }
+  const auto row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeId::decimal_float);
+  if (!Expect(row.ok() && row.manifest.descriptor_rows.size() == 1,
+              "decimal_float datatype descriptor authority unavailable")) {
+    return {};
+  }
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto built = dt::LookupExecutionTypeDescriptorFromCatalog(
+      dt::CanonicalTypeId::decimal_float, metadata);
+  if (!Expect(built.ok(), "decimal_float execution descriptor build failed")) {
+    return {};
+  }
+  return built.descriptor;
+}
+
+scratchbird::engine::ExecutionTypeDescriptor BooleanExecutionDescriptor() {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!Expect(manifest.ok(), "boolean datatype catalog authority unavailable")) {
+    return {};
+  }
+  const auto row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeId::boolean);
+  if (!Expect(row.ok() && row.manifest.descriptor_rows.size() == 1,
+              "boolean datatype descriptor authority unavailable")) {
+    return {};
+  }
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto built = dt::LookupExecutionTypeDescriptorFromCatalog(
+      dt::CanonicalTypeId::boolean, metadata);
+  if (!Expect(built.ok(), "boolean execution descriptor build failed")) {
+    return {};
+  }
+  return built.descriptor;
+}
+
 std::string DatatypeDiagnosticDetail(
     const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
@@ -465,6 +512,42 @@ bool ExpectDatatypeDecimalRefusal(std::string_view left,
              "datatype decimal refusal published a value");
 }
 
+bool ExpectDatatypeDecimalFloatRefusal(std::string_view left,
+                                       std::string_view right) {
+  const auto encode = [](std::string_view lexical) {
+    const auto encoded = numeric::EncodeDecimal128LittleEndian(lexical, true);
+    dt::DatatypeOperationValue value;
+    if (!encoded.bytes) return value;
+    value.type_id = dt::CanonicalTypeId::decimal_float;
+    value.encoded_value.assign(
+        reinterpret_cast<const char*>(encoded.bytes->data()),
+        encoded.bytes->size());
+    value.descriptor = DecimalFloatExecutionDescriptor();
+    return value;
+  };
+  dt::DatatypeNumericOperationRequest request;
+  request.type_id = dt::CanonicalTypeId::decimal_float;
+  request.operation = dt::DatatypeNumericOperationKind::compare;
+  request.left = encode(left);
+  request.right = encode(right);
+  request.context.precision = 34;
+  request.context.allow_special_values = true;
+  request.result_descriptor = BooleanExecutionDescriptor();
+  const auto result = dt::ApplyNumericOperation(request);
+  return Expect(!result.ok(),
+                "datatype decimal_float operation unexpectedly succeeded") &&
+      Expect(result.diagnostic.diagnostic_code ==
+                 "SB_DATATYPE_NUMERIC_OPERATION_REJECTED",
+             "datatype decimal_float refusal code mismatch") &&
+      Expect(DatatypeDiagnosticDetail(result.diagnostic) ==
+                 "decimal_float_numeric_policy_unresolved",
+             "datatype decimal_float refusal detail mismatch") &&
+      Expect(result.value.type_id == dt::CanonicalTypeId::unknown &&
+                 result.value.encoded_value.empty() &&
+                 result.comparison == 0,
+             "datatype decimal_float refusal published a value");
+}
+
 bool TestExactNumericSurfaces(const api::EngineRequestContext& context) {
   bool ok = true;
   ok &= ExpectNumericBackend(numeric::NumericType::int128,
@@ -505,12 +588,7 @@ bool TestExactNumericSurfaces(const api::EngineRequestContext& context) {
                               "5",
                               "340282366920938463463374607431768211450");
   ok &= ExpectDatatypeDecimalRefusal("1.25", "2.75");
-  ok &= ExpectDatatypeNumeric(numeric::NumericType::decimal_float,
-                              numeric::NumericOperation::compare,
-                              "4.50",
-                              "4.5",
-                              "true",
-                              0);
+  ok &= ExpectDatatypeDecimalFloatRefusal("4.50", "4.5");
   ok &= ExpectDatatypeNumeric(numeric::NumericType::real128,
                               numeric::NumericOperation::add,
                               "1.5",

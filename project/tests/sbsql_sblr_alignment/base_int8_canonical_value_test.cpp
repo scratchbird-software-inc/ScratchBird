@@ -89,6 +89,24 @@ engine::ExecutionTypeDescriptor DecimalDescriptor() {
   return built.descriptor;
 }
 
+engine::ExecutionTypeDescriptor DecimalFloatDescriptor() {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto row = manifest.ok()
+      ? dt::LookupDatatypeCatalogRow(manifest.manifest,
+                                     dt::CanonicalTypeId::decimal_float)
+      : dt::DatatypeCatalogManifestResult{};
+  Check(row.ok() && row.manifest.descriptor_rows.size() == 1,
+        "unique decimal_float catalog descriptor row");
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows[0].descriptor_uuid;
+  metadata.descriptor_epoch = row.manifest.descriptor_rows[0].descriptor_epoch;
+  const auto built = dt::LookupExecutionTypeDescriptorFromCatalog(
+      dt::CanonicalTypeId::decimal_float, metadata);
+  Check(built.ok(), "execution descriptor from exact decimal_float catalog row");
+  return built.descriptor;
+}
+
 dt::DatatypeOperationValue Decimal(std::string_view lexical) {
   const auto encoded = numeric::EncodeExactDecimalLittleEndian(lexical);
   Check(encoded.ok, "exact decimal fixture encoding");
@@ -98,6 +116,22 @@ dt::DatatypeOperationValue Decimal(std::string_view lexical) {
                   encoded.canonical_bytes.size()),
       false};
   value.descriptor = DecimalDescriptor();
+  return value;
+}
+
+dt::DatatypeOperationValue DecimalFloat(std::string_view lexical,
+                                        bool allow_special_values = false) {
+  const auto encoded = numeric::EncodeDecimal128LittleEndian(
+      lexical, allow_special_values);
+  Check(encoded.bytes.has_value(), "exact decimal_float BID fixture encoding");
+  dt::DatatypeOperationValue value;
+  value.type_id = dt::CanonicalTypeId::decimal_float;
+  if (encoded.bytes) {
+    value.encoded_value.assign(
+        reinterpret_cast<const char*>(encoded.bytes->data()),
+        encoded.bytes->size());
+  }
+  value.descriptor = DecimalFloatDescriptor();
   return value;
 }
 
@@ -312,12 +346,21 @@ void OperationsAndSerialization() {
               converted.value.encoded_value.empty(),
           "decimal-to-int8 remains fail-closed without pair policy");
   }
-  const auto decimal_float_input = Cast(
-      {dt::CanonicalTypeId::decimal_float, "-12e0", false},
-      dt::CanonicalTypeId::int8, dt::DatatypeCastContext::explicit_cast);
-  Check(decimal_float_input.ok() &&
-            decimal_float_input.value.encoded_value.size() == 1,
-        "unrelated integral decimal-float cast behavior remains unchanged");
+  const auto decimal_float_input =
+      Cast(DecimalFloat("-12E0"), dt::CanonicalTypeId::int8,
+           dt::DatatypeCastContext::explicit_cast);
+  Check(!decimal_float_input.ok() &&
+            decimal_float_input.diagnostic.diagnostic_code ==
+                "DATATYPE.CAST_FORBIDDEN" &&
+            DiagnosticDetail(decimal_float_input.diagnostic) ==
+                "decimal_float_present_cast_policy_unresolved" &&
+            decimal_float_input.value.type_id ==
+                dt::CanonicalTypeId::unknown &&
+            decimal_float_input.value.encoded_value.empty() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::decimal_float,
+                                     dt::CanonicalTypeId::int8) ==
+                dt::DatatypeCastCategory::forbidden,
+        "decimal_float-to-int8 remains fail-closed without pair policy");
   const auto real64_input = Cast(
       {dt::CanonicalTypeId::real64, "127.0", false},
       dt::CanonicalTypeId::int8, dt::DatatypeCastContext::explicit_cast);
@@ -343,12 +386,23 @@ void OperationsAndSerialization() {
        {Decimal("12.5"),
         Decimal("12.000000000000000000001"),
         Decimal("126.999999999999999999999"),
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "NaN", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::real64, "128", false}}) {
     Check(!Cast(source, dt::CanonicalTypeId::int8,
                 dt::DatatypeCastContext::explicit_cast).ok(),
           "non-integral, special, or out-of-range numeric cast fails closed");
   }
+  const auto decimal_float_special =
+      Cast(DecimalFloat("NaN", true), dt::CanonicalTypeId::int8,
+           dt::DatatypeCastContext::explicit_cast);
+  Check(!decimal_float_special.ok() &&
+            decimal_float_special.diagnostic.diagnostic_code ==
+                "DATATYPE.CAST_FORBIDDEN" &&
+            DiagnosticDetail(decimal_float_special.diagnostic) ==
+                "decimal_float_present_cast_policy_unresolved" &&
+            decimal_float_special.value.type_id ==
+                dt::CanonicalTypeId::unknown &&
+            decimal_float_special.value.encoded_value.empty(),
+        "decimal_float special-to-int8 remains fail-closed without pair policy");
   Check(!Cast({dt::CanonicalTypeId::int8, {}, false},
               dt::CanonicalTypeId::int8,
               dt::DatatypeCastContext::explicit_cast).ok() &&

@@ -140,6 +140,21 @@ dt::DatatypeOperationValue DecimalValue(std::string_view lexical) {
   return value;
 }
 
+dt::DatatypeOperationValue DecimalFloatValue(std::string_view lexical) {
+  const auto encoded = numeric::EncodeDecimal128LittleEndian(lexical, true);
+  Require(encoded.bytes.has_value(),
+          "listener exact decimal_float BID fixture encoding failed");
+  auto value = Value(dt::CanonicalTypeId::decimal_float, {});
+  if (encoded.bytes) {
+    value.encoded_value.assign(
+        reinterpret_cast<const char*>(encoded.bytes->data()),
+        encoded.bytes->size());
+  }
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::decimal_float);
+  value.descriptor = descriptor;
+  return value;
+}
+
 std::string DatatypeDiagnosticDetail(
     const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
   for (const auto& argument : diagnostic.arguments) {
@@ -198,7 +213,17 @@ void RuntimeNumericProof() {
               DatatypeDiagnosticDetail(decimal_compare.diagnostic) ==
                   "decimal_comparison_policy_unresolved",
           "decimal comparison did not fail at unresolved policy");
-  RequireCompare(dt::CanonicalTypeId::decimal_float, "4.50", "4.5", 0);
+  const auto decimal_float_450 = DecimalFloatValue("4.50");
+  const auto decimal_float_45 = DecimalFloatValue("4.5");
+  const auto decimal_float_compare =
+      dt::CompareDatatypeValues({decimal_float_450, decimal_float_45});
+  Require(!decimal_float_compare.ok() &&
+              decimal_float_compare.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_COMPARISON_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_float_compare.diagnostic) ==
+                  "decimal_float_comparison_policy_unresolved" &&
+              decimal_float_compare.comparison == 0,
+          "decimal_float comparison did not fail at unresolved policy");
   RequireCompare(dt::CanonicalTypeId::real128, "1.500", "1.5", 0);
 
   Require(SortKey(dt::CanonicalTypeId::int128, "-10") <
@@ -219,12 +244,38 @@ void RuntimeNumericProof() {
               DatatypeDiagnosticDetail(decimal_ten_key.diagnostic) ==
                   "decimal_sort_key_policy_unresolved",
           "decimal sort key did not fail at unresolved policy");
-  Require(SortKey(dt::CanonicalTypeId::decimal_float, "4.50") ==
-              SortKey(dt::CanonicalTypeId::decimal_float, "4.5"),
-          "decimal_float sort key did not collapse equivalent precision");
-  Require(StableHash(dt::CanonicalTypeId::decimal_float, "4.50") ==
-              StableHash(dt::CanonicalTypeId::decimal_float, "4.5"),
-          "decimal_float hash did not use canonical numeric value");
+  const auto decimal_float_450_key =
+      dt::MakeDatatypeSortKey({decimal_float_450});
+  const auto decimal_float_45_key =
+      dt::MakeDatatypeSortKey({decimal_float_45});
+  Require(!decimal_float_450_key.ok() && !decimal_float_45_key.ok() &&
+              decimal_float_450_key.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SORT_KEY_REJECTED" &&
+              decimal_float_45_key.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SORT_KEY_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_float_450_key.diagnostic) ==
+                  "decimal_float_sort_key_policy_unresolved" &&
+              DatatypeDiagnosticDetail(decimal_float_45_key.diagnostic) ==
+                  "decimal_float_sort_key_policy_unresolved" &&
+              decimal_float_450_key.sort_key.empty() &&
+              decimal_float_45_key.sort_key.empty(),
+          "decimal_float sort key did not fail at unresolved policy");
+  const auto decimal_float_450_hash =
+      dt::HashDatatypeValue({decimal_float_450});
+  const auto decimal_float_45_hash =
+      dt::HashDatatypeValue({decimal_float_45});
+  Require(!decimal_float_450_hash.ok() && !decimal_float_45_hash.ok() &&
+              decimal_float_450_hash.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_HASH_REJECTED" &&
+              decimal_float_45_hash.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_HASH_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_float_450_hash.diagnostic) ==
+                  "decimal_float_hash_policy_unresolved" &&
+              DatatypeDiagnosticDetail(decimal_float_45_hash.diagnostic) ==
+                  "decimal_float_hash_policy_unresolved" &&
+              decimal_float_450_hash.stable_hash_hex.empty() &&
+              decimal_float_45_hash.stable_hash_hex.empty(),
+          "decimal_float hash did not fail at unresolved policy");
   Require(StableHash(dt::CanonicalTypeId::int128, "+00042") ==
               StableHash(dt::CanonicalTypeId::int128, "42"),
           "int128 hash did not use canonical numeric value");

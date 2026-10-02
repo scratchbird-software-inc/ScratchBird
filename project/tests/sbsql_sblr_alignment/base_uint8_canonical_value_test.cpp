@@ -9,6 +9,7 @@
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "sbl_numeric.hpp"
 #include "sblr_special_forms.hpp"
 #include "query/expression_api.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
@@ -35,12 +36,24 @@ namespace sblr = scratchbird::engine::sblr;
 namespace api = scratchbird::engine::internal_api;
 namespace platform = scratchbird::core::platform;
 namespace fs = std::filesystem;
+namespace numeric = scratchbird::libraries::sbl_numeric;
 
 namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool ok, const std::string& why) {
   ++checks;
   if (!ok) { ++failures; std::cerr << "FAIL: " << why << '\n'; }
+}
+
+std::string DiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* text = argument.text();
+      return text == nullptr ? std::string{} : *text;
+    }
+  }
+  return {};
 }
 
 bool SameUuid(const engine::Uuid& left, const engine::Uuid& right) {
@@ -75,6 +88,20 @@ engine::ExecutionTypeDescriptor Descriptor() {
       dt::CanonicalTypeId::uint8, metadata);
   Check(built.ok(), "execution descriptor from exact uint8 catalog row");
   return built.descriptor;
+}
+
+dt::DatatypeOperationValue DecimalFloat(std::string_view lexical) {
+  const auto encoded = numeric::EncodeDecimal128LittleEndian(lexical);
+  Check(encoded.bytes.has_value(), "exact decimal_float BID fixture encoding");
+  dt::DatatypeOperationValue value;
+  value.type_id = dt::CanonicalTypeId::decimal_float;
+  if (encoded.bytes) {
+    value.encoded_value.assign(
+        reinterpret_cast<const char*>(encoded.bytes->data()),
+        encoded.bytes->size());
+  }
+  value.descriptor = CatalogDescriptor(dt::CanonicalTypeId::decimal_float);
+  return value;
 }
 
 dt::DatatypeOperationValue Uint8(std::uint8_t raw) {
@@ -331,12 +358,26 @@ void OperationsAndSerialization() {
        {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.0", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
                                    "12.000000000000000000001", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "12e0", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::real64, "255.0", false}}) {
     Check(!Cast(source, dt::CanonicalTypeId::uint8,
                 dt::DatatypeCastContext::explicit_cast).ok(),
           "numeric-to-uint8 remains fail-closed while exact pair policy is unresolved");
   }
+  const auto decimal_float_input =
+      Cast(DecimalFloat("12E0"), dt::CanonicalTypeId::uint8,
+           dt::DatatypeCastContext::explicit_cast);
+  Check(!decimal_float_input.ok() &&
+            decimal_float_input.diagnostic.diagnostic_code ==
+                "DATATYPE.CAST_FORBIDDEN" &&
+            DiagnosticDetail(decimal_float_input.diagnostic) ==
+                "decimal_float_present_cast_policy_unresolved" &&
+            decimal_float_input.value.type_id ==
+                dt::CanonicalTypeId::unknown &&
+            decimal_float_input.value.encoded_value.empty() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::decimal_float,
+                                     dt::CanonicalTypeId::uint8) ==
+                dt::DatatypeCastCategory::forbidden,
+        "decimal_float-to-uint8 remains fail-closed without pair policy");
   Check(!Cast({dt::CanonicalTypeId::decimal, "12", false},
               dt::CanonicalTypeId::uint8,
               dt::DatatypeCastContext::assignment).ok(),
