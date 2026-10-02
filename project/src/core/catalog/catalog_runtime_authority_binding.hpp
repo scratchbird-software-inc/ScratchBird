@@ -50,9 +50,9 @@ inline bool Valid(const CatalogRuntimeAuthorityBinding& r) {
 }
 }  // namespace runtime_binding_detail
 
-inline const CatalogValueSchema& CatalogRuntimeAuthorityBindingSchema() {
+inline constexpr CatalogValueSchemaView CatalogRuntimeAuthorityBindingSchemaView() {
   using T = CatalogValueType;
-  static const CatalogValueSchema schema{65587, 1, {
+  static constexpr CatalogValueFieldSchema fields[]{
       {1, T::engine_identity, true, 16, UuidKind::object},
       {2, T::unsigned_integer, true, 8},
       {3, T::engine_identity, true, 16, UuidKind::database},
@@ -65,7 +65,15 @@ inline const CatalogValueSchema& CatalogRuntimeAuthorityBindingSchema() {
       {11, T::unsigned_integer, true, 8}, {12, T::unsigned_integer, true, 8},
       {13, T::unsigned_integer, true, 8},
       {14, T::engine_identity, true, 16, UuidKind::transaction},
-      {15, T::unsigned_integer, true, 8}}};
+      {15, T::unsigned_integer, true, 8}};
+  return {65587, 1, fields};
+}
+
+inline const CatalogValueSchema& CatalogRuntimeAuthorityBindingSchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogRuntimeAuthorityBindingSchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 
@@ -89,27 +97,28 @@ inline CatalogValueEncodeResult EncodeCatalogRuntimeAuthorityBinding(const Catal
 inline CatalogRuntimeAuthorityBindingResult DecodeCatalogRuntimeAuthorityBinding(std::string_view bytes) {
   // Exactly fourteen required fixed-width fields, plus one optional identity.
   if (bytes.size() != 304 && bytes.size() != 328) return {CatalogValueError::invalid_framing, {}};
-  const auto decoded = DecodeCatalogValueBlock(CatalogRuntimeAuthorityBindingSchema(),
-      std::vector<byte>(bytes.begin(), bytes.end()));
+  std::array<CatalogValueFieldView, 15> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogRuntimeAuthorityBindingSchemaView(),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if (!decoded.ok()) return {decoded.error, {}};
   CatalogRuntimeAuthorityBinding r;
   for (const auto& f : decoded.fields) {
     switch (f.id) {
-      case 1: r.binding_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 2: r.generation = std::get<u64>(f.value); break;
-      case 3: r.database_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 4: r.service_principal_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 5: r.security_authority_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 6: r.provider_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 7: r.policy_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 8: r.credential_reference_uuid = std::get<TypedUuid>(f.value).value; break;
-      case 9: r.authority_mode = static_cast<RuntimeAuthorityMode>(std::get<u64>(f.value)); break;
-      case 10: r.security_epoch = std::get<u64>(f.value); break;
-      case 11: r.policy_epoch = std::get<u64>(f.value); break;
-      case 12: r.provider_generation = std::get<u64>(f.value); break;
-      case 13: r.catalog_generation = std::get<u64>(f.value); break;
-      case 14: r.origin_transaction_uuid = std::get<TypedUuid>(f.value); break;
-      case 15: r.origin_local_transaction_id = std::get<u64>(f.value); break;
+      case 1: r.binding_uuid = f.identity()->value; break;
+      case 2: r.generation = *f.unsigned_value(); break;
+      case 3: r.database_uuid = f.identity()->value; break;
+      case 4: r.service_principal_uuid = f.identity()->value; break;
+      case 5: r.security_authority_uuid = f.identity()->value; break;
+      case 6: r.provider_uuid = f.identity()->value; break;
+      case 7: r.policy_uuid = f.identity()->value; break;
+      case 8: r.credential_reference_uuid = f.identity()->value; break;
+      case 9: r.authority_mode = static_cast<RuntimeAuthorityMode>(*f.unsigned_value()); break;
+      case 10: r.security_epoch = *f.unsigned_value(); break;
+      case 11: r.policy_epoch = *f.unsigned_value(); break;
+      case 12: r.provider_generation = *f.unsigned_value(); break;
+      case 13: r.catalog_generation = *f.unsigned_value(); break;
+      case 14: r.origin_transaction_uuid = *f.identity(); break;
+      case 15: r.origin_local_transaction_id = *f.unsigned_value(); break;
     }
   }
   if (!runtime_binding_detail::Valid(r)) return {CatalogValueError::invalid_value, {}};

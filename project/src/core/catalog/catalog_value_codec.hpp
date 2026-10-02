@@ -4,6 +4,8 @@
 
 #include "runtime_platform.hpp"
 #include <string>
+#include <span>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -30,7 +32,7 @@ enum class CatalogValueType : u8 {
 };
 enum class CatalogValueError : u8 {
   none, invalid_schema, invalid_framing, unsupported_version, unknown_field,
-  missing_field, type_mismatch, invalid_value, size_limit
+  missing_field, type_mismatch, invalid_value, size_limit, invalid_backing
 };
 struct CatalogValueFieldSchema {
   u16 id = 0;
@@ -44,6 +46,36 @@ struct CatalogValueSchema {
   u16 version = 0;
   std::vector<CatalogValueFieldSchema> fields;
 };
+// Borrowed schemas and values are structural inspection, not catalog authority.
+// Input and schema must remain immutable throughout decoding. Retain the input
+// owner (and its real memory grant) for as long as any returned field is used.
+struct CatalogValueSchemaView {
+  u32 id = 0;
+  u16 version = 0;
+  std::span<const CatalogValueFieldSchema> fields;
+};
+inline CatalogValueSchemaView BorrowCatalogValueSchema(const CatalogValueSchema& s) {
+  return {s.id, s.version, s.fields};
+}
+struct CatalogValueFieldView {
+  u16 id = 0;
+  CatalogValueType type = CatalogValueType::opaque_bytes;
+  UuidKind identity_kind = UuidKind::unknown;
+  std::span<const byte> bytes;
+  std::optional<u64> unsigned_value() const noexcept;
+  std::optional<TypedUuid> identity() const noexcept;
+};
+struct CatalogValueDecodeViewResult {
+  CatalogValueError error = CatalogValueError::none;
+  std::span<const CatalogValueFieldView> fields;
+  bool ok() const { return error == CatalogValueError::none; }
+};
+// No C++ heap allocation, including schema setup and malformed input. Validates
+// the whole block before touching backing. On any refusal no fields are returned
+// and backing is unchanged. Backing must not overlap input or schema storage.
+CatalogValueDecodeViewResult DecodeCatalogValueBlockInto(
+    CatalogValueSchemaView schema, std::span<const byte> bytes,
+    std::span<CatalogValueFieldView> backing);
 using CatalogValue = std::variant<u64, bool, std::string, std::vector<byte>,
                                   TypedUuid, Uuid, std::vector<TypedUuid>,
                                   std::vector<std::string>>;
