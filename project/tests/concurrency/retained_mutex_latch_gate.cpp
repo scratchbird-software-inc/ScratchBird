@@ -516,7 +516,7 @@ void Publication() {
   });
 }
 #if defined(SB_MUTEX_NATIVE_FAULT_GATE)
-void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned expected,unsigned terminal=0,bool alias=false,bool rebound=false) {
+void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned expected,unsigned terminal=0,bool alias=false,bool rebound=false,bool permutations=false) {
   using N=scratchbird::core::platform::CheckedFifoMutex;
   Fixture fixture;
   {
@@ -571,8 +571,11 @@ void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned
       if (terminal==2) stops[0].request_stop();
       Check(probes[0].committed.try_acquire_for(5s),"terminal waiter paused before actual unlink");
     }
-    for (bool reverse:{false,true}) {
-      if (reverse) std::reverse(operations.begin(),operations.begin()+count);
+    std::array<unsigned,8> permutation{};
+    for (unsigned i=0;i<count;++i) permutation[i]=i;
+    unsigned captures=0;
+    do {
+      for (unsigned i=0;i<count;++i) operations[i]=&observers[permutation[i]];
       const auto found=c::MutexLatchOperation::CaptureWaitCycle(std::span(operations).first(count),frames,observations,waits,edges,cycle,8,8);
       if (alias) Check(found.status==c::MutexLatchCycleStatus::no_cycle_in_set &&
           observations[0].wait.owner==observations[2].wait.owner &&
@@ -580,7 +583,7 @@ void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned
           "concurrent executions sharing task UUID do not manufacture a thread cycle");
       if (rebound) Check(found.status==c::MutexLatchCycleStatus::execution_binding_required,
           "different binary task bindings on one native thread are not spliced");
-      if (terminal) Check(found.status==c::MutexLatchCycleStatus::no_cycle_in_set,
+      if (terminal) Check(found.status==(expected?c::MutexLatchCycleStatus::cycle:c::MutexLatchCycleStatus::no_cycle_in_set),
           "terminal wait cannot contribute a continuing cycle before unlink");
       Check(found.status==(rebound?c::MutexLatchCycleStatus::execution_binding_required:
             expected?c::MutexLatchCycleStatus::cycle:c::MutexLatchCycleStatus::no_cycle_in_set) &&
@@ -593,8 +596,16 @@ void CycleTopology(unsigned count,const std::array<unsigned,8>& targets,unsigned
         const auto& held=observations[edges[cycle[i]].latch_index].wait;
         const auto& next=waits[edges[cycle[(i+1)%expected]].waiter_index];
         Check(held.holder==next.thread && held.owner==next.owner,"independent topology witness closes every execution edge");
+        if (terminal) Check(waits[edges[cycle[i]].waiter_index].owner!=Id(1000),
+            "surviving cycle never reuses the terminated execution edge");
       }
-    }
+      ++captures;
+      if (!permutations) {
+        if (captures==2) break;
+        std::reverse(permutation.begin(),permutation.begin()+count);
+      }
+    } while (!permutations || std::next_permutation(permutation.begin(),permutation.begin()+count));
+    Check(captures==(permutations?24u:2u),"every requested capture ordering exercised");
     // The selected terminal edge already has its close/stop/deadline outcome.
     // Do not inject cancellation ahead of an expired deadline during teardown.
     for (unsigned i=0;i<count;++i) if (!terminal || i!=0) stops[i].request_stop();
@@ -620,10 +631,45 @@ void NativeBoundaries() {
     if (!expected && all) expected=3;
     CycleTopology(3,targets,expected);
   }
+  // All256 nonrecursive four-execution graphs, each captured in all24 input
+  // permutations. Independent transitive closure, rather than the production
+  // functional-graph traversal, determines strongly connected cycle size.
+  // Two distinct cycles can coexist here; both then have exactly two members.
+  std::array<unsigned,5> sizes{};
+  for (unsigned encoded=0;encoded<256;++encoded) {
+    unsigned value=encoded; std::array<unsigned,8> targets{};
+    bool reaches[4][4]{};
+    for (unsigned i=0;i<4;++i) {
+      const auto choice=value%4; value/=4;
+      targets[i]=choice==3?4:(i+1+choice)%4;
+      if (targets[i]<4) reaches[i][targets[i]]=true;
+    }
+    for (unsigned via=0;via<4;++via) for (unsigned from=0;from<4;++from)
+      for (unsigned to=0;to<4;++to) reaches[from][to]|=reaches[from][via] && reaches[via][to];
+    unsigned expected=0;
+    for (unsigned i=0;i<4;++i) if (reaches[i][i]) {
+      unsigned members=0;
+      for (unsigned j=0;j<4;++j) members+=reaches[i][j] && reaches[j][i];
+      Check(!expected || expected==members,"independent four-node cycle cardinalities agree");
+      expected=members;
+    }
+    ++sizes[expected];
+    CycleTopology(4,targets,expected,0,false,false,true);
+  }
+  // Acyclic:5^3 forests rooted at the absent-edge sink. Two-cycles:
+  // six chosen pairs * sixteen remaining choices minus three double-counted
+  // disjoint pairs. Three-cycles:four triples * two directions * four choices
+  // for the remaining node. Four-cycles:3! directed rings.
+  Check(sizes[0]==125 && sizes[2]==93 && sizes[3]==32 && sizes[4]==6,
+        "exhaustive graph population matches independent labeled-tree and cycle counts");
   CycleTopology(8,{1,2,3,4,5,6,7,0},8);
   CycleTopology(3,{1,2,3},0,0,true);
   CycleTopology(2,{1,0},0,0,false,true);
-  for (unsigned terminal:{1U,2U,3U}) CycleTopology(2,{1,0},0,terminal);
+  for (unsigned terminal:{1U,2U,3U}) {
+    CycleTopology(2,{1,0},0,terminal);
+    CycleTopology(4,{1,0,3,2},2,terminal);
+    CycleTopology(5,{1,0,3,4,2},3,terminal);
+  }
   Run([](auto& left,auto& domain) {
     c::MutexLatchOwner right(domain); auto d=Descriptor(); d.primitive_id=Id(21); d.generation=8;
     Check(right.Initialize(d,{4,8},Hazard(40))==S::ok,"second real retained latch published");
