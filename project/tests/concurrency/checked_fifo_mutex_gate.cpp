@@ -277,5 +277,45 @@ int main() {
     Check(mutex.Observe().held,"close does not forgive in-flight committed grant");
     pause.resume.release(); holder.join(); Idle(mutex);
   }
+  {
+    Mutex mutex(2);
+    Mutex::OwnerIdentity task{}; task[0]=1;
+    auto different=task; different[15]=2;
+    Check(mutex.TryLock({}, {}, task)==Result::acquired,"binary task holder");
+    std::thread moved_task([&] {
+      Check(mutex.TryLock({}, {}, task)==Result::recursive,"same binary task cannot recurse on another native thread");
+      Check(mutex.Lock(Mutex::Clock::now()+1s, {}, task)==Result::recursive,"same binary task cannot park behind itself");
+      Check(!mutex.Unlock(task),"binary task alone cannot release on foreign native thread");
+    }); moved_task.join();
+    Check(mutex.TryLock({}, {}, different)==Result::recursive,"different task does not permit native thread recursion");
+    Check(!mutex.Unlock(different),"wrong binary task cannot release native holder");
+    Check(!mutex.Unlock(),"unbound release cannot discard binary ownership");
+    Check(mutex.Observe().held,"failed binary releases preserve ownership");
+    Check(mutex.Unlock(task),"exact binary task and native thread release");
+    Check(mutex.TryLock()==Result::acquired,"unbound native reuse clears old identity");
+    Check(!mutex.Unlock(task),"bound release cannot release an unbound holder");
+    Check(mutex.Unlock(),"unbound native release preserved"); Idle(mutex);
+  }
+  {
+    Mutex mutex(2); Park first, second;
+    Mutex::OwnerIdentity task{}; task[0]=1;
+    std::binary_semaphore granted(0), release(0);
+    Check(mutex.TryLock()==Result::acquired,"queued duplicate task initial holder");
+    std::thread one([&] {
+      park=&first;
+      Check(mutex.Lock(Mutex::Clock::now()+5s, {}, task)==Result::acquired,"first queued binary task granted");
+      granted.release(); release.acquire();
+      Check(mutex.Unlock(task),"first queued task retains ownership");
+    });
+    Check(first.entered.try_acquire_for(5s),"first binary task parked");
+    std::thread two([&] {
+      park=&second;
+      Check(mutex.Lock(Mutex::Clock::now()+5s, {}, task)==Result::recursive,"queued duplicate revalidates binary owner before repark");
+    });
+    Check(second.entered.try_acquire_for(5s),"second binary task parked");
+    Check(mutex.Unlock(),"release to first binary task");
+    Check(granted.try_acquire_for(5s),"first binary task commit visible");
+    two.join(); release.release(); one.join(); Idle(mutex);
+  }
   std::cout << "PASS " << checks << " native FIFO parking checks; not full engine latch acceptance\n";
 }

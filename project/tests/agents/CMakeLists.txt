@@ -74,6 +74,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock")
 endif()
 add_test(NAME retained_condition_wait_gate COMMAND retained_condition_wait_gate)
+add_executable(retained_mutex_latch_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_mutex_latch_gate.cpp")
+target_compile_features(retained_mutex_latch_gate PRIVATE cxx_std_23)
+target_link_libraries(retained_mutex_latch_gate PRIVATE sb_core_concurrency)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_definitions(retained_mutex_latch_gate PRIVATE SB_MUTEX_NATIVE_FAULT_GATE)
+  target_link_options(retained_mutex_latch_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait
+    -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_unlock)
+endif()
+add_test(NAME retained_mutex_latch_gate COMMAND retained_mutex_latch_gate)
+set_tests_properties(retained_mutex_latch_gate PROPERTIES
+  TIMEOUT 120 LABELS "concurrency;mutex;binary_uuid;safe_retirement;fault")
 set_tests_properties(retained_condition_wait_gate PROPERTIES
   TIMEOUT 60 LABELS "concurrency;condition_wait;safe_retirement")
 add_test(NAME retained_condition_wait_measurement_gate COMMAND retained_condition_wait_gate --measure)
