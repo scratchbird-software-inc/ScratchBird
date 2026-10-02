@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "filespace_bootstrap.hpp"
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::disk {
@@ -16,7 +17,7 @@ struct FilespaceRootReference {
   Uuid page_size_profile_uuid;
   Uuid object_uuid;
 };
-struct FilespacePageZero {
+template<class Roots> struct FilespacePageZeroData {
   FilespaceBootstrap bootstrap;
   Uuid page_uuid;
   Uuid creation_operation_uuid;
@@ -27,13 +28,15 @@ struct FilespacePageZero {
   u64 free_pages = 0;
   u64 preallocated_pages = 0;
   u64 creation_utc_millis = 0;
-  std::vector<FilespaceRootReference> roots;
+  Roots roots;
 };
+using FilespacePageZero=FilespacePageZeroData<std::vector<FilespaceRootReference>>;
+using FilespacePageZeroView=FilespacePageZeroData<std::span<FilespaceRootReference>>;
 enum class FilespacePageZeroError {
   none, invalid_bootstrap, invalid_common_header, invalid_family,
   integrity_mismatch, hash_provider_failure, invalid_capacity,
   invalid_root_directory, required_root_missing, probe_changed,
-  device_not_open, io_failure, resource_exhausted
+  device_not_open, io_failure, resource_exhausted, invalid_backing
 };
 enum class FilespaceRecoveryRootError {
   none, invalid_request, invalid_bootstrap, invalid_directory, invalid_extent,
@@ -64,6 +67,16 @@ struct FilespacePageZeroEncodeResult {
   std::optional<std::vector<byte>> bytes;
   bool ok() const noexcept { return error == FilespacePageZeroError::none && bytes.has_value(); }
 };
+struct FilespacePageZeroViewResult {
+  FilespacePageZeroError error=FilespacePageZeroError::invalid_family;
+  std::optional<FilespacePageZeroView> record;
+  bool ok() const noexcept {return error==FilespacePageZeroError::none&&record.has_value();}
+};
+// Caller storage must outlive the returned view. No vector or image allocation.
+// Scratch contents after failure are unspecified, not partial evidence.
+FilespacePageZeroViewResult DecodeFilespacePageZeroInto(
+    std::span<const byte>,std::span<FilespaceRootReference>,
+    const FilespaceBootstrapBinding* expected=nullptr) noexcept;
 u32 CanonicalPageZeroRootPageType(u16 root_kind) noexcept;
 FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero&) noexcept;
 FilespacePageZeroDecodeResult DecodeFilespacePageZero(

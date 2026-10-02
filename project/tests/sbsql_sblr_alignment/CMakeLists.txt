@@ -10323,6 +10323,28 @@ set_tests_properties(sbsql_sblr_alignment_base_bfloat16_carrier_state PROPERTIES
   LABELS "sbsql_sblr_alignment;datatype;base_bfloat16;structural_carrier;null_state;persistence;component_regression;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_real16_carrier_state
+  base_real16_carrier_state_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_real16_carrier_state PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_real16_carrier_state PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_real16_carrier_state
+  COMMAND sbsql_sblr_alignment_base_real16_carrier_state)
+set_tests_properties(sbsql_sblr_alignment_base_real16_carrier_state PROPERTIES
+  LABELS "sbsql_sblr_alignment;datatype;base_real16;structural_carrier;null_state;persistence;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_base_real32_carrier_state
+  base_real32_carrier_state_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_real32_carrier_state PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_real32_carrier_state PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_real32_carrier_state
+  COMMAND sbsql_sblr_alignment_base_real32_carrier_state)
+set_tests_properties(sbsql_sblr_alignment_base_real32_carrier_state PROPERTIES
+  LABELS "sbsql_sblr_alignment;datatype;base_real32;structural_carrier;null_state;persistence;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 # Binary parameter hashing and cursor framing are component regressions. The
 # existing process tests retain the independent live execution/publication checks.
 add_executable(sbsql_sblr_alignment_parameter_slot_binary_hash

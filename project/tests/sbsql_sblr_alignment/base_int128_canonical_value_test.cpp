@@ -572,9 +572,55 @@ void NumericAndCastAdapter() {
             bfloat_cast.value.encoded_value == bfloat_source_before,
         "int128 PRESENT-to-bfloat16 cast refuses without publishing output");
 
-  for (const auto target : {dt::CanonicalTypeId::real16,
-                            dt::CanonicalTypeId::real32,
-                            dt::CanonicalTypeId::real64,
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeCastRequest real16_cast;
+    real16_cast.value = Int128("42");
+    real16_cast.target_type_id = dt::CanonicalTypeId::real16;
+    real16_cast.context = context;
+    real16_cast.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    real16_cast.target_descriptor = DescriptorFor(dt::CanonicalTypeId::real16);
+    const auto real16_source_before = real16_cast.value.encoded_value;
+    const auto real16_value = dt::CastDatatypeValue(real16_cast);
+    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int128,
+                                   dt::CanonicalTypeId::real16) ==
+                  dt::DatatypeCastCategory::forbidden &&
+              !real16_value.ok() &&
+              real16_value.category == dt::DatatypeCastCategory::forbidden &&
+              real16_value.value.type_id == dt::CanonicalTypeId::unknown &&
+              real16_value.value.encoded_value.empty() &&
+              !real16_value.value.is_null &&
+              real16_cast.value.encoded_value == real16_source_before,
+          "int128 PRESENT-to-real16 cast refuses without publishing output");
+  }
+
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeCastRequest real32_cast;
+    real32_cast.value = Int128("42");
+    real32_cast.target_type_id = dt::CanonicalTypeId::real32;
+    real32_cast.context = context;
+    real32_cast.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    real32_cast.target_descriptor = DescriptorFor(dt::CanonicalTypeId::real32);
+    const auto real32_source_before = real32_cast.value.encoded_value;
+    const auto real32_value = dt::CastDatatypeValue(real32_cast);
+    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int128,
+                                   dt::CanonicalTypeId::real32) ==
+                  dt::DatatypeCastCategory::forbidden &&
+              !real32_value.ok() &&
+              real32_value.category == dt::DatatypeCastCategory::forbidden &&
+              real32_value.value.type_id == dt::CanonicalTypeId::unknown &&
+              real32_value.value.encoded_value.empty() &&
+              !real32_value.value.is_null &&
+              real32_cast.value.encoded_value == real32_source_before,
+          "int128 PRESENT-to-real32 cast refuses without publishing output");
+  }
+
+  for (const auto target : {dt::CanonicalTypeId::real64,
                             dt::CanonicalTypeId::real128}) {
     dt::DatatypeCastRequest real_cast;
     real_cast.value = Int128("42");
