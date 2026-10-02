@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "checked_mode_latch.hpp"
+#include "held_latch_order.hpp"
 #include "memory_safe_retirement.hpp"
 
 namespace scratchbird::core::concurrency {
 
 // Retained native mechanism, NOT an admitted reader/writer or intent descriptor.
-// Its owning adapter must validate class/mode/order, current execution
+// Its owning adapter must validate class/mode, current execution
 // authority and admitted arbitration rank. No conversion or bypass is exposed.
+// Declared class order is checked against actual retained mutex and mode grants
+// on this native thread; no unconverted primitive or exception is covered.
 // Binary instance/generation and exact request bindings prevent stale/mismatched
 // use; they do not manufacture authority. Domain/resource outlive all wrappers.
 using ModeLatchUuid = memory::MemoryBinaryUuid;
@@ -17,6 +20,7 @@ using ModeLatchClock = ModeLatchNative::Clock;
 struct ModeLatchIdentity {
   ModeLatchUuid primitive{};
   std::uint64_t generation = 0;
+  LatchClass latch_class = LatchClass::unspecified;
   bool operator==(const ModeLatchIdentity&) const = default;
 };
 struct ModeLatchLimits { std::uint32_t holders = 0, waiters = 0, operations = 0; };
@@ -36,11 +40,12 @@ struct ModeLatchGrantMemory {
 };
 enum class ModeLatchCode {
   acquired, released, drained, invalid, wrong_owner, no_grant, busy, recursive, exhausted,
-  closed, cancelled, timed_out, memory_failed, synchronization_failed
+  closed, cancelled, timed_out, memory_failed, synchronization_failed, order_violation
 };
 struct ModeLatchResult {
   ModeLatchCode code = ModeLatchCode::invalid;
   memory::SafeRetirementStatus memory_status = memory::SafeRetirementStatus::ok;
+  std::optional<LatchOrderConflict> order_conflict{};
 };
 struct ModeLatchSnapshot {
   ModeLatchIdentity identity;
@@ -70,7 +75,7 @@ inline ModeLatchCode ModeNativeCode(ModeLatchNative::Result result) noexcept {
   }
   std::terminate();
 }
-struct ModeLatchRecord { ModeLatchNative::Grant native; };
+struct ModeLatchRecord { ModeLatchNative::Grant native; HeldLatchNode held; };
 struct ModeLatchState {
   const ModeLatchIdentity identity;
   const ModeLatchLimits limits;
@@ -128,6 +133,7 @@ class ModeLatchGrant {
       std::lock_guard lock(state_->lifetime);
       if (!state_->native.Release(record_->native, request_.task)) return {C::wrong_owner};
       if (!state_->grants) std::terminate();
+      record_->held.Unlink();
       --state_->grants; state_->Notify();
       state_ = nullptr; record_ = nullptr;
     } catch (const std::system_error&) { return {C::synchronization_failed}; }
@@ -182,6 +188,10 @@ class ModeLatchOperation {
         storage.latch_hazard.owner_task != task_ || storage.record_hazard.owner_task != task_ ||
         storage.latch_hazard.hazard_id == storage.record_hazard.hazard_id) return {C::invalid};
     auto& s = *state_;
+    if (const auto conflict = detail::HeldOrderConflict(s.identity.latch_class))
+      return {C::order_violation,S::ok,conflict};
+    if (detail::held_latches.count == std::numeric_limits<std::uint32_t>::max())
+      return {C::exhausted};
     memory::SafeRetirementGuard state_guard, record_guard;
     try {
       {
@@ -205,6 +215,12 @@ class ModeLatchOperation {
       if (protected_record != S::ok) return {C::memory_failed, protected_record};
       if (retired != S::ok) std::terminate(); // A real guard forbids reclamation.
       auto* record = static_cast<detail::ModeLatchRecord*>(record_guard.get());
+      // Memory preparation may enter another retained latch on this thread.
+      // Recheck before either a grant or registration in the native wait queue.
+      if (const auto conflict = detail::HeldOrderConflict(s.identity.latch_class))
+        return {C::order_violation,S::ok,conflict};
+      if (detail::held_latches.count == std::numeric_limits<std::uint32_t>::max())
+        return {C::exhausted};
       const auto native = immediate
           ? s.native.TryAcquire(record->native, request.mode, deadline, stop, task_)
           : s.native.Acquire(record->native, request.mode, request.admitted_rank, deadline, stop, task_);
@@ -215,6 +231,7 @@ class ModeLatchOperation {
         try {
           std::lock_guard lock(s.lifetime);
           if (s.grants == s.limits.holders) std::terminate();
+          record->held.Link({s.identity.primitive,s.identity.generation,s.identity.latch_class});
           ++s.grants;
           output.request_ = request;
           output.state_guard_ = std::move(state_guard);
@@ -248,6 +265,8 @@ class ModeLatchOwner {
                                          memory::SafeRetirementHazard hazard) {
     using S = memory::SafeRetirementStatus;
     if (state_ || !memory::MemorySystemUuidValid(identity.primitive) || !limits.holders ||
+        identity.latch_class < LatchClass::engine_lifecycle ||
+        identity.latch_class > LatchClass::metrics_evidence ||
         !limits.operations || !detail::ModeHazardValid(hazard)) return S::invalid_request;
     const auto made = domain_.Emplace<detail::ModeLatchState>(identity.primitive,
         memory::SafeRetirementObjectKind::temporary_descriptor, identity, limits, domain_);
