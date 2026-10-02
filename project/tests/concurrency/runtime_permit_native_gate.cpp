@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <latch>
 #include <new>
 #include <string_view>
 #include <thread>
@@ -18,7 +19,15 @@
 #include <unistd.h>
 #endif
 
-namespace fault { thread_local long remaining = -1; thread_local bool hit = false; }
+namespace fault {
+thread_local long remaining = -1;
+thread_local bool hit = false;
+struct AlignedPause {
+  std::latch entered{1}, resume{1};
+  bool reached = false;
+};
+thread_local AlignedPause* aligned_pause = nullptr;
+}
 void* operator new(std::size_t bytes) {
   if (fault::remaining >= 0 && fault::remaining-- == 0) {
     fault::remaining = -1; fault::hit = true; throw std::bad_alloc();
@@ -40,7 +49,14 @@ void* operator new(std::size_t bytes, std::align_val_t alignment) {
   if (requested > std::numeric_limits<std::size_t>::max() - (align - 1))
     throw std::bad_alloc();
   const auto rounded = ((requested + align - 1) / align) * align;
-  if (void* p = std::aligned_alloc(align, rounded)) return p;
+  if (void* p = std::aligned_alloc(align, rounded)) {
+    if (auto* pause = std::exchange(fault::aligned_pause, nullptr)) {
+      pause->reached = true;
+      pause->entered.count_down();
+      pause->resume.wait();
+    }
+    return p;
+  }
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t bytes, std::align_val_t alignment) {
@@ -409,6 +425,82 @@ void PrematureDestruction(const char* executable) {
         "ledger destruction cannot reclaim a still-owned permit node");
 }
 #endif
+void TerminalSelection() {
+  using Clock = std::chrono::steady_clock;
+  for (bool worker : {false, true}) {
+    for (unsigned mask = 0; mask < 16; ++mask) {
+      Fixture f;
+      const bool closed = mask & 1, cancelled = mask & 2;
+      const bool expired = mask & 4, full = mask & 8;
+      a::RuntimePermitAcquireResult first, second;
+      if (full) {
+        first = f.governor.AcquireRuntimePermit(f.Request(worker, 30));
+        second = f.governor.AcquireRuntimePermit(f.Request(worker, 31));
+        Check(first.ok() && second.ok(), "terminal matrix owns actual full capacity");
+      }
+      std::stop_source stop;
+      if (cancelled) stop.request_stop();
+      if (closed) Check(f.governor.CloseRuntimePermits() == Code::closed, "terminal matrix closes real governor");
+      a::RuntimePermitAcquireControl control{stop.get_token(), {}};
+      if (expired) control.wait_deadline = Clock::now();
+      const auto before = f.governor.Snapshot();
+      const auto physical = f.manager.Snapshot().current_bytes;
+      auto result = f.governor.AcquireRuntimePermit(f.Request(worker), control);
+      const auto expected = closed ? Code::closed : cancelled ? Code::cancelled :
+          expired ? Code::timed_out : full ? Code::exhausted : Code::granted;
+      Check(result.code == expected, "closed then cancelled then timeout then actual capacity admission");
+      if (expected != Code::granted) {
+        Check(!result.permit && Same(before, f.governor.Snapshot()) &&
+              f.manager.Snapshot().current_bytes == physical,
+              "terminal refusal preserves actual governor and physical ownership");
+      } else Check(result.permit.Release(f.Request(worker)) == Code::released, "matrix actual grant release");
+      if (full) {
+        Check(first.permit.Release(f.Request(worker, 30)) == Code::released &&
+              second.permit.Release(f.Request(worker, 31)) == Code::released,
+              "terminal refusal never revokes preexisting full-capacity grants");
+      }
+      f.Empty();
+    }
+    for (bool expire : {false, true}) {
+      Fixture f;
+      const auto before = f.governor.Snapshot();
+      std::stop_source stop;
+      fault::AlignedPause pause;
+      a::RuntimePermitAcquireResult result;
+      Clock::time_point deadline;
+      std::jthread producer([&] {
+        deadline = Clock::now() + std::chrono::seconds(2);
+        fault::aligned_pause = &pause;
+        result = f.governor.AcquireRuntimePermit(f.Request(worker),
+            {stop.get_token(), expire ? std::optional(deadline) : std::nullopt});
+        fault::aligned_pause = nullptr;
+        if (!pause.reached) pause.entered.count_down();
+      });
+      pause.entered.wait();
+      Check(pause.reached, "controlled boundary reaches real physical metadata allocation");
+      if (expire) std::this_thread::sleep_until(deadline);
+      else stop.request_stop();
+      pause.resume.count_down(); producer.join();
+      Check(result.code == (expire ? Code::timed_out : Code::cancelled) && !result.permit &&
+            Same(before, f.governor.Snapshot()) && f.manager.Snapshot().current_bytes == 0,
+            "late terminal during preparation cannot publish grant or debit");
+      f.Empty();
+    }
+    Fixture f;
+    std::stop_source stop;
+    const auto deadline = Clock::now() + std::chrono::seconds(1);
+    auto result = f.governor.AcquireRuntimePermit(f.Request(worker), {stop.get_token(), deadline});
+    Check(result.ok(), "grant committed before late terminal signals");
+    const auto before = f.governor.Snapshot();
+    stop.request_stop();
+    Check(f.governor.CloseRuntimePermits() == Code::closed, "close after commitment");
+    std::this_thread::sleep_until(deadline);
+    Check(result.ok() && Same(before, f.governor.Snapshot()),
+          "late close cancel and wait expiry retain committed ownership");
+    Check(result.permit.Release(f.Request(worker)) == Code::released, "late terminal grant actual release");
+    f.Empty();
+  }
+}
 void MetadataOwnerCleanup() {
   for (bool worker : {false, true}) {
     Fixture f;
@@ -504,7 +596,7 @@ int main(int argc, char** argv) {
     std::_Exit(99);
   }
   PolicyAndExistingCharges(); BindingAndRelease(); ContentionAndClose(); WorkerLifetimeAndRaces();
-  MetadataOwnerCleanup(); FaultSweep();
+  TerminalSelection(); MetadataOwnerCleanup(); FaultSweep();
 #if defined(__linux__)
   PrematureDestruction(argv[0]);
 #endif

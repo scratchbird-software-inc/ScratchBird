@@ -3,7 +3,9 @@
 #pragma once
 #include "runtime_platform.hpp"
 #include <cstdint>
+#include <chrono>
 #include <optional>
+#include <stop_token>
 
 namespace scratchbird::core::agents {
 
@@ -11,7 +13,7 @@ enum class RuntimePermitProfile { worker_slot, queued_task };
 enum class RuntimePermitCode {
   bound, granted, released, closed, invalid_binding, policy_unbound,
   exhausted, allocation_failed, identity_failed, synchronization_failed,
-  no_grant
+  no_grant, cancelled, timed_out
 };
 
 struct RuntimePermitAuthority {
@@ -49,6 +51,15 @@ struct RuntimePermitView {
   platform::Uuid grant;
   RuntimePermitRequest binding;
   std::uint64_t issuance = 0;
+};
+
+// Acquisition controls, not the resource-use lease in RuntimePermitRequest.
+// Checked under grant/close serialization before admission and again after
+// fallible metadata preparation. No waiting is performed by this governor API.
+// No controls means an immediate capacity attempt, not an uncancellable wait.
+struct RuntimePermitAcquireControl {
+  std::stop_token cancellation;
+  std::optional<std::chrono::steady_clock::time_point> wait_deadline;
 };
 
 class ResourceGovernanceReservationLedger;

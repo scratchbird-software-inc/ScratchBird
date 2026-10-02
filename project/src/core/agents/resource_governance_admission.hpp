@@ -235,7 +235,8 @@ class ResourceGovernanceReservationLedger {
       RuntimePermitInstanceBinding queue,
       core::memory::ReservationBackedPmrMemoryResource& metadata,
       core::uuid::StandaloneUuidV7Issuer& issuer) noexcept;
-  RuntimePermitAcquireResult AcquireRuntimePermit(const RuntimePermitRequest&) noexcept;
+  RuntimePermitAcquireResult AcquireRuntimePermit(const RuntimePermitRequest&,
+      RuntimePermitAcquireControl control = {}) noexcept;
   RuntimePermitCode CloseRuntimePermits() noexcept;
 
   // Fallible result/evidence construction completes before ledger mutation.

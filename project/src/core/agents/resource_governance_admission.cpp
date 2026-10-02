@@ -618,7 +618,7 @@ RuntimePermitCode ResourceGovernanceReservationLedger::BindRuntimePermits(
 }
 
 RuntimePermitAcquireResult ResourceGovernanceReservationLedger::AcquireRuntimePermit(
-    const RuntimePermitRequest& request) noexcept {
+    const RuntimePermitRequest& request, RuntimePermitAcquireControl control) noexcept {
   RuntimePermitAcquireResult result;
   static_assert(std::is_nothrow_move_constructible_v<RuntimePermitAcquireResult>);
   static_assert(std::is_nothrow_copy_assignable_v<RuntimePermitView>);
@@ -644,6 +644,16 @@ RuntimePermitAcquireResult ResourceGovernanceReservationLedger::AcquireRuntimePe
           existing.attempt == request.attempt && existing.worker == request.worker)
         return result;
     }
+    const auto terminal = [&]() noexcept {
+      // Close was selected above under this same mutex and cannot publish
+      // during preparation. Cancellation precedes deadline, both before grant.
+      if (control.cancellation.stop_requested()) return RuntimePermitCode::cancelled;
+      if (control.wait_deadline && std::chrono::steady_clock::now() >= *control.wait_deadline)
+        return RuntimePermitCode::timed_out;
+      return RuntimePermitCode::granted;
+    };
+    result.code = terminal();
+    if (result.code != RuntimePermitCode::granted) return result;
     const auto used = worker ? active_usage_.worker_threads : active_usage_.backlog_items;
     const auto capacity = worker ? runtime.policy.worker_capacity : runtime.policy.queue_capacity;
     if (used >= capacity || next_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
@@ -656,6 +666,13 @@ RuntimePermitAcquireResult ResourceGovernanceReservationLedger::AcquireRuntimePe
     // allocation is not a committed governor issuance or a leaked grant.
     const auto inserted = runtime.permits.emplace(view.grant, NativePermit{view, false});
     if (!inserted.second) { result.code = RuntimePermitCode::identity_failed; return result; }
+    result.code = terminal();
+    if (result.code != RuntimePermitCode::granted) {
+      // Prepared metadata is not a published grant. No unit or issuance was
+      // committed; the actual memory owner handles backing-release retries.
+      runtime.permits.erase(inserted.first);
+      return result;
+    }
     if (worker) ++active_usage_.worker_threads; else ++active_usage_.backlog_items;
     ++next_sequence_;
     result.permit.view_ = view;
