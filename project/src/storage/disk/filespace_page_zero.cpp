@@ -3,6 +3,7 @@
 #include "filespace_page_zero.hpp"
 #include "native_common_page_header.hpp"
 #include "disk_device.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include <openssl/evp.h>
 #include <algorithm>
 #include <limits>
@@ -10,6 +11,7 @@
 #include <new>
 #include <stdexcept>
 #include <utility>
+#include <type_traits>
 
 namespace scratchbird::storage::disk {
 namespace {
@@ -42,7 +44,7 @@ Error BootstrapError(FilespaceBootstrapError error) noexcept {
   if(error==FilespaceBootstrapError::io_failure) return Error::io_failure;
   return Error::invalid_bootstrap;
 }
-Error Validate(const FilespacePageZero& value) {
+template<class Roots> Error Validate(const FilespacePageZeroData<Roots>& value) {
   const auto& h=value.bootstrap;
   if(ValidateFilespaceBootstrap(h)!=FilespaceBootstrapError::none) return Error::invalid_bootstrap;
   if(!V7(value.page_uuid)||!V7(value.creation_operation_uuid)||!V7(value.writer_identity_uuid)
@@ -172,52 +174,70 @@ FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero& v
     catch(...) { return {Error::invalid_family,std::nullopt}; }
 }
 
-FilespacePageZeroDecodeResult DecodeFilespacePageZero(
-    const byte* bytes,std::size_t size,const FilespaceBootstrapBinding* expected) noexcept {
+namespace {
+template<class Roots> Error DecodeValues(const byte* bytes,std::size_t size,
+    const FilespaceBootstrapBinding* expected,FilespacePageZeroData<Roots>& value) {
   try {
-    if(!bytes||size<kFilespaceBootstrapBytes) return Failure(Error::invalid_bootstrap);
+    if(!bytes||size<kFilespaceBootstrapBytes) return Error::invalid_bootstrap;
     const auto preamble=DecodeFilespaceBootstrap(bytes,kFilespaceBootstrapBytes,expected);
-    if(!preamble.ok()) return Failure(BootstrapError(preamble.error));
+    if(!preamble.ok()) return BootstrapError(preamble.error);
     const auto& h=*preamble.preamble;
-    if(size!=h.page_size_bytes) return Failure(Error::invalid_capacity);
-    FilespacePageZero value; value.bootstrap=h;
+    if(size!=h.page_size_bytes) return Error::invalid_capacity;
+    value.bootstrap=h;
     if(!ReadCommon(bytes+common_offset,h,value.page_uuid,value.page_generation))
-      return Failure(Error::invalid_common_header);
+      return Error::invalid_common_header;
     const auto* b=bytes+family_offset;
     const u32 count=LoadLittle32(b+12);
     if(!std::equal(family_magic.begin(),family_magic.end(),b)||LoadLittle32(b+8)!=256||count>32
         ||LoadLittle64(b+16)!=256+80ull*count||LoadLittle32(b+216)!=80||!Zero(b+220,4)
         ||!Zero(bytes+directory_offset+80*count,size-directory_offset-80*count))
-      return Failure(Error::invalid_family);
+      return Error::invalid_family;
     std::array<byte,32> digest{};
-    if(!FullDigest(bytes,size,digest)) return Failure(Error::hash_provider_failure);
-    if(!std::equal(digest.begin(),digest.end(),bytes+digest_offset)) return Failure(Error::integrity_mismatch);
+    if(!FullDigest(bytes,size,digest)) return Error::hash_provider_failure;
+    if(!std::equal(digest.begin(),digest.end(),bytes+digest_offset)) return Error::integrity_mismatch;
     if(!Same(GetUuid(b+32),h.database_uuid)||!Same(GetUuid(b+48),h.filespace_uuid)
         ||!Same(GetUuid(b+64),h.page_size_profile_uuid)||!Same(GetUuid(b+80),h.checksum_profile_uuid)
         ||!Same(GetUuid(b+96),h.encryption_profile_uuid)||!Same(GetUuid(b+112),value.page_uuid)
         ||LoadLittle32(b+128)!=h.page_size_bytes||LoadLittle32(b+132)!=h.durable_format_generation
         ||LoadLittle16(b+136)!=h.filespace_role||LoadLittle16(b+138)!=h.lifecycle_state
         ||LoadLittle32(b+140)!=h.flags||LoadLittle64(b+168)!=value.page_generation)
-      return Failure(Error::invalid_family);
+      return Error::invalid_family;
     value.root_set_generation=LoadLittle64(b+24); value.total_pages=LoadLittle64(b+144);
     value.free_pages=LoadLittle64(b+152); value.preallocated_pages=LoadLittle64(b+160);
     value.creation_operation_uuid=GetUuid(b+176); value.writer_identity_uuid=GetUuid(b+192);
     value.creation_utc_millis=LoadLittle64(b+208);
-    value.roots.reserve(count); const auto* entry=bytes+directory_offset;
+    if constexpr(std::is_same_v<Roots,std::vector<FilespaceRootReference>>)value.roots.resize(count);
+    else {if(count>value.roots.size())return Error::resource_exhausted;value.roots=value.roots.first(count);}
+    const auto* entry=bytes+directory_offset;
     for(u32 i=0;i<count;++i,entry+=80) {
-      if(LoadLittle16(entry+2)!=0||!Zero(entry+72,8)) return Failure(Error::invalid_root_directory);
+      if(LoadLittle16(entry+2)!=0||!Zero(entry+72,8)) return Error::invalid_root_directory;
       FilespaceRootReference root;
       root.kind=LoadLittle16(entry); root.page_type=LoadLittle32(entry+4);
       root.filespace_uuid=GetUuid(entry+8); root.page_number=LoadLittle64(entry+24);
       root.page_generation=LoadLittle64(entry+32); root.page_size_profile_uuid=GetUuid(entry+40);
-      root.object_uuid=GetUuid(entry+56); value.roots.push_back(root);
+      root.object_uuid=GetUuid(entry+56); value.roots[i]=root;
     }
     const auto error=Validate(value);
-    if(error!=Error::none) return Failure(error);
-    return {Error::none,std::move(value)};
-  } catch(const std::bad_alloc&) { return Failure(Error::resource_exhausted); }
-    catch(const std::length_error&) { return Failure(Error::resource_exhausted); }
-    catch(...) { return Failure(Error::invalid_family); }
+    if(error!=Error::none) return error;
+    return Error::none;
+  } catch(const std::bad_alloc&) { return Error::resource_exhausted; }
+    catch(const std::length_error&) { return Error::resource_exhausted; }
+    catch(...) { return Error::invalid_family; }
+}
+} // namespace
+FilespacePageZeroDecodeResult DecodeFilespacePageZero(
+    const byte* bytes,std::size_t size,const FilespaceBootstrapBinding* expected) noexcept {
+  FilespacePageZero value;const auto error=DecodeValues(bytes,size,expected,value);
+  if(error!=Error::none)return Failure(error);
+  return {Error::none,std::move(value)};
+}
+FilespacePageZeroViewResult DecodeFilespacePageZeroInto(std::span<const byte> bytes,
+    std::span<FilespaceRootReference> roots,const FilespaceBootstrapBinding* expected) noexcept {
+  if(!detail::DisjointNativeDecodeRegions(bytes,roots))return {Error::invalid_backing,std::nullopt};
+  FilespacePageZeroView value;value.roots=roots;
+  const auto error=DecodeValues(bytes.data(),bytes.size(),expected,value);
+  if(error!=Error::none)return {error,std::nullopt};
+  return {Error::none,value};
 }
 
 FilespacePageZeroDecodeResult ReadFilespacePageZeroFromOpenDevice(
