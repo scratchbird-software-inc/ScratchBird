@@ -5,6 +5,7 @@
 #include "database_dirty_manifest.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::database {
@@ -38,6 +39,15 @@ struct NativeCheckpointSelectionImage {
   std::vector<byte> bytes;
   bool ok() const noexcept {return error==NativeCheckpointSelectionError::none&&selection.has_value();}
 };
+// Fixed-size decoded fields only. The caller retains the input bytes; no span,
+// pointer or uncharged image copy is retained by this result. In particular a
+// grant-backed page need not be copied into a vector merely to validate it.
+struct NativeCheckpointSelectionValue {
+  NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_family;
+  std::optional<NativeCheckpointSelection> selection;
+  bool ok() const noexcept {return error==NativeCheckpointSelectionError::none&&selection.has_value();}
+};
+NativeCheckpointSelectionValue DecodeNativeCheckpointSelectionValue(std::span<const byte>) noexcept;
 NativeCheckpointSelectionImage EncodeNativeCheckpointSelection(const NativeCheckpointSelection&) noexcept;
 NativeCheckpointSelectionImage DecodeNativeCheckpointSelection(const std::vector<byte>&) noexcept;
 // Image-level classification only. A stable pair does not prove allocation,
@@ -49,7 +59,7 @@ struct NativeCheckpointSelectionPair {
   bool ok() const noexcept {return error==NativeCheckpointSelectionError::none&&selection.has_value();}
 };
 NativeCheckpointSelectionPair ClassifyNativeCheckpointSelectionPair(
-    const std::vector<byte>& first,const std::vector<byte>& second) noexcept;
+    std::span<const byte> first,std::span<const byte> second) noexcept;
 struct NativeBoundCheckpointSelection {
   NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_pair;
   NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
