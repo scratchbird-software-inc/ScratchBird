@@ -95,4 +95,6 @@ bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersion&, cons
 // visibility, producer/policy admission and publication.
 bool CatalogMetricLabelSchemaMatchesDescriptor(const CatalogMetricLabelSchema&,
     const metrics::MetricDescriptorDefinition&, const metrics::MetricDescriptorBinding&);
+bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

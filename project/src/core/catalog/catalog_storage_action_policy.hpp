@@ -37,8 +37,8 @@ CatalogValueEncodeResult EncodeCatalogStorageActionPolicy(const CatalogStorageAc
 CatalogStorageActionPolicyResult DecodeCatalogStorageActionPolicy(std::string_view);
 bool IsCatalogStorageActionPolicyPayload(std::string_view);
 bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecord&);
-bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersion&);
-bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersion&,const CatalogMetadataVersion&);
+bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersionView&,const CatalogMetadataVersionView&);
 } // namespace scratchbird::core::catalog
 
 namespace scratchbird::core::catalog {
@@ -59,7 +59,7 @@ inline bool Valid(const CatalogStorageActionPolicy& r){
     r.maximum_retained_image_bytes>=768&&r.cooldown_microseconds<=86400000000ULL&&
     r.maximum_runtime_microseconds&&r.maximum_runtime_microseconds<=86400000000ULL;
 }
-inline bool Family(const CatalogMetadataVersion& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}
+inline bool Family(const CatalogMetadataVersionView& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}
 }
 inline constexpr CatalogValueSchemaView CatalogStorageActionPolicySchemaView() {
   using T = CatalogValueType;
@@ -126,7 +126,7 @@ inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecordView
 inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogStorageActionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersion& m){
+inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersionView& m){
   if(!CatalogStorageActionPolicyMatchesHeader(m.record)||m.object_subtype!="storage_action"||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
@@ -139,7 +139,7 @@ inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersi
     (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&
       r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-inline bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersion& a,const CatalogMetadataVersion& b){
+inline bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b){
   if(!storage_action_policy_detail::Family(a)&&!storage_action_policy_detail::Family(b))return true;
   if(!CatalogStorageActionPolicyMatchesMetadata(a)||!CatalogStorageActionPolicyMatchesMetadata(b))return false;
   const auto x=DecodeCatalogStorageActionPolicy(a.record.payload),y=DecodeCatalogStorageActionPolicy(b.record.payload);
@@ -221,7 +221,7 @@ inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord
 inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogStorageActionAttachmentMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersion& m){
+inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersionView& m){
   if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!="storage_action_attachment"||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
@@ -231,7 +231,7 @@ inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataV
   return r.generation==m.definition_version&&
     (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataVersion& a,const CatalogMetadataVersion& b){
+inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b){
   const auto family=[](const auto& m){return m.object_subtype=="storage_action_attachment"||IsCatalogStorageActionAttachmentPayload(m.record.payload);};
   if(!family(a)&&!family(b))return true;
   if(!CatalogStorageActionAttachmentMatchesMetadata(a)||!CatalogStorageActionAttachmentMatchesMetadata(b))return false;
@@ -240,5 +240,17 @@ inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataV
     x.record->filespace_uuid==y.record->filespace_uuid&&x.record->storage_profile_uuid==y.record->storage_profile_uuid&&
     x.record->page_size_profile_uuid==y.record->page_size_profile_uuid&&
     x.record->origin_transaction_uuid.value==y.record->origin_transaction_uuid.value&&x.record->origin_local_transaction_id==y.record->origin_local_transaction_id;
+}
+inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogStorageActionPolicyMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+inline bool CatalogStorageActionPolicyPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogStorageActionPolicyPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
+}
+inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogStorageActionAttachmentMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogStorageActionAttachmentPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 } // namespace scratchbird::core::catalog

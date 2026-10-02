@@ -66,7 +66,7 @@ void SeriesRoundTrip(const c::CatalogMetricSeries& r) {
   Check(decoded.ok()&&SeriesGolden(*decoded.record,false)==golden,"series canonical decode differs");
   const auto metadata=SeriesMetadata(r);Check(c::CatalogMetricSeriesMatchesMetadata(metadata),"series metadata refused");
   const auto envelope=c::EncodeCatalogMetadataVersion(metadata);Check(envelope.ok(),"series envelope failed");
-  if(envelope.ok()){const auto reread=c::DecodeCatalogMetadataVersion(envelope.bytes);Check(reread.ok()&&reread.record.record.payload==golden,"series envelope reread lost payload");}
+  if(envelope.ok()){const auto reread=CheckedMetadataDecode(envelope.bytes);Check(reread.ok()&&reread.record.record.payload==golden,"series envelope reread lost payload");}
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);Check(typed.ok()&&c::DecodeCatalogTypedRecord(typed.row).ok(),"series typed record failed");
 }
 void SeriesShapes() {

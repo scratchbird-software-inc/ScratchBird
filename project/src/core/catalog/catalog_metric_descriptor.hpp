@@ -116,4 +116,6 @@ bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord&);
 bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
+bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

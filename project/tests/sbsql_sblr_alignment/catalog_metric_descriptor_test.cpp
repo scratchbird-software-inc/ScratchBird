@@ -53,6 +53,25 @@ template<class F> auto WithoutDescriptorHeap(F action) {
     Check(false,"borrowed descriptor threw under denied heap");throw;
   }
 }
+c::CatalogMetadataVersionCodecResult CheckedMetadataDecode(const std::vector<p::byte>& bytes) {
+  const auto owned=c::DecodeCatalogMetadataVersion(bytes);
+  const auto view=WithoutDescriptorHeap([&]{return c::DecodeCatalogMetadataVersionView(bytes);});
+  Check(view.ok()==owned.ok(),"borrowed complete envelope admission parity");
+  if(view.ok()) {
+    Check(view.record->record.payload==owned.record.record.payload&&
+        view.definition_sha256==owned.definition_sha256,"borrowed complete envelope values");
+    const auto copy=c::MaterializeCatalogMetadataVersion(*view.record);
+    Check(c::EncodeCatalogMetadataVersion(copy).bytes==bytes,"borrowed all metadata fields preserved");
+    Check(WithoutDescriptorHeap([&]{return c::CatalogMetadataPreservesFamilyOrigin(*view.record,*view.record);}),
+        "borrowed complete family origin no heap");
+  } else {
+    const auto error=c::MaterializeCatalogRecordDiagnostic(view.diagnostic);
+    Check(!view.record&&error.status.code==owned.status.code&&
+        error.diagnostic_code==owned.diagnostic.diagnostic_code&&error.message_key==owned.diagnostic.message_key&&
+        error.source_component==owned.diagnostic.source_component,"borrowed envelope exact refusal");
+  }
+  return owned;
+}
 bool SharedDescriptorOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
   const bool family=c::CatalogMetricDescriptorPreservesOrigin(a,b);
   const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
@@ -154,7 +173,7 @@ void RoundTrip(const c::CatalogMetricDescriptor& r){
   Check(decoded.ok()&&Golden(*decoded.record)==expected,"independent descriptor decode mismatch");
   const auto metadata=Metadata(r);Check(WithoutDescriptorHeap([&]{return c::CatalogMetricDescriptorMatchesMetadata(metadata);}),"valid metadata refused");
   const auto wrapped=c::EncodeCatalogMetadataVersion(metadata);Check(wrapped.ok(),"native envelope refused descriptor");
-  if(wrapped.ok()){const auto reread=c::DecodeCatalogMetadataVersion(wrapped.bytes);Check(reread.ok()&&reread.record.record.payload==expected,"envelope lost descriptor");}
+  if(wrapped.ok()){const auto reread=CheckedMetadataDecode(wrapped.bytes);Check(reread.ok()&&reread.record.record.payload==expected,"envelope lost descriptor");}
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);Check(typed.ok()&&c::DecodeCatalogTypedRecord(typed.row).ok(),"typed record refused descriptor");
 }
 void Refused(std::string_view bytes){
@@ -281,7 +300,7 @@ void Binding(){
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);
     std::array<unsigned char,32> hash{};SHA256(bytes.data(),bytes.size(),hash.data());std::copy(hash.begin(),hash.end(),bytes.begin()+320);
-    Check(!c::DecodeCatalogMetadataVersion(bytes).ok(),"rehash bypassed binding");
+    Check(!CheckedMetadataDecode(bytes).ok(),"rehash bypassed binding");
   }
   for(unsigned i=0;i<3;++i){auto r=initial.record;
     if(i==0)r.payload="metric_uuid=seed";

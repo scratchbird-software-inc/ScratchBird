@@ -99,4 +99,6 @@ bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersion&, const Cat
 // up a name, issues an identity or grants live activation/security/finality.
 metrics::MetricHistoryRecordResult<metrics::MetricSeriesIdentity> BindCatalogMetricSeries(
     const CatalogMetricSeries&, const metrics::MetricDescriptor&, const metrics::MetricRetentionPolicy&);
+bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

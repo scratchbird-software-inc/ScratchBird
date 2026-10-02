@@ -48,7 +48,7 @@ constexpr std::array<CatalogValueFieldSchema,8> kFields{{
     {5,T::opaque_bytes,true,1024}, {6,T::boolean,true,1},
     {7,T::engine_identity,true,16,UuidKind::transaction}, {8,T::unsigned_integer,true,8}
 }};
-bool Family(const CatalogMetadataVersion& m) {
+bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind == CatalogRecordKind::metric_label_schema ||
       m.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(m.record.payload);
 }
@@ -137,7 +137,7 @@ bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecordView& r) {
 bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricLabelSchemaMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricLabelSchemaMatchesHeader(m.record) || m.object_subtype != "metric_label_schema" ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
@@ -151,7 +151,7 @@ bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersion& m) {
       (m.definition_version != 1 || (r.origin_transaction_uuid.value == m.creator_transaction_uuid.value &&
                                    r.origin_local_transaction_id == m.creator_local_transaction_id));
 }
-bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   if (!Family(previous) && !Family(successor)) return true;
   if (!CatalogMetricLabelSchemaMatchesMetadata(previous) || !CatalogMetricLabelSchemaMatchesMetadata(successor)) return false;
   const auto a = DecodeCatalogMetricLabelSchemaView(previous.record.payload), b = DecodeCatalogMetricLabelSchemaView(successor.record.payload);
@@ -169,5 +169,11 @@ bool CatalogMetricLabelSchemaMatchesDescriptor(const CatalogMetricLabelSchema& s
     if (a.key != s.key || a.required != s.required || a.sensitive != s.sensitive || a.value_type != s.value_type) return false;
   }
   return true;
+}
+bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricLabelSchemaMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricLabelSchemaPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricLabelSchemaPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

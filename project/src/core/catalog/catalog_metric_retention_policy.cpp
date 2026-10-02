@@ -23,7 +23,7 @@ bool Valid(const CatalogMetricRetentionPolicy& record) {
       Identity(record.origin_transaction_uuid, UuidKind::transaction) &&
       record.origin_local_transaction_id != 0;
 }
-bool IsFamily(const CatalogMetadataVersion& record) {
+bool IsFamily(const CatalogMetadataVersionView& record) {
   return record.object_subtype == "metric_retention" ||
       IsCatalogMetricRetentionPolicyPayload(record.record.payload);
 }
@@ -144,7 +144,7 @@ bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecordView& r) 
 bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricRetentionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricRetentionPolicyMatchesHeader(m.record) ||
       m.object_subtype != "metric_retention" ||
       !Identity(m.owning_schema_uuid, UuidKind::schema) ||
@@ -163,7 +163,7 @@ bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m
         r.origin_local_transaction_id == m.creator_local_transaction_id));
 }
 bool CatalogMetricRetentionPolicyPreservesOrigin(
-    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+    const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   if (!IsFamily(previous) && !IsFamily(successor)) return true;
   if (!CatalogMetricRetentionPolicyMatchesMetadata(previous) ||
       !CatalogMetricRetentionPolicyMatchesMetadata(successor)) return false;
@@ -173,5 +173,11 @@ bool CatalogMetricRetentionPolicyPreservesOrigin(
       a.record->scope == b.record->scope &&
       a.record->origin_transaction_uuid.value == b.record->origin_transaction_uuid.value &&
       a.record->origin_local_transaction_id == b.record->origin_local_transaction_id;
+}
+bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricRetentionPolicyMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricRetentionPolicyPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricRetentionPolicyPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

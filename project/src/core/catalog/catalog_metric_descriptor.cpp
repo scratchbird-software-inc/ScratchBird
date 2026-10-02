@@ -98,7 +98,7 @@ std::optional<MetricScalar> NumericValue(MetricScalarType type, std::span<const 
   }
   return MetricScalarValid(value) ? std::optional<MetricScalar>(std::move(value)) : std::nullopt;
 }
-bool Family(const CatalogMetadataVersion& m) {
+bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind == CatalogRecordKind::metric_descriptor ||
       m.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(m.record.payload);
 }
@@ -258,7 +258,7 @@ bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecordView& r) {
 bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricDescriptorMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!="metric_descriptor" ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.record.header.parent_uuid.value!=m.owning_schema_uuid.value ||
@@ -271,12 +271,18 @@ bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
       (m.definition_version!=1 || (r.origin_transaction_uuid.value==m.creator_transaction_uuid.value &&
                                  r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion& previous,const CatalogMetadataVersion& successor) {
+bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersionView& previous,const CatalogMetadataVersionView& successor) {
   if (!Family(previous) && !Family(successor)) return true;
   if (!CatalogMetricDescriptorMatchesMetadata(previous) || !CatalogMetricDescriptorMatchesMetadata(successor)) return false;
   const auto a=DecodeCatalogMetricDescriptorView(previous.record.payload), b=DecodeCatalogMetricDescriptorView(successor.record.payload);
   return a.record->binding.metric_uuid==b.record->binding.metric_uuid && a.record->definition.cluster_only==b.record->definition.cluster_only &&
       a.record->origin_transaction_uuid.value==b.record->origin_transaction_uuid.value &&
       a.record->origin_local_transaction_id==b.record->origin_local_transaction_id;
+}
+bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricDescriptorMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricDescriptorPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

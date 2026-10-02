@@ -106,7 +106,7 @@ CatalogSchemaDefinitionResult DecodeCatalogSchemaDefinition(std::string_view byt
   if (!Valid(d)) return {CatalogValueError::invalid_value,{}};
   return {CatalogValueError::none,std::move(d)};
 }
-bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (m.record.header.kind != CatalogRecordKind::schema) return false;
   const auto decoded=DecodeCatalogSchemaDefinition(m.record.payload);
   if (!decoded.ok()) return false;
@@ -132,7 +132,7 @@ bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
     default: return false;
   }
 }
-bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a,const CatalogMetadataVersion& b) {
+bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
   if (a.record.header.kind != CatalogRecordKind::schema && b.record.header.kind != CatalogRecordKind::schema) return true;
   if (!CatalogSchemaDefinitionMatchesMetadata(a) || !CatalogSchemaDefinitionMatchesMetadata(b)) return false;
   const auto before=DecodeCatalogSchemaDefinition(a.record.payload);
@@ -141,5 +141,11 @@ bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a,cons
       Same(before.definition->database_catalog_object_uuid,after.definition->database_catalog_object_uuid) &&
       Same(before.definition->origin_transaction_uuid,after.definition->origin_transaction_uuid) &&
       before.definition->origin_local_transaction_id == after.definition->origin_local_transaction_id;
+}
+bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogSchemaDefinitionMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogSchemaDefinitionPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

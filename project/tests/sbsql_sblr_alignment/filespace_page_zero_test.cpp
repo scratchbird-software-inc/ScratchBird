@@ -55,6 +55,8 @@ bool count_allocations=false;
 unsigned hash_fault=0,reads=0,read_fault=0;
 unsigned allocation_failure_reads=0;
 unsigned full_digest_fault=0;
+unsigned segmented_context_skip=0,observed_segmented_contexts=0;
+bool selected_hash_context=true,count_segmented_contexts=false;
 unsigned stage_write_fault=0,stage_sync_fault=0,stage_writes=0,stage_syncs=0;
 unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
 bool allocation_fault_after_stage_write=false;
@@ -137,21 +139,24 @@ extern "C" int __wrap_EVP_Digest(const void* b,size_t n,unsigned char* out,unsig
   return __real_EVP_Digest(b,n,out,count,md,e);
 }
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new() {
-  if(hash_fault==1) { hash_fault=0; return nullptr; } return __real_EVP_MD_CTX_new();
+  if(count_segmented_contexts)++observed_segmented_contexts;
+  selected_hash_context=segmented_context_skip==0;
+  if(segmented_context_skip)--segmented_context_skip;
+  if(selected_hash_context&&hash_fault==1) { hash_fault=0; return nullptr; } return __real_EVP_MD_CTX_new();
 }
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_DigestInit_ex(EVP_MD_CTX* c,const EVP_MD* m,ENGINE* e) {
-  if(hash_fault==2) { hash_fault=0; return 0; } return __real_EVP_DigestInit_ex(c,m,e);
+  if(selected_hash_context&&hash_fault==2) { hash_fault=0; return 0; } return __real_EVP_DigestInit_ex(c,m,e);
 }
 extern "C" int __real_EVP_DigestUpdate(EVP_MD_CTX*,const void*,size_t);
 extern "C" int __wrap_EVP_DigestUpdate(EVP_MD_CTX* c,const void* b,size_t n) {
-  if(hash_fault==3) { hash_fault=0; return 0; } return __real_EVP_DigestUpdate(c,b,n);
+  if(selected_hash_context&&hash_fault==3) { hash_fault=0; return 0; } return __real_EVP_DigestUpdate(c,b,n);
 }
 extern "C" int __real_EVP_DigestFinal_ex(EVP_MD_CTX*,unsigned char*,unsigned int*);
 extern "C" int __wrap_EVP_DigestFinal_ex(EVP_MD_CTX* c,unsigned char* b,unsigned int* n) {
-  if(hash_fault==4) { hash_fault=0; return 0; }
+  if(selected_hash_context&&hash_fault==4) { hash_fault=0; return 0; }
   const int result=__real_EVP_DigestFinal_ex(c,b,n);
-  if(hash_fault==5) { hash_fault=0; *n=31; } return result;
+  if(selected_hash_context&&hash_fault==5) { hash_fault=0; *n=31; } return result;
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
@@ -1290,8 +1295,17 @@ void CatalogLeaves() {
     LeafReject(r,Error::hash_failure); Check(!hash_fault,"leaf digest provider fault consumed");
   }
   for(unsigned mode=0;mode<2;++mode) {
-    full_digest_fault=1; auto r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
-    LeafReject(r,Error::hash_failure); Check(!full_digest_fault,"nested metadata hash failure propagated");
+    observed_segmented_contexts=0;count_segmented_contexts=true;
+    auto r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
+    count_segmented_contexts=false;const auto contexts=observed_segmented_contexts;
+    Check(r.ok()&&contexts>1,"measure actual leaf and nested metadata hash contexts");
+    for(unsigned context=0;context<contexts;++context)for(unsigned fault=1;fault<=5;++fault) {
+      segmented_context_skip=context;hash_fault=fault;
+      r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
+      const bool reached=segmented_context_skip==0;segmented_context_skip=0;
+      LeafReject(r,Error::hash_failure);
+      Check(reached&&!hash_fault,"every actual nested metadata hash stage failure propagated");
+    }
     observed_allocations=0;count_allocations=true;
     r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
     count_allocations=false;const auto count=observed_allocations;Check(r.ok(),"leaf allocation baseline");

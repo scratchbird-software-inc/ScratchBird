@@ -21,6 +21,7 @@
 
 #include "uuid.hpp"
 #include "hash_digest.hpp"
+#include "hash_digest_parts.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -184,20 +185,13 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
   return {record,{}};
 }
 
-CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& record, u32 ordinal) {
-  const auto checked=ValidateCatalogTypedRecordView(BorrowCatalogTypedRecord(record));
-  if(!checked.ok())return MaterializeRecordError(checked.diagnostic);
-  CatalogRecordCodecResult result;
-  result.status = CodecOkStatus();
-  result.record = record;
-  result.row.kind = CatalogPageRowKind::typed_catalog_record;
-  result.row.ordinal = ordinal;
-  result.row.payload.assign(kBinaryHeaderBytes + record.payload.size(), '\0');
-  auto* bytes = reinterpret_cast<byte*>(result.row.payload.data());
+namespace {
+// Caller supplied the exact zero-initialized final extent and validated record.
+void WriteTypedRecord(CatalogTypedRecordView record, byte* bytes) {
   std::memcpy(bytes, "SBCTREC2", 8);
   StoreLittle16(bytes + 8, 2);
   StoreLittle16(bytes + 10, kBinaryHeaderBytes);
-  StoreLittle32(bytes + 12, static_cast<u32>(result.row.payload.size()));
+  StoreLittle32(bytes + 12, static_cast<u32>(kBinaryHeaderBytes + record.payload.size()));
   StoreLittle16(bytes + 16, static_cast<u16>(record.header.kind));
   StoreLittle32(bytes + 20, record.header.record_version);
   StoreLittle32(bytes + 24, record.header.deleted ? 1 : 0);
@@ -210,7 +204,20 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     std::copy(id.begin(), id.end(), bytes + 40 + i * 16);
   }
   std::copy(record.payload.begin(), record.payload.end(),
-            result.row.payload.begin() + kBinaryHeaderBytes);
+            bytes + kBinaryHeaderBytes);
+}
+}
+
+CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& record, u32 ordinal) {
+  const auto checked=ValidateCatalogTypedRecordView(BorrowCatalogTypedRecord(record));
+  if(!checked.ok())return MaterializeRecordError(checked.diagnostic);
+  CatalogRecordCodecResult result;
+  result.status = CodecOkStatus();
+  result.record = record;
+  result.row.kind = CatalogPageRowKind::typed_catalog_record;
+  result.row.ordinal = ordinal;
+  result.row.payload.assign(kBinaryHeaderBytes + record.payload.size(), '\0');
+  WriteTypedRecord(BorrowCatalogTypedRecord(record), reinterpret_cast<byte*>(result.row.payload.data()));
   return result;
 }
 
@@ -274,7 +281,7 @@ constexpr std::size_t kMetadataHeaderBytes = 384;
 constexpr std::size_t kMetadataMaxBytes = 262144;
 using scratchbird::core::platform::LoadLittle64;
 using scratchbird::core::platform::StoreLittle64;
-using Metadata = CatalogMetadataVersion;
+using Metadata = CatalogMetadataVersionView;
 constexpr auto kMetadataReferences = std::array{
     &Metadata::owner_uuid, &Metadata::creator_transaction_uuid,
     &Metadata::retired_transaction_uuid, &Metadata::default_name_uuid,
@@ -287,88 +294,95 @@ constexpr auto kMetadataCounters = std::array{
     &Metadata::dependency_generation, &Metadata::invalidation_generation,
     &Metadata::creator_local_transaction_id};
 
-CatalogMetadataVersionCodecResult MetadataError(const char* detail) {
+CatalogRecordDiagnosticView MetadataViewError(const char* detail) {
+  return {CodecErrorStatus(),"CATALOG.INVALID_INPUT","catalog.metadata_version.invalid",
+          detail,"core.catalog.record_codec"};
+}
+CatalogMetadataVersionCodecResult MetadataFailure(const CatalogRecordDiagnosticView& error) {
   CatalogMetadataVersionCodecResult result;
-  result.status = CodecErrorStatus();
-  result.diagnostic = MakeCatalogRecordCodecDiagnostic(result.status,
-      "CATALOG.INVALID_INPUT", "catalog.metadata_version.invalid", detail);
+  result.status=error.status;result.diagnostic=MaterializeCatalogRecordDiagnostic(error);
   return result;
+}
+CatalogRecordDiagnosticView MetadataHashError(scratchbird::core::hash::Sha256PartsError error) {
+  return {{StatusCode::platform_required_feature_missing,Severity::error,Subsystem::platform},
+      "SB-CORE-HASH-SHA256-FAILED","core.hash.sha256_failed",
+      scratchbird::core::hash::Sha256PartsErrorDetail(error),"core.hash.digest"};
 }
 template <typename Enum> bool MetadataEnum(Enum value, u16 maximum) {
   return static_cast<u16>(value) >= 1 && static_cast<u16>(value) <= maximum;
 }
 }
 
-CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMetadataVersion& value) {
+std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(const CatalogMetadataVersionView& value) {
   if (!MetadataEnum(value.authority_scope, 7) || !MetadataEnum(value.lifecycle, 10) ||
       !MetadataEnum(value.status, 9) || !MetadataEnum(value.visibility, 7))
-    return MetadataError("enum_invalid");
+    return MetadataViewError("enum_invalid");
   for (std::size_t i = 0; i < kMetadataCounters.size(); ++i)
-    if (i != 3 && value.*kMetadataCounters[i] == 0) return MetadataError("counter_zero");
-  const auto valid_key = [](const std::string& key, std::size_t maximum) {
+    if (i != 3 && value.*kMetadataCounters[i] == 0) return MetadataViewError("counter_zero");
+  const auto valid_key = [](std::string_view key, std::size_t maximum) {
     return !key.empty() && key.size() <= maximum && std::all_of(key.begin(), key.end(),
         [](unsigned char c) { return c >= 33 && c <= 126; });
   };
   if (!valid_key(value.trace_search_key, 4096) || !valid_key(value.object_subtype, 256) ||
       !valid_key(value.retention_class, 256))
-    return MetadataError("trace_key_invalid");
+    return MetadataViewError("trace_key_invalid");
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
     const auto& id = value.*kMetadataReferences[i];
     if (!IsSuppliedIdentity(id)) {
       if (i == 0 || i == 1 || i == 9)
-        return MetadataError("required_reference_missing");
-    } else if (!scratchbird::core::uuid::MakeDurableEngineIdentityUuid(id.kind, id.value).ok())
-      return MetadataError("reference_invalid");
+        return MetadataViewError("required_reference_missing");
+    } else if (DurableIdentityError(id).has_value())
+      return MetadataViewError("reference_invalid");
   }
   if (!IsTypedIdentity(value.creator_transaction_uuid, UuidKind::transaction) ||
       (IsSuppliedIdentity(value.retired_transaction_uuid) &&
        !IsTypedIdentity(value.retired_transaction_uuid, UuidKind::transaction)))
-    return MetadataError("transaction_reference_kind");
+    return MetadataViewError("transaction_reference_kind");
   if (IsSuppliedIdentity(value.default_name_uuid) != IsSuppliedIdentity(value.name_vector_uuid))
-    return MetadataError("name_vector_pair_invalid");
+    return MetadataViewError("name_vector_pair_invalid");
   if (IsSuppliedIdentity(value.owning_schema_uuid) && !IsTypedIdentity(value.owning_schema_uuid, UuidKind::schema))
-    return MetadataError("owning_schema_kind_invalid");
+    return MetadataViewError("owning_schema_kind_invalid");
   for (auto member : {&Metadata::default_name_uuid, &Metadata::name_vector_uuid,
                      &Metadata::security_policy_uuid, &Metadata::dependency_group_uuid,
                      &Metadata::storage_binding_uuid, &Metadata::donor_overlay_uuid})
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
-      return MetadataError("object_reference_kind_invalid");
+      return MetadataViewError("object_reference_kind_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_series ||
        value.object_subtype == "metric_series" || IsCatalogMetricSeriesPayload(value.record.payload)) &&
       !CatalogMetricSeriesMatchesMetadata(value))
-    return MetadataError("metric_series_definition_binding_invalid");
+    return MetadataViewError("metric_series_definition_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_label_schema ||
        value.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(value.record.payload)) &&
       !CatalogMetricLabelSchemaMatchesMetadata(value))
-    return MetadataError("metric_label_schema_definition_binding_invalid");
+    return MetadataViewError("metric_label_schema_definition_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_descriptor ||
        value.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
       !CatalogMetricDescriptorMatchesMetadata(value))
-    return MetadataError("metric_descriptor_definition_binding_invalid");
+    return MetadataViewError("metric_descriptor_definition_binding_invalid");
   if ((value.object_subtype == "storage_action_attachment" ||
        IsCatalogStorageActionAttachmentPayload(value.record.payload)) &&
       !CatalogStorageActionAttachmentMatchesMetadata(value))
-    return MetadataError("storage_action_attachment_binding_invalid");
+    return MetadataViewError("storage_action_attachment_binding_invalid");
   if ((value.object_subtype == "storage_action" ||
        IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
       !CatalogStorageActionPolicyMatchesMetadata(value))
-    return MetadataError("storage_action_definition_binding_invalid");
+    return MetadataViewError("storage_action_definition_binding_invalid");
   if ((value.object_subtype == "agent_runtime_authority" ||
        IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
       !CatalogRuntimeAuthorityBindingMatchesMetadata(value))
-    return MetadataError("runtime_authority_definition_binding_invalid");
+    return MetadataViewError("runtime_authority_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
   if ((value.object_subtype == "metric_visibility" ||
        IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
       !CatalogMetricVisibilityPolicyMatchesMetadata(value))
-    return MetadataError("metric_visibility_definition_binding_invalid");
+    return MetadataViewError("metric_visibility_definition_binding_invalid");
   if ((value.object_subtype == "metric_retention" ||
        IsCatalogMetricRetentionPolicyPayload(value.record.payload)) &&
       !CatalogMetricRetentionPolicyMatchesMetadata(value))
-    return MetadataError("metric_retention_definition_binding_invalid");
+    return MetadataViewError("metric_retention_definition_binding_invalid");
   if (value.record.header.kind == CatalogRecordKind::schema &&
       !CatalogSchemaDefinitionMatchesMetadata(value))
-    return MetadataError("schema_definition_binding_invalid");
+    return MetadataViewError("schema_definition_binding_invalid");
   if ((IsSuppliedIdentity(value.retired_transaction_uuid) &&
        ((value.status != CatalogObjectStatus::retired && value.status != CatalogObjectStatus::quarantined) ||
         value.retired_transaction_uuid.value != value.creator_transaction_uuid.value)) ||
@@ -376,16 +390,20 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
                    value.lifecycle != CatalogObjectLifecycle::dropped ||
                    value.status != CatalogObjectStatus::retired ||
                    value.retired_transaction_uuid.value != value.creator_transaction_uuid.value)))
-    return MetadataError("retirement_binding_invalid");
-  const auto inner = EncodeCatalogTypedRecord(value.record, 0);
-  if (!inner.ok()) {
-    CatalogMetadataVersionCodecResult result;
-    result.status = inner.status; result.diagnostic = inner.diagnostic; return result;
-  }
-  const auto inner_size = inner.row.payload.size();
-  const auto text_size = value.trace_search_key.size() + value.object_subtype.size() + value.retention_class.size();
-  if (inner_size > kMetadataMaxBytes - kMetadataHeaderBytes - text_size)
-    return MetadataError("size_limit");
+    return MetadataViewError("retirement_binding_invalid");
+  const auto inner=ValidateCatalogTypedRecordView(value.record);
+  if(!inner.ok())return inner.diagnostic;
+  const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
+  const auto text_size=value.trace_search_key.size()+value.object_subtype.size()+value.retention_class.size();
+  if(inner_size>kMetadataMaxBytes-kMetadataHeaderBytes-text_size)return MetadataViewError("size_limit");
+  return std::nullopt;
+}
+
+CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMetadataVersion& value) {
+  const auto view=BorrowCatalogMetadataVersion(value);
+  if(const auto error=ValidateCatalogMetadataVersionView(view))return MetadataFailure(*error);
+  const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
+  const auto text_size=value.trace_search_key.size()+value.object_subtype.size()+value.retention_class.size();
   CatalogMetadataVersionCodecResult result;
   result.bytes.assign(kMetadataHeaderBytes + text_size + inner_size, 0);
   auto* out = result.bytes.data();
@@ -397,17 +415,18 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   StoreLittle16(out + 20, static_cast<u16>(value.status));
   StoreLittle16(out + 22, static_cast<u16>(value.visibility));
   for (std::size_t i = 0; i < kMetadataCounters.size(); ++i)
-    StoreLittle64(out + 32 + 8 * i, value.*kMetadataCounters[i]);
+    StoreLittle64(out + 32 + 8 * i, view.*kMetadataCounters[i]);
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
-    const auto& id = value.*kMetadataReferences[i];
+    const auto& id = view.*kMetadataReferences[i];
     std::copy(id.value.bytes.begin(), id.value.bytes.end(), out + 96 + 16 * i);
     out[272 + i] = static_cast<byte>(id.kind);
   }
-  const auto definition = scratchbird::core::hash::ComputeSha256Digest(
-      reinterpret_cast<const byte*>(inner.row.payload.data()), inner_size);
-  if (!definition.ok()) {
+  auto* nested=out+kMetadataHeaderBytes+text_size;
+  WriteTypedRecord(view.record,nested);
+  const auto definition=scratchbird::core::hash::ComputeSha256Digest(nested,inner_size);
+  if(!definition.ok()) {
     CatalogMetadataVersionCodecResult failure;
-    failure.status = definition.status; failure.diagnostic = definition.diagnostic; return failure;
+    failure.status=definition.status;failure.diagnostic=definition.diagnostic;return failure;
   }
   std::copy(definition.digest.begin(), definition.digest.end(), out + 288);
   StoreLittle32(out + 352, static_cast<u32>(value.trace_search_key.size()));
@@ -417,7 +436,6 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   std::copy(value.trace_search_key.begin(), value.trace_search_key.end(), out + kMetadataHeaderBytes);
   std::copy(value.object_subtype.begin(), value.object_subtype.end(), out + kMetadataHeaderBytes + value.trace_search_key.size());
   std::copy(value.retention_class.begin(), value.retention_class.end(), out + kMetadataHeaderBytes + value.trace_search_key.size() + value.object_subtype.size());
-  std::copy(inner.row.payload.begin(), inner.row.payload.end(), out + kMetadataHeaderBytes + text_size);
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(result.bytes);
   if (!digest.ok()) {
     CatalogMetadataVersionCodecResult failure;
@@ -428,55 +446,100 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   return result;
 }
 
+CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<const byte> bytes) {
+  const auto failure=[](CatalogRecordDiagnosticView error) {
+    return CatalogMetadataVersionViewResult{{},{},error};
+  };
+  const auto invalid=[&](const char* detail) { return failure(MetadataViewError(detail)); };
+  if(bytes.size()<kMetadataHeaderBytes || bytes.size()>kMetadataMaxBytes)return invalid("size_invalid");
+  const auto* in=bytes.data();
+  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=1 ||
+      LoadLittle16(in+10)!=kMetadataHeaderBytes || LoadLittle32(in+12)!=bytes.size())
+    return invalid("header_invalid");
+  const auto trace_size=LoadLittle32(in+352),inner_size=LoadLittle32(in+356);
+  const auto subtype_size=LoadLittle32(in+360),retention_size=LoadLittle32(in+364);
+  const auto text_size=static_cast<u64>(trace_size)+subtype_size+retention_size;
+  if(trace_size>4096 || subtype_size>256 || retention_size>256 ||
+      static_cast<u64>(kMetadataHeaderBytes)+text_size+inner_size!=bytes.size())
+    return invalid("length_invalid");
+  constexpr std::array<byte,32> zero{};
+  const scratchbird::core::hash::HashDigestSegment parts[]{
+      {in,320},{zero.data(),zero.size()},{in+352,bytes.size()-352}};
+  const auto digest=scratchbird::core::hash::ComputeSha256DigestPartsNative(parts,3);
+  if(!digest.ok())return failure(MetadataHashError(digest.error));
+  if(!std::equal(digest.digest.begin(),digest.digest.end(),in+320))
+    return invalid("version_digest_mismatch");
+  CatalogMetadataVersionView value;
+  value.authority_scope=static_cast<CatalogAuthorityScope>(LoadLittle16(in+16));
+  value.lifecycle=static_cast<CatalogObjectLifecycle>(LoadLittle16(in+18));
+  value.status=static_cast<CatalogObjectStatus>(LoadLittle16(in+20));
+  value.visibility=static_cast<CatalogVisibilityClass>(LoadLittle16(in+22));
+  for(std::size_t i=0;i<kMetadataCounters.size();++i)value.*kMetadataCounters[i]=LoadLittle64(in+32+8*i);
+  for(std::size_t i=0;i<kMetadataReferences.size();++i) {
+    auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[272+i]);
+    std::copy(in+96+16*i,in+112+16*i,id.value.bytes.begin());
+  }
+  value.trace_search_key={reinterpret_cast<const char*>(in+kMetadataHeaderBytes),trace_size};
+  value.object_subtype={reinterpret_cast<const char*>(in+kMetadataHeaderBytes+trace_size),subtype_size};
+  value.retention_class={reinterpret_cast<const char*>(in+kMetadataHeaderBytes+trace_size+subtype_size),retention_size};
+  const auto* nested=in+kMetadataHeaderBytes+text_size;
+  const auto inner=DecodeCatalogTypedRecordView(CatalogPageRowKind::typed_catalog_record,
+      {reinterpret_cast<const char*>(nested),inner_size});
+  if(!inner.ok())return failure(inner.diagnostic);
+  value.record=*inner.record;
+  if(const auto error=ValidateCatalogMetadataVersionView(value))return failure(*error);
+  const scratchbird::core::hash::HashDigestSegment definition_part{nested,inner_size};
+  const auto definition=scratchbird::core::hash::ComputeSha256DigestPartsNative(&definition_part,1);
+  if(!definition.ok())return failure(MetadataHashError(definition.error));
+  const auto zeros=[](const byte* first,const byte* last) {
+    return std::all_of(first,last,[](byte b){return b==0;});
+  };
+  // Common/nested fields have exact canonical encodings. These are the only
+  // remaining bytes the old re-encode comparison could reject.
+  if(!std::equal(definition.digest.begin(),definition.digest.end(),in+288) ||
+      !zeros(in+24,in+32) || !zeros(in+283,in+288) || !zeros(in+368,in+384))
+    return invalid("digest_reserved_or_canonical_mismatch");
+  return {value,definition.digest,{}};
+}
+
+CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVersionView& v) {
+  return {{v.record.header,std::string(v.record.payload)},
+      v.authority_scope,
+      v.lifecycle,
+      v.status,
+      v.visibility,
+      v.definition_version,
+      v.schema_epoch,
+      v.security_epoch,
+      v.resource_epoch,
+      v.catalog_generation,
+      v.dependency_generation,
+      v.invalidation_generation,
+      v.creator_local_transaction_id,
+      v.owner_uuid,
+      v.creator_transaction_uuid,
+      v.retired_transaction_uuid,
+      v.default_name_uuid,
+      v.name_vector_uuid,
+      v.security_policy_uuid,
+      v.dependency_group_uuid,
+      v.storage_binding_uuid,
+      v.donor_overlay_uuid,
+      v.audit_uuid,
+      v.owning_schema_uuid,
+      std::string(v.trace_search_key),
+      std::string(v.object_subtype),
+      std::string(v.retention_class)};
+}
+
 CatalogMetadataVersionCodecResult DecodeCatalogMetadataVersion(const std::vector<byte>& bytes) {
-  if (bytes.size() < kMetadataHeaderBytes || bytes.size() > kMetadataMaxBytes)
-    return MetadataError("size_invalid");
-  const auto* in = bytes.data();
-  if (std::memcmp(in, "SBCMV001", 8) || LoadLittle16(in + 8) != 1 ||
-      LoadLittle16(in + 10) != kMetadataHeaderBytes || LoadLittle32(in + 12) != bytes.size())
-    return MetadataError("header_invalid");
-  const auto trace_size = LoadLittle32(in + 352), inner_size = LoadLittle32(in + 356);
-  const auto subtype_size = LoadLittle32(in + 360), retention_size = LoadLittle32(in + 364);
-  const auto text_size = static_cast<u64>(trace_size) + subtype_size + retention_size;
-  if (trace_size > 4096 || subtype_size > 256 || retention_size > 256 ||
-      static_cast<u64>(kMetadataHeaderBytes) + text_size + inner_size != bytes.size())
-    return MetadataError("length_invalid");
-  auto checksum_bytes = bytes;
-  std::fill(checksum_bytes.begin() + 320, checksum_bytes.begin() + 352, 0);
-  const auto digest = scratchbird::core::hash::ComputeSha256Digest(checksum_bytes);
-  if (!digest.ok()) {
-    CatalogMetadataVersionCodecResult failure;
-    failure.status = digest.status; failure.diagnostic = digest.diagnostic; return failure;
-  }
-  if (!std::equal(digest.digest.begin(), digest.digest.end(), in + 320))
-    return MetadataError("version_digest_mismatch");
-  CatalogMetadataVersion value;
-  value.authority_scope = static_cast<CatalogAuthorityScope>(LoadLittle16(in + 16));
-  value.lifecycle = static_cast<CatalogObjectLifecycle>(LoadLittle16(in + 18));
-  value.status = static_cast<CatalogObjectStatus>(LoadLittle16(in + 20));
-  value.visibility = static_cast<CatalogVisibilityClass>(LoadLittle16(in + 22));
-  for (std::size_t i = 0; i < kMetadataCounters.size(); ++i)
-    value.*kMetadataCounters[i] = LoadLittle64(in + 32 + 8 * i);
-  for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
-    auto& id = value.*kMetadataReferences[i]; id.kind = static_cast<UuidKind>(in[272 + i]);
-    std::copy(in + 96 + 16 * i, in + 112 + 16 * i, id.value.bytes.begin());
-  }
-  value.trace_search_key.assign(reinterpret_cast<const char*>(in + kMetadataHeaderBytes), trace_size);
-  value.object_subtype.assign(reinterpret_cast<const char*>(in + kMetadataHeaderBytes + trace_size), subtype_size);
-  value.retention_class.assign(reinterpret_cast<const char*>(in + kMetadataHeaderBytes + trace_size + subtype_size), retention_size);
-  CatalogPageRow row;
-  row.kind = CatalogPageRowKind::typed_catalog_record;
-  row.payload.assign(reinterpret_cast<const char*>(in + kMetadataHeaderBytes + text_size), inner_size);
-  const auto inner = DecodeCatalogTypedRecord(row);
-  if (!inner.ok()) {
-    CatalogMetadataVersionCodecResult result;
-    result.status = inner.status; result.diagnostic = inner.diagnostic; return result;
-  }
-  value.record = inner.record;
-  auto result = EncodeCatalogMetadataVersion(value);
-  // Re-encoding checks both digests, reserved bytes and canonical framing.
-  if (!result.ok()) return result;
-  if (result.bytes != bytes) return MetadataError("digest_reserved_or_canonical_mismatch");
+  const auto decoded=DecodeCatalogMetadataVersionView(bytes);
+  if(!decoded.ok())return MetadataFailure(decoded.diagnostic);
+  CatalogMetadataVersionCodecResult result;
+  result.record=MaterializeCatalogMetadataVersion(*decoded.record);
+  result.bytes=bytes;
+  result.definition_sha256=decoded.definition_sha256;
+  result.status=CodecOkStatus();
   return result;
 }
 
@@ -500,7 +563,7 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 }
 
 bool CatalogMetadataPreservesFamilyOrigin(
-    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+    const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   return CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
       CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
@@ -510,6 +573,12 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogMetricDescriptorPreservesOrigin(previous,successor) &&
       CatalogMetricLabelSchemaPreservesOrigin(previous,successor) &&
       CatalogMetricSeriesPreservesOrigin(previous,successor);
+}
+
+bool CatalogMetadataPreservesFamilyOrigin(
+    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+  return CatalogMetadataPreservesFamilyOrigin(
+      BorrowCatalogMetadataVersion(previous),BorrowCatalogMetadataVersion(successor));
 }
 
 }  // namespace scratchbird::core::catalog
