@@ -166,13 +166,13 @@ u64 MetricRollupGrainWindowSeconds(MetricRollupGrain grain) {
   return 0;
 }
 
-MetricValidationResult ValidateMetricRetentionPolicyDefinition(
-    const MetricRetentionPolicyDefinition& policy) {
-  const auto invalid = [](std::string detail) {
-    return MetricValidationResult{false, "METRIC.RETENTION_POLICY_INVALID", std::move(detail)};
+MetricRetentionValidationView ValidateMetricRetentionPolicyDefinitionView(
+    const MetricRetentionPolicyDefinitionView& policy) {
+  const auto invalid = [](std::string_view detail) {
+    return MetricRetentionValidationView{false, "METRIC.RETENTION_POLICY_INVALID", detail};
   };
-  const auto text = [](const std::string& value) {
-    return !value.empty() && value.find('\0') == std::string::npos;
+  const auto text = [](std::string_view value) {
+    return !value.empty() && value.find('\0') == std::string_view::npos;
   };
   if (!text(policy.policy_name) || !text(policy.edit_right) ||
       !text(policy.default_admin_group)) return invalid("invalid_policy_annotation");
@@ -209,6 +209,16 @@ MetricValidationResult ValidateMetricRetentionPolicyDefinition(
       return invalid("invalid_retention_mode");
   }
   return {true, {}, {}};
+}
+
+MetricValidationResult ValidateMetricRetentionPolicyDefinition(
+    const MetricRetentionPolicyDefinition& policy) {
+  const auto result = ValidateMetricRetentionPolicyDefinitionView({
+      policy.policy_name, policy.scope, policy.mode, policy.raw_retention_seconds,
+      policy.rollup_retention_seconds, policy.rollup_grains, policy.purge_batch_limit,
+      policy.max_cardinality, policy.overflow_behavior, policy.edit_right,
+      policy.default_admin_group, policy.evidence_required});
+  return {result.ok, std::string(result.diagnostic_code), std::string(result.detail)};
 }
 
 MetricValidationResult ValidateMetricRetentionPolicy(const MetricRetentionPolicy& policy) {

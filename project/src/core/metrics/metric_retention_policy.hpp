@@ -15,6 +15,8 @@
 #include "metric_registry.hpp"
 
 #include <string>
+#include <string_view>
+#include <span>
 #include <vector>
 
 namespace scratchbird::core::metrics {
@@ -58,6 +60,30 @@ struct MetricRetentionPolicy : MetricRetentionPolicyDefinition {
   MetricUuid policy_uuid;
   u64 generation = 0;
 };
+
+// Non-owning definition validation only. The caller retains immutable text and
+// grain storage. Diagnostic views reference static strings, not caller storage.
+struct MetricRetentionPolicyDefinitionView {
+  std::string_view policy_name;
+  std::string_view scope;
+  MetricRetentionMode mode = MetricRetentionMode::current_only;
+  u64 raw_retention_seconds = 0;
+  u64 rollup_retention_seconds = 0;
+  std::span<const MetricRollupGrain> rollup_grains;
+  u64 purge_batch_limit = 0;
+  u64 max_cardinality = 0;
+  std::string_view overflow_behavior;
+  std::string_view edit_right;
+  std::string_view default_admin_group;
+  bool evidence_required = false;
+};
+struct MetricRetentionValidationView {
+  bool ok = false;
+  std::string_view diagnostic_code;
+  std::string_view detail;
+};
+MetricRetentionValidationView ValidateMetricRetentionPolicyDefinitionView(
+    const MetricRetentionPolicyDefinitionView& definition);
 
 MetricValidationResult ValidateMetricRetentionPolicyDefinition(
     const MetricRetentionPolicyDefinition& definition);
