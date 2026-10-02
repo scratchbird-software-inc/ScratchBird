@@ -8,7 +8,14 @@
 #include <iostream>
 #include <latch>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
+
+#if defined(__linux__)
+#include <cerrno>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #if defined(SB_RETIRE_NATIVE_FAULT_GATE)
 #include <cerrno>
@@ -586,10 +593,92 @@ void NativeDrainFailure() {
   f.Empty();
 #endif
 }
+
+#if defined(__linux__)
+// Fresh exec children deliberately violate the owning destruction contract.
+// The terminate observer checks the real allocator, not only an exit code:
+// payload AND metadata must remain charged at the fail-fast boundary.
+Fixture* destruction_fixture = nullptr;
+std::atomic<unsigned>* destruction_count = nullptr;
+m::u64 destruction_charge = 0;
+bool destruction_armed = false;
+
+[[noreturn]] void PrematureDestructionChild(std::string_view mode) {
+  alarm(20);  // Watchdog only; latch/state observations establish the schedule.
+  std::set_terminate([] {
+    const bool retained = destruction_armed && destruction_fixture && destruction_count &&
+        destruction_count->load() == 0 &&
+        destruction_fixture->manager.Snapshot().current_bytes == destruction_charge &&
+        destruction_fixture->resource->Snapshot().allocation_count == 3;
+    _exit(retained ? 86 : 87);
+  });
+  Fixture f;
+  std::atomic<unsigned> destroyed{0};
+  auto domain = std::make_unique<m::MemorySafeRetirement>(*f.resource, Id(600), 1, 1);
+  Check(domain->Initialize() == S::ok, "premature destruction metadata");
+  m::SafeRetirementGuard guard;
+  std::latch entered(1), release(1);
+  std::thread active;
+  if (mode == "reader") {
+    const auto made = domain->Emplace<Payload>(Id(601), kind, 42, destroyed, *domain);
+    Check(made.ok() && domain->Protect(made.handle, Hazard(602), guard) == S::ok,
+          "premature destruction actual protected payload");
+    Check(domain->Snapshot().readers == 1, "live reader destruction boundary");
+  } else if (mode == "constructor") {
+    active = std::thread([&] {
+      (void)domain->Emplace<PausedConstruction>(Id(601), kind, entered, release, destroyed);
+    });
+    entered.wait();
+    Check(domain->Snapshot().constructing == 1, "live constructor destruction boundary");
+  } else if (mode == "collector") {
+    const auto made = domain->Emplace<PausedDestruction>(Id(601), kind, &entered, &release, &destroyed);
+    Check(made.ok() && domain->Retire(made.handle) == S::ok, "premature destruction retired payload");
+    active = std::thread([&] { (void)domain->Collect(); });
+    entered.wait();
+    Check(domain->Snapshot().reclaiming == 1, "live collector destruction boundary");
+  } else {
+    _exit(88);
+  }
+  destruction_fixture = &f;
+  destruction_count = &destroyed;
+  destruction_charge = f.manager.Snapshot().current_bytes;
+  Check(destruction_charge > domain->Snapshot().metadata_bytes &&
+        f.resource->Snapshot().allocation_count == 3, "actual payload and both metadata allocations");
+  destruction_armed = true;
+  domain.reset();
+  // Do not let a joinable thread's destructor masquerade as the domain guard.
+  _exit(89);
+}
+
+void PrematureDestruction() {
+  for (const char* mode : {"reader", "constructor", "collector"}) {
+    const auto child = fork();
+    Check(child >= 0, "launch isolated lifetime child");
+    if (child == 0) {
+      execl("/proc/self/exe", "memory_safe_retirement_gate", "--premature-destruction", mode,
+            static_cast<char*>(nullptr));
+      _exit(90);
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 86,
+          "domain destruction fails fast before freeing reachable backing or metadata");
+  }
+}
+#endif
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+#if defined(__linux__)
+    if (argc == 3 && std::string_view(argv[1]) == "--premature-destruction")
+      PrematureDestructionChild(argv[2]);
+    Check(argc == 1, "recognized invocation");
+    PrematureDestruction();
+#else
+    (void)argc; (void)argv;
+#endif
     ProtectedLifetimeAndHandles(); TimeoutCancellationAndRevocation();
     ConstructionAndClose(); ConcurrentProtectRetire(); InvalidAndExhaustedInitialization();
     FailedReleaseRetainsCharge();
