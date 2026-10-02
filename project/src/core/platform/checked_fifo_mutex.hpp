@@ -5,6 +5,7 @@
 #include "checked_condition.hpp"
 #include <array>
 #include <cstdint>
+#include <span>
 #include <stop_token>
 #include <thread>
 
@@ -51,7 +52,7 @@ class CheckedFifoMutex {
     if (!held_ && !head_) { Grant(owner); return Result::acquired; }
     if (waiters_ == limit_ || calls_ == limit_)
       return Result::exhausted;
-    Node node{tail_, nullptr};
+    Node node{tail_, nullptr, {std::this_thread::get_id(), owner, Clock::now(), deadline, false}, stop};
     if (tail_) tail_->next = &node; else head_ = &node;
     tail_ = &node;
     ++waiters_; ++calls_;
@@ -115,8 +116,46 @@ class CheckedFifoMutex {
     std::lock_guard lock(mutex_);
     return {held_, waiters_, calls_, closed_};
   }
+  struct WaiterObservation {
+    std::thread::id thread{};
+    std::optional<OwnerIdentity> owner;
+    Clock::time_point started{};
+    std::optional<Clock::time_point> deadline;
+    bool cancellation_requested = false;
+  };
+  struct WaitObservation {
+    Observation state{};
+    std::thread::id holder{};
+    std::optional<OwnerIdentity> owner;
+    bool complete = false;
+  };
+  // Protected owning-layer input, not a public diagnostic or deadlock verdict.
+  // Holder and FIFO queue are copied under the actual grant/queue mutex. The
+  // borrowed destination is never retained; no node pointers or stop tokens
+  // escape. Capacity failure leaves it untouched and reports required waiters.
+  // Only the first state.waiters entries are valid when complete. The caller
+  // owns storage admission and disclosure. An observation of one latch cannot
+  // prove a consistent cross-latch cycle or authorize victim cancellation.
+  // Cancellation flags are individual atomic samples, not acknowledgements.
+  WaitObservation ObserveWaiters(std::span<WaiterObservation> output) {
+    std::lock_guard lock(mutex_);
+    WaitObservation result{{held_, waiters_, calls_, closed_}, holder_, owner_,
+                           output.size() >= waiters_};
+    if (!result.complete) return result;
+    std::size_t index=0;
+    for (auto* node=head_; node; node=node->next) {
+      output[index]=node->observation;
+      output[index++].cancellation_requested=node->stop.stop_requested();
+    }
+    return result;
+  }
  private:
-  struct Node { Node* previous; Node* next; };
+  struct Node {
+    Node* previous;
+    Node* next;
+    WaiterObservation observation;
+    std::stop_token stop;
+  };
   struct Wake {
     CheckedFifoMutex* owner;
     void operator()() const noexcept {

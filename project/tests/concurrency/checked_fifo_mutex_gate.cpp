@@ -76,6 +76,63 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* c) {
   return __real_pthread_cond_broadcast(c);
 }
 int main() {
+  {
+    // Observe actual stack-registered waits, not synthetic graph edges. A
+    // too-small destination must not expose a deceptively complete prefix.
+    Mutex mutex(2); Park first, second;
+    Mutex::OwnerIdentity holder{}, a{}, b{};
+    for (unsigned i=0;i<16;++i) { holder[i]=i+0x80; a[i]=i+0xa0; b[i]=i+0xe0; }
+    first.defer_return=true;
+    const auto main_thread=std::this_thread::get_id();
+    Check(mutex.TryLock({}, {}, holder)==Result::acquired,"inspection holder granted");
+    std::stop_source cancel;
+    const auto deadline=Mutex::Clock::now()+10s;
+    std::thread one([&] {
+      park=&first;
+      Check(mutex.Lock(deadline,cancel.get_token(),a)==Result::cancelled,"inspected waiter cancelled");
+    });
+    Check(first.entered.try_acquire_for(5s),"first inspected waiter actually parked");
+    std::thread two([&] {
+      park=&second;
+      Check(mutex.Lock(deadline,{},b)==Result::closed,"inspected waiter closed");
+    });
+    Check(second.entered.try_acquire_for(5s),"second inspected waiter actually parked");
+    std::array<Mutex::WaiterObservation,3> rows{};
+    rows[0].owner=holder; rows[2].owner=holder;
+    const auto small=mutex.ObserveWaiters(std::span(rows).first(1));
+    Check(!small.complete && small.state.waiters==2 && small.state.calls==2,
+          "insufficient inspection capacity reports exact requirement");
+    Check(rows[0].owner==holder,"incomplete inspection leaves output untouched");
+    const auto view=mutex.ObserveWaiters(rows);
+    Check(view.complete && view.state.held && view.holder==main_thread && view.owner==holder,
+          "inspection preserves real native holder and binary task");
+    Check(rows[0].thread==one.get_id() && rows[1].thread==two.get_id() &&
+          rows[0].owner==a && rows[1].owner==b,"inspection records real FIFO waiters");
+    Check(rows[0].deadline==deadline && rows[1].deadline==deadline &&
+          rows[0].started<=rows[1].started && rows[1].started<=Mutex::Clock::now(),
+          "inspection captures native wait timing");
+    Check(!rows[0].cancellation_requested && !rows[1].cancellation_requested &&
+          rows[2].owner==holder,"inspection respects output extent");
+    cancel.request_stop();
+    Check(first.woke.try_acquire_for(5s),"cancelled native waiter paused before predicate reacquisition");
+    const auto pending=mutex.ObserveWaiters(rows);
+    Check(pending.complete && pending.state.waiters==2 && rows[0].owner==a &&
+          rows[0].cancellation_requested && !rows[1].cancellation_requested,
+          "cancellation request remains observed until real wait unlink");
+    first.resume.release(); one.join();
+    const auto after=mutex.ObserveWaiters(rows);
+    Check(after.complete && after.state.waiters==1 && rows[0].owner==b,
+          "cancelled wait edge disappears after actual unlink");
+    mutex.Close(); two.join();
+    const auto closed=mutex.ObserveWaiters({});
+    Check(closed.complete && closed.state.closed && closed.state.held && closed.owner==holder &&
+          closed.state.waiters==0 && closed.state.calls==0,"close observation does not erase live holder");
+    Check(mutex.Unlock(holder),"inspected holder releases");
+    const auto empty=mutex.ObserveWaiters({});
+    Check(empty.complete && !empty.owner && empty.holder==std::thread::id{} && !empty.state.held,
+          "release clears observed holder identity");
+    Check(view.owner==holder && view.state.waiters==2,"captured state is a value not live authority");
+  }
   for (bool immediate : {false,true}) for (bool held : {false,true})
     for (unsigned signals=0; signals<8; ++signals) {
       Mutex mutex(1);

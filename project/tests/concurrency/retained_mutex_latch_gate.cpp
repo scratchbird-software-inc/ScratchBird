@@ -340,6 +340,15 @@ void NativeBoundaries() {
     });
     Check(probe.entered.try_acquire_for(5s),"actual retained native waiter parked");
     Check(owner.Snapshot().native.waiters==1 && domain.Snapshot().readers==5,"park retains operation prepared grant and holder guards");
+    std::array<scratchbird::core::platform::CheckedFifoMutex::WaiterObservation,1> waits;
+    const auto live=owner.SnapshotWaiters(waits);
+    Check(live.wait.complete && live.latch.initialized && live.latch.native.waiters==1 &&
+          live.wait.owner==Id(99) && waits[0].owner==Id(98) &&
+          live.wait.holder==std::this_thread::get_id() && waits[0].thread==waiter.get_id(),
+          "retained observation binds actual native owners and FIFO wait to live descriptor");
+    Check(live.latch.descriptor.primitive_id==Request().primitive_id &&
+          live.latch.descriptor.generation==Request().generation && domain.Snapshot().readers==5,
+          "observation preserves binary primitive generation without extra hazard admission");
     if (terminal==0) { Check(owner.Close(Id(24)),"close during park"); Check(owner.FenceAdmission()==S::ok,"fence parked call"); }
     if (terminal==1) stop.request_stop();
     waiter.join();
@@ -413,6 +422,10 @@ void NativeBoundaries() {
     const auto snapshot=owner.Snapshot();
     Check(snapshot.native.held && snapshot.native.calls==1 && snapshot.retained_grants==0 &&
           snapshot.operation_references==1,"whole operation covers grant delivery and callback join gap");
+    const auto live=owner.SnapshotWaiters({});
+    Check(live.wait.complete && live.wait.owner==Id(98) && live.wait.holder==waiter.get_id() &&
+          live.wait.state.waiters==0 && live.wait.state.calls==1 && live.latch.retained_grants==0,
+          "observation distinguishes committed native ownership from retained grant delivery");
     Check(owner.Drain(c::MutexClock::now()).code==C::timed_out,"delivery gap cannot produce false zero drain");
     Check(domain.Collect()==S::ok && domain.Snapshot().readers==3 && domain.Snapshot().retired==1,
           "real owner operation and prepared grant guards retain late result storage");

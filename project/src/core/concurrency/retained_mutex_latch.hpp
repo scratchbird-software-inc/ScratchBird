@@ -62,6 +62,10 @@ struct MutexLatchSnapshot {
   std::uint32_t retained_grants = 0;
   platform::CheckedFifoMutex::Observation native{};
 };
+struct MutexLatchWaitSnapshot {
+  MutexLatchSnapshot latch;
+  platform::CheckedFifoMutex::WaitObservation wait;
+};
 
 namespace detail {
 inline bool MutexHazardValid(const memory::SafeRetirementHazard& hazard) noexcept {
@@ -347,6 +351,18 @@ class MutexLatchOwner {
     return {state_->descriptor, true, state_->closed, state_->fenced,
         state_->retirement_admitted, state_->references, state_->grants,
         state_->native.Observe()};
+  }
+  // The owner's real guard retains storage across both locks and the copy.
+  // Native ownership may precede retained-grant delivery: neither count is a
+  // substitute for the other. This is a protected single-latch observation,
+  // not admission, a global graph snapshot, or permission to cancel/reclaim.
+  MutexLatchWaitSnapshot SnapshotWaiters(
+      std::span<platform::CheckedFifoMutex::WaiterObservation> output) const {
+    if (!state_) return {};
+    std::lock_guard lock(state_->lifetime);
+    const auto wait=state_->native.ObserveWaiters(output);
+    return {{state_->descriptor, true, state_->closed, state_->fenced,
+        state_->retirement_admitted, state_->references, state_->grants, wait.state}, wait};
   }
  private:
   memory::MemorySafeRetirement& domain_;
