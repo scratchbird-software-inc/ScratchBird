@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "retained_mode_latch.hpp"
+#include "retained_mutex_latch.hpp"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -94,7 +95,7 @@ m::MemoryBinaryUuid Id(unsigned n) {
   id[14]=static_cast<unsigned char>(n>>8); id[15]=static_cast<unsigned char>(n); return id;
 }
 m::SafeRetirementHazard Hazard(unsigned n, unsigned task=99) { return {Id(n),Id(task)}; }
-c::ModeLatchIdentity Identity() { return {Id(20),7}; }
+c::ModeLatchIdentity Identity() { return {Id(20),7,c::LatchClass::page}; }
 c::ModeLatchRequest Request(unsigned n, M mode=M::shared_read, unsigned task=99) {
   return {Identity(),Id(task),Id(n),mode,0};
 }
@@ -183,6 +184,159 @@ void Matrix() {
     Check(first.Release(request).code==C::released,"first exact release");
     Check(domain.Collect()==S::ok,"unused and released grant records collect");
   });
+}
+// Exercise both mechanisms through real owners, operations, grants and memory;
+// the expected order comes from canonical names, not numeric enum comparisons.
+constexpr c::LatchClass classes[]{c::LatchClass::engine_lifecycle,c::LatchClass::database_state,
+  c::LatchClass::transaction_inventory,c::LatchClass::catalog_metadata,
+  c::LatchClass::relation_index_descriptor,c::LatchClass::filespace_descriptor,
+  c::LatchClass::allocation_map,c::LatchClass::page_cache_bucket,c::LatchClass::page,
+  c::LatchClass::record_lineage,c::LatchClass::archive_descriptor,
+  c::LatchClass::temporary_storage,c::LatchClass::metrics_evidence};
+struct MixedLatch {
+  bool mutex;
+  c::ModeLatchOwner modes;
+  c::MutexLatchOwner exclusive;
+  c::ModeLatchOperation mode_op;
+  c::MutexLatchOperation mutex_op;
+  c::ModeLatchRequest mode_request;
+  c::MutexLatchRequest mutex_request;
+  c::ModeLatchGrant mode_grant;
+  c::MutexLatchGrant mutex_grant;
+  MixedLatch(m::MemorySafeRetirement& domain, bool is_mutex, unsigned slot, c::LatchClass rank, M mode)
+      : mutex(is_mutex), modes(domain), exclusive(domain),
+        mode_request{{Id(20+slot),7,rank},Id(99),Id(50+slot),mode,0},
+        mutex_request{Id(20+slot),7,Id(99),Id(50+slot),c::MutexLatchMode::exclusive_write} {
+    if (mutex) {
+      c::MutexLatchDescriptor d;
+      d.primitive_id=Id(20+slot); d.owner_uuid=Id(99); d.last_transition=Id(60+slot);
+      d.generation=7; d.latch_class=rank;
+      Check(exclusive.Initialize(d,{4,8},Hazard(30+slot))==S::ok,"mixed mutex published");
+      Check(exclusive.AcquireOperation(d.primitive_id,7,Hazard(40+slot),mutex_op)==S::ok,"mixed mutex operation");
+    } else {
+      Check(modes.Initialize(mode_request.identity,{4,4,8},Hazard(30+slot))==S::ok,"mixed mode published");
+      Check(modes.AcquireOperation(mode_request.identity,Hazard(40+slot),mode_op)==S::ok,"mixed mode operation");
+    }
+  }
+  ~MixedLatch() {
+    Release(); mode_op.Reset(); mutex_op.Reset();
+    if (mutex) {
+      Check(exclusive.Close(Id(80)),"mixed mutex close");
+      Check(exclusive.FenceAdmission()==S::ok,"mixed mutex fence");
+      Check(exclusive.Drain(c::MutexClock::now()+2s).code==c::MutexLatchCode::drained,"mixed mutex drain");
+    } else {
+      Check(modes.Close(),"mixed mode close");
+      Check(modes.FenceAdmission()==S::ok,"mixed mode fence");
+      Check(modes.Drain(c::ModeLatchClock::now()+2s).code==C::drained,"mixed mode drain");
+    }
+  }
+  c::ModeLatchResult Acquire(unsigned storage, bool immediate=true) {
+    if (!mutex) return mode_op.Acquire(mode_request,Memory(storage),mode_grant,{}, {},immediate);
+    const auto r=mutex_op.Acquire(mutex_request,Hazard(storage),mutex_grant,{}, {},immediate);
+    if (r.code==c::MutexLatchCode::acquired) return {C::acquired,r.memory_status,r.order_conflict};
+    if (r.code==c::MutexLatchCode::order_violation) return {C::order_violation,r.memory_status,r.order_conflict};
+    if (r.code==c::MutexLatchCode::closed) return {C::closed};
+    if (r.code==c::MutexLatchCode::wrong_owner) return {C::wrong_owner};
+    return {C::invalid};
+  }
+  void Release() {
+    if (mode_grant) Check(mode_grant.Release(mode_request).code==C::released,"mixed mode exact release");
+    if (mutex_grant) Check(mutex_grant.Release(mutex_request).code==c::MutexLatchCode::released,"mixed mutex exact release");
+  }
+};
+void SharedOrderMatrix() {
+  // mode->mode, mode->mutex and mutex->mode, including every native mode.
+  for (unsigned kinds=0;kinds<3;++kinds) for (unsigned mode=1;mode<=11;++mode)
+    for (unsigned held=0;held<13;++held) for (unsigned requested=0;requested<13;++requested) {
+      Fixture fixture;
+      {
+        m::MemorySafeRetirement domain(*fixture.resource,Id(10),8,16);
+        Check(domain.Initialize()==S::ok,"mixed order domain");
+        {
+          MixedLatch first(domain,kinds==2,0,classes[held],static_cast<M>(mode));
+          MixedLatch second(domain,kinds==1,1,classes[requested],static_cast<M>(mode));
+          Check(first.Acquire(100).code==C::acquired,"mixed prior grant");
+          const auto before=fixture.manager.Snapshot().current_bytes;
+          const auto readers=domain.Snapshot().readers;
+          const auto r=second.Acquire(110,(held+requested+mode)%2==0);
+          Check(r.code==(requested<held ? C::order_violation : C::acquired),
+                "all named class pairs across both mechanisms obey shared order");
+          if (requested<held) {
+            Check(r.order_conflict && r.order_conflict->held_primitive==Id(20) &&
+                  r.order_conflict->held_generation==7 && r.order_conflict->held_class==classes[held],
+                  "mixed refusal names actual held binary identity generation and class");
+            Check(before==fixture.manager.Snapshot().current_bytes && readers==domain.Snapshot().readers,
+                  "mixed refusal before any extra physical allocation or guard");
+            Check(!second.mode_grant && !second.mutex_grant,"mixed refusal has no ownership effect");
+          }
+          second.Release(); first.Release();
+          Check(domain.Collect()==S::ok,"mixed unused records collected");
+          Check(second.Acquire(120).code==C::acquired,"shared order obstruction removed by actual release");
+        }
+        Check(domain.Collect()==S::ok,"mixed states collected");
+      }
+      fixture.Empty();
+    }
+}
+void SharedOrderLifetime() {
+  Fixture fixture;
+  {
+    m::MemorySafeRetirement domain(*fixture.resource,Id(10),16,32);
+    Check(domain.Initialize()==S::ok,"mixed lifetime domain");
+    {
+      MixedLatch low(domain,false,0,classes[0],M::shared_read);
+      MixedLatch middle(domain,true,1,classes[4],M::exclusive_write);
+      MixedLatch high(domain,false,2,classes[12],M::verification);
+      MixedLatch target(domain,true,3,classes[8],M::exclusive_write);
+      Check(low.Acquire(100).code==C::acquired && middle.Acquire(110).code==C::acquired &&
+            high.Acquire(120).code==C::acquired,"three interleaved real held grants");
+      auto moved=std::move(high.mode_grant);
+      middle.Release();
+      Check(target.Acquire(130).code==C::order_violation,"mixed non-LIFO removal and move preserve highest order");
+      auto wrong=high.mode_request; wrong.request=Id(200);
+      Check(moved.Release(wrong).code==C::wrong_owner && target.Acquire(140).code==C::order_violation,
+            "mixed wrong request preserves order obstruction");
+      std::thread other([&] {
+        Check(moved.Release(high.mode_request).code==C::wrong_owner,"mixed wrong thread preserves grant");
+        Check(target.Acquire(150).code==C::acquired,"same task on another native thread has independent order");
+        target.Release();
+      });
+      other.join();
+      Check(high.modes.Close() && high.modes.FenceAdmission()==S::ok,"held high closed and retired");
+      high.mode_op.Reset();
+      Check(domain.Collect()==S::ok && target.Acquire(160).code==C::order_violation,
+            "closed retired state and dropped operation retain real held order node");
+      low.mode_grant=std::move(moved);
+      Check(target.Acquire(170).code==C::order_violation,"move assignment releases lower but adopts higher obstruction");
+      Check(low.mode_grant.Release(high.mode_request).code==C::released,"moved governed record exact release");
+      Check(target.Acquire(180).code==C::acquired,"last higher release clears shared order");
+    }
+    Check(domain.Collect()==S::ok,"mixed lifetime objects collected");
+  }
+  fixture.Empty();
+}
+void ClassBinding() {
+  Fixture fixture;
+  {
+    m::MemorySafeRetirement domain(*fixture.resource,Id(10),8,16);
+    Check(domain.Initialize()==S::ok,"class binding domain");
+    const auto baseline=fixture.manager.Snapshot().current_bytes;
+    for (const auto rank:{c::LatchClass::unspecified,static_cast<c::LatchClass>(255)}) {
+      c::ModeLatchOwner owner(domain);
+      auto identity=Identity(); identity.latch_class=rank;
+      Check(owner.Initialize(identity,{4,4,8},Hazard(30))==S::invalid_request,
+            "missing or invalid class cannot publish mode latch");
+      Check(fixture.manager.Snapshot().current_bytes==baseline,"invalid class has no physical effect");
+    }
+    {
+      MixedLatch latch(domain,false,0,classes[8],M::shared_read);
+      auto request=latch.mode_request; request.identity.latch_class=classes[0];
+      Check(latch.mode_op.Acquire(request,Memory(100),latch.mode_grant,{}).code==C::invalid,
+            "request cannot reclassify existing owning latch");
+    }
+    Check(domain.Collect()==S::ok,"class binding cleanup");
+  }
+  fixture.Empty();
 }
 void Ownership() {
   Run([](auto& owner,auto& domain,auto& fixture) {
@@ -415,14 +569,42 @@ void PreparationOwnershipRecheck() {
       Check(first.Release(hook.request).code==C::released,"prepared nested holder retains exact release path");
     });
 }
+void PreparationOrderRecheck() {
+  for (const bool mutex:{false,true}) for (unsigned mode=1;mode<=11;++mode) {
+    Fixture fixture;
+    {
+      m::MemorySafeRetirement domain(*fixture.resource,Id(10),8,16);
+      Check(domain.Initialize()==S::ok,"preparation order domain");
+      {
+        MixedLatch lower(domain,mutex,0,classes[0],M::shared_read);
+        MixedLatch higher(domain,false,1,classes[12],static_cast<M>(mode));
+        PreparationReentry hook{&higher.mode_op,&higher.mode_grant,higher.mode_request,Memory(120)};
+        preparation_reentry=&hook;
+        const auto result=lower.Acquire(mutex?112:110,false);
+        Check(hook.reached && result.code==C::order_violation &&
+              !lower.mode_grant && !lower.mutex_grant && higher.mode_grant,
+              "shared order rechecked after actual memory preparation in both mechanisms");
+        Check(result.order_conflict && result.order_conflict->held_primitive==Id(21) &&
+              result.order_conflict->held_class==classes[12],"preparation refusal identifies nested actual holder");
+        higher.Release();
+        Check(domain.Collect()==S::ok && lower.Acquire(140).code==C::acquired,
+              "preparation refusal preserves original release and leaves no phantom order node");
+      }
+      Check(domain.Collect()==S::ok,"preparation order cleanup");
+    }
+    fixture.Empty();
+  }
+}
 #endif
 } // namespace
 int main() {
+  SharedOrderMatrix(); SharedOrderLifetime(); ClassBinding();
   Matrix(); Ownership(); Nonrecursive(); Exhaustion(); MultipleRetainedHolders(); RetainedTerminals();
 #if defined(SB_MODE_NATIVE_FAULT_GATE)
   ParkedLifetime();
   DomainClosesBeforeProtection();
   PreparationOwnershipRecheck();
+  PreparationOrderRecheck();
 #endif
   std::printf("PASS retained mode latch: %u checks\n",checks.load());
 }
