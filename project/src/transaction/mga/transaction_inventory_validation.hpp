@@ -14,16 +14,13 @@ namespace scratchbird::transaction::mga {
 // Structural admission only: never establishes durable inventory authority,
 // transaction finality, cluster authorization or a live snapshot horizon.
 // Empty means valid. Reasons are internal detail keys, not diagnostic codes.
-inline const char* ValidateLocalTransactionInventoryStructure(
-    const LocalTransactionInventory& inventory) {
+namespace detail {
+template<class Inventory,class CommitUnique,class LocalUnique,class UuidUnique>
+const char* ValidateInventoryStructure(const Inventory& inventory,
+    CommitUnique commit_unique,LocalUnique local_unique,UuidUnique uuid_unique) {
   if (inventory.next_local_transaction_id == kInvalidLocalTransactionId)
     return "next_transaction_invalid";
   if (inventory.next_commit_sequence == 0) return "next_commit_sequence_invalid";
-  std::set<u64> commit_sequences;
-  std::set<u64> local_ids;
-  using BinaryIdentity = std::array<scratchbird::core::platform::byte, 16>;
-  static_assert(sizeof(BinaryIdentity) == 16);
-  std::set<BinaryIdentity> transaction_ids;
   for (const auto& entry : inventory.entries) {
     if (entry.begin_visible_through_commit_sequence >= inventory.next_commit_sequence)
       return "begin_commit_sequence_invalid";
@@ -38,7 +35,7 @@ inline const char* ValidateLocalTransactionInventoryStructure(
       if (entry.commit_sequence == 0 || entry.commit_sequence >= inventory.next_commit_sequence ||
           entry.commit_sequence <= entry.begin_visible_through_commit_sequence)
         return "commit_sequence_invalid";
-      if (!commit_sequences.insert(entry.commit_sequence).second) return "duplicate_commit_sequence";
+      if (!commit_unique(entry)) return "duplicate_commit_sequence";
     } else if (entry.commit_sequence != 0) return "noncommitted_commit_sequence";
     if (!entry.identity.valid() ||
         !scratchbird::core::uuid::IsEngineIdentityUuid(entry.identity.transaction_uuid.value))
@@ -52,9 +49,9 @@ inline const char* ValidateLocalTransactionInventoryStructure(
     }
     if (entry.identity.local_id.value >= inventory.next_local_transaction_id)
       return "future_transaction_in_inventory";
-    if (!local_ids.insert(entry.identity.local_id.value).second)
+    if (!local_unique(entry))
       return "duplicate_local_transaction_id";
-    if (!transaction_ids.insert(entry.identity.transaction_uuid.value.bytes).second)
+    if (!uuid_unique(entry))
       return "duplicate_transaction_uuid";
     switch (entry.state) {
       case TransactionState::created:
@@ -76,6 +73,15 @@ inline const char* ValidateLocalTransactionInventoryStructure(
     }
   }
   return "";
+}
+} // namespace detail
+inline const char* ValidateLocalTransactionInventoryStructure(const LocalTransactionInventory& inventory) {
+  std::set<u64> commits,locals;
+  std::set<std::array<scratchbird::core::platform::byte,16>> identities;
+  return detail::ValidateInventoryStructure(inventory,
+      [&](const auto& e){return commits.insert(e.commit_sequence).second;},
+      [&](const auto& e){return locals.insert(e.identity.local_id.value).second;},
+      [&](const auto& e){return identities.insert(e.identity.transaction_uuid.value.bytes).second;});
 }
 
 // Successor consistency only. Callers still own transition authorization,
