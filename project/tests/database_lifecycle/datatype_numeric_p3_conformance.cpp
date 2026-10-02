@@ -268,9 +268,15 @@ void TestDatatypeOperations(const api::EngineRequestContext& context) {
 
   cast.value.encoded_value = "340282366920938463463374607431768211455";
   cast.target_type_id = dt::CanonicalTypeId::uint128;
-  cast.target_descriptor = {};
+  cast.target_descriptor = ExecutionDescriptor(dt::CanonicalTypeId::uint128);
   cast_result = dt::CastDatatypeValue(cast);
   Require(cast_result.ok(), "uint128 max cast failed");
+  std::string uint128_decoded;
+  Require(dt::DecodeCanonicalUint128Value(cast_result.value.encoded_value,
+                                          &uint128_decoded) &&
+              uint128_decoded ==
+                  "340282366920938463463374607431768211455",
+          "uint128 max cast value mismatch");
 
   cast.value.encoded_value = "340282366920938463463374607431768211456";
   cast_result = dt::CastDatatypeValue(cast);

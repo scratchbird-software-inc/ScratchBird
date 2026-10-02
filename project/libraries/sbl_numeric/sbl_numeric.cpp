@@ -790,6 +790,71 @@ NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload)
   return result;
 }
 
+NumericBinaryResult EncodeUint128LittleEndian(std::string_view canonical) {
+  NumericBinaryResult result;
+  bool canonical_digits = !canonical.empty();
+  for (const char digit : canonical) {
+    canonical_digits = canonical_digits &&
+        std::isdigit(static_cast<unsigned char>(digit));
+  }
+  if (!canonical_digits ||
+      (canonical.size() > 1 && canonical.front() == '0')) {
+    result.diagnostic_code = "NUMERIC.ENCODING.NONCANONICAL";
+    return result;
+  }
+  if (canonical.size() > 39) {
+    result.status = NumericStatusCode::overflow;
+    result.diagnostic_code = "NUMERIC.UINT128.OVERFLOW";
+    return result;
+  }
+  cpp_int value = 0;
+  if (!ParseInteger(std::string(canonical), false, &value) ||
+      CppIntToString(value) != canonical) {
+    result.diagnostic_code = "NUMERIC.ENCODING.NONCANONICAL";
+    return result;
+  }
+  if (!IntegerInRange(NumericType::uint128, value)) {
+    result.status = NumericStatusCode::overflow;
+    result.diagnostic_code = "NUMERIC.UINT128.OVERFLOW";
+    return result;
+  }
+  result.payload.resize(16);
+  for (auto& byte : result.payload) {
+    byte = static_cast<std::uint8_t>(value & 255);
+    value >>= 8;
+  }
+  result.status = NumericStatusCode::ok;
+  return result;
+}
+
+NumericResult DecodeUint128LittleEndian(
+    const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != 16) {
+    return Failure(NumericStatusCode::invalid_left,
+                   "NUMERIC.ENCODING.NONCANONICAL");
+  }
+  cpp_int value = 0;
+  for (auto byte = payload.rbegin(); byte != payload.rend(); ++byte) {
+    value <<= 8;
+    value += *byte;
+  }
+  NumericResult result;
+  result.value = {NumericType::uint128, CppIntToString(value), false};
+  return result;
+}
+
+NumericBinaryResult MakeUint128OrderKeyLittleEndian(
+    const std::vector<std::uint8_t>& payload) {
+  NumericBinaryResult result;
+  if (payload.size() != 16) {
+    result.diagnostic_code = "NUMERIC.ENCODING.NONCANONICAL";
+    return result;
+  }
+  result.payload.assign(payload.rbegin(), payload.rend());
+  result.status = NumericStatusCode::ok;
+  return result;
+}
+
 NumericResult ApplyNumericOperation(const NumericRequest& request) {
   if (request.type == NumericType::real128) return detail::Real128ReferenceOperation(request);
   NumericResult result;

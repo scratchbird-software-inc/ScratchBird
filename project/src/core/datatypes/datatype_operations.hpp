@@ -375,6 +375,14 @@ bool EncodeCanonicalInt128Value(std::string_view canonical_decimal,
                                 std::string* canonical_bytes);
 bool DecodeCanonicalInt128Value(std::string_view canonical_bytes,
                                 std::string* canonical_decimal);
+// Canonical UINT128 value boundary. Present values are exactly sixteen
+// little-endian unsigned bytes. Canonical decimal text exists only at this
+// sbl_numeric-backed conversion boundary; DatatypeOperationValue carries the
+// resulting binary bytes.
+bool EncodeCanonicalUint128Value(std::string_view canonical_decimal,
+                                 std::string* canonical_bytes);
+bool DecodeCanonicalUint128Value(std::string_view canonical_bytes,
+                                 std::string* canonical_decimal);
 // Exact bulk-import converter 019d...b775 generation 1. This accepts only the
 // lane's canonical decimal grammar and is not a general parser, cast, or
 // display policy.
