@@ -22,7 +22,7 @@ constexpr std::array<std::string_view, 37> kAttributeNames{
     "ambient", "authority_class", "group_name", "ambient_rights", "connect_only",
     "operational_role", "created_disabled"};
 
-u16 PrimaryField(CatalogRecordKind kind) {
+constexpr u16 PrimaryField(CatalogRecordKind kind) {
   switch (kind) {
     case CatalogRecordKind::user_account: return 1;
     case CatalogRecordKind::group_account: return 2;
@@ -32,8 +32,15 @@ u16 PrimaryField(CatalogRecordKind kind) {
   }
 }
 
-CatalogValueSchema Schema(CatalogRecordKind kind) {
-  CatalogValueSchema schema;
+struct FixedSchema {
+  u32 id = 0;
+  u16 version = 0;
+  std::array<CatalogValueFieldSchema, 47> fields{};
+  std::size_t count = 0;
+  constexpr CatalogValueSchemaView View() const { return {id, version, std::span(fields).first(count)}; }
+};
+constexpr FixedSchema Schema(CatalogRecordKind kind) {
+  FixedSchema schema;
   const auto primary = PrimaryField(kind);
   if (!primary) return schema;
   schema.id = 65536 + static_cast<u32>(kind);
@@ -41,14 +48,32 @@ CatalogValueSchema Schema(CatalogRecordKind kind) {
   for (u16 id = 1; id <= kIdentityNames.size(); ++id) {
     const bool admitted = id == primary || id == 9 ||
         (kind == CatalogRecordKind::grant_record && id != 2);
-    if (admitted) schema.fields.push_back(
-        {id, CatalogValueType::engine_identity, id == primary, 16, UuidKind::object});
+    if (admitted) schema.fields[schema.count++] =
+        {id, CatalogValueType::engine_identity, id == primary, 16, UuidKind::object};
   }
   for (u16 index = 0; index < kAttributeNames.size(); ++index) {
-    schema.fields.push_back({static_cast<u16>(32 + index), CatalogValueType::utf8_text,
-                             index == 0, 130000});
+    schema.fields[schema.count++] = {static_cast<u16>(32 + index), CatalogValueType::utf8_text,
+                             index == 0, 130000};
   }
   return schema;
+}
+
+constexpr CatalogValueSchemaView SchemaView(CatalogRecordKind kind) {
+  static constexpr auto user = Schema(CatalogRecordKind::user_account);
+  static constexpr auto group = Schema(CatalogRecordKind::group_account);
+  static constexpr auto role = Schema(CatalogRecordKind::role_account);
+  static constexpr auto grant = Schema(CatalogRecordKind::grant_record);
+  switch (kind) {
+    case CatalogRecordKind::user_account: return user.View();
+    case CatalogRecordKind::group_account: return group.View();
+    case CatalogRecordKind::role_account: return role.View();
+    case CatalogRecordKind::grant_record: return grant.View();
+    default: return {};
+  }
+}
+CatalogValueSchema OwningSchema(CatalogRecordKind kind) {
+  const auto view = SchemaView(kind);
+  return {view.id, view.version, {view.fields.begin(), view.fields.end()}};
 }
 
 template <std::size_t N>
@@ -73,10 +98,10 @@ std::string_view CatalogSecurityPrimaryIdentityName(CatalogRecordKind kind) {
 }
 
 const CatalogValueSchema& CatalogSecurityRecordSchema(CatalogRecordKind kind) {
-  static const auto user = Schema(CatalogRecordKind::user_account);
-  static const auto group = Schema(CatalogRecordKind::group_account);
-  static const auto role = Schema(CatalogRecordKind::role_account);
-  static const auto grant = Schema(CatalogRecordKind::grant_record);
+  static const auto user = OwningSchema(CatalogRecordKind::user_account);
+  static const auto group = OwningSchema(CatalogRecordKind::group_account);
+  static const auto role = OwningSchema(CatalogRecordKind::role_account);
+  static const auto grant = OwningSchema(CatalogRecordKind::grant_record);
   static const CatalogValueSchema invalid;
   switch (kind) {
     case CatalogRecordKind::user_account: return user;
@@ -120,30 +145,48 @@ CatalogValueEncodeResult EncodeCatalogSecurityRecord(const CatalogSecurityRecord
   return encoded;
 }
 
-CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
+Uuid CatalogSecurityRecordView::Identity(std::string_view name) const {
+  const auto id = FieldId(kIdentityNames, name, 1);
+  return id && identities[*id - 1] ? *identities[*id - 1] : Uuid{};
+}
+std::optional<std::string_view> CatalogSecurityRecordView::Attribute(std::string_view name) const {
+  const auto id = FieldId(kAttributeNames, name, 32);
+  return id ? attributes[*id - 32] : std::nullopt;
+}
+CatalogSecurityRecordViewResult DecodeCatalogSecurityRecordView(
     CatalogRecordKind kind, std::string_view bytes) {
   if (!IsCatalogSecurityRecordKind(kind)) return {CatalogValueError::invalid_schema, {}};
   if (bytes.size() < kCatalogValueBlockHeaderBytes || bytes.size() > kMaximumPayloadBytes)
     return {CatalogValueError::invalid_framing, {}};
-  const auto decoded = DecodeCatalogValueBlock(CatalogSecurityRecordSchema(kind),
-                                               std::vector<byte>(bytes.begin(), bytes.end()));
+  std::array<CatalogValueFieldView, 47> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(SchemaView(kind),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
+  if (!decoded.ok()) return {decoded.error, {}};
+  CatalogSecurityRecordView record;
+  record.kind = kind;
+  for (const auto& field : decoded.fields) {
+    if (field.id <= kIdentityNames.size()) record.identities[field.id - 1] = field.identity()->value;
+    else record.attributes[field.id - 32] = std::string_view(
+        reinterpret_cast<const char*>(field.bytes.data()), field.bytes.size());
+  }
+  return {CatalogValueError::none, record};
+}
+CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
+    CatalogRecordKind kind, std::string_view bytes) {
+  const auto decoded = DecodeCatalogSecurityRecordView(kind, bytes);
   if (!decoded.ok()) return {decoded.error, {}};
   CatalogSecurityRecord record;
   record.kind = kind;
-  for (const auto& field : decoded.fields) {
-    if (field.id >= 1 && field.id <= kIdentityNames.size()) {
-      record.identities.emplace(std::string(kIdentityNames[field.id - 1]),
-                                std::get<TypedUuid>(field.value).value);
-    } else {
-      record.attributes.emplace(std::string(kAttributeNames[field.id - 32]),
-                                std::get<std::string>(field.value));
-    }
-  }
+  const auto& v = *decoded.record;
+  for (std::size_t i = 0; i < v.identities.size(); ++i)
+    if (v.identities[i]) record.identities.emplace(std::string(kIdentityNames[i]), *v.identities[i]);
+  for (std::size_t i = 0; i < v.attributes.size(); ++i)
+    if (v.attributes[i]) record.attributes.emplace(std::string(kAttributeNames[i]), std::string(*v.attributes[i]));
   return {CatalogValueError::none, std::move(record)};
 }
 
 bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecord& record) {
-  const auto decoded = DecodeCatalogSecurityRecord(record.header.kind, record.payload);
+  const auto decoded = DecodeCatalogSecurityRecordView(record.header.kind, record.payload);
   return decoded.ok() && record.header.object_uuid.kind == UuidKind::object &&
       record.header.object_uuid.value == decoded.record->Identity(
           CatalogSecurityPrimaryIdentityName(record.header.kind)) &&

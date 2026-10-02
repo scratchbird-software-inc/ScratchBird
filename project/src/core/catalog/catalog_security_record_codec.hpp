@@ -6,6 +6,7 @@
 #include "catalog_value_codec.hpp"
 
 #include <map>
+#include <array>
 #include <optional>
 #include <string_view>
 
@@ -27,6 +28,24 @@ struct CatalogSecurityRecordDecodeResult {
   std::optional<CatalogSecurityRecord> record;
   bool ok() const { return error == CatalogValueError::none && record.has_value(); }
 };
+
+// Structural bootstrap payload only, never a credential or grant. Identity
+// slots correspond to field IDs1..10, attributes to IDs32..68. Optional slots
+// preserve absence separately from empty text. Attribute bytes borrow immutable
+// caller input whose owner/memory grant must outlive the views.
+struct CatalogSecurityRecordView {
+  CatalogRecordKind kind = CatalogRecordKind::unknown;
+  std::array<std::optional<Uuid>, 10> identities;
+  std::array<std::optional<std::string_view>, 37> attributes;
+  Uuid Identity(std::string_view name) const;
+  std::optional<std::string_view> Attribute(std::string_view name) const;
+};
+struct CatalogSecurityRecordViewResult {
+  CatalogValueError error = CatalogValueError::none;
+  std::optional<CatalogSecurityRecordView> record;
+  bool ok() const { return error == CatalogValueError::none && record.has_value(); }
+};
+CatalogSecurityRecordViewResult DecodeCatalogSecurityRecordView(CatalogRecordKind kind, std::string_view bytes);
 
 bool IsCatalogSecurityRecordKind(CatalogRecordKind kind);
 std::string_view CatalogSecurityPrimaryIdentityName(CatalogRecordKind kind);
