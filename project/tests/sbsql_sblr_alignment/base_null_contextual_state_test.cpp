@@ -1118,6 +1118,15 @@ void SerializationRetainsConcreteType() {
             "typed UUID NULL serialization failure published output or wrong detail");
       continue;
     }
+    if (descriptor.type_id == dt::CanonicalTypeId::ip_address) {
+      CheckRejectedAs(serialized, "SB_DATATYPE_SERIALIZATION_REJECTED",
+                      "typed IP address NULL serialization without codec policy");
+      Check(DiagnosticDetail(serialized.diagnostic) ==
+                    "ip_address_serialization_policy_unresolved" &&
+                serialized.serialized_value.empty(),
+            "typed IP address NULL serialization failure published output or wrong detail");
+      continue;
+    }
     Check(serialized.ok(), "typed NULL serialization failed for " + label);
     Check(DescriptorEquals(serialized.descriptor, execution_descriptor),
           "typed NULL serialization lost descriptor sidecar for " + label);

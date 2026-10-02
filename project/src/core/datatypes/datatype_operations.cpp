@@ -359,6 +359,10 @@ bool IsUuid(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::uuid;
 }
 
+bool IsIpAddress(CanonicalTypeId type_id) noexcept {
+  return type_id == CanonicalTypeId::ip_address;
+}
+
 bool DecimalFloatDescriptorValidForPresent(
     const ExecutionTypeDescriptor& descriptor) {
   return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -496,6 +500,11 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
                value.descriptor, value.type_id) &&
         value.encoded_value.size() == 16;
   }
+  if (IsIpAddress(value.type_id)) {
+    return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+               value.descriptor, value.type_id) &&
+        value.encoded_value.size() == 16;
+  }
   if (value.type_id == CanonicalTypeId::boolean) {
     return value.encoded_value.size() == 1 &&
         (static_cast<unsigned char>(value.encoded_value[0]) == 0u ||
@@ -544,6 +553,11 @@ const char* CanonicalOperationValueDiagnosticCode(
     return "DATATYPE.DESCRIPTOR.INVALID";
   }
   if (IsUuid(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (IsIpAddress(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
     return "DATATYPE.DESCRIPTOR.INVALID";
@@ -2165,7 +2179,9 @@ bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
            hex.size() !=
                PolicyRestrictedRealCarrierByteWidth(frame->element_type_id) *
                    2u) ||
-          (IsUuid(frame->element_type_id) && hex.size() != 32u) ||
+          ((IsUuid(frame->element_type_id) ||
+            IsIpAddress(frame->element_type_id)) &&
+           hex.size() != 32u) ||
           (IsDecimal(frame->element_type_id) &&
            (!DecodeCanonicalLowerHex(hex, &decoded_item) ||
             !DecimalCarrierStructurallyCanonical(decoded_item))) ||
@@ -2695,10 +2711,11 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (!LookupDatatypeDescriptor(source_type_id).ok()) {
     return DatatypeCastCategory::forbidden;
   }
-  // The structural UUID raw 16-octet carrier is known, but no PRESENT cast
-  // operation is admitted without the missing identity/cast policy receipt.
+  // The structural UUID and IP-address raw 16-octet carriers are known, but no
+  // PRESENT cast operation is admitted without the missing policy receipt.
   // Contextual NULL binding was handled above.
-  if (IsUuid(source_type_id) || IsUuid(target_type_id)) {
+  if (IsUuid(source_type_id) || IsUuid(target_type_id) ||
+      IsIpAddress(source_type_id) || IsIpAddress(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
   // Contextual NULL binding was admitted above. No PRESENT cast pair touching
@@ -2815,6 +2832,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsUuid(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
+       (IsIpAddress(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
        ((IsUnresolvedRealSemantics(request.value.type_id) ||
          IsReal128(request.value.type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2826,6 +2846,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       (request.value.type_id == CanonicalTypeId::unknown ||
        !LookupDatatypeDescriptor(request.value.type_id).ok() ||
        (IsUuid(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
+       (IsIpAddress(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
        (request.value.is_null &&
@@ -2863,6 +2886,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsUuid(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
+       (IsIpAddress(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
        ((IsUnresolvedRealSemantics(request.target_type_id) ||
          IsReal128(request.target_type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2873,6 +2899,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (!target_is_unresolved &&
       (!LookupDatatypeDescriptor(request.target_type_id).ok() ||
        (IsUuid(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
+       (IsIpAddress(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
        (result_is_null &&
@@ -2926,7 +2955,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::real128 ||
        request.value.type_id == CanonicalTypeId::decimal ||
        request.value.type_id == CanonicalTypeId::decimal_float ||
-       request.value.type_id == CanonicalTypeId::uuid) &&
+       request.value.type_id == CanonicalTypeId::uuid ||
+       request.value.type_id == CanonicalTypeId::ip_address) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
@@ -3113,6 +3143,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         result_is_null
             ? "uuid_cross_type_typed_null_cast_policy_unresolved"
             : "uuid_present_cast_policy_unresolved");
+  }
+  if (IsIpAddress(request.value.type_id) ||
+      IsIpAddress(request.target_type_id)) {
+    return CastFailure(
+        result_is_null
+            ? "ip_address_cross_type_typed_null_cast_policy_unresolved"
+            : "ip_address_present_cast_policy_unresolved");
   }
   if (IsDecimal(request.value.type_id) ||
       IsDecimal(request.target_type_id)) {
@@ -3407,6 +3444,12 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     return ExtractFailure("uuid_extract_descriptor_invalid",
                           "DATATYPE.DESCRIPTOR.INVALID");
   }
+  if (IsIpAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    return ExtractFailure("ip_address_extract_descriptor_invalid",
+                          "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -3425,12 +3468,13 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     const bool decimal_value = IsDecimal(request.value.type_id);
     const bool decimal_float_value = IsDecimalFloat(request.value.type_id);
     const bool uuid_value = IsUuid(request.value.type_id);
+    const bool ip_address_value = IsIpAddress(request.value.type_id);
     const bool descriptor_or_null_state_failure =
         request.value.type_id == CanonicalTypeId::unknown ||
         request.value.type_id == CanonicalTypeId::null_type ||
         request.value.is_null ||
         bfloat16_value || real16_value || real32_value || real64_value ||
-        decimal_value || decimal_float_value || uuid_value;
+        decimal_value || decimal_float_value || uuid_value || ip_address_value;
     const char* diagnostic_code = descriptor_or_null_state_failure
         ? CanonicalOperationValueDiagnosticCode(
               request.value, "SB_DATATYPE_EXTRACT_REJECTED")
@@ -3477,6 +3521,11 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
                            "DATATYPE.DESCRIPTOR.INVALID"
                        ? "uuid_extract_descriptor_invalid"
                        : "uuid_extract_value_invalid")
+            : ip_address_value
+                ? (std::string_view(diagnostic_code) ==
+                           "DATATYPE.DESCRIPTOR.INVALID"
+                       ? "ip_address_extract_descriptor_invalid"
+                       : "ip_address_extract_value_invalid")
             : request.value.is_null ? "null_or_descriptor_state_invalid"
                                     : "canonical_value_invalid",
         diagnostic_code);
@@ -3500,6 +3549,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   }
   if (IsUuid(request.value.type_id)) {
     return ExtractFailure("uuid_extract_policy_unresolved");
+  }
+  if (IsIpAddress(request.value.type_id)) {
+    return ExtractFailure("ip_address_extract_policy_unresolved");
   }
   DatatypeExtractResult result;
   result.status = OkStatus();
@@ -3587,6 +3639,7 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
        IsDecimal(descriptor.element_type_id) ||
        IsDecimalFloat(descriptor.element_type_id) ||
        IsUuid(descriptor.element_type_id) ||
+       IsIpAddress(descriptor.element_type_id) ||
        descriptor.allow_null_elements || element_descriptor_present) &&
       !(IsPolicyRestrictedReal(descriptor.element_type_id)
             ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -3598,6 +3651,10 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                 ? DecimalFloatDescriptorValidForPresent(
                       descriptor.element_descriptor)
             : IsUuid(descriptor.element_type_id)
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      descriptor.element_descriptor,
+                      descriptor.element_type_id)
+            : IsIpAddress(descriptor.element_type_id)
                 ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                       descriptor.element_descriptor,
                       descriptor.element_type_id)
@@ -3639,6 +3696,8 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                       ? "decimal_set_element_invalid"
                   : IsDecimalFloat(value.type_id)
                       ? "decimal_float_set_element_invalid"
+                  : IsIpAddress(value.type_id)
+                      ? "ip_address_set_element_invalid"
                       : "set_element_value_invalid";
       return SetFailure(failure_detail,
                         CanonicalOperationValueDiagnosticCode(
@@ -3673,6 +3732,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   }
   if (IsUuid(descriptor.element_type_id)) {
     return SetFailure("uuid_set_semantics_policy_unresolved");
+  }
+  if (IsIpAddress(descriptor.element_type_id)) {
+    return SetFailure("ip_address_set_semantics_policy_unresolved");
   }
   if (!descriptor.ordered) { std::sort(encoded_items.begin(), encoded_items.end()); }
   std::ostringstream out;
@@ -3710,9 +3772,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   const bool decimal_float_set =
       IsDecimalFloat(request.descriptor.element_type_id);
   const bool uuid_set = IsUuid(request.descriptor.element_type_id);
+  const bool ip_address_set = IsIpAddress(request.descriptor.element_type_id);
   const bool policy_restricted_set =
       IsPolicyRestrictedReal(request.descriptor.element_type_id) ||
-      decimal_set || decimal_float_set || uuid_set;
+      decimal_set || decimal_float_set || uuid_set || ip_address_set;
   if (policy_restricted_set &&
       !(decimal_set
             ? DecimalDescriptorValidForPresent(
@@ -3721,6 +3784,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
                 ? DecimalFloatDescriptorValidForPresent(
                       request.descriptor.element_descriptor)
             : uuid_set
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      request.descriptor.element_descriptor,
+                      request.descriptor.element_type_id)
+            : ip_address_set
                 ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                       request.descriptor.element_descriptor,
                       request.descriptor.element_type_id)
@@ -3769,6 +3836,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
               ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)
+              : ip_address_set
+              ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                    request.right_value.descriptor,
+                    request.descriptor.element_type_id)
               : ExecutionDescriptorValidForType(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)) ||
@@ -3797,7 +3868,7 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
              : decimal_float_set
              ? !DecimalFloatCarrierStructurallyCanonical(
                    request.right_value.encoded_value)
-             : uuid_set
+             : (uuid_set || ip_address_set)
              ? request.right_value.encoded_value.size() != 16u
              : request.right_value.encoded_value.size() !=
                    PolicyRestrictedRealCarrierByteWidth(
@@ -3817,6 +3888,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
             ? "decimal_float_set_semantics_policy_unresolved"
             : uuid_set
             ? "uuid_set_semantics_policy_unresolved"
+            : ip_address_set
+            ? "ip_address_set_semantics_policy_unresolved"
             : IsReal128(request.descriptor.element_type_id)
             ? "real128_set_semantics_policy_unresolved"
             : UnresolvedRealDetail(
@@ -3942,6 +4015,44 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
               invalid, "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
     }
     return invalid_request("uuid_numeric_policy_unresolved");
+  }
+
+  const bool ip_address_incident = IsIpAddress(request.type_id) ||
+      IsIpAddress(request.left.type_id) ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       IsIpAddress(request.right.type_id));
+  if (ip_address_incident) {
+    const auto ip_address_descriptor_invalid = [](
+        const DatatypeOperationValue& value) {
+      return IsIpAddress(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::ip_address);
+    };
+    if (ip_address_descriptor_invalid(request.left)) {
+      return invalid_request("ip_address_left_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        ip_address_descriptor_invalid(request.right)) {
+      return invalid_request("ip_address_right_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if ((IsIpAddress(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         IsIpAddress(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid =
+          IsIpAddress(request.left.type_id) &&
+                  !CanonicalOperationValueValid(request.left)
+              ? request.left
+              : request.right;
+      return invalid_request(
+          "ip_address_numeric_value_invalid",
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
+    }
+    return invalid_request("ip_address_numeric_policy_unresolved");
   }
 
   if (IsReal128(request.type_id)) {
@@ -4554,6 +4665,53 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "SB_DATATYPE_COMPARISON_REJECTED",
         "datatype.comparison.rejected", "uuid_comparison_policy_unresolved");
+    return result;
+  }
+  const bool ip_address_incident = IsIpAddress(request.left.type_id) ||
+      IsIpAddress(request.right.type_id);
+  if (ip_address_incident) {
+    const auto ip_address_descriptor_invalid = [](
+        const DatatypeOperationValue& value) {
+      return IsIpAddress(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::ip_address);
+    };
+    if (ip_address_descriptor_invalid(request.left) ||
+        ip_address_descriptor_invalid(request.right) ||
+        (IsIpAddress(request.left.type_id) &&
+         IsIpAddress(request.right.type_id) &&
+         !ExecutionDescriptorEquals(request.left.descriptor,
+                                    request.right.descriptor))) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.comparison.rejected",
+          "ip_address_operand_descriptor_invalid_or_mismatch");
+      return result;
+    }
+    if ((IsIpAddress(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (IsIpAddress(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid =
+          IsIpAddress(request.left.type_id) &&
+                  !CanonicalOperationValueValid(request.left)
+              ? request.left
+              : request.right;
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_COMPARISON_REJECTED"),
+          "datatype.comparison.rejected",
+          "ip_address_comparison_value_invalid");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+        "datatype.comparison.rejected",
+        "ip_address_comparison_policy_unresolved");
     return result;
   }
   const bool decimal_incident =
@@ -5188,6 +5346,12 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
     *failure_detail = "uuid_hash_descriptor_invalid";
     return false;
   }
+  if (IsIpAddress(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    *failure_detail = "ip_address_hash_descriptor_invalid";
+    return false;
+  }
   if (IsReal128(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
@@ -5197,6 +5361,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
   if (!CanonicalOperationValueValid(value)) {
     *failure_detail = IsUuid(value.type_id)
                           ? "uuid_hash_value_invalid"
+                          : IsIpAddress(value.type_id)
+                          ? "ip_address_hash_value_invalid"
                           : IsUnresolvedRealSemantics(value.type_id) &&
                               !value.is_null
                           ? UnresolvedRealDetail(
@@ -5231,6 +5397,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
   }
   if (IsUuid(value.type_id)) {
     *failure_detail = "uuid_hash_policy_unresolved";
+    return false;
+  }
+  if (IsIpAddress(value.type_id)) {
+    *failure_detail = "ip_address_hash_policy_unresolved";
     return false;
   }
   if (value.type_id == CanonicalTypeId::int16 ||
@@ -5320,6 +5490,16 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         "datatype.sort_key.rejected", "uuid_sort_key_descriptor_invalid");
     return result;
   }
+  if (IsIpAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.sort_key.rejected",
+        "ip_address_sort_key_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5337,6 +5517,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         "datatype.sort_key.rejected",
         IsUuid(request.value.type_id)
             ? "uuid_sort_key_value_invalid"
+            : IsIpAddress(request.value.type_id)
+            ? "ip_address_sort_key_value_invalid"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
@@ -5389,6 +5571,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
         "datatype.sort_key.rejected", "uuid_sort_key_policy_unresolved");
+    return result;
+  }
+  if (IsIpAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+        "datatype.sort_key.rejected",
+        "ip_address_sort_key_policy_unresolved");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -5619,6 +5809,16 @@ DatatypeSerializationResult SerializeDatatypeValue(
         "uuid_serialization_descriptor_invalid");
     return result;
   }
+  if (IsIpAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.serialization.rejected",
+        "ip_address_serialization_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5637,6 +5837,8 @@ DatatypeSerializationResult SerializeDatatypeValue(
         "datatype.serialization.rejected",
         IsUuid(request.value.type_id)
             ? "uuid_serialization_value_invalid"
+            : IsIpAddress(request.value.type_id)
+            ? "ip_address_serialization_value_invalid"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
@@ -5670,6 +5872,14 @@ DatatypeSerializationResult SerializeDatatypeValue(
         result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
         "datatype.serialization.rejected",
         "uuid_serialization_policy_unresolved");
+    return result;
+  }
+  if (IsIpAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
+        "datatype.serialization.rejected",
+        "ip_address_serialization_policy_unresolved");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::unknown) {
@@ -5840,6 +6050,15 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "datatype.deserialization.rejected", "expected_descriptor_invalid");
     return result;
   }
+  if (IsIpAddress(type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
   if (ExecutionDescriptorPresent(request.expected_descriptor) &&
       !ExecutionDescriptorValidForType(request.expected_descriptor, type_id)) {
     result.status = ErrorStatus();
@@ -5957,7 +6176,9 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         CanonicalOperationValueDiagnosticCode(
             staged, "SB_DATATYPE_DESERIALIZATION_REJECTED"),
         "datatype.deserialization.rejected",
-        IsUnresolvedRealSemantics(staged.type_id) && !staged.is_null
+        IsIpAddress(staged.type_id)
+            ? "ip_address_deserialization_value_invalid"
+            : IsUnresolvedRealSemantics(staged.type_id) && !staged.is_null
             ? UnresolvedRealDetail(
                   staged.type_id,
                   "bfloat16_present_value_policy_unresolved",
@@ -5991,6 +6212,14 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "uuid_deserialization_policy_unresolved");
     return result;
   }
+  if (IsIpAddress(staged.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "ip_address_deserialization_policy_unresolved");
+    return result;
+  }
   result.value = std::move(staged);
   return result;
 }
@@ -6012,6 +6241,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         "uuid_display_descriptor_invalid");
     return result;
   }
+  if (IsIpAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.display_render.rejected",
+        "ip_address_display_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -6031,6 +6270,8 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         "datatype.display_render.rejected",
         IsUuid(request.value.type_id)
             ? "uuid_display_value_invalid"
+            : IsIpAddress(request.value.type_id)
+            ? "ip_address_display_value_invalid"
             : request.value.type_id == CanonicalTypeId::null_type
             ? "standalone_null_type"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
@@ -6087,6 +6328,14 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
         "datatype.display_render.rejected",
         "uuid_display_policy_unresolved");
+    return result;
+  }
+  if (IsIpAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "ip_address_display_policy_unresolved");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);
