@@ -213,6 +213,13 @@ bool DatabaseOwnershipLock::valid() const {
 #endif
 }
 
+storage::disk::RouteSourceTransitionResult
+DatabaseOwnershipLock::BeginNativeSourceTransition() noexcept {
+  // Only the actual retained private lease can issue. Storage validates null,
+  // withdrawn and inherited owners before touching its synchronization state.
+  return storage::disk::RouteOwnershipLease::BeginNativeSourceTransition(lease_);
+}
+
 void DatabaseOwnershipLock::release() {
   if (lease_) {
     lease_->Withdraw();

@@ -15,7 +15,10 @@
 #include <memory>
 #include <string>
 
-namespace scratchbird::storage::disk { class RouteOwnershipLease; }
+namespace scratchbird::storage::disk {
+class RouteOwnershipLease;
+struct RouteSourceTransitionResult;
+}
 
 namespace scratchbird::server {
 
@@ -49,6 +52,11 @@ class DatabaseOwnershipLock {
   DatabaseOwnershipLock& operator=(DatabaseOwnershipLock&& other) noexcept;
 
   [[nodiscard]] bool valid() const;
+  // Externally serialize issuance, move and release of this owner. Successful
+  // issuance fences legacy borrowing only; it is not drain/transfer/readiness.
+  // The result definition is in storage/disk/route_ownership_lease.hpp.
+  [[nodiscard]] storage::disk::RouteSourceTransitionResult
+  BeginNativeSourceTransition() noexcept;
   [[nodiscard]] NativeHandle native_handle() const;
 #ifndef _WIN32
   [[nodiscard]] int fd() const { return native_handle(); }

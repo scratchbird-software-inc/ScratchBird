@@ -47,6 +47,16 @@ set_tests_properties(concurrency_metric_definitions_gate PROPERTIES
 if(UNIX)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 find_package(OpenSSL REQUIRED)
+add_executable(route_source_issuer_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/route_source_issuer_gate.cpp"
+  "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
+target_compile_features(route_source_issuer_gate PRIVATE cxx_std_23)
+target_include_directories(route_source_issuer_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/server")
+target_link_libraries(route_source_issuer_gate PRIVATE sb_storage_disk)
+target_link_options(route_source_issuer_gate PRIVATE -Wl,--wrap=pthread_mutex_lock)
+add_test(NAME route_source_issuer_gate COMMAND route_source_issuer_gate)
+set_tests_properties(route_source_issuer_gate PROPERTIES
+  TIMEOUT 60 LABELS "agents;ownership;native_source;real_file_io")
 add_executable(startup_parent_publication_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_parent_publication_gate.cpp")
 target_compile_features(startup_parent_publication_gate PRIVATE cxx_std_23)
