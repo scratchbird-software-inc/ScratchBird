@@ -553,8 +553,26 @@ void NumericAndCastAdapter() {
   Check(!dt::CastDatatypeValue(identity).ok(),
         "int128 identity cast refuses descriptor metadata substitution");
 
-  for (const auto target : {dt::CanonicalTypeId::bfloat16,
-                            dt::CanonicalTypeId::real16,
+  dt::DatatypeCastRequest bfloat_cast;
+  bfloat_cast.value = Int128("42");
+  bfloat_cast.target_type_id = dt::CanonicalTypeId::bfloat16;
+  bfloat_cast.context = dt::DatatypeCastContext::explicit_cast;
+  bfloat_cast.explicit_cast = true;
+  bfloat_cast.target_descriptor = DescriptorFor(dt::CanonicalTypeId::bfloat16);
+  const auto bfloat_source_before = bfloat_cast.value.encoded_value;
+  const auto bfloat_value = dt::CastDatatypeValue(bfloat_cast);
+  Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int128,
+                                 dt::CanonicalTypeId::bfloat16) ==
+                dt::DatatypeCastCategory::forbidden &&
+            !bfloat_value.ok() &&
+            bfloat_value.category == dt::DatatypeCastCategory::forbidden &&
+            bfloat_value.value.type_id == dt::CanonicalTypeId::unknown &&
+            bfloat_value.value.encoded_value.empty() &&
+            !bfloat_value.value.is_null &&
+            bfloat_cast.value.encoded_value == bfloat_source_before,
+        "int128 PRESENT-to-bfloat16 cast refuses without publishing output");
+
+  for (const auto target : {dt::CanonicalTypeId::real16,
                             dt::CanonicalTypeId::real32,
                             dt::CanonicalTypeId::real64,
                             dt::CanonicalTypeId::real128}) {
