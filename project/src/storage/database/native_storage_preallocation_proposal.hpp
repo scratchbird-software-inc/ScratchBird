@@ -57,16 +57,29 @@ inline NativeStoragePreallocationProposalResult ResolveNativeStoragePreallocatio
           (n&&devices[n-1].filespace_uuid==d.filespace_uuid))return result;
       for(std::size_t prior=0;prior<n;++prior)if(devices[prior].device==d.device)return result;
     }
+    const auto target=std::find_if(devices.begin(),devices.end(),[&](const auto& d){return d.filespace_uuid==filespace;});
+    if(target==devices.end())return result;
+    const u64 probe_bytes=disk::FindCanonicalFilespacePageProfile(target->page_size_profile_uuid)->page_size_bytes;
+    if(probe_bytes>budget-kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
+    // Admit the actual payload BEFORE the outer device fence. Its owner is
+    // declared first, so every exit unlocks devices before memory cleanup.
+    auto probe=memory.AllocatePage(target->page_size_profile_uuid);
+    if(!probe.ok()){
+      result.range.error=NativeStorageRangeError::resource_exhausted;
+      result.range.memory_error=probe.error;result.range.memory_status=probe.allocation_status;
+      result.range.memory_diagnostic=std::move(probe.diagnostic);return fail(E::range_failure);
+    }
     std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
     for(const auto& d:devices)guards.push_back(d.device->AcquireOperationGuard());
     auto source=ResolveNativeStoragePolicyFromOpenDevices(database,devices,checkpoint,filespace,
-        selector,role,relation,reader,pin,budget-kNativeStorageActionIntentBytes);
+        selector,role,relation,reader,pin,budget-kNativeStorageActionIntentBytes-probe_bytes);
     if(!source.ok()){result.source_failure=std::move(source);return fail(E::resolution_failure);}
     auto intent=native_storage_proposal_detail::Bind(source,request,operation,context,budget);
     // Once the selected policy is known, enforce its ceiling on this first
     // retained source as well as on the subsequent independent range read.
     if(intent.maximum_retained_image_bytes<kNativeStorageActionIntentBytes||
-        source.retained_image_bytes>intent.maximum_retained_image_bytes-kNativeStorageActionIntentBytes)
+        probe_bytes>intent.maximum_retained_image_bytes-kNativeStorageActionIntentBytes||
+        source.retained_image_bytes>intent.maximum_retained_image_bytes-kNativeStorageActionIntentBytes-probe_bytes)
       return fail(E::resource_exhausted);
     intent.action=NativeStorageAction::page_preallocation;intent.intended_state=NativeStorageIntentState::preallocated;
     intent.first_page=demand.first_page;intent.page_count=demand.page_count;
@@ -82,8 +95,8 @@ inline NativeStoragePreallocationProposalResult ResolveNativeStoragePreallocatio
     // complete ordered device guards span both reads. Do not double-retain an
     // uncharged snapshot or return the local candidate on a failed range read.
     source={};
-    auto range=InspectNativeStorageActionRangeWithMemoryFromOpenDevices(intent,devices,
-        selector,role,relation,reader,pin,budget,memory);
+    auto range=detail::InspectNativeStorageActionRange(intent,devices,
+        selector,role,relation,reader,pin,budget,&probe.buffer);
     if(!range.ok()){result.range=std::move(range);return fail(E::range_failure);}
     result.range=std::move(range);result.image=std::move(image);result.error=E::none;return result;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}

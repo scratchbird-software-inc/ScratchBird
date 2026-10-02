@@ -34,16 +34,17 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRange(
     const NativeStorageActionIntent& intent,const std::vector<disk::NativeFilespaceDevice>& supplied,
     u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
     const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget,
-    NativeStorageMemory* memory) noexcept {
+    NativeStorageBuffer* admitted_probe) noexcept {
   using E=NativeStorageRangeError;
   NativeStorageRangeInspection result;
   const auto fail=[&](E e){result.error=e;return std::move(result);};
   try {
-    if(memory){
-      result.memory_error=memory->CheckBinding({intent.database_uuid,intent.operation_uuid,
-        intent.initiator_uuid,intent.request_context_uuid});
-      if(result.memory_error!=NativeStorageMemoryError::none)return fail(E::memory_binding_failure);
-    }
+    // A governed caller has already admitted this exact owning buffer before
+    // taking any outer device fence. Never call the memory governor here.
+    const u64 probe_bytes=admitted_probe?admitted_probe->size():0;
+    const u64 allowance=std::min(budget,intent.maximum_retained_image_bytes);
+    if(admitted_probe&&(!*admitted_probe||probe_bytes!=intent.page_size_bytes))return fail(E::invalid_request);
+    if(probe_bytes&&probe_bytes>=allowance)return fail(E::resource_exhausted);
     auto devices=supplied;
     std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     if(devices.empty())return fail(E::invalid_request);
@@ -55,9 +56,9 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRange(
     }
     std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
     for(const auto& d:devices)guards.push_back(d.device->AcquireOperationGuard());
-    auto policy=CheckNativeStorageIntentPolicyFromOpenDevices(intent,devices,selector,role,relation,reader,pin,budget);
+    auto policy=CheckNativeStorageIntentPolicyFromOpenDevices(intent,devices,selector,role,relation,reader,pin,
+      admitted_probe?allowance-probe_bytes:budget);
     if(!policy.ok()){result.policy=std::move(policy);return fail(E::policy_failure);}
-    const u64 allowance=std::min(budget,intent.maximum_retained_image_bytes);
     u64 retained=kNativeStorageActionIntentBytes;
     const auto charge=[&](u64 bytes){if(bytes>allowance-retained)return false;retained+=bytes;return true;};
     if(!charge(policy.resolution.retained_image_bytes))return fail(E::resource_exhausted);
@@ -94,16 +95,9 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRange(
       }
       if(covered!=intent.page_count)return fail(E::allocation_mismatch);
       std::vector<byte> unmanaged_scratch;
-      NativeStorageBuffer owned_scratch;
       byte* scratch=nullptr;
-      if(memory){
-        auto allocated=memory->AllocatePage(intent.page_size_profile_uuid);
-        if(!allocated.ok()){
-          result.memory_error=allocated.error;result.memory_status=allocated.allocation_status;
-          result.memory_diagnostic=std::move(allocated.diagnostic);return fail(E::resource_exhausted);
-        }
-        owned_scratch=std::move(allocated.buffer);scratch=owned_scratch.data();
-      }else{unmanaged_scratch.resize(intent.page_size_bytes);scratch=unmanaged_scratch.data();}
+      if(admitted_probe)scratch=admitted_probe->data();
+      else{unmanaged_scratch.resize(intent.page_size_bytes);scratch=unmanaged_scratch.data();}
       for(u64 n=intent.first_page;n<end;++n){
         const auto io=target->device->ReadAt(n*intent.page_size_bytes,scratch,intent.page_size_bytes);
         if(!io.ok()||io.bytes_transferred!=intent.page_size_bytes){result.blocked_page=n;return fail(E::io_failure);}
@@ -136,6 +130,37 @@ inline NativeStorageRangeInspection InspectNativeStorageActionRangeWithMemoryFro
     u16 selector,u16 role,const NativeCatalogRelationBinding& relation,
     const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,u64 budget,
     NativeStorageMemory& memory) noexcept {
-  return detail::InspectNativeStorageActionRange(intent,devices,selector,role,relation,reader,pin,budget,&memory);
+  using E=NativeStorageRangeError;
+  NativeStorageRangeInspection failure;
+  try {
+    failure.memory_error=memory.CheckBinding({intent.database_uuid,intent.operation_uuid,
+      intent.initiator_uuid,intent.request_context_uuid});
+    if(failure.memory_error!=NativeStorageMemoryError::none){failure.error=E::memory_binding_failure;return failure;}
+    // In particular, never size the admission check from an unchecked caller
+    // page_size_bytes while allocating a different canonical profile size.
+    const auto valid=ValidateNativeStorageActionIntent(intent);
+    if(valid!=NativeStorageIntentError::none){
+      failure.error=E::policy_failure;failure.policy.error=NativeStorageIntentPolicyError::invalid_intent;
+      failure.policy.intent_error=valid;return failure;
+    }
+    NativeStorageBuffer probe;
+    if(intent.action==NativeStorageAction::page_preallocation){
+      const auto allowance=std::min(budget,intent.maximum_retained_image_bytes);
+      if(allowance<=kNativeStorageActionIntentBytes||
+          intent.page_size_bytes>allowance-kNativeStorageActionIntentBytes){failure.error=E::resource_exhausted;return failure;}
+      auto allocated=memory.AllocatePage(intent.page_size_profile_uuid);
+      if(!allocated.ok()){
+        failure.error=E::resource_exhausted;failure.memory_error=allocated.error;
+        failure.memory_status=allocated.allocation_status;failure.memory_diagnostic=std::move(allocated.diagnostic);return failure;
+      }
+      probe=std::move(allocated.buffer);
+    }
+    // The inner reader releases every device guard before this owner retires.
+    return detail::InspectNativeStorageActionRange(intent,devices,selector,role,relation,reader,pin,budget,
+      probe?&probe:nullptr);
+  }catch(const std::bad_alloc&){failure.error=E::resource_exhausted;}
+   catch(const std::length_error&){failure.error=E::resource_exhausted;}
+   catch(const std::system_error&){failure.error=E::io_failure;}
+  return failure;
 }
 } // namespace scratchbird::storage::database
