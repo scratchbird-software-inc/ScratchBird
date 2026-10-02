@@ -71,13 +71,18 @@ class NativeStorageMemory {
   NativeStorageMemory& operator=(const NativeStorageMemory&)=delete;
   NativeStorageMemory(NativeStorageMemory&&) noexcept=default;
   NativeStorageMemory& operator=(NativeStorageMemory&&) noexcept=default;
-  NativeStorageMemoryError CheckBinding(const core::platform::Uuid& database,const core::platform::Uuid& operation) const {
+  // Check every ownership dimension at consumption, not only at adoption.
+  // An operation UUID does not authorize another initiator/context to spend
+  // this retained grant. There is deliberately no partial-binding overload.
+  NativeStorageMemoryError CheckBinding(const NativeStorageMemoryBinding& expected) const {
     if(!resource_)return NativeStorageMemoryError::invalid_grant;
-    if(binding_.database_uuid!=database||binding_.operation_uuid!=operation)return NativeStorageMemoryError::invalid_binding;
+    if(binding_.database_uuid!=expected.database_uuid||binding_.operation_uuid!=expected.operation_uuid||
+       binding_.owner_uuid!=expected.owner_uuid||binding_.context_uuid!=expected.context_uuid)
+      return NativeStorageMemoryError::invalid_binding;
     return resource_->active()?NativeStorageMemoryError::none:NativeStorageMemoryError::invalid_grant;
   }
-  bool Matches(const core::platform::Uuid& database,const core::platform::Uuid& operation) const {
-    return CheckBinding(database,operation)==NativeStorageMemoryError::none;
+  bool Matches(const NativeStorageMemoryBinding& expected) const {
+    return CheckBinding(expected)==NativeStorageMemoryError::none;
   }
   const NativeStorageMemoryBinding& binding() const noexcept {return binding_;}
   core::memory::ReservationBackedMemoryResourceSnapshot Snapshot() const {

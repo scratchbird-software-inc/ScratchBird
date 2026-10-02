@@ -4228,6 +4228,29 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
             failed(actual,R::memory_binding_failure);Check(!reads&&actual.memory_error==db::NativeStorageMemoryError::invalid_binding,"wrong operation grant refuses before device reads");
             wrong=pre;wrong.database_uuid=Id(252);reads=0;track_reads=true;actual=governed(wrong);track_reads=false;
             failed(actual,R::memory_binding_failure);Check(!reads&&actual.memory_error==db::NativeStorageMemoryError::invalid_binding,"wrong database grant refuses before device reads");
+            for(unsigned field=0;field<2;++field)for(unsigned variant=0;variant<3;++variant){
+              wrong=pre;
+              auto other=Id(252);if(variant==1)other={};if(variant==2)other.bytes[6]=0x40;
+              if(field==0)wrong.initiator_uuid=other;else wrong.request_context_uuid=other;
+              const auto charged=memory.Snapshot();const auto physical=manager.Snapshot();
+              reads=0;track_reads=true;actual=governed(wrong);track_reads=false;
+              Check(!actual.ok()&&actual.error==R::memory_binding_failure&&
+                actual.memory_error==db::NativeStorageMemoryError::invalid_binding&&!reads&&
+                !actual.inspected_pages&&!actual.blocked_page&&!actual.policy.ok(),
+                "foreign owner or context cannot borrow same database-operation grant before reads");
+              Check(memory.Snapshot().allocated_bytes==charged.allocated_bytes&&
+                memory.Snapshot().allocation_count==charged.allocation_count&&
+                manager.Snapshot().allocation_count==physical.allocation_count,
+                "foreign storage consumer cannot consume grant payload or probe capacity");
+              if(variant==0){auto context=pre_context;
+                if(field==0)context.initiator_uuid=other;else context.request_context_uuid=other;
+                reads=0;track_reads=true;proposed=propose_pre(context,demand,ceiling,devices);track_reads=false;
+                proposal_bad(proposed);
+                Check(proposed.error==PE::memory_binding_failure&&
+                  proposed.memory_error==db::NativeStorageMemoryError::invalid_binding&&!reads,
+                  "proposal and direct range share exact owner-context memory admission");}
+              Check(governed(pre).ok(),"foreign-consumer refusal leaves original owner's grant usable");
+            }
             memory={};Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"complete page grant cleanup");
             --request.requested_bytes;memory=acquire();actual=governed(pre);failed(actual,R::resource_exhausted);
             proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
