@@ -151,6 +151,13 @@ class CheckedModeLatch {
     Notify();
   }
   struct Observation { std::uint32_t holders, waiters, calls; bool closed; };
+  // No grant or queue position is reserved. Owning memory preparation must
+  // always re-enter Acquire/TryAcquire and reselect under commit synchronization.
+  std::optional<Result> Preflight(std::optional<Clock::time_point> deadline,
+                                   std::stop_token stop = {}) {
+    std::lock_guard lock(mutex_);
+    return Terminal(deadline, stop);
+  }
   // Observation is not a lifetime fence, a drain receipt, or engine authority.
   Observation Observe() {
     std::lock_guard lock(mutex_);
