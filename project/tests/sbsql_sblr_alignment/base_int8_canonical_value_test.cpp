@@ -228,9 +228,14 @@ void OperationsAndSerialization() {
       Int8(0x80), dt::CanonicalTypeId::real64,
       dt::DatatypeCastContext::explicit_cast);
   Check(exact_numeric.ok() && exact_numeric.value.encoded_value == "-128" &&
-            approximate_numeric.ok() &&
-            approximate_numeric.value.encoded_value == "-128",
-        "int8 numeric output casts decode the canonical byte");
+            !approximate_numeric.ok() &&
+            approximate_numeric.value.type_id ==
+                dt::CanonicalTypeId::unknown &&
+            approximate_numeric.value.encoded_value.empty() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int8,
+                                     dt::CanonicalTypeId::real64) ==
+                dt::DatatypeCastCategory::forbidden,
+        "int8-to-real64 refuses while exact decimal output remains admitted");
   const auto narrowed = Cast(
       {dt::CanonicalTypeId::int16, std::string{'\x7f', '\0'}, false},
                              dt::CanonicalTypeId::int8,
@@ -246,12 +251,22 @@ void OperationsAndSerialization() {
   for (const auto& source :
        {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.0", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "-12e0", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::real64, "127.0", false}}) {
+        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "127", false}}) {
     const auto converted = Cast(source, dt::CanonicalTypeId::int8,
                                 dt::DatatypeCastContext::explicit_cast);
     Check(converted.ok() && converted.value.encoded_value.size() == 1,
           "integral numeric cast emits one canonical int8 byte");
   }
+  const auto real64_input = Cast(
+      {dt::CanonicalTypeId::real64, "127.0", false},
+      dt::CanonicalTypeId::int8, dt::DatatypeCastContext::explicit_cast);
+  Check(!real64_input.ok() &&
+            real64_input.value.type_id == dt::CanonicalTypeId::unknown &&
+            real64_input.value.encoded_value.empty() &&
+            dt::ClassifyDatatypeCast(dt::CanonicalTypeId::real64,
+                                     dt::CanonicalTypeId::int8) ==
+                dt::DatatypeCastCategory::forbidden,
+        "real64-to-int8 decimal-text conversion refuses");
   const auto assigned_numeric = Cast(
       {dt::CanonicalTypeId::decimal, "12", false},
       dt::CanonicalTypeId::int8, dt::DatatypeCastContext::assignment);

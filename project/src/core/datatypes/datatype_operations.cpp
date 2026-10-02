@@ -333,11 +333,13 @@ bool DescriptorHasDomainBinding(
 bool IsUnresolvedRealSemantics(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::bfloat16 ||
       type_id == CanonicalTypeId::real16 ||
-      type_id == CanonicalTypeId::real32;
+      type_id == CanonicalTypeId::real32 ||
+      type_id == CanonicalTypeId::real64;
 }
 
 std::size_t UnresolvedRealCarrierByteWidth(
     CanonicalTypeId type_id) noexcept {
+  if (type_id == CanonicalTypeId::real64) return 8u;
   return type_id == CanonicalTypeId::real32 ? 4u : 2u;
 }
 
@@ -347,7 +349,7 @@ CanonicalTypeId SelectUnresolvedRealType(
     CanonicalTypeId third = CanonicalTypeId::unknown) noexcept {
   // Preserve the established REAL16-before-BFLOAT16 diagnostic selection when
   // malformed requests mention more than one unresolved real family. REAL32
-  // is appended without changing that existing ordering.
+  // and REAL64 are appended without changing that existing ordering.
   for (const auto candidate : {first, second, third}) {
     if (candidate == CanonicalTypeId::real16) {
       return CanonicalTypeId::real16;
@@ -363,15 +365,22 @@ CanonicalTypeId SelectUnresolvedRealType(
       return CanonicalTypeId::real32;
     }
   }
+  for (const auto candidate : {first, second, third}) {
+    if (candidate == CanonicalTypeId::real64) {
+      return CanonicalTypeId::real64;
+    }
+  }
   return CanonicalTypeId::unknown;
 }
 
 const char* UnresolvedRealDetail(CanonicalTypeId type_id,
                                  const char* bfloat16_detail,
                                  const char* real16_detail,
-                                 const char* real32_detail) noexcept {
+                                 const char* real32_detail,
+                                 const char* real64_detail) noexcept {
   if (type_id == CanonicalTypeId::real16) return real16_detail;
   if (type_id == CanonicalTypeId::real32) return real32_detail;
+  if (type_id == CanonicalTypeId::real64) return real64_detail;
   return bfloat16_detail;
 }
 
@@ -402,10 +411,10 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
       !ExecutionDescriptorValidForType(value.descriptor, value.type_id)) {
     return false;
   }
-  // Core fixes exact structural carriers for BFLOAT16, REAL16, and REAL32
-  // without completing their scalar semantic policies. Keep PRESENT values out of
-  // DatatypeOperationValue until those policies exist; typed NULL remains
-  // governed by the descriptor/null-state branch above.
+  // Core fixes exact structural carriers for BFLOAT16, REAL16, REAL32, and
+  // REAL64 without completing their scalar semantic policies. Keep PRESENT
+  // values out of DatatypeOperationValue until those policies exist; typed
+  // NULL remains governed by the descriptor/null-state branch above.
   if (IsUnresolvedRealSemantics(value.type_id)) return false;
   if (value.type_id == CanonicalTypeId::uuid)
     return value.encoded_value.size() == 16;
@@ -2253,6 +2262,30 @@ bool DecodeReal32CarrierBitsV1(std::string_view carrier_bytes,
   return true;
 }
 
+bool EncodeReal64CarrierBitsV1(std::uint64_t raw_bits,
+                               std::string* carrier_bytes) {
+  if (carrier_bytes == nullptr) return false;
+  std::string staged(8, '\0');
+  for (std::size_t index = 0; index < 8; ++index) {
+    staged[index] = static_cast<char>((raw_bits >> (8u * index)) & 0xffu);
+  }
+  *carrier_bytes = std::move(staged);
+  return true;
+}
+
+bool DecodeReal64CarrierBitsV1(std::string_view carrier_bytes,
+                               std::uint64_t* raw_bits) {
+  if (raw_bits == nullptr || carrier_bytes.size() != 8) return false;
+  std::uint64_t staged = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    staged |= static_cast<std::uint64_t>(
+                  static_cast<unsigned char>(carrier_bytes[index]))
+        << (8u * index);
+  }
+  *raw_bits = staged;
+  return true;
+}
+
 bool EncodeCanonicalInt32Value(std::int64_t value,
                                std::string* canonical_bytes) {
   if (canonical_bytes == nullptr ||
@@ -2546,7 +2579,8 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
     return DatatypeCastCategory::forbidden;
   }
   // Contextual NULL binding was admitted above. No PRESENT cast pair touching
-  // BFLOAT16, REAL16, or REAL32, including identity, has semantic authority.
+  // BFLOAT16, REAL16, REAL32, or REAL64, including identity, has semantic
+  // authority.
   if (IsUnresolvedRealSemantics(source_type_id) ||
       IsUnresolvedRealSemantics(target_type_id)) {
     return DatatypeCastCategory::forbidden;
@@ -2708,7 +2742,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::uint128 ||
        request.value.type_id == CanonicalTypeId::bfloat16 ||
        request.value.type_id == CanonicalTypeId::real16 ||
-       request.value.type_id == CanonicalTypeId::real32) &&
+       request.value.type_id == CanonicalTypeId::real32 ||
+       request.value.type_id == CanonicalTypeId::real64) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
@@ -2737,7 +2772,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
             rejected_type,
             "bfloat16_present_cast_policy_unresolved",
             "real16_present_cast_policy_unresolved",
-            "real32_present_cast_policy_unresolved"));
+            "real32_present_cast_policy_unresolved",
+            "real64_present_cast_policy_unresolved"));
   }
   if (!source_is_contextual_null &&
       !CanonicalOperationValueValid(request.value)) {
@@ -3094,11 +3130,13 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
         request.value.type_id == CanonicalTypeId::real16;
     const bool real32_value =
         request.value.type_id == CanonicalTypeId::real32;
+    const bool real64_value =
+        request.value.type_id == CanonicalTypeId::real64;
     const bool descriptor_or_null_state_failure =
         request.value.type_id == CanonicalTypeId::unknown ||
         request.value.type_id == CanonicalTypeId::null_type ||
         request.value.is_null ||
-        bfloat16_value || real16_value || real32_value;
+        bfloat16_value || real16_value || real32_value || real64_value;
     const char* diagnostic_code = descriptor_or_null_state_failure
         ? CanonicalOperationValueDiagnosticCode(
               request.value, "SB_DATATYPE_EXTRACT_REJECTED")
@@ -3119,6 +3157,11 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
                            "DATATYPE.DESCRIPTOR.INVALID"
                        ? "real32_extract_descriptor_invalid"
                        : "real32_extract_policy_unresolved")
+            : real64_value
+                ? (std::string_view(diagnostic_code) ==
+                           "DATATYPE.DESCRIPTOR.INVALID"
+                       ? "real64_extract_descriptor_invalid"
+                       : "real64_extract_policy_unresolved")
             : request.value.is_null ? "null_or_descriptor_state_invalid"
                                     : "canonical_value_invalid",
         diagnostic_code);
@@ -3128,7 +3171,8 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
         request.value.type_id,
         "bfloat16_extract_policy_unresolved",
         "real16_extract_policy_unresolved",
-        "real32_extract_policy_unresolved"));
+        "real32_extract_policy_unresolved",
+        "real64_extract_policy_unresolved"));
   }
   DatatypeExtractResult result;
   result.status = OkStatus();
@@ -3263,7 +3307,8 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
         descriptor.element_type_id,
         "bfloat16_set_semantics_policy_unresolved",
         "real16_set_semantics_policy_unresolved",
-        "real32_set_semantics_policy_unresolved"));
+        "real32_set_semantics_policy_unresolved",
+        "real64_set_semantics_policy_unresolved"));
   }
   std::vector<std::string> encoded_items;
   std::set<std::string> unique_items;
@@ -3276,6 +3321,8 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                   ? "real16_set_element_policy_unresolved"
                   : value.type_id == CanonicalTypeId::real32 && !value.is_null
                       ? "real32_set_element_policy_unresolved"
+                  : value.type_id == CanonicalTypeId::real64 && !value.is_null
+                      ? "real64_set_element_policy_unresolved"
                   : "set_element_value_invalid";
       return SetFailure(failure_detail,
                         CanonicalOperationValueDiagnosticCode(
@@ -3400,7 +3447,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
         request.descriptor.element_type_id,
         "bfloat16_set_semantics_policy_unresolved",
         "real16_set_semantics_policy_unresolved",
-        "real32_set_semantics_policy_unresolved"));
+        "real32_set_semantics_policy_unresolved",
+        "real64_set_semantics_policy_unresolved"));
   }
   DatatypeSetOperationResult result;
   result.status = OkStatus();
@@ -3504,7 +3552,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
                                rejected_type,
                                "bfloat16_operand_descriptor_invalid",
                                "real16_operand_descriptor_invalid",
-                               "real32_operand_descriptor_invalid"),
+                               "real32_operand_descriptor_invalid",
+                               "real64_operand_descriptor_invalid"),
                            "DATATYPE.DESCRIPTOR.INVALID");
   }
   if (request.operation != DatatypeNumericOperationKind::canonicalize &&
@@ -3516,7 +3565,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
         request.left.type_id,
         "bfloat16_operand_descriptor_mismatch",
         "real16_operand_descriptor_mismatch",
-        "real32_operand_descriptor_mismatch"),
+        "real32_operand_descriptor_mismatch",
+        "real64_operand_descriptor_mismatch"),
                            "DATATYPE.DESCRIPTOR.INVALID");
   }
 
@@ -3556,7 +3606,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
                   invalid_value.type_id,
                   "bfloat16_numeric_policy_unresolved",
                   "real16_numeric_policy_unresolved",
-                  "real32_numeric_policy_unresolved")
+                  "real32_numeric_policy_unresolved",
+                  "real64_numeric_policy_unresolved")
             : "numeric_argument_value_invalid",
         malformed_128_bit_payload
             ? "NUMERIC.ENCODING.NONCANONICAL"
@@ -3582,7 +3633,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
         rejected_type,
         "bfloat16_numeric_policy_unresolved",
         "real16_numeric_policy_unresolved",
-        "real32_numeric_policy_unresolved"));
+        "real32_numeric_policy_unresolved",
+        "real64_numeric_policy_unresolved"));
   }
   if (IsCanonical128Integer(request.type_id) &&
       request.operation == DatatypeNumericOperationKind::compare &&
@@ -3828,7 +3880,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
             rejected_type,
             "bfloat16_operand_descriptor_invalid_or_mismatch",
             "real16_operand_descriptor_invalid_or_mismatch",
-            "real32_operand_descriptor_invalid_or_mismatch"));
+            "real32_operand_descriptor_invalid_or_mismatch",
+            "real64_operand_descriptor_invalid_or_mismatch"));
     return result;
   }
   if (!CanonicalOperationValueValid(request.left) || !CanonicalOperationValueValid(request.right)) {
@@ -3847,7 +3900,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                            request.right.type_id),
                   "bfloat16_comparison_policy_unresolved",
                   "real16_comparison_policy_unresolved",
-                  "real32_comparison_policy_unresolved")
+                  "real32_comparison_policy_unresolved",
+                  "real64_comparison_policy_unresolved")
             : "canonical_value_encoding_invalid");
     return result;
   }
@@ -3862,7 +3916,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                      request.right.type_id),
             "bfloat16_comparison_policy_unresolved",
             "real16_comparison_policy_unresolved",
-            "real32_comparison_policy_unresolved"));
+            "real32_comparison_policy_unresolved",
+            "real64_comparison_policy_unresolved"));
     return result;
   }
   const bool strict_binary_descriptor_type =
@@ -4333,7 +4388,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
                                 value.type_id,
                                 "bfloat16_hash_policy_unresolved",
                                 "real16_hash_policy_unresolved",
-                                "real32_hash_policy_unresolved")
+                                "real32_hash_policy_unresolved",
+                                "real64_hash_policy_unresolved")
                           : "canonical_value_encoding_invalid";
     return false;
   }
@@ -4342,7 +4398,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
         value.type_id,
         "bfloat16_hash_policy_unresolved",
         "real16_hash_policy_unresolved",
-        "real32_hash_policy_unresolved");
+        "real32_hash_policy_unresolved",
+        "real64_hash_policy_unresolved");
     return false;
   }
   if (value.type_id == CanonicalTypeId::int16 ||
@@ -4435,7 +4492,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
                   request.value.type_id,
                   "bfloat16_sort_key_policy_unresolved",
                   "real16_sort_key_policy_unresolved",
-                  "real32_sort_key_policy_unresolved")
+                  "real32_sort_key_policy_unresolved",
+                  "real64_sort_key_policy_unresolved")
             : "canonical_value_encoding_invalid");
     return result;
   }
@@ -4448,7 +4506,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             request.value.type_id,
             "bfloat16_sort_key_policy_unresolved",
             "real16_sort_key_policy_unresolved",
-            "real32_sort_key_policy_unresolved"));
+            "real32_sort_key_policy_unresolved",
+            "real64_sort_key_policy_unresolved"));
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -4687,7 +4746,8 @@ DatatypeSerializationResult SerializeDatatypeValue(
                   request.value.type_id,
                   "bfloat16_present_value_policy_unresolved",
                   "real16_present_value_policy_unresolved",
-                  "real32_present_value_policy_unresolved")
+                  "real32_present_value_policy_unresolved",
+                  "real64_present_value_policy_unresolved")
             : "canonical_value_encoding_invalid");
     return result;
   }
@@ -4946,7 +5006,8 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
                   staged.type_id,
                   "bfloat16_present_value_policy_unresolved",
                   "real16_present_value_policy_unresolved",
-                  "real32_present_value_policy_unresolved")
+                  "real32_present_value_policy_unresolved",
+                  "real64_present_value_policy_unresolved")
             : "canonical_value_encoding_invalid");
     return result;
   }
@@ -4976,7 +5037,8 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
                       request.value.type_id,
                       "bfloat16_display_policy_unresolved",
                       "real16_display_policy_unresolved",
-                      "real32_display_policy_unresolved")
+                      "real32_display_policy_unresolved",
+                      "real64_display_policy_unresolved")
                 : "canonical_value_encoding_invalid");
     return result;
   }
@@ -4989,7 +5051,8 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
             request.value.type_id,
             "bfloat16_display_policy_unresolved",
             "real16_display_policy_unresolved",
-            "real32_display_policy_unresolved"));
+            "real32_display_policy_unresolved",
+            "real64_display_policy_unresolved"));
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);

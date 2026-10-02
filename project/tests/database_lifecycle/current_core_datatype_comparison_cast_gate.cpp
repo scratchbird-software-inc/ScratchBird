@@ -37,6 +37,17 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
+std::string DiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* value = argument.text();
+      return value == nullptr ? std::string{} : *value;
+    }
+  }
+  return {};
+}
+
 scratchbird::engine::ExecutionTypeDescriptor Descriptor(
     dt::CanonicalTypeId type_id) {
   static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
@@ -447,6 +458,7 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
 
   cast.value = Value(dt::CanonicalTypeId::real128, "1.25");
   cast.target_type_id = dt::CanonicalTypeId::real64;
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::real64);
   cast.explicit_cast = false;
   const auto silent_downgrade = dt::CastDatatypeValue(cast);
   Require(!silent_downgrade.ok(),
@@ -454,6 +466,12 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
   Require(silent_downgrade.diagnostic.diagnostic_code ==
               "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 silent downgrade diagnostic mismatch");
+  Require(DiagnosticDetail(silent_downgrade.diagnostic) ==
+              "real64_present_cast_policy_unresolved",
+          "MDF-014 silent downgrade refusal detail mismatch");
+  Require(silent_downgrade.value.type_id == dt::CanonicalTypeId::unknown &&
+              silent_downgrade.value.encoded_value.empty(),
+          "MDF-014 silent downgrade returned a value");
 }
 
 void TestNonScalarOperatorCastProof() {
