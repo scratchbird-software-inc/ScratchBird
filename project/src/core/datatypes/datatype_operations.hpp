@@ -355,6 +355,14 @@ bool EncodeReal16CarrierBitsV1(std::uint16_t raw_bits,
                                std::string* carrier_bytes);
 bool DecodeReal16CarrierBitsV1(std::string_view carrier_bytes,
                                std::uint16_t* raw_bits);
+// Structural REAL32 carrier bridge for codec generation 1. The four bytes
+// preserve opaque raw bits in little-endian order. These helpers do not admit
+// a DatatypeOperationValue or define any numeric, canonical-value, or IEEE
+// policy.
+bool EncodeReal32CarrierBitsV1(std::uint32_t raw_bits,
+                               std::string* carrier_bytes);
+bool DecodeReal32CarrierBitsV1(std::string_view carrier_bytes,
+                               std::uint32_t* raw_bits);
 // Canonical INT32 value boundary. Present values are exactly four
 // little-endian two's-complement bytes. This bridge is mathematical and does
 // not define a text, parser, display, or cast policy.
