@@ -326,6 +326,72 @@ void Publication() {
 }
 #if defined(SB_MUTEX_NATIVE_FAULT_GATE)
 void NativeBoundaries() {
+  Run([](auto& left,auto& domain) {
+    c::MutexLatchOwner right(domain); auto d=Descriptor(); d.primitive_id=Id(21); d.generation=8;
+    Check(right.Initialize(d,{4,8},Hazard(40))==S::ok,"second real retained latch published");
+    auto observe_left=Operation(left,41,97); c::MutexLatchOperation observe_right;
+    Check(right.AcquireOperation(Id(21),8,Hazard(42,97),observe_right)==S::ok,"second actual observation guard");
+    std::counting_semaphore<2> ready(0), proceed(0); Park a,b; std::stop_source stop;
+    auto run=[&](bool reversed) {
+      const unsigned task=reversed?98:99, base=reversed?50:60;
+      auto first_request=Request(base,task), second_request=Request(base+1,task);
+      auto& first=reversed?right:left; auto& second=reversed?left:right;
+      if (reversed) { first_request.primitive_id=Id(21); first_request.generation=8; }
+      else { second_request.primitive_id=Id(21); second_request.generation=8; }
+      c::MutexLatchOperation first_op,second_op;
+      Check(first.AcquireOperation(first_request.primitive_id,first_request.generation,Hazard(base+2,task),first_op)==S::ok &&
+            second.AcquireOperation(second_request.primitive_id,second_request.generation,Hazard(base+3,task),second_op)==S::ok,
+            "cycle operations retain both actual backing objects");
+      c::MutexLatchGrant holder,waiting;
+      Check(first_op.Acquire(first_request,Hazard(base+4,task),holder,{}, {},true).code==C::acquired,"retained cycle actual grant");
+      ready.release(); proceed.acquire(); park=reversed?&b:&a;
+      Check(second_op.Acquire(second_request,Hazard(base+5,task),waiting,{},stop.get_token()).code==C::cancelled,
+            "retained cycle wait ends through real cooperative cancellation");
+      Check(!waiting && holder.Release(first_request).code==C::released,"retained cycle owner releases only its own grant");
+    };
+    std::thread one([&]{run(false);}),two([&]{run(true);});
+    Check(ready.try_acquire_for(5s) && ready.try_acquire_for(5s),"both retained holders ready"); proceed.release(2);
+    Check(a.entered.try_acquire_for(5s) && b.entered.try_acquire_for(5s),"actual retained cycle parked");
+    using N=scratchbird::core::platform::CheckedFifoMutex; using R=N::WaitSetResult;
+    std::array<c::MutexLatchOperation*,2> operations{&observe_right,&observe_left};
+    std::array<N::WaitSetEntry,2> frames;
+    std::array<c::MutexLatchWaitSetObservation,2> observations;
+    std::array<N::WaiterObservation,2> waits;
+    const auto readers=domain.Snapshot().readers;
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,waits,2)==R::captured,
+          "capture actual retained two-latch set");
+    Check(observations[0].primitive_id==Id(21) && observations[0].generation==8 &&
+          observations[1].primitive_id==Id(20) && observations[1].generation==7 &&
+          observations[0].wait.owner==Id(98) && observations[1].wait.owner==Id(99) &&
+          waits[observations[0].offset].owner==Id(99) && waits[observations[1].offset].owner==Id(98),
+          "retained capture binds exact binary primitive generations to real cycle edges");
+    Check(!frames[0].mutex && !frames[1].mutex && !frames[0].lock.owns_lock() &&
+          !frames[1].lock.owns_lock() && domain.Snapshot().readers==readers,
+          "capture clears borrowed native pointers and preserves real reader count");
+    waits[0].owner=Id(88);
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,std::span(waits).first(1),2)==R::insufficient_capacity &&
+          !observations[0].wait.complete && !observations[1].wait.complete && waits[0].owner==Id(88),
+          "retained capacity refusal preserves full identity association without partial edges");
+    operations[1]=operations[0];
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,waits,2)==R::invalid,
+          "duplicate retained identity rejected before capture");
+    operations[1]=nullptr;
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,waits,2)==R::invalid,
+          "absent retained operation rejected before capture");
+    operations[1]=&observe_left;
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,std::span(observations).first(1),waits,2)==R::exhausted,
+          "retained output metadata must cover the admitted set");
+    stop.request_stop(); one.join(); two.join();
+    Check(left.Close(Id(24)) && right.Close(Id(25)) && left.FenceAdmission()==S::ok && right.FenceAdmission()==S::ok,
+          "both observed latches fenced through real retirement");
+    Check(domain.Collect()==S::ok && domain.Snapshot().reclamation_blocked_objects==2,
+          "real observation guards retain both retired objects");
+    Check(c::MutexLatchOperation::SnapshotWaitSet(operations,frames,observations,{},2)==R::captured &&
+          observations[0].wait.state.closed && observations[1].wait.state.closed,
+          "retained capture stays valid after fence without permitting new grants");
+    Check(right.Drain(c::MutexClock::now()).code==C::timed_out,"observation guard is not a drained runtime");
+    observe_left.Reset(); observe_right.Reset(); Finish(right);
+  });
   for (unsigned terminal=0;terminal<3;++terminal) Run([terminal](auto& owner,auto& domain) {
     auto op=Operation(owner,31); c::MutexLatchGrant holder;
     Check(op.Acquire(Request(),Hazard(32),holder,{}, {},true).code==C::acquired,"native boundary holder");

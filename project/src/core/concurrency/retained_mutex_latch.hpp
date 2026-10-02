@@ -66,6 +66,12 @@ struct MutexLatchWaitSnapshot {
   MutexLatchSnapshot latch;
   platform::CheckedFifoMutex::WaitObservation wait;
 };
+struct MutexLatchWaitSetObservation {
+  MutexUuid primitive_id{};
+  std::uint64_t generation = 0;
+  platform::CheckedFifoMutex::WaitObservation wait;
+  std::size_t offset = 0;
+};
 
 namespace detail {
 inline bool MutexHazardValid(const memory::SafeRetirementHazard& hazard) noexcept {
@@ -173,6 +179,50 @@ class MutexLatchGrant {
 class MutexLatchOwner;
 class MutexLatchOperation {
  public:
+  // All operations must remain alive and must not be moved/reset concurrently.
+  // Their existing real guards retain every native mutex throughout capture.
+  // Caller-owned frames/output are bounded borrowed scratch, not a registry or
+  // a resource grant. Binary descriptor association is produced here, never
+  // supplied independently of the retained object. No raw native pointer remains
+  // in a used frame after return. This still grants no task-phase authority.
+  static platform::CheckedFifoMutex::WaitSetResult SnapshotWaitSet(
+      std::span<MutexLatchOperation* const> operations,
+      std::span<platform::CheckedFifoMutex::WaitSetEntry> frames,
+      std::span<MutexLatchWaitSetObservation> observations,
+      std::span<platform::CheckedFifoMutex::WaiterObservation> waiters,
+      std::uint32_t max_latches) {
+    using N = platform::CheckedFifoMutex;
+    using R = N::WaitSetResult;
+    if (!max_latches) return R::invalid;
+    if (operations.size()>max_latches || frames.size()<operations.size() ||
+        observations.size()<operations.size()) return R::exhausted;
+    for (std::size_t i=0;i<operations.size();++i) {
+      if (!operations[i] || !operations[i]->state_ || frames[i].lock.owns_lock())
+        return R::invalid;
+      const auto& current=operations[i]->state_->descriptor;
+      for (std::size_t j=0;j<i;++j) {
+        const auto& prior=operations[j]->state_->descriptor;
+        if (current.primitive_id==prior.primitive_id && current.generation==prior.generation)
+          return R::invalid;
+      }
+    }
+    const auto used=frames.first(operations.size());
+    struct Clear {
+      std::span<N::WaitSetEntry> frames;
+      ~Clear() { for (auto& frame:frames) frame.mutex=nullptr; }
+    } clear{used};
+    for (std::size_t i=0;i<operations.size();++i)
+      used[i].mutex=&operations[i]->state_->native;
+    const auto result=N::ObserveWaitSet(used,waiters,max_latches);
+    if (result==R::captured || result==R::insufficient_capacity)
+      for (std::size_t i=0;i<operations.size();++i) {
+        // Identity/generation are immutable for this retained object's lifetime;
+        // mutable lifecycle fields are deliberately not copied outside their lock.
+        const auto& d=operations[i]->state_->descriptor;
+        observations[i]={d.primitive_id,d.generation,used[i].observation,used[i].offset};
+      }
+    return result;
+  }
   MutexLatchOperation() = default;
   ~MutexLatchOperation() { Reset(); }
   MutexLatchOperation(const MutexLatchOperation&) = delete;
