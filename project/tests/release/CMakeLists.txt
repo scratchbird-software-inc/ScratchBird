@@ -660,6 +660,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 180 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   add_executable(native_checkpoint_decoded_memory_gate native_checkpoint_decoded_memory_gate.cpp)
   add_executable(native_inventory_memory_gate native_inventory_memory_gate.cpp)
+  add_executable(native_system_state_memory_gate native_system_state_memory_gate.cpp)
+  target_compile_features(native_system_state_memory_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_system_state_memory_gate PRIVATE sb_storage_database)
+  target_link_options(native_system_state_memory_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=EVP_Digest
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME native_system_state_memory_gate COMMAND native_system_state_memory_gate)
+  set_tests_properties(native_system_state_memory_gate PROPERTIES
+    TIMEOUT 180 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   target_compile_features(native_inventory_memory_gate PRIVATE cxx_std_23)
   target_link_libraries(native_inventory_memory_gate PRIVATE sb_storage_database)
   target_link_options(native_inventory_memory_gate PRIVATE

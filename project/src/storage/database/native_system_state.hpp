@@ -5,6 +5,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 namespace scratchbird::storage::database {
 using scratchbird::core::platform::Uuid;
@@ -55,6 +56,13 @@ struct NativeSystemStateResult {
 };
 NativeSystemStateResult EncodeNativeSystemState(const NativeSystemState&) noexcept;
 NativeSystemStateResult DecodeNativeSystemState(const std::vector<byte>&) noexcept;
+struct NativeSystemStateValueResult {
+  NativeSystemStateError error=NativeSystemStateError::invalid_family;
+  std::optional<NativeSystemState> state;
+  bool ok() const noexcept {return error==NativeSystemStateError::none&&state.has_value();}
+};
+// Fixed native values only; does not retain input or certify current selection.
+NativeSystemStateValueResult DecodeNativeSystemStateValue(std::span<const byte>) noexcept;
 // Actual caller-owned device and exact reference, not startup/recovery admission.
 NativeSystemStateResult ReadNativeSystemStateFromOpenDevice(
     disk::FileDevice&,const Uuid& database_uuid,const disk::FilespaceRootReference&) noexcept;
