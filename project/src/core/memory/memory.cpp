@@ -9,6 +9,7 @@
 #include "memory.hpp"
 
 #include "metric_producer.hpp"
+#include "reservation_backed_memory_resource.hpp"
 #include "sharded_memory_accounting_ledger.hpp"
 
 #include <algorithm>
@@ -2063,16 +2064,21 @@ ArenaAllocator::ArenaAllocator(BoundedAllocator* allocator, MemoryTag tag)
   tag_.lifetime = MemoryLifetime::arena;
 }
 
+ArenaAllocator::ArenaAllocator(std::shared_ptr<ReservationBackedMemoryResource> resource)
+    : resource_(std::move(resource)) {}
+
 ArenaAllocator::ArenaAllocator(ArenaAllocator&& other) noexcept
-    : allocator_(other.allocator_), tag_(std::move(other.tag_)), chunks_(std::move(other.chunks_)) {
+    : allocator_(other.allocator_), resource_(std::move(other.resource_)),
+      tag_(std::move(other.tag_)), chunks_(std::move(other.chunks_)) {
   other.allocator_ = nullptr;
   other.chunks_.clear();
 }
 
 ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
   if (this != &other) {
-    if (allocator_) for (auto& chunk : chunks_) (void)allocator_->DeallocateNoAlloc(chunk.pointer);
+    (void)ResetNoAlloc();
     allocator_ = other.allocator_;
+    resource_ = std::move(other.resource_);
     tag_ = std::move(other.tag_);
     chunks_ = std::move(other.chunks_);
     other.allocator_ = nullptr;
@@ -2082,7 +2088,7 @@ ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
 }
 
 ArenaAllocator::~ArenaAllocator() {
-  if (allocator_) for (auto& chunk : chunks_) (void)allocator_->DeallocateNoAlloc(chunk.pointer);
+  (void)ResetNoAlloc();
 }
 
 namespace {
@@ -2115,7 +2121,7 @@ ArenaAllocationPlan ArenaAllocator::PlanAllocation(usize bytes, usize alignment,
                                                    usize growth_limit_bytes) const noexcept {
   ArenaAllocationPlan plan;
   plan.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
-  if (allocator_ == nullptr || bytes == 0) return plan;
+  if ((!allocator_ && !resource_) || bytes == 0) return plan;
   if (alignment != 0 && !IsPowerOfTwo(alignment)) return plan;
   if (alignment == 0 || alignment < kDefaultAlignment) alignment = kDefaultAlignment;
   plan.alignment = alignment;
@@ -2172,13 +2178,14 @@ AllocationResult ArenaAllocator::AllocateWithinCapacity(usize bytes, usize align
     result.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::memory};
     return result;
   }
-  chunks_.reserve(chunks_.size() + 1);
-  MemoryTag tag = tag_;
-  tag.lifetime = MemoryLifetime::arena;
-  auto chunk = allocator_->Allocate(plan.growth_bytes, alignment, std::move(tag));
-  if (!chunk.ok()) return chunk;
-  // All fallible bookkeeping precedes the real backing allocation.
-  chunks_.push_back({chunk.pointer, chunk.bytes, chunk.alignment, bytes});
+  auto backing = ReserveBacking(plan.growth_bytes, alignment);
+  if (!backing.ok()) {
+    result.status = backing.status;
+    result.diagnostic = std::move(backing.diagnostic);
+    return result;
+  }
+  auto& chunk = chunks_.back();
+  chunk.used = bytes;
   result.pointer = chunk.pointer;
   result.bytes = bytes;
   result.alignment = alignment;
@@ -2189,7 +2196,50 @@ AllocationResult ArenaAllocator::AllocateWithinCapacity(usize bytes, usize align
   return result;
 }
 
+ArenaBackingResult ArenaAllocator::ReserveBacking(usize bytes, usize alignment) try {
+  ArenaBackingResult result;
+  result.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
+  if ((!allocator_ && !resource_) || !bytes || (alignment && !IsPowerOfTwo(alignment))) return result;
+  if (alignment < kDefaultAlignment) alignment = kDefaultAlignment;
+  if (chunks_.size() == chunks_.max_size() ||
+      bytes > std::numeric_limits<u64>::max() - CapacitySnapshot().retained_bytes) {
+    result.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::memory};
+    return result;
+  }
+  chunks_.reserve(chunks_.size() + 1);
+  auto backing = resource_ ? resource_->Allocate({bytes, alignment, {}})
+                           : allocator_->Allocate(bytes, alignment, tag_);
+  result.status = backing.status;
+  result.diagnostic = std::move(backing.diagnostic);
+  if (!backing.ok()) return result;
+  // No fallible work remains after the real provider publishes its allocation.
+  chunks_.push_back({backing.pointer, backing.bytes, backing.alignment, 0});
+  result.bytes = backing.bytes;
+  result.alignment = backing.alignment;
+  return result;
+} catch (const std::bad_alloc&) {
+  ArenaBackingResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
+} catch (const std::length_error&) {
+  ArenaBackingResult result;
+  result.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::memory};
+  return result;
+}
+
+Status ArenaAllocator::ResetNoAlloc() {
+  while (!chunks_.empty()) {
+    const auto& chunk = chunks_.back();
+    const auto status = resource_ ? resource_->DeallocateNoAlloc(chunk.pointer, chunk.bytes, chunk.alignment)
+                                 : allocator_->DeallocateNoAlloc(chunk.pointer);
+    if (!status.ok()) return status;
+    chunks_.pop_back();
+  }
+  return OkStatus();
+}
+
 DeallocationResult ArenaAllocator::Reset() try {
+  if (resource_) return {ResetNoAlloc(), {}};
   if (allocator_ == nullptr) return {OkStatus(), {}};
   while (!chunks_.empty()) {
     auto result = allocator_->Deallocate(chunks_.back().pointer, tag_);
@@ -2202,6 +2252,7 @@ DeallocationResult ArenaAllocator::Reset() try {
 }
 
 MemoryAccountingSnapshot ArenaAllocator::Snapshot() const {
+  if (resource_) return resource_->request().memory_manager->Snapshot();
   if (allocator_ == nullptr) {
     return {};
   }

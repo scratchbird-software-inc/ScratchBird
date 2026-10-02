@@ -64,6 +64,38 @@ struct NativeStorageBufferResult {
   bool ok() const noexcept {return error==NativeStorageMemoryError::none&&bool(buffer);}
 };
 struct NativeStorageMemoryResult;
+class NativeStorageArena {
+ public:
+  NativeStorageArena() noexcept = default;
+  NativeStorageArena(const NativeStorageArena&)=delete;
+  NativeStorageArena& operator=(const NativeStorageArena&)=delete;
+  NativeStorageArena(NativeStorageArena&&) noexcept=default;
+  NativeStorageArena& operator=(NativeStorageArena&&) noexcept=default;
+  // This is a consumer of the shared allocator, never another governor. Once
+  // admitted, only existing backing can be consumed; no callbacks under fences.
+  core::memory::AllocationResult Allocate(core::platform::usize bytes,core::platform::usize alignment=0) {
+    if(arena_)return arena_->AllocateWithinCapacity(bytes,alignment,0);
+    core::memory::AllocationResult out;
+    out.status={core::platform::StatusCode::memory_invalid_request,
+      core::platform::Severity::error,core::platform::Subsystem::memory};return out;
+  }
+  core::memory::ArenaCapacitySnapshot Snapshot() const noexcept {
+    return arena_?arena_->CapacitySnapshot():core::memory::ArenaCapacitySnapshot{};
+  }
+  const NativeStorageMemoryBinding& binding() const noexcept {return binding_;}
+  explicit operator bool() const noexcept {return bool(arena_);}
+ private:
+  NativeStorageMemoryBinding binding_;
+  std::unique_ptr<core::memory::ArenaAllocator> arena_;
+  friend class NativeStorageMemory;
+};
+struct NativeStorageArenaResult {
+  NativeStorageMemoryError error=NativeStorageMemoryError::invalid_grant;
+  core::memory::ArenaBackingResult backing{{core::platform::StatusCode::memory_invalid_request,
+    core::platform::Severity::error,core::platform::Subsystem::memory}};
+  NativeStorageArena arena;
+  bool ok() const noexcept {return error==NativeStorageMemoryError::none&&bool(arena);}
+};
 class NativeStorageMemory {
  public:
   NativeStorageMemory() noexcept = default;
@@ -87,6 +119,23 @@ class NativeStorageMemory {
   const NativeStorageMemoryBinding& binding() const noexcept {return binding_;}
   core::memory::ReservationBackedMemoryResourceSnapshot Snapshot() const {
     return resource_?resource_->Snapshot():core::memory::ReservationBackedMemoryResourceSnapshot{};
+  }
+  // Bind every identity for this new consumer, then allocate real backing
+  // before any device fence. The stable owning arena may outlive this workspace.
+  NativeStorageArenaResult CreateArena(const NativeStorageMemoryBinding& expected,
+      core::platform::usize bytes,core::platform::usize alignment=0) noexcept {
+    NativeStorageArenaResult out;
+    try {
+      out.error=CheckBinding(expected);
+      if(out.error!=NativeStorageMemoryError::none)return out;
+      auto arena=std::make_unique<core::memory::ArenaAllocator>(resource_);
+      out.backing=arena->ReserveBacking(bytes,alignment);
+      if(!out.backing.ok()){out.error=NativeStorageMemoryError::resource_exhausted;return out;}
+      out.arena.binding_=binding_;out.arena.arena_=std::move(arena);
+      out.error=NativeStorageMemoryError::none;return out;
+    }catch(const std::bad_alloc&){out.error=NativeStorageMemoryError::resource_exhausted;
+      out.backing.status={core::platform::StatusCode::memory_allocation_failed,
+        core::platform::Severity::error,core::platform::Subsystem::memory};return out;}
   }
   NativeStorageBufferResult AllocatePage(const core::platform::Uuid& profile) noexcept {
     NativeStorageBufferResult out;

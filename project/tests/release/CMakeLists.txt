@@ -647,6 +647,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES
     TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   add_executable(native_storage_memory_buffer_gate native_storage_memory_buffer_gate.cpp)
+  add_executable(native_storage_memory_arena_gate native_storage_memory_arena_gate.cpp)
+  target_compile_features(native_storage_memory_arena_gate PRIVATE cxx_std_23)
+  target_include_directories(native_storage_memory_arena_gate PRIVATE ../../src/storage/database)
+  target_link_libraries(native_storage_memory_arena_gate PRIVATE sb_storage_disk sb_core_memory)
+  add_test(NAME native_storage_memory_arena_gate COMMAND native_storage_memory_arena_gate)
+  set_tests_properties(native_storage_memory_arena_gate PROPERTIES
+    TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   target_compile_features(native_storage_memory_buffer_gate PRIVATE cxx_std_23)
   target_include_directories(native_storage_memory_buffer_gate PRIVATE ../../src/storage/database)
   target_link_libraries(native_storage_memory_buffer_gate PRIVATE sb_storage_disk sb_core_memory)
