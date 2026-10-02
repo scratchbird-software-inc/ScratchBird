@@ -109,6 +109,28 @@ struct RuntimePermitAcquireResult {
 };
 struct RuntimePermitWaitResult {
   RuntimePermitAcquireResult admission;
+  bool registered = false;
+  std::uint64_t wait_duration_us = 0;
+  std::array<char, 96> uninterruptible_reason{};
+  std::uint8_t reason_size = 0;
+  std::string_view reason() const noexcept {
+    return {uninterruptible_reason.data(), reason_size};
+  }
+};
+// Fixed-size evidence from the actual selected instance. This is neither a
+// memory-retirement receipt nor a current policy/security admission receipt.
+struct RuntimePermitInstanceSnapshot {
+  RuntimePermitCode code = RuntimePermitCode::invalid_binding;
+  std::uint32_t capacity = 0;
+  std::uint32_t waiter_limit = 0;
+  std::uint32_t holders = 0;
+  std::uint32_t waiters = 0;
+  std::uint32_t wait_calls = 0;
+  bool closed = false;
+};
+struct RuntimePermitDrainResult {
+  RuntimePermitCode code = RuntimePermitCode::invalid_binding;
+  bool drained = false;
   std::uint64_t wait_duration_us = 0;
   std::array<char, 96> uninterruptible_reason{};
   std::uint8_t reason_size = 0;
