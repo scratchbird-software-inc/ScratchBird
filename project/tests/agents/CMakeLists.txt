@@ -10,6 +10,16 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
+  add_executable(checked_mode_latch_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/checked_mode_latch_gate.cpp")
+  target_compile_features(checked_mode_latch_gate PRIVATE cxx_std_20)
+  target_include_directories(checked_mode_latch_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/platform")
+  target_link_libraries(checked_mode_latch_gate PRIVATE Threads::Threads)
+  target_link_options(checked_mode_latch_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait)
+  add_test(NAME checked_mode_latch_gate COMMAND checked_mode_latch_gate)
+  set_tests_properties(checked_mode_latch_gate PROPERTIES
+    TIMEOUT 60 LABELS "concurrency;multiholder;platform;fault")
   add_executable(checked_fifo_mutex_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/checked_fifo_mutex_gate.cpp")
   target_compile_features(checked_fifo_mutex_gate PRIVATE cxx_std_20)
