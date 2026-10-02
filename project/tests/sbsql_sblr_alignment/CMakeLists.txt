@@ -10411,6 +10411,17 @@ set_tests_properties(sbsql_sblr_alignment_base_ip_address_canonical_value PROPER
   LABELS "datatype;base_ip_address;network_order_binary16;ipv4_mapped_prefix;null_state;persistence;component_regression;not_runtime_acceptance"
   TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_base_network_prefix_canonical_value
+  base_network_prefix_canonical_value_test.cpp)
+target_compile_features(sbsql_sblr_alignment_base_network_prefix_canonical_value PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_base_network_prefix_canonical_value PRIVATE
+  sb_core_datatypes sb_storage_disk)
+add_test(NAME sbsql_sblr_alignment_base_network_prefix_canonical_value
+  COMMAND sbsql_sblr_alignment_base_network_prefix_canonical_value)
+set_tests_properties(sbsql_sblr_alignment_base_network_prefix_canonical_value PROPERTIES
+  LABELS "datatype;base_network_prefix;byte_sequence_binary18;null_state;persistence;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 # Binary parameter hashing and cursor framing are component regressions. The
 # existing process tests retain the independent live execution/publication checks.
 add_executable(sbsql_sblr_alignment_parameter_slot_binary_hash
