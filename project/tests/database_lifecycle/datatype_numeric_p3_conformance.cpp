@@ -137,6 +137,28 @@ scratchbird::engine::ExecutionTypeDescriptor ExecutionDescriptor(
   return descriptor.descriptor;
 }
 
+dt::DatatypeOperationValue DecimalValue(std::string_view lexical) {
+  const auto encoded = numeric::EncodeExactDecimalLittleEndian(lexical);
+  Require(encoded.ok, "exact decimal fixture encoding failed");
+  auto value = Value(
+      dt::CanonicalTypeId::decimal,
+      std::string(reinterpret_cast<const char*>(encoded.canonical_bytes.data()),
+                  encoded.canonical_bytes.size()));
+  value.descriptor = ExecutionDescriptor(dt::CanonicalTypeId::decimal);
+  return value;
+}
+
+std::string DatatypeDiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* text = argument.text();
+      return text == nullptr ? std::string{} : *text;
+    }
+  }
+  return {};
+}
+
 void RequireMetricOk(const metrics::MetricValidationResult& result, std::string_view message) {
   if (!result.ok) {
     std::cerr << result.diagnostic_code << ":" << result.detail << '\n';
@@ -240,13 +262,20 @@ void TestDatatypeOperations(const api::EngineRequestContext& context) {
   dt::DatatypeNumericOperationRequest numeric_request;
   numeric_request.operation = dt::DatatypeNumericOperationKind::multiply;
   numeric_request.type_id = dt::CanonicalTypeId::decimal;
-  numeric_request.left = Value(dt::CanonicalTypeId::decimal, "12.50");
-  numeric_request.right = Value(dt::CanonicalTypeId::decimal, "2");
+  numeric_request.left = DecimalValue("12.50");
+  numeric_request.right = DecimalValue("2");
   numeric_request.context.precision = 38;
   numeric_request.context.scale = 2;
+  numeric_request.result_descriptor =
+      ExecutionDescriptor(dt::CanonicalTypeId::decimal);
   auto numeric_result = dt::ApplyNumericOperation(numeric_request);
-  Require(numeric_result.ok(), "datatype numeric operation failed");
-  Require(numeric_result.value.encoded_value == "25.00", "datatype numeric backend result mismatch");
+  Require(!numeric_result.ok() &&
+              numeric_result.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
+              DatatypeDiagnosticDetail(numeric_result.diagnostic) ==
+                  "decimal_numeric_policy_unresolved" &&
+              numeric_result.value.encoded_value.empty(),
+          "datatype decimal arithmetic did not fail at unresolved policy");
 
   dt::DatatypeCastRequest cast;
   cast.value = Value(dt::CanonicalTypeId::character, "170141183460469231731687303715884105727");

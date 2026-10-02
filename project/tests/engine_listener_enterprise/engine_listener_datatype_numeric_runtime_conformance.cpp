@@ -8,10 +8,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_descriptor.hpp"
 #include "datatype_operations.hpp"
 #include "domain_support/domain_store.hpp"
 #include "memory.hpp"
 #include "query/expression_api.hpp"
+#include "sbl_numeric.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -28,6 +31,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace dt = scratchbird::core::datatypes;
 namespace memory = scratchbird::core::memory;
+namespace numeric = scratchbird::libraries::sbl_numeric;
 namespace uuid = scratchbird::core::uuid;
 
 using scratchbird::core::platform::TypedUuid;
@@ -107,6 +111,46 @@ dt::DatatypeOperationValue Value(dt::CanonicalTypeId type_id, std::string value)
   return {type_id, std::move(value), false};
 }
 
+scratchbird::engine::ExecutionTypeDescriptor Descriptor(
+    dt::CanonicalTypeId type_id) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "listener datatype catalog authority unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "listener datatype descriptor authority unavailable");
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto built =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  Require(built.ok(), "listener execution descriptor build failed");
+  return built.descriptor;
+}
+
+dt::DatatypeOperationValue DecimalValue(std::string_view lexical) {
+  const auto encoded = numeric::EncodeExactDecimalLittleEndian(lexical);
+  Require(encoded.ok, "listener exact decimal fixture encoding failed");
+  auto value = Value(
+      dt::CanonicalTypeId::decimal,
+      std::string(reinterpret_cast<const char*>(encoded.canonical_bytes.data()),
+                  encoded.canonical_bytes.size()));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::decimal);
+  value.descriptor = descriptor;
+  return value;
+}
+
+std::string DatatypeDiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* text = argument.text();
+      return text == nullptr ? std::string{} : *text;
+    }
+  }
+  return {};
+}
+
 std::string SortKey(dt::CanonicalTypeId type_id, std::string value) {
   dt::DatatypeSortKeyRequest request;
   request.value = Value(type_id, std::move(value));
@@ -144,7 +188,16 @@ void RuntimeNumericProof() {
                  "340282366920938463463374607431768211455",
                  "340282366920938463463374607431768211454",
                  1);
-  RequireCompare(dt::CanonicalTypeId::decimal, "10", "2", 1);
+  const auto decimal_ten = DecimalValue("10");
+  const auto decimal_two = DecimalValue("2");
+  const auto decimal_compare =
+      dt::CompareDatatypeValues({decimal_ten, decimal_two});
+  Require(!decimal_compare.ok() &&
+              decimal_compare.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_COMPARISON_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_compare.diagnostic) ==
+                  "decimal_comparison_policy_unresolved",
+          "decimal comparison did not fail at unresolved policy");
   RequireCompare(dt::CanonicalTypeId::decimal_float, "4.50", "4.5", 0);
   RequireCompare(dt::CanonicalTypeId::real128, "1.500", "1.5", 0);
 
@@ -154,9 +207,18 @@ void RuntimeNumericProof() {
   Require(SortKey(dt::CanonicalTypeId::int128, "2") <
               SortKey(dt::CanonicalTypeId::int128, "10"),
           "int128 sort key used lexical ordering");
-  Require(SortKey(dt::CanonicalTypeId::decimal, "2") <
-              SortKey(dt::CanonicalTypeId::decimal, "10"),
-          "decimal sort key used lexical ordering");
+  const auto decimal_two_key = dt::MakeDatatypeSortKey({decimal_two});
+  const auto decimal_ten_key = dt::MakeDatatypeSortKey({decimal_ten});
+  Require(!decimal_two_key.ok() && !decimal_ten_key.ok() &&
+              decimal_two_key.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SORT_KEY_REJECTED" &&
+              decimal_ten_key.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SORT_KEY_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_two_key.diagnostic) ==
+                  "decimal_sort_key_policy_unresolved" &&
+              DatatypeDiagnosticDetail(decimal_ten_key.diagnostic) ==
+                  "decimal_sort_key_policy_unresolved",
+          "decimal sort key did not fail at unresolved policy");
   Require(SortKey(dt::CanonicalTypeId::decimal_float, "4.50") ==
               SortKey(dt::CanonicalTypeId::decimal_float, "4.5"),
           "decimal_float sort key did not collapse equivalent precision");
@@ -168,9 +230,14 @@ void RuntimeNumericProof() {
           "int128 hash did not use canonical numeric value");
 
   dt::DatatypeHashRequest invalid_hash;
-  invalid_hash.value = Value(dt::CanonicalTypeId::decimal, "not_numeric");
-  Require(!dt::HashDatatypeValue(invalid_hash).ok(),
-          "invalid decimal hash did not fail closed");
+  invalid_hash.value = DecimalValue("4.50");
+  const auto decimal_hash = dt::HashDatatypeValue(invalid_hash);
+  Require(!decimal_hash.ok() &&
+              decimal_hash.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_HASH_REJECTED" &&
+              DatatypeDiagnosticDetail(decimal_hash.diagnostic) ==
+                  "decimal_hash_policy_unresolved",
+          "decimal hash did not fail at unresolved policy");
 }
 
 memory::AllocationPolicy MemoryPolicy() {

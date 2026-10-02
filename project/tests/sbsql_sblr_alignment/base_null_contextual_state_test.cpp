@@ -13,6 +13,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
+#include "sbl_numeric.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -39,6 +41,7 @@ namespace disk = scratchbird::storage::disk;
 namespace engine = scratchbird::engine;
 namespace platform = scratchbird::core::platform;
 namespace fs = std::filesystem;
+namespace numeric_backend = scratchbird::libraries::sbl_numeric;
 
 namespace {
 
@@ -68,6 +71,17 @@ void CheckRejectedAs(const Result& result, const std::string& code,
   Check(result.diagnostic.diagnostic_code == code,
         message + " reported " + result.diagnostic.diagnostic_code +
             " instead of " + code);
+}
+
+std::string DiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* text = argument.text();
+      return text == nullptr ? std::string{} : *text;
+    }
+  }
+  return {};
 }
 
 platform::TypedUuid TypedObjectUuid(std::uint8_t seed) {
@@ -117,6 +131,21 @@ engine::ExecutionTypeDescriptor DescriptorFor(
   Check(built.ok(), std::string("build execution descriptor for ") +
                         dt::CanonicalTypeName(type_id));
   return built.descriptor;
+}
+
+dt::DatatypeOperationValue DecimalValue(
+    std::string_view lexical,
+    const engine::ExecutionTypeDescriptor& descriptor) {
+  const auto encoded =
+      numeric_backend::EncodeExactDecimalLittleEndian(lexical);
+  Check(encoded.ok, "exact decimal fixture encoding");
+  dt::DatatypeOperationValue value{
+      dt::CanonicalTypeId::decimal,
+      std::string(reinterpret_cast<const char*>(encoded.canonical_bytes.data()),
+                  encoded.canonical_bytes.size()),
+      false};
+  value.descriptor = descriptor;
+  return value;
 }
 
 bool EngineUuidEquals(const engine::Uuid& left,
@@ -433,7 +462,7 @@ void ExactDescriptorFidelityAndRefusal() {
   identity.target_descriptor =
       DescriptorFor(dt::CanonicalTypeId::decimal, 0x51u, true);
   CheckRejectedAs(dt::CastDatatypeValue(identity),
-                  "DATATYPE.CAST_FORBIDDEN",
+                  "DATATYPE.DESCRIPTOR.INVALID",
                   "identity cast across unequal exact descriptors");
 
   const auto int64_descriptor =
@@ -580,12 +609,13 @@ void BoundOperationsRetainConcreteTypeIds() {
   numeric.left = TypedNull(dt::CanonicalTypeId::decimal, decimal_descriptor);
   numeric.result_descriptor = decimal_descriptor;
   const auto numeric_result = dt::ApplyNumericOperation(numeric);
-  Check(numeric_result.ok(), "typed decimal NULL canonicalization failed");
-  Check(numeric_result.value.type_id == dt::CanonicalTypeId::decimal &&
-            numeric_result.value.is_null && numeric_result.value.encoded_value.empty(),
-        "numeric NULL result lost its declared decimal type");
-  Check(DescriptorEquals(numeric_result.value.descriptor, decimal_descriptor),
-        "numeric NULL result lost its declared descriptor");
+  Check(!numeric_result.ok() &&
+            numeric_result.diagnostic.diagnostic_code ==
+                "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
+            DiagnosticDetail(numeric_result.diagnostic) ==
+                "decimal_numeric_policy_unresolved" &&
+            numeric_result.value.encoded_value.empty(),
+        "typed decimal NULL canonicalization remained admitted without operation policy");
 
   numeric.left = TypedNull(dt::CanonicalTypeId::decimal, decimal_descriptor);
   numeric.left.encoded_value = "payload";
@@ -595,18 +625,18 @@ void BoundOperationsRetainConcreteTypeIds() {
 
   numeric.operation = dt::DatatypeNumericOperationKind::compare;
   numeric.left = TypedNull(dt::CanonicalTypeId::decimal, decimal_descriptor);
-  numeric.right = {dt::CanonicalTypeId::decimal, "1", false};
+  numeric.right = DecimalValue("1", decimal_descriptor);
   const auto boolean_descriptor =
       DescriptorFor(dt::CanonicalTypeId::boolean, 0x44u);
   numeric.result_descriptor = boolean_descriptor;
   const auto null_comparison = dt::ApplyNumericOperation(numeric);
-  Check(null_comparison.ok() &&
-            null_comparison.value.type_id == dt::CanonicalTypeId::boolean &&
-            null_comparison.value.is_null &&
-            null_comparison.value.encoded_value.empty() &&
-            DescriptorEquals(null_comparison.value.descriptor,
-                             boolean_descriptor),
-        "numeric NULL comparison lost its Boolean result descriptor");
+  Check(!null_comparison.ok() &&
+            null_comparison.diagnostic.diagnostic_code ==
+                "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
+            DiagnosticDetail(null_comparison.diagnostic) ==
+                "decimal_numeric_policy_unresolved" &&
+            null_comparison.value.encoded_value.empty(),
+        "decimal NULL comparison remained admitted without comparison policy");
 
   numeric.result_descriptor = decimal_descriptor;
   CheckRejectedAs(dt::ApplyNumericOperation(numeric),
@@ -618,15 +648,16 @@ void BoundOperationsRetainConcreteTypeIds() {
                   "DATATYPE.DESCRIPTOR.INVALID",
                   "numeric NULL comparison without result descriptor");
 
-  numeric.left = {dt::CanonicalTypeId::decimal, "1", false};
+  numeric.left = DecimalValue("1", decimal_descriptor);
   numeric.result_descriptor = boolean_descriptor;
   const auto present_comparison = dt::ApplyNumericOperation(numeric);
-  Check(present_comparison.ok() &&
-            present_comparison.value.type_id == dt::CanonicalTypeId::boolean &&
-            !present_comparison.value.is_null &&
-            DescriptorEquals(present_comparison.value.descriptor,
-                             boolean_descriptor),
-        "present numeric comparison did not use Boolean result descriptor");
+  Check(!present_comparison.ok() &&
+            present_comparison.diagnostic.diagnostic_code ==
+                "SB_DATATYPE_NUMERIC_OPERATION_REJECTED" &&
+            DiagnosticDetail(present_comparison.diagnostic) ==
+                "decimal_numeric_policy_unresolved" &&
+            present_comparison.value.encoded_value.empty(),
+        "present decimal comparison remained admitted without comparison policy");
 
   dt::DatatypeExtractRequest extract;
   extract.value = TypedNull(dt::CanonicalTypeId::date,

@@ -8,6 +8,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "disk_device.hpp"
+#include "sbl_numeric.hpp"
 #include "sblr_special_forms.hpp"
 #include "query/expression_api.hpp"
 #include "../support/exact_datatype_descriptor_fixture.hpp"
@@ -33,12 +34,24 @@ namespace sblr = scratchbird::engine::sblr;
 namespace api = scratchbird::engine::internal_api;
 namespace platform = scratchbird::core::platform;
 namespace fs = std::filesystem;
+namespace numeric = scratchbird::libraries::sbl_numeric;
 
 namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool ok, const std::string& why) {
   ++checks;
   if (!ok) { ++failures; std::cerr << "FAIL: " << why << '\n'; }
+}
+
+std::string DiagnosticDetail(
+    const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  for (const auto& argument : diagnostic.arguments) {
+    if (argument.key == "detail") {
+      const auto* text = argument.text();
+      return text == nullptr ? std::string{} : *text;
+    }
+  }
+  return {};
 }
 
 engine::ExecutionTypeDescriptor Descriptor() {
@@ -56,6 +69,36 @@ engine::ExecutionTypeDescriptor Descriptor() {
       dt::CanonicalTypeId::int8, metadata);
   Check(built.ok(), "execution descriptor from exact int8 catalog row");
   return built.descriptor;
+}
+
+engine::ExecutionTypeDescriptor DecimalDescriptor() {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  const auto row = manifest.ok()
+      ? dt::LookupDatatypeCatalogRow(manifest.manifest,
+                                     dt::CanonicalTypeId::decimal)
+      : dt::DatatypeCatalogManifestResult{};
+  Check(row.ok() && row.manifest.descriptor_rows.size() == 1,
+        "unique decimal catalog descriptor row");
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1) return {};
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows[0].descriptor_uuid;
+  metadata.descriptor_epoch = row.manifest.descriptor_rows[0].descriptor_epoch;
+  const auto built = dt::LookupExecutionTypeDescriptorFromCatalog(
+      dt::CanonicalTypeId::decimal, metadata);
+  Check(built.ok(), "execution descriptor from exact decimal catalog row");
+  return built.descriptor;
+}
+
+dt::DatatypeOperationValue Decimal(std::string_view lexical) {
+  const auto encoded = numeric::EncodeExactDecimalLittleEndian(lexical);
+  Check(encoded.ok, "exact decimal fixture encoding");
+  dt::DatatypeOperationValue value{
+      dt::CanonicalTypeId::decimal,
+      std::string(reinterpret_cast<const char*>(encoded.canonical_bytes.data()),
+                  encoded.canonical_bytes.size()),
+      false};
+  value.descriptor = DecimalDescriptor();
+  return value;
 }
 
 dt::DatatypeOperationValue Int8(std::uint8_t raw) {
@@ -78,6 +121,9 @@ dt::DatatypeCastResult Cast(dt::DatatypeOperationValue value,
   request.context = context;
   request.explicit_cast = context == dt::DatatypeCastContext::explicit_cast;
   if (target == dt::CanonicalTypeId::int8) request.target_descriptor = Descriptor();
+  if (target == dt::CanonicalTypeId::decimal) {
+    request.target_descriptor = DecimalDescriptor();
+  }
   return dt::CastDatatypeValue(request);
 }
 
@@ -227,7 +273,13 @@ void OperationsAndSerialization() {
   const auto approximate_numeric = Cast(
       Int8(0x80), dt::CanonicalTypeId::real64,
       dt::DatatypeCastContext::explicit_cast);
-  Check(exact_numeric.ok() && exact_numeric.value.encoded_value == "-128" &&
+  Check(!exact_numeric.ok() &&
+            exact_numeric.diagnostic.diagnostic_code ==
+                "DATATYPE.CAST_FORBIDDEN" &&
+            DiagnosticDetail(exact_numeric.diagnostic) ==
+                "decimal_present_cast_policy_unresolved" &&
+            exact_numeric.value.type_id == dt::CanonicalTypeId::unknown &&
+            exact_numeric.value.encoded_value.empty() &&
             !approximate_numeric.ok() &&
             approximate_numeric.value.type_id ==
                 dt::CanonicalTypeId::unknown &&
@@ -235,7 +287,7 @@ void OperationsAndSerialization() {
             dt::ClassifyDatatypeCast(dt::CanonicalTypeId::int8,
                                      dt::CanonicalTypeId::real64) ==
                 dt::DatatypeCastCategory::forbidden,
-        "int8-to-real64 refuses while exact decimal output remains admitted");
+        "int8-to-decimal and int8-to-real64 remain fail-closed without pair policy");
   const auto narrowed = Cast(
       {dt::CanonicalTypeId::int16, std::string{'\x7f', '\0'}, false},
                              dt::CanonicalTypeId::int8,
@@ -248,15 +300,24 @@ void OperationsAndSerialization() {
                              dt::DatatypeCastContext::assignment);
   Check(!assigned.ok(),
         "unregistered int16-to-int8 assignment remains fail-closed");
-  for (const auto& source :
-       {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.0", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "-12e0", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "127", false}}) {
+  for (const auto& source : {Decimal("12.0"), Decimal("127")}) {
     const auto converted = Cast(source, dt::CanonicalTypeId::int8,
                                 dt::DatatypeCastContext::explicit_cast);
-    Check(converted.ok() && converted.value.encoded_value.size() == 1,
-          "integral numeric cast emits one canonical int8 byte");
+    Check(!converted.ok() &&
+              converted.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(converted.diagnostic) ==
+                  "decimal_present_cast_policy_unresolved" &&
+              converted.value.type_id == dt::CanonicalTypeId::unknown &&
+              converted.value.encoded_value.empty(),
+          "decimal-to-int8 remains fail-closed without pair policy");
   }
+  const auto decimal_float_input = Cast(
+      {dt::CanonicalTypeId::decimal_float, "-12e0", false},
+      dt::CanonicalTypeId::int8, dt::DatatypeCastContext::explicit_cast);
+  Check(decimal_float_input.ok() &&
+            decimal_float_input.value.encoded_value.size() == 1,
+        "unrelated integral decimal-float cast behavior remains unchanged");
   const auto real64_input = Cast(
       {dt::CanonicalTypeId::real64, "127.0", false},
       dt::CanonicalTypeId::int8, dt::DatatypeCastContext::explicit_cast);
@@ -268,16 +329,20 @@ void OperationsAndSerialization() {
                 dt::DatatypeCastCategory::forbidden,
         "real64-to-int8 decimal-text conversion refuses");
   const auto assigned_numeric = Cast(
-      {dt::CanonicalTypeId::decimal, "12", false},
-      dt::CanonicalTypeId::int8, dt::DatatypeCastContext::assignment);
-  Check(assigned_numeric.ok() && IsInt8(assigned_numeric.value, 0x0c),
-        "checked exact-numeric assignment emits one canonical int8 byte");
+      Decimal("12"), dt::CanonicalTypeId::int8,
+      dt::DatatypeCastContext::assignment);
+  Check(!assigned_numeric.ok() &&
+            assigned_numeric.diagnostic.diagnostic_code ==
+                "DATATYPE.CAST_FORBIDDEN" &&
+            DiagnosticDetail(assigned_numeric.diagnostic) ==
+                "decimal_present_cast_policy_unresolved" &&
+            assigned_numeric.value.type_id == dt::CanonicalTypeId::unknown &&
+            assigned_numeric.value.encoded_value.empty(),
+        "decimal assignment to int8 remains fail-closed without pair policy");
   for (const auto& source :
-       {dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal, "12.5", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
-                                   "12.000000000000000000001", false},
-        dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal,
-                                   "126.999999999999999999999", false},
+       {Decimal("12.5"),
+        Decimal("12.000000000000000000001"),
+        Decimal("126.999999999999999999999"),
         dt::DatatypeOperationValue{dt::CanonicalTypeId::decimal_float, "NaN", false},
         dt::DatatypeOperationValue{dt::CanonicalTypeId::real64, "128", false}}) {
     Check(!Cast(source, dt::CanonicalTypeId::int8,

@@ -133,6 +133,18 @@ dt::DatatypeOperationValue Uint128Value(std::string_view number) {
   return value;
 }
 
+dt::DatatypeOperationValue DecimalValue(std::string_view lexical) {
+  const auto encoded = numeric::EncodeExactDecimalLittleEndian(lexical);
+  Require(encoded.ok, "MDF-014 exact decimal fixture encoding failed");
+  auto value = Value(
+      dt::CanonicalTypeId::decimal,
+      std::string(reinterpret_cast<const char*>(encoded.canonical_bytes.data()),
+                  encoded.canonical_bytes.size()));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::decimal);
+  value.descriptor = descriptor;
+  return value;
+}
+
 bool IsCanonicalUint64(const dt::DatatypeOperationValue& value,
                        std::uint64_t expected) {
   std::uint64_t decoded = 0;
@@ -260,20 +272,29 @@ void TestOrderedKeysAndResourceBoundComparison() {
   }
 
   const std::vector<dt::DatatypeOperationValue> decimal_values = {
-      Value(dt::CanonicalTypeId::decimal, "-1.20"),
-      Value(dt::CanonicalTypeId::decimal, "-1.10"),
-      Value(dt::CanonicalTypeId::decimal, "0"),
-      Value(dt::CanonicalTypeId::decimal, "2.10"),
-      Value(dt::CanonicalTypeId::decimal, "10.01")};
+      DecimalValue("-1.20"), DecimalValue("-1.10"), DecimalValue("0"),
+      DecimalValue("2.10"), DecimalValue("10.01")};
   for (std::size_t index = 1; index < decimal_values.size(); ++index) {
     const auto compare = dt::CompareDatatypeValues(
         {decimal_values[index - 1], decimal_values[index]});
-    Require(compare.ok() && compare.comparison < 0,
-            "MDF-014 decimal comparison order drifted");
+    Require(!compare.ok() &&
+                compare.diagnostic.diagnostic_code ==
+                    "SB_DATATYPE_COMPARISON_REJECTED" &&
+                DiagnosticDetail(compare.diagnostic) ==
+                    "decimal_comparison_policy_unresolved",
+            "MDF-014 decimal comparison did not fail at unresolved policy");
     const auto left = dt::MakeDatatypeSortKey({decimal_values[index - 1]});
     const auto right = dt::MakeDatatypeSortKey({decimal_values[index]});
-    Require(left.ok() && right.ok() && left.sort_key < right.sort_key,
-            "MDF-014 decimal sort key order drifted");
+    Require(!left.ok() && !right.ok() &&
+                left.diagnostic.diagnostic_code ==
+                    "SB_DATATYPE_SORT_KEY_REJECTED" &&
+                right.diagnostic.diagnostic_code ==
+                    "SB_DATATYPE_SORT_KEY_REJECTED" &&
+                DiagnosticDetail(left.diagnostic) ==
+                    "decimal_sort_key_policy_unresolved" &&
+                DiagnosticDetail(right.diagnostic) ==
+                    "decimal_sort_key_policy_unresolved",
+            "MDF-014 decimal sort key did not fail at unresolved policy");
   }
 
   dt::DatatypeOperationValue null_value;

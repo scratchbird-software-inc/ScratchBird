@@ -596,6 +596,15 @@ ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
   result.descriptor.bit_width = descriptor.bit_width;
   result.descriptor.precision = metadata.precision != 0 ? metadata.precision : descriptor.default_precision;
   result.descriptor.scale = metadata.scale != 0 ? metadata.scale : descriptor.default_scale;
+  if (descriptor.type_id == CanonicalTypeId::decimal &&
+      (result.descriptor.precision == 0 ||
+       result.descriptor.precision > 38 || result.descriptor.scale > 38 ||
+       result.descriptor.scale > result.descriptor.precision)) {
+    return DescriptorBuildFailure(
+        "DATATYPE.DESCRIPTOR.INVALID",
+        "execution_type_descriptor.decimal_precision_scale_invalid",
+        descriptor.stable_name);
+  }
   result.descriptor.length = metadata.length;
   result.descriptor.vector_dimensions = metadata.vector_dimensions;
   result.descriptor.container_rank = metadata.container_rank;
