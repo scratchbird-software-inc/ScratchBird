@@ -367,6 +367,10 @@ bool IsNetworkPrefix(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::network_prefix;
 }
 
+bool IsMacAddress(CanonicalTypeId type_id) noexcept {
+  return type_id == CanonicalTypeId::mac_address;
+}
+
 bool DecimalFloatDescriptorValidForPresent(
     const ExecutionTypeDescriptor& descriptor) {
   return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -514,6 +518,11 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
                value.descriptor, value.type_id) &&
         value.encoded_value.size() == 18;
   }
+  if (IsMacAddress(value.type_id)) {
+    return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+               value.descriptor, value.type_id) &&
+        value.encoded_value.size() == 8;
+  }
   if (value.type_id == CanonicalTypeId::boolean) {
     return value.encoded_value.size() == 1 &&
         (static_cast<unsigned char>(value.encoded_value[0]) == 0u ||
@@ -572,6 +581,11 @@ const char* CanonicalOperationValueDiagnosticCode(
     return "DATATYPE.DESCRIPTOR.INVALID";
   }
   if (IsNetworkPrefix(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (IsMacAddress(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
     return "DATATYPE.DESCRIPTOR.INVALID";
@@ -2198,6 +2212,8 @@ bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
            hex.size() != 32u) ||
           (IsNetworkPrefix(frame->element_type_id) &&
            hex.size() != 36u) ||
+          (IsMacAddress(frame->element_type_id) &&
+           hex.size() != 16u) ||
           (IsDecimal(frame->element_type_id) &&
            (!DecodeCanonicalLowerHex(hex, &decoded_item) ||
             !DecimalCarrierStructurallyCanonical(decoded_item))) ||
@@ -2727,13 +2743,14 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (!LookupDatatypeDescriptor(source_type_id).ok()) {
     return DatatypeCastCategory::forbidden;
   }
-  // The structural UUID/IP-address raw 16-octet carriers and network-prefix
-  // raw 18-octet carrier are known, but no PRESENT cast operation is admitted
-  // without the missing policy receipt. Contextual NULL binding was handled
-  // above.
+  // The structural UUID/IP-address raw 16-octet carriers, network-prefix raw
+  // 18-octet carrier, and MAC-address raw 8-octet carrier are known, but no
+  // PRESENT cast operation is admitted without the missing policy receipt.
+  // Contextual NULL binding was handled above.
   if (IsUuid(source_type_id) || IsUuid(target_type_id) ||
       IsIpAddress(source_type_id) || IsIpAddress(target_type_id) ||
-      IsNetworkPrefix(source_type_id) || IsNetworkPrefix(target_type_id)) {
+      IsNetworkPrefix(source_type_id) || IsNetworkPrefix(target_type_id) ||
+      IsMacAddress(source_type_id) || IsMacAddress(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
   // Contextual NULL binding was admitted above. No PRESENT cast pair touching
@@ -2856,6 +2873,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsNetworkPrefix(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
+       (IsMacAddress(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
        ((IsUnresolvedRealSemantics(request.value.type_id) ||
          IsReal128(request.value.type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2873,6 +2893,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
        (IsNetworkPrefix(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
+       (IsMacAddress(request.value.type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.value.descriptor, request.value.type_id)) ||
        (request.value.is_null &&
@@ -2916,6 +2939,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        (IsNetworkPrefix(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
+       (IsMacAddress(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
        ((IsUnresolvedRealSemantics(request.target_type_id) ||
          IsReal128(request.target_type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2932,6 +2958,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
        (IsNetworkPrefix(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
+       (IsMacAddress(request.target_type_id) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
             request.target_descriptor, request.target_type_id)) ||
        (result_is_null &&
@@ -2987,7 +3016,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::decimal_float ||
        request.value.type_id == CanonicalTypeId::uuid ||
        request.value.type_id == CanonicalTypeId::ip_address ||
-       request.value.type_id == CanonicalTypeId::network_prefix) &&
+       request.value.type_id == CanonicalTypeId::network_prefix ||
+       request.value.type_id == CanonicalTypeId::mac_address) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
@@ -3188,6 +3218,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         result_is_null
             ? "network_prefix_cross_type_typed_null_cast_policy_unresolved"
             : "network_prefix_present_cast_policy_unresolved");
+  }
+  if (IsMacAddress(request.value.type_id) ||
+      IsMacAddress(request.target_type_id)) {
+    return CastFailure(
+        result_is_null
+            ? "mac_address_cross_type_typed_null_cast_policy_unresolved"
+            : "mac_address_present_cast_policy_unresolved");
   }
   if (IsDecimal(request.value.type_id) ||
       IsDecimal(request.target_type_id)) {
@@ -3494,6 +3531,12 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     return ExtractFailure("network_prefix_extract_descriptor_invalid",
                           "DATATYPE.DESCRIPTOR.INVALID");
   }
+  if (IsMacAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    return ExtractFailure("mac_address_extract_descriptor_invalid",
+                          "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -3514,13 +3557,14 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     const bool uuid_value = IsUuid(request.value.type_id);
     const bool ip_address_value = IsIpAddress(request.value.type_id);
     const bool network_prefix_value = IsNetworkPrefix(request.value.type_id);
+    const bool mac_address_value = IsMacAddress(request.value.type_id);
     const bool descriptor_or_null_state_failure =
         request.value.type_id == CanonicalTypeId::unknown ||
         request.value.type_id == CanonicalTypeId::null_type ||
         request.value.is_null ||
         bfloat16_value || real16_value || real32_value || real64_value ||
         decimal_value || decimal_float_value || uuid_value || ip_address_value ||
-        network_prefix_value;
+        network_prefix_value || mac_address_value;
     const char* diagnostic_code = descriptor_or_null_state_failure
         ? CanonicalOperationValueDiagnosticCode(
               request.value, "SB_DATATYPE_EXTRACT_REJECTED")
@@ -3577,6 +3621,11 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
                            "DATATYPE.DESCRIPTOR.INVALID"
                        ? "network_prefix_extract_descriptor_invalid"
                        : "network_prefix_extract_value_invalid")
+            : mac_address_value
+                ? (std::string_view(diagnostic_code) ==
+                           "DATATYPE.DESCRIPTOR.INVALID"
+                       ? "mac_address_extract_descriptor_invalid"
+                       : "mac_address_extract_value_invalid")
             : request.value.is_null ? "null_or_descriptor_state_invalid"
                                     : "canonical_value_invalid",
         diagnostic_code);
@@ -3606,6 +3655,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   }
   if (IsNetworkPrefix(request.value.type_id)) {
     return ExtractFailure("network_prefix_extract_policy_unresolved");
+  }
+  if (IsMacAddress(request.value.type_id)) {
+    return ExtractFailure("mac_address_extract_policy_unresolved");
   }
   DatatypeExtractResult result;
   result.status = OkStatus();
@@ -3695,6 +3747,7 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
        IsUuid(descriptor.element_type_id) ||
        IsIpAddress(descriptor.element_type_id) ||
        IsNetworkPrefix(descriptor.element_type_id) ||
+       IsMacAddress(descriptor.element_type_id) ||
        descriptor.allow_null_elements || element_descriptor_present) &&
       !(IsPolicyRestrictedReal(descriptor.element_type_id)
             ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -3714,6 +3767,10 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                       descriptor.element_descriptor,
                       descriptor.element_type_id)
             : IsNetworkPrefix(descriptor.element_type_id)
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      descriptor.element_descriptor,
+                      descriptor.element_type_id)
+            : IsMacAddress(descriptor.element_type_id)
                 ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                       descriptor.element_descriptor,
                       descriptor.element_type_id)
@@ -3759,6 +3816,8 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
                       ? "ip_address_set_element_invalid"
                   : IsNetworkPrefix(value.type_id)
                       ? "network_prefix_set_element_invalid"
+                  : IsMacAddress(value.type_id)
+                      ? "mac_address_set_element_invalid"
                       : "set_element_value_invalid";
       return SetFailure(failure_detail,
                         CanonicalOperationValueDiagnosticCode(
@@ -3800,6 +3859,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   if (IsNetworkPrefix(descriptor.element_type_id)) {
     return SetFailure("network_prefix_set_semantics_policy_unresolved");
   }
+  if (IsMacAddress(descriptor.element_type_id)) {
+    return SetFailure("mac_address_set_semantics_policy_unresolved");
+  }
   if (!descriptor.ordered) { std::sort(encoded_items.begin(), encoded_items.end()); }
   std::ostringstream out;
   out << "SBSET2;element=" << CanonicalTypeName(descriptor.element_type_id)
@@ -3839,10 +3901,12 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   const bool ip_address_set = IsIpAddress(request.descriptor.element_type_id);
   const bool network_prefix_set =
       IsNetworkPrefix(request.descriptor.element_type_id);
+  const bool mac_address_set =
+      IsMacAddress(request.descriptor.element_type_id);
   const bool policy_restricted_set =
       IsPolicyRestrictedReal(request.descriptor.element_type_id) ||
       decimal_set || decimal_float_set || uuid_set || ip_address_set ||
-      network_prefix_set;
+      network_prefix_set || mac_address_set;
   if (policy_restricted_set &&
       !(decimal_set
             ? DecimalDescriptorValidForPresent(
@@ -3859,6 +3923,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
                       request.descriptor.element_descriptor,
                       request.descriptor.element_type_id)
             : network_prefix_set
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      request.descriptor.element_descriptor,
+                      request.descriptor.element_type_id)
+            : mac_address_set
                 ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                       request.descriptor.element_descriptor,
                       request.descriptor.element_type_id)
@@ -3915,6 +3983,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
               ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)
+              : mac_address_set
+              ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                    request.right_value.descriptor,
+                    request.descriptor.element_type_id)
               : ExecutionDescriptorValidForType(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)) ||
@@ -3947,6 +4019,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
              ? request.right_value.encoded_value.size() != 16u
              : network_prefix_set
              ? request.right_value.encoded_value.size() != 18u
+             : mac_address_set
+             ? request.right_value.encoded_value.size() != 8u
              : request.right_value.encoded_value.size() !=
                    PolicyRestrictedRealCarrierByteWidth(
                        request.descriptor.element_type_id))) {
@@ -3969,6 +4043,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
             ? "ip_address_set_semantics_policy_unresolved"
             : network_prefix_set
             ? "network_prefix_set_semantics_policy_unresolved"
+            : mac_address_set
+            ? "mac_address_set_semantics_policy_unresolved"
             : IsReal128(request.descriptor.element_type_id)
             ? "real128_set_semantics_policy_unresolved"
             : UnresolvedRealDetail(
@@ -4170,6 +4246,44 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
               invalid, "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
     }
     return invalid_request("network_prefix_numeric_policy_unresolved");
+  }
+
+  const bool mac_address_incident = IsMacAddress(request.type_id) ||
+      IsMacAddress(request.left.type_id) ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       IsMacAddress(request.right.type_id));
+  if (mac_address_incident) {
+    const auto mac_address_descriptor_invalid = [](
+        const DatatypeOperationValue& value) {
+      return IsMacAddress(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::mac_address);
+    };
+    if (mac_address_descriptor_invalid(request.left)) {
+      return invalid_request("mac_address_left_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        mac_address_descriptor_invalid(request.right)) {
+      return invalid_request("mac_address_right_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if ((IsMacAddress(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         IsMacAddress(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid =
+          IsMacAddress(request.left.type_id) &&
+                  !CanonicalOperationValueValid(request.left)
+              ? request.left
+              : request.right;
+      return invalid_request(
+          "mac_address_numeric_value_invalid",
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
+    }
+    return invalid_request("mac_address_numeric_policy_unresolved");
   }
 
   if (IsReal128(request.type_id)) {
@@ -4879,6 +4993,54 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         "network_prefix_comparison_policy_unresolved");
     return result;
   }
+  const bool mac_address_incident =
+      IsMacAddress(request.left.type_id) ||
+      IsMacAddress(request.right.type_id);
+  if (mac_address_incident) {
+    const auto mac_address_descriptor_invalid = [](
+        const DatatypeOperationValue& value) {
+      return IsMacAddress(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::mac_address);
+    };
+    if (mac_address_descriptor_invalid(request.left) ||
+        mac_address_descriptor_invalid(request.right) ||
+        (IsMacAddress(request.left.type_id) &&
+         IsMacAddress(request.right.type_id) &&
+         !ExecutionDescriptorEquals(request.left.descriptor,
+                                    request.right.descriptor))) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.comparison.rejected",
+          "mac_address_operand_descriptor_invalid_or_mismatch");
+      return result;
+    }
+    if ((IsMacAddress(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (IsMacAddress(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid =
+          IsMacAddress(request.left.type_id) &&
+                  !CanonicalOperationValueValid(request.left)
+              ? request.left
+              : request.right;
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_COMPARISON_REJECTED"),
+          "datatype.comparison.rejected",
+          "mac_address_comparison_value_invalid");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+        "datatype.comparison.rejected",
+        "mac_address_comparison_policy_unresolved");
+    return result;
+  }
   const bool decimal_incident =
       IsDecimal(request.left.type_id) || IsDecimal(request.right.type_id);
   if (decimal_incident) {
@@ -5523,6 +5685,12 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
     *failure_detail = "network_prefix_hash_descriptor_invalid";
     return false;
   }
+  if (IsMacAddress(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    *failure_detail = "mac_address_hash_descriptor_invalid";
+    return false;
+  }
   if (IsReal128(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
@@ -5536,6 +5704,8 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           ? "ip_address_hash_value_invalid"
                           : IsNetworkPrefix(value.type_id)
                           ? "network_prefix_hash_value_invalid"
+                          : IsMacAddress(value.type_id)
+                          ? "mac_address_hash_value_invalid"
                           : IsUnresolvedRealSemantics(value.type_id) &&
                               !value.is_null
                           ? UnresolvedRealDetail(
@@ -5578,6 +5748,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
   }
   if (IsNetworkPrefix(value.type_id)) {
     *failure_detail = "network_prefix_hash_policy_unresolved";
+    return false;
+  }
+  if (IsMacAddress(value.type_id)) {
+    *failure_detail = "mac_address_hash_policy_unresolved";
     return false;
   }
   if (value.type_id == CanonicalTypeId::int16 ||
@@ -5687,6 +5861,16 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         "network_prefix_sort_key_descriptor_invalid");
     return result;
   }
+  if (IsMacAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.sort_key.rejected",
+        "mac_address_sort_key_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5708,6 +5892,8 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             ? "ip_address_sort_key_value_invalid"
             : IsNetworkPrefix(request.value.type_id)
             ? "network_prefix_sort_key_value_invalid"
+            : IsMacAddress(request.value.type_id)
+            ? "mac_address_sort_key_value_invalid"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
@@ -5776,6 +5962,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
         "datatype.sort_key.rejected",
         "network_prefix_sort_key_policy_unresolved");
+    return result;
+  }
+  if (IsMacAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+        "datatype.sort_key.rejected",
+        "mac_address_sort_key_policy_unresolved");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -6026,6 +6220,16 @@ DatatypeSerializationResult SerializeDatatypeValue(
         "network_prefix_serialization_descriptor_invalid");
     return result;
   }
+  if (IsMacAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.serialization.rejected",
+        "mac_address_serialization_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -6048,6 +6252,8 @@ DatatypeSerializationResult SerializeDatatypeValue(
             ? "ip_address_serialization_value_invalid"
             : IsNetworkPrefix(request.value.type_id)
             ? "network_prefix_serialization_value_invalid"
+            : IsMacAddress(request.value.type_id)
+            ? "mac_address_serialization_value_invalid"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
@@ -6097,6 +6303,14 @@ DatatypeSerializationResult SerializeDatatypeValue(
         result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
         "datatype.serialization.rejected",
         "network_prefix_serialization_policy_unresolved");
+    return result;
+  }
+  if (IsMacAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
+        "datatype.serialization.rejected",
+        "mac_address_serialization_policy_unresolved");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::unknown) {
@@ -6285,6 +6499,15 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "datatype.deserialization.rejected", "expected_descriptor_invalid");
     return result;
   }
+  if (IsMacAddress(type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
   if (ExecutionDescriptorPresent(request.expected_descriptor) &&
       !ExecutionDescriptorValidForType(request.expected_descriptor, type_id)) {
     result.status = ErrorStatus();
@@ -6406,6 +6629,8 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
             ? "ip_address_deserialization_value_invalid"
             : IsNetworkPrefix(staged.type_id)
             ? "network_prefix_deserialization_value_invalid"
+            : IsMacAddress(staged.type_id)
+            ? "mac_address_deserialization_value_invalid"
             : IsUnresolvedRealSemantics(staged.type_id) && !staged.is_null
             ? UnresolvedRealDetail(
                   staged.type_id,
@@ -6456,6 +6681,14 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "network_prefix_deserialization_policy_unresolved");
     return result;
   }
+  if (IsMacAddress(staged.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "mac_address_deserialization_policy_unresolved");
+    return result;
+  }
   result.value = std::move(staged);
   return result;
 }
@@ -6497,6 +6730,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         "network_prefix_display_descriptor_invalid");
     return result;
   }
+  if (IsMacAddress(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.display_render.rejected",
+        "mac_address_display_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -6520,6 +6763,8 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
             ? "ip_address_display_value_invalid"
             : IsNetworkPrefix(request.value.type_id)
             ? "network_prefix_display_value_invalid"
+            : IsMacAddress(request.value.type_id)
+            ? "mac_address_display_value_invalid"
             : request.value.type_id == CanonicalTypeId::null_type
             ? "standalone_null_type"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
@@ -6592,6 +6837,14 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
         "datatype.display_render.rejected",
         "network_prefix_display_policy_unresolved");
+    return result;
+  }
+  if (IsMacAddress(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "mac_address_display_policy_unresolved");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);
