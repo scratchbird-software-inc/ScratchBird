@@ -29,6 +29,7 @@ struct CatalogMetricLabelView {
   metrics::MetricLabelType value_type = metrics::MetricLabelType::text;
 };
 struct CatalogMetricLabelSchemaViewResult;
+struct CatalogMetricDescriptorViewResult;
 // Constructed only by complete schema validation. Iterators and returned keys
 // borrow immutable input; retain its owner and actual memory grant during use.
 class CatalogMetricLabelSequenceView {
@@ -53,6 +54,7 @@ class CatalogMetricLabelSequenceView {
   };
   CatalogMetricLabelSequenceView() = default;
   std::size_t size() const { return flags_.size(); }
+  bool empty() const { return flags_.empty(); }
   Iterator begin() const { return {keys_.data(), flags_.data(), types_.data()}; }
   Iterator end() const {
     return {keys_.empty() ? keys_.data() : keys_.data() + keys_.size(),
@@ -61,6 +63,7 @@ class CatalogMetricLabelSequenceView {
   }
  private:
   friend CatalogMetricLabelSchemaViewResult DecodeCatalogMetricLabelSchemaView(std::string_view);
+  friend CatalogMetricDescriptorViewResult DecodeCatalogMetricDescriptorView(std::string_view);
   CatalogMetricLabelSequenceView(std::span<const byte> keys,
       std::span<const byte> flags, std::span<const byte> types)
       : keys_(keys), flags_(flags), types_(types) {}
