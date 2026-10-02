@@ -8,6 +8,7 @@
 
 #include "disk_device.hpp"
 #include "route_ownership_lease.hpp"
+#include "checked_condition.hpp"
 #include "windows_data_ownership.hpp"
 
 #include "metric_contracts.hpp"
@@ -950,6 +951,10 @@ RouteLeaseRegistry& LeaseRegistry() {
 }
 }  // namespace
 
+struct RouteOwnershipLease::DrainSignal {
+  core::platform::CheckedCondition changed;
+};
+
 RouteOwnershipLease::RouteOwnershipLease(std::string route_path,
                                          std::uint64_t owner_pid)
     : route_path_(std::move(route_path)), owner_pid_(owner_pid) {}
@@ -965,6 +970,7 @@ struct RouteOwnershipLease::BorrowPin {
         registry.process_id != OwnershipProcessId()) return;
     std::lock_guard<std::mutex> guard(registry.mutex);
     --owner->legacy_borrowers_;
+    if (owner->drain_signal_ && !owner->drain_signal_->changed.NotifyAll()) std::terminate();
   }
   std::shared_ptr<RouteOwnershipLease> owner;
   bool counted = false;
@@ -1031,7 +1037,108 @@ RouteSourceDrainObservation RouteSourceTransition::ObserveDrain() const noexcept
   return out;
 }
 
+RouteSourceDrainWaitResult RouteSourceTransition::BeginDrainWait(
+    std::chrono::steady_clock::time_point deadline) const noexcept {
+  RouteSourceDrainWaitResult out;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.error = RouteSourceTransitionError::wrong_process; return out;
+    }
+    if (deadline == std::chrono::steady_clock::time_point::max()) {
+      out.error = RouteSourceTransitionError::invalid_deadline; return out;
+    }
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if (!owner_->issuing_ || !owner_->valid()) {
+      out.error = RouteSourceTransitionError::withdrawn; return out;
+    }
+    if (!owner_->drain_signal_)
+      owner_->drain_signal_ = std::make_unique<RouteOwnershipLease::DrainSignal>();
+    out.wait = std::shared_ptr<RouteSourceDrainWait>(new RouteSourceDrainWait(owner_, deadline));
+    out.error = RouteSourceTransitionError::none;
+  } catch (const std::bad_alloc&) { out.error = RouteSourceTransitionError::resource_exhausted; }
+    catch (...) { out.error = RouteSourceTransitionError::lock_failure; }
+  return out;
+}
+
+RouteSourceDrainWaitObservation RouteSourceDrainWait::Observe() const noexcept {
+  RouteSourceDrainWaitObservation out;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.state = RouteSourceDrainWaitState::wrong_process; return out;
+    }
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    out.state = state_;
+    out.legacy_borrowers = state_ == RouteSourceDrainWaitState::pending ?
+        owner_->legacy_borrowers_ : completed_borrowers_;
+    out.parked_waiters = parked_waiters_;
+  } catch (...) { out.state = RouteSourceDrainWaitState::lock_failure; }
+  return out;
+}
+
+RouteSourceDrainCancelResult RouteSourceDrainWait::Cancel() noexcept {
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId())
+      return RouteSourceDrainCancelResult::wrong_process;
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if (state_ != RouteSourceDrainWaitState::pending)
+      return RouteSourceDrainCancelResult::already_completed;
+    state_ = RouteSourceDrainWaitState::cancelled;
+    completed_borrowers_ = owner_->legacy_borrowers_;
+    if (!owner_->drain_signal_->changed.NotifyAll()) {
+      state_ = RouteSourceDrainWaitState::lock_failure;
+      return RouteSourceDrainCancelResult::lock_failure;
+    }
+    return RouteSourceDrainCancelResult::requested;
+  } catch (...) { return RouteSourceDrainCancelResult::lock_failure; }
+}
+
+RouteSourceDrainWaitObservation RouteSourceDrainWait::Wait() noexcept {
+  using S = RouteSourceDrainWaitState;
+  RouteSourceDrainWaitObservation out;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.state = S::wrong_process; return out;
+    }
+    std::unique_lock<std::mutex> guard(registry.mutex);
+    const auto finish = [&](S state) {
+      state_ = state;
+      completed_borrowers_ = owner_->legacy_borrowers_;
+      if (!owner_->drain_signal_->changed.NotifyAll()) std::terminate();
+    };
+    while (state_ == S::pending) {
+      if (!owner_->issuing_ || !owner_->valid()) { finish(S::withdrawn); break; }
+      if (!owner_->legacy_borrowers_) { finish(S::drained); break; }
+      if (std::chrono::steady_clock::now() >= deadline_) { finish(S::deadline_expired); break; }
+      if (parked_waiters_ == std::numeric_limits<std::uint64_t>::max()) {
+        out.state = S::resource_exhausted; out.legacy_borrowers = owner_->legacy_borrowers_;
+        out.parked_waiters = parked_waiters_; return out;
+      }
+      ++parked_waiters_;
+      bool woke = false;
+      try { woke = owner_->drain_signal_->changed.Wait(guard, deadline_); }
+      catch (...) {
+        // A failing native wait must still return with its predicate owned.
+        if (!guard.owns_lock()) std::terminate();
+      }
+      --parked_waiters_;
+      if (!woke && state_ == S::pending) finish(S::lock_failure);
+    }
+    out.state = state_; out.legacy_borrowers = completed_borrowers_;
+    out.parked_waiters = parked_waiters_;
+  } catch (...) { out.state = S::lock_failure; }
+  return out;
+}
+
 RouteOwnershipLease::~RouteOwnershipLease() {
+  // fork inherits the condition's waiter bits, not the threads which clear
+  // them. Do not destroy or inspect that inherited synchronization object.
+  // The child must exec before new registry use; its copied allocation is
+  // abandoned until process replacement/exit, never in the owning process.
+  if (owner_pid_ != OwnershipProcessId()) (void)drain_signal_.release();
 #ifdef _WIN32
   if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE)
     ::CloseHandle(static_cast<HANDLE>(handle_));
@@ -1091,6 +1198,7 @@ void RouteOwnershipLease::Withdraw() {
   std::lock_guard<std::mutex> guard(registry.mutex);
   accepting_ = false;
   issuing_ = false;
+  if (drain_signal_ && !drain_signal_->changed.NotifyAll()) std::terminate();
   const auto entry = registry.leases.find(route_path_);
   if (entry != registry.leases.end() && entry->second.lock().get() == this)
     registry.leases.erase(entry);
