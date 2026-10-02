@@ -34,6 +34,7 @@ using scratchbird::core::platform::u64;
 using scratchbird::core::platform::usize;
 
 class ShardedMemoryAccountingLedger;
+class ReservationBackedMemoryResource;
 
 // SB-MEMORY-DEFERRED-CONSUMER-ANCHOR
 // Categories are architecture-visible accounting buckets. Several categories
@@ -766,9 +767,20 @@ struct ArenaAllocationPlan {
   bool ok() const { return status.ok(); }
 };
 
+struct ArenaBackingResult {
+  Status status;
+  usize bytes = 0;
+  usize alignment = 0;
+  DiagnosticRecord diagnostic;
+  bool ok() const { return status.ok(); }
+};
+
 class ArenaAllocator {
  public:
   ArenaAllocator(BoundedAllocator* allocator, MemoryTag tag);
+  // Retains the actual grant, not its observation or a second accounting owner.
+  // The grant's manager/ledger must outlive this arena. Callers serialize use.
+  explicit ArenaAllocator(std::shared_ptr<ReservationBackedMemoryResource> resource);
   ArenaAllocator(const ArenaAllocator&) = delete;
   ArenaAllocator& operator=(const ArenaAllocator&) = delete;
   ArenaAllocator(ArenaAllocator&& other) noexcept;
@@ -784,8 +796,12 @@ class ArenaAllocator {
   // path never silently falls back to a differently sized backing allocation.
   AllocationResult AllocateWithinCapacity(usize bytes, usize alignment,
                                          usize growth_limit_bytes);
+  // Appends exact backing without consuming its bump space. Call outside all
+  // subsystem fences; zero-growth suballocation then never calls the governor.
+  ArenaBackingResult ReserveBacking(usize bytes, usize alignment = 0);
   ArenaCapacitySnapshot CapacitySnapshot() const noexcept;
   DeallocationResult Reset();
+  Status ResetNoAlloc();
   // Legacy backing-allocator diagnostics; use CapacitySnapshot for this arena's
   // own physical chunks and admission, never differences of global snapshots.
   MemoryAccountingSnapshot Snapshot() const;
@@ -799,6 +815,7 @@ class ArenaAllocator {
   };
 
   BoundedAllocator* allocator_ = nullptr;
+  std::shared_ptr<ReservationBackedMemoryResource> resource_;
   MemoryTag tag_;
   std::vector<Chunk> chunks_;
 };
