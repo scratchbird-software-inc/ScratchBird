@@ -197,5 +197,14 @@ struct NumericBinaryResult {
 // Rejects whitespace, plus, leading zeroes, negative zero and out-of-range
 // values. Uses the same portable arithmetic and range authority as decoding.
 NumericBinaryResult EncodeInt128LittleEndian(std::string_view canonical);
+// Exact canonical unsigned integer spelling to little endian. Rejects
+// whitespace, signs, leading zeroes and out-of-range values.
+NumericBinaryResult EncodeUint128LittleEndian(std::string_view canonical);
+NumericResult DecodeUint128LittleEndian(
+    const std::vector<std::uint8_t>& payload);
+// Converts an exact canonical LE16 payload to the unsigned BE16 ordered-key
+// payload. Datatype state framing remains the caller's responsibility.
+NumericBinaryResult MakeUint128OrderKeyLittleEndian(
+    const std::vector<std::uint8_t>& payload);
 
 }  // namespace scratchbird::libraries::sbl_numeric
