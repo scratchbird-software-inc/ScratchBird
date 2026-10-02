@@ -3,6 +3,7 @@
 #pragma once
 
 #include "checked_condition.hpp"
+#include <array>
 #include <cstdint>
 #include <stop_token>
 #include <thread>
@@ -18,6 +19,9 @@ namespace scratchbird::core::platform {
 class CheckedFifoMutex {
  public:
   using Clock = std::chrono::steady_clock;
+  // Opaque binary execution-owner token, not an authority or UUID issuer. The
+  // owning layer validates it. Unbound use remains native-thread-affine only.
+  using OwnerIdentity = std::array<std::uint8_t, 16>;
   enum class Result { acquired, busy, recursive, exhausted, timed_out, cancelled, closed, failed };
   explicit CheckedFifoMutex(std::uint32_t waiter_limit) : limit_(waiter_limit) {}
   CheckedFifoMutex(const CheckedFifoMutex&) = delete;
@@ -27,22 +31,24 @@ class CheckedFifoMutex {
     if (held_ || head_ || tail_ || waiters_ || calls_) std::terminate();
   }
 
-  Result TryLock(std::optional<Clock::time_point> deadline = {}, std::stop_token stop = {}) {
+  Result TryLock(std::optional<Clock::time_point> deadline = {}, std::stop_token stop = {},
+                 std::optional<OwnerIdentity> owner = {}) {
     std::lock_guard lock(mutex_);
-    if (held_ && holder_ == std::this_thread::get_id()) return Result::recursive;
+    if (Recursive(owner)) return Result::recursive;
     if (const auto terminal = Terminal(deadline, stop)) return *terminal;
     if (held_ || head_) return Result::busy;
-    Grant();
+    Grant(owner);
     return Result::acquired;
   }
 
   // For a valid ungranted request, select closed, cancelled, expired, then grant
   // under the commit mutex. The owning layer still validates identity/policy.
-  Result Lock(std::optional<Clock::time_point> deadline, std::stop_token stop = {}) {
+  Result Lock(std::optional<Clock::time_point> deadline, std::stop_token stop = {},
+              std::optional<OwnerIdentity> owner = {}) {
     std::unique_lock lock(mutex_);
-    if (held_ && holder_ == std::this_thread::get_id()) return Result::recursive;
+    if (Recursive(owner)) return Result::recursive;
     if (const auto terminal = Terminal(deadline, stop)) return *terminal;
-    if (!held_ && !head_) { Grant(); return Result::acquired; }
+    if (!held_ && !head_) { Grant(owner); return Result::acquired; }
     if (waiters_ == limit_ || calls_ == limit_)
       return Result::exhausted;
     Node node{tail_, nullptr};
@@ -59,8 +65,9 @@ class CheckedFifoMutex {
     Result result = Result::failed;
     try {
       for (;;) {
+        if (Recursive(owner)) { result = Result::recursive; break; }
         if (const auto terminal = Terminal(deadline, stop)) { result = *terminal; break; }
-        if (!held_ && head_ == &node) { Grant(); result = Result::acquired; break; }
+        if (!held_ && head_ == &node) { Grant(owner); result = Result::acquired; break; }
         if (!changed_.Wait(lock, deadline)) break;
       }
     } catch (...) {
@@ -80,10 +87,10 @@ class CheckedFifoMutex {
 
   // False leaves ownership unchanged. Notification failure after committed
   // release cannot be reported as a retryable unlock: fail fast instead.
-  bool Unlock() {
+  bool Unlock(std::optional<OwnerIdentity> owner = {}) {
     std::lock_guard lock(mutex_);
-    if (!held_ || holder_ != std::this_thread::get_id()) return false;
-    held_ = false; holder_ = {};
+    if (!held_ || holder_ != std::this_thread::get_id() || owner != owner_) return false;
+    held_ = false; holder_ = {}; owner_.reset();
     Notify();
     return true;
   }
@@ -95,6 +102,15 @@ class CheckedFifoMutex {
     Notify();
   }
   struct Observation { bool held; std::uint32_t waiters; std::uint32_t calls; bool closed; };
+  // Select an existing rejection/terminal outcome before owning-layer memory
+  // admission. No result is not a grant or queue position: Lock/TryLock must
+  // revalidate under their commit synchronization after preparing storage.
+  std::optional<Result> Preflight(std::optional<Clock::time_point> deadline,
+      std::stop_token stop = {}, std::optional<OwnerIdentity> owner = {}) {
+    std::lock_guard lock(mutex_);
+    if (Recursive(owner)) return Result::recursive;
+    return Terminal(deadline, stop);
+  }
   Observation Observe() {
     std::lock_guard lock(mutex_);
     return {held_, waiters_, calls_, closed_};
@@ -119,13 +135,19 @@ class CheckedFifoMutex {
     return std::nullopt;
   }
   void Notify() noexcept { if (!changed_.NotifyAll()) std::terminate(); }
-  void Grant() noexcept { held_ = true; holder_ = std::this_thread::get_id(); }
+  bool Recursive(const std::optional<OwnerIdentity>& owner) const noexcept {
+    return held_ && (holder_ == std::this_thread::get_id() || (owner && owner == owner_));
+  }
+  void Grant(const std::optional<OwnerIdentity>& owner) noexcept {
+    held_ = true; holder_ = std::this_thread::get_id(); owner_ = owner;
+  }
   const std::uint32_t limit_;
   std::mutex mutex_;
   CheckedCondition changed_;
   Node* head_ = nullptr;
   Node* tail_ = nullptr;
   std::thread::id holder_{};
+  std::optional<OwnerIdentity> owner_;
   std::uint32_t waiters_ = 0;
   std::uint32_t calls_ = 0;
   bool held_ = false;
