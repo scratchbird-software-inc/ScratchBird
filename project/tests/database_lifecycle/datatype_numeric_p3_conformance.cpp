@@ -11,6 +11,7 @@
 
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_wire_metadata.hpp"
@@ -117,6 +118,23 @@ std::filesystem::path CreateFixtureDirectory() {
 
 dt::DatatypeOperationValue Value(dt::CanonicalTypeId type, std::string encoded) {
   return {type, std::move(encoded), false};
+}
+
+scratchbird::engine::ExecutionTypeDescriptor ExecutionDescriptor(
+    dt::CanonicalTypeId type_id) {
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "datatype catalog authority unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+          "datatype descriptor authority unavailable");
+  dt::CatalogExecutionTypeMetadata metadata;
+  metadata.descriptor_uuid = row.manifest.descriptor_rows.front().descriptor_uuid;
+  metadata.descriptor_epoch =
+      row.manifest.descriptor_rows.front().descriptor_epoch;
+  const auto descriptor =
+      dt::LookupExecutionTypeDescriptorFromCatalog(type_id, metadata);
+  Require(descriptor.ok(), "execution descriptor build failed");
+  return descriptor.descriptor;
 }
 
 void RequireMetricOk(const metrics::MetricValidationResult& result, std::string_view message) {
@@ -234,9 +252,14 @@ void TestDatatypeOperations(const api::EngineRequestContext& context) {
   cast.value = Value(dt::CanonicalTypeId::character, "170141183460469231731687303715884105727");
   cast.target_type_id = dt::CanonicalTypeId::int128;
   cast.explicit_cast = true;
+  cast.target_descriptor = ExecutionDescriptor(dt::CanonicalTypeId::int128);
   auto cast_result = dt::CastDatatypeValue(cast);
   Require(cast_result.ok(), "int128 max cast failed");
-  Require(cast_result.value.encoded_value == "170141183460469231731687303715884105727",
+  std::string int128_decoded;
+  Require(dt::DecodeCanonicalInt128Value(cast_result.value.encoded_value,
+                                         &int128_decoded) &&
+              int128_decoded ==
+                  "170141183460469231731687303715884105727",
           "int128 max cast value mismatch");
 
   cast.value.encoded_value = "170141183460469231731687303715884105728";
@@ -245,6 +268,7 @@ void TestDatatypeOperations(const api::EngineRequestContext& context) {
 
   cast.value.encoded_value = "340282366920938463463374607431768211455";
   cast.target_type_id = dt::CanonicalTypeId::uint128;
+  cast.target_descriptor = {};
   cast_result = dt::CastDatatypeValue(cast);
   Require(cast_result.ok(), "uint128 max cast failed");
 
