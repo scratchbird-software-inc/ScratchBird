@@ -5,6 +5,7 @@
 #include "catalog_value_codec.hpp"
 #include "filespace_bootstrap.hpp"
 #include "uuid.hpp"
+#include <array>
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -60,9 +61,9 @@ inline bool Valid(const CatalogStorageActionPolicy& r){
 }
 inline bool Family(const CatalogMetadataVersion& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}
 }
-inline const CatalogValueSchema& CatalogStorageActionPolicySchema(){
-  using T=CatalogValueType;
-  static const CatalogValueSchema schema{65548,1,{
+inline constexpr CatalogValueSchemaView CatalogStorageActionPolicySchemaView() {
+  using T = CatalogValueType;
+  static constexpr CatalogValueFieldSchema fields[]{
     {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
     {3,T::engine_identity,true,16,UuidKind::database},{4,T::engine_identity,true,16,UuidKind::filespace},
     {5,T::engine_identity,true,16,UuidKind::object},{6,T::engine_identity,true,16,UuidKind::object},
@@ -71,7 +72,14 @@ inline const CatalogValueSchema& CatalogStorageActionPolicySchema(){
     {12,T::unsigned_integer,true,8},{13,T::unsigned_integer,true,8},{14,T::unsigned_integer,true,8},
     {15,T::unsigned_integer,true,8},{16,T::unsigned_integer,true,8},{17,T::unsigned_integer,true,8},
     {18,T::unsigned_integer,true,8},{19,T::unsigned_integer,true,8},{20,T::unsigned_integer,true,8},
-    {21,T::unsigned_integer,true,8},{22,T::unsigned_integer,true,8}}};
+    {21,T::unsigned_integer,true,8},{22,T::unsigned_integer,true,8}};
+  return {65548, 1, fields};
+}
+inline const CatalogValueSchema& CatalogStorageActionPolicySchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogStorageActionPolicySchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 inline CatalogValueEncodeResult EncodeCatalogStorageActionPolicy(const CatalogStorageActionPolicy& r){
@@ -87,20 +95,22 @@ inline CatalogValueEncodeResult EncodeCatalogStorageActionPolicy(const CatalogSt
 }
 inline CatalogStorageActionPolicyResult DecodeCatalogStorageActionPolicy(std::string_view bytes){
   if(bytes.size()>kCatalogValueBlockMaxBytes)return {CatalogValueError::size_limit,{}};
-  const auto decoded=DecodeCatalogValueBlock(CatalogStorageActionPolicySchema(),std::vector<byte>(bytes.begin(),bytes.end()));
+  std::array<CatalogValueFieldView, 22> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogStorageActionPolicySchemaView(),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if(!decoded.ok())return {decoded.error,{}};
   const auto& f=decoded.fields;CatalogStorageActionPolicy r;
-  r.policy_uuid=std::get<TypedUuid>(f[0].value).value;r.generation=std::get<u64>(f[1].value);
-  r.database_uuid=std::get<TypedUuid>(f[2].value).value;r.filespace_uuid=std::get<TypedUuid>(f[3].value).value;
-  r.storage_profile_uuid=std::get<TypedUuid>(f[4].value).value;r.page_size_profile_uuid=std::get<TypedUuid>(f[5].value).value;
-  r.origin_transaction_uuid=std::get<TypedUuid>(f[6].value);r.origin_local_transaction_id=std::get<u64>(f[7].value);
-  r.enabled=std::get<bool>(f[8].value);r.growth_allowed=std::get<bool>(f[9].value);r.preallocation_allowed=std::get<bool>(f[10].value);
-  r.approval=static_cast<StorageActionApproval>(std::get<u64>(f[11].value));
-  r.minimum_free_pages=std::get<u64>(f[12].value);r.target_free_pages=std::get<u64>(f[13].value);
-  r.growth_increment_pages=std::get<u64>(f[14].value);r.maximum_total_pages=std::get<u64>(f[15].value);
-  r.maximum_pages_per_action=std::get<u64>(f[16].value);r.maximum_work_bytes=std::get<u64>(f[17].value);
-  r.maximum_retained_image_bytes=std::get<u64>(f[18].value);r.cooldown_microseconds=std::get<u64>(f[19].value);
-  r.maximum_runtime_microseconds=std::get<u64>(f[20].value);r.refusal_pressure=static_cast<StorageActionPressure>(std::get<u64>(f[21].value));
+  r.policy_uuid=f[0].identity()->value;r.generation=*f[1].unsigned_value();
+  r.database_uuid=f[2].identity()->value;r.filespace_uuid=f[3].identity()->value;
+  r.storage_profile_uuid=f[4].identity()->value;r.page_size_profile_uuid=f[5].identity()->value;
+  r.origin_transaction_uuid=*f[6].identity();r.origin_local_transaction_id=*f[7].unsigned_value();
+  r.enabled=(f[8].bytes[0] != 0);r.growth_allowed=(f[9].bytes[0] != 0);r.preallocation_allowed=(f[10].bytes[0] != 0);
+  r.approval=static_cast<StorageActionApproval>(*f[11].unsigned_value());
+  r.minimum_free_pages=*f[12].unsigned_value();r.target_free_pages=*f[13].unsigned_value();
+  r.growth_increment_pages=*f[14].unsigned_value();r.maximum_total_pages=*f[15].unsigned_value();
+  r.maximum_pages_per_action=*f[16].unsigned_value();r.maximum_work_bytes=*f[17].unsigned_value();
+  r.maximum_retained_image_bytes=*f[18].unsigned_value();r.cooldown_microseconds=*f[19].unsigned_value();
+  r.maximum_runtime_microseconds=*f[20].unsigned_value();r.refusal_pressure=static_cast<StorageActionPressure>(*f[21].unsigned_value());
   if(!storage_action_policy_detail::Valid(r))return {CatalogValueError::invalid_value,{}};
   return {CatalogValueError::none,std::move(r)};
 }
@@ -149,14 +159,21 @@ struct CatalogStorageActionAttachmentResult {
   std::optional<CatalogStorageActionAttachment> record;
   bool ok() const {return error==CatalogValueError::none&&record.has_value();}
 };
-inline const CatalogValueSchema& CatalogStorageActionAttachmentSchema(){
-  using T=CatalogValueType;
-  static const CatalogValueSchema schema{65549,1,{
+inline constexpr CatalogValueSchemaView CatalogStorageActionAttachmentSchemaView() {
+  using T = CatalogValueType;
+  static constexpr CatalogValueFieldSchema fields[]{
     {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
     {3,T::engine_identity,true,16,UuidKind::database},{4,T::engine_identity,true,16,UuidKind::filespace},
     {5,T::engine_identity,true,16,UuidKind::object},{6,T::engine_identity,true,16,UuidKind::object},
     {7,T::engine_identity,true,16,UuidKind::object},{8,T::engine_identity,true,16,UuidKind::transaction},
-    {9,T::unsigned_integer,true,8}}};
+    {9,T::unsigned_integer,true,8}};
+  return {65549, 1, fields};
+}
+inline const CatalogValueSchema& CatalogStorageActionAttachmentSchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogStorageActionAttachmentSchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 inline bool ValidCatalogStorageActionAttachment(const CatalogStorageActionAttachment& r){
@@ -176,14 +193,16 @@ inline CatalogValueEncodeResult EncodeCatalogStorageActionAttachment(const Catal
 }
 inline CatalogStorageActionAttachmentResult DecodeCatalogStorageActionAttachment(std::string_view bytes){
   if(bytes.size()>kCatalogValueBlockMaxBytes)return {CatalogValueError::size_limit,{}};
-  const auto decoded=DecodeCatalogValueBlock(CatalogStorageActionAttachmentSchema(),std::vector<byte>(bytes.begin(),bytes.end()));
+  std::array<CatalogValueFieldView, 9> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogStorageActionAttachmentSchemaView(),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if(!decoded.ok())return {decoded.error,{}};
   const auto& f=decoded.fields;CatalogStorageActionAttachment r;
-  r.attachment_uuid=std::get<TypedUuid>(f[0].value).value;r.generation=std::get<u64>(f[1].value);
-  r.database_uuid=std::get<TypedUuid>(f[2].value).value;r.filespace_uuid=std::get<TypedUuid>(f[3].value).value;
-  r.storage_profile_uuid=std::get<TypedUuid>(f[4].value).value;r.page_size_profile_uuid=std::get<TypedUuid>(f[5].value).value;
-  r.policy_uuid=std::get<TypedUuid>(f[6].value).value;r.origin_transaction_uuid=std::get<TypedUuid>(f[7].value);
-  r.origin_local_transaction_id=std::get<u64>(f[8].value);
+  r.attachment_uuid=f[0].identity()->value;r.generation=*f[1].unsigned_value();
+  r.database_uuid=f[2].identity()->value;r.filespace_uuid=f[3].identity()->value;
+  r.storage_profile_uuid=f[4].identity()->value;r.page_size_profile_uuid=f[5].identity()->value;
+  r.policy_uuid=f[6].identity()->value;r.origin_transaction_uuid=*f[7].identity();
+  r.origin_local_transaction_id=*f[8].unsigned_value();
   if(!ValidCatalogStorageActionAttachment(r))return {CatalogValueError::invalid_value,{}};
   return {CatalogValueError::none,std::move(r)};
 }

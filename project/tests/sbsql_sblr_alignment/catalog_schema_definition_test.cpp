@@ -165,21 +165,20 @@ int main() {
   {auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="table";other.record.payload="unrelated";
     Check(!SharedSchemaOrigin(metadata,other)&&!SharedSchemaOrigin(other,metadata),"shared schema origin refuses family swaps");
     Check(SharedSchemaOrigin(other,other),"shared schema origin preserves unrelated families");}
-  unsigned origin_faults=0;
-  for(long n=0;n<1000;++n){bool threw=false;allocation_budget=n;
-    try {const bool admitted=c::CatalogMetadataPreservesFamilyOrigin(metadata,successor);allocation_budget=-1;
-      Check(admitted,"shared origin rejects unchanged schema after allocation recovery");}
-    catch(const std::bad_alloc&){allocation_budget=-1;threw=true;++origin_faults;}
-    if(!threw)break;
-  }
-  Check(origin_faults>0&&origin_faults<999,"shared origin propagates every injected allocation failure");
+  allocation_budget=0;
+  try {const bool admitted=c::CatalogMetadataPreservesFamilyOrigin(metadata,successor);allocation_budget=-1;
+    Check(admitted,"shared origin accepts unchanged schema with heap allocation forbidden");}
+  catch(const std::bad_alloc&){allocation_budget=-1;Check(false,"shared schema origin allocated");}
   for(unsigned fault=0;fault<3;++fault){auto changed=d;
     if(fault==0)changed.database_catalog_object_uuid=Id(p::UuidKind::object,20);
     if(fault==1)changed.origin_transaction_uuid=Id(p::UuidKind::transaction,20);
     if(fault==2)changed.origin_local_transaction_id=10;
     successor.record.payload=Golden(changed);
     Check(c::CatalogSchemaDefinitionMatchesMetadata(successor),"individually valid successor needs history check");
-    Check(!SharedSchemaOrigin(metadata,successor),"database/origin replacement refused");
+    allocation_budget=0;
+    try {const bool admitted=c::CatalogMetadataPreservesFamilyOrigin(metadata,successor);allocation_budget=-1;
+      Check(!admitted,"database/origin replacement refused with heap allocation forbidden");}
+    catch(const std::bad_alloc&){allocation_budget=-1;Check(false,"shared schema origin refusal allocated");}
   }
   c::CatalogSchemaRecord seed;seed.schema_object_uuid=d.schema_object_uuid;seed.parent_object_uuid=d.database_catalog_object_uuid;
   seed.root_schema=true;seed.path_cache="users";seed.name_cache="users";
