@@ -47,14 +47,16 @@ inline bool MetricOwnerLabelsMatchScope(const MetricLabelSet& labels,
 }
 
 // Validation does not mutate any series and does not format or parse UUIDs.
-inline bool MetricNamespaceMatchesScope(const MetricDescriptorDefinition& definition) noexcept {
+template<class Definition>
+inline bool MetricNamespaceMatchesScope(const Definition& definition) noexcept {
   const std::string_view root = definition.cluster_only ? "cluster.sys.metrics." : "sys.metrics.";
   const auto& path = definition.namespace_path;
   return path.size() > root.size() && path.size() <= 4096 &&
       path.starts_with(root) && path.find('\0') == path.npos;
 }
 
-inline bool MetricDescriptorReferencesValid(const MetricDescriptorDefinition& d,
+template<class Definition>
+inline bool MetricDescriptorReferencesValid(const Definition& d,
                                             const MetricDescriptorBinding& b) noexcept {
   if (!MetricSystemUuidValid(b.metric_uuid) || !b.descriptor_generation ||
       !MetricSystemUuidValid(b.retention_policy_uuid) || !b.retention_policy_generation ||

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "metric_scalar.hpp"
+#include "metric_descriptor_validation.hpp"
 #include "metric_registry.hpp"
 #include "sbl_numeric.hpp"
 #include <boost/multiprecision/cpp_int.hpp>
@@ -224,16 +225,7 @@ std::optional<int> CompareMetricScalars(const MetricScalar& a,const MetricScalar
   }
 }
 MetricScalarError ValidateMetricScalarDescriptor(const MetricDescriptorDefinition& d) noexcept {
-  if(d.value_type<MetricScalarType::uint64||d.value_type>MetricScalarType::enumeration)return E::invalid_descriptor;
-  if(d.value_type==MetricScalarType::enumeration){
-    if(d.enum_values.empty())return E::invalid_descriptor;
-    for(std::size_t i=0;i<d.enum_values.size();++i)for(std::size_t j=0;j<i;++j)if(d.enum_values[i]==d.enum_values[j])return E::invalid_descriptor;
-  }else if(!d.enum_values.empty())return E::invalid_descriptor;
-  if(!Numeric(d.value_type)&&(d.min_value||d.max_value||d.unit==MetricUnit::percent))return E::invalid_descriptor;
-  for(const auto* bound:{&d.min_value,&d.max_value})if(*bound&&
-      (MetricScalarTypeOf(**bound)!=d.value_type||!MetricScalarValid(**bound)))return E::invalid_descriptor;
-  if(d.min_value&&d.max_value&&*CompareMetricScalars(*d.min_value,*d.max_value)>0)return E::invalid_descriptor;
-  return E::none;
+  return detail::ValidateScalarDescriptor(d);
 }
 MetricScalarError ValidateMetricObservationScalar(const MetricDescriptorDefinition& d,const MetricScalar& value) noexcept {
   const auto definition=ValidateMetricScalarDescriptor(d);if(definition!=E::none)return definition;

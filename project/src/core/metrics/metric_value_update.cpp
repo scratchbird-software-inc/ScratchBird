@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "metric_value_update.hpp"
+#include "metric_descriptor_validation.hpp"
 #include "metric_label_key.hpp"
 #include <limits>
 #include <new>
@@ -25,14 +26,7 @@ bool Negative(const MetricScalar& value) {
 }
 
 bool ValidateMetricHistogramDescriptor(const MetricDescriptorDefinition& d) noexcept {
-  if(d.type!=MetricType::histogram)return d.histogram_buckets.empty()&&d.histogram_cumulative;
-  if(!Numeric(d.value_type)||d.histogram_buckets.empty())return false;
-  for(std::size_t i=0;i<d.histogram_buckets.size();++i){
-    const auto& bound=d.histogram_buckets[i];
-    if(MetricScalarTypeOf(bound)!=d.value_type||!MetricScalarValid(bound))return false;
-    if(i&&*CompareMetricScalars(d.histogram_buckets[i-1],bound)>=0)return false;
-  }
-  return true;
+  return detail::ValidateHistogramDescriptor(d);
 }
 bool ValidateMetricValueDescriptor(const MetricDescriptorDefinition& d) noexcept {
   return ValidateMetricScalarDescriptor(d)==MetricScalarError::none&&ValidateMetricHistogramDescriptor(d)&&
