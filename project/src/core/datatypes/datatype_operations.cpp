@@ -337,10 +337,32 @@ bool IsUnresolvedRealSemantics(CanonicalTypeId type_id) noexcept {
       type_id == CanonicalTypeId::real64;
 }
 
-std::size_t UnresolvedRealCarrierByteWidth(
+bool IsReal128(CanonicalTypeId type_id) noexcept {
+  return type_id == CanonicalTypeId::real128;
+}
+
+bool IsPolicyRestrictedReal(CanonicalTypeId type_id) noexcept {
+  return IsUnresolvedRealSemantics(type_id) || IsReal128(type_id);
+}
+
+std::size_t PolicyRestrictedRealCarrierByteWidth(
     CanonicalTypeId type_id) noexcept {
+  if (type_id == CanonicalTypeId::real128) return 16u;
   if (type_id == CanonicalTypeId::real64) return 8u;
   return type_id == CanonicalTypeId::real32 ? 4u : 2u;
+}
+
+bool DecodeReal128Carrier(
+    std::string_view encoded,
+    scratchbird::libraries::sbl_numeric::Real128Bytes* bytes) noexcept {
+  if (bytes == nullptr || encoded.size() != bytes->size()) return false;
+  std::copy(encoded.begin(), encoded.end(), bytes->begin());
+  return true;
+}
+
+std::string EncodeReal128Carrier(
+    const scratchbird::libraries::sbl_numeric::Real128Bytes& bytes) {
+  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
 CanonicalTypeId SelectUnresolvedRealType(
@@ -416,6 +438,11 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
   // values out of DatatypeOperationValue until those policies exist; typed
   // NULL remains governed by the descriptor/null-state branch above.
   if (IsUnresolvedRealSemantics(value.type_id)) return false;
+  if (value.type_id == CanonicalTypeId::real128) {
+    return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+               value.descriptor, value.type_id) &&
+        value.encoded_value.size() == 16;
+  }
   if (value.type_id == CanonicalTypeId::uuid)
     return value.encoded_value.size() == 16;
   if (value.type_id == CanonicalTypeId::boolean) {
@@ -480,6 +507,15 @@ const char* CanonicalOperationValueDiagnosticCode(
        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                         value.type_id))) {
     return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.type_id == CanonicalTypeId::real128 && !value.is_null &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (value.type_id == CanonicalTypeId::real128 && !value.is_null &&
+      value.encoded_value.size() != 16) {
+    return "NUMERIC.ENCODING.NONCANONICAL";
   }
   if (ExecutionDescriptorPresent(value.descriptor) &&
       !ExecutionDescriptorValidForType(value.descriptor, value.type_id)) {
@@ -2052,9 +2088,10 @@ bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
     } else if (!item.empty() && item.front() == 'V') {
       const std::string_view hex(item.data() + 1, item.size() - 1);
       if (!IsCanonicalLowerHex(hex) ||
-          (IsUnresolvedRealSemantics(frame->element_type_id) &&
+          (IsPolicyRestrictedReal(frame->element_type_id) &&
            hex.size() !=
-               UnresolvedRealCarrierByteWidth(frame->element_type_id) * 2u)) {
+               PolicyRestrictedRealCarrierByteWidth(frame->element_type_id) *
+                   2u)) {
         return false;
       }
     } else {
@@ -2585,6 +2622,13 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
       IsUnresolvedRealSemantics(target_type_id)) {
     return DatatypeCastCategory::forbidden;
   }
+  // REAL128 has an exact descriptor-bound LE16 identity operation, but Core
+  // has not registered any cross-type PRESENT cast UUID involving it.
+  if (IsReal128(source_type_id) || IsReal128(target_type_id)) {
+    return source_type_id == target_type_id
+        ? DatatypeCastCategory::identity
+        : DatatypeCastCategory::forbidden;
+  }
   // Core defines these types' value bytes but has not registered any complete
   // non-NULL cast pair, including identity. Contextual base.null binding is
   // admitted above; all other INT16/UINT16/INT32/UINT32/INT64/UINT64 routes
@@ -2683,12 +2727,20 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !ExecutionDescriptorValidForType(request.value.descriptor,
                                          request.value.type_id)) ||
        (!request.value.is_null &&
-        ((IsUnresolvedRealSemantics(request.value.type_id) &&
+        (((IsUnresolvedRealSemantics(request.value.type_id) ||
+           IsReal128(request.value.type_id)) &&
           !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
               request.value.descriptor, request.value.type_id)) ||
          (ExecutionDescriptorPresent(request.value.descriptor) &&
           !ExecutionDescriptorValidForType(request.value.descriptor,
                                            request.value.type_id)))))) {
+    return CastFailure("source_descriptor_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (!source_is_contextual_null && IsReal128(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
     return CastFailure("source_descriptor_invalid",
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
@@ -2710,7 +2762,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !ExecutionDescriptorValidForType(request.target_descriptor,
                                          request.target_type_id)) ||
        (!result_is_null &&
-        ((IsUnresolvedRealSemantics(request.target_type_id) &&
+        (((IsUnresolvedRealSemantics(request.target_type_id) ||
+           IsReal128(request.target_type_id)) &&
           !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
               request.target_descriptor, request.target_type_id)) ||
          (ExecutionDescriptorPresent(request.target_descriptor) &&
@@ -2720,13 +2773,23 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
+  if (!target_is_unresolved && IsReal128(request.target_type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.target_descriptor, request.target_type_id)) {
+    return CastFailure("target_descriptor_invalid",
+                       DatatypeCastCategory::forbidden,
+                       "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (!result_is_null &&
-      IsCanonical128Integer(request.target_type_id) &&
+      (IsCanonical128Integer(request.target_type_id) ||
+       IsReal128(request.target_type_id)) &&
       !ExecutionDescriptorPresent(request.target_descriptor)) {
     return CastFailure(
         request.target_type_id == CanonicalTypeId::int128
             ? "int128_target_descriptor_required"
-            : "uint128_target_descriptor_required",
+            : request.target_type_id == CanonicalTypeId::uint128
+                ? "uint128_target_descriptor_required"
+                : "real128_target_descriptor_required",
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.DESCRIPTOR.INVALID");
   }
@@ -2743,11 +2806,13 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::bfloat16 ||
        request.value.type_id == CanonicalTypeId::real16 ||
        request.value.type_id == CanonicalTypeId::real32 ||
-       request.value.type_id == CanonicalTypeId::real64) &&
+       request.value.type_id == CanonicalTypeId::real64 ||
+       request.value.type_id == CanonicalTypeId::real128) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
-      IsCanonical128Integer(request.value.type_id) &&
+      (IsCanonical128Integer(request.value.type_id) ||
+       IsReal128(request.value.type_id)) &&
       request.target_type_id == request.value.type_id;
   if (typed_null_identity &&
       !ExecutionDescriptorEquals(request.value.descriptor,
@@ -2807,12 +2872,85 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.CAST_FORBIDDEN");
   }
+  const auto validate_real128_cast_context = [&request](
+      const DatatypeOperationValue* present_value,
+      DatatypeCastCategory category) {
+    namespace numeric = scratchbird::libraries::sbl_numeric;
+    numeric::NumericContext context;
+    context.precision = request.numeric_context.precision;
+    context.scale = request.numeric_context.scale;
+    context.allow_special_values =
+        request.numeric_context.allow_special_values;
+    switch (request.numeric_context.rounding) {
+      case DatatypeRoundingMode::half_even:
+        context.rounding = numeric::RoundingMode::half_even;
+        break;
+      case DatatypeRoundingMode::half_up:
+        context.rounding = numeric::RoundingMode::half_up;
+        break;
+      case DatatypeRoundingMode::truncate:
+        context.rounding = numeric::RoundingMode::truncate;
+        break;
+      default:
+        context.rounding = static_cast<numeric::RoundingMode>(99);
+        break;
+    }
+
+    numeric::Real128Bytes bytes{};
+    if (present_value == nullptr) {
+      // NULL suppresses value work, but not backend/context validation.
+      bytes[14] = 0xffu;
+      bytes[15] = 0x3fu;
+    } else if (!DecodeReal128Carrier(present_value->encoded_value, &bytes)) {
+      auto failed = CastFailure("real128_identity_payload_invalid", category,
+                                "NUMERIC.ENCODING.NONCANONICAL");
+      failed.numeric_facts.invalid = true;
+      return failed;
+    }
+
+    numeric::Real128BinaryRequest binary_request;
+    binary_request.operation = numeric::NumericOperation::canonicalize;
+    binary_request.context = context;
+    binary_request.left = bytes;
+    const auto backend = numeric::ApplyReal128BinaryOperation(binary_request);
+    if (backend.numeric.status != numeric::NumericStatusCode::ok ||
+        (present_value != nullptr &&
+         (!backend.bytes || *backend.bytes != bytes))) {
+      auto failed = CastFailure(
+          "real128_cast_context_rejected", category,
+          backend.numeric.diagnostic_code.empty()
+              ? "NUMERIC.REAL128.INVALID"
+              : backend.numeric.diagnostic_code);
+      failed.numeric_facts = NumericFacts(backend.numeric);
+      if (backend.numeric.diagnostic_code.empty()) {
+        failed.numeric_facts.invalid = true;
+      }
+      return failed;
+    }
+
+    DatatypeCastResult validated;
+    validated.status = OkStatus();
+    validated.category = category;
+    validated.numeric_facts = NumericFacts(backend.numeric);
+    validated.diagnostic = MakeDatatypeOperationDiagnostic(
+        validated.status, "SB_DATATYPE_OK", "datatype.ok");
+    return validated;
+  };
   if (source_is_contextual_null) {
+    DatatypeCastResult real128_context;
+    if (request.target_type_id == CanonicalTypeId::real128) {
+      real128_context = validate_real128_cast_context(
+          nullptr, DatatypeCastCategory::lossless_implicit);
+      if (!real128_context.ok()) return real128_context;
+    }
     DatatypeCastResult result;
     result.status = OkStatus();
     result.category = DatatypeCastCategory::lossless_implicit;
     result.value = {request.target_type_id, {}, true};
     result.value.descriptor = request.target_descriptor;
+    if (request.target_type_id == CanonicalTypeId::real128) {
+      result.numeric_facts = real128_context.numeric_facts;
+    }
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "SB_DATATYPE_OK", "datatype.ok");
     return result;
@@ -2821,10 +2959,19 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   // value-conversion policy. Preserve it even when a datatype's present-value
   // cast table remains unresolved.
   if (typed_null_identity) {
+    DatatypeCastResult real128_context;
+    if (request.value.type_id == CanonicalTypeId::real128) {
+      real128_context = validate_real128_cast_context(
+          nullptr, DatatypeCastCategory::identity);
+      if (!real128_context.ok()) return real128_context;
+    }
     DatatypeCastResult null_identity;
     null_identity.status = OkStatus();
     null_identity.category = DatatypeCastCategory::identity;
     null_identity.value = request.value;
+    if (request.value.type_id == CanonicalTypeId::real128) {
+      null_identity.numeric_facts = real128_context.numeric_facts;
+    }
     null_identity.diagnostic = MakeDatatypeOperationDiagnostic(
         null_identity.status, "SB_DATATYPE_OK", "datatype.ok");
     return null_identity;
@@ -2835,17 +2982,35 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure(
           request.value.type_id == CanonicalTypeId::int128
               ? "int128_identity_descriptor_mismatch"
-              : "uint128_identity_descriptor_mismatch",
+              : request.value.type_id == CanonicalTypeId::uint128
+                  ? "uint128_identity_descriptor_mismatch"
+                  : "real128_identity_descriptor_mismatch",
                          DatatypeCastCategory::forbidden,
                          "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    DatatypeCastResult real128_context;
+    if (request.value.type_id == CanonicalTypeId::real128) {
+      real128_context = validate_real128_cast_context(
+          &request.value, DatatypeCastCategory::identity);
+      if (!real128_context.ok()) return real128_context;
     }
     DatatypeCastResult identity;
     identity.status = OkStatus();
     identity.category = DatatypeCastCategory::identity;
     identity.value = request.value;
+    if (request.value.type_id == CanonicalTypeId::real128) {
+      identity.numeric_facts = real128_context.numeric_facts;
+    }
     identity.diagnostic = MakeDatatypeOperationDiagnostic(
         identity.status, "SB_DATATYPE_OK", "datatype.ok");
     return identity;
+  }
+  if (IsReal128(request.value.type_id) ||
+      IsReal128(request.target_type_id)) {
+    return CastFailure(
+        result_is_null
+            ? "real128_cross_type_typed_null_cast_policy_unresolved"
+            : "real128_present_cast_policy_unresolved");
   }
   DatatypeCastResult result;
   result.category = ClassifyDatatypeCast(request.value.type_id, request.target_type_id, request.reference_compatibility_profile);
@@ -2882,41 +3047,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     return CastFailure("domain_binding_cast_policy_unavailable",
                        DatatypeCastCategory::forbidden,
                        "DATATYPE.CAST_FORBIDDEN");
-  }
-  if (request.target_type_id == CanonicalTypeId::real128) {
-    // Cast admission above establishes source-family conversion permission.
-    // Validate the target numeric context even for SQL NULL, then let the
-    // numeric adapter propagate NULL without parsing source payload bytes.
-    DatatypeNumericOperationRequest numeric;
-    numeric.type_id = CanonicalTypeId::real128;
-    numeric.operation = DatatypeNumericOperationKind::canonicalize;
-    numeric.left = {
-        CanonicalTypeId::real128,
-        request.value.is_null
-            ? std::string{}
-            : IsCanonical128Integer(request.value.type_id)
-                ? IntegerOperationText(request.value.type_id,
-                                       request.value.encoded_value)
-                : request.value.encoded_value,
-        request.value.is_null};
-    if (request.value.is_null) {
-      numeric.left.descriptor = request.target_descriptor;
-    }
-    numeric.context = request.numeric_context;
-    numeric.result_descriptor = request.target_descriptor;
-    auto canonical = ApplyNumericOperation(numeric);
-    result.status = canonical.status;
-    result.diagnostic = std::move(canonical.diagnostic);
-    result.numeric_facts = canonical.numeric_facts;
-    if (canonical.ok()) {
-      result.value = std::move(canonical.value);
-      result.value.type_id = CanonicalTypeId::real128;
-      if (IsCanonical128Integer(request.value.type_id) &&
-          ExecutionDescriptorPresent(request.target_descriptor)) {
-        result.value.descriptor = request.target_descriptor;
-      }
-    }
-    return result;
   }
   if (request.value.is_null) {
     result.status = OkStatus();
@@ -3123,6 +3253,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (IsReal128(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    return ExtractFailure("real128_extract_descriptor_invalid",
+                          "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (!CanonicalOperationValueValid(request.value)) {
     const bool bfloat16_value =
         request.value.type_id == CanonicalTypeId::bfloat16;
@@ -3173,6 +3309,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
         "real16_extract_policy_unresolved",
         "real32_extract_policy_unresolved",
         "real64_extract_policy_unresolved"));
+  }
+  if (IsReal128(request.value.type_id)) {
+    return ExtractFailure("real128_extract_policy_unresolved");
   }
   DatatypeExtractResult result;
   result.status = OkStatus();
@@ -3287,9 +3426,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   }
   const bool element_descriptor_present =
       ExecutionDescriptorPresent(descriptor.element_descriptor);
-  if ((IsUnresolvedRealSemantics(descriptor.element_type_id) ||
+  if ((IsPolicyRestrictedReal(descriptor.element_type_id) ||
        descriptor.allow_null_elements || element_descriptor_present) &&
-      !(IsUnresolvedRealSemantics(descriptor.element_type_id)
+      !(IsPolicyRestrictedReal(descriptor.element_type_id)
             ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                   descriptor.element_descriptor, descriptor.element_type_id)
             : ExecutionDescriptorValidForType(descriptor.element_descriptor,
@@ -3309,6 +3448,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
         "real16_set_semantics_policy_unresolved",
         "real32_set_semantics_policy_unresolved",
         "real64_set_semantics_policy_unresolved"));
+  }
+  if (IsReal128(descriptor.element_type_id)) {
+    return SetFailure("real128_set_semantics_policy_unresolved");
   }
   std::vector<std::string> encoded_items;
   std::set<std::string> unique_items;
@@ -3381,9 +3523,9 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   if (IsOpaqueRenderOnly(request.descriptor.element_type_id)) {
     return SetFailure("opaque_set_operation_rejected");
   }
-  const bool unresolved_real_set =
-      IsUnresolvedRealSemantics(request.descriptor.element_type_id);
-  if (unresolved_real_set &&
+  const bool policy_restricted_real_set =
+      IsPolicyRestrictedReal(request.descriptor.element_type_id);
+  if (policy_restricted_real_set &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.descriptor.element_descriptor,
           request.descriptor.element_type_id)) {
@@ -3396,7 +3538,7 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
     return SetFailure("left_set_descriptor_mismatch",
                       "DATATYPE.DESCRIPTOR.INVALID");
   }
-  if (unresolved_real_set &&
+  if (policy_restricted_real_set &&
       (request.operation == DatatypeSetOperationKind::equals ||
        request.operation == DatatypeSetOperationKind::subset ||
        request.operation == DatatypeSetOperationKind::superset)) {
@@ -3409,14 +3551,19 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
                         "DATATYPE.DESCRIPTOR.INVALID");
     }
   }
-  if (unresolved_real_set &&
+  if (policy_restricted_real_set &&
       request.operation == DatatypeSetOperationKind::membership) {
     if (request.right_value.type_id !=
         request.descriptor.element_type_id) {
       return SetFailure("set_membership_type_mismatch");
     }
-    if (!ExecutionDescriptorValidForType(request.right_value.descriptor,
-                                         request.descriptor.element_type_id) ||
+    if (!(IsReal128(request.descriptor.element_type_id)
+              ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                    request.right_value.descriptor,
+                    request.descriptor.element_type_id)
+              : ExecutionDescriptorValidForType(
+                    request.right_value.descriptor,
+                    request.descriptor.element_type_id)) ||
         !ExecutionDescriptorEquals(request.descriptor.element_descriptor,
                                    request.right_value.descriptor)) {
       return SetFailure("set_membership_descriptor_mismatch",
@@ -3437,18 +3584,21 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
     }
     if (!request.right_value.is_null &&
         request.right_value.encoded_value.size() !=
-            UnresolvedRealCarrierByteWidth(
+            PolicyRestrictedRealCarrierByteWidth(
                 request.descriptor.element_type_id)) {
       return SetFailure("set_membership_value_invalid");
     }
   }
-  if (unresolved_real_set) {
-    return SetFailure(UnresolvedRealDetail(
-        request.descriptor.element_type_id,
-        "bfloat16_set_semantics_policy_unresolved",
-        "real16_set_semantics_policy_unresolved",
-        "real32_set_semantics_policy_unresolved",
-        "real64_set_semantics_policy_unresolved"));
+  if (policy_restricted_real_set) {
+    return SetFailure(
+        IsReal128(request.descriptor.element_type_id)
+            ? "real128_set_semantics_policy_unresolved"
+            : UnresolvedRealDetail(
+                  request.descriptor.element_type_id,
+                  "bfloat16_set_semantics_policy_unresolved",
+                  "real16_set_semantics_policy_unresolved",
+                  "real32_set_semantics_policy_unresolved",
+                  "real64_set_semantics_policy_unresolved"));
   }
   DatatypeSetOperationResult result;
   result.status = OkStatus();
@@ -3532,6 +3682,31 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   result.value = {request.type_id, {}, false};
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
 
+  if (IsReal128(request.type_id)) {
+    if (request.left.type_id != CanonicalTypeId::real128 ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         request.right.type_id != CanonicalTypeId::real128)) {
+      return invalid_request("numeric_argument_type_mismatch");
+    }
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.left.descriptor, CanonicalTypeId::real128)) {
+      return invalid_request("real128_left_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.right.descriptor, CanonicalTypeId::real128)) {
+      return invalid_request("real128_right_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        !ExecutionDescriptorEquals(request.left.descriptor,
+                                   request.right.descriptor)) {
+      return invalid_request("real128_operand_descriptor_mismatch",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+  }
+
   const auto unresolved_real_present_descriptor_invalid = [](
       const DatatypeOperationValue& value) {
     return IsUnresolvedRealSemantics(value.type_id) && !value.is_null &&
@@ -3587,7 +3762,8 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
         invalid_value.type_id == CanonicalTypeId::null_type ||
         invalid_value.is_null;
     const bool malformed_128_bit_payload =
-        IsCanonical128Integer(invalid_value.type_id) &&
+        (IsCanonical128Integer(invalid_value.type_id) ||
+         IsReal128(invalid_value.type_id)) &&
         !invalid_value.is_null &&
         ExecutionDescriptorValidForType(invalid_value.descriptor,
                                         invalid_value.type_id) &&
@@ -3692,6 +3868,139 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
             ? "int128_result_descriptor_mismatch"
             : "uint128_result_descriptor_mismatch",
                            "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (IsReal128(request.type_id) &&
+      request.operation != DatatypeNumericOperationKind::compare &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.result_descriptor, CanonicalTypeId::real128)) {
+    return invalid_request("real128_result_descriptor_invalid",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (IsReal128(request.type_id) &&
+      request.operation != DatatypeNumericOperationKind::compare &&
+      !ExecutionDescriptorEquals(request.left.descriptor,
+                                 request.result_descriptor)) {
+    return invalid_request("real128_result_descriptor_mismatch",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
+  if (IsReal128(request.type_id) &&
+      request.operation == DatatypeNumericOperationKind::compare &&
+      ExecutionDescriptorPresent(request.result_descriptor) &&
+      !ExecutionDescriptorValidForType(request.result_descriptor,
+                                       CanonicalTypeId::boolean)) {
+    return invalid_request("numeric_compare_result_descriptor_invalid",
+                           "DATATYPE.DESCRIPTOR.INVALID");
+  }
+
+  if (IsReal128(request.type_id)) {
+    numeric::NumericOperation backend_operation;
+    switch (request.operation) {
+      case DatatypeNumericOperationKind::canonicalize:
+        backend_operation = numeric::NumericOperation::canonicalize;
+        break;
+      case DatatypeNumericOperationKind::add:
+        backend_operation = numeric::NumericOperation::add;
+        break;
+      case DatatypeNumericOperationKind::subtract:
+        backend_operation = numeric::NumericOperation::subtract;
+        break;
+      case DatatypeNumericOperationKind::multiply:
+        backend_operation = numeric::NumericOperation::multiply;
+        break;
+      case DatatypeNumericOperationKind::divide:
+        backend_operation = numeric::NumericOperation::divide;
+        break;
+      case DatatypeNumericOperationKind::compare:
+        backend_operation = numeric::NumericOperation::compare;
+        break;
+      default:
+        return invalid_request("invalid_numeric_operation");
+    }
+
+    numeric::NumericContext backend_context;
+    backend_context.precision = request.context.precision;
+    backend_context.scale = request.context.scale;
+    backend_context.allow_special_values = request.context.allow_special_values;
+    switch (request.context.rounding) {
+      case DatatypeRoundingMode::half_even:
+        backend_context.rounding = numeric::RoundingMode::half_even;
+        break;
+      case DatatypeRoundingMode::half_up:
+        backend_context.rounding = numeric::RoundingMode::half_up;
+        break;
+      case DatatypeRoundingMode::truncate:
+        backend_context.rounding = numeric::RoundingMode::truncate;
+        break;
+      default:
+        return invalid_request("invalid_rounding_mode");
+    }
+
+    numeric::Real128BinaryRequest binary_request;
+    binary_request.operation = backend_operation;
+    binary_request.context = backend_context;
+    numeric::Real128Bytes left_bytes{};
+    numeric::Real128Bytes right_bytes{};
+    const bool null_result = request.left.is_null ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         request.right.is_null);
+    if (null_result) {
+      // The binary API carries values only. Use finite +1 probes to validate
+      // backend availability, operation, and context before strict NULL
+      // propagation without making a value conversion or publishing a probe.
+      left_bytes[14] = 0xffu;
+      left_bytes[15] = 0x3fu;
+      right_bytes = left_bytes;
+    } else {
+      if (!DecodeReal128Carrier(request.left.encoded_value, &left_bytes)) {
+        return invalid_request("real128_left_payload_invalid",
+                               "NUMERIC.ENCODING.NONCANONICAL");
+      }
+      if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+          !DecodeReal128Carrier(request.right.encoded_value, &right_bytes)) {
+        return invalid_request("real128_right_payload_invalid",
+                               "NUMERIC.ENCODING.NONCANONICAL");
+      }
+    }
+    binary_request.left = left_bytes;
+    if (request.operation != DatatypeNumericOperationKind::canonicalize) {
+      binary_request.right = right_bytes;
+    }
+
+    const auto backend_result =
+        numeric::ApplyReal128BinaryOperation(binary_request);
+    result.numeric_facts = NumericFacts(backend_result.numeric);
+    if (backend_result.numeric.status != numeric::NumericStatusCode::ok) {
+      auto failed = NumericFailure(
+          backend_result.numeric.diagnostic_code.empty()
+              ? "real128_binary_backend_failed"
+              : backend_result.numeric.diagnostic_code,
+          backend_result.numeric.diagnostic_code.empty()
+              ? "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"
+              : backend_result.numeric.diagnostic_code);
+      failed.numeric_facts = result.numeric_facts;
+      return failed;
+    }
+    if (null_result) {
+      result.value = {declared_result_type, {}, true};
+      result.value.descriptor = request.result_descriptor;
+      return result;
+    }
+    result.comparison = backend_result.numeric.comparison;
+    if (request.operation == DatatypeNumericOperationKind::compare) {
+      result.value = BoolValue(result.comparison == 0);
+      if (ExecutionDescriptorPresent(request.result_descriptor)) {
+        result.value.descriptor = request.result_descriptor;
+      }
+      return result;
+    }
+    if (!backend_result.bytes) {
+      return invalid_request("real128_result_payload_missing",
+                             "NUMERIC.ENCODING.NONCANONICAL");
+    }
+    result.value = {CanonicalTypeId::real128,
+                    EncodeReal128Carrier(*backend_result.bytes), false};
+    result.value.descriptor = request.result_descriptor;
+    return result;
   }
 
   numeric::NumericRequest backend_request;
@@ -3844,6 +4153,24 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  const bool real128_incident =
+      IsReal128(request.left.type_id) || IsReal128(request.right.type_id);
+  if (real128_incident &&
+      (!IsReal128(request.left.type_id) ||
+       !IsReal128(request.right.type_id) ||
+       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+           request.left.descriptor, CanonicalTypeId::real128) ||
+       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+           request.right.descriptor, CanonicalTypeId::real128) ||
+       !ExecutionDescriptorEquals(request.left.descriptor,
+                                  request.right.descriptor))) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.comparison.rejected",
+        "real128_operand_descriptor_invalid_or_mismatch");
+    return result;
+  }
   const auto unresolved_real_descriptor_invalid = [](
       const DatatypeOperationValue& value) {
     return IsUnresolvedRealSemantics(value.type_id) &&
@@ -3925,7 +4252,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
       (request.left.type_id == CanonicalTypeId::int64 ||
        request.left.type_id == CanonicalTypeId::uint64 ||
        request.left.type_id == CanonicalTypeId::int128 ||
-       request.left.type_id == CanonicalTypeId::uint128);
+       request.left.type_id == CanonicalTypeId::uint128 ||
+       request.left.type_id == CanonicalTypeId::real128);
   const bool strict_binary_descriptors_invalid =
       strict_binary_descriptor_type &&
       (!ExecutionDescriptorPresent(request.left.descriptor) ||
@@ -3938,7 +4266,8 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         request.left.type_id == CanonicalTypeId::int64 ||
         request.left.type_id == CanonicalTypeId::uint64 ||
         request.left.type_id == CanonicalTypeId::int128 ||
-        request.left.type_id == CanonicalTypeId::uint128) &&
+        request.left.type_id == CanonicalTypeId::uint128 ||
+        request.left.type_id == CanonicalTypeId::real128) &&
        request.right.type_id == request.left.type_id &&
        !ExecutionDescriptorEquals(request.left.descriptor,
                                   request.right.descriptor)) ||
@@ -3954,8 +4283,10 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                 : request.left.type_id == CanonicalTypeId::uint64
                     ? "uint64_descriptor_mismatch"
                     : request.left.type_id == CanonicalTypeId::int128
-                        ? "int128_descriptor_mismatch"
-                        : "uint128_descriptor_mismatch");
+                    ? "int128_descriptor_mismatch"
+                        : request.left.type_id == CanonicalTypeId::uint128
+                            ? "uint128_descriptor_mismatch"
+                            : "real128_descriptor_mismatch");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -4381,6 +4712,12 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (IsReal128(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    *failure_detail = "real128_hash_descriptor_invalid";
+    return false;
+  }
   if (!CanonicalOperationValueValid(value)) {
     *failure_detail = IsUnresolvedRealSemantics(value.type_id) &&
                               !value.is_null
@@ -4400,6 +4737,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
         "real16_hash_policy_unresolved",
         "real32_hash_policy_unresolved",
         "real64_hash_policy_unresolved");
+    return false;
+  }
+  if (IsReal128(value.type_id)) {
+    *failure_detail = "real128_hash_policy_unresolved";
     return false;
   }
   if (value.type_id == CanonicalTypeId::int16 ||
@@ -4480,6 +4821,15 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsReal128(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.sort_key.rejected", "real128_sort_key_descriptor_invalid");
+    return result;
+  }
   if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -4508,6 +4858,13 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             "real16_sort_key_policy_unresolved",
             "real32_sort_key_policy_unresolved",
             "real64_sort_key_policy_unresolved"));
+    return result;
+  }
+  if (IsReal128(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+        "datatype.sort_key.rejected", "real128_sort_key_policy_unresolved");
     return result;
   }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
@@ -4734,6 +5091,16 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsReal128(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.serialization.rejected",
+        "real128_serialization_descriptor_invalid");
+    return result;
+  }
   if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -4934,6 +5301,15 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "datatype.deserialization.rejected", "expected_descriptor_invalid");
     return result;
   }
+  if (type_id == CanonicalTypeId::real128 &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
   if (state != "null" && state != "value") {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -4988,6 +5364,22 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
                                                         "payload_hex_invalid");
     return result;
   }
+  if (!staged.is_null && type_id == CanonicalTypeId::real128) {
+    if (staged.encoded_value.size() != 16) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "NUMERIC.ENCODING.NONCANONICAL",
+          "datatype.deserialization.rejected",
+          "real128_payload_width_invalid");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "real128_deserialization_policy_unresolved");
+    return result;
+  }
   if (staged.is_null && !request.expected_descriptor.nullable_allowed) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -5022,6 +5414,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
+  if (IsReal128(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.display_render.rejected",
+        "real128_display_descriptor_invalid");
+    return result;
+  }
   if (!CanonicalOperationValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -5053,6 +5455,14 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
             "real16_display_policy_unresolved",
             "real32_display_policy_unresolved",
             "real64_display_policy_unresolved"));
+    return result;
+  }
+  if (IsReal128(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "real128_display_policy_unresolved");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);

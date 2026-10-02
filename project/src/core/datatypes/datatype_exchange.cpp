@@ -240,7 +240,6 @@ const std::vector<ReferenceTypeLabelMapping>& BuiltinReferenceTypeLabelPlacehold
       Mapping(ReferenceDialectId::firebird, "SMALLINT", CanonicalTypeId::int16),
       Mapping(ReferenceDialectId::firebird, "INTEGER", CanonicalTypeId::int32),
       Mapping(ReferenceDialectId::firebird, "BIGINT", CanonicalTypeId::int64),
-      Mapping(ReferenceDialectId::firebird, "DECFLOAT", CanonicalTypeId::real128),
       Mapping(ReferenceDialectId::postgresql, "SMALLINT", CanonicalTypeId::int16),
       Mapping(ReferenceDialectId::postgresql, "INTEGER", CanonicalTypeId::int32),
       Mapping(ReferenceDialectId::postgresql, "BIGINT", CanonicalTypeId::int64),

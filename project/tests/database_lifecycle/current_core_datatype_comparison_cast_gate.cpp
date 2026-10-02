@@ -10,6 +10,7 @@
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_document.hpp"
 #include "resource_seed_pack.hpp"
+#include "sbl_numeric.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
@@ -25,6 +26,7 @@
 namespace {
 
 namespace dt = scratchbird::core::datatypes;
+namespace numeric = scratchbird::libraries::sbl_numeric;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -456,7 +458,13 @@ void TestCastPersistenceAndSilentDowngradeRefusal() {
   Require(precision_loss.diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN",
           "MDF-014 precision-loss diagnostic mismatch");
 
-  cast.value = Value(dt::CanonicalTypeId::real128, "1.25");
+  const auto real128_source = numeric::EncodeReal128LittleEndian("1.25");
+  Require(real128_source.bytes.has_value(),
+          "MDF-014 real128 source fixture encoding failed");
+  cast.value = Value(
+      dt::CanonicalTypeId::real128,
+      std::string(real128_source.bytes->begin(), real128_source.bytes->end()));
+  cast.value.descriptor = Descriptor(dt::CanonicalTypeId::real128);
   cast.target_type_id = dt::CanonicalTypeId::real64;
   cast.target_descriptor = Descriptor(dt::CanonicalTypeId::real64);
   cast.explicit_cast = false;

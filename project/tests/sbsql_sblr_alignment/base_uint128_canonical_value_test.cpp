@@ -731,28 +731,30 @@ void NumericAndCastAdapter() {
           "uint128 PRESENT-to-real64 cast refuses without publishing output");
   }
 
-  for (const auto target : {dt::CanonicalTypeId::real128}) {
-    dt::DatatypeCastRequest real_cast;
-    real_cast.value = Uint128("42");
-    real_cast.target_type_id = target;
-    real_cast.context = dt::DatatypeCastContext::explicit_cast;
-    real_cast.explicit_cast = true;
-    const auto real_value = dt::CastDatatypeValue(real_cast);
-    Check(real_value.ok() && real_value.value.type_id == target &&
-              real_value.value.encoded_value == "42",
-          "admitted uint128-to-real cast consumes decoded decimal boundary");
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment,
+                             dt::DatatypeCastContext::explicit_cast}) {
+    dt::DatatypeCastRequest real128_cast;
+    real128_cast.value = Uint128("42");
+    real128_cast.target_type_id = dt::CanonicalTypeId::real128;
+    real128_cast.context = context;
+    real128_cast.explicit_cast =
+        context == dt::DatatypeCastContext::explicit_cast;
+    real128_cast.target_descriptor =
+        DescriptorFor(dt::CanonicalTypeId::real128);
+    const auto real128_source_before = real128_cast.value.encoded_value;
+    const auto real128_value = dt::CastDatatypeValue(real128_cast);
+    Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uint128,
+                                   dt::CanonicalTypeId::real128) ==
+                  dt::DatatypeCastCategory::forbidden &&
+              !real128_value.ok() &&
+              real128_value.category == dt::DatatypeCastCategory::forbidden &&
+              real128_value.value.type_id == dt::CanonicalTypeId::unknown &&
+              real128_value.value.encoded_value.empty() &&
+              !real128_value.value.is_null &&
+              real128_cast.value.encoded_value == real128_source_before,
+          "uint128 PRESENT-to-real128 cast refuses without publishing output");
   }
-  dt::DatatypeCastRequest real128_cast;
-  real128_cast.value = Uint128("42");
-  real128_cast.target_type_id = dt::CanonicalTypeId::real128;
-  real128_cast.context = dt::DatatypeCastContext::explicit_cast;
-  real128_cast.explicit_cast = true;
-  real128_cast.target_descriptor = DescriptorFor(dt::CanonicalTypeId::real128);
-  const auto real128_value = dt::CastDatatypeValue(real128_cast);
-  Check(real128_value.ok() &&
-            SameUuidBytes(real128_value.value.descriptor.descriptor_uuid,
-                          real128_cast.target_descriptor.descriptor_uuid),
-        "uint128-to-real128 cast preserves supplied target descriptor");
 
   dt::DatatypeCastRequest compatibility;
   compatibility.value = Uint128("42");
