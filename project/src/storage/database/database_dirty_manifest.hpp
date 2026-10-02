@@ -23,6 +23,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -45,7 +46,7 @@ struct NativeCheckpointRootReference {
   std::array<scratchbird::core::platform::byte,32> sha256{};
   bool operator==(const NativeCheckpointRootReference&) const = default;
 };
-struct NativeCheckpointRoot {
+template<class Roots> struct NativeCheckpointRootData {
   scratchbird::storage::disk::NativeCommonPageHeader header;
   scratchbird::core::platform::Uuid object_uuid;
   u64 checkpoint_generation = 0;
@@ -61,11 +62,13 @@ struct NativeCheckpointRoot {
   std::optional<scratchbird::storage::disk::NativePageReference> predecessor;
   std::array<scratchbird::core::platform::byte,32> predecessor_sha256{};
   bool completed = false;
-  std::vector<NativeCheckpointRootReference> roots;
+  Roots roots;
   // Exclusive alternative to creator transaction UUID/local number. The
   // image preserves lineage; a UUID is not durable operation authority.
   scratchbird::core::platform::Uuid creator_operation_uuid;
 };
+using NativeCheckpointRoot=NativeCheckpointRootData<std::vector<NativeCheckpointRootReference>>;
+using NativeCheckpointRootView=NativeCheckpointRootData<std::span<NativeCheckpointRootReference>>;
 enum class NativeCheckpointError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
@@ -80,7 +83,7 @@ enum class NativeCheckpointError {
   horizon_failure, horizon_creator_mismatch, horizon_creator_not_committed,
   horizon_retention_mismatch, horizon_boundary_mismatch, horizon_observation_mismatch,
   retention_failure, retention_creator_mismatch, retention_creator_not_committed,
-  horizon_pin_missing, horizon_pin_lineage_mismatch, cluster_requires_authority
+  horizon_pin_missing, horizon_pin_lineage_mismatch, cluster_requires_authority, invalid_backing
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -90,6 +93,15 @@ struct NativeCheckpointRootResult {
 };
 NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot&) noexcept;
 NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>&) noexcept;
+struct NativeCheckpointRootViewResult {
+  NativeCheckpointError error=NativeCheckpointError::invalid_family;
+  std::optional<NativeCheckpointRootView> root;
+  bool ok() const noexcept {return error==NativeCheckpointError::none&&root.has_value();}
+};
+// Pure image inspection, not selection or outcome authority. Input and native
+// roots must be disjoint; roots outlive the returned exact-length view.
+NativeCheckpointRootViewResult DecodeNativeCheckpointRootInto(
+    std::span<const scratchbird::core::platform::byte>,std::span<NativeCheckpointRootReference>) noexcept;
 NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
     scratchbird::storage::disk::FileDevice&,
     const scratchbird::core::platform::Uuid& database_uuid,
