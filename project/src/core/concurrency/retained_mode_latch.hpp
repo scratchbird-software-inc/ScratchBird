@@ -47,6 +47,10 @@ struct ModeLatchResult {
   memory::SafeRetirementStatus memory_status = memory::SafeRetirementStatus::ok;
   std::optional<LatchOrderConflict> order_conflict{};
 };
+struct ModeLatchUpgradeResult {
+  ModeLatchResult result;
+  bool original_released = false;
+};
 struct ModeLatchSnapshot {
   ModeLatchIdentity identity;
   bool initialized = false, fenced = false, retirement_admitted = false;
@@ -64,6 +68,7 @@ inline ModeLatchCode ModeNativeCode(ModeLatchNative::Result result) noexcept {
   using C = ModeLatchCode;
   switch (result) {
     case N::acquired: return C::acquired;
+    case N::released: return C::released;
     case N::busy: return C::busy;
     case N::invalid: return C::invalid;
     case N::recursive: return C::recursive;
@@ -172,6 +177,52 @@ class ModeLatchOperation {
   void Reset() noexcept {
     if (auto* state = std::exchange(state_, nullptr)) state->ReleaseOperation();
     guard_.Reset();
+  }
+  // The caller exclusively borrows operation/output for the complete call.
+  // Explicit intent -> upgrade gap, NOT completed exclusive conversion. The
+  // existing governed record/guards are reused; no fallible allocation follows
+  // release. This retained operation covers the gap and callback/result lifetime.
+  // On acquired, grant.request().mode is upgrade; owning structure generation
+  // and current authority must still be revalidated before exclusive access.
+  ModeLatchUpgradeResult UpgradeIntent(ModeLatchGrant& grant, const ModeLatchRequest& original,
+      std::uint32_t admitted_rank, std::optional<ModeLatchClock::time_point> deadline,
+      std::stop_token stop = {}) {
+    using C = ModeLatchCode;
+    if (!state_ || grant.state_ != state_ || original != grant.request_ ||
+        original.task != task_ || original.identity != state_->identity ||
+        original.mode != ModeLatchNative::Mode::intent_write) return {{C::invalid},false};
+    auto& s = *state_;
+    if (const auto conflict = detail::HeldOrderConflict(s.identity.latch_class))
+      return {{C::order_violation,memory::SafeRetirementStatus::ok,conflict},false};
+    auto* record = grant.record_;
+    try {
+      std::lock_guard lock(s.lifetime);
+      const auto released = s.native.ReleaseIntentForUpgrade(record->native,deadline,stop,task_);
+      if (released != ModeLatchNative::Result::released)
+        return {{detail::ModeNativeCode(released)},false};
+      if (!s.grants) std::terminate();
+      record->held.Unlink(); --s.grants; s.Notify();
+    } catch (const std::system_error&) { return {{C::synchronization_failed},false}; }
+    ModeLatchNative::Result native = ModeLatchNative::Result::failed;
+    try {
+      native = s.native.Acquire(record->native,ModeLatchNative::Mode::upgrade,
+                                admitted_rank,deadline,stop,task_);
+    } catch (const std::system_error&) { /* Explicitly report original release below. */ }
+    const auto code = detail::ModeNativeCode(native);
+    if (code == C::acquired) {
+      try {
+        std::lock_guard lock(s.lifetime);
+        if (s.grants == s.limits.holders) std::terminate();
+        record->held.Link({s.identity.primitive,s.identity.generation,s.identity.latch_class});
+        ++s.grants;
+        grant.request_.mode = ModeLatchNative::Mode::upgrade;
+        grant.request_.admitted_rank = admitted_rank;
+      } catch (...) { std::terminate(); }
+    } else {
+      grant.state_ = nullptr; grant.record_ = nullptr;
+      grant.record_guard_.Reset(); grant.state_guard_.Reset();
+    }
+    return {{code},true};
   }
   // The caller exclusively borrows operation/output for the complete call.
   // Prepare both actual guards before any native grant. Moves of the returned
