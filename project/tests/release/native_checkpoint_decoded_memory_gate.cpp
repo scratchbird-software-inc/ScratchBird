@@ -1,6 +1,14 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "database_dirty_manifest.hpp"
+#include "native_checkpoint_root_memory.hpp"
+#include <cerrno>
+#include <filesystem>
+#include <limits>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <unistd.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <algorithm>
@@ -15,12 +23,42 @@ thread_local long budget=-1;
 thread_local bool measuring=false;
 thread_local unsigned allocations=0;
 unsigned fault=0,fault_context=1,hashes=0,hash_at=0,checks=0;
+unsigned reads=0,fail_read=0,short_read=0,eof_read=0;
+unsigned long writes=0,syncs=0;
+void* last_read_buffer=nullptr;
+bool bootstrap_fault=false;
+std::recursive_mutex* allocation_device_mutex=nullptr;
+std::recursive_mutex* deallocation_device_mutex=nullptr;
+bool allocation_lock_free=false,deallocation_lock_free=false;
+void ProbeCleanup(){if(deallocation_device_mutex){auto* mutex=deallocation_device_mutex;deallocation_device_mutex=nullptr;
+  bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();deallocation_lock_free=available;}}
 }
 void* operator new(std::size_t n){if(measuring)++allocations;if(budget==0){budget=-1;throw std::bad_alloc();}
   if(budget>0)--budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+void* operator new(std::size_t n,std::align_val_t a){
+  if(measuring)++allocations;if(budget==0){budget=-1;throw std::bad_alloc();}if(budget>0)--budget;
+  if(allocation_device_mutex){auto* mutex=allocation_device_mutex;allocation_device_mutex=nullptr;
+    bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();allocation_lock_free=available;}
+  void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(a),n?n:1)==0)return p;throw std::bad_alloc();
+}
+void operator delete(void* p,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
+extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
+extern "C" ssize_t __wrap_pread(int fd,void* p,size_t n,off_t at){
+  ++reads;last_read_buffer=p;if(fail_read==reads){errno=EIO;return -1;}if(eof_read&&eof_read==reads)return 0;
+  return __real_pread(fd,p,short_read&&short_read==reads?n-1:n,at);
+}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* p,size_t n,off_t at){++writes;return __real_pwrite(fd,p,n,at);}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd){++syncs;return __real_fsync(fd);}
+extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
+extern "C" int __wrap_EVP_Digest(const void* p,size_t n,unsigned char* out,unsigned int* count,const EVP_MD* md,ENGINE* engine){
+  if(bootstrap_fault){bootstrap_fault=false;return 0;}return __real_EVP_Digest(p,n,out,count,md,engine);
+}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){++hashes;if(hash_at&&hashes==hash_at)return nullptr;return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
@@ -73,6 +111,152 @@ db::NativeCheckpointRoot Example(unsigned profile=0,unsigned member=0,unsigned c
     ref.role=role;ref.page_type=types[role];ref.page={Id(3),30+role,80+role,target.uuid};ref.object_uuid=Id(100+role);ref.sha256.fill(byte(role));r.roots.push_back(ref);}
   if(count>=14){r.flags=4;r.cluster_quorum_transaction_id=15;}return r;
 }
+namespace m=scratchbird::core::memory;
+using ME=db::NativeCheckpointRootMemoryError;
+struct MemoryFixture {
+  m::MemoryManager manager;
+  m::HierarchicalMemoryBudgetLedger ledger{3,5};
+  db::NativeStorageMemoryBinding binding{Id(1),Id(61),Id(62),Id(63)};
+  db::NativeStorageMemory memory;
+  static auto Policy(){auto p=m::DefaultLocalEngineMemoryPolicy();p.hard_limit_bytes=2097152;p.per_context_limit_bytes=2097152;return p;}
+  explicit MemoryFixture(u64 bytes):manager(Policy()){
+    m::ReservationBackedMemoryResourceRequest r;r.memory_manager=&manager;r.reservation_ledger=&ledger;
+    r.consumer_kind=m::ReservationBackedMemoryConsumerKind::background_maintenance;
+    r.category=m::MemoryCategory::page_buffer;r.requested_bytes=bytes;r.memory_class="page_buffer";
+    r.route_label="storage.checkpoint.conformance";r.purpose="actual checkpoint image and metadata";
+    r.binary_operation_uuid=binding.operation_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::database]=binding.database_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context_uuid.bytes;
+    r.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(64).bytes},
+      {m::HierarchicalMemoryScopeKind::database,{},binding.database_uuid.bytes}};
+    r.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+    r.provenance.source_label="checkpoint resource conformance";
+    for(const auto& scope:r.scope_chain){m::HierarchicalMemoryBudget b;b.scope=scope;b.hard_limit_bytes=bytes;
+      b.provenance=r.provenance;Check(ledger.SetBudget(b).ok(),"actual parent budget");}
+    auto grant=m::AcquireReservationBackedMemoryResource(r);Check(grant.ok(),"actual node-issued metadata grant");
+    auto adopted=db::AdoptNativeStorageMemory(binding,grant.resource);Check(adopted.ok()&&!grant.resource,"exclusive native adoption");
+    memory=std::move(adopted.memory);
+  }
+  void Empty(){const auto s=manager.Snapshot();Check(!s.current_bytes&&!s.reserved_capacity_bytes&&
+    !s.active_capacity_reservation_count&&!ledger.Snapshot().current_bytes,"all real checkpoint charges released");}
+};
+struct MemoryFile {
+  std::filesystem::path directory,path;
+  d::FileDevice device;
+  db::NativeCheckpointRoot value;
+  Bytes bytes;
+  d::NativeCommonPageHeaderBinding expected;
+  explicit MemoryFile(unsigned profile):value(Example(profile)),bytes(Oracle(value)){
+    char name[]="/tmp/sb-checkpoint-memory-XXXXXX";const auto* made=mkdtemp(name);if(!made)throw std::runtime_error("mkdtemp");
+    directory=made;path=directory/"native.bin";
+    Check(device.Open(path.string(),d::FileOpenMode::create_new).ok(),"actual checkpoint source");
+    expected={{value.header.database_uuid,value.header.filespace_uuid,value.header.page_size_profile_uuid},
+      value.header.page_number,value.header.page_generation,0x300,value.header.page_uuid};
+    Bootstrap();Store(bytes);Check(device.Sync().ok()&&device.Close().ok()&&
+      device.Open(path.string(),d::FileOpenMode::open_existing).ok(),"cold reopen independent checkpoint image");
+  }
+  ~MemoryFile(){(void)device.Close();std::error_code ec;std::filesystem::remove_all(directory,ec);}
+  void Bootstrap(u32 flags=0,Uuid database=Id(1)){
+    Bytes b(4096,0);std::copy_n("SBFP",4,b.begin());Num(b,4,2,1);Num(b,6,2,4096);
+    Num(b,8,4,value.header.page_size_bytes);Num(b,12,4,flags);Put(b,16,database);
+    Put(b,32,value.header.filespace_uuid);Put(b,48,value.header.page_size_profile_uuid);
+    Num(b,64,4,1);Num(b,68,2,1);Num(b,70,2,1);Put(b,72,d::kNativeBootstrapIntegrityProfile);
+    if(flags&1)Put(b,88,Id(71));std::array<byte,32> digest{};
+    Check(SHA256(b.data(),104,digest.data())!=nullptr,"independent bootstrap digest");
+    std::copy(digest.begin(),digest.end(),b.begin()+104);
+    Check(device.WriteAt(0,b.data(),b.size()).ok()&&device.Sync().ok(),"actual independent bootstrap");
+  }
+  void Store(const Bytes& image){Check(device.WriteAt(value.header.page_number*u64(value.header.page_size_bytes),image.data(),image.size()).ok()&&device.Sync().ok(),"actual independent checkpoint");}
+  auto Read(MemoryFixture& f){reads=hashes=0;return db::ReadNativeCheckpointRootWithMemoryFromOpenDevice(device,expected,value.object_uuid,f.memory,f.binding);}
+};
+void NoRoot(const db::NativeCheckpointRootMemoryResult& r){Check(!r.ok()&&!r.root&&r.image.empty()&&!r.arena,"refusal exposes no image metadata or owner prefix");}
+void MemoryTests(){
+  for(unsigned profile=0;profile<5;++profile){MemoryFile file(profile);
+    const auto capacity=db::NativeCheckpointRootWorkspaceBytes(file.value.header.page_size_profile_uuid);
+    Check(capacity==file.bytes.size()+16*sizeof(db::NativeCheckpointRootReference)+(alignof(std::max_align_t)-1),"independent native backing size formula");
+    {
+      MemoryFixture f(capacity);
+      {auto guard=file.device.AcquireOperationGuard();allocation_device_mutex=guard.mutex();}
+      allocation_lock_free=false;auto read=file.Read(f);
+      Check(read.ok()&&allocation_lock_free,"real metadata backing allocated outside device guard");
+      Check(last_read_buffer==read.image.data()&&read.image.size()==file.bytes.size()&&
+        std::equal(read.image.begin(),read.image.end(),file.bytes.begin(),file.bytes.end()),"actual read destination is returned charged image");
+      const auto begin=reinterpret_cast<std::uintptr_t>(read.image.data());
+      const auto inside=[&](const void* ptr,usize bytes){auto n=reinterpret_cast<std::uintptr_t>(ptr);return n>=begin&&n-begin<=capacity&&bytes<=capacity-(n-begin);};
+      Check(inside(read.root->roots.data(),read.root->roots.size_bytes())&&
+        Oracle(*read.root)==file.bytes,"actual metadata resides in same charged block with exact binary records");
+      Check(f.manager.Snapshot().current_bytes==capacity&&f.memory.Snapshot().allocated_bytes==capacity&&
+        f.ledger.Snapshot().current_bytes==capacity&&read.arena.Snapshot().retained_bytes==capacity,"actual physical parent and arena charges agree");
+      auto full=file.Read(f);NoRoot(full);Check(full.error==ME::memory_allocation_failure&&reads==0,"simultaneous live image prevents uncharged second reader");
+      const auto revoked=f.ledger.CleanupOwner(f.binding.owner_uuid.bytes);Check(revoked.retained_bytes==capacity,"revocation retains actual image and metadata");
+      auto denied=file.Read(f);NoRoot(denied);Check(denied.error==ME::memory_binding_failure&&reads==0,"revoked grant prevents new source reads");
+      f.memory={};Check(f.manager.Snapshot().current_bytes==capacity,"returned metadata owner survives caller workspace");
+      std::thread worker([retained=std::move(read)]()mutable{budget=0;retained={};if(budget!=0)std::abort();budget=-1;});worker.join();f.Empty();
+    }
+    MemoryFixture valid(capacity);const auto no_writes=writes,no_syncs=syncs;
+    const auto original_binding=file.expected;
+    for(unsigned invalid=0;invalid<7;++invalid){
+      if(invalid==0)file.expected.page_number=0;
+      if(invalid==1)file.expected.page_number=std::numeric_limits<u64>::max();
+      if(invalid==2)file.expected.page_generation=0;
+      if(invalid==3)file.expected.page_type=0x30e;
+      if(invalid==4)file.expected.filespace.filespace_uuid={};
+      if(invalid==5)file.expected.filespace.page_size_profile_uuid=Id(99);
+      if(invalid==6)file.expected.page_uuid=Uuid{};
+      auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::invalid_request&&reads==0&&
+        !valid.memory.Snapshot().allocation_count,"invalid typed page binding refuses before physical admission");
+      file.expected=original_binding;
+    }
+    for(unsigned field=0;field<4;++field){auto wrong=valid.binding;
+      const std::array<Uuid*,4> fields{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*fields[field]=Id(99);
+      reads=0;auto denied=db::ReadNativeCheckpointRootWithMemoryFromOpenDevice(file.device,file.expected,file.value.object_uuid,valid.memory,wrong);
+      NoRoot(denied);Check(denied.error==ME::memory_binding_failure&&!reads&&!valid.manager.Snapshot().current_bytes,"exact binary memory identity before allocation or I/O");}
+    MemoryFixture small(capacity-1);auto short_grant=file.Read(small);NoRoot(short_grant);
+    Check(short_grant.error==ME::memory_allocation_failure&&!reads&&!small.manager.Snapshot().current_bytes,"one byte short cannot obtain image or metadata");small.memory={};small.Empty();
+    file.expected.page_generation++;{auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::header_failure,"stale generation binds actual source");}file.expected.page_generation--;
+    auto object=db::ReadNativeCheckpointRootWithMemoryFromOpenDevice(file.device,file.expected,Id(99),valid.memory,valid.binding);NoRoot(object);Check(object.error==ME::object_mismatch,"exact checkpoint object identity");
+    for(unsigned n=1;n<=2;++n){fail_read=n;auto r=file.Read(valid);fail_read=0;NoRoot(r);
+      Check(reads==n&&!valid.manager.Snapshot().current_bytes,"every real read failure releases admitted payload");}
+    short_read=2;{auto r=file.Read(valid);Check(r.ok()&&reads==3,"legal short physical read completes");}short_read=0;
+    short_read=2;eof_read=3;{auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::io_failure&&r.page_bytes_read==file.bytes.size()-1,"partial then EOF retains actual read progress only");}short_read=eof_read=0;
+    bootstrap_fault=true;{auto r=file.Read(valid);NoRoot(r);Check(!bootstrap_fault&&r.error==ME::bootstrap_failure,"real bootstrap digest failure reached");}
+    for(unsigned phase=1;phase<=2;++phase)for(unsigned method=1;method<=4;++method){fault_context=phase;fault=method;
+      auto r=file.Read(valid);NoRoot(r);Check(fault==0&&r.checkpoint_error==E::hash_failure,"each method in each actual checkpoint digest reached");}
+    for(unsigned phase=1;phase<=2;++phase){hash_at=phase;auto r=file.Read(valid);hash_at=0;NoRoot(r);
+      Check(r.checkpoint_error==E::hash_failure&&hashes==phase,"each actual checkpoint digest context failure typed");}
+    Check(writes==no_writes&&syncs==no_syncs,"reader and refusal paths never write or sync source");
+    auto corrupt=file.bytes;corrupt.back()^=1;file.Store(corrupt);
+    {auto guard=file.device.AcquireOperationGuard();deallocation_device_mutex=guard.mutex();}deallocation_lock_free=false;
+    {auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::checkpoint_failure&&deallocation_lock_free,"failed image cleanup occurs after releasing device guard");}file.Store(file.bytes);
+    file.Bootstrap(0,Id(99));{auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::bootstrap_failure,"actual bootstrap identity mismatch");}file.Bootstrap(1);
+    {auto r=file.Read(valid);NoRoot(r);Check(r.error==ME::encrypted_requires_authority&&reads==1,"encrypted filespace refuses before checkpoint payload I/O");}file.Bootstrap();
+    {auto encrypted=file.value;encrypted.header.flags=1;file.Store(Oracle(encrypted));auto r=file.Read(valid);NoRoot(r);
+      Check(r.error==ME::encrypted_requires_authority,"encrypted common header never parsed as plaintext");}file.Store(file.bytes);
+    for(unsigned member=0;member<5;++member)for(unsigned mask=0;mask<64;++mask)for(bool operation:{false,true})for(bool completed:{false,true}){
+      auto variant=Example(profile,member,16);variant.completed=completed;
+      std::erase_if(variant.roots,[&](const auto& root){return root.role>10&&!(mask&(1u<<(root.role-11)));});
+      variant.flags=(mask&(1u<<3))?4:0;variant.cluster_quorum_transaction_id=variant.flags?15:0;
+      if(operation){variant.creator_transaction_uuid={};variant.creator_local_transaction_id=0;variant.creator_operation_uuid=Id(98);}
+      const auto encoded=Oracle(variant);file.Store(encoded);auto r=file.Read(valid);
+      Check(r.ok()&&Oracle(*r.root)==encoded,"actual managed checkpoint retains all 64 optional role subsets across mixed profiles creators and completion without upgrading authority");
+    }
+    file.Store(file.bytes);
+    if(!profile){unsigned long sites=0;
+      {allocations=0;measuring=true;auto r=file.Read(valid);measuring=false;sites=allocations;Check(r.ok(),"measure full admitted reader allocation sites");}
+      for(unsigned long n=0;n<sites;++n){budget=n;auto r=file.Read(valid);budget=-1;
+        if(r.ok())Check(Oracle(*r.root)==file.bytes,"optional telemetry loss cannot change decoded result");
+        else NoRoot(r);
+        r={};Check(!valid.manager.Snapshot().current_bytes&&!valid.memory.Snapshot().allocated_bytes,"every allocation fault retains zero physical payload after cleanup");
+        {auto retry=file.Read(valid);Check(retry.ok(),"same-owner retry after each allocation failure");}
+      }
+      Check(sites>0,"allocation sweep executed");std::cout<<"governed checkpoint metadata faults="<<sites<<'\n';
+    }
+    Check(file.device.Close().ok(),"close source");auto closed=file.Read(valid);NoRoot(closed);
+    Check(closed.error==ME::bootstrap_failure&&closed.bootstrap_error==d::FilespaceBootstrapError::device_not_open,"reader never reopens closed source");
+    valid.memory={};valid.Empty();
+  }
+}
 void Codecs(){
   for(unsigned profile=0;profile<5;++profile)for(unsigned member=0;member<5;++member)
     for(unsigned count=10;count<=16;++count)for(bool operation:{false,true})for(bool complete:{false,true}){
@@ -122,5 +306,5 @@ void Codecs(){
     Check(!result.root&&result.error==E::invalid_roots,"conflicting shared root metadata cannot be interpreted as a valid alias");}
 }
 }
-int main(){try{Codecs();std::cout<<"PASS borrowed checkpoint checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
+int main(){try{Codecs();MemoryTests();std::cout<<"PASS governed checkpoint checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(...){budget=-1;std::cerr<<"FAIL checks="<<checks<<'\n';return 1;}}
