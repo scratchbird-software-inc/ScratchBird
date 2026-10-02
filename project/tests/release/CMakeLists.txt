@@ -684,7 +684,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(native_owned_source_route_gate PRIVATE cxx_std_23)
   target_include_directories(native_owned_source_route_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/server")
   target_link_libraries(native_owned_source_route_gate PRIVATE sb_storage_database sb_core_uuid)
-  target_link_options(native_owned_source_route_gate PRIVATE "LINKER:--wrap=pread")
+  target_link_options(native_owned_source_route_gate PRIVATE "LINKER:--wrap=pread"
+    "LINKER:--wrap=pthread_cond_timedwait" "LINKER:--wrap=pthread_mutex_lock"
+    "LINKER:--wrap=pthread_cond_destroy" "LINKER:--wrap=pthread_cond_init")
   add_test(NAME native_owned_source_route_gate COMMAND native_owned_source_route_gate)
   set_tests_properties(native_owned_source_route_gate PROPERTIES
     TIMEOUT 60 LABELS "storage;binary_uuid;route_ownership;not_runtime_acceptance")

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -20,8 +21,10 @@ namespace scratchbird::storage::disk {
 
 class RouteOwnershipLease;
 class RouteSourceTransition;
+class RouteSourceDrainWait;
 enum class RouteSourceTransitionError {
-  none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure
+  none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure,
+  invalid_deadline
 };
 enum class RouteSourceDrainState { pending, drained, withdrawn, wrong_process, lock_failure };
 // An observation only. Native source transfer must revalidate under the actual
@@ -35,12 +38,54 @@ struct RouteSourceTransitionResult {
   std::shared_ptr<RouteSourceTransition> transition;
   bool ok() const noexcept { return error == RouteSourceTransitionError::none && transition != nullptr; }
 };
+enum class RouteSourceDrainWaitState {
+  pending, drained, cancelled, deadline_expired, withdrawn, wrong_process,
+  resource_exhausted, lock_failure
+};
+struct RouteSourceDrainWaitObservation {
+  RouteSourceDrainWaitState state = RouteSourceDrainWaitState::lock_failure;
+  std::uint64_t legacy_borrowers = 0;
+  std::uint64_t parked_waiters = 0;
+};
+enum class RouteSourceDrainCancelResult {
+  requested, already_completed, wrong_process, lock_failure
+};
+struct RouteSourceDrainWaitResult {
+  RouteSourceTransitionError error = RouteSourceTransitionError::invalid_owner;
+  std::shared_ptr<RouteSourceDrainWait> wait;
+  bool ok() const noexcept { return error == RouteSourceTransitionError::none && wait != nullptr; }
+};
+// One retained, bounded wait attempt. Cancellation affects this attempt only;
+// retries use the same transition and never reopen legacy admission. Retain a
+// shared handle for every concurrent call. Completion is immutable and is NOT
+// native transfer authority; transfer must revalidate the actual owner state.
+class RouteSourceDrainWait final {
+ public:
+  RouteSourceDrainWait(const RouteSourceDrainWait&) = delete;
+  RouteSourceDrainWait& operator=(const RouteSourceDrainWait&) = delete;
+  RouteSourceDrainWaitObservation Wait() noexcept;
+  RouteSourceDrainWaitObservation Observe() const noexcept;
+  RouteSourceDrainCancelResult Cancel() noexcept;
+ private:
+  friend class RouteSourceTransition;
+  RouteSourceDrainWait(std::shared_ptr<RouteOwnershipLease> owner,
+      std::chrono::steady_clock::time_point deadline)
+      : owner_(std::move(owner)), deadline_(deadline) {}
+  std::shared_ptr<RouteOwnershipLease> owner_;
+  const std::chrono::steady_clock::time_point deadline_;
+  RouteSourceDrainWaitState state_ = RouteSourceDrainWaitState::pending;
+  std::uint64_t completed_borrowers_ = 0;
+  std::uint64_t parked_waiters_ = 0;
+};
 class RouteSourceTransition final {
  public:
   RouteSourceTransition(const RouteSourceTransition&) = delete;
   RouteSourceTransition& operator=(const RouteSourceTransition&) = delete;
   // Nonblocking observation, not a wait/cancel/transfer or shutdown receipt.
   RouteSourceDrainObservation ObserveDrain() const noexcept;
+  // A finite monotonic deadline is mandatory; max() is not an unbounded wait.
+  RouteSourceDrainWaitResult BeginDrainWait(
+      std::chrono::steady_clock::time_point deadline) const noexcept;
  private:
   friend class RouteOwnershipLease;
   explicit RouteSourceTransition(std::shared_ptr<RouteOwnershipLease> owner)
@@ -65,6 +110,9 @@ class RouteOwnershipLease final {
   friend class scratchbird::server::DatabaseOwnershipLock;
   friend class FileDevice;
   friend class RouteSourceTransition;
+  friend class RouteSourceDrainWait;
+  struct DrainSignal;
+  std::unique_ptr<DrainSignal> drain_signal_;
   struct BorrowPin;
   static std::shared_ptr<RouteOwnershipLease> PinBorrowLocked(
       const std::shared_ptr<RouteOwnershipLease>& owner);
