@@ -733,6 +733,7 @@ RuntimePermitWaitResult ResourceGovernanceReservationLedger::WaitAcquireRuntimeP
   if (!limit) { result.admission.code = RuntimePermitCode::wait_policy_unbound; return result; }
   if (calls >= limit) { result.admission.code = RuntimePermitCode::waiter_exhausted; return result; }
   ++calls; ++waiters;
+  result.registered = true;
   const auto began = std::chrono::steady_clock::now();
   const auto wake = [this]() noexcept {
     std::lock_guard callback_lock(mutex_);
@@ -803,6 +804,104 @@ RuntimePermitCode ResourceGovernanceReservationLedger::CloseRuntimePermitInstanc
   } catch (const std::system_error&) {
     return RuntimePermitCode::synchronization_failed;
   }
+}
+
+RuntimePermitInstanceSnapshot ResourceGovernanceReservationLedger::InspectRuntimePermitInstanceLocked(
+    const RuntimePermitAuthority& authority, RuntimePermitProfile profile,
+    RuntimePermitInstanceBinding instance) const noexcept {
+  RuntimePermitInstanceSnapshot result;
+  if (!native_runtime_) { result.code = RuntimePermitCode::policy_unbound; return result; }
+  const auto& runtime = *native_runtime_;
+  const bool worker = profile == RuntimePermitProfile::worker_slot;
+  const auto& selected = worker ? runtime.workers : runtime.queue;
+  if ((profile != RuntimePermitProfile::queued_task && !worker) ||
+      !(authority == runtime.policy.authority) || instance.semaphore != selected.semaphore ||
+      instance.generation != selected.generation) return result;
+  result.closed = worker ? runtime.workers_closed : runtime.queue_closed;
+  result.code = result.closed ? RuntimePermitCode::closed : RuntimePermitCode::bound;
+  result.capacity = worker ? runtime.policy.worker_capacity : runtime.policy.queue_capacity;
+  result.waiter_limit = worker ? runtime.policy.worker_waiter_limit : runtime.policy.queue_waiter_limit;
+  result.waiters = worker ? runtime.worker_waiters : runtime.queue_waiters;
+  result.wait_calls = worker ? runtime.worker_wait_calls : runtime.queue_wait_calls;
+  for (const auto& entry : runtime.permits)
+    if (entry.second.view.binding.profile == profile) ++result.holders;
+  return result;
+}
+
+RuntimePermitInstanceSnapshot ResourceGovernanceReservationLedger::InspectRuntimePermitInstance(
+    const RuntimePermitAuthority& authority, RuntimePermitProfile profile,
+    RuntimePermitInstanceBinding instance) const noexcept {
+  try {
+    std::lock_guard lock(mutex_);
+    return InspectRuntimePermitInstanceLocked(authority, profile, instance);
+  } catch (const std::system_error&) {
+    RuntimePermitInstanceSnapshot result;
+    result.code = RuntimePermitCode::synchronization_failed;
+    return result;
+  }
+}
+
+RuntimePermitDrainResult ResourceGovernanceReservationLedger::DrainRuntimePermitInstance(
+    const RuntimePermitAuthority& authority, RuntimePermitProfile profile,
+    RuntimePermitInstanceBinding instance, RuntimePermitAcquireControl control,
+    std::string_view reason) noexcept {
+  RuntimePermitDrainResult result;
+  if (reason.size() > result.uninterruptible_reason.size() ||
+      reason.find('\0') != std::string_view::npos ||
+      (!control.cancellation.stop_possible() && (!control.wait_deadline || reason.empty())))
+    return result;
+  std::copy(reason.begin(), reason.end(), result.uninterruptible_reason.begin());
+  result.reason_size = static_cast<std::uint8_t>(reason.size());
+  std::unique_lock lock(mutex_, std::defer_lock);
+  try { lock.lock(); }
+  catch (const std::system_error&) {
+    result.code = RuntimePermitCode::synchronization_failed; return result;
+  }
+  const auto initial = InspectRuntimePermitInstanceLocked(authority, profile, instance);
+  if (initial.code != RuntimePermitCode::closed) {
+    result.code = initial.code == RuntimePermitCode::bound ? RuntimePermitCode::invalid_binding : initial.code;
+    return result;
+  }
+  // This callback belongs to the externally retained lifecycle observer; it
+  // is not included among the acquisition calls that observer waits to drain.
+  const auto notify = [this]() noexcept {
+    std::lock_guard callback_lock(mutex_);
+    NotifyRuntimeWaitersLocked();
+  };
+  lock.unlock();
+  std::optional<std::stop_callback<decltype(notify)>> wake;
+  if (control.cancellation.stop_possible()) wake.emplace(control.cancellation, notify);
+  try { lock.lock(); } catch (...) { std::terminate(); }
+  std::optional<std::chrono::steady_clock::time_point> began;
+  try {
+    for (;;) {
+      const auto state = InspectRuntimePermitInstanceLocked(authority, profile, instance);
+      result.code = state.code;
+      if (state.code != RuntimePermitCode::closed) {
+        if (state.code == RuntimePermitCode::bound) result.code = RuntimePermitCode::invalid_binding;
+        break; // An open pool cannot provide a stable final zero observation.
+      }
+      if (control.cancellation.stop_requested()) { result.code = RuntimePermitCode::cancelled; break; }
+      if (!state.holders && !state.wait_calls && !state.waiters) {
+        result.drained = true; break;
+      }
+      if (control.wait_deadline && std::chrono::steady_clock::now() >= *control.wait_deadline) {
+        result.code = RuntimePermitCode::timed_out; break;
+      }
+      if (!began) began = std::chrono::steady_clock::now();
+      if (!native_runtime_->changed->Wait(lock, control.wait_deadline)) {
+        result.code = RuntimePermitCode::synchronization_failed; break;
+      }
+    }
+  } catch (const std::system_error&) {
+    if (!lock.owns_lock()) std::terminate();
+    result.code = RuntimePermitCode::synchronization_failed;
+  }
+  if (began) result.wait_duration_us = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - *began).count());
+  lock.unlock();
+  wake.reset(); // Join outside mutex_, before the retained owner may retire.
+  return result;
 }
 
 RuntimePermitCode ResourceGovernanceReservationLedger::ReleaseRuntimePermit(
