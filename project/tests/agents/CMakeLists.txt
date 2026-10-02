@@ -9,6 +9,16 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Threads REQUIRED)
+  add_executable(checked_fifo_mutex_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/checked_fifo_mutex_gate.cpp")
+  target_compile_features(checked_fifo_mutex_gate PRIVATE cxx_std_20)
+  target_include_directories(checked_fifo_mutex_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/platform")
+  target_link_libraries(checked_fifo_mutex_gate PRIVATE Threads::Threads)
+  target_link_options(checked_fifo_mutex_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_cond_broadcast)
+  add_test(NAME checked_fifo_mutex_gate COMMAND checked_fifo_mutex_gate)
+  set_tests_properties(checked_fifo_mutex_gate PROPERTIES TIMEOUT 60 LABELS "concurrency;fifo;platform;fault")
   add_executable(runtime_permit_wait_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_wait_gate.cpp")
   target_compile_features(runtime_permit_wait_gate PRIVATE cxx_std_20)
