@@ -8,6 +8,18 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(runtime_permit_wait_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_wait_gate.cpp")
+  target_compile_features(runtime_permit_wait_gate PRIVATE cxx_std_20)
+  target_link_libraries(runtime_permit_wait_gate PRIVATE sb_core_resource_governance sb_core_memory)
+  target_link_options(runtime_permit_wait_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_cond_init)
+  add_test(NAME runtime_permit_wait_gate COMMAND runtime_permit_wait_gate)
+  set_tests_properties(runtime_permit_wait_gate PROPERTIES
+    TIMEOUT 120 LABELS "concurrency;resource_governance;binary_uuid;runtime_permits;park;fault")
+endif()
+
 add_executable(runtime_permit_governor_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_governor_gate.cpp")
 add_executable(runtime_permit_native_gate

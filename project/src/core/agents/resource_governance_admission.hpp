@@ -16,6 +16,7 @@
 
 #include "agent_runtime.hpp"
 #include "runtime_permit_types.hpp"
+#include "checked_condition.hpp"
 
 #include <cstdint>
 #include <map>
@@ -162,6 +163,9 @@ struct ResourceGovernanceReservationSnapshot {
   ResourceGovernanceQuotaVector active;
   std::uint64_t retained_runtime_permits = 0;
   std::uint64_t quiescence_requested_permits = 0;
+  std::uint32_t worker_waiters = 0, queue_waiters = 0;
+  std::uint32_t worker_wait_calls = 0, queue_wait_calls = 0;
+  bool workers_closed = false, queue_closed = false;
 };
 
 struct ResourceGovernanceReservationAcquireResult {
@@ -237,7 +241,14 @@ class ResourceGovernanceReservationLedger {
       core::uuid::StandaloneUuidV7Issuer& issuer) noexcept;
   RuntimePermitAcquireResult AcquireRuntimePermit(const RuntimePermitRequest&,
       RuntimePermitAcquireControl control = {}) noexcept;
+  // Blocking governor primitive, not a memory-retirement or runtime drain
+  // receipt. Owning runtime keeps ledger/provider/issuer alive through the
+  // whole call and callback join. No callback invokes external caller code.
+  RuntimePermitWaitResult WaitAcquireRuntimePermit(const RuntimePermitRequest&,
+      RuntimePermitAcquireControl, std::string_view uninterruptible_reason = {}) noexcept;
   RuntimePermitCode CloseRuntimePermits() noexcept;
+  RuntimePermitCode CloseRuntimePermitInstance(const RuntimePermitAuthority&,
+      RuntimePermitProfile, RuntimePermitInstanceBinding) noexcept;
 
   // Fallible result/evidence construction completes before ledger mutation.
   // Allocation failure propagates with ownership, usage and sequences intact.
@@ -274,13 +285,24 @@ class ResourceGovernanceReservationLedger {
     const RuntimePermitInstanceBinding workers;
     const RuntimePermitInstanceBinding queue;
     core::uuid::StandaloneUuidV7Issuer& issuer;
-    bool closed = false;
+    bool workers_closed = false;
+    bool queue_closed = false;
+    std::uint32_t worker_waiters = 0, queue_waiters = 0;
+    std::uint32_t worker_wait_calls = 0, queue_wait_calls = 0;
+    std::optional<core::platform::CheckedCondition> changed;
     std::pmr::map<core::platform::Uuid, NativePermit> permits;
     NativeRuntime(core::platform::Uuid id, RuntimePermitPolicy p,
         RuntimePermitInstanceBinding w, RuntimePermitInstanceBinding q,
-        std::pmr::memory_resource& resource, core::uuid::StandaloneUuidV7Issuer& u) noexcept
-        : governor(id), policy(p), workers(w), queue(q), issuer(u), permits(&resource) {}
+        std::pmr::memory_resource& resource, core::uuid::StandaloneUuidV7Issuer& u)
+        : governor(id), policy(p), workers(w), queue(q), issuer(u), permits(&resource) {
+      if (p.worker_waiter_limit || p.queue_waiter_limit) changed.emplace();
+    }
   };
+  RuntimePermitCode ValidateRuntimePermitLocked(const RuntimePermitRequest&,
+      const RuntimePermitAcquireControl&) const noexcept;
+  RuntimePermitAcquireResult AcquireRuntimePermitLocked(const RuntimePermitRequest&,
+      const RuntimePermitAcquireControl&);
+  void NotifyRuntimeWaitersLocked() noexcept;
   RuntimePermitCode ReleaseRuntimePermit(RuntimePermitGrant&) noexcept;
   bool RuntimePermitQuiescenceRequested(const RuntimePermitGrant&) const;
   struct ActiveReservation {

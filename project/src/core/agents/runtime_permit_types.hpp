@@ -3,9 +3,12 @@
 #pragma once
 #include "runtime_platform.hpp"
 #include <cstdint>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <stop_token>
+#include <string_view>
+#include <limits>
 
 namespace scratchbird::core::agents {
 
@@ -13,8 +16,15 @@ enum class RuntimePermitProfile { worker_slot, queued_task };
 enum class RuntimePermitCode {
   bound, granted, released, closed, invalid_binding, policy_unbound,
   exhausted, allocation_failed, identity_failed, synchronization_failed,
-  no_grant, cancelled, timed_out
+  no_grant, cancelled, timed_out, sequence_exhausted, wait_policy_unbound,
+  waiter_exhausted
 };
+
+// The real grant path uses this same boundary. Exhaustion is permanent for
+// this incarnation; a capacity wake cannot make issuance safe again.
+constexpr bool RuntimePermitSequenceAvailable(std::uint64_t issued) noexcept {
+  return issued != std::numeric_limits<std::uint64_t>::max();
+}
 
 struct RuntimePermitAuthority {
   platform::Uuid database;
@@ -29,6 +39,10 @@ struct RuntimePermitPolicy {
   RuntimePermitAuthority authority;
   std::uint32_t worker_capacity = 0;
   std::uint32_t queue_capacity = 0;
+  // Selected bounds on whole blocking calls, including cancellation-callback
+  // joining after terminal selection. Zero admits immediate attempts only.
+  std::uint32_t worker_waiter_limit = 0;
+  std::uint32_t queue_waiter_limit = 0;
 };
 struct RuntimePermitInstanceBinding {
   platform::Uuid semaphore;
@@ -55,7 +69,8 @@ struct RuntimePermitView {
 
 // Acquisition controls, not the resource-use lease in RuntimePermitRequest.
 // Checked under grant/close serialization before admission and again after
-// fallible metadata preparation. No waiting is performed by this governor API.
+// fallible metadata preparation. AcquireRuntimePermit never waits. The separate
+// bounded WaitAcquire API requires cancellation or a finite, reasoned wait.
 // No controls means an immediate capacity attempt, not an uncancellable wait.
 struct RuntimePermitAcquireControl {
   std::stop_token cancellation;
@@ -91,5 +106,14 @@ struct RuntimePermitAcquireResult {
   RuntimePermitCode code = RuntimePermitCode::invalid_binding;
   RuntimePermitGrant permit;
   bool ok() const noexcept { return code == RuntimePermitCode::granted && bool(permit); }
+};
+struct RuntimePermitWaitResult {
+  RuntimePermitAcquireResult admission;
+  std::uint64_t wait_duration_us = 0;
+  std::array<char, 96> uninterruptible_reason{};
+  std::uint8_t reason_size = 0;
+  std::string_view reason() const noexcept {
+    return {uninterruptible_reason.data(), reason_size};
+  }
 };
 } // namespace scratchbird::core::agents
