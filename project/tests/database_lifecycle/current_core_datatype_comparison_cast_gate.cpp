@@ -110,6 +110,16 @@ bool IsCanonicalInt128(const dt::DatatypeOperationValue& value,
       decoded == expected;
 }
 
+dt::DatatypeOperationValue Uint128Value(std::string_view number) {
+  std::string encoded;
+  Require(dt::EncodeCanonicalUint128Value(number, &encoded),
+          "MDF-014 uint128 fixture encoding failed");
+  auto value = Value(dt::CanonicalTypeId::uint128, std::move(encoded));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::uint128);
+  value.descriptor = descriptor;
+  return value;
+}
+
 bool IsCanonicalUint64(const dt::DatatypeOperationValue& value,
                        std::uint64_t expected) {
   std::uint64_t decoded = 0;
@@ -393,8 +403,8 @@ void TestNumericOperationsUseTypedSemantics() {
   dt::DatatypeNumericOperationRequest compare;
   compare.operation = dt::DatatypeNumericOperationKind::compare;
   compare.type_id = dt::CanonicalTypeId::uint128;
-  compare.left = Value(dt::CanonicalTypeId::uint128, "255");
-  compare.right = Value(dt::CanonicalTypeId::uint128, "256");
+  compare.left = Uint128Value("255");
+  compare.right = Uint128Value("256");
   const auto compared = dt::ApplyNumericOperation(compare);
   Require(compared.ok() && compared.comparison < 0,
           "MDF-014 uint128 numeric compare drifted");
@@ -1071,111 +1081,68 @@ void TestIntegerPhysicalSortKeyBytes() {
               !dt::CompareDatatypeValues({int128_null, int128_zero}).ok(),
           "int128 unresolved key/hash/NULL comparison policy did not fail closed");
 
-  struct Case { dt::CanonicalTypeId type; unsigned width; bool signed_type;
-    const char* minimum; const char* maximum; const char* overflow; };
-  const std::vector<Case> cases = {
-      {dt::CanonicalTypeId::uint128, 16, false, "0", "340282366920938463463374607431768211455",
-       "340282366920938463463374607431768211456"}};
-  for (const auto& item : cases) {
-    const auto compare = [&](std::string left, std::string right) {
-      dt::DatatypeComparisonRequest request;
-      request.left = Value(item.type, std::move(left));
-      request.right = Value(item.type, std::move(right));
-      return dt::CompareDatatypeValues(request);
-    };
-    const auto hash = [&](std::string value) {
-      const auto result = dt::HashDatatypeValue({Value(item.type, std::move(value))});
-      Require(result.ok(), "integer boundary hash refused");
-      return result.stable_hash_hex;
-    };
-    const auto refuse = [&](const std::string& invalid) {
-      Require(!compare(invalid, "0").ok() && !compare("0", invalid).ok(),
-              "integer comparison admitted invalid or out-of-range operand");
-      Require(!dt::HashDatatypeValue({Value(item.type, invalid)}).ok(),
-              "integer hash admitted invalid or out-of-range operand");
-      Require(!dt::MakeDatatypeSortKey({Value(item.type, invalid)}).ok(),
-              "integer sort key admitted invalid or out-of-range operand");
-      dt::DatatypeComparisonRequest request;
-      request.left = Value(item.type, invalid);
-      request.right = TypedNull(item.type);
-      Require(!dt::CompareDatatypeValues(request).ok(),
-              "NULL counterpart bypassed integer operand validation");
-      std::swap(request.left, request.right);
-      Require(!dt::CompareDatatypeValues(request).ok(),
-              "left NULL bypassed integer operand validation");
-    };
-    const auto key = [&](std::string value) {
-      const auto encoded = dt::MakeDatatypeSortKey({Value(item.type, std::move(value))});
-      Require(encoded.ok(), "integer boundary comparison key refused");
-      return encoded.sort_key;
-    };
-    // Independently specified state byte and fixed-width big-endian payload.
-    const auto smallest = std::string(1, '\1') + std::string(item.width, '\0');
-    const auto largest = std::string(1, '\1') + std::string(item.width, static_cast<char>(255));
-    Require(key(item.minimum) == smallest && key(item.maximum) == largest,
-            "integer key is not fixed-width sign-transformed big-endian bytes");
-    std::string zero = smallest;
-    if (item.signed_type) zero[1] = static_cast<char>(128);
-    Require(key("0") == zero && key("+000") == zero,
-            "integer zero lexical aliases changed comparison identity");
-    for (const auto alias : {"0", "000", "+000"}) {
-      const auto compared = compare(alias, "0");
-      Require(compared.ok() && compared.comparison == 0 && hash(alias) == hash("0"),
-              "integer zero aliases disagree across comparison hash and key");
-    }
-    if (item.signed_type) {
-      Require(key("-0") == zero && key("-1") < zero,
-              "signed zero or negative integer key ordering drifted");
-      std::string below_minimum = "-" + std::string(item.overflow);
-      below_minimum.back() = static_cast<char>(below_minimum.back() + 1);
-      Require(!dt::MakeDatatypeSortKey({Value(item.type, below_minimum)}).ok(),
-              "integer sort key accepted a below-minimum value");
-      refuse(below_minimum);
-      for (const auto alias : {"-0", "-000"}) {
-        const auto compared = compare(alias, "0");
-        Require(compared.ok() && compared.comparison == 0 &&
-                    hash(alias) == hash("0") && key(alias) == zero,
-                "negative zero disagrees across integer comparison hash and key");
-      }
-    } else {
-      Require(!dt::MakeDatatypeSortKey({Value(item.type, "-1")}).ok(),
-              "unsigned integer key admitted a negative value");
-      refuse("-1");
-      refuse("-0");
-    }
-    auto one = zero;
-    one.back() = static_cast<char>(static_cast<unsigned char>(one.back()) + 1u);
-    Require(key("1") == one && zero < one,
-            "integer one is not encoded in the least significant byte");
-    for (const auto invalid : {std::string(item.overflow), std::string("1x"), std::string(80, '9'),
-                              std::string(), std::string("+"), std::string(" 1"), std::string("1.0")}) {
-      Require(!dt::MakeDatatypeSortKey({Value(item.type, invalid)}).ok(),
-              "invalid integer key was accepted or silently truncated");
-      refuse(invalid);
-    }
-    const std::vector<std::string> ordered = item.signed_type
-        ? std::vector<std::string>{item.minimum, "-1", "0", "1", item.maximum}
-        : std::vector<std::string>{"0", "1", item.maximum};
-    for (std::size_t left = 0; left < ordered.size(); ++left) {
-      for (std::size_t right = 0; right < ordered.size(); ++right) {
-        const int expected = left < right ? -1 : (left > right ? 1 : 0);
-        const auto compared = compare(ordered[left], ordered[right]);
-        const auto left_key = key(ordered[left]), right_key = key(ordered[right]);
-        const int key_comparison = left_key < right_key ? -1 : (left_key > right_key ? 1 : 0);
-        Require(compared.ok() && compared.comparison == expected && key_comparison == expected,
-                "integer comparison and physical key disagree with independent boundary order");
-      }
-    }
-    dt::DatatypeSortKeyRequest null_request;
-    null_request.value = TypedNull(item.type);
-    const auto first = dt::MakeDatatypeSortKey(null_request);
-    null_request.null_ordering = dt::DatatypeNullOrdering::nulls_last;
-    const auto last = dt::MakeDatatypeSortKey(null_request);
-    Require(first.ok() && last.ok() && first.sort_key == std::string(1, '\0') &&
-                last.sort_key == std::string(1, '\2') &&
-                first.sort_key < smallest && largest < last.sort_key,
-            "integer NULL sort key ordering or state drifted");
+  const auto uint128_key = [](std::string_view decimal) {
+    const auto key = dt::MakeDatatypeSortKey({Uint128Value(decimal)});
+    Require(key.ok(), "uint128 boundary comparison key refused");
+    return key.sort_key;
+  };
+  const auto smallest = std::string(1, '\1') + std::string(16, '\0');
+  const auto largest = std::string(1, '\1') + std::string(16, static_cast<char>(255));
+  Require(uint128_key("0") == smallest &&
+              uint128_key("340282366920938463463374607431768211455") == largest,
+          "uint128 key is not state plus unsigned big-endian bytes");
+  std::string one = smallest;
+  one.back() = '\1';
+  Require(uint128_key("1") == one && smallest < one,
+          "uint128 one is not encoded in the least significant key byte");
+
+  std::string staged = "sentinel";
+  for (const auto invalid : {"-1", "-0", "+1", "00", " 1", "1.0",
+                             "340282366920938463463374607431768211456"}) {
+    const auto before = staged;
+    Require(!dt::EncodeCanonicalUint128Value(invalid, &staged) &&
+                staged == before,
+            "uint128 lexical boundary admitted invalid text");
   }
+  for (const auto width : {0u, 1u, 8u, 15u, 17u}) {
+    auto malformed = Uint128Value("0");
+    malformed.encoded_value.resize(width, '\0');
+    Require(!dt::CompareDatatypeValues({malformed, Uint128Value("0")}).ok() &&
+                !dt::HashDatatypeValue({malformed}).ok() &&
+                !dt::MakeDatatypeSortKey({malformed}).ok(),
+            "uint128 operations admitted malformed LE16");
+  }
+  const std::vector<std::string> ordered{
+      "0", "1", "18446744073709551616",
+      "170141183460469231731687303715884105728",
+      "340282366920938463463374607431768211455"};
+  for (std::size_t left = 0; left < ordered.size(); ++left) {
+    for (std::size_t right = 0; right < ordered.size(); ++right) {
+      const int expected = left < right ? -1 : (left > right ? 1 : 0);
+      const auto compared = dt::CompareDatatypeValues(
+          {Uint128Value(ordered[left]), Uint128Value(ordered[right])});
+      const auto left_key = uint128_key(ordered[left]);
+      const auto right_key = uint128_key(ordered[right]);
+      const int key_comparison = left_key < right_key ? -1
+          : left_key > right_key ? 1 : 0;
+      Require(compared.ok() && compared.comparison == expected &&
+                  key_comparison == expected,
+              "uint128 comparison and key disagree with unsigned order");
+    }
+  }
+  const auto uint128_zero = Uint128Value("0");
+  const auto uint128_null = TypedNull(dt::CanonicalTypeId::uint128);
+  dt::DatatypeSortKeyRequest null_request;
+  null_request.value = uint128_null;
+  const auto first = dt::MakeDatatypeSortKey(null_request);
+  null_request.null_ordering = dt::DatatypeNullOrdering::nulls_last;
+  const auto last = dt::MakeDatatypeSortKey(null_request);
+  Require(first.ok() && last.ok() && first.sort_key == std::string(1, '\0') &&
+              last.sort_key == std::string(1, '\2') &&
+              first.sort_key < smallest && largest < last.sort_key &&
+              !dt::HashDatatypeValue({uint128_zero}).ok() &&
+              !dt::CompareDatatypeValues({uint128_null, uint128_zero}).ok(),
+          "uint128 state keys or unresolved hash/NULL policy drifted");
 }
 
 }  // namespace
