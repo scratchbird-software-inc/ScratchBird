@@ -5,6 +5,7 @@
 #include "checked_condition.hpp"
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <stop_token>
 #include <thread>
@@ -139,6 +140,72 @@ class CheckedFifoMutex {
   // Cancellation flags are individual atomic samples, not acknowledgements.
   WaitObservation ObserveWaiters(std::span<WaiterObservation> output) {
     std::lock_guard lock(mutex_);
+    return CopyWaiters(output);
+  }
+  // Caller-owned bounded capture frame. The mutexes and all spans must remain
+  // alive and exclusively borrowed for the whole call; entries must not own
+  // locks at entry. No latch pointer or frame is retained by the implementation.
+  struct WaitSetEntry {
+    CheckedFifoMutex* mutex = nullptr;
+    WaitObservation observation;
+    std::size_t offset = 0;
+    std::unique_lock<std::mutex> lock;
+  };
+  enum class WaitSetResult { invalid, exhausted, insufficient_capacity, captured, synchronization_failed };
+  // A consistent capture of the supplied set, NOT evidence that it contains
+  // all runtime latches or current task-phase authority. Locks are native commit
+  // locks, not semantic latch grants. Acquire in a total pointer order, with
+  // bounded O(n^2) local selection and blocking lock calls, never try-lock/yield
+  // loops. Input order is preserved; output is packed by that order. All native
+  // locks remain held until every copy finishes. Stop flags remain individual
+  // atomic samples. The owning layer admits frame/output memory and disclosure.
+  static WaitSetResult ObserveWaitSet(std::span<WaitSetEntry> entries,
+      std::span<WaiterObservation> output, std::uint32_t max_latches) {
+    using R = WaitSetResult;
+    if (!max_latches) return R::invalid;
+    if (entries.size()>max_latches) return R::exhausted;
+    for (std::size_t i=0;i<entries.size();++i) {
+      if (!entries[i].mutex || entries[i].lock.owns_lock()) return R::invalid;
+      for (std::size_t j=0;j<i;++j)
+        if (entries[j].mutex==entries[i].mutex) return R::invalid;
+    }
+    struct Release {
+      std::span<WaitSetEntry> entries;
+      ~Release() noexcept { for (auto& entry:entries) entry.lock={}; }
+    } release{entries};
+    CheckedFifoMutex* previous=nullptr;
+    const std::less<CheckedFifoMutex*> less;
+    try {
+      for (std::size_t count=0;count<entries.size();++count) {
+        WaitSetEntry* next=nullptr;
+        for (auto& entry:entries)
+          if ((!previous || less(previous,entry.mutex)) &&
+              (!next || less(entry.mutex,next->mutex))) next=&entry;
+        if (!next) std::terminate(); // Validated distinct, non-null input set.
+        next->lock=std::unique_lock(next->mutex->mutex_);
+        previous=next->mutex;
+      }
+    } catch (const std::system_error&) { return R::synchronization_failed; }
+    auto remaining=output.size();
+    bool complete=true;
+    for (auto& entry:entries) {
+      const auto& m=*entry.mutex;
+      entry.observation={{m.held_,m.waiters_,m.calls_,m.closed_},m.holder_,m.owner_,false};
+      entry.offset=0;
+      if (m.waiters_>remaining) complete=false;
+      else remaining-=m.waiters_;
+    }
+    if (!complete) return R::insufficient_capacity; // No output prefix written.
+    std::size_t offset=0;
+    for (auto& entry:entries) {
+      entry.offset=offset;
+      entry.observation=entry.mutex->CopyWaiters(output.subspan(offset));
+      offset+=entry.observation.state.waiters;
+    }
+    return R::captured;
+  }
+ private:
+  WaitObservation CopyWaiters(std::span<WaiterObservation> output) {
     WaitObservation result{{held_, waiters_, calls_, closed_}, holder_, owner_,
                            output.size() >= waiters_};
     if (!result.complete) return result;
@@ -149,7 +216,6 @@ class CheckedFifoMutex {
     }
     return result;
   }
- private:
   struct Node {
     Node* previous;
     Node* next;
