@@ -514,57 +514,81 @@ void OperationsAndSerialization() {
 
 void OwnedUint8Producers() {
   const auto bound_uint8_descriptor = Descriptor();
+  const auto uuid_descriptor =
+      CatalogDescriptor(dt::CanonicalTypeId::uuid);
+  const auto check_uuid_extract_policy = [](const auto& result,
+                                            const std::string& message) {
+    Check(!result.ok() &&
+              result.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_EXTRACT_REJECTED" &&
+              DiagnosticDetail(result.diagnostic) ==
+                  "uuid_extract_policy_unresolved" &&
+              result.value.type_id == dt::CanonicalTypeId::unknown &&
+              !result.value.is_null && result.value.encoded_value.empty(),
+          message);
+  };
   for (unsigned version : {0u, 7u, 15u}) {
     std::string uuid(16, '\0');
     uuid[6] = static_cast<char>(version << 4u);
     dt::DatatypeExtractRequest request;
     request.value = {dt::CanonicalTypeId::uuid, uuid, false};
+    request.value.descriptor = uuid_descriptor;
     request.field = "version";
     request.result_descriptor = bound_uint8_descriptor;
     const auto extracted = dt::ExtractDatatypeField(request);
-    Check(extracted.ok() && IsUint8(extracted.value, version) &&
-              SameUuid(extracted.value.descriptor.descriptor_uuid,
-                       bound_uint8_descriptor.descriptor_uuid),
-          "UUID version producer emits one canonical uint8 byte with bound descriptor");
+    check_uuid_extract_policy(
+        extracted,
+        "UUID version extraction refuses without an identity/extraction policy");
   }
 
   dt::DatatypeExtractRequest wrong_nonnull;
   wrong_nonnull.value = {dt::CanonicalTypeId::uuid, std::string(16, '\0'), false};
+  wrong_nonnull.value.descriptor = uuid_descriptor;
   wrong_nonnull.field = "version";
   wrong_nonnull.result_descriptor = CatalogDescriptor(dt::CanonicalTypeId::int8);
-  Check(!dt::ExtractDatatypeField(wrong_nonnull).ok(),
-        "UUID version rejects a non-uint8 result descriptor");
+  check_uuid_extract_policy(
+      dt::ExtractDatatypeField(wrong_nonnull),
+      "UUID version extraction refuses before inferring a result profile");
   dt::DatatypeExtractRequest malformed;
   malformed.value = {dt::CanonicalTypeId::uuid, std::string(15, '\0'), false};
+  malformed.value.descriptor = uuid_descriptor;
   malformed.field = "version";
   malformed.result_descriptor = bound_uint8_descriptor;
-  Check(!dt::ExtractDatatypeField(malformed).ok(),
-        "UUID version rejects malformed UUID byte length");
+  const auto malformed_result = dt::ExtractDatatypeField(malformed);
+  Check(!malformed_result.ok() &&
+            malformed_result.diagnostic.diagnostic_code ==
+                "SB_DATATYPE_EXTRACT_REJECTED" &&
+            DiagnosticDetail(malformed_result.diagnostic) ==
+                "uuid_extract_value_invalid" &&
+            malformed_result.value.type_id == dt::CanonicalTypeId::unknown &&
+            !malformed_result.value.is_null &&
+            malformed_result.value.encoded_value.empty(),
+        "UUID extraction validates binary16 before unresolved policy");
 
-  auto uuid_descriptor = CatalogDescriptor(dt::CanonicalTypeId::uuid);
   auto uint8_descriptor = Descriptor();
-  uuid_descriptor.nullable_allowed = true;
+  auto nullable_uuid_descriptor = uuid_descriptor;
+  nullable_uuid_descriptor.nullable_allowed = true;
   uint8_descriptor.nullable_allowed = true;
   dt::DatatypeExtractRequest null_request;
   null_request.value = {dt::CanonicalTypeId::uuid, {}, true};
-  null_request.value.descriptor = uuid_descriptor;
+  null_request.value.descriptor = nullable_uuid_descriptor;
   null_request.field = "version";
   null_request.result_descriptor = uint8_descriptor;
   const auto null_result = dt::ExtractDatatypeField(null_request);
-  Check(null_result.ok() && null_result.value.type_id == dt::CanonicalTypeId::uint8 &&
-            null_result.value.is_null && null_result.value.encoded_value.empty() &&
-            SameUuid(null_result.value.descriptor.descriptor_uuid,
-                     uint8_descriptor.descriptor_uuid),
-        "NULL UUID version preserves the bound uint8 descriptor and zero payload");
+  check_uuid_extract_policy(
+      null_result,
+      "typed-NULL UUID extraction refuses without an extraction policy");
 
   null_request.result_descriptor = CatalogDescriptor(dt::CanonicalTypeId::int8);
   null_request.result_descriptor.nullable_allowed = true;
-  Check(!dt::ExtractDatatypeField(null_request).ok(),
-        "NULL UUID version rejects a non-uint8 result descriptor");
+  check_uuid_extract_policy(
+      dt::ExtractDatatypeField(null_request),
+      "typed-NULL UUID extraction does not infer a result descriptor");
   null_request.result_descriptor = uint8_descriptor;
   null_request.result_descriptor.nullable_allowed = false;
-  Check(!dt::ExtractDatatypeField(null_request).ok(),
-        "NULL UUID version rejects a non-nullable uint8 result descriptor");
+  check_uuid_extract_policy(
+      dt::ExtractDatatypeField(null_request),
+      "typed-NULL UUID extraction remains refused for a nonnullable result");
 }
 
 void SblrBoundaryAdapters() {

@@ -1109,6 +1109,15 @@ void SerializationRetainsConcreteType() {
     typed_null.value = TypedNull(descriptor.type_id, execution_descriptor);
     const auto serialized = dt::SerializeDatatypeValue(typed_null);
     const std::string label = descriptor.stable_name;
+    if (descriptor.type_id == dt::CanonicalTypeId::uuid) {
+      CheckRejectedAs(serialized, "SB_DATATYPE_SERIALIZATION_REJECTED",
+                      "typed UUID NULL serialization without codec policy");
+      Check(DiagnosticDetail(serialized.diagnostic) ==
+                    "uuid_serialization_policy_unresolved" &&
+                serialized.serialized_value.empty(),
+            "typed UUID NULL serialization failure published output or wrong detail");
+      continue;
+    }
     Check(serialized.ok(), "typed NULL serialization failed for " + label);
     Check(DescriptorEquals(serialized.descriptor, execution_descriptor),
           "typed NULL serialization lost descriptor sidecar for " + label);
@@ -1164,9 +1173,14 @@ void SerializationRetainsConcreteType() {
   uuid_null_request.value =
       TypedNull(dt::CanonicalTypeId::uuid, uuid_descriptor);
   const auto uuid_null_encoded = dt::SerializeDatatypeValue(uuid_null_request);
-  Check(uuid_null_encoded.ok() && uuid_null_encoded.serialized_value.size() == 10,
-        "typed UUID NULL serialization frame invalid");
-  auto uuid_payload_null_frame = uuid_null_encoded.serialized_value;
+  CheckRejectedAs(uuid_null_encoded, "SB_DATATYPE_SERIALIZATION_REJECTED",
+                  "typed UUID NULL serialization without codec policy");
+  Check(DiagnosticDetail(uuid_null_encoded.diagnostic) ==
+            "uuid_serialization_policy_unresolved" &&
+            uuid_null_encoded.serialized_value.empty(),
+        "typed UUID NULL serialization failure published output or wrong detail");
+  const std::string uuid_null_frame("SBDVUUID\0\0", 10);
+  auto uuid_payload_null_frame = uuid_null_frame;
   uuid_payload_null_frame[9] = '\1';
   uuid_payload_null_frame.push_back('\0');
   dt::DatatypeDeserializationRequest uuid_payload_null_request;
@@ -1177,17 +1191,20 @@ void SerializationRetainsConcreteType() {
       dt::DeserializeDatatypeValue(uuid_payload_null_request);
   CheckRejectedAs(uuid_payload_null, "DATATYPE.NULL_STATE.INVALID",
                   "payload-bearing typed UUID NULL deserialization");
+  Check(DiagnosticDetail(uuid_payload_null.diagnostic) ==
+            "null_payload_present",
+        "payload-bearing typed UUID NULL lost state precedence");
   Check(uuid_payload_null.value.type_id == dt::CanonicalTypeId::unknown &&
             !uuid_payload_null.value.is_null &&
             uuid_payload_null.value.encoded_value.empty(),
         "payload-bearing typed UUID NULL deserialization published a value");
 
   const auto uuid_descriptor_mismatch = dt::DeserializeDatatypeValue(
-      {dt::CanonicalTypeId::int64, uuid_null_encoded.serialized_value});
+      {dt::CanonicalTypeId::int64, uuid_null_frame});
   CheckRejectedAs(uuid_descriptor_mismatch, "DATATYPE.DESCRIPTOR.INVALID",
                   "typed UUID NULL descriptor mismatch");
 
-  auto uuid_unsupported_state_frame = uuid_null_encoded.serialized_value;
+  auto uuid_unsupported_state_frame = uuid_null_frame;
   uuid_unsupported_state_frame[8] = '\2';
   dt::DatatypeDeserializationRequest uuid_unsupported_state_request;
   uuid_unsupported_state_request.expected_type_id = dt::CanonicalTypeId::uuid;
@@ -1198,8 +1215,11 @@ void SerializationRetainsConcreteType() {
       dt::DeserializeDatatypeValue(uuid_unsupported_state_request);
   CheckRejectedAs(uuid_unsupported_state, "DTYPE.VALUE.STATE_UNHANDLED",
                   "typed UUID NULL unsupported state");
+  Check(DiagnosticDetail(uuid_unsupported_state.diagnostic) ==
+            "value_state_invalid",
+        "typed UUID NULL state validation did not precede policy refusal");
 
-  auto uuid_malformed_precedes_descriptor = uuid_null_encoded.serialized_value;
+  auto uuid_malformed_precedes_descriptor = uuid_null_frame;
   uuid_malformed_precedes_descriptor[8] = '\1';
   uuid_malformed_precedes_descriptor[9] = '\20';
   uuid_malformed_precedes_descriptor.append(17, '\0');
@@ -1209,7 +1229,7 @@ void SerializationRetainsConcreteType() {
       "SB_DATATYPE_DESERIALIZATION_REJECTED",
       "typed UUID malformed framing precedes descriptor mismatch");
 
-  auto uuid_malformed_precedes_state = uuid_null_encoded.serialized_value;
+  auto uuid_malformed_precedes_state = uuid_null_frame;
   uuid_malformed_precedes_state[8] = '\2';
   uuid_malformed_precedes_state[9] = '\1';
   CheckRejectedAs(
@@ -1220,12 +1240,17 @@ void SerializationRetainsConcreteType() {
 
   dt::DatatypeDeserializationRequest uuid_round_trip;
   uuid_round_trip.expected_type_id = dt::CanonicalTypeId::uuid;
-  uuid_round_trip.serialized_value = uuid_null_encoded.serialized_value;
+  uuid_round_trip.serialized_value = uuid_null_frame;
   uuid_round_trip.expected_descriptor = uuid_descriptor;
   const auto uuid_decoded = dt::DeserializeDatatypeValue(uuid_round_trip);
-  Check(uuid_decoded.ok() && uuid_decoded.value.is_null &&
-            DescriptorEquals(uuid_decoded.value.descriptor, uuid_descriptor),
-        "typed UUID NULL round trip lost exact descriptor");
+  CheckRejectedAs(uuid_decoded, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+                  "typed UUID NULL deserialization without codec policy");
+  Check(DiagnosticDetail(uuid_decoded.diagnostic) ==
+            "uuid_deserialization_policy_unresolved" &&
+            uuid_decoded.value.type_id == dt::CanonicalTypeId::unknown &&
+            !uuid_decoded.value.is_null &&
+            uuid_decoded.value.encoded_value.empty(),
+        "typed UUID NULL deserialization failure published output or wrong detail");
 
   uuid_round_trip.expected_descriptor = {};
   CheckRejectedAs(dt::DeserializeDatatypeValue(uuid_round_trip),

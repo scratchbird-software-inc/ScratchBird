@@ -78,6 +78,13 @@ dt::DatatypeOperationValue Value(dt::CanonicalTypeId type,
   return {type, std::move(encoded), false};
 }
 
+dt::DatatypeOperationValue UuidValue(std::string encoded) {
+  auto value = Value(dt::CanonicalTypeId::uuid, std::move(encoded));
+  static const auto descriptor = Descriptor(dt::CanonicalTypeId::uuid);
+  value.descriptor = descriptor;
+  return value;
+}
+
 dt::DatatypeOperationValue Int32Value(std::int64_t number) {
   std::string encoded;
   Require(dt::EncodeCanonicalInt32Value(number, &encoded),
@@ -660,19 +667,37 @@ void TestNonScalarOperatorCastProof() {
 
 void TestStableHashAndDeserializationRefusals() {
   dt::DatatypeHashRequest hash_request;
-  hash_request.value = Value(dt::CanonicalTypeId::uuid,
-                             std::string("\x01\x8f\x8a\x2a\x1b\x2c\x7d\xef\x81\x23\x45\x67\x89\xab\xcd\xef",16));
+  const std::string bytes(
+      "\x01\x8f\x8a\x2a\x1b\x2c\x7d\xef\x81\x23\x45\x67\x89\xab\xcd\xef",
+      16);
+  hash_request.value = UuidValue(bytes);
   const auto first = dt::HashDatatypeValue(hash_request);
   const auto second = dt::HashDatatypeValue(hash_request);
-  Require(first.ok() && second.ok() &&
-              first.stable_hash_hex == second.stable_hash_hex,
-          "MDF-014 stable hash changed");
+  Require(!first.ok() && !second.ok() &&
+              first.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_HASH_REJECTED" &&
+              second.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_HASH_REJECTED" &&
+              DiagnosticDetail(first.diagnostic) ==
+                  "uuid_hash_policy_unresolved" &&
+              DiagnosticDetail(second.diagnostic) ==
+                  "uuid_hash_policy_unresolved" &&
+              first.stable_hash_hex.empty() &&
+              second.stable_hash_hex.empty(),
+          "MDF-014 UUID hash did not fail closed at unresolved policy");
 
   const auto serialized = dt::SerializeDatatypeValue({hash_request.value});
-  Require(serialized.ok(), "MDF-014 UUID serialization failed");
+  Require(!serialized.ok() &&
+              serialized.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SERIALIZATION_REJECTED" &&
+              DiagnosticDetail(serialized.diagnostic) ==
+                  "uuid_serialization_policy_unresolved" &&
+              serialized.serialized_value.empty(),
+          "MDF-014 UUID serialization did not fail closed at unresolved policy");
+  const std::string private_frame = std::string("SBDVUUID\1\20", 10) + bytes;
   const auto wrong_type =
       dt::DeserializeDatatypeValue({dt::CanonicalTypeId::int64,
-                                    serialized.serialized_value});
+                                    private_frame});
   Require(!wrong_type.ok(), "MDF-014 accepted mismatched deserialization type");
   Require(wrong_type.diagnostic.diagnostic_code ==
               "DATATYPE.DESCRIPTOR.INVALID",
@@ -773,45 +798,128 @@ void TestExplicitDisplayBoundaryRendering() {
 
 void TestBinaryUuidOperations() {
   const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff", 16);
-  const auto value = Value(dt::CanonicalTypeId::uuid, bytes);
+  const auto value = UuidValue(bytes);
   const auto serialized = dt::SerializeDatatypeValue({value});
   const std::string expected = std::string("SBDVUUID\1\20", 10) + bytes;
-  Require(serialized.ok() && serialized.serialized_value == expected,
-          "UUID serializer changed raw octets or frame");
-  const auto decoded = dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, expected});
-  Require(decoded.ok() && !decoded.value.is_null && decoded.value.encoded_value == bytes,
-          "UUID frame did not round trip");
+  Require(!serialized.ok() &&
+              serialized.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SERIALIZATION_REJECTED" &&
+              DiagnosticDetail(serialized.diagnostic) ==
+                  "uuid_serialization_policy_unresolved" &&
+              serialized.serialized_value.empty(),
+          "private UUID serializer did not fail closed");
+  dt::DatatypeDeserializationRequest decode_present;
+  decode_present.expected_type_id = dt::CanonicalTypeId::uuid;
+  decode_present.serialized_value = expected;
+  decode_present.expected_descriptor = value.descriptor;
+  const auto decoded = dt::DeserializeDatatypeValue(decode_present);
+  Require(!decoded.ok() &&
+              decoded.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
+              DiagnosticDetail(decoded.diagnostic) ==
+                  "uuid_deserialization_policy_unresolved" &&
+              decoded.value.type_id == dt::CanonicalTypeId::unknown &&
+              decoded.value.encoded_value.empty(),
+          "private UUID frame deserialization did not fail closed");
   for (std::size_t size = 0; size < expected.size(); ++size)
     Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, expected.substr(0, size)}).ok(),
             "truncated UUID frame admitted");
-  for (auto invalid : {expected + "x", std::string("SBDVUUID\2\20",10) + bytes,
-                       std::string("SBDVUUID\1\17",10) + bytes,
-                       std::string("SBDV1;type=uuid;state=value;payload=01020304050670008000090a3b7c00ff")})
-    Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, invalid}).ok(),
-            "noncanonical UUID frame admitted");
+  for (const auto& invalid :
+       {expected + "x", std::string("SBDVUUID\1\17", 10) + bytes}) {
+    const auto malformed =
+        dt::DeserializeDatatypeValue({dt::CanonicalTypeId::uuid, invalid});
+    Require(!malformed.ok() &&
+                malformed.diagnostic.diagnostic_code ==
+                    "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
+                DiagnosticDetail(malformed.diagnostic) ==
+                    "uuid_binary_frame_invalid",
+            "malformed UUID frame did not precede descriptor/policy checks");
+  }
+  auto unsupported_state = decode_present;
+  unsupported_state.serialized_value = std::string("SBDVUUID\2\20", 10) + bytes;
+  const auto unsupported_state_result =
+      dt::DeserializeDatatypeValue(unsupported_state);
+  Require(!unsupported_state_result.ok() &&
+              unsupported_state_result.diagnostic.diagnostic_code ==
+                  "DTYPE.VALUE.STATE_UNHANDLED" &&
+              DiagnosticDetail(unsupported_state_result.diagnostic) ==
+                  "value_state_invalid",
+          "UUID frame state validation did not precede policy refusal");
+  dt::DatatypeDeserializationRequest generic_uuid;
+  generic_uuid.expected_type_id = dt::CanonicalTypeId::uuid;
+  generic_uuid.expected_descriptor = value.descriptor;
+  generic_uuid.serialized_value =
+      "SBDV1;type=uuid;state=value;payload="
+      "01020304050670008000090a3b7c00ff";
+  const auto generic_uuid_result =
+      dt::DeserializeDatatypeValue(generic_uuid);
+  Require(!generic_uuid_result.ok() &&
+              generic_uuid_result.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
+              DiagnosticDetail(generic_uuid_result.diagnostic) ==
+                  "uuid_deserialization_policy_unresolved",
+          "generic UUID frame bypassed unresolved codec policy");
   Require(!dt::DeserializeDatatypeValue({dt::CanonicalTypeId::int64, expected}).ok(),
           "UUID frame decoded as another type");
   const auto null_value = TypedNull(dt::CanonicalTypeId::uuid);
   const auto null_frame = dt::SerializeDatatypeValue({null_value});
   dt::DatatypeDeserializationRequest decode_null;
   decode_null.expected_type_id = dt::CanonicalTypeId::uuid;
-  decode_null.serialized_value = null_frame.serialized_value;
+  decode_null.serialized_value = std::string("SBDVUUID\0\0", 10);
   decode_null.expected_descriptor = null_value.descriptor;
-  Require(null_frame.ok() && null_frame.serialized_value == std::string("SBDVUUID\0\0",10) &&
-      dt::DeserializeDatatypeValue(decode_null).value.is_null,
-      "UUID SQL NULL framing drifted");
-  const auto nil = Value(dt::CanonicalTypeId::uuid, std::string(16,'\0'));
-  Require(dt::SerializeDatatypeValue({nil}).ok(), "nil UUID value refused");
+  const auto decoded_null = dt::DeserializeDatatypeValue(decode_null);
+  Require(!null_frame.ok() &&
+              null_frame.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_SERIALIZATION_REJECTED" &&
+              DiagnosticDetail(null_frame.diagnostic) ==
+                  "uuid_serialization_policy_unresolved" &&
+              null_frame.serialized_value.empty() &&
+              !decoded_null.ok() &&
+              decoded_null.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_DESERIALIZATION_REJECTED" &&
+              DiagnosticDetail(decoded_null.diagnostic) ==
+                  "uuid_deserialization_policy_unresolved" &&
+              decoded_null.value.type_id == dt::CanonicalTypeId::unknown,
+          "private UUID typed-NULL framing did not fail closed");
+  const auto nil = UuidValue(std::string(16, '\0'));
+  const auto nil_serialized = dt::SerializeDatatypeValue({nil});
+  Require(!nil_serialized.ok() &&
+              DiagnosticDetail(nil_serialized.diagnostic) ==
+                  "uuid_serialization_policy_unresolved",
+          "nil UUID bypassed unresolved serialization policy");
   const auto sorted = dt::MakeDatatypeSortKey({value});
-  Require(sorted.ok() && sorted.sort_key == std::string(1,'\1') + bytes,
-          "UUID sort key converted binary octets");
-  Require(dt::CompareDatatypeValues({nil,value}).comparison < 0 &&
-          dt::HashDatatypeValue({value}).ok(), "UUID comparison/hash refused valid bytes");
-  for (const auto invalid : {Value(dt::CanonicalTypeId::uuid, bytes.substr(1)),
-                            Value(dt::CanonicalTypeId::uuid,"01020304-0506-7000-8000-090a3b7c00ff")}) {
-    Require(!dt::SerializeDatatypeValue({invalid}).ok() && !dt::HashDatatypeValue({invalid}).ok() &&
-            !dt::MakeDatatypeSortKey({invalid}).ok() && !dt::CompareDatatypeValues({invalid,value}).ok(),
-            "UUID operation accepted nonbinary16 value");
+  const auto compared = dt::CompareDatatypeValues({nil, value});
+  const auto hashed = dt::HashDatatypeValue({value});
+  Require(!sorted.ok() && sorted.sort_key.empty() &&
+              DiagnosticDetail(sorted.diagnostic) ==
+                  "uuid_sort_key_policy_unresolved" &&
+              !compared.ok() &&
+              DiagnosticDetail(compared.diagnostic) ==
+                  "uuid_comparison_policy_unresolved" &&
+              !hashed.ok() && hashed.stable_hash_hex.empty() &&
+              DiagnosticDetail(hashed.diagnostic) ==
+                  "uuid_hash_policy_unresolved",
+          "UUID order/comparison/hash did not fail at unresolved policy");
+  for (auto invalid : {UuidValue(bytes.substr(1)),
+                       UuidValue("01020304-0506-7000-8000-090a3b7c00ff")}) {
+    const auto invalid_serialized = dt::SerializeDatatypeValue({invalid});
+    const auto invalid_hash = dt::HashDatatypeValue({invalid});
+    const auto invalid_key = dt::MakeDatatypeSortKey({invalid});
+    const auto invalid_compare =
+        dt::CompareDatatypeValues({invalid, value});
+    Require(!invalid_serialized.ok() &&
+                DiagnosticDetail(invalid_serialized.diagnostic) ==
+                    "uuid_serialization_value_invalid" &&
+                !invalid_hash.ok() &&
+                DiagnosticDetail(invalid_hash.diagnostic) ==
+                    "uuid_hash_value_invalid" &&
+                !invalid_key.ok() &&
+                DiagnosticDetail(invalid_key.diagnostic) ==
+                    "uuid_sort_key_value_invalid" &&
+                !invalid_compare.ok() &&
+                DiagnosticDetail(invalid_compare.diagnostic) ==
+                    "uuid_comparison_value_invalid",
+            "UUID operation did not validate binary16 before policy refusal");
   }
   auto dirty_null = TypedNull(dt::CanonicalTypeId::uuid);
   dirty_null.encoded_value = bytes;
@@ -825,49 +933,82 @@ void TestBinaryUuidOperations() {
           !dt::CompareDatatypeValues({dirty_null,value}).ok() &&
           !dt::CastDatatypeValue(invalid_null_cast).ok(), "UUID SQL NULL retained payload bytes");
   dt::DatatypeCastRequest cast;
-  cast.value = Value(dt::CanonicalTypeId::uuid, bytes);
+  cast.value = UuidValue(bytes);
   cast.explicit_cast = true;
   for (auto target : {dt::CanonicalTypeId::uuid, dt::CanonicalTypeId::binary}) {
     cast.target_type_id = target;
     cast.target_descriptor = Descriptor(target);
     const auto result = dt::CastDatatypeValue(cast);
-    Require(result.ok() && result.value.encoded_value == bytes,
-            "UUID identity/binary cast changed native bytes");
+    Require(!result.ok() &&
+                result.diagnostic.diagnostic_code ==
+                    "DATATYPE.CAST_FORBIDDEN" &&
+                DiagnosticDetail(result.diagnostic) ==
+                    "uuid_present_cast_policy_unresolved" &&
+                result.value.type_id == dt::CanonicalTypeId::unknown &&
+                result.value.encoded_value.empty(),
+            "UUID identity/binary cast did not fail closed");
   }
-  cast.value.type_id = dt::CanonicalTypeId::binary;
+  cast.value = Value(dt::CanonicalTypeId::binary, bytes);
+  cast.value.descriptor = Descriptor(dt::CanonicalTypeId::binary);
   cast.target_type_id = dt::CanonicalTypeId::uuid;
   cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
-  Require(dt::CastDatatypeValue(cast).ok(), "binary16 UUID cast rejected");
+  const auto binary_to_uuid = dt::CastDatatypeValue(cast);
+  Require(!binary_to_uuid.ok() &&
+              binary_to_uuid.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(binary_to_uuid.diagnostic) ==
+                  "uuid_present_cast_policy_unresolved" &&
+              binary_to_uuid.value.type_id == dt::CanonicalTypeId::unknown &&
+              binary_to_uuid.value.encoded_value.empty(),
+          "binary16-to-UUID cast did not fail at unresolved policy");
   cast.value.encoded_value.pop_back();
   Require(!dt::CastDatatypeValue(cast).ok(), "truncated UUID accepted");
   cast.value = Value(dt::CanonicalTypeId::character, "01020304-0506-7000-8000-090a3b7c00ff");
-  Require(!dt::CastDatatypeValue(cast).ok(), "engine converted textual UUID");
-  cast.value = Value(dt::CanonicalTypeId::uuid, bytes);
+  cast.value.descriptor = Descriptor(dt::CanonicalTypeId::character);
+  const auto text_to_uuid = dt::CastDatatypeValue(cast);
+  Require(!text_to_uuid.ok() &&
+              text_to_uuid.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(text_to_uuid.diagnostic) ==
+                  "uuid_present_cast_policy_unresolved",
+          "text-to-UUID cast did not fail at unresolved policy");
+  cast.value = UuidValue(bytes);
   cast.target_type_id = dt::CanonicalTypeId::character;
-  Require(!dt::CastDatatypeValue(cast).ok(), "engine rendered UUID text");
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::character);
+  const auto uuid_to_text = dt::CastDatatypeValue(cast);
+  Require(!uuid_to_text.ok() &&
+              uuid_to_text.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(uuid_to_text.diagnostic) ==
+                  "uuid_present_cast_policy_unresolved",
+          "UUID-to-text cast did not fail at unresolved policy");
   dt::DatatypeExtractRequest extract;
   extract.value = cast.value;
   extract.field = "version";
   auto result = dt::ExtractDatatypeField(extract);
-  Require(result.ok() && result.value.type_id == dt::CanonicalTypeId::uint8 &&
-              result.value.encoded_value.size() == 1 &&
-              static_cast<unsigned char>(result.value.encoded_value[0]) == 7,
-          "binary UUID version extraction failed");
+  Require(!result.ok() &&
+              result.diagnostic.diagnostic_code ==
+                  "SB_DATATYPE_EXTRACT_REJECTED" &&
+              DiagnosticDetail(result.diagnostic) ==
+                  "uuid_extract_policy_unresolved" &&
+              result.value.type_id == dt::CanonicalTypeId::unknown &&
+              result.value.encoded_value.empty(),
+          "binary UUID version extraction did not fail closed");
   extract.field = "uuidv7_unix_millis";
   result = dt::ExtractDatatypeField(extract);
   const bool unresolved_uuidv7_profile = std::any_of(
       result.diagnostic.arguments.begin(), result.diagnostic.arguments.end(),
       [](const auto& argument) {
         return argument.key == "detail" && argument.text() &&
-               *argument.text() == "uuidv7_uint64_result_profile_unresolved";
+               *argument.text() == "uuid_extract_policy_unresolved";
       });
   Require(!result.ok() &&
               result.diagnostic.diagnostic_code ==
                   "SB_DATATYPE_EXTRACT_REJECTED" &&
               result.diagnostic.message_key == "datatype.extract.rejected" &&
               unresolved_uuidv7_profile,
-          "binary UUID timestamp extraction did not fail closed for the "
-          "unresolved uint64 result profile");
+          "binary UUID timestamp extraction did not fail closed at the "
+          "unresolved UUID extraction policy");
 }
 
 void TestIntegerPhysicalSortKeyBytes() {

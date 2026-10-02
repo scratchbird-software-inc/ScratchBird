@@ -355,6 +355,10 @@ bool IsDecimalFloat(CanonicalTypeId type_id) noexcept {
   return type_id == CanonicalTypeId::decimal_float;
 }
 
+bool IsUuid(CanonicalTypeId type_id) noexcept {
+  return type_id == CanonicalTypeId::uuid;
+}
+
 bool DecimalFloatDescriptorValidForPresent(
     const ExecutionTypeDescriptor& descriptor) {
   return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -487,8 +491,11 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
                value.descriptor, value.type_id) &&
         value.encoded_value.size() == 16;
   }
-  if (value.type_id == CanonicalTypeId::uuid)
-    return value.encoded_value.size() == 16;
+  if (IsUuid(value.type_id)) {
+    return ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+               value.descriptor, value.type_id) &&
+        value.encoded_value.size() == 16;
+  }
   if (value.type_id == CanonicalTypeId::boolean) {
     return value.encoded_value.size() == 1 &&
         (static_cast<unsigned char>(value.encoded_value[0]) == 0u ||
@@ -534,6 +541,11 @@ const char* CanonicalOperationValueDiagnosticCode(
     const char* owning_operation_code = "DATATYPE.DESCRIPTOR.INVALID") {
   if (value.type_id == CanonicalTypeId::unknown ||
       value.type_id == CanonicalTypeId::null_type) {
+    return "DATATYPE.DESCRIPTOR.INVALID";
+  }
+  if (IsUuid(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
     return "DATATYPE.DESCRIPTOR.INVALID";
   }
   if (value.is_null &&
@@ -2153,6 +2165,7 @@ bool ParseEncodedSet(const std::string& encoded, EncodedSetFrame* frame) {
            hex.size() !=
                PolicyRestrictedRealCarrierByteWidth(frame->element_type_id) *
                    2u) ||
+          (IsUuid(frame->element_type_id) && hex.size() != 32u) ||
           (IsDecimal(frame->element_type_id) &&
            (!DecodeCanonicalLowerHex(hex, &decoded_item) ||
             !DecimalCarrierStructurallyCanonical(decoded_item))) ||
@@ -2682,6 +2695,12 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (!LookupDatatypeDescriptor(source_type_id).ok()) {
     return DatatypeCastCategory::forbidden;
   }
+  // The structural UUID raw 16-octet carrier is known, but no PRESENT cast
+  // operation is admitted without the missing identity/cast policy receipt.
+  // Contextual NULL binding was handled above.
+  if (IsUuid(source_type_id) || IsUuid(target_type_id)) {
+    return DatatypeCastCategory::forbidden;
+  }
   // Contextual NULL binding was admitted above. No PRESENT cast pair touching
   // BFLOAT16, REAL16, REAL32, or REAL64, including identity, has semantic
   // authority.
@@ -2721,10 +2740,6 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
     return DatatypeCastCategory::forbidden;
   }
   if (source_type_id == target_type_id) { return DatatypeCastCategory::identity; }
-  if (source_type_id == CanonicalTypeId::uuid || target_type_id == CanonicalTypeId::uuid) {
-    return (source_type_id == CanonicalTypeId::binary || target_type_id == CanonicalTypeId::binary)
-        ? DatatypeCastCategory::lossless_explicit : DatatypeCastCategory::forbidden;
-  }
   if (IsOpaqueRenderOnly(source_type_id) && IsCharacter(target_type_id)) {
     return DatatypeCastCategory::lossless_explicit;
   }
@@ -2760,21 +2775,19 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
   if (IsInteger(source_type_id) && target_type_id == CanonicalTypeId::boolean) {
     return DatatypeCastCategory::lossless_explicit;
   }
-  if ((IsNumeric(source_type_id) || source_type_id == CanonicalTypeId::boolean || source_type_id == CanonicalTypeId::uuid ||
+  if ((IsNumeric(source_type_id) || source_type_id == CanonicalTypeId::boolean ||
        IsTemporal(source_type_id) || source_type_id == CanonicalTypeId::interval || IsDocument(source_type_id)) &&
       IsCharacter(target_type_id)) {
     return DatatypeCastCategory::lossless_explicit;
   }
   if (IsCharacter(source_type_id) &&
-      (IsNumeric(target_type_id) || target_type_id == CanonicalTypeId::boolean || target_type_id == CanonicalTypeId::uuid ||
+      (IsNumeric(target_type_id) || target_type_id == CanonicalTypeId::boolean ||
        IsTemporal(target_type_id) || target_type_id == CanonicalTypeId::interval || IsDocument(target_type_id))) {
     return DatatypeCastCategory::lossless_explicit;
   }
   if ((IsBinaryLike(source_type_id) && IsCharacter(target_type_id)) ||
       (IsCharacter(source_type_id) && IsBinaryLike(target_type_id)) ||
-      (IsBinaryLike(source_type_id) && IsBinaryLike(target_type_id)) ||
-      (source_type_id == CanonicalTypeId::uuid && target_type_id == CanonicalTypeId::binary) ||
-      (source_type_id == CanonicalTypeId::binary && target_type_id == CanonicalTypeId::uuid)) {
+      (IsBinaryLike(source_type_id) && IsBinaryLike(target_type_id))) {
     return DatatypeCastCategory::lossless_explicit;
   }
   if (source_type_id == CanonicalTypeId::set_value || target_type_id == CanonicalTypeId::set_value) {
@@ -2799,6 +2812,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !DecimalDescriptorValidForPresent(request.value.descriptor)) ||
        (IsDecimalFloat(request.value.type_id) &&
         !DecimalFloatDescriptorValidForPresent(request.value.descriptor)) ||
+       (IsUuid(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
        ((IsUnresolvedRealSemantics(request.value.type_id) ||
          IsReal128(request.value.type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2809,6 +2825,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
   if (!source_is_contextual_null &&
       (request.value.type_id == CanonicalTypeId::unknown ||
        !LookupDatatypeDescriptor(request.value.type_id).ok() ||
+       (IsUuid(request.value.type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.value.descriptor, request.value.type_id)) ||
        (request.value.is_null &&
         !ExecutionDescriptorValidForType(request.value.descriptor,
                                          request.value.type_id)) ||
@@ -2841,6 +2860,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         !DecimalDescriptorValidForPresent(request.target_descriptor)) ||
        (IsDecimalFloat(request.target_type_id) &&
         !DecimalFloatDescriptorValidForPresent(request.target_descriptor)) ||
+       (IsUuid(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
        ((IsUnresolvedRealSemantics(request.target_type_id) ||
          IsReal128(request.target_type_id)) &&
         !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -2850,6 +2872,9 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
                                          request.target_type_id)));
   if (!target_is_unresolved &&
       (!LookupDatatypeDescriptor(request.target_type_id).ok() ||
+       (IsUuid(request.target_type_id) &&
+        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.target_descriptor, request.target_type_id)) ||
        (result_is_null &&
         !ExecutionDescriptorValidForType(request.target_descriptor,
                                          request.target_type_id)) ||
@@ -2900,7 +2925,8 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
        request.value.type_id == CanonicalTypeId::real64 ||
        request.value.type_id == CanonicalTypeId::real128 ||
        request.value.type_id == CanonicalTypeId::decimal ||
-       request.value.type_id == CanonicalTypeId::decimal_float) &&
+       request.value.type_id == CanonicalTypeId::decimal_float ||
+       request.value.type_id == CanonicalTypeId::uuid) &&
       request.value.type_id == request.target_type_id;
   const bool canonical_128_present_identity =
       !request.value.is_null &&
@@ -3082,6 +3108,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
         null_identity.status, "SB_DATATYPE_OK", "datatype.ok");
     return null_identity;
   }
+  if (IsUuid(request.value.type_id) || IsUuid(request.target_type_id)) {
+    return CastFailure(
+        result_is_null
+            ? "uuid_cross_type_typed_null_cast_policy_unresolved"
+            : "uuid_present_cast_policy_unresolved");
+  }
   if (IsDecimal(request.value.type_id) ||
       IsDecimal(request.target_type_id)) {
     return CastFailure(
@@ -3193,10 +3225,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     // Preserve previously admitted boundary-text conversions without leaking
     // the native LE16 carrier into another datatype's representation.
     result.value.encoded_value = value;
-  }
-  if (request.value.type_id == CanonicalTypeId::uuid || request.target_type_id == CanonicalTypeId::uuid) {
-    if (value.size() != 16) return CastFailure("uuid_binary_length_invalid", result.category);
-    return result;  // UUID identity and UUID/binary casts retain all 128 bits.
   }
   if (IsBinaryLike(request.value.type_id) && request.target_type_id == CanonicalTypeId::character) {
     result.value.encoded_value = HexEncodeLower(value);
@@ -3373,6 +3401,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (IsUuid(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    return ExtractFailure("uuid_extract_descriptor_invalid",
+                          "DATATYPE.DESCRIPTOR.INVALID");
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -3390,12 +3424,13 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
         request.value.type_id == CanonicalTypeId::real64;
     const bool decimal_value = IsDecimal(request.value.type_id);
     const bool decimal_float_value = IsDecimalFloat(request.value.type_id);
+    const bool uuid_value = IsUuid(request.value.type_id);
     const bool descriptor_or_null_state_failure =
         request.value.type_id == CanonicalTypeId::unknown ||
         request.value.type_id == CanonicalTypeId::null_type ||
         request.value.is_null ||
         bfloat16_value || real16_value || real32_value || real64_value ||
-        decimal_value || decimal_float_value;
+        decimal_value || decimal_float_value || uuid_value;
     const char* diagnostic_code = descriptor_or_null_state_failure
         ? CanonicalOperationValueDiagnosticCode(
               request.value, "SB_DATATYPE_EXTRACT_REJECTED")
@@ -3437,6 +3472,11 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
                                  "NUMERIC.ENCODING.NONCANONICAL"
                            ? "decimal_float_extract_value_noncanonical"
                            : "decimal_float_extract_policy_unresolved")
+            : uuid_value
+                ? (std::string_view(diagnostic_code) ==
+                           "DATATYPE.DESCRIPTOR.INVALID"
+                       ? "uuid_extract_descriptor_invalid"
+                       : "uuid_extract_value_invalid")
             : request.value.is_null ? "null_or_descriptor_state_invalid"
                                     : "canonical_value_invalid",
         diagnostic_code);
@@ -3458,6 +3498,9 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   if (IsDecimalFloat(request.value.type_id) && !request.value.is_null) {
     return ExtractFailure("decimal_float_extract_policy_unresolved");
   }
+  if (IsUuid(request.value.type_id)) {
+    return ExtractFailure("uuid_extract_policy_unresolved");
+  }
   DatatypeExtractResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
@@ -3473,11 +3516,6 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
     if (request.value.type_id == CanonicalTypeId::interval &&
                (field == "seconds" || field == "total_seconds")) {
       result_type = CanonicalTypeId::int64;
-    } else if (request.value.type_id == CanonicalTypeId::uuid && field == "version") {
-      result_type = CanonicalTypeId::uint8;
-    } else if (request.value.type_id == CanonicalTypeId::uuid &&
-               field == "uuidv7_unix_millis") {
-      return ExtractFailure("uuidv7_uint64_result_profile_unresolved");
     } else if (request.value.type_id == CanonicalTypeId::character &&
                (field == "character_length" || field == "octet_length" || field == "length")) {
       result_type = CanonicalTypeId::uint64;
@@ -3508,32 +3546,6 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
       return ExtractFailure("interval_int64_result_profile_unresolved");
     }
     return ExtractFailure("unsupported_interval_field:" + field);
-  }
-  if (request.value.type_id == CanonicalTypeId::uuid) {
-    if (value.size() != 16) return ExtractFailure("uuid_binary_length_invalid");
-    const auto version = static_cast<unsigned char>(value[6]) >> 4;
-    if (field == "version") {
-      if (ExecutionDescriptorPresent(request.result_descriptor) &&
-          !ExecutionDescriptorValidForType(request.result_descriptor,
-                                           CanonicalTypeId::uint8)) {
-        return ExtractFailure("uuid_version_result_descriptor_invalid",
-                              "DATATYPE.DESCRIPTOR.INVALID");
-      }
-      std::string encoded;
-      if (!EncodeUint8DecimalText(std::to_string(version), &encoded)) {
-        return ExtractFailure("uuid_version_encoding_invalid");
-      }
-      result.value = {CanonicalTypeId::uint8, std::move(encoded), false};
-      if (ExecutionDescriptorPresent(request.result_descriptor)) {
-        result.value.descriptor = request.result_descriptor;
-      }
-      return result;
-    }
-    if (field == "uuidv7_unix_millis") {
-      if (version != 7) return ExtractFailure("uuid_not_v7");
-      return ExtractFailure("uuidv7_uint64_result_profile_unresolved");
-    }
-    return ExtractFailure("unsupported_uuid_field:" + field);
   }
   if (request.value.type_id == CanonicalTypeId::character) {
     if (field == "character_length" || field == "length") {
@@ -3574,6 +3586,7 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   if ((IsPolicyRestrictedReal(descriptor.element_type_id) ||
        IsDecimal(descriptor.element_type_id) ||
        IsDecimalFloat(descriptor.element_type_id) ||
+       IsUuid(descriptor.element_type_id) ||
        descriptor.allow_null_elements || element_descriptor_present) &&
       !(IsPolicyRestrictedReal(descriptor.element_type_id)
             ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
@@ -3584,6 +3597,10 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
             : IsDecimalFloat(descriptor.element_type_id)
                 ? DecimalFloatDescriptorValidForPresent(
                       descriptor.element_descriptor)
+            : IsUuid(descriptor.element_type_id)
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      descriptor.element_descriptor,
+                      descriptor.element_type_id)
             : ExecutionDescriptorValidForType(descriptor.element_descriptor,
                                               descriptor.element_type_id))) {
     return SetFailure("set_element_descriptor_invalid",
@@ -3654,6 +3671,9 @@ DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descripto
   if (IsDecimalFloat(descriptor.element_type_id)) {
     return SetFailure("decimal_float_set_semantics_policy_unresolved");
   }
+  if (IsUuid(descriptor.element_type_id)) {
+    return SetFailure("uuid_set_semantics_policy_unresolved");
+  }
   if (!descriptor.ordered) { std::sort(encoded_items.begin(), encoded_items.end()); }
   std::ostringstream out;
   out << "SBSET2;element=" << CanonicalTypeName(descriptor.element_type_id)
@@ -3689,9 +3709,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
   const bool decimal_set = IsDecimal(request.descriptor.element_type_id);
   const bool decimal_float_set =
       IsDecimalFloat(request.descriptor.element_type_id);
+  const bool uuid_set = IsUuid(request.descriptor.element_type_id);
   const bool policy_restricted_set =
       IsPolicyRestrictedReal(request.descriptor.element_type_id) ||
-      decimal_set || decimal_float_set;
+      decimal_set || decimal_float_set || uuid_set;
   if (policy_restricted_set &&
       !(decimal_set
             ? DecimalDescriptorValidForPresent(
@@ -3699,6 +3720,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
             : decimal_float_set
                 ? DecimalFloatDescriptorValidForPresent(
                       request.descriptor.element_descriptor)
+            : uuid_set
+                ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                      request.descriptor.element_descriptor,
+                      request.descriptor.element_type_id)
             : ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                   request.descriptor.element_descriptor,
                   request.descriptor.element_type_id))) {
@@ -3740,6 +3765,10 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
               ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)
+              : uuid_set
+              ? ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+                    request.right_value.descriptor,
+                    request.descriptor.element_type_id)
               : ExecutionDescriptorValidForType(
                     request.right_value.descriptor,
                     request.descriptor.element_type_id)) ||
@@ -3768,6 +3797,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
              : decimal_float_set
              ? !DecimalFloatCarrierStructurallyCanonical(
                    request.right_value.encoded_value)
+             : uuid_set
+             ? request.right_value.encoded_value.size() != 16u
              : request.right_value.encoded_value.size() !=
                    PolicyRestrictedRealCarrierByteWidth(
                        request.descriptor.element_type_id))) {
@@ -3784,6 +3815,8 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
             ? "decimal_set_semantics_policy_unresolved"
             : decimal_float_set
             ? "decimal_float_set_semantics_policy_unresolved"
+            : uuid_set
+            ? "uuid_set_semantics_policy_unresolved"
             : IsReal128(request.descriptor.element_type_id)
             ? "real128_set_semantics_policy_unresolved"
             : UnresolvedRealDetail(
@@ -3874,6 +3907,42 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
   result.status = OkStatus();
   result.value = {request.type_id, {}, false};
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+
+  const bool uuid_incident = IsUuid(request.type_id) ||
+      IsUuid(request.left.type_id) ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       IsUuid(request.right.type_id));
+  if (uuid_incident) {
+    const auto uuid_descriptor_invalid = [](const DatatypeOperationValue& value) {
+      return IsUuid(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::uuid);
+    };
+    if (uuid_descriptor_invalid(request.left)) {
+      return invalid_request("uuid_left_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if (request.operation != DatatypeNumericOperationKind::canonicalize &&
+        uuid_descriptor_invalid(request.right)) {
+      return invalid_request("uuid_right_descriptor_invalid",
+                             "DATATYPE.DESCRIPTOR.INVALID");
+    }
+    if ((IsUuid(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (request.operation != DatatypeNumericOperationKind::canonicalize &&
+         IsUuid(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid = IsUuid(request.left.type_id) &&
+                                    !CanonicalOperationValueValid(request.left)
+          ? request.left
+          : request.right;
+      return invalid_request(
+          "uuid_numeric_value_invalid",
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_NUMERIC_OPERATION_REJECTED"));
+    }
+    return invalid_request("uuid_numeric_policy_unresolved");
+  }
 
   if (IsReal128(request.type_id)) {
     if (request.left.type_id != CanonicalTypeId::real128 ||
@@ -4445,6 +4514,48 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  const bool uuid_incident = IsUuid(request.left.type_id) ||
+      IsUuid(request.right.type_id);
+  if (uuid_incident) {
+    const auto uuid_descriptor_invalid = [](const DatatypeOperationValue& value) {
+      return IsUuid(value.type_id) &&
+          !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+              value.descriptor, CanonicalTypeId::uuid);
+    };
+    if (uuid_descriptor_invalid(request.left) ||
+        uuid_descriptor_invalid(request.right) ||
+        (IsUuid(request.left.type_id) && IsUuid(request.right.type_id) &&
+         !ExecutionDescriptorEquals(request.left.descriptor,
+                                    request.right.descriptor))) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, "DATATYPE.DESCRIPTOR.INVALID",
+          "datatype.comparison.rejected",
+          "uuid_operand_descriptor_invalid_or_mismatch");
+      return result;
+    }
+    if ((IsUuid(request.left.type_id) &&
+         !CanonicalOperationValueValid(request.left)) ||
+        (IsUuid(request.right.type_id) &&
+         !CanonicalOperationValueValid(request.right))) {
+      const auto& invalid = IsUuid(request.left.type_id) &&
+                                    !CanonicalOperationValueValid(request.left)
+          ? request.left
+          : request.right;
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          CanonicalOperationValueDiagnosticCode(
+              invalid, "SB_DATATYPE_COMPARISON_REJECTED"),
+          "datatype.comparison.rejected", "uuid_comparison_value_invalid");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_COMPARISON_REJECTED",
+        "datatype.comparison.rejected", "uuid_comparison_policy_unresolved");
+    return result;
+  }
   const bool decimal_incident =
       IsDecimal(request.left.type_id) || IsDecimal(request.right.type_id);
   if (decimal_incident) {
@@ -5071,6 +5182,12 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (IsUuid(value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
+                                                       value.type_id)) {
+    *failure_detail = "uuid_hash_descriptor_invalid";
+    return false;
+  }
   if (IsReal128(value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
                                                        value.type_id)) {
@@ -5078,7 +5195,9 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
     return false;
   }
   if (!CanonicalOperationValueValid(value)) {
-    *failure_detail = IsUnresolvedRealSemantics(value.type_id) &&
+    *failure_detail = IsUuid(value.type_id)
+                          ? "uuid_hash_value_invalid"
+                          : IsUnresolvedRealSemantics(value.type_id) &&
                               !value.is_null
                           ? UnresolvedRealDetail(
                                 value.type_id,
@@ -5108,6 +5227,10 @@ bool CanonicalHashPayload(const DatatypeOperationValue& value,
   }
   if (IsDecimalFloat(value.type_id)) {
     *failure_detail = "decimal_float_hash_policy_unresolved";
+    return false;
+  }
+  if (IsUuid(value.type_id)) {
+    *failure_detail = "uuid_hash_policy_unresolved";
     return false;
   }
   if (value.type_id == CanonicalTypeId::int16 ||
@@ -5188,6 +5311,15 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsUuid(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.sort_key.rejected", "uuid_sort_key_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5203,7 +5335,9 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         CanonicalOperationValueDiagnosticCode(
             request.value, "SB_DATATYPE_SORT_KEY_REJECTED"),
         "datatype.sort_key.rejected",
-        IsUnresolvedRealSemantics(request.value.type_id) &&
+        IsUuid(request.value.type_id)
+            ? "uuid_sort_key_value_invalid"
+            : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
                   request.value.type_id,
@@ -5250,17 +5384,18 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         "decimal_float_sort_key_policy_unresolved");
     return result;
   }
+  if (IsUuid(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SORT_KEY_REJECTED",
+        "datatype.sort_key.rejected", "uuid_sort_key_policy_unresolved");
+    return result;
+  }
   if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
       request.null_ordering != DatatypeNullOrdering::nulls_last) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
         "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "invalid_null_ordering");
-    return result;
-  }
-  if (request.value.type_id == CanonicalTypeId::uuid) {
-    result.sort_key.assign(1, request.value.is_null
-        ? (request.null_ordering == DatatypeNullOrdering::nulls_first ? '\0' : '\2') : '\1');
-    if (!request.value.is_null) result.sort_key.append(request.value.encoded_value);
     return result;
   }
   if (IsInteger(request.value.type_id)) {
@@ -5474,6 +5609,16 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (IsUuid(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.serialization.rejected",
+        "uuid_serialization_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5490,7 +5635,9 @@ DatatypeSerializationResult SerializeDatatypeValue(
         CanonicalOperationValueDiagnosticCode(
             request.value, "SB_DATATYPE_SERIALIZATION_REJECTED"),
         "datatype.serialization.rejected",
-        IsUnresolvedRealSemantics(request.value.type_id) &&
+        IsUuid(request.value.type_id)
+            ? "uuid_serialization_value_invalid"
+            : IsUnresolvedRealSemantics(request.value.type_id) &&
                 !request.value.is_null
             ? UnresolvedRealDetail(
                   request.value.type_id,
@@ -5517,6 +5664,14 @@ DatatypeSerializationResult SerializeDatatypeValue(
         "decimal_float_serialization_policy_unresolved");
     return result;
   }
+  if (IsUuid(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_SERIALIZATION_REJECTED",
+        "datatype.serialization.rejected",
+        "uuid_serialization_policy_unresolved");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::unknown) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -5535,14 +5690,6 @@ DatatypeSerializationResult SerializeDatatypeValue(
     return result;
   }
   result.descriptor = request.value.descriptor;
-  if (request.value.type_id == CanonicalTypeId::uuid) {
-    // UUID-OPERATION-VALUE-BINARY-001: exact state/length framing, raw value bits.
-    result.serialized_value.assign("SBDVUUID", 8);
-    result.serialized_value.push_back(request.value.is_null ? '\0' : '\1');
-    result.serialized_value.push_back(request.value.is_null ? '\0' : '\20');
-    result.serialized_value.append(request.value.encoded_value);
-    return result;
-  }
   result.serialized_value = std::string("SBDV1;type=") +
                             CanonicalTypeName(request.value.type_id) +
                             ";state=" + (request.value.is_null ? "null" : "value") +
@@ -5582,9 +5729,8 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
       return result;
     }
     const bool decoded_is_null = bytes[8] == '\0';
-    if ((decoded_is_null || ExecutionDescriptorPresent(request.expected_descriptor)) &&
-        !ExecutionDescriptorValidForType(request.expected_descriptor,
-                                         CanonicalTypeId::uuid)) {
+    if (!ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+            request.expected_descriptor, CanonicalTypeId::uuid)) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(
           result.status, "DATATYPE.DESCRIPTOR.INVALID",
@@ -5619,10 +5765,11 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
           "datatype.deserialization.rejected", "expected_descriptor_not_nullable");
       return result;
     }
-    result.value.type_id = CanonicalTypeId::uuid;
-    result.value.is_null = decoded_is_null;
-    result.value.encoded_value = bytes.substr(10);
-    result.value.descriptor = request.expected_descriptor;
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "uuid_deserialization_policy_unresolved");
     return result;
   }
   if (!StartsWith(request.serialized_value, "SBDV1;")) {
@@ -5680,18 +5827,19 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "datatype.deserialization.rejected", "type_mismatch");
     return result;
   }
-  if (type_id == CanonicalTypeId::uuid) {
-    result.status = ErrorStatus();
-    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                        "SB_DATATYPE_DESERIALIZATION_REJECTED",
-                                                        "datatype.deserialization.rejected",
-                                                        "uuid_codec_mismatch");
-    return result;
-  }
   bool ok = false;
   DatatypeOperationValue staged;
   staged.type_id = type_id;
   const auto& state = fields.at("state");
+  if (IsUuid(type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.expected_descriptor, type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.deserialization.rejected", "expected_descriptor_invalid");
+    return result;
+  }
   if (ExecutionDescriptorPresent(request.expected_descriptor) &&
       !ExecutionDescriptorValidForType(request.expected_descriptor, type_id)) {
     result.status = ErrorStatus();
@@ -5835,6 +5983,14 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
         "decimal_float_deserialization_policy_unresolved");
     return result;
   }
+  if (IsUuid(staged.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DESERIALIZATION_REJECTED",
+        "datatype.deserialization.rejected",
+        "uuid_deserialization_policy_unresolved");
+    return result;
+  }
   result.value = std::move(staged);
   return result;
 }
@@ -5846,6 +6002,16 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
+  if (IsUuid(request.value.type_id) &&
+      !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
+          request.value.descriptor, request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "DATATYPE.DESCRIPTOR.INVALID",
+        "datatype.display_render.rejected",
+        "uuid_display_descriptor_invalid");
+    return result;
+  }
   if (IsReal128(request.value.type_id) &&
       !ExecutionDescriptorExactlyMatchesCurrentBuiltin(
           request.value.descriptor, request.value.type_id)) {
@@ -5863,7 +6029,9 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         CanonicalOperationValueDiagnosticCode(
             request.value, "SB_DATATYPE_DISPLAY_RENDER_REJECTED"),
         "datatype.display_render.rejected",
-        request.value.type_id == CanonicalTypeId::null_type
+        IsUuid(request.value.type_id)
+            ? "uuid_display_value_invalid"
+            : request.value.type_id == CanonicalTypeId::null_type
             ? "standalone_null_type"
             : IsUnresolvedRealSemantics(request.value.type_id) &&
                       !request.value.is_null
@@ -5911,6 +6079,14 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
         "datatype.display_render.rejected",
         "decimal_float_display_policy_unresolved");
+    return result;
+  }
+  if (IsUuid(request.value.type_id)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "SB_DATATYPE_DISPLAY_RENDER_REJECTED",
+        "datatype.display_render.rejected",
+        "uuid_display_policy_unresolved");
     return result;
   }
   result.canonical_type_name = CanonicalTypeName(request.value.type_id);

@@ -313,6 +313,7 @@ void RepresentationAndCodecs() {
   uuidv7[6] = static_cast<char>(0x70);
   uuidv7[8] = static_cast<char>(0x80);
   extract.value = {dt::CanonicalTypeId::uuid, uuidv7, false};
+  extract.value.descriptor = DescriptorFor(dt::CanonicalTypeId::uuid);
   extract.field = "uuidv7_unix_millis";
   extract.result_descriptor = Uint64Descriptor();
   const auto extract_result = dt::ExtractDatatypeField(extract);
@@ -323,8 +324,11 @@ void RepresentationAndCodecs() {
             extract_result.diagnostic.diagnostic_code ==
                 "SB_DATATYPE_EXTRACT_REJECTED" &&
             extract_detail != nullptr &&
-            *extract_detail == "uuidv7_uint64_result_profile_unresolved",
-        "uint64 extraction refuses until its result profile is registered");
+            *extract_detail == "uuid_extract_policy_unresolved" &&
+            extract_result.value.type_id == dt::CanonicalTypeId::unknown &&
+            !extract_result.value.is_null &&
+            extract_result.value.encoded_value.empty(),
+        "UUIDv7 extraction refuses without an identity/extraction policy");
 
   std::uint64_t text_like = 0;
   Check(dt::DecodeCanonicalUint64Value(std::string{"12345678", 8}, &text_like) &&
@@ -498,8 +502,11 @@ void NullAndAbsentPolicies() {
             null_uuid_result.diagnostic.diagnostic_code ==
                 "SB_DATATYPE_EXTRACT_REJECTED" &&
             null_uuid_detail != nullptr &&
-            *null_uuid_detail == "uuidv7_uint64_result_profile_unresolved",
-        "typed-NULL UUIDv7 extraction refuses with the unresolved uint64 result profile");
+            *null_uuid_detail == "uuid_extract_policy_unresolved" &&
+            null_uuid_result.value.type_id == dt::CanonicalTypeId::unknown &&
+            !null_uuid_result.value.is_null &&
+            null_uuid_result.value.encoded_value.empty(),
+        "typed-NULL UUIDv7 extraction refuses without an extraction policy");
 
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
