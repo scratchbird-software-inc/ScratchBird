@@ -30,6 +30,7 @@ struct Park {
 thread_local Park* park = nullptr;
 struct DeliveryPause { std::binary_semaphore reached{0}, resume{0}; };
 thread_local DeliveryPause* delivery_pause = nullptr;
+thread_local unsigned fail_capture_lock_call=0, capture_lock_calls=0;
 void Enter(pthread_cond_t* condition) {
   if (park && !park->condition) { park->condition = condition; park->entered.release(); }
   if (park && ++park->visits==2) park->reparked.release();
@@ -54,6 +55,11 @@ extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
 extern "C" int __real_pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const timespec*);
 extern "C" int __real_pthread_cond_broadcast(pthread_cond_t*);
 extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t*);
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (fail_capture_lock_call && ++capture_lock_calls==fail_capture_lock_call) return EINVAL;
+  return __real_pthread_mutex_lock(mutex);
+}
 extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
   const auto code=__real_pthread_mutex_unlock(mutex);
   if (code==0 && delivery_pause) {
@@ -76,6 +82,133 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* c) {
   return __real_pthread_cond_broadcast(c);
 }
 int main() {
+  {
+    Mutex left(1), right(1); Park left_wait, right_wait;
+    Mutex::OwnerIdentity a{}, b{}; a[0]=0xa1; b[0]=0xb2;
+    std::counting_semaphore<2> ready(0), proceed(0);
+    std::stop_source stop;
+    std::thread one([&] {
+      Check(left.TryLock({}, {}, a)==Result::acquired,"cycle left actual holder");
+      ready.release(); proceed.acquire(); park=&left_wait;
+      Check(right.Lock({},stop.get_token(),a)==Result::cancelled,"cycle left wait cooperatively cancelled");
+      Check(left.Unlock(a),"cycle left holder releases itself");
+    });
+    std::thread two([&] {
+      Check(right.TryLock({}, {}, b)==Result::acquired,"cycle right actual holder");
+      ready.release(); proceed.acquire(); park=&right_wait;
+      Check(left.Lock({},stop.get_token(),b)==Result::cancelled,"cycle right wait cooperatively cancelled");
+      Check(right.Unlock(b),"cycle right holder releases itself");
+    });
+    Check(ready.try_acquire_for(5s) && ready.try_acquire_for(5s),"both real cycle holders ready");
+    proceed.release(2);
+    Check(left_wait.entered.try_acquire_for(5s) && right_wait.entered.try_acquire_for(5s),
+          "real two-latch cycle is parked before capture");
+    std::array<Mutex::WaitSetEntry,2> entries;
+    entries[0].mutex=&right; entries[1].mutex=&left;
+    std::array<Mutex::WaiterObservation,2> rows;
+    rows[0].owner=a;
+    for (unsigned failure : {1U,2U}) {
+      capture_lock_calls=0; fail_capture_lock_call=failure;
+      const auto failed=Mutex::ObserveWaitSet(entries,rows,2);
+      fail_capture_lock_call=0;
+      Check(failed==Mutex::WaitSetResult::synchronization_failed && rows[0].owner==a,
+            "failed group lock publishes no partial wait records");
+      Check(!entries[0].lock.owns_lock() && !entries[1].lock.owns_lock() &&
+            left.Observe().held && right.Observe().held,"partial lock failure releases native locks not semantic holders");
+    }
+    std::mutex unrelated;
+    entries[0].lock=std::unique_lock(unrelated);
+    Check(Mutex::ObserveWaitSet(entries,rows,2)==Mutex::WaitSetResult::invalid &&
+          entries[0].lock.owns_lock(),"invalid borrowed frame does not release caller-owned lock");
+    entries[0].lock={};
+    Check(Mutex::ObserveWaitSet(entries,rows,1)==Mutex::WaitSetResult::exhausted,
+          "multi-latch capture enforces admitted latch bound");
+    Check(Mutex::ObserveWaitSet(entries,std::span(rows).first(1),2)==Mutex::WaitSetResult::insufficient_capacity &&
+          rows[0].owner==a && !entries[0].observation.complete && !entries[1].observation.complete,
+          "multi-latch capacity failure exposes no partial edge output");
+    auto capture=[&](bool reverse) {
+      std::array<Mutex::WaitSetEntry,2> local;
+      local[reverse?1:0].mutex=&right; local[reverse?0:1].mutex=&left;
+      std::array<Mutex::WaiterObservation,2> waits;
+      for (unsigned repeat=0;repeat<100;++repeat) {
+        Check(Mutex::ObserveWaitSet(local,waits,2)==Mutex::WaitSetResult::captured,
+              "opposite-order collectors capture without locking cycle");
+        const auto& r=local[reverse?1:0]; const auto& l=local[reverse?0:1];
+        Check(r.observation.complete && l.observation.complete && r.observation.owner==b &&
+              l.observation.owner==a && waits[r.offset].owner==a && waits[l.offset].owner==b,
+              "consistent capture preserves both actual wait-for edges");
+        Check(!r.lock.owns_lock() && !l.lock.owns_lock(),"capture releases every native commit lock");
+      }
+    };
+    std::thread collector([&]{capture(true);}); capture(false); collector.join();
+    entries[1].mutex=&right;
+    Check(Mutex::ObserveWaitSet(entries,rows,2)==Mutex::WaitSetResult::invalid,
+          "duplicate latch rejected before recursive native locking");
+    entries[1].mutex=nullptr;
+    Check(Mutex::ObserveWaitSet(entries,rows,2)==Mutex::WaitSetResult::invalid,
+          "missing latch rejected before capture");
+    Check(Mutex::ObserveWaitSet({},rows,0)==Mutex::WaitSetResult::invalid &&
+          Mutex::ObserveWaitSet({},rows,1)==Mutex::WaitSetResult::captured,
+          "empty capture still requires a nonzero admitted bound");
+    stop.request_stop(); one.join(); two.join(); Idle(left); Idle(right);
+  }
+  {
+    // Observe actual stack-registered waits, not synthetic graph edges. A
+    // too-small destination must not expose a deceptively complete prefix.
+    Mutex mutex(2); Park first, second;
+    Mutex::OwnerIdentity holder{}, a{}, b{};
+    for (unsigned i=0;i<16;++i) { holder[i]=i+0x80; a[i]=i+0xa0; b[i]=i+0xe0; }
+    first.defer_return=true;
+    const auto main_thread=std::this_thread::get_id();
+    Check(mutex.TryLock({}, {}, holder)==Result::acquired,"inspection holder granted");
+    std::stop_source cancel;
+    const auto deadline=Mutex::Clock::now()+10s;
+    std::thread one([&] {
+      park=&first;
+      Check(mutex.Lock(deadline,cancel.get_token(),a)==Result::cancelled,"inspected waiter cancelled");
+    });
+    Check(first.entered.try_acquire_for(5s),"first inspected waiter actually parked");
+    std::thread two([&] {
+      park=&second;
+      Check(mutex.Lock(deadline,{},b)==Result::closed,"inspected waiter closed");
+    });
+    Check(second.entered.try_acquire_for(5s),"second inspected waiter actually parked");
+    std::array<Mutex::WaiterObservation,3> rows{};
+    rows[0].owner=holder; rows[2].owner=holder;
+    const auto small=mutex.ObserveWaiters(std::span(rows).first(1));
+    Check(!small.complete && small.state.waiters==2 && small.state.calls==2,
+          "insufficient inspection capacity reports exact requirement");
+    Check(rows[0].owner==holder,"incomplete inspection leaves output untouched");
+    const auto view=mutex.ObserveWaiters(rows);
+    Check(view.complete && view.state.held && view.holder==main_thread && view.owner==holder,
+          "inspection preserves real native holder and binary task");
+    Check(rows[0].thread==one.get_id() && rows[1].thread==two.get_id() &&
+          rows[0].owner==a && rows[1].owner==b,"inspection records real FIFO waiters");
+    Check(rows[0].deadline==deadline && rows[1].deadline==deadline &&
+          rows[0].started<=rows[1].started && rows[1].started<=Mutex::Clock::now(),
+          "inspection captures native wait timing");
+    Check(!rows[0].cancellation_requested && !rows[1].cancellation_requested &&
+          rows[2].owner==holder,"inspection respects output extent");
+    cancel.request_stop();
+    Check(first.woke.try_acquire_for(5s),"cancelled native waiter paused before predicate reacquisition");
+    const auto pending=mutex.ObserveWaiters(rows);
+    Check(pending.complete && pending.state.waiters==2 && rows[0].owner==a &&
+          rows[0].cancellation_requested && !rows[1].cancellation_requested,
+          "cancellation request remains observed until real wait unlink");
+    first.resume.release(); one.join();
+    const auto after=mutex.ObserveWaiters(rows);
+    Check(after.complete && after.state.waiters==1 && rows[0].owner==b,
+          "cancelled wait edge disappears after actual unlink");
+    mutex.Close(); two.join();
+    const auto closed=mutex.ObserveWaiters({});
+    Check(closed.complete && closed.state.closed && closed.state.held && closed.owner==holder &&
+          closed.state.waiters==0 && closed.state.calls==0,"close observation does not erase live holder");
+    Check(mutex.Unlock(holder),"inspected holder releases");
+    const auto empty=mutex.ObserveWaiters({});
+    Check(empty.complete && !empty.owner && empty.holder==std::thread::id{} && !empty.state.held,
+          "release clears observed holder identity");
+    Check(view.owner==holder && view.state.waiters==2,"captured state is a value not live authority");
+  }
   for (bool immediate : {false,true}) for (bool held : {false,true})
     for (unsigned signals=0; signals<8; ++signals) {
       Mutex mutex(1);
