@@ -13,8 +13,8 @@ namespace scratchbird::core::platform {
 // Native mechanism, not an engine latch descriptor or admission authority.
 // The owner validates allowed modes, order, current execution and
 // policy before entry, retains this object and every grant, and joins all calls
-// before destruction. No conversion API: conversion barriers/generations belong
-// to the owning layer. A rank is an already-admitted arbitration rank (smaller
+// before destruction. Only intent release preparation is supplied here;
+// conversion barriers/generations belong to the owning layer. A rank is an already-admitted arbitration rank (smaller
 // first), not an engine priority mapping. Equal ranks are FIFO; no bypass API.
 class CheckedModeLatch {
  public:
@@ -24,7 +24,7 @@ class CheckedModeLatch {
     none, shared_read, intent_read, intent_write, exclusive_write, upgrade,
     cleanup, recovery, flush, eviction, publication, verification
   };
-  enum class Result { acquired, busy, invalid, recursive, exhausted, timed_out, cancelled, closed, failed };
+  enum class Result { acquired, busy, invalid, recursive, exhausted, timed_out, cancelled, closed, failed, released };
 
   // Intrusive, nonmoving caller-owned record. Exclusive borrow for Acquire and
   // Release; do not destroy or reuse until the call completes. An active record
@@ -135,8 +135,29 @@ class CheckedModeLatch {
 
   bool Release(Grant& grant, std::optional<OwnerIdentity> owner = {}) {
     std::lock_guard lock(mutex_);
-    if (grant.latch_ != this || grant.thread_ != std::this_thread::get_id() ||
-        grant.owner_ != owner) return false;
+    if (!Owned(grant, owner)) return false;
+    ReleaseLocked(grant);
+    return true;
+  }
+  // Explicit conversion preparation boundary, not an upgrade or exclusive
+  // grant. The owner prepares storage first, then re-enters normal Acquire
+  // only after receiving released. Sole-writer and terminal checks are atomic
+  // with release; an observation followed by ordinary Release is insufficient.
+  Result ReleaseIntentForUpgrade(Grant& grant, std::optional<Clock::time_point> deadline,
+      std::stop_token stop = {}, std::optional<OwnerIdentity> owner = {}) {
+    std::lock_guard lock(mutex_);
+    if (!Owned(grant, owner) || grant.mode_ != Mode::intent_write) return Result::invalid;
+    for (auto* held = holders_; held; held = held->next_)
+      if (held != &grant && held->mode_ == Mode::intent_write) return Result::busy;
+    if (auto terminal = Terminal(deadline, stop)) return *terminal;
+    ReleaseLocked(grant);
+    return Result::released;
+  }
+ private:
+  bool Owned(const Grant& grant, const std::optional<OwnerIdentity>& owner) const noexcept {
+    return grant.latch_ == this && grant.thread_ == std::this_thread::get_id() && grant.owner_ == owner;
+  }
+  void ReleaseLocked(Grant& grant) noexcept {
     if (grant.previous_) grant.previous_->next_ = grant.next_; else holders_ = grant.next_;
     if (grant.next_) grant.next_->previous_ = grant.previous_;
     --holder_count_;
@@ -146,8 +167,8 @@ class CheckedModeLatch {
     grant.thread_ = {};
     grant.owner_.reset();
     Notify();
-    return true;
   }
+ public:
   void Close() {
     std::lock_guard lock(mutex_);
     closed_ = true;

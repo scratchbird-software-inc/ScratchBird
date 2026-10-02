@@ -338,6 +338,64 @@ void ClassBinding() {
   }
   fixture.Empty();
 }
+void IntentUpgrade() {
+  for (unsigned mode=1;mode<=11;++mode) if (static_cast<M>(mode)!=M::intent_write)
+    Run([&](auto& owner,auto&,auto&) {
+      auto op=Operation(owner,40); c::ModeLatchGrant grant;
+      const auto original=Request(50,static_cast<M>(mode));
+      Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"other-mode original");
+      const auto result=op.UpgradeIntent(grant,original,0,{});
+      Check(result.result.code==C::invalid && !result.original_released && grant.request()==original,
+            "intent conversion cannot release any other original mode");
+    });
+  for (unsigned flags=0;flags<8;++flags) Run([&](auto& owner,auto&,auto& fixture) {
+    auto op=Operation(owner,40);
+    auto original=Request(50,M::intent_write);
+    c::ModeLatchGrant grant;
+    Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"intent conversion original grant");
+    const auto before=fixture.manager.Snapshot().current_bytes;
+    std::stop_source stop;
+    if (flags&1) Check(owner.Close(),"intent pre-release close");
+    if (flags&2) stop.request_stop();
+    const auto deadline=flags&4?std::optional(c::ModeLatchClock::now()-1s):std::nullopt;
+    const auto r=op.UpgradeIntent(grant,original,0,deadline,stop.get_token());
+    const auto expected=flags&1?C::closed:flags&2?C::cancelled:flags&4?C::timed_out:C::acquired;
+    Check(r.result.code==expected && r.original_released==(flags==0),"intent release terminal precedence and ownership outcome");
+    Check(fixture.manager.Snapshot().current_bytes==before,"conversion reuses actual governed grant backing");
+    Check(grant.request().mode==(flags?M::intent_write:M::upgrade),"returned mode distinguishes upgrade from exclusive authority");
+    if (!flags) Check(grant.Release(original).code==C::wrong_owner,"old intent request cannot release upgraded binding");
+    Check(grant.Release(grant.request()).code==C::released,"exact post-conversion release path");
+  });
+  Run([](auto& owner,auto&,auto&) {
+    auto op=Operation(owner,40);
+    auto original=Request(50,M::intent_write);
+    c::ModeLatchGrant grant;
+    Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"sole-writer original");
+    auto wrong=original; wrong.request=Id(51);
+    auto r=op.UpgradeIntent(grant,wrong,0,{});
+    Check(r.result.code==C::invalid && !r.original_released && grant,"foreign request preserves intent");
+    std::binary_semaphore ready{0},release{0};
+    std::thread writer([&] {
+      auto other=Operation(owner,41);
+      c::ModeLatchGrant second;
+      auto request=Request(51,M::intent_write);
+      Check(other.Acquire(request,Memory(120),second,{}).code==C::acquired,"actual concurrent intent writer");
+      ready.release(); release.acquire();
+      Check(second.Release(request).code==C::released,"second writer release");
+    });
+    ready.acquire(); r=op.UpgradeIntent(grant,original,0,{});
+    Check(r.result.code==C::busy && !r.original_released && grant,"nonsole writer cannot release for conversion");
+    release.release(); writer.join();
+    std::thread foreign([&] {
+      auto other=Operation(owner,42);
+      auto result=other.UpgradeIntent(grant,original,0,{});
+      Check(result.result.code==C::invalid && !result.original_released,"wrong native execution preserves original intent");
+    });
+    foreign.join();
+    r=op.UpgradeIntent(grant,original,0,{});
+    Check(r.result.code==C::acquired && r.original_released,"sole writer retry acquires upgrade");
+  });
+}
 void Ownership() {
   Run([](auto& owner,auto& domain,auto& fixture) {
     auto operation=Operation(owner,40);
@@ -595,16 +653,102 @@ void PreparationOrderRecheck() {
     fixture.Empty();
   }
 }
+void IntentUpgradeParking() {
+  // An earlier exclusive waiter must run first; retaining the original intent
+  // while queued would deadlock this actual two-execution path.
+  Run([](auto& owner,auto&,auto&) {
+    auto op=Operation(owner,40); c::ModeLatchGrant grant;
+    const auto original=Request(50,M::intent_write);
+    Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"queued conversion original");
+    Park earlier; std::atomic<bool> exclusive_ran=false;
+    std::thread writer([&] {
+      auto other=Operation(owner,41); c::ModeLatchGrant exclusive;
+      park=&earlier; const auto request=Request(51,M::exclusive_write);
+      Check(other.Acquire(request,Memory(120),exclusive,c::ModeLatchClock::now()+5s).code==C::acquired,
+            "earlier exclusive waiter makes actual progress");
+      exclusive_ran=true;
+      Check(exclusive.Release(request).code==C::released,"earlier exclusive released"); park=nullptr;
+    });
+    earlier.entered.acquire();
+    const auto result=op.UpgradeIntent(grant,original,0,c::ModeLatchClock::now()+5s);
+    Check(result.result.code==C::acquired && result.original_released && exclusive_ran,
+          "conversion releases before normal queue without bypass or self-blocking");
+    writer.join();
+  });
+  for (unsigned outcome=0;outcome<3;++outcome) Run([&](auto& owner,auto& domain,auto&) {
+    std::binary_semaphore reader_ready{0},reader_release{0};
+    std::thread reader([&] {
+      auto op=Operation(owner,41); c::ModeLatchGrant grant; const auto request=Request(51);
+      Check(op.Acquire(request,Memory(120),grant,{}).code==C::acquired,"reader blocks upgrade after intent release");
+      reader_ready.release(); reader_release.acquire();
+    });
+    reader_ready.acquire();
+    auto op=Operation(owner,40); c::ModeLatchGrant grant; const auto original=Request(50,M::intent_write);
+    Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"intent alongside reader");
+    Park parked; std::stop_source stop;
+    std::thread signal([&] {
+      parked.entered.acquire();
+      Check(owner.Snapshot().native.holders==1 && owner.Snapshot().grants==1,
+            "parked conversion no longer holds intent");
+      Check(domain.Snapshot().readers>=6,"conversion gap retains actual operation state and record guards");
+      if (outcome==0) stop.request_stop();
+      if (outcome==1) Check(owner.Close(),"close after original release");
+    });
+    park=&parked;
+    auto result=op.UpgradeIntent(grant,original,0,c::ModeLatchClock::now()+100ms,stop.get_token());
+    park=nullptr; signal.join();
+    Check(result.original_released && !grant &&
+          result.result.code==(outcome==0?C::cancelled:outcome==1?C::closed:C::timed_out),
+          "post-release terminal explicitly reports original ownership gone");
+    Check(grant.Release(original).code==C::no_grant,"no silent original grant recreation");
+    reader_release.release(); reader.join();
+  });
+  for (const bool full:{false,true}) Run([&](auto& owner,auto& domain,auto&) {
+    std::binary_semaphore ready{0},release{0};
+    std::thread reader([&] {
+      auto op=Operation(owner,41); c::ModeLatchGrant grant;
+      Check(op.Acquire(Request(51),Memory(120),grant,{}).code==C::acquired,"failure path blocking reader");
+      ready.release(); release.acquire();
+    });
+    ready.acquire(); auto op=Operation(owner,40); c::ModeLatchGrant grant;
+    const auto original=Request(50,M::intent_write);
+    Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,"failure path original intent");
+    std::array<Park,4> parks;
+    std::vector<std::thread> waiters;
+    if (full) for (unsigned n=0;n<4;++n) {
+      waiters.emplace_back([&,n] {
+        auto other=Operation(owner,42+n); c::ModeLatchGrant pending;
+        park=&parks[n];
+        Check(other.Acquire(Request(52+n,M::exclusive_write),Memory(140+3*n),pending,{}).code==C::closed,
+              "full queue waiter wakes on actual close");
+        park=nullptr;
+      });
+      parks[n].entered.acquire();
+    }
+    fail_wait=!full;
+    const auto result=op.UpgradeIntent(grant,original,0,{});
+    fail_wait=false;
+    Check(result.original_released && !grant &&
+          result.result.code==(full?C::exhausted:C::synchronization_failed),
+          "post-release capacity and native faults explicitly lose original ownership");
+    Check(owner.Close(),"failure cleanup close");
+    for (auto& thread:waiters) thread.join();
+    release.release(); reader.join();
+    Check(domain.Collect()==S::ok && owner.Snapshot().grants==0 && owner.Snapshot().native.waiters==0,
+          "failed conversion cleans real grant records and wait registrations");
+  });
+}
 #endif
 } // namespace
 int main() {
-  SharedOrderMatrix(); SharedOrderLifetime(); ClassBinding();
+  SharedOrderMatrix(); SharedOrderLifetime(); ClassBinding(); IntentUpgrade();
   Matrix(); Ownership(); Nonrecursive(); Exhaustion(); MultipleRetainedHolders(); RetainedTerminals();
 #if defined(SB_MODE_NATIVE_FAULT_GATE)
   ParkedLifetime();
   DomainClosesBeforeProtection();
   PreparationOwnershipRecheck();
   PreparationOrderRecheck();
+  IntentUpgradeParking();
 #endif
   std::printf("PASS retained mode latch: %u checks\n",checks.load());
 }
