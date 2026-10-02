@@ -186,7 +186,11 @@ void SeriesBindings() {
   }
 }
 void SeriesAllocations() {
-  auto r=Series();r.labels[0].value=std::string(512,'v');const auto golden=SeriesGolden(r);
+  for(unsigned shape=0;shape<3;++shape){
+  auto r=Series();r.labels[0].value=std::string(512,'v');
+  if(shape==1)for(std::size_t i=0;i<r.labels.size();++i)r.labels[i].key=std::string(4096,char('a'+i));
+  if(shape==2)r.labels.clear();
+  const auto golden=SeriesGolden(r);
   for(unsigned operation=0;operation<2;++operation){
     struct Attempt { long allocations; bool fired,success,partial,canonical; };
     const auto run=[&](long budget){
@@ -214,8 +218,10 @@ void SeriesAllocations() {
     const auto measured=run(std::numeric_limits<long>::max());
     Check(measured.success&&measured.canonical&&!measured.fired&&!measured.partial,
           "series allocation measurement failed canonical operation");
-    Check(measured.allocations>0&&measured.allocations<2048,"series measured allocation bound invalid");
-    if(!measured.success||measured.allocations<=0||measured.allocations>=2048)continue;
+    const bool empty_decode=shape==2&&operation==1;
+    Check(measured.allocations>=0&&measured.allocations<2048&&
+          (empty_decode?measured.allocations==0:measured.allocations>0),"series measured allocation bound invalid");
+    if(!measured.success||measured.allocations<0||measured.allocations>=2048)continue;
     long injected=0;
     for(long index=0;index<measured.allocations;++index){
       const auto fault=run(index);
@@ -227,7 +233,8 @@ void SeriesAllocations() {
     Check(!recovered.fired&&recovered.success&&recovered.canonical&&!recovered.partial&&
           recovered.allocations==measured.allocations,"series exact allocation boundary failed recovery");
     Check(injected==measured.allocations,"series allocation fault sweep incomplete");
-    std::cout<<"series allocation operation="<<operation<<" measured="<<measured.allocations<<" injected="<<injected<<'\n';
+    std::cout<<"series allocation shape="<<shape<<" operation="<<operation<<" measured="<<measured.allocations<<" injected="<<injected<<'\n';
+  }
   }
 }
 }

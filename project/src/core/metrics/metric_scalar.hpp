@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <type_traits>
 #include <utility>
@@ -72,6 +73,10 @@ std::optional<MetricScalar> MetricScalarZero(MetricScalarType);
 struct MetricDescriptorDefinition;
 MetricScalarType MetricScalarTypeOf(const MetricScalar&) noexcept;
 bool MetricScalarValid(const MetricScalar&) noexcept;
+// The same strict UTF8 predicate used by text scalars; borrows bytes and does
+// not construct an owning scalar. Empty and embedded NUL are valid UTF8;
+// family-specific key/value rules remain the caller's responsibility.
+bool MetricTextValid(std::string_view) noexcept;
 // Only valid numeric values of identical type are comparable. No conversion.
 std::optional<int> CompareMetricScalars(const MetricScalar&, const MetricScalar&) noexcept;
 MetricScalarError ValidateMetricScalarDescriptor(const MetricDescriptorDefinition&) noexcept;
