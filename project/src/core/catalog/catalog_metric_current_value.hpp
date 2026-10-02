@@ -20,14 +20,43 @@ struct CatalogMetricCurrentValueResult {
   std::optional<CatalogMetricCurrentValue> record;
   bool ok() const { return error == CatalogValueError::none && record.has_value(); }
 };
+inline constexpr std::array<CatalogValueFieldSchema,4> kCatalogCurrentValueFields{{
+    {1, CatalogValueType::engine_identity, true, 16, UuidKind::object},
+    {2, CatalogValueType::engine_identity, true, 16, UuidKind::database},
+    {3, CatalogValueType::opaque_bytes, true, 65536},
+    {4, CatalogValueType::opaque_bytes, true, 65536},
+}};
+struct CatalogMetricCurrentValueView {
+  TypedUuid object_uuid;
+  TypedUuid database_uuid;
+  CatalogMetricDescriptorView descriptor;
+  metrics::MetricValueView value;
+  std::string_view descriptor_bytes;
+};
+struct CatalogMetricCurrentValueViewResult {
+  CatalogValueError error=CatalogValueError::invalid_value;
+  std::optional<CatalogMetricCurrentValueView> record;
+  bool ok() const { return error==CatalogValueError::none&&record.has_value(); }
+};
+// All variable data borrow the immutable outer input. Keep its owner and actual
+// memory grant alive; valid structure is not catalog admission/publication.
+inline CatalogMetricCurrentValueViewResult DecodeCatalogMetricCurrentValueView(std::string_view bytes) {
+  std::array<CatalogValueFieldView,4> fields;
+  const auto block=DecodeCatalogValueBlockInto({65547,1,kCatalogCurrentValueFields},
+      {reinterpret_cast<const byte*>(bytes.data()),bytes.size()},fields);
+  if(!block.ok())return {block.error,{}};
+  const auto& descriptor_bytes=fields[2].bytes;
+  const std::string_view encoded{reinterpret_cast<const char*>(descriptor_bytes.data()),descriptor_bytes.size()};
+  auto descriptor=DecodeCatalogMetricDescriptorView(encoded);
+  if(!descriptor.ok())return {descriptor.error,{}};
+  auto value=metrics::DecodeMetricValueView(descriptor.record->definition,fields[3].bytes);
+  if(!value.ok())return {CatalogValueError::invalid_value,{}};
+  return {CatalogValueError::none,CatalogMetricCurrentValueView{
+      *fields[0].identity(),*fields[1].identity(),std::move(*descriptor.record),std::move(*value.value),encoded}};
+}
 inline const CatalogValueSchema& CatalogMetricCurrentValueSchema() {
-  using T = CatalogValueType;
-  static const CatalogValueSchema schema{65547, 1, {
-      {1, T::engine_identity, true, 16, UuidKind::object},
-      {2, T::engine_identity, true, 16, UuidKind::database},
-      {3, T::opaque_bytes, true, 65536},
-      {4, T::opaque_bytes, true, 65536},
-  }};
+  static const CatalogValueSchema schema{65547,1,
+      {kCatalogCurrentValueFields.begin(),kCatalogCurrentValueFields.end()}};
   return schema;
 }
 inline CatalogValueEncodeResult EncodeCatalogMetricCurrentValue(const CatalogMetricCurrentValue& r) {
@@ -42,20 +71,13 @@ inline CatalogValueEncodeResult EncodeCatalogMetricCurrentValue(const CatalogMet
       {3, std::move(descriptor.bytes)}, {4, std::move(value.bytes)}});
 }
 inline CatalogMetricCurrentValueResult DecodeCatalogMetricCurrentValue(std::string_view bytes) {
-  if (bytes.size() > kCatalogValueBlockMaxBytes) return {CatalogValueError::size_limit, {}};
-  const auto block = DecodeCatalogValueBlock(CatalogMetricCurrentValueSchema(),
-      std::vector<byte>(bytes.begin(), bytes.end()));
-  if (!block.ok()) return {block.error, {}};
-  const auto& descriptor_bytes = std::get<std::vector<byte>>(block.fields[2].value);
-  const auto descriptor = DecodeCatalogMetricDescriptor(
-      {reinterpret_cast<const char*>(descriptor_bytes.data()), descriptor_bytes.size()});
-  if (!descriptor.ok()) return {descriptor.error, {}};
-  const auto value = metrics::DecodeMetricValue(descriptor.record->definition,
-      std::get<std::vector<byte>>(block.fields[3].value));
-  if (!value.ok()) return {CatalogValueError::invalid_value, {}};
+  const auto decoded=DecodeCatalogMetricCurrentValueView(bytes);
+  if(!decoded.ok())return {decoded.error,{}};
+  auto descriptor=DecodeCatalogMetricDescriptor(decoded.record->descriptor_bytes);
+  if(!descriptor.ok())return {descriptor.error,{}};
   return {CatalogValueError::none, CatalogMetricCurrentValue{
-      std::get<TypedUuid>(block.fields[0].value), std::get<TypedUuid>(block.fields[1].value),
-      *descriptor.record, *value.value}};
+      decoded.record->object_uuid,decoded.record->database_uuid,
+      std::move(*descriptor.record),metrics::MaterializeMetricValue(decoded.record->value)}};
 }
 inline bool IsCatalogMetricCurrentValuePayload(std::string_view bytes) {
   return bytes.size() >= kCatalogValueBlockHeaderBytes && bytes.substr(0, 4) == "SBCV" &&
@@ -63,7 +85,7 @@ inline bool IsCatalogMetricCurrentValuePayload(std::string_view bytes) {
 }
 inline bool CatalogMetricCurrentValueMatchesHeader(const CatalogTypedRecord& r) {
   if (r.header.kind != CatalogRecordKind::metric_current_value) return false;
-  const auto decoded = DecodeCatalogMetricCurrentValue(r.payload);
+  const auto decoded = DecodeCatalogMetricCurrentValueView(r.payload);
   return decoded.ok() && decoded.record->object_uuid.kind == r.header.object_uuid.kind &&
       decoded.record->object_uuid.value == r.header.object_uuid.value;
 }
