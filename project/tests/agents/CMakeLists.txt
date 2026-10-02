@@ -16,7 +16,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_include_directories(checked_fifo_mutex_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/platform")
   target_link_libraries(checked_fifo_mutex_gate PRIVATE Threads::Threads)
   target_link_options(checked_fifo_mutex_gate PRIVATE
-    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_cond_broadcast)
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_cond_broadcast
+    -Wl,--wrap=pthread_mutex_unlock)
   add_test(NAME checked_fifo_mutex_gate COMMAND checked_fifo_mutex_gate)
   set_tests_properties(checked_fifo_mutex_gate PROPERTIES TIMEOUT 60 LABELS "concurrency;fifo;platform;fault")
   add_executable(runtime_permit_wait_gate
