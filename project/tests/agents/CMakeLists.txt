@@ -10,6 +10,16 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
+  add_executable(checked_mode_latch_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/checked_mode_latch_gate.cpp")
+  target_compile_features(checked_mode_latch_gate PRIVATE cxx_std_20)
+  target_include_directories(checked_mode_latch_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/platform")
+  target_link_libraries(checked_mode_latch_gate PRIVATE Threads::Threads)
+  target_link_options(checked_mode_latch_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait)
+  add_test(NAME checked_mode_latch_gate COMMAND checked_mode_latch_gate)
+  set_tests_properties(checked_mode_latch_gate PROPERTIES
+    TIMEOUT 60 LABELS "concurrency;multiholder;platform;fault")
   add_executable(checked_fifo_mutex_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/checked_fifo_mutex_gate.cpp")
   target_compile_features(checked_fifo_mutex_gate PRIVATE cxx_std_20)
@@ -61,6 +71,19 @@ if(NOT TARGET sb_core_concurrency)
 endif()
 add_executable(retained_condition_wait_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_condition_wait_gate.cpp")
+add_executable(retained_mode_latch_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_mode_latch_gate.cpp")
+target_compile_features(retained_mode_latch_gate PRIVATE cxx_std_23)
+target_link_libraries(retained_mode_latch_gate PRIVATE sb_core_concurrency)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(retained_mode_latch_gate PRIVATE SB_MODE_NATIVE_FAULT_GATE)
+  target_link_options(retained_mode_latch_gate PRIVATE
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait -Wl,--wrap=pthread_mutex_unlock
+    -Wl,--wrap=_ZN11scratchbird4core6memory20MemorySafeRetirement7ProtectERKNS1_20SafeRetirementHandleENS1_20SafeRetirementHazardERNS1_19SafeRetirementGuardE)
+endif()
+add_test(NAME retained_mode_latch_gate COMMAND retained_mode_latch_gate)
+set_tests_properties(retained_mode_latch_gate PROPERTIES
+  TIMEOUT 120 LABELS "concurrency;multiholder;safe_retirement;binary_uuid")
 target_compile_features(retained_condition_wait_gate PRIVATE cxx_std_23)
 target_link_libraries(retained_condition_wait_gate PRIVATE sb_core_concurrency)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
