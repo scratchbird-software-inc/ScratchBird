@@ -60,11 +60,14 @@ CatalogStorageRecordDecodeResult DecodeCatalogStorageRecord(std::string_view byt
       v.descriptor_uuid, v.filespace_uuid, v.page_size, v.creator_transaction_number,
       std::string(v.descriptor_name)}};
 }
-bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecord& record) {
+bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecordView& record) {
   const auto decoded = DecodeCatalogStorageRecordView(record.payload);
   return record.header.kind == CatalogRecordKind::storage_descriptor && decoded.ok() &&
       record.header.object_uuid.kind == UuidKind::object &&
       record.header.object_uuid.value == decoded.record->descriptor_uuid.value &&
       record.header.row_uuid.value != record.header.object_uuid.value;
+}
+bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecord& record) {
+  return CatalogStoragePayloadMatchesHeader(BorrowCatalogTypedRecord(record));
 }
 }  // namespace scratchbird::core::catalog

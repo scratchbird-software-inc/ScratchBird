@@ -128,11 +128,14 @@ bool IsCatalogMetricLabelSchemaPayload(std::string_view bytes) {
   return bytes.size() >= kCatalogValueBlockHeaderBytes && bytes.substr(0,4) == "SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16) == 65545;
 }
-bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::metric_label_schema ||
       !Identity(r.header.object_uuid,UuidKind::object)) return false;
   const auto decoded = DecodeCatalogMetricLabelSchemaView(r.payload);
   return decoded.ok() && decoded.record->label_schema_uuid == r.header.object_uuid.value;
+}
+bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricLabelSchemaMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersion& m) {
   if (!CatalogMetricLabelSchemaMatchesHeader(m.record) || m.object_subtype != "metric_label_schema" ||

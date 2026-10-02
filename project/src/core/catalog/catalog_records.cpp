@@ -8,6 +8,7 @@
 
 #include "catalog_records.hpp"
 
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -28,15 +29,15 @@ Status CatalogRecordErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::catalog};
 }
 
-CatalogRecordDescriptor Descriptor(CatalogRecordKind kind,
+constexpr CatalogRecordDescriptorView Descriptor(CatalogRecordKind kind,
                                    CatalogRecordScope scope,
-                                   std::string stable_name,
+                                   std::string_view stable_name,
                                    bool requires_object_uuid,
                                    bool requires_parent_uuid,
                                    bool may_reference_toast,
                                    bool mutable_after_create,
                                    bool parser_visible) {
-  CatalogRecordDescriptor descriptor;
+  CatalogRecordDescriptorView descriptor;
   descriptor.kind = kind;
   descriptor.scope = scope;
   descriptor.stable_name = std::move(stable_name);
@@ -132,8 +133,8 @@ const char* CatalogRecordScopeName(CatalogRecordScope scope) {
   return "unknown";
 }
 
-const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors() {
-  static const std::vector<CatalogRecordDescriptor> descriptors = {
+std::span<const CatalogRecordDescriptorView> BuiltinCatalogRecordDescriptorViews() noexcept {
+  static constexpr auto descriptors = std::array{
       Descriptor(CatalogRecordKind::database, CatalogRecordScope::local_database, "database", true, false, false, false, true),
       Descriptor(CatalogRecordKind::filespace, CatalogRecordScope::local_database, "filespace", true, true, false, false, false),
       Descriptor(CatalogRecordKind::schema, CatalogRecordScope::local_database, "schema", true, true, false, true, true),
@@ -185,14 +186,44 @@ const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors() {
       Descriptor(CatalogRecordKind::protected_material_audit_event, CatalogRecordScope::local_database, "protected_material_audit_event", true, true, true, false, false),
       Descriptor(CatalogRecordKind::cluster_stub, CatalogRecordScope::private_cluster, "cluster_stub", true, true, false, false, false),
   };
+  static_assert([] {
+    for(std::size_t i=0;i<descriptors.size();++i){
+      const auto& d=descriptors[i];
+      if(d.kind==CatalogRecordKind::unknown||d.scope==CatalogRecordScope::unknown||
+          d.stable_name.empty()||!d.engine_authority)return false;
+      for(std::size_t j=0;j<i;++j)if(descriptors[j].kind==d.kind)return false;
+    }
+    return true;
+  }());
   return descriptors;
 }
 
+namespace {
+CatalogRecordDescriptor Materialize(const CatalogRecordDescriptorView& d) {
+  return {d.kind,d.scope,std::string(d.stable_name),d.requires_row_uuid,
+      d.requires_object_uuid,d.requires_parent_uuid,d.may_reference_toast,
+      d.mutable_after_create,d.parser_visible,d.engine_authority};
+}
+}
+const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors() {
+  static const auto descriptors=[] {
+    std::vector<CatalogRecordDescriptor> result;
+    const auto views=BuiltinCatalogRecordDescriptorViews();result.reserve(views.size());
+    for(const auto& d:views)result.push_back(Materialize(d));
+    return result;
+  }();
+  return descriptors;
+}
+const CatalogRecordDescriptorView* FindBuiltinCatalogRecordDescriptor(CatalogRecordKind kind) noexcept {
+  for(const auto& d:BuiltinCatalogRecordDescriptorViews())if(d.kind==kind)return &d;
+  return nullptr;
+}
 CatalogRecordValidationResult LookupCatalogRecordDescriptor(CatalogRecordKind kind) {
-  for (const CatalogRecordDescriptor& descriptor : BuiltinCatalogRecordDescriptors()) {
-    if (descriptor.kind == kind) {
-      return ValidateCatalogRecordDescriptor(descriptor);
-    }
+  // Builtins satisfy the same completeness/authority predicates at compile
+  // time. Materialize only the final result, never an intermediate name.
+  if(const auto* d=FindBuiltinCatalogRecordDescriptor(kind)) {
+    CatalogRecordValidationResult result;result.status=CatalogRecordOkStatus();
+    result.descriptor=Materialize(*d);return result;
   }
   return CatalogRecordError("SB-CATALOG-RECORD-UNKNOWN-KIND",
                             "catalog.record.unknown_kind",

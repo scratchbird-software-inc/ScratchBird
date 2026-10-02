@@ -51,6 +51,7 @@ CatalogMetricRetentionPolicyResult DecodeCatalogMetricRetentionPolicy(std::strin
 // Schema identification is for family-confusion rejection only, not validation.
 bool IsCatalogMetricRetentionPolicyPayload(std::string_view);
 bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord&);
+bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricRetentionPolicyPreservesOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor);

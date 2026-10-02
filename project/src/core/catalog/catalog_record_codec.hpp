@@ -14,6 +14,8 @@
 #include "runtime_platform.hpp"
 
 #include <string>
+#include <string_view>
+#include <optional>
 #include <array>
 #include <vector>
 
@@ -28,6 +30,31 @@ struct CatalogTypedRecord {
   CatalogRecordHeader header;
   std::string payload;
 };
+// Structural admission only. The immutable payload owner and its actual memory
+// grant must outlive this view and every copy; the header identities are native
+// values. This view confers no publication, activation, or storage authority.
+struct CatalogTypedRecordView {
+  CatalogRecordHeader header;
+  std::string_view payload;
+};
+inline CatalogTypedRecordView BorrowCatalogTypedRecord(const CatalogTypedRecord& r) {
+  return {r.header,r.payload};
+}
+// Static diagnostic identifiers/details in this boundary; no owning error
+// strings or text identity carriers. Materialization is explicit at the caller.
+struct CatalogRecordDiagnosticView {
+  Status status;
+  std::string_view diagnostic_code, message_key, detail, origin;
+};
+struct CatalogTypedRecordViewResult {
+  std::optional<CatalogTypedRecordView> record;
+  CatalogRecordDiagnosticView diagnostic;
+  bool ok() const { return record.has_value(); }
+};
+CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordView);
+CatalogTypedRecordViewResult DecodeCatalogTypedRecordView(
+    scratchbird::storage::page::CatalogPageRowKind, std::string_view);
+DiagnosticRecord MaterializeCatalogRecordDiagnostic(const CatalogRecordDiagnosticView&);
 
 enum class CatalogAuthorityScope : u16 {
   local = 1, cluster, donor_overlay, security_database, configuration_database,

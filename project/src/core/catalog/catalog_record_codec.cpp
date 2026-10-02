@@ -54,16 +54,29 @@ Status CodecErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::catalog};
 }
 
-CatalogRecordCodecResult CodecError(std::string diagnostic_code,
-                                    std::string message_key,
-                                    std::string detail = {}) {
-  CatalogRecordCodecResult result;
-  result.status = CodecErrorStatus();
-  result.diagnostic = MakeCatalogRecordCodecDiagnostic(result.status,
-                                                       std::move(diagnostic_code),
-                                                       std::move(message_key),
-                                                       std::move(detail));
-  return result;
+CatalogTypedRecordViewResult RecordViewError(std::string_view code,
+    std::string_view key, std::string_view detail = {},
+    std::string_view origin = "core.catalog.record_codec") {
+  return {{},{CodecErrorStatus(),code,key,detail,origin}};
+}
+CatalogRecordCodecResult MaterializeRecordError(const CatalogRecordDiagnosticView& error) {
+  CatalogRecordCodecResult result;result.status=error.status;
+  result.diagnostic=MaterializeCatalogRecordDiagnostic(error);return result;
+}
+std::optional<CatalogRecordDiagnosticView> DurableIdentityError(const TypedUuid& id) {
+  const auto error=[&](const char* code,const char* key,bool detail=true) {
+    return CatalogRecordDiagnosticView{
+        {StatusCode::uuid_invalid,Severity::error,Subsystem::uuid},code,key,
+        detail?std::string_view(scratchbird::core::uuid::UuidKindName(id.kind)):std::string_view{}, "core.uuid"};
+  };
+  using namespace scratchbird::core::uuid;
+  if(!UuidKindAllowsDurableIdentity(id.kind))
+    return error("SB-UUID-DURABLE-IDENTITY-KIND","uuid.durable_identity.kind_not_allowed");
+  if(!IsEngineIdentityKind(id.kind))return error("SB-UUID-TYPED-UNKNOWN-KIND","uuid.typed.unknown_kind",false);
+  if(id.value.is_nil())return error("SB-UUID-TYPED-NIL","uuid.typed.nil_not_allowed");
+  if(!IsValidUuidVariant(id.value))return error("SB-UUID-TYPED-VARIANT","uuid.typed.invalid_variant");
+  if(UuidVersion(id.value)!=7)return error("SB-UUID-TYPED-ENGINE-IDENTITY-NOT-V7","uuid.typed.engine_identity_requires_v7");
+  return {};
 }
 
 bool IsTypedIdentity(const scratchbird::core::platform::TypedUuid& uuid, UuidKind expected) {
@@ -78,107 +91,102 @@ bool IsSuppliedIdentity(const scratchbird::core::platform::TypedUuid& uuid) {
 
 }  // namespace
 
-CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& record, u32 ordinal) {
-  const auto descriptor = LookupCatalogRecordDescriptor(record.header.kind);
-  if (!descriptor.ok()) {
-    CatalogRecordCodecResult result;
-    result.status = descriptor.status;
-    result.diagnostic = descriptor.diagnostic;
-    return result;
-  }
+CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordView record) {
+  const auto* descriptor=FindBuiltinCatalogRecordDescriptor(record.header.kind);
+  if(!descriptor)return RecordViewError("SB-CATALOG-RECORD-UNKNOWN-KIND",
+      "catalog.record.unknown_kind",CatalogRecordKindName(record.header.kind),"core.catalog.records");
   if (record.header.record_version < kCatalogRecordSchemaVersionMinSupported ||
       record.header.record_version > kCatalogRecordSchemaVersionMaxSupported) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
                       "catalog.record_codec.version_unsupported",
                       CatalogRecordKindName(record.header.kind));
   }
-  if ((descriptor.descriptor.requires_row_uuid || IsSuppliedIdentity(record.header.row_uuid)) &&
+  if ((descriptor->requires_row_uuid || IsSuppliedIdentity(record.header.row_uuid)) &&
       !IsTypedIdentity(record.header.row_uuid, UuidKind::row)) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-ROW-UUID-MUST-BE-V7",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-ROW-UUID-MUST-BE-V7",
                       "catalog.record_codec.row_uuid_must_be_v7",
                       CatalogRecordKindName(record.header.kind));
   }
-  if ((descriptor.descriptor.requires_object_uuid || IsSuppliedIdentity(record.header.object_uuid)) &&
+  if ((descriptor->requires_object_uuid || IsSuppliedIdentity(record.header.object_uuid)) &&
       !IsTypedIdentity(record.header.object_uuid, UuidKind::object)) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-OBJECT-UUID-MUST-BE-V7",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-OBJECT-UUID-MUST-BE-V7",
                       "catalog.record_codec.object_uuid_must_be_v7",
                       CatalogRecordKindName(record.header.kind));
   }
-  if (descriptor.descriptor.requires_parent_uuid && record.header.parent_uuid.valid() &&
+  if (descriptor->requires_parent_uuid && record.header.parent_uuid.valid() &&
       !IsEngineIdentityUuid(record.header.parent_uuid.value)) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-PARENT-UUID-MUST-BE-V7",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-PARENT-UUID-MUST-BE-V7",
                       "catalog.record_codec.parent_uuid_must_be_v7",
                       CatalogRecordKindName(record.header.kind));
   }
-  if (descriptor.descriptor.requires_parent_uuid && !record.header.parent_uuid.valid()) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-PARENT-UUID-REQUIRED",
+  if (descriptor->requires_parent_uuid && !record.header.parent_uuid.valid()) {
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-PARENT-UUID-REQUIRED",
                       "catalog.record_codec.parent_uuid_required",
                       CatalogRecordKindName(record.header.kind));
   }
 
   if (IsSuppliedIdentity(record.header.parent_uuid)) {
-    const auto parent = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
-        record.header.parent_uuid.kind, record.header.parent_uuid.value);
-    if (!parent.ok()) {
-      CatalogRecordCodecResult refused;
-      refused.status = parent.status;
-      refused.diagnostic = parent.diagnostic;
-      return refused;
-    }
+    if(const auto error=DurableIdentityError(record.header.parent_uuid))return {{},*error};
   }
 
   if (IsCatalogRuntimeAuthorityBindingPayload(record.payload) &&
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
   if (record.header.kind == CatalogRecordKind::storage_descriptor &&
       !CatalogStoragePayloadMatchesHeader(record)) {
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
                       "storage_binary_payload_or_header_invalid");
   }
   if (IsCatalogSecurityRecordKind(record.header.kind) &&
       !CatalogSecurityPayloadMatchesHeader(record)) {
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",
                       "security_binary_payload_or_header_invalid");
   }
   if ((record.header.kind == CatalogRecordKind::metric_current_value ||
        IsCatalogMetricCurrentValuePayload(record.payload)) &&
       !CatalogMetricCurrentValueMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_current_value.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_current_value.invalid",
                       "current_value_binary_payload_or_header_invalid");
   if ((record.header.kind == CatalogRecordKind::metric_series || IsCatalogMetricSeriesPayload(record.payload)) &&
       !CatalogMetricSeriesMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_series.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_series.invalid",
                       "series_binary_payload_or_header_invalid");
   if ((record.header.kind == CatalogRecordKind::metric_label_schema || IsCatalogMetricLabelSchemaPayload(record.payload)) &&
       !CatalogMetricLabelSchemaMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_label_schema.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_label_schema.invalid",
                       "label_schema_binary_payload_or_header_invalid");
   if ((record.header.kind == CatalogRecordKind::metric_descriptor || IsCatalogMetricDescriptorPayload(record.payload)) &&
       !CatalogMetricDescriptorMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_descriptor.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_descriptor.invalid",
                       "descriptor_binary_payload_or_header_invalid");
   if (IsCatalogMetricRetentionPolicyPayload(record.payload) &&
       !CatalogMetricRetentionPolicyMatchesHeader(record)) {
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
                       "policy_binary_payload_or_header_invalid");
   }
   if (IsCatalogStorageActionAttachmentPayload(record.payload) &&
       !CatalogStorageActionAttachmentMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
                       "storage_action_attachment_binary_payload_or_header_invalid");
   if (IsCatalogStorageActionPolicyPayload(record.payload) &&
       !CatalogStorageActionPolicyMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_action.invalid",
                       "storage_action_binary_payload_or_header_invalid");
   if (IsCatalogMetricVisibilityPolicyPayload(record.payload) &&
       !CatalogMetricVisibilityPolicyMatchesHeader(record))
-    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_visibility.invalid",
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_visibility.invalid",
                       "visibility_binary_payload_or_header_invalid");
   if (record.payload.size() > kMaxBinaryRecordBytes - kBinaryHeaderBytes) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                       "catalog.record_codec.fields_missing", "binary_record_size_limit");
   }
+  return {record,{}};
+}
+
+CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& record, u32 ordinal) {
+  const auto checked=ValidateCatalogTypedRecordView(BorrowCatalogTypedRecord(record));
+  if(!checked.ok())return MaterializeRecordError(checked.diagnostic);
   CatalogRecordCodecResult result;
   result.status = CodecOkStatus();
   result.record = record;
@@ -206,32 +214,32 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
   return result;
 }
 
-CatalogRecordCodecResult DecodeCatalogTypedRecord(const CatalogPageRow& row) {
-  if (row.kind != CatalogPageRowKind::typed_catalog_record) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-ROW-KIND-INVALID",
+CatalogTypedRecordViewResult DecodeCatalogTypedRecordView(CatalogPageRowKind kind, std::string_view payload) {
+  if (kind != CatalogPageRowKind::typed_catalog_record) {
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-ROW-KIND-INVALID",
                       "catalog.record_codec.row_kind_invalid");
   }
   const auto malformed = [](const char* detail) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                       "catalog.record_codec.fields_missing", detail);
   };
-  if (row.payload.size() < kBinaryHeaderBytes || row.payload.size() > kMaxBinaryRecordBytes) {
+  if (payload.size() < kBinaryHeaderBytes || payload.size() > kMaxBinaryRecordBytes) {
     return malformed("binary_record_size_invalid");
   }
-  const auto* bytes = reinterpret_cast<const byte*>(row.payload.data());
+  const auto* bytes = reinterpret_cast<const byte*>(payload.data());
   if (std::memcmp(bytes, "SBCTREC2", 8) != 0 || LoadLittle16(bytes + 8) != 2 ||
       LoadLittle16(bytes + 10) != kBinaryHeaderBytes) {
-    return CodecError("SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
+    return RecordViewError("SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
                       "catalog.record_codec.version_unsupported", "binary_header_required");
   }
-  if (LoadLittle32(bytes + 12) != row.payload.size() ||
-      LoadLittle32(bytes + 28) != row.payload.size() - kBinaryHeaderBytes ||
+  if (LoadLittle32(bytes + 12) != payload.size() ||
+      LoadLittle32(bytes + 28) != payload.size() - kBinaryHeaderBytes ||
       LoadLittle16(bytes + 18) != 0 || (LoadLittle32(bytes + 24) & ~1u) != 0 ||
       !std::all_of(bytes + 35, bytes + 40, [](byte value) { return value == 0; }) ||
       !std::all_of(bytes + 88, bytes + 96, [](byte value) { return value == 0; })) {
     return malformed("binary_lengths_flags_or_reserved_invalid");
   }
-  CatalogTypedRecord record;
+  CatalogTypedRecordView record;
   record.header.kind = static_cast<CatalogRecordKind>(LoadLittle16(bytes + 16));
   record.header.record_version = LoadLittle32(bytes + 20);
   record.header.deleted = LoadLittle32(bytes + 24) != 0;
@@ -241,11 +249,24 @@ CatalogRecordCodecResult DecodeCatalogTypedRecord(const CatalogPageRow& row) {
     identities[i]->kind = static_cast<UuidKind>(bytes[32 + i]);
     std::copy(bytes + 40 + i * 16, bytes + 56 + i * 16, identities[i]->value.bytes.begin());
   }
-  record.payload.assign(row.payload.data() + kBinaryHeaderBytes,
-                        row.payload.size() - kBinaryHeaderBytes);
-  // The shared admission path enforces descriptor requiredness and exact UUID
-  // kind/version/variant policy before publishing any decoded authority.
-  return EncodeCatalogTypedRecord(record, row.ordinal);
+  record.payload=payload.substr(kBinaryHeaderBytes);
+  return ValidateCatalogTypedRecordView(record);
+}
+
+CatalogRecordCodecResult DecodeCatalogTypedRecord(const CatalogPageRow& row) {
+  const auto decoded=DecodeCatalogTypedRecordView(row.kind,row.payload);
+  if(!decoded.ok())return MaterializeRecordError(decoded.diagnostic);
+  CatalogRecordCodecResult result;result.status=CodecOkStatus();
+  result.record={decoded.record->header,std::string(decoded.record->payload)};
+  result.row=row;
+  return result;
+}
+
+DiagnosticRecord MaterializeCatalogRecordDiagnostic(const CatalogRecordDiagnosticView& error) {
+  std::vector<DiagnosticArgument> arguments;
+  if(!error.detail.empty())arguments.push_back({"detail",std::string(error.detail)});
+  return MakeDiagnostic(error.status.code,error.status.severity,error.status.subsystem,
+      std::string(error.diagnostic_code),std::string(error.message_key),std::move(arguments),{},std::string(error.origin));
 }
 
 namespace {

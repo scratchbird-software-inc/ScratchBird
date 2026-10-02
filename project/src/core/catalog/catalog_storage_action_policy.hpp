@@ -118,10 +118,13 @@ inline bool IsCatalogStorageActionPolicyPayload(std::string_view b){
   return b.size()>=kCatalogValueBlockHeaderBytes&&b.substr(0,4)=="SBCV"&&
     platform::LoadLittle32(reinterpret_cast<const byte*>(b.data())+16)==65548;
 }
-inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecord& r){
+inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecordView& r) {
   if(r.header.kind!=CatalogRecordKind::policy||!storage_action_policy_detail::Identity(r.header.object_uuid,UuidKind::object))return false;
   const auto decoded=DecodeCatalogStorageActionPolicy(r.payload);
   return decoded.ok()&&decoded.record->policy_uuid==r.header.object_uuid.value;
+}
+inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogStorageActionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersion& m){
   if(!CatalogStorageActionPolicyMatchesHeader(m.record)||m.object_subtype!="storage_action"||
@@ -210,10 +213,13 @@ inline bool IsCatalogStorageActionAttachmentPayload(std::string_view b){
   return b.size()>=kCatalogValueBlockHeaderBytes&&b.substr(0,4)=="SBCV"&&
     platform::LoadLittle32(reinterpret_cast<const byte*>(b.data())+16)==65549;
 }
-inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord& r){
+inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecordView& r) {
   if(r.header.kind!=CatalogRecordKind::config_profile||!storage_action_policy_detail::Identity(r.header.object_uuid,UuidKind::object))return false;
   const auto decoded=DecodeCatalogStorageActionAttachment(r.payload);
   return decoded.ok()&&decoded.record->attachment_uuid==r.header.object_uuid.value;
+}
+inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogStorageActionAttachmentMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersion& m){
   if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!="storage_action_attachment"||

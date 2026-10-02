@@ -130,11 +130,14 @@ inline bool IsCatalogRuntimeAuthorityBindingPayload(std::string_view bytes) {
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16) == 65587;
 }
 
-inline bool CatalogRuntimeAuthorityBindingMatchesHeader(const CatalogTypedRecord& r) {
+inline bool CatalogRuntimeAuthorityBindingMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::config_profile ||
       !runtime_binding_detail::Identity(r.header.object_uuid, UuidKind::object)) return false;
   const auto decoded = DecodeCatalogRuntimeAuthorityBinding(r.payload);
   return decoded.ok() && decoded.record->binding_uuid == r.header.object_uuid.value;
+}
+inline bool CatalogRuntimeAuthorityBindingMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogRuntimeAuthorityBindingMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 
 inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataVersion& m) {

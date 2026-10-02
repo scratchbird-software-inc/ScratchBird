@@ -185,11 +185,14 @@ CatalogSecurityRecordDecodeResult DecodeCatalogSecurityRecord(
   return {CatalogValueError::none, std::move(record)};
 }
 
-bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecord& record) {
+bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecordView& record) {
   const auto decoded = DecodeCatalogSecurityRecordView(record.header.kind, record.payload);
   return decoded.ok() && record.header.object_uuid.kind == UuidKind::object &&
       record.header.object_uuid.value == decoded.record->Identity(
           CatalogSecurityPrimaryIdentityName(record.header.kind)) &&
       record.header.row_uuid.value != record.header.object_uuid.value;
+}
+bool CatalogSecurityPayloadMatchesHeader(const CatalogTypedRecord& record) {
+  return CatalogSecurityPayloadMatchesHeader(BorrowCatalogTypedRecord(record));
 }
 }  // namespace scratchbird::core::catalog

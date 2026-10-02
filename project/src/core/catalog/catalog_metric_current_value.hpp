@@ -83,10 +83,13 @@ inline bool IsCatalogMetricCurrentValuePayload(std::string_view bytes) {
   return bytes.size() >= kCatalogValueBlockHeaderBytes && bytes.substr(0, 4) == "SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16) == 65547;
 }
-inline bool CatalogMetricCurrentValueMatchesHeader(const CatalogTypedRecord& r) {
+inline bool CatalogMetricCurrentValueMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::metric_current_value) return false;
   const auto decoded = DecodeCatalogMetricCurrentValueView(r.payload);
   return decoded.ok() && decoded.record->object_uuid.kind == r.header.object_uuid.kind &&
       decoded.record->object_uuid.value == r.header.object_uuid.value;
+}
+inline bool CatalogMetricCurrentValueMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricCurrentValueMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 }  // namespace scratchbird::core::catalog

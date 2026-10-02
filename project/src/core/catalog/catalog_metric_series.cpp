@@ -215,10 +215,13 @@ bool IsCatalogMetricSeriesPayload(std::string_view bytes) {
   return bytes.size()>=kCatalogValueBlockHeaderBytes && bytes.substr(0,4)=="SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16)==65546;
 }
-bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecordView& r) {
   if(r.header.kind!=CatalogRecordKind::metric_series || !Identity(r.header.object_uuid,UuidKind::object))return false;
   const auto decoded=DecodeCatalogMetricSeriesView(r.payload);
   return decoded.ok() && decoded.record->series_uuid==r.header.object_uuid.value;
+}
+bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricSeriesMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersion& m) {
   if(!CatalogMetricSeriesMatchesHeader(m.record) || m.object_subtype!="metric_series" ||
