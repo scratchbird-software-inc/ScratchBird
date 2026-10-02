@@ -75,6 +75,18 @@ std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tre
 unsigned pause_tree_read_number=0;
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
 bool extend_on_second_read=false;
+struct MemoryDeviceLockProbe {
+  std::array<std::recursive_mutex*,2> locks{};
+  bool armed=false,available=false;
+};
+thread_local MemoryDeviceLockProbe allocation_lock_probe,deallocation_lock_probe;
+void ObserveMemoryDeviceLocks(MemoryDeviceLockProbe& probe){
+  if(!probe.armed)return;
+  probe.armed=false;bool available=true;
+  std::thread inspect([&]{for(auto* mutex:probe.locks){
+    if(mutex->try_lock())mutex->unlock();else available=false;
+  }});inspect.join();probe.available=available;
+}
 }
 void* operator new(std::size_t bytes) {
   if(count_allocations) ++observed_allocations;
@@ -88,6 +100,16 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p,std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
+void* operator new(std::size_t bytes,std::align_val_t alignment){
+  if(count_allocations)++observed_allocations;
+  if(allocation_budget==0){allocation_budget=-1;allocation_failure_reads=reads;throw std::bad_alloc();}
+  if(allocation_budget>0)--allocation_budget;
+  ObserveMemoryDeviceLocks(allocation_lock_probe);
+  void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(alignment),bytes?bytes:1)==0)return p;
+  throw std::bad_alloc();
+}
+void operator delete(void* p,std::align_val_t)noexcept{ObserveMemoryDeviceLocks(deallocation_lock_probe);std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{ObserveMemoryDeviceLocks(deallocation_lock_probe);std::free(p);}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   ++initialization_entropy_calls;
@@ -4098,9 +4120,10 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
               {mem::HierarchicalMemoryScopeKind::database,{},pre.database_uuid.bytes}};
             request.provenance.source=mem::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
             request.provenance.source_label="actual storage fixture";
-            for(const auto& scope:request.scope_chain){mem::HierarchicalMemoryBudget budget;
-              budget.scope=scope;budget.hard_limit_bytes=pre.page_size_bytes;budget.provenance=request.provenance;
-              Check(ledger.SetBudget(budget).ok(),"configure shared page-buffer parent");}
+            const auto configure_budget=[&](u64 bytes){for(const auto& scope:request.scope_chain){mem::HierarchicalMemoryBudget budget;
+              budget.scope=scope;budget.hard_limit_bytes=bytes;budget.provenance=request.provenance;
+              Check(ledger.SetBudget(budget).ok(),"configure shared page-buffer parent");}};
+            configure_budget(pre.page_size_bytes);
             const auto acquire=[&]{auto grant=mem::AcquireReservationBackedMemoryResource(request);
               Check(grant.ok(),"admit actual page-buffer memory grant");auto owned=db::AdoptNativeStorageMemory(
                 {pre.database_uuid,pre.operation_uuid,pre.initiator_uuid,pre.request_context_uuid},grant.resource);
@@ -4144,7 +4167,12 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
                 !manager.Snapshot().current_bytes,"preallocation demand resolves exact independent native image and governed probe");};
             stage_writes=stage_syncs=0;
             const auto file_before1=actual(first,0,64*sizes[p]),file_before2=actual(second,0,64*sizes[q]);
+            const std::array device_mutexes{first.AcquireOperationGuard().mutex(),second.AcquireOperationGuard().mutex()};
+            allocation_lock_probe={device_mutexes,true,false};deallocation_lock_probe={device_mutexes,true,false};
             auto proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_good(proposed,ceiling);
+            Check(!allocation_lock_probe.armed&&allocation_lock_probe.available&&
+              !deallocation_lock_probe.armed&&deallocation_lock_probe.available,
+              "proposal allocates and releases node-owned probe outside every device guard");
             proposal_good(propose_pre(pre_context,demand,ceiling,reversed),ceiling);
             proposal_good(propose_pre(pre_context,demand,proposed.range.retained_image_bytes,devices),proposed.range.retained_image_bytes);
             proposal_bad(propose_pre(pre_context,demand,proposed.range.retained_image_bytes-1,devices));
@@ -4200,7 +4228,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
                   // The shared allocator also preserves a successful allocation
                   // when optional telemetry fails. Prove the exact probe phase,
                   // loss counter and authoritative allocation/release accounting.
-                  const bool memory_telemetry=allocation_failure_reads==nr-8&&reads==nr&&
+                  const bool memory_telemetry=allocation_failure_reads==0&&reads==nr&&
                     after_memory.telemetry_truncation_count==before_memory.telemetry_truncation_count+1&&
                     after_memory.allocation_count==before_memory.allocation_count+1&&
                     after_memory.deallocation_count==before_memory.deallocation_count+1&&
@@ -4208,10 +4236,18 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
                   Check(io_telemetry||memory_telemetry,"successful injected failure must be recorded optional I/O or probe-allocation telemetry");}}
                 else proposal_bad(proposed);}
               std::cout<<"preallocation proposal faults: reads="<<nr<<" hashes="<<nh<<" allocations="<<na<<'\n';
+              // Both independent operations now admit their page BEFORE they
+              // wait for ordered device guards; provision their actual peak.
+              memory={};configure_budget(2*pre.page_size_bytes);
+              request.requested_bytes=2*pre.page_size_bytes;memory=acquire();
               std::atomic<unsigned> completed=0;
               const auto concurrent=[&](const auto& files){for(unsigned n=0;n<4;++n)if(propose_pre(pre_context,demand,ceiling,files).ok())++completed;};
               std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reversed);});a.join();b.join();
               Check(completed==8,"preallocation resolution retains complete ordered guards across both source reads");
+              Check(!manager.Snapshot().current_bytes&&memory.Snapshot().peak_allocated_bytes<=2*pre.page_size_bytes,
+                "concurrent operations remain inside actual two-page grant and release every probe");
+              memory={};configure_budget(pre.page_size_bytes);
+              request.requested_bytes=pre.page_size_bytes;memory=acquire();
             }
             Check(!stage_writes&&!stage_syncs&&actual(first,0,64*sizes[p])==file_before1&&actual(second,0,64*sizes[q])==file_before2,
               "preallocation resolution and faults leave every file byte unchanged");
@@ -4222,7 +4258,34 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
               second.Open(path2,disk::FileOpenMode::open_existing).ok(),"restore range fixture after preallocation resolution");
             const auto governed=[&](const auto& candidate){return db::InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
               candidate,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,ceiling,memory);};
+            for(const u64 limit:{db::kNativeStorageActionIntentBytes,
+                db::kNativeStorageActionIntentBytes+u64(pre.page_size_bytes)-1}){
+              const auto before=manager.Snapshot();reads=0;track_reads=true;
+              const auto denied=db::InspectNativeStorageActionRangeWithMemoryFromOpenDevices(
+                pre,devices,2,1,{Id(101),{}},next_reader.identity,committed_snapshot.pin,limit,memory);
+              track_reads=false;failed(denied,R::resource_exhausted);
+              Check(!reads&&manager.Snapshot().allocation_count==before.allocation_count,
+                "short whole-work image allowance cannot allocate the early probe");
+              reads=0;track_reads=true;proposed=propose_pre(pre_context,demand,limit,devices);track_reads=false;
+              proposal_bad(proposed);Check(proposed.error==PE::resource_exhausted&&!reads&&
+                manager.Snapshot().allocation_count==before.allocation_count,
+                "proposal reserves intent plus live probe allowance before allocation or source reads");
+            }
+            for(unsigned field=0;field<5;++field){auto malformed=pre;
+              if(field==0)malformed.page_size_bytes=0;if(field==1)++malformed.page_size_bytes;
+              if(field==2)malformed.page_size_profile_uuid={};if(field==3)malformed.page_count=0;
+              if(field==4)malformed.action=static_cast<db::NativeStorageAction>(0xff);
+              const auto before=manager.Snapshot();reads=0;track_reads=true;
+              const auto denied=governed(malformed);track_reads=false;failed(denied,R::policy_failure);
+              Check(!reads&&denied.policy.intent_error==db::ValidateNativeStorageActionIntent(malformed)&&
+                manager.Snapshot().allocation_count==before.allocation_count,
+                "malformed native intent cannot spend probe grant or bypass image ceiling with false size");
+            }
+            allocation_lock_probe={device_mutexes,true,false};deallocation_lock_probe={device_mutexes,true,false};
             reads=0;track_reads=true;auto actual=governed(pre);track_reads=false;const auto probe_reads=reads;
+            Check(!allocation_lock_probe.armed&&allocation_lock_probe.available&&
+              !deallocation_lock_probe.armed&&deallocation_lock_probe.available,
+              "direct range allocates and releases node-owned probe outside every device guard");
             Check(actual.ok()&&actual.inspected_pages==8&&memory.Snapshot().peak_allocated_bytes==pre.page_size_bytes&&
               !memory.Snapshot().allocated_bytes&&!manager.Snapshot().current_bytes&&ledger.Snapshot().current_bytes==pre.page_size_bytes,
               "actual range reuses one governed page and releases payload while retaining grant");
@@ -4257,8 +4320,11 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
               Check(governed(pre).ok(),"foreign-consumer refusal leaves original owner's grant usable");
             }
             memory={};Check(!ledger.Snapshot().current_bytes&&!manager.Snapshot().active_capacity_reservation_count,"complete page grant cleanup");
-            --request.requested_bytes;memory=acquire();actual=governed(pre);failed(actual,R::resource_exhausted);
-            proposed=propose_pre(pre_context,demand,ceiling,devices);proposal_bad(proposed);
+            --request.requested_bytes;memory=acquire();reads=0;track_reads=true;
+            actual=governed(pre);track_reads=false;failed(actual,R::resource_exhausted);
+            Check(!reads,"short direct-range grant refuses before source I/O");
+            reads=0;track_reads=true;proposed=propose_pre(pre_context,demand,ceiling,devices);track_reads=false;proposal_bad(proposed);
+            Check(!reads,"short proposal grant refuses before source I/O");
             Check(proposed.range.memory_error==db::NativeStorageMemoryError::resource_exhausted,"preallocation proposal consumes actual short grant failure");
             Check(actual.memory_error==db::NativeStorageMemoryError::resource_exhausted&&
               actual.memory_diagnostic.diagnostic_code=="SB_CEIC_012_MEMORY_RESOURCE.RESERVATION_EXCEEDED"&&
