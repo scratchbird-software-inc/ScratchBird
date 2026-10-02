@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -231,6 +232,36 @@ void WithdrawWaiting(const std::string& path){
     !waiting.wait->Observe().parked_waiters,"issuer withdrawal wakes actual wait without falsely retiring borrower");
   borrow.reset();Check(waiting.wait->Wait().state==S::withdrawn,"withdrawal completion remains immutable");
 }
+void NativeAdmissionFailures(const std::string& path,const std::string& missing){
+  using R=disk::RouteSourceTransitionError;using E=db::NativeOwnedSourceError;
+  const scratchbird::core::platform::Uuid database{{1,2,3,4,5,6,0x70,8,0x80,10,11,12,13,14,15,1}};
+  auto primary=database;primary.bytes[15]=2;
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  {server::DatabaseOwnershipRequest request;request.database_path=missing;
+    auto owner=server::AcquireDatabaseOwnership(request);Check(owner.acquired&&owner.lock,"actual route reservation without primary file");
+    auto transition=owner.lock->BeginNativeSourceTransition();Check(transition.ok(),"issue unbound native transition");
+    const auto refused=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+    Check(refused.error==E::route_admission&&refused.route_error==R::primary_not_bound&&!refused.owner&&secondary.empty(),
+      "pathname reservation cannot fabricate an owned primary");}
+  server::DatabaseOwnershipRequest request;request.database_path=path;
+  auto owner=server::AcquireDatabaseOwnership(request);Check(owner.acquired&&owner.lock,"actual route for handle exhaustion");
+  auto transition=owner.lock->BeginNativeSourceTransition();Check(transition.ok(),"issue bound transition for handle exhaustion");
+  rlimit saved{};Check(::getrlimit(RLIMIT_NOFILE,&saved)==0,"save native descriptor limit");
+  auto exhausted=saved;exhausted.rlim_cur=0;
+  Check(::setrlimit(RLIMIT_NOFILE,&exhausted)==0,"temporarily prohibit any new process descriptor");
+  // The source API is noexcept. Restore the original limit before any assertion,
+  // diagnostics or further fixture I/O, including on an unexpected result.
+  const auto failed=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+  const bool restored=::setrlimit(RLIMIT_NOFILE,&saved)==0;
+  Check(restored&&failed.error==E::route_admission&&failed.route_error==R::io_failure&&!failed.owner,
+    "actual descriptor duplication failure is typed and publishes no source");
+  reads=0;count_reads=true;
+  const auto retry=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+  count_reads=false;
+  Check(retry.error==E::bootstrap_failure&&retry.route_error==R::none&&reads&&!retry.owner&&
+      transition.transition->ObserveDrain().state==disk::RouteSourceDrainState::drained,
+    "same owner retries after handle exhaustion; real one-byte invalid source cannot falsely succeed");
+}
 void* operator new(std::size_t n){
   if(fail_borrow_allocation){fail_borrow_allocation=false;throw std::bad_alloc();}
   if(wait_allocation_budget>=0&&wait_allocation_budget--==0)throw std::bad_alloc();
@@ -271,5 +302,6 @@ int main(){try{
       reopened.ReadAt(0,&value,1).ok()&&value==0x5a&&reopened.Close().ok(),"independent owner may open after actual borrower release");}
   CountedBorrowers(path);
   DrainWaits(path);WithdrawWaiting(path);
+  NativeAdmissionFailures(path,(fixture.root/"uncreated").string());
   std::cout<<"native owned source route isolation, counted borrowing and bounded drain waits passed\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

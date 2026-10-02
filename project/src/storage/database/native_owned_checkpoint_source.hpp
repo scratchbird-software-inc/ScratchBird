@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_selected_checkpoint_read_lease.hpp"
+#include "route_ownership_lease.hpp"
 #include <atomic>
 
 namespace scratchbird::storage::database {
 class NativeOwnedCheckpointSource;
 enum class NativeOwnedSourceError {
   none, invalid_request, device_ownership, bootstrap_failure, source_failure,
-  resource_exhausted, lock_failure, withdrawn, wrong_process, io_failure
+  resource_exhausted, lock_failure, withdrawn, wrong_process, io_failure, route_admission,
+  incomplete_cohort
 };
 class NativeOwnedCheckpointReadLease {
  public:
@@ -32,6 +34,7 @@ struct NativeOwnedSourceDiagnostics {
   page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
   page::NativeDirectoryError directory_error=page::NativeDirectoryError::none;
   page::NativeInventoryError inventory_error=page::NativeInventoryError::none;
+  disk::RouteSourceTransitionError route_error=disk::RouteSourceTransitionError::none;
   void FromSource(const NativeSelectedCheckpointReadResult& r) noexcept {
     error=NativeOwnedSourceError::source_failure;source_error=r.error;
     selection_error=r.selection_error;checkpoint_error=r.checkpoint_error;
@@ -94,6 +97,9 @@ class NativeOwnedCheckpointSource {
       }
       auto selected=AcquireNativeSelectedCheckpointReadLease(database,owner->devices_,primary,budget);
       if(!selected.ok()){out.FromSource(selected);return out;}
+      if(!CompleteCohort(*selected.lease,owner->devices_.size())){
+        out.error=E::incomplete_cohort;return out;
+      }
       // Everything which allocates or can refuse precedes this ownership move.
       // Each file keeps its actual exclusive OS locks. The legacy per-path
       // recursive guard is unnecessary for independently owned devices, and
@@ -123,8 +129,80 @@ class NativeOwnedCheckpointSource {
       auto selected=AcquireNativeSelectedCheckpointReadLease(
           owner->database_,owner->devices_,owner->primary_,budget);
       if(!selected.ok()){out.FromSource(selected);return out;}
+      if(!CompleteCohort(*selected.lease,owner->devices_.size())){
+        out.error=E::incomplete_cohort;return out;
+      }
       lease->source_=std::move(selected.lease);
       out.lease=std::move(lease);out.error=E::none;return out;
+    }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
+     catch(const std::length_error&){out.error=E::resource_exhausted;}
+     catch(const std::system_error&){out.error=E::lock_failure;}
+     catch(...){out.error=E::io_failure;}
+    return out;
+  }
+  // Read-source admission, not a writable mount or a security/configuration
+  // grant. The primary comes from the owner's retained physical object, never
+  // a path. Secondary handles must be independently owned on this thread and
+  // are consumed ONLY after complete native validation and live-owner commit.
+  static NativeOwnedSourceResult AdoptRoute(
+      const std::shared_ptr<disk::RouteSourceTransition>& transition,
+      const Uuid& database,const Uuid& primary,
+      std::vector<std::unique_ptr<disk::FileDevice>>& secondary,u64 budget) noexcept {
+    using E=NativeOwnedSourceError;
+    NativeOwnedSourceResult out;
+    try {
+      if(!transition||!core::uuid::IsEngineIdentityUuid(database)||
+          !core::uuid::IsEngineIdentityUuid(primary)||!budget)return out;
+      for(const auto& f:secondary)if(!f||!f->CanAdoptIndependentSource()){
+        out.error=E::device_ownership;return out;
+      }
+      auto retained=transition;
+      std::unique_ptr<disk::FileDevice> primary_device;
+      out.route_error=retained->BeginSourceAdmission(primary_device);
+      if(out.route_error!=disk::RouteSourceTransitionError::none){out.error=E::route_admission;return out;}
+      // No caller may obtain a reservation token or half-validated primary.
+      // Rollback runs after all local guards/devices, and never reopens legacy
+      // admission. Only this successful reservation may clear its busy state.
+      const auto abort=[](disk::RouteSourceTransition* t){t->AbortSourceAdmission();};
+      std::unique_ptr<disk::RouteSourceTransition,decltype(abort)> rollback(retained.get(),abort);
+      auto owner=std::shared_ptr<NativeOwnedCheckpointSource>(new NativeOwnedCheckpointSource);
+      owner->database_=database;owner->primary_=primary;
+      owner->process_=disk::FileDevice::SourceOwnershipProcessId();
+      if(secondary.size()==secondary.max_size()){out.error=E::resource_exhausted;return out;}
+      const auto count=secondary.size()+1;
+      owner->owned_.resize(count);owner->devices_.reserve(count);
+      owner->owned_[0]=std::move(primary_device);
+      std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(count);
+      for(std::size_t i=0;i<count;++i){
+        auto* f=i?secondary[i-1].get():owner->owned_[0].get();
+        guards.push_back(f->AcquireOperationGuard());
+        const auto bootstrap=disk::ReadFilespaceBootstrapFromOpenDevice(*f);
+        if(!bootstrap.ok()){
+          out.error=E::bootstrap_failure;out.bootstrap_error=bootstrap.error;return out;
+        }
+        const auto& b=*bootstrap.preamble;
+        if(b.database_uuid!=database||(!i&&b.filespace_uuid!=primary)){
+          out.error=E::bootstrap_failure;out.bootstrap_error=disk::FilespaceBootstrapError::binding_mismatch;return out;
+        }
+        owner->devices_.push_back({b.filespace_uuid,b.page_size_profile_uuid,f});
+      }
+      auto selected=AcquireNativeSelectedCheckpointReadLease(database,owner->devices_,primary,budget);
+      if(!selected.ok()){out.FromSource(selected);return out;}
+      if(!CompleteCohort(*selected.lease,owner->devices_.size())){
+        out.error=E::incomplete_cohort;return out;
+      }
+      // No registry/scheduler mutex spans native I/O. Release may have revoked
+      // the issuer during validation; commit checks that actual state again.
+      out.route_error=retained->CommitSourceAdmission();
+      if(out.route_error!=disk::RouteSourceTransitionError::none){out.error=E::route_admission;return out;}
+      (void)rollback.release();
+      // All fallible work precedes the single-consumption point. Slots already
+      // exist; unique ownership moves and guard release are nonallocating.
+      for(std::size_t i=0;i<secondary.size();++i){
+        secondary[i]->route_owner_storage_guard_=std::unique_lock<std::recursive_mutex>{};
+        owner->owned_[i+1]=std::move(secondary[i]);
+      }
+      secondary.clear();out.owner=std::move(owner);out.error=E::none;return out;
     }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
      catch(const std::length_error&){out.error=E::resource_exhausted;}
      catch(const std::system_error&){out.error=E::lock_failure;}
@@ -134,6 +212,12 @@ class NativeOwnedCheckpointSource {
  private:
   friend class NativeOwnedCheckpointReadLease;
   NativeOwnedCheckpointSource()=default;
+  static bool CompleteCohort(const NativeSelectedCheckpointReadLease& selected,std::size_t count) noexcept {
+    // The underlying reader proves unique supplied members and their exact
+    // directory bindings, but deliberately permits partial readers. An owning
+    // source additionally requires every committed member to be retained.
+    return selected.directory().directory.pages.front().directory->total_records==count;
+  }
   std::vector<std::unique_ptr<disk::FileDevice>> owned_;
   std::vector<disk::NativeFilespaceDevice> devices_;
   Uuid database_,primary_;

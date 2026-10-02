@@ -12,6 +12,11 @@
 #include "native_checkpoint_selection.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
+#ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
+#include "../../src/server/database_ownership.hpp"
+#include <fcntl.h>
+#include <sys/file.h>
+#endif
 #include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
 #include "native_filespace_capacity.hpp"
@@ -5018,6 +5023,11 @@ void OwnedCheckpointSource(const std::filesystem::path& root,unsigned p,bool fau
   refused(Source::Adopt({},Id(2),files,budget));refused(Source::Adopt(Id(250),Id(2),files,budget));
   refused(Source::Adopt(Id(1),Id(250),files,budget));refused(Source::Adopt(Id(1),Id(2),files,0));
   refused(Source::Adopt(Id(1),Id(2),files,1));
+  {auto missing=std::move(files.back());files.pop_back();
+    const auto rejected=Source::Adopt(Id(1),Id(2),files,budget);
+    Check(!rejected.ok()&&!rejected.owner&&files.size()==1&&files.front()->is_open(),
+      "source adoption requires the COMPLETE committed member cohort, not a valid subset");
+    files.push_back(std::move(missing));}
   std::thread wrong_thread([&]{const auto r=Source::Adopt(Id(1),Id(2),files,budget);
     Check(r.error==E::device_ownership&&!r.owner,"wrong opening thread refuses before acquiring device locks");});wrong_thread.join();
   {auto missing=std::move(files[1]);const auto r=Source::Adopt(Id(1),Id(2),files,budget);
@@ -5099,6 +5109,135 @@ void OwnedCheckpointSource(const std::filesystem::path& root,unsigned p,bool fau
   open();Check(bytes(*files[0])==first&&bytes(*files[1])==second&&stage_writes==writes+fixture_writes,"owner admission reading withdrawal and failures never mutate source files");
   for(auto& f:files)Check(f->Close().ok(),"independent reopen after last owned read");
 }
+
+#ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
+void RouteOwnedCheckpointSource(const std::filesystem::path& root,unsigned p,bool faults){
+  namespace server=scratchbird::server;
+  using Source=db::NativeOwnedCheckpointSource;using E=db::NativeOwnedSourceError;
+  using R=disk::RouteSourceTransitionError;
+  const auto primary=(root/"bound-selector").string(),other=(root/"bound-selector-secondary").string();
+  const unsigned q=(p+1)%5;const u64 budget=32*u64{sizes[p]}+4*u64{sizes[q]};
+  const auto bytes=[](disk::FileDevice& f){const auto n=f.Size();Check(n.ok(),"route source size");Bytes b(n.size_bytes);
+    Check(f.ReadAt(0,b.data(),b.size()).ok(),"route source complete bytes");return b;};
+  disk::FileDevice original;Check(original.Open(primary,disk::FileOpenMode::open_existing_read_only).ok(),"read original primary before route ownership");
+  const auto primary_bytes=bytes(original);Check(original.Close().ok(),"close independent primary before actual route");
+  server::DatabaseOwnershipRequest request;request.database_path=primary;
+  server::DatabaseOwnershipResult route;
+  disk::RouteSourceTransitionResult transition;
+  std::shared_ptr<disk::RouteOwnershipLease> legacy;
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  const auto start=[&](bool retain_legacy=false){
+    secondary.clear();transition.transition.reset();route.lock.reset();
+    route=server::AcquireDatabaseOwnership(request);Check(route.acquired&&route.lock,"actual native primary route owner");
+    if(retain_legacy)legacy=disk::RouteOwnershipLease::Borrow(primary+".sb.route.owner.lock");
+    auto f=std::make_unique<disk::FileDevice>();Check(f->Open(other,disk::FileOpenMode::open_existing).ok(),"independently own secondary on admitting thread");
+    secondary.push_back(std::move(f));
+    transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"issue actual native source transition");
+  };
+  start(true);const auto secondary_bytes=bytes(*secondary.front());
+  const auto acquire=[&]{return Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,budget);};
+  const auto refused=[&](const auto& r){Check(!r.ok()&&!r.owner&&r.error!=E::none&&secondary.size()==1&&secondary[0]->is_open(),
+    "failed route admission preserves original secondary ownership and emits no source");};
+  reads=0;track_reads=true;auto undrained=acquire();track_reads=false;refused(undrained);
+  Check(legacy&&undrained.route_error==R::not_drained&&!reads,"private admission refuses actual undrained borrowers before source I/O");
+  legacy.reset();
+  refused(Source::AdoptRoute({},Id(1),Id(2),secondary,budget));
+  refused(Source::AdoptRoute(transition.transition,{},Id(2),secondary,budget));
+  refused(Source::AdoptRoute(transition.transition,Id(250),Id(2),secondary,budget));
+  refused(Source::AdoptRoute(transition.transition,Id(1),Id(7),secondary,budget));
+  refused(Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,0));
+  refused(Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,1));
+  {auto held=std::move(secondary.back());secondary.clear();auto missing=acquire();
+    Check(missing.error==E::incomplete_cohort&&!missing.owner&&secondary.empty(),"route source rejects valid but incomplete membership");
+    secondary.push_back(std::move(held));}
+  {auto extra=std::make_unique<disk::FileDevice>();const auto extra_path=(root/"route-extra").string();
+    Check(extra->Open(extra_path,disk::FileOpenMode::create_new).ok()&&extra->WriteAt(0,secondary_bytes.data(),secondary_bytes.size()).ok()&&extra->Sync().ok(),"duplicate physical member fixture");
+    secondary.push_back(std::move(extra));auto duplicate=acquire();
+    Check(!duplicate.ok()&&!duplicate.owner&&secondary.size()==2&&secondary[0]->is_open()&&secondary[1]->is_open(),"duplicate member identity cannot form a cohort");
+    secondary.pop_back();}
+  {const byte changed=secondary_bytes[0]^1;Check(secondary[0]->WriteAt(0,&changed,1).ok()&&secondary[0]->Sync().ok(),"corrupt actual member bootstrap");
+    auto bad=acquire();refused(bad);Check(bad.error==E::bootstrap_failure,"malformed native member has typed refusal");
+    Check(secondary[0]->WriteAt(0,secondary_bytes.data(),1).ok()&&secondary[0]->Sync().ok(),"restore actual member bootstrap");}
+  E thread_error=E::none;std::thread wrong([&]{thread_error=acquire().error;});wrong.join();
+  Check(thread_error==E::device_ownership,"foreign opening thread refused before native device access");
+  {const auto child=::fork();Check(child>=0,"fork inherited route transition");if(child==0){
+      std::vector<std::unique_ptr<disk::FileDevice>> none;
+      auto r=Source::AdoptRoute(transition.transition,Id(1),Id(2),none,budget);
+      ::_exit(r.error==E::route_admission&&r.route_error==R::wrong_process?0:8);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"inherited source admission refuses without source reads");}
+  // Both a competing native attempt and owner withdrawal occur while the
+  // admitting thread is stopped at a real pread. No registry lock spans I/O.
+  pause_next_tree_read=true;tree_read_paused=false;resume_tree_read=false;
+  R competing=R::none;
+  std::thread withdrawer([&]{while(!tree_read_paused.load())std::this_thread::yield();
+    std::vector<std::unique_ptr<disk::FileDevice>> none;
+    competing=Source::AdoptRoute(transition.transition,Id(1),Id(2),none,budget).route_error;
+    route.lock->release();resume_tree_read=true;});
+  auto withdrawn=acquire();withdrawer.join();refused(withdrawn);
+  Check(competing==R::admission_busy&&withdrawn.error==E::route_admission&&withdrawn.route_error==R::withdrawn,
+    "single private reservation and final live-owner revalidation prevent transfer after release");
+  start();
+  if(faults){
+    observed_allocations=reads=observed_full_digests=0;count_allocations=track_reads=count_full_digests=true;
+    auto measured=acquire();count_allocations=track_reads=count_full_digests=false;
+    const auto na=observed_allocations;const auto nr=reads,nf=observed_full_digests;
+    Check(measured.ok()&&secondary.empty(),"measure complete route-source admission");measured.owner.reset();start();
+    for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;auto r=acquire();track_reads=false;
+      Check(!read_fault,"route source consumes each physical read failure");refused(r);}
+    for(unsigned n=1;n<=nf;++n){full_digest_fault=n;auto r=acquire();Check(!full_digest_fault,"route source consumes each digest failure");refused(r);}
+    for(unsigned long n=0;n<=na;++n){
+      auto* old=secondary[0].get();const auto loss=old->failed_io_latency_observations();
+      allocation_budget=n;auto r=acquire();const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(n==na?remaining>=0:remaining<0,"complete route-source allocation failure sweep");
+      if(r.ok()){
+        Check(secondary.empty(),"successful route transfer consumes every secondary");
+        if(remaining<0){auto held=Source::Read(r.owner,budget);Check(held.ok(),"inspect recorded telemetry loss after admitted source");
+          Check(held.lease->devices()[0].device->failed_io_latency_observations()+old->failed_io_latency_observations()==loss+1,
+            "only recorded telemetry allocation failure may coexist with successful transfer");}
+        r.owner.reset();start();
+      }else refused(r);
+      if(n==na)Check(r.error==E::none,"terminal allocation sweep transfer succeeds");
+    }
+    std::cout<<"route source reads="<<nr<<" digests="<<nf<<" allocations="<<na<<'\n';
+  }
+  // Replacing the name cannot replace the already-owned primary object.
+  const auto saved=primary+".retained";std::filesystem::rename(primary,saved);
+  const int replacement=::open(primary.c_str(),O_CREAT|O_EXCL|O_WRONLY|O_CLOEXEC,0600);
+  Check(replacement>=0,"create unrelated replacement primary pathname");const byte junk=0x17;
+  const bool wrote=::write(replacement,&junk,1)==1;::close(replacement);Check(wrote,"replacement is deliberately not a native source");
+  auto admitted=acquire();Check(admitted.ok()&&secondary.empty(),"actual retained primary and all native secondary members transfer");
+  auto owner=std::move(admitted.owner);
+  {auto held=Source::Read(owner,budget);Check(held.ok()&&held.lease->devices().size()==2&&
+      held.lease->devices()[0].device->read_only()&&bytes(*held.lease->devices()[0].device)==primary_bytes&&
+      bytes(*held.lease->devices()[1].device)==secondary_bytes,"transferred reads retain original inode and exact member data");}
+  auto duplicate=acquire();Check(duplicate.error==E::route_admission&&duplicate.route_error==R::already_transferred&&!duplicate.owner,
+    "completed transfer is single-consumption");
+  transition.transition.reset();transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"recreate transition observer without resetting consumption");
+  duplicate=acquire();Check(duplicate.route_error==R::already_transferred,"recreated observer cannot duplicate source ownership");
+  route.lock->release();transition.transition.reset();
+  std::atomic<unsigned> phase{0};bool worker_ok=false;std::weak_ptr<Source> weak=owner;
+  std::thread reader([retained=owner,&phase,&worker_ok,&primary_bytes,&bytes,budget]() mutable {
+    auto held=Source::Read(retained,budget);retained.reset();phase.store(1);phase.notify_all();
+    while(phase.load()==1)phase.wait(1);
+    worker_ok=held.ok()&&bytes(*held.lease->devices()[0].device)==primary_bytes;
+    held.lease.reset();});
+  while(!phase.load())phase.wait(0);
+  owner->Withdraw();const auto refused_read=Source::Read(owner,budget);owner.reset();
+  bool locked=true;
+  for(const auto& path:{primary+".sb.route.owner.lock",primary+".sb.owner.lock",saved}){
+    const int fd=::open(path.c_str(),O_RDWR|O_CLOEXEC);
+    if(fd<0){locked=false;continue;}
+    const int got=::flock(fd,LOCK_EX|LOCK_NB),error=errno;::close(fd);
+    locked=locked&&got<0&&(error==EWOULDBLOCK||error==EAGAIN);
+  }
+  const bool retained=!weak.expired();phase.store(2);phase.notify_all();reader.join();
+  Check(retained&&locked&&refused_read.error==E::withdrawn&&worker_ok&&weak.expired(),
+    "withdrawn source retains route/storage/data locks through last worker read and releases on that worker");
+  std::filesystem::remove(primary);std::filesystem::rename(saved,primary);
+  Check(original.Open(primary,disk::FileOpenMode::open_existing_read_only).ok()&&bytes(original)==primary_bytes&&original.Close().ok(),
+    "independent reopen after final source release preserves original native bytes");
+}
+#endif
 
 void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false,bool history_only=false,unsigned history_shard=0,unsigned history_stride=1,int inventory_allocation_shard=-1,bool directory_staging=false,bool directory_controls=false,bool directory_graph=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
@@ -5929,6 +6068,9 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only selector reopen");Check(read(budget).ok(),"actual bound selector survives reopen");consumers(CheckpointRef(current),true);
     Check(device.Close().ok()&&second_device.Close().ok(),"release node ownership before fresh selector process");
     OwnedCheckpointSource(fixture.root,p,p==0&&role==1);
+#ifdef SB_NATIVE_ROUTE_SOURCE_TESTS
+    RouteOwnedCheckpointSource(fixture.root,p,p==0&&role==1);
+#endif
     const auto child=::fork();Check(child>=0,"fork actual selector reader");
     if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","bound-selector-probe","--bound-selector-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds actual selector and retained targets");

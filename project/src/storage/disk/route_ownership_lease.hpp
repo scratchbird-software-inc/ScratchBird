@@ -16,15 +16,18 @@
 #include <utility>
 
 namespace scratchbird::server { class DatabaseOwnershipLock; }
+namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; }
 
 namespace scratchbird::storage::disk {
 
 class RouteOwnershipLease;
 class RouteSourceTransition;
 class RouteSourceDrainWait;
+class FileDevice;
 enum class RouteSourceTransitionError {
   none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure,
-  invalid_deadline
+  invalid_deadline, not_drained, admission_busy, already_transferred,
+  primary_not_bound, io_failure
 };
 enum class RouteSourceDrainState { pending, drained, withdrawn, wrong_process, lock_failure };
 // An observation only. Native source transfer must revalidate under the actual
@@ -88,6 +91,12 @@ class RouteSourceTransition final {
       std::chrono::steady_clock::time_point deadline) const noexcept;
  private:
   friend class RouteOwnershipLease;
+  friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
+  // Only the validating source factory may reserve/consume admission. No
+  // observation, pathname or ordinary borrower can construct this cohort.
+  RouteSourceTransitionError BeginSourceAdmission(std::unique_ptr<FileDevice>& primary) noexcept;
+  RouteSourceTransitionError CommitSourceAdmission() noexcept;
+  void AbortSourceAdmission() noexcept;
   explicit RouteSourceTransition(std::shared_ptr<RouteOwnershipLease> owner)
       : owner_(std::move(owner)) {}
   std::shared_ptr<RouteOwnershipLease> owner_;
@@ -157,6 +166,8 @@ class RouteOwnershipLease final {
   bool accepting_ = false;  // guarded by the process-local registry mutex
   bool issuing_ = false;   // Withdraw revokes even a previously fenced issuer
   bool transition_started_ = false;
+  bool source_admission_active_ = false;
+  bool source_transferred_ = false;
   std::uint64_t legacy_borrowers_ = 0;
   std::weak_ptr<RouteSourceTransition> transition_;
 };

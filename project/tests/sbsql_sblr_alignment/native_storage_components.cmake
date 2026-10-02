@@ -8,6 +8,7 @@
 # alternate codec implementations or prebuilt storage archives are admitted.
 add_executable(sbsql_sblr_alignment_native_storage_components
   filespace_page_zero_test.cpp
+  ../../src/server/database_ownership.cpp
   ../../src/storage/database/database_dirty_manifest.cpp
   ../../src/storage/database/physical_mga_cow_store.cpp
   ../../src/storage/database/native_catalog_leaf_staging.cpp
@@ -82,6 +83,7 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/transaction/mga/current_row_map.cpp
   ../../src/transaction/mga/isolation.cpp)
 target_compile_features(sbsql_sblr_alignment_native_storage_components PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_native_storage_components PRIVATE SB_NATIVE_ROUTE_SOURCE_TESTS=1)
 target_include_directories(sbsql_sblr_alignment_native_storage_components PRIVATE
   ../../src ../../include ../../src/engine/internal_api
   ../../src/storage/database ../../src/storage/page ../../src/storage/disk
