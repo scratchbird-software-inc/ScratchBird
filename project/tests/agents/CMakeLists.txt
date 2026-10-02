@@ -76,6 +76,13 @@ endif()
 add_test(NAME retained_condition_wait_gate COMMAND retained_condition_wait_gate)
 add_executable(retained_mutex_latch_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_mutex_latch_gate.cpp")
+add_executable(local_latch_victim_policy_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/local_latch_victim_policy_gate.cpp")
+target_compile_features(local_latch_victim_policy_gate PRIVATE cxx_std_23)
+target_link_libraries(local_latch_victim_policy_gate PRIVATE sb_core_concurrency)
+add_test(NAME local_latch_victim_policy_gate COMMAND local_latch_victim_policy_gate)
+set_tests_properties(local_latch_victim_policy_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;binary_uuid;victim_preference;not_resolution_authority")
 target_compile_features(retained_mutex_latch_gate PRIVATE cxx_std_23)
 target_link_libraries(retained_mutex_latch_gate PRIVATE sb_core_concurrency)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
