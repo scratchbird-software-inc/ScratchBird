@@ -15,12 +15,17 @@
 // security, finality, visibility, recovery, parser, or reference authority.
 
 #include "agent_runtime.hpp"
+#include "runtime_permit_types.hpp"
 
 #include <cstdint>
 #include <map>
+#include <memory_resource>
 #include <mutex>
 #include <string>
 #include <vector>
+
+namespace scratchbird::core::memory { class ReservationBackedPmrMemoryResource; }
+namespace scratchbird::core::uuid { class StandaloneUuidV7Issuer; }
 
 namespace scratchbird::core::agents {
 
@@ -150,10 +155,13 @@ struct ResourceGovernanceReservationAcquireRequest {
 
 struct ResourceGovernanceReservationSnapshot {
   std::string ledger_id;
+  std::optional<core::platform::Uuid> native_ledger_uuid;
   std::uint64_t active_reservation_count = 0;
   std::uint64_t created_reservation_count = 0;
   std::uint64_t released_reservation_count = 0;
   ResourceGovernanceQuotaVector active;
+  std::uint64_t retained_runtime_permits = 0;
+  std::uint64_t quiescence_requested_permits = 0;
 };
 
 struct ResourceGovernanceReservationAcquireResult {
@@ -191,6 +199,7 @@ struct ResourceGovernanceReservationCleanupResult {
       ResourceGovernanceReservationReleaseReason::kRelease;
   bool ok = false;
   std::uint64_t released_count = 0;
+  std::uint64_t retained_count = 0;
   std::string owner_scope;
   std::string diagnostic_code;
   std::vector<std::string> evidence;
@@ -215,6 +224,19 @@ enum class ResourceGovernanceReleaseCode { released, not_found, synchronization_
 class ResourceGovernanceReservationLedger {
  public:
   explicit ResourceGovernanceReservationLedger(std::string ledger_id);
+  ~ResourceGovernanceReservationLedger();
+
+  // Trusted owning-kernel inputs, NOT selected-policy/security authority.
+  // Bind once on the existing node ledger, preserving all earlier charges.
+  // The actual metadata provider and issuer must outlive this ledger and every
+  // permit. Memory/governor locks may be taken: never call under device fences.
+  RuntimePermitCode BindRuntimePermits(core::platform::Uuid governor,
+      RuntimePermitPolicy policy, RuntimePermitInstanceBinding workers,
+      RuntimePermitInstanceBinding queue,
+      core::memory::ReservationBackedPmrMemoryResource& metadata,
+      core::uuid::StandaloneUuidV7Issuer& issuer) noexcept;
+  RuntimePermitAcquireResult AcquireRuntimePermit(const RuntimePermitRequest&) noexcept;
+  RuntimePermitCode CloseRuntimePermits() noexcept;
 
   // Fallible result/evidence construction completes before ledger mutation.
   // Allocation failure propagates with ownership, usage and sequences intact.
@@ -240,6 +262,26 @@ class ResourceGovernanceReservationLedger {
   ResourceGovernanceReleaseCode ReleaseNoAlloc(const std::string& token_id) noexcept;
 
  private:
+  friend class RuntimePermitGrant;
+  struct NativePermit {
+    RuntimePermitView view;
+    bool quiescence_requested = false;
+  };
+  struct NativeRuntime {
+    const core::platform::Uuid governor;
+    const RuntimePermitPolicy policy;
+    const RuntimePermitInstanceBinding workers;
+    const RuntimePermitInstanceBinding queue;
+    core::uuid::StandaloneUuidV7Issuer& issuer;
+    bool closed = false;
+    std::pmr::map<core::platform::Uuid, NativePermit> permits;
+    NativeRuntime(core::platform::Uuid id, RuntimePermitPolicy p,
+        RuntimePermitInstanceBinding w, RuntimePermitInstanceBinding q,
+        std::pmr::memory_resource& resource, core::uuid::StandaloneUuidV7Issuer& u) noexcept
+        : governor(id), policy(p), workers(w), queue(q), issuer(u), permits(&resource) {}
+  };
+  RuntimePermitCode ReleaseRuntimePermit(RuntimePermitGrant&) noexcept;
+  bool RuntimePermitQuiescenceRequested(const RuntimePermitGrant&) const;
   struct ActiveReservation {
     ResourceGovernanceReservationToken token;
   };
@@ -253,6 +295,7 @@ class ResourceGovernanceReservationLedger {
   mutable std::mutex mutex_;
   std::map<std::string, ActiveReservation> active_;
   ResourceGovernanceQuotaVector active_usage_;
+  std::optional<NativeRuntime> native_runtime_;
   std::uint64_t next_sequence_ = 0;
   std::uint64_t released_count_ = 0;
 };

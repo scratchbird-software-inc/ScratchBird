@@ -10,6 +10,13 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_executable(runtime_permit_governor_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_governor_gate.cpp")
+add_executable(runtime_permit_native_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_native_gate.cpp")
+target_compile_features(runtime_permit_native_gate PRIVATE cxx_std_20)
+target_link_libraries(runtime_permit_native_gate PRIVATE sb_core_resource_governance sb_core_memory)
+add_test(NAME runtime_permit_native_gate COMMAND runtime_permit_native_gate)
+set_tests_properties(runtime_permit_native_gate PROPERTIES
+  TIMEOUT 120 LABELS "concurrency;resource_governance;binary_uuid;runtime_permits;fault")
 target_compile_features(runtime_permit_governor_gate PRIVATE cxx_std_20)
 target_link_libraries(runtime_permit_governor_gate PRIVATE sb_core_resource_governance)
 add_test(NAME runtime_permit_governor_gate COMMAND runtime_permit_governor_gate)

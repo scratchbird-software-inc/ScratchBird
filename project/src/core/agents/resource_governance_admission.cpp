@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "resource_governance_admission.hpp"
+#include "node_uuid_issuer.hpp"
+#include "../memory/reservation_backed_memory_resource.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -559,6 +561,157 @@ ResourceGovernanceReservationLedger::ResourceGovernanceReservationLedger(
     std::string ledger_id)
     : ledger_id_(std::move(ledger_id)) {}
 
+ResourceGovernanceReservationLedger::~ResourceGovernanceReservationLedger() {
+  // Owners must join all ledger callers first. A live native permit cannot be
+  // revoked by destroying its release path or reclaiming its index node.
+  if (native_runtime_ && !native_runtime_->permits.empty()) std::terminate();
+}
+
+RuntimePermitGrant::~RuntimePermitGrant() { Reset(); }
+RuntimePermitGrant::RuntimePermitGrant(RuntimePermitGrant&& other) noexcept
+    : ledger_(std::exchange(other.ledger_, nullptr)), view_(other.view_) {}
+RuntimePermitGrant& RuntimePermitGrant::operator=(RuntimePermitGrant&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    ledger_ = std::exchange(other.ledger_, nullptr);
+    view_ = other.view_;
+  }
+  return *this;
+}
+void RuntimePermitGrant::Reset() noexcept {
+  if (ledger_ && ledger_->ReleaseRuntimePermit(*this) != RuntimePermitCode::released)
+    std::terminate();
+}
+RuntimePermitCode RuntimePermitGrant::Release(const RuntimePermitRequest& expected) noexcept {
+  if (!ledger_) return RuntimePermitCode::no_grant;
+  if (!(expected == view_.binding)) return RuntimePermitCode::invalid_binding;
+  return ledger_->ReleaseRuntimePermit(*this);
+}
+bool RuntimePermitGrant::QuiescenceRequested() const {
+  return ledger_ && ledger_->RuntimePermitQuiescenceRequested(*this);
+}
+
+RuntimePermitCode ResourceGovernanceReservationLedger::BindRuntimePermits(
+    core::platform::Uuid governor, RuntimePermitPolicy policy,
+    RuntimePermitInstanceBinding workers, RuntimePermitInstanceBinding queue,
+    core::memory::ReservationBackedPmrMemoryResource& metadata,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  const auto valid = core::uuid::IsEngineIdentityUuid;
+  const auto& a = policy.authority;
+  if (!valid(governor) || !valid(a.database) || !valid(a.incarnation) ||
+      !valid(a.policy) || !a.policy_generation || !policy.worker_capacity ||
+      !policy.queue_capacity || !valid(workers.semaphore) || !workers.generation ||
+      !valid(queue.semaphore) || !queue.generation || workers.semaphore == queue.semaphore ||
+      issuer.binding().database_uuid != a.database)
+    return RuntimePermitCode::invalid_binding;
+  try {
+    std::lock_guard lock(mutex_);
+    if (native_runtime_) return RuntimePermitCode::invalid_binding;
+    if (active_usage_.worker_threads > policy.worker_capacity ||
+        active_usage_.backlog_items > policy.queue_capacity)
+      return RuntimePermitCode::exhausted;
+    native_runtime_.emplace(governor, policy, workers, queue, metadata, issuer);
+    return RuntimePermitCode::bound;
+  } catch (const std::system_error&) {
+    return RuntimePermitCode::synchronization_failed;
+  }
+}
+
+RuntimePermitAcquireResult ResourceGovernanceReservationLedger::AcquireRuntimePermit(
+    const RuntimePermitRequest& request) noexcept {
+  RuntimePermitAcquireResult result;
+  static_assert(std::is_nothrow_move_constructible_v<RuntimePermitAcquireResult>);
+  static_assert(std::is_nothrow_copy_assignable_v<RuntimePermitView>);
+  try {
+    std::lock_guard lock(mutex_);
+    if (!native_runtime_) { result.code = RuntimePermitCode::policy_unbound; return result; }
+    auto& runtime = *native_runtime_;
+    if (runtime.closed) { result.code = RuntimePermitCode::closed; return result; }
+    const bool worker = request.profile == RuntimePermitProfile::worker_slot;
+    const bool queue = request.profile == RuntimePermitProfile::queued_task;
+    const auto& instance = worker ? runtime.workers : runtime.queue;
+    const auto valid = core::uuid::IsEngineIdentityUuid;
+    if ((!worker && !queue) || !(request.authority == runtime.policy.authority) ||
+        request.quantity != 1 || !valid(request.task) || !valid(request.attempt) ||
+        request.semaphore != instance.semaphore || request.semaphore_generation != instance.generation ||
+        (worker ? (!request.worker || !valid(*request.worker)) : request.worker.has_value()))
+      return result;
+    for (const auto& entry : runtime.permits) {
+      const auto& existing = entry.second.view.binding;
+      // One live resource unit for this exact holder/attempt/instance. Changing
+      // an expiry field cannot duplicate the same resource's ownership.
+      if (existing.profile == request.profile && existing.task == request.task &&
+          existing.attempt == request.attempt && existing.worker == request.worker)
+        return result;
+    }
+    const auto used = worker ? active_usage_.worker_threads : active_usage_.backlog_items;
+    const auto capacity = worker ? runtime.policy.worker_capacity : runtime.policy.queue_capacity;
+    if (used >= capacity || next_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+      result.code = RuntimePermitCode::exhausted; return result;
+    }
+    const auto identity = runtime.issuer.Issue(core::platform::UuidKind::object);
+    if (!identity.ok()) { result.code = RuntimePermitCode::identity_failed; return result; }
+    RuntimePermitView view{runtime.governor, identity.value->value, request, next_sequence_ + 1};
+    // The actual memory service owns node backing. An unused UUID on failed
+    // allocation is not a committed governor issuance or a leaked grant.
+    const auto inserted = runtime.permits.emplace(view.grant, NativePermit{view, false});
+    if (!inserted.second) { result.code = RuntimePermitCode::identity_failed; return result; }
+    if (worker) ++active_usage_.worker_threads; else ++active_usage_.backlog_items;
+    ++next_sequence_;
+    result.permit.view_ = view;
+    result.permit.ledger_ = this;
+    result.code = RuntimePermitCode::granted;
+    return result;
+  } catch (const std::bad_alloc&) {
+    result.code = RuntimePermitCode::allocation_failed;
+  } catch (const std::system_error&) {
+    result.code = RuntimePermitCode::synchronization_failed;
+  }
+  return result;
+}
+
+RuntimePermitCode ResourceGovernanceReservationLedger::CloseRuntimePermits() noexcept {
+  try {
+    std::lock_guard lock(mutex_);
+    if (!native_runtime_) return RuntimePermitCode::policy_unbound;
+    native_runtime_->closed = true;
+    return RuntimePermitCode::closed;
+  } catch (const std::system_error&) {
+    return RuntimePermitCode::synchronization_failed;
+  }
+}
+
+RuntimePermitCode ResourceGovernanceReservationLedger::ReleaseRuntimePermit(
+    RuntimePermitGrant& grant) noexcept {
+  std::unique_lock lock(mutex_, std::defer_lock);
+  try { lock.lock(); }
+  catch (const std::system_error&) { return RuntimePermitCode::synchronization_failed; }
+  if (grant.ledger_ != this || !native_runtime_) return RuntimePermitCode::invalid_binding;
+  auto& permits = native_runtime_->permits;
+  const auto found = permits.find(grant.view_.grant);
+  if (found == permits.end() || found->second.view.issuance != grant.view_.issuance ||
+      !(found->second.view.binding == grant.view_.binding))
+    return RuntimePermitCode::invalid_binding;
+  const bool worker = grant.view_.binding.profile == RuntimePermitProfile::worker_slot;
+  auto& used = worker ? active_usage_.worker_threads : active_usage_.backlog_items;
+  if (used <= 0) std::terminate();
+  permits.erase(found);
+  --used;
+  ++released_count_;
+  grant.ledger_ = nullptr;
+  // This is release of a quiescent resource unit, NOT a physical-memory drain
+  // receipt. The memory provider retains any failed backing cleanup for retry.
+  return RuntimePermitCode::released;
+}
+
+bool ResourceGovernanceReservationLedger::RuntimePermitQuiescenceRequested(
+    const RuntimePermitGrant& grant) const {
+  std::lock_guard lock(mutex_);
+  if (!native_runtime_ || grant.ledger_ != this) return true;
+  const auto found = native_runtime_->permits.find(grant.view_.grant);
+  return found == native_runtime_->permits.end() || found->second.quiescence_requested;
+}
+
 ResourceGovernanceReservationSnapshot
 ResourceGovernanceReservationLedger::SnapshotLocked() const {
   ResourceGovernanceReservationSnapshot snapshot;
@@ -567,6 +720,13 @@ ResourceGovernanceReservationLedger::SnapshotLocked() const {
   snapshot.created_reservation_count = next_sequence_;
   snapshot.released_reservation_count = released_count_;
   snapshot.active = active_usage_;
+  if (native_runtime_) {
+    snapshot.native_ledger_uuid = native_runtime_->governor;
+    snapshot.retained_runtime_permits = native_runtime_->permits.size();
+    snapshot.active_reservation_count += snapshot.retained_runtime_permits;
+    for (const auto& entry : native_runtime_->permits)
+      snapshot.quiescence_requested_permits += entry.second.quiescence_requested;
+  }
   return snapshot;
 }
 
@@ -639,12 +799,15 @@ ResourceGovernanceReservationLedger::Acquire(
                               request.admission.requested,
                               request.admission.descriptor.limits);
   const bool sequence_exhausted = next_sequence_ == std::numeric_limits<std::uint64_t>::max();
-  if (!exceeded.empty() || sequence_exhausted) {
+  const bool needs_native_permit = native_runtime_ &&
+      (request.admission.requested.worker_threads || request.admission.requested.backlog_items);
+  if (!exceeded.empty() || sequence_exhausted || needs_native_permit) {
     result.ok = false;
     result.fail_closed = true;
     result.diagnostic_code =
         "SB_RESOURCE_GOVERNANCE.RESERVATION_LEDGER_LIMIT_EXCEEDED";
-    result.diagnostic_detail = sequence_exhausted ? "reservation_sequence_exhausted"
+    result.diagnostic_detail = needs_native_permit ? "native_runtime_permit_required"
+                              : sequence_exhausted ? "reservation_sequence_exhausted"
                                                 : "active_reservations_exceed_quota_limit";
     result.exceeded_quota = exceeded;
     result.status = LocalAgentError(result.diagnostic_code, result.diagnostic_detail);
@@ -800,6 +963,14 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservationsImpl(
   const auto matches = [&](const ActiveReservation& entry) {
     return entry.token.owner_scope == owner_scope && entry.token.owner_uuid == owner_uuid;
   };
+  const auto native_matches = [&](const NativePermit& entry) {
+    return owner_scope.empty() && entry.view.binding.task == owner_uuid;
+  };
+  if (native_runtime_) for (const auto& entry : native_runtime_->permits) {
+    if (!native_matches(entry.second)) continue;
+    ++result.retained_count;
+    if (!entry.second.quiescence_requested) ++result.snapshot.quiescence_requested_permits;
+  }
   for (const auto& entry : active_) {
     if (!matches(entry.second)) continue;
     SubtractQuota(&result.snapshot.active, entry.second.token.reserved);
@@ -818,12 +989,16 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservationsImpl(
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
                     result.snapshot.active);
+  if (result.retained_count) Add(&result.evidence,
+      "resource_reservation.retained_count=" + std::to_string(result.retained_count));
   for (auto it = active_.begin(); it != active_.end();) {
     if (!matches(it->second)) { ++it; continue; }
     SubtractQuota(&active_usage_, it->second.token.reserved);
     it = active_.erase(it);
     ++released_count_;
   }
+  if (native_runtime_) for (auto& entry : native_runtime_->permits)
+    if (native_matches(entry.second)) entry.second.quiescence_requested = true;
   return result;
 }
 
@@ -846,6 +1021,15 @@ ResourceGovernanceReservationLedger::ExpireReservations(std::uint64_t now_tick) 
     const auto deadline = entry.token.lease_deadline_tick;
     return deadline != 0 && deadline <= now_tick;
   };
+  const auto native_expired = [&](const NativePermit& entry) {
+    const auto deadline = entry.view.binding.lease_deadline_tick;
+    return deadline != 0 && deadline <= now_tick;
+  };
+  if (native_runtime_) for (const auto& entry : native_runtime_->permits) {
+    if (!native_expired(entry.second)) continue;
+    ++result.retained_count;
+    if (!entry.second.quiescence_requested) ++result.snapshot.quiescence_requested_permits;
+  }
   for (const auto& entry : active_) {
     if (!expired(entry.second)) continue;
     SubtractQuota(&result.snapshot.active, entry.second.token.reserved);
@@ -864,12 +1048,16 @@ ResourceGovernanceReservationLedger::ExpireReservations(std::uint64_t now_tick) 
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
                     result.snapshot.active);
+  if (result.retained_count) Add(&result.evidence,
+      "resource_reservation.retained_count=" + std::to_string(result.retained_count));
   for (auto it = active_.begin(); it != active_.end();) {
     if (!expired(it->second)) { ++it; continue; }
     SubtractQuota(&active_usage_, it->second.token.reserved);
     it = active_.erase(it);
     ++released_count_;
   }
+  if (native_runtime_) for (auto& entry : native_runtime_->permits)
+    if (native_expired(entry.second)) entry.second.quiescence_requested = true;
   return result;
 }
 
