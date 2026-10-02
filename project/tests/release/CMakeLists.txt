@@ -679,6 +679,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME native_storage_action_intent_gate COMMAND native_storage_action_intent_gate)
   set_tests_properties(native_storage_action_intent_gate PROPERTIES
     TIMEOUT 60 LABELS "storage;binary_uuid;intent_codec;fault_injection;not_runtime_acceptance")
+  add_executable(native_owned_source_route_gate native_owned_source_route_gate.cpp
+    "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
+  target_compile_features(native_owned_source_route_gate PRIVATE cxx_std_23)
+  target_include_directories(native_owned_source_route_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/server")
+  target_link_libraries(native_owned_source_route_gate PRIVATE sb_storage_database sb_core_uuid)
+  target_link_options(native_owned_source_route_gate PRIVATE "LINKER:--wrap=pread")
+  add_test(NAME native_owned_source_route_gate COMMAND native_owned_source_route_gate)
+  set_tests_properties(native_owned_source_route_gate PROPERTIES
+    TIMEOUT 60 LABELS "storage;binary_uuid;route_ownership;not_runtime_acceptance")
   add_executable(filespace_retained_observation_gate filespace_retained_observation_gate.cpp)
   target_compile_features(filespace_retained_observation_gate PRIVATE cxx_std_23)
   target_link_libraries(filespace_retained_observation_gate PRIVATE sb_storage_disk)

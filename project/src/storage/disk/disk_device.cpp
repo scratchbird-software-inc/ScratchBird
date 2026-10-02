@@ -1168,6 +1168,10 @@ void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const
 }
 
 FileDevice::~FileDevice() {
+  // A child may destroy inherited ownership, but must neither unlock the
+  // parent's shared open-file description nor unlock an inherited thread guard.
+  if (open_process_id_ && open_process_id_ != OwnershipProcessId())
+    (void)route_owner_storage_guard_.release();
 #ifdef _WIN32
   if (file_handle_ != nullptr) {
     ::CloseHandle(static_cast<HANDLE>(file_handle_));
@@ -1183,13 +1187,22 @@ FileDevice::~FileDevice() {
     file_fd_ = -1;
   }
   if (owner_lock_fd_ >= 0) {
-    (void)::flock(owner_lock_fd_, LOCK_UN);
+    // close-only: fork/dup can retain the same locked open-file description.
     (void)::close(owner_lock_fd_);
     owner_lock_fd_ = -1;
   }
 #endif
   // Retain the lock file: a contender may already have its inode open.
   // Unlinking after release would let later opens lock a different inode.
+}
+
+u64 FileDevice::SourceOwnershipProcessId() noexcept { return OwnershipProcessId(); }
+
+bool FileDevice::CanAdoptIndependentSource() const noexcept {
+  return open_process_id_ == OwnershipProcessId() &&
+         open_thread_id_ == std::this_thread::get_id() &&
+         owner_lock_held_ && owner_lock_exclusive_ && !route_owner_lease_ &&
+         route_owner_storage_guard_.owns_lock();
 }
 
 IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
@@ -1487,6 +1500,8 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
       route_owned_by_current_process ? std::string{} : prospective_owner_lock_path;
   route_owner_lease_ = std::move(route_owner_lease);
   route_owner_storage_guard_ = std::move(route_owner_storage_guard);
+  open_process_id_ = OwnershipProcessId();
+  open_thread_id_ = std::this_thread::get_id();
 #ifdef _WIN32
   file_handle_ = prospective_file_handle;
   prospective_file_handle = nullptr;
@@ -1555,7 +1570,7 @@ IoResult FileDevice::Close() {
   }
   file_fd_ = -1;
   if (owner_lock_fd_ >= 0) {
-    (void)::flock(owner_lock_fd_, LOCK_UN);
+    // Release our handle, not another retained description's ownership.
     (void)::close(owner_lock_fd_);
     owner_lock_fd_ = -1;
   }
@@ -1569,6 +1584,8 @@ IoResult FileDevice::Close() {
   owner_lock_exclusive_ = false;
   route_owner_lease_.reset();  // data handle is closed before the last lock pin
   route_owner_storage_guard_ = std::unique_lock<std::recursive_mutex>{};
+  open_process_id_ = 0;
+  open_thread_id_ = {};
   capabilities_.write_at = true;
   capabilities_.extent_preallocation = false;
 
