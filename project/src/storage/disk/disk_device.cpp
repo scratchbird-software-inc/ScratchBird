@@ -954,6 +954,83 @@ RouteOwnershipLease::RouteOwnershipLease(std::string route_path,
                                          std::uint64_t owner_pid)
     : route_path_(std::move(route_path)), owner_pid_(owner_pid) {}
 
+// A distinct control block counts one admitted borrow, not arbitrary references
+// to the route owner. Allocate before incrementing; copies retain the same pin.
+// A FileDevice keeps this admission even while blocked on its legacy path guard.
+struct RouteOwnershipLease::BorrowPin {
+  explicit BorrowPin(std::shared_ptr<RouteOwnershipLease> owner) : owner(std::move(owner)) {}
+  ~BorrowPin() {
+    auto& registry = LeaseRegistry();
+    if (!counted || owner->owner_pid_ != OwnershipProcessId() ||
+        registry.process_id != OwnershipProcessId()) return;
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    --owner->legacy_borrowers_;
+  }
+  std::shared_ptr<RouteOwnershipLease> owner;
+  bool counted = false;
+};
+
+std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::PinBorrowLocked(
+    const std::shared_ptr<RouteOwnershipLease>& owner) {
+  if (owner->legacy_borrowers_ == std::numeric_limits<std::uint64_t>::max()) return {};
+  auto pin = std::make_shared<BorrowPin>(owner);
+  ++owner->legacy_borrowers_;
+  pin->counted = true;
+  return std::shared_ptr<RouteOwnershipLease>(std::move(pin), owner.get());
+}
+
+std::optional<std::uint64_t> RouteOwnershipLease::ObserveLegacyBorrowers() const noexcept {
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) return {};
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    return legacy_borrowers_;
+  } catch (...) { return {}; }
+}
+
+RouteSourceTransitionResult RouteOwnershipLease::BeginNativeSourceTransition(
+    const std::shared_ptr<RouteOwnershipLease>& owner) noexcept {
+  RouteSourceTransitionResult out;
+  try {
+    if (!owner) return out;
+    auto& registry = LeaseRegistry();
+    if (owner->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.error = RouteSourceTransitionError::wrong_process; return out;
+    }
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if (!owner->valid() || !owner->issuing_) {
+      out.error = RouteSourceTransitionError::withdrawn; return out;
+    }
+    out.transition = owner->transition_.lock();
+    if (!out.transition) {
+      // Allocation failure precedes the admission fence. Recreating a dropped
+      // observer never resets the owner's already-started transition state.
+      out.transition = std::shared_ptr<RouteSourceTransition>(new RouteSourceTransition(owner));
+      owner->transition_ = out.transition;
+    }
+    owner->accepting_ = false;
+    owner->transition_started_ = true;
+    out.error = RouteSourceTransitionError::none;
+  } catch (const std::bad_alloc&) { out.error = RouteSourceTransitionError::resource_exhausted; }
+    catch (...) { out.error = RouteSourceTransitionError::lock_failure; }
+  return out;
+}
+
+RouteSourceDrainObservation RouteSourceTransition::ObserveDrain() const noexcept {
+  RouteSourceDrainObservation out;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.state = RouteSourceDrainState::wrong_process; return out;
+    }
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    out.legacy_borrowers = owner_->legacy_borrowers_;
+    if (!owner_->issuing_ || !owner_->valid()) out.state = RouteSourceDrainState::withdrawn;
+    else out.state = out.legacy_borrowers ? RouteSourceDrainState::pending : RouteSourceDrainState::drained;
+  } catch (...) { out.state = RouteSourceDrainState::lock_failure; }
+  return out;
+}
+
 RouteOwnershipLease::~RouteOwnershipLease() {
 #ifdef _WIN32
   if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE)
@@ -986,10 +1063,12 @@ bool RouteOwnershipLease::Publish(const std::shared_ptr<RouteOwnershipLease>& se
   // A child must exec before using an inherited registry, including its mutex.
   if (!valid() || registry.process_id != OwnershipProcessId()) return false;
   std::lock_guard<std::mutex> guard(registry.mutex);
+  if (issuing_ || transition_started_) return false;
   auto& entry = registry.leases[route_path_];
   if (!entry.expired()) return false;
   entry = self;
   accepting_ = true;
+  issuing_ = true;
   return true;
 }
 
@@ -1002,7 +1081,7 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::Borrow(
   if (entry == registry.leases.end()) return {};
   auto lease = entry->second.lock();
   if (!lease || !lease->accepting_ || !lease->valid()) return {};
-  return lease;
+  return PinBorrowLocked(lease);
 }
 
 void RouteOwnershipLease::Withdraw() {
@@ -1011,6 +1090,7 @@ void RouteOwnershipLease::Withdraw() {
       registry.process_id != OwnershipProcessId()) return;
   std::lock_guard<std::mutex> guard(registry.mutex);
   accepting_ = false;
+  issuing_ = false;
   const auto entry = registry.leases.find(route_path_);
   if (entry != registry.leases.end() && entry->second.lock().get() == this)
     registry.leases.erase(entry);
@@ -1035,7 +1115,7 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
     if (!lease || !lease->accepting_ || !lease->valid() || !lease->data_handle_) continue;
     FILE_ID_INFO held{};
     if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) ==
-            ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held)) return lease;
+            ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held)) return PinBorrowLocked(lease);
   }
   return {};
 }
@@ -1094,7 +1174,7 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
     struct stat held{};
     if (::fstat(lease->data_fd_, &held) == 0 &&
         requested.st_dev == held.st_dev && requested.st_ino == held.st_ino)
-      return lease;
+      return PinBorrowLocked(lease);
   }
   return {};
 }
@@ -1531,6 +1611,9 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
 }
 
 IoResult FileDevice::Close() {
+  // Retire counted admission after the operation guard, not while close still
+  // owns locks needed by a drained native transition. Sync failures retain it.
+  std::shared_ptr<RouteOwnershipLease> retired_route_borrow;
   const auto operation_guard = AcquireOperationGuard();
   if (!is_open()) {
     return MakeIoError("SB-STORAGE-DISK-NOT-OPEN",
@@ -1582,8 +1665,8 @@ IoResult FileDevice::Close() {
   read_only_ = false;
   owner_lock_held_ = false;
   owner_lock_exclusive_ = false;
-  route_owner_lease_.reset();  // data handle is closed before the last lock pin
   route_owner_storage_guard_ = std::unique_lock<std::recursive_mutex>{};
+  retired_route_borrow = std::move(route_owner_lease_);
   open_process_id_ = 0;
   open_thread_id_ = {};
   capabilities_.write_at = true;
