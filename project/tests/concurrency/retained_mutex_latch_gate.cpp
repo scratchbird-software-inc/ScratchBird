@@ -85,7 +85,9 @@ m::MemoryBinaryUuid Id(unsigned n) {
 }
 m::SafeRetirementHazard Hazard(unsigned n, unsigned task=99) { return {Id(n), Id(task)}; }
 c::MutexLatchDescriptor Descriptor() {
-  return {Id(20), Id(22), c::MutexOwnerScope::database, 7, 11, Id(23)};
+  auto d=c::MutexLatchDescriptor{Id(20), Id(22), c::MutexOwnerScope::database, 7, 11, Id(23)};
+  d.latch_class=c::MutexLatchClass::database_state;
+  return d;
 }
 c::MutexLatchRequest Request(unsigned n=100, unsigned task=99) {
   return {Id(20),7,Id(task),Id(n)};
@@ -157,12 +159,188 @@ void Run(Function function, c::MutexLatchLimits limits={16,32}, unsigned readers
   }
   fixture.Empty();
 }
+void LatchOrderPairs() {
+  using L=c::MutexLatchClass;
+  // Independent canonical name order, not an oracle derived from enum numbers.
+  constexpr std::array classes{L::engine_lifecycle,L::database_state,L::transaction_inventory,
+      L::catalog_metadata,L::relation_index_descriptor,L::filespace_descriptor,L::allocation_map,
+      L::page_cache_bucket,L::page,L::record_lineage,L::archive_descriptor,
+      L::temporary_storage,L::metrics_evidence};
+  for (unsigned held=1;held<=13;++held) for (unsigned requested=1;requested<=13;++requested) {
+    Fixture f;
+    {
+      m::MemorySafeRetirement domain(*f.resource,Id(10),2,16);
+      Check(domain.Initialize()==S::ok,"order domain initialized");
+      {
+        c::MutexLatchOwner first(domain),second(domain);
+        auto a=Descriptor(),b=Descriptor(); b.primitive_id=Id(21);
+        a.latch_class=classes[held-1];
+        b.latch_class=classes[requested-1];
+        Check(first.Initialize(a,{2,4},Hazard(30))==S::ok &&
+              second.Initialize(b,{2,4},Hazard(31))==S::ok,"actual ordered latch pair");
+        auto left=Operation(first,32);
+        c::MutexLatchOperation right;
+        Check(second.AcquireOperation(Id(21),7,Hazard(33),right)==S::ok,"ordered target operation");
+        auto ra=Request(100),rb=Request(101); rb.primitive_id=Id(21);
+        c::MutexLatchGrant ga,gb;
+        Check(left.Acquire(ra,Hazard(34),ga,{}).code==C::acquired,"first class really held");
+        const auto before=domain.Snapshot().readers;
+        const auto result=right.Acquire(rb,Hazard(35),gb,{});
+        Check(result.code==(requested<held ? C::order_violation : C::acquired),
+              "every lower class refused before grant and every equal or higher class admitted");
+        if (requested<held) {
+          Check(result.order_conflict && result.order_conflict->held_primitive==a.primitive_id &&
+                result.order_conflict->held_generation==a.generation &&
+                result.order_conflict->held_class==a.latch_class,
+                "order refusal identifies actual held binary primitive generation and class");
+          Check(!gb && !second.Snapshot().native.held && second.Snapshot().native.waiters==0 &&
+                domain.Snapshot().readers==before,
+                "order refusal has no grant wait registration or extra hazard");
+        } else Check(gb.Release(rb).code==C::released,"ordered grant actually released");
+        Check(ga.Release(ra).code==C::released,"prior holder survives order decision");
+        Check(right.Acquire(rb,Hazard(35),gb,{}).code==C::acquired,
+              "release removes order obstruction without sticky refusal");
+        Check(gb.Release(rb).code==C::released,"unobstructed grant release");
+        left.Reset(); right.Reset(); Finish(first); Finish(second);
+      }
+      Check(domain.Collect()==S::ok,"ordered payloads collected");
+    }
+    f.Empty();
+  }
+}
+void LatchOrderBeforePark() {
+  Fixture f;
+  {
+    m::MemorySafeRetirement domain(*f.resource,Id(10),2,16);
+    Check(domain.Initialize()==S::ok,"order park domain initialized");
+    {
+      c::MutexLatchOwner lower(domain),higher(domain);
+      auto lo=Descriptor(),hi=Descriptor(); hi.primitive_id=Id(21);
+      lo.latch_class=c::MutexLatchClass::engine_lifecycle;
+      hi.latch_class=c::MutexLatchClass::metrics_evidence;
+      Check(lower.Initialize(lo,{2,4},Hazard(30))==S::ok &&
+            higher.Initialize(hi,{2,4},Hazard(31))==S::ok,"order park real objects");
+      auto waiting=Operation(lower,32);
+      std::binary_semaphore held{0},release{0};
+      std::thread holder([&] {
+        auto op=Operation(lower,33,98); auto request=Request(101,98);
+        c::MutexLatchGrant grant;
+        Check(op.Acquire(request,Hazard(34,98),grant,{}).code==C::acquired,"contended lower physically held");
+        held.release(); release.acquire();
+        Check(grant.Release(request).code==C::released,"contended lower owner releases");
+      });
+      held.acquire();
+      c::MutexLatchOperation own;
+      Check(higher.AcquireOperation(Id(21),7,Hazard(35),own)==S::ok,"higher park operation");
+      auto high_request=Request(102); high_request.primitive_id=Id(21);
+      c::MutexLatchGrant high_grant;
+      Check(own.Acquire(high_request,Hazard(36),high_grant,{}).code==C::acquired,"higher latch really held at refusal");
+      for (const bool immediate:{false,true}) {
+        c::MutexLatchGrant refused;
+#if defined(SB_MUTEX_NATIVE_FAULT_GATE)
+        Park probe; park=&probe;
+#endif
+        Check(waiting.Acquire(Request(),Hazard(37),refused,c::MutexClock::now()+50ms,{},immediate).code==C::order_violation,
+              "contended lower order refuses before native blocking or try grant");
+#if defined(SB_MUTEX_NATIVE_FAULT_GATE)
+        park=nullptr; Check(!probe.observed,"order violation never reaches native park");
+#endif
+        Check(!refused && lower.Snapshot().native.waiters==0,"order refusal never joins actual FIFO queue");
+      }
+      Check(high_grant.Release(high_request).code==C::released,"higher owner preserved across refusal");
+      release.release(); holder.join(); own.Reset(); waiting.Reset();
+      Finish(lower); Finish(higher);
+    }
+    Check(domain.Collect()==S::ok,"order park objects reclaimed");
+  }
+  f.Empty();
+}
+void LatchOrderOwnership() {
+  Fixture f;
+  {
+    m::MemorySafeRetirement domain(*f.resource,Id(10),4,32);
+    Check(domain.Initialize()==S::ok,"order ownership domain initialized");
+    {
+      std::array<std::unique_ptr<c::MutexLatchOwner>,4> owners;
+      std::array<c::MutexLatchOperation,4> operations;
+      std::array<c::MutexLatchRequest,4> requests;
+      std::array<c::MutexLatchGrant,4> grants;
+      for (unsigned i=0;i<4;++i) {
+        owners[i]=std::make_unique<c::MutexLatchOwner>(domain);
+        auto d=Descriptor(); d.primitive_id=Id(20+i);
+        d.latch_class=static_cast<c::MutexLatchClass>(i==3 ? 1 : 3+i*3);
+        Check(owners[i]->Initialize(d,{4,8},Hazard(30+i))==S::ok,"governed order ownership payload");
+        Check(owners[i]->AcquireOperation(Id(20+i),7,Hazard(40+i),operations[i])==S::ok,
+              "real retained order operation");
+        requests[i]=Request(100+i); requests[i].primitive_id=Id(20+i);
+      }
+      const auto acquire=[&](unsigned i) {
+        return operations[i].Acquire(requests[i],Hazard(50+i),grants[i],{}).code;
+      };
+      const auto release=[&](unsigned i) {
+        Check(grants[i].Release(requests[i]).code==C::released,"actual ordered ownership release");
+      };
+      Check(acquire(0)==C::acquired && acquire(1)==C::acquired && acquire(2)==C::acquired,
+            "three actual held order nodes");
+      // Nodes belong to retained payloads, not the addresses of movable wrappers.
+      c::MutexLatchGrant moved(std::move(grants[2]));
+      release(1); // Remove the middle, not necessarily a LIFO release.
+      Check(acquire(1)==C::order_violation && acquire(3)==C::order_violation,
+            "middle removal and grant move retain highest obstruction");
+      auto wrong=requests[2]; wrong.request_id=Id(999);
+      Check(moved.Release(wrong).code==C::wrong_owner && acquire(3)==C::order_violation,
+            "wrong release cannot erase actual held order node");
+      // Same binary task may execute elsewhere. Native held order belongs to
+      // this execution, not to an unproved task-wide exclusivity assertion.
+      std::thread other([&] {
+        Check(moved.Release(requests[2]).code==C::wrong_owner,
+              "wrong native owner cannot mutate another thread held stack");
+        Check(acquire(3)==C::acquired,"held stack does not leak into another native execution");
+        release(3);
+      });
+      other.join();
+      Check(acquire(3)==C::order_violation,"wrong native release preserves original order obstruction");
+#if defined(SB_MUTEX_NATIVE_FAULT_GATE)
+      for (unsigned failure=1;failure<=2;++failure) {
+        fail_lock=failure;
+        Check(moved.Release(requests[2]).code==C::synchronization_failed,
+              "real release lock fault preserves grant");
+        Check(acquire(3)==C::order_violation,"failed native release preserves held order node");
+      }
+#endif
+      Check(owners[2]->Close(Id(70)) && owners[2]->FenceAdmission()==S::ok,
+            "actual highest owner retired with committed grant");
+      Check(acquire(3)==C::order_violation,"close and retirement do not erase holder order");
+      grants[2]=std::move(moved); release(2);
+      Check(acquire(1)==C::acquired,"highest release reveals remaining held class");
+      // Move assignment releases its prior live destination before adopting the
+      // source, but cannot move the source's physical node or lose its class.
+      grants[0]=std::move(grants[1]);
+      Check(acquire(3)==C::order_violation,"move assignment preserves adopted higher order");
+      Check(grants[0].Release(requests[1]).code==C::released,"adopted grant releases exact request");
+      Check(acquire(3)==C::acquired,"all actual held nodes removed after non-LIFO releases");
+      release(3);
+      // Failed acquisition must never leave a phantom holder node.
+      Check(acquire(0)==C::acquired,"lower holder for acquisition failure check");
+      std::stop_source stop; stop.request_stop();
+      Check(operations[1].Acquire(requests[1],Hazard(51),grants[1],{},stop.get_token()).code==C::cancelled,
+            "cancelled higher acquisition has no grant");
+      release(0);
+      Check(acquire(3)==C::acquired,"failed acquisition leaves no phantom high order");
+      release(3);
+      for (auto& op:operations) op.Reset();
+      for (auto& owner:owners) Finish(*owner);
+    }
+    Check(domain.Collect()==S::ok && domain.Snapshot().retired==0,"order nodes reclaimed only after release");
+  }
+  f.Empty();
+}
 void Descriptors() {
   Fixture f;
   {
     m::MemorySafeRetirement domain(*f.resource,Id(10),2,8);
     Check(domain.Initialize()==S::ok,"descriptor domain initialized");
-    for (unsigned test=0;test<12;++test) {
+    for (unsigned test=0;test<14;++test) {
       auto d=Descriptor(); auto h=Hazard(30); c::MutexLatchLimits limits{2,2};
       switch (test) {
         case 0:d.primitive_id={};break;
@@ -177,6 +355,8 @@ void Descriptors() {
         case 9:h.hazard_id={};break;
         case 10:h.owner_task={};break;
         case 11:h.release_required_by=static_cast<m::SafeRetirementBoundary>(255);break;
+        case 12:d.latch_class=c::MutexLatchClass::unspecified;break;
+        case 13:d.latch_class=static_cast<c::MutexLatchClass>(255);break;
       }
       const auto before=f.manager.Snapshot().current_bytes;
       c::MutexLatchOwner owner(domain);
@@ -662,7 +842,7 @@ int main(int argc,char** argv) {
       Check(owner.Initialize(Descriptor(),{1,1},Hazard(30))==S::ok,"child real owner"); }
     return 9;
   }
-  Descriptors(); IdentityAndModes(); LifetimeAndExhaustion(); RequestValidationAndTerminals(); Publication();
+  LatchOrderPairs(); LatchOrderBeforePark(); LatchOrderOwnership(); Descriptors(); IdentityAndModes(); LifetimeAndExhaustion(); RequestValidationAndTerminals(); Publication();
 #if defined(SB_MUTEX_NATIVE_FAULT_GATE)
   NativeBoundaries();
 #endif
