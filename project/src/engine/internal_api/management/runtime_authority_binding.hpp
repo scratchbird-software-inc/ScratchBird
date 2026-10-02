@@ -3,6 +3,7 @@
 #pragma once
 #include "catalog_runtime_authority_binding.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "native_owned_checkpoint_source.hpp"
 #include <new>
 #include <stdexcept>
 
@@ -29,6 +30,18 @@ struct RuntimeAuthorityBindingCommittedReadResult {
   storage::database::NativeCommittedCatalogReadError source_error = storage::database::NativeCommittedCatalogReadError::none;
   core::platform::DiagnosticRecord diagnostic;
   bool ok() const noexcept { return error == RuntimeAuthorityBindingReadError::none && binding.has_value(); }
+};
+
+// Move-only observation retaining the actual native source and its ordered
+// guards. Destroy on the acquiring thread. Neither the binding nor this lease
+// authenticates a principal or authorizes BEGIN/publication. Do not recursively
+// publish, close, or rebind devices while the lease is retained.
+struct RuntimeAuthorityBindingOwnedReadResult : RuntimeAuthorityBindingCommittedReadResult {
+  storage::database::NativeOwnedSourceDiagnostics owned_source;
+  std::unique_ptr<storage::database::NativeOwnedCheckpointReadLease> source_lease;
+  bool ok() const noexcept {
+    return RuntimeAuthorityBindingCommittedReadResult::ok() && source_lease != nullptr;
+  }
 };
 
 namespace runtime_binding_read_detail {
@@ -128,6 +141,41 @@ inline RuntimeAuthorityBindingCommittedReadResult ReadCommittedRuntimeAuthorityB
   } catch (const std::bad_alloc&) { result.error=E::resource_exhausted; }
     catch (const std::length_error&) { result.error=E::resource_exhausted; }
   result.binding.reset(); result.native_version_uuid={};
+  return result;
+}
+
+// Resolve the current native selector through the actual owner, rather than
+// trusting a caller checkpoint. Keep the source fence through row selection
+// and subsequent observation. The ceiling covers combined retained images,
+// not decoded metadata or an issued memory-governor grant. Outer configuration
+// and security admission fences remain separate, in their owning lock order.
+inline RuntimeAuthorityBindingOwnedReadResult ReadCommittedRuntimeAuthorityBindingFromOwnedSource(
+    const std::shared_ptr<const storage::database::NativeOwnedCheckpointSource>& owner,
+    const core::platform::Uuid& database_uuid,
+    core::platform::u16 catalog_selector, core::platform::u16 relation_role,
+    const storage::database::NativeCatalogRelationBinding& relation,
+    const core::platform::Uuid& binding_uuid, core::platform::u64 expected_generation,
+    core::platform::u64 maximum_retained_image_bytes) noexcept {
+  using E = RuntimeAuthorityBindingReadError;
+  RuntimeAuthorityBindingOwnedReadResult result;
+  try {
+    if (!owner || !core::uuid::IsEngineIdentityUuid(database_uuid) ||
+        owner->database_uuid() != database_uuid || !core::uuid::IsEngineIdentityUuid(binding_uuid) ||
+        !expected_generation || !maximum_retained_image_bytes) return result;
+    auto retained = storage::database::NativeOwnedCheckpointSource::Read(owner, maximum_retained_image_bytes);
+    result.owned_source = static_cast<const storage::database::NativeOwnedSourceDiagnostics&>(retained);
+    if (!retained.ok()) { result.error = E::source_failure; return result; }
+    const auto consumed = retained.lease->source().retained_image_bytes();
+    if (consumed >= maximum_retained_image_bytes) { result.error = E::resource_exhausted; return result; }
+    const auto source = storage::database::ReadNativeCommittedCatalogVersionsFromOpenDevices(
+        database_uuid, retained.lease->devices(), retained.lease->source().checkpoint(),
+        catalog_selector, relation_role, relation, maximum_retained_image_bytes - consumed);
+    runtime_binding_read_detail::Select(result, source, database_uuid, binding_uuid, expected_generation);
+    if (result.RuntimeAuthorityBindingCommittedReadResult::ok()) result.source_lease = std::move(retained.lease);
+    return result;
+  } catch (const std::bad_alloc&) { result.error = E::resource_exhausted; }
+    catch (const std::length_error&) { result.error = E::resource_exhausted; }
+  result.binding.reset(); result.native_version_uuid = {}; result.source_lease.reset();
   return result;
 }
 } // namespace scratchbird::engine::internal_api

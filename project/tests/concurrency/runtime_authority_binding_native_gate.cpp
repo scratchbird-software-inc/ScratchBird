@@ -5,12 +5,17 @@
 #include "../sbsql_sblr_alignment/filespace_page_zero_test.cpp"
 #undef main
 #include "management/runtime_authority_binding.hpp"
+#include "../../src/server/database_ownership.hpp"
+#include <future>
+#include <latch>
 
 namespace {
 namespace runtime_api=scratchbird::engine::internal_api;
 using BindingError=runtime_api::RuntimeAuthorityBindingReadError;
 template<class T> concept HasSnapshotIdentity=requires(T value){value.snapshot_uuid;};
 static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingCommittedReadResult>);
+static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
+static_assert(!std::is_copy_constructible_v<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
 
 void VerifyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result) {
   if(!result.ok())std::cerr<<"committed binding error="<<static_cast<unsigned>(result.error)
@@ -55,6 +60,173 @@ auto ReadRuntimeBinding(disk::FileDevice& device,unsigned profile,const mga::Loc
   Check(found!=inventory.entries.end(),"actual inventory reader exists");
   return runtime_api::ReadRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
       CheckpointRef(CheckpointExample(profile)),2,1,{Id(101),{}},found->identity,pin.pin,Id(identity),generation,8*u64{sizes[profile]});
+}
+
+// Add independent selector/directory/allocation bytes to the existing actual
+// catalog fixture. No production encoder manufactures the expected selection.
+void InstallOwnedSelection(disk::FileDevice& device,unsigned p,disk::FilespacePageZero zero,
+    db::NativeCheckpointRoot checkpoint,const page::NativeTransactionInventoryPage& inventory) {
+  zero.free_pages=zero.preallocated_pages=0;
+  zero.roots.push_back({18,0x30e,Id(2),31,1,Profile(p),Id(154)});
+  zero.roots.push_back({19,0x30e,Id(2),32,1,Profile(p),Id(154)});
+  page::NativeAllocationMap map;
+  map.header={sizes[p],3,Id(1),Id(2),Id(164),13,103,0,Profile(p)};
+  map.object_uuid=Id(43);map.map_generation=map.capacity_generation=1;
+  map.total_pages=zero.total_pages;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;
+  map.states.assign(map.total_pages,page::NativeAllocationState::quarantined);
+  const auto add=[&](const disk::NativeCommonPageHeader& h,const Uuid& object) {
+    map.states[h.page_number]=page::NativeAllocationState::allocated;
+    map.records.push_back({h.page_number,Id(static_cast<byte>(210+h.page_number)),h.page_uuid,
+        object,Id(98),17,h.page_generation,0,h.page_type,{}});
+  };
+  add({sizes[p],1,Id(1),Id(2),zero.page_uuid,0,zero.page_generation,0,Profile(p)},Id(2));
+  add(map.header,map.object_uuid);add(inventory.header,inventory.object_uuid);
+  add(checkpoint.header,checkpoint.object_uuid);
+  add({sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)},Id(154));
+  add({sizes[p],0x30e,Id(1),Id(2),Id(156),32,1,0,Profile(p)},Id(154));
+  std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+  page::NativeFilespaceDirectory directory;
+  directory.header={sizes[p],9,Id(1),Id(2),Id(165),15,105,0,Profile(p)};
+  directory.object_uuid=Id(45);directory.directory_generation=1;
+  directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=1;
+  directory.records.push_back({zero.bootstrap,Id(166),zero.page_uuid,zero.page_generation,
+      zero.root_set_generation,zero.total_pages,0,{}});
+  const auto mb=AllocationOracle(map),dbb=DirectoryOracle(directory);
+  checkpoint.roots[3]={4,3,{Id(2),13,103,Profile(p)},Id(43),WholeRootHash(mb)};
+  checkpoint.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
+  const auto cp=CheckpointOracle(checkpoint);
+  db::NativeCheckpointSelection selection;
+  selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)};
+  selection.object_uuid=Id(154);selection.bootstrap_uuid=zero.page_uuid;selection.publication_uuid=Id(153);
+  selection.selection_generation=1;selection.checkpoint={Id(2),19,109,Profile(p)};
+  selection.checkpoint_object_uuid=checkpoint.object_uuid;selection.checkpoint_sha256=WholeRootHash(cp);
+  selection.checkpoint_generation=checkpoint.checkpoint_generation;
+  selection.root_set_generation=checkpoint.root_set_generation;selection.timeline_uuid=checkpoint.timeline_uuid;
+  const auto put=[&](u64 number,const Bytes& b) {
+    const auto io=device.WriteAt(number*sizes[p],b.data(),b.size());
+    Check(io.ok()&&io.bytes_transferred==b.size(),"persist independent owned configuration source");
+  };
+  put(0,Oracle(zero));put(13,mb);put(15,dbb);put(19,cp);put(31,SelectionOracle(selection));
+  selection.header.page_number=32;selection.header.page_uuid=Id(156);put(32,SelectionOracle(selection));
+  Check(device.Sync().ok(),"durable actual selection fixture");
+}
+
+void OwnedRuntimeBinding(const std::string& path,unsigned p) {
+  namespace server=scratchbird::server;
+  using Source=db::NativeOwnedCheckpointSource;
+  const u64 budget=64*u64{sizes[p]};
+  server::DatabaseOwnershipRequest request;request.database_path=path;
+  auto route=server::AcquireDatabaseOwnership(request);Check(route.acquired&&route.lock,"actual configuration route owner");
+  auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"actual source transition issuer");
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  auto source=Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,budget);
+  if(!source.ok())std::cerr<<"owned fixture error="<<int(source.error)<<" selection="<<int(source.selection_error)
+      <<" checkpoint="<<int(source.checkpoint_error)<<" directory="<<int(source.directory_error)<<'\n';
+  Check(source.ok(),"actual complete route-owned configuration source");
+  const auto read=[&](u64 generation=1,byte binding=180,u64 ceiling=0) {
+    return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(1),2,1,
+        {Id(101),{}},Id(binding),generation,ceiling?ceiling:budget);
+  };
+  const auto empty=[&](const auto& result,BindingError error) {
+    EmptyCommittedBinding(result,error);Check(!result.source_lease,"failed owned read releases all source guards");
+  };
+  const auto writes_before=stage_writes,syncs_before=stage_syncs;
+  {auto result=read();VerifyCommittedBinding(result);Check(result.ok()&&result.source_lease,
+      "successful configuration observation retains actual current source");}
+  empty(read(2),BindingError::generation_mismatch);empty(read(1,250),BindingError::absent);
+  empty(read(1,180,1),BindingError::source_failure);
+  {const auto bad_relation=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(1),2,1,
+      {Id(250),{}},Id(180),1,budget);
+    empty(bad_relation,BindingError::source_failure);
+    Check(bad_relation.source_error!=db::NativeCommittedCatalogReadError::none,
+        "owned binding preserves nested committed-catalog refusal");}
+  reads=0;track_reads=true;
+  empty(runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(250),2,1,
+      {Id(101),{}},Id(180),1,budget),BindingError::invalid_request);
+  empty(read(0),BindingError::invalid_request);track_reads=false;Check(!reads,"invalid owned binding refuses before I/O");
+  if(p==0) {
+    for(unsigned invalid=0;invalid<4;++invalid) {
+      std::shared_ptr<const Source> owner=source.owner;auto database=Id(1),binding=Id(180);u64 ceiling=budget;
+      if(invalid==0)owner.reset();if(invalid==1)database={};if(invalid==2)binding={};if(invalid==3)ceiling=0;
+      reads=0;track_reads=true;
+      const auto failed=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(owner,database,2,1,
+          {Id(101),{}},binding,1,ceiling);
+      track_reads=false;empty(failed,BindingError::invalid_request);Check(!reads,"invalid owner input rejected before I/O");
+    }
+    reads=observed_full_digests=0;observed_allocations=0;
+    track_reads=count_full_digests=count_allocations=true;auto measured=read();
+    track_reads=count_full_digests=count_allocations=false;const auto count=reads;
+    const auto allocations=observed_allocations;const auto digests=observed_full_digests;
+    VerifyCommittedBinding(measured);Check(count>0,"owned binding uses real source I/O");
+    Check(allocations>0&&digests>0,"measure actual owned binding allocations and hashes");
+    const auto retained=measured.source_lease->source().retained_image_bytes();
+    const auto* device=measured.source_lease->devices().front().device;
+    u64 combined=0;
+    {const auto catalog=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),measured.source_lease->devices(),
+        measured.source_lease->source().checkpoint(),2,1,{Id(101),{}},budget);
+      Check(catalog.ok(),"independent catalog image cost");combined=retained+catalog.source.retained_image_bytes;}
+    measured.source_lease.reset();
+    empty(read(1,180,retained),BindingError::resource_exhausted);
+    {auto exact=read(1,180,combined);VerifyCommittedBinding(exact);Check(exact.ok(),"combined source/catalog images fit exactly");}
+    empty(read(1,180,combined-1),BindingError::source_failure);
+    for(unsigned fault=1;fault<=count;++fault) {
+      reads=0;read_fault=fault;track_reads=true;auto failed=read();track_reads=false;
+      Check(!read_fault,"each owned configuration physical read failure consumed");
+      empty(failed,BindingError::source_failure);
+    }
+    for(unsigned fault=1;fault<=digests;++fault) {
+      full_digest_fault=fault;auto failed=read();
+      Check(!full_digest_fault,"each owned configuration digest failure consumed");
+      empty(failed,BindingError::source_failure);
+    }
+    for(unsigned long fault=0;fault<allocations;++fault) {
+      const auto loss=device->failed_io_latency_observations();
+      allocation_budget=static_cast<long>(fault);auto failed=read();const bool consumed=allocation_budget==-1;allocation_budget=-1;
+      Check(consumed,"owned configuration allocation fault consumed");
+      if(failed.ok()) {
+        Check(device->failed_io_latency_observations()==loss+1,
+            "only independently recorded telemetry loss permits owned-read success after allocation failure");
+        VerifyCommittedBinding(failed);continue;
+      }
+      Check(!failed.ok()&&!failed.binding&&failed.native_version_uuid.is_nil()&&!failed.source_lease,
+          "owned configuration allocation failure emits no usable result");
+      Check(failed.error==BindingError::source_failure||failed.error==BindingError::resource_exhausted,
+          "owned allocation refusal retains typed error");
+    }
+    std::cout<<"owned binding fault sweep reads="<<count<<" digests="<<digests<<" allocations="<<allocations<<'\n';
+    const auto child=fork();Check(child>=0,"fork inherited owned configuration reader");
+    if(child==0){auto inherited=read();_exit(!inherited.ok()&&!inherited.binding&&!inherited.source_lease&&
+        inherited.owned_source.error==db::NativeOwnedSourceError::wrong_process?0:9);}
+    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+        "inherited configuration source refuses before device access");
+  }
+  // Read guards are acquired and released on the worker. The main thread
+  // withdraws new admission but cannot destroy the worker's retained source.
+  std::latch ready(1),finish(1);
+  std::weak_ptr<Source> weak=source.owner;
+  auto worker=std::async(std::launch::async,[owner=source.owner,&ready,&finish,budget]() mutable {
+    auto held=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(owner,Id(1),2,1,
+        {Id(101),{}},Id(180),1,budget);
+    owner.reset();ready.count_down();finish.wait();
+    return held.ok()&&held.binding->service_principal_uuid==Id(200)&&held.source_lease!=nullptr;
+  });
+  // A failed main-thread oracle must still release the worker before future
+  // destruction, including negative-control runs that remove the retained pin.
+  std::unique_ptr<std::latch,void(*)(std::latch*)> release(&finish,[](auto* latch){latch->count_down();});
+  ready.wait();source.owner->Withdraw();
+  reads=0;track_reads=true;auto withdrawn=read();track_reads=false;empty(withdrawn,BindingError::source_failure);
+  Check(!reads,"withdrawn configuration source performs no new I/O");
+  Check(withdrawn.owned_source.error==db::NativeOwnedSourceError::withdrawn,"typed owner withdrawal preserved");
+  route.lock->release();route.lock.reset();transition.transition.reset();source.owner.reset();
+  Check(!weak.expired(),"worker configuration read retains actual owner after runtime release");
+  {disk::FileDevice competing;Check(!competing.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),
+      "physical ownership survives withdrawal until worker drains");}
+  release.reset();Check(worker.get()&&weak.expired(),"worker releases source guards before final owner destruction");
+  Check(stage_writes==writes_before&&stage_syncs==syncs_before,"owned configuration observation is physically read-only");
+  disk::FileDevice reopened;Check(reopened.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),
+      "independent reopen only after worker source release");
+  VerifyCommittedBinding(runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(p),&reopened}},
+      CheckpointRef(CheckpointExample(p)),2,1,{Id(101),{}},Id(180),1,budget));
 }
 void RuntimeBindingFiles() {
   Fixture fixture;
@@ -220,6 +392,10 @@ void RuntimeBindingFiles() {
     const auto argument=std::to_string(profile);
     if(child==0){execl("/proc/self/exe","runtime-binding-native","--read-binding",path.c_str(),argument.c_str(),nullptr);_exit(125);}
     int status=0; Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual committed binding");
+    Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"own fixture before selector installation");
+    InstallOwnedSelection(device,profile,zero,checkpoint,inventory);
+    Check(device.Close().ok(),"release fixture writer before actual route admission");
+    OwnedRuntimeBinding(path,profile);
   }
 }
 } // namespace

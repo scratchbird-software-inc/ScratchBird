@@ -74,7 +74,8 @@ add_test(NAME startup_parent_publication_gate COMMAND startup_parent_publication
 set_tests_properties(startup_parent_publication_gate PROPERTIES
   TIMEOUT 180 LABELS "agents;startup;native_publication;real_file_io")
 add_executable(runtime_authority_binding_native_gate
-  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_native_gate.cpp")
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_native_gate.cpp"
+  "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")
 target_compile_features(runtime_authority_binding_native_gate PRIVATE cxx_std_23)
 target_include_directories(runtime_authority_binding_native_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/engine/internal_api")
 target_link_libraries(runtime_authority_binding_native_gate PRIVATE sb_storage_database OpenSSL::Crypto)
