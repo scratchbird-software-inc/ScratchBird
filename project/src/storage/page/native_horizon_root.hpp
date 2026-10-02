@@ -5,6 +5,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -49,8 +50,40 @@ struct NativeHorizonRoot {
 enum class NativeHorizonError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, chain_mismatch, io_failure
+  binding_mismatch, chain_mismatch, io_failure, invalid_backing
 };
+// Separate view preserves the owning codec and chain ABI. All spans borrow the
+// caller's live storage; scratch contains only typed binary identities.
+struct NativeHorizonRootView {
+  disk::NativeCommonPageHeader header;
+  Uuid object_uuid;
+  u64 epoch=0;
+  Uuid creator_transaction_uuid;
+  u64 creator_local_transaction_id=0, flags=0, total_records=0, first_record=0;
+  disk::NativePageReference retention;
+  Uuid retention_object_uuid;
+  std::array<byte,32> retention_sha256{};
+  std::optional<disk::NativePageReference> next;
+  std::array<byte,32> next_sha256{};
+  u64 minimum_blocker=0;
+  std::span<NativeHorizonRecord> records;
+};
+struct NativeHorizonIdentityScratch { Uuid identity; std::size_t ordinal=0; };
+struct NativeHorizonReferenceScratch {
+  disk::NativePageReference reference;
+  u32 type=0;
+  Uuid object;
+  u64 generation=0;
+};
+struct NativeHorizonViewResult {
+  NativeHorizonError error=NativeHorizonError::invalid_family;
+  std::optional<NativeHorizonRootView> root;
+  bool ok() const noexcept {return error==NativeHorizonError::none&&root.has_value();}
+};
+// No hidden variable backing; scratch may change on failure but no view escapes.
+NativeHorizonViewResult DecodeNativeHorizonRootInto(std::span<const byte>,
+    std::span<NativeHorizonRecord>,std::span<NativeHorizonIdentityScratch>,
+    std::span<NativeHorizonReferenceScratch>) noexcept;
 struct NativeHorizonResult {
   NativeHorizonError error=NativeHorizonError::invalid_family;
   std::optional<NativeHorizonRoot> root;

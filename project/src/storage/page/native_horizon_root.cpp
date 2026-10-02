@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_horizon_root.hpp"
+#include "native_decoded_storage_ranges.hpp"
+#include <type_traits>
 #include "hash_digest_parts.hpp"
 #include "disk_device.hpp"
 #include <algorithm>
@@ -26,7 +28,7 @@ disk::NativePageReference GetRef(const byte* p){return {GetUuid(p),LoadLittle64(
 void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uuid);StoreLittle64(p+16,r.page_number);StoreLittle64(p+24,r.page_generation);PutUuid(p+32,r.page_size_profile_uuid);}
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
-auto Digest(const std::vector<byte>& b,bool clear){const std::array<byte,32> zero{};
+auto Digest(std::span<const byte> b,bool clear){const std::array<byte,32> zero{};
   const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
   return hash::ComputeSha256DigestParts(parts,3);}
 NativeHorizonResult Fail(E e){NativeHorizonResult r;r.error=e;return r;}
@@ -46,14 +48,14 @@ struct References {
     return fresh||at->second==value;
   }
 };
-bool AddReferences(References& refs,const NativeHorizonRoot& v){const auto& h=v.header;
+template<class Refs,class Page> bool AddReferences(Refs& refs,const Page& v){const auto& h=v.header;
   if(!refs.Add({h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},0x302,v.object_uuid,v.epoch)||
       !refs.Add(v.retention,0x303,v.retention_object_uuid,0))return false;
   if(v.next&&!refs.Add(*v.next,0x302,v.object_uuid,v.epoch))return false;
   for(const auto& r:v.records)if(r.checkpoint&&!refs.Add(*r.checkpoint,0x300,r.checkpoint_object_uuid,r.checkpoint_generation))return false;
   return true;
 }
-E Validate(const NativeHorizonRoot& v){const auto& h=v.header;
+template<class Page,class Unique,class Refs> E ValidateValues(const Page& v,Unique&& unique,Refs&& references){const auto& h=v.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x302||h.flags)return E::invalid_header;
   if(!V7(v.object_uuid)||!V7(v.creator_transaction_uuid)||!v.epoch||!v.creator_local_transaction_id||(v.flags&~u64{1})||
       !V7(v.retention_object_uuid)||Zero(v.retention_sha256.data(),32)||v.first_record>v.total_records||
@@ -61,9 +63,9 @@ E Validate(const NativeHorizonRoot& v){const auto& h=v.header;
   if(v.records.empty()&&(v.total_records||v.first_record))return E::invalid_family;
   if((v.records.size()<v.total_records-v.first_record)!=v.next.has_value()||v.next.has_value()==Zero(v.next_sha256.data(),32))return E::invalid_reference;
   if(v.next&&v.next->filespace_uuid==h.filespace_uuid&&v.next->page_number==h.page_number)return E::invalid_reference;
-  std::optional<decltype(Key(NativeHorizonRecord{}))> prior;std::set<Uuid> identities;u64 minimum=0;
+  std::optional<decltype(Key(NativeHorizonRecord{}))> prior;u64 minimum=0;std::size_t ordinal=0;
   for(const auto& r:v.records){const auto kind=static_cast<u16>(r.kind),owner=static_cast<u16>(r.owner_kind);
-    if(!kind||kind>18||!owner||owner>8||!r.local_boundary||!V7(r.owner_uuid)||!V7(r.horizon_uuid)||!V7(r.timeline_uuid)||!identities.insert(r.horizon_uuid).second||(!r.pin_uuid.is_nil()&&!V7(r.pin_uuid))||
+    if(!kind||kind>18||!owner||owner>8||!r.local_boundary||!V7(r.owner_uuid)||!V7(r.horizon_uuid)||!V7(r.timeline_uuid)||!unique(r.horizon_uuid,ordinal++)||(!r.pin_uuid.is_nil()&&!V7(r.pin_uuid))||
         (r.flags&~u32{15})||((r.flags&4)&&!(r.flags&1))||
         (r.flags?!V7(r.diagnostic_uuid):!r.diagnostic_uuid.is_nil())||
         ((kind>=11||owner==5)&&!(v.flags&1))||(kind>=11&&owner!=5))return E::invalid_record;
@@ -72,9 +74,34 @@ E Validate(const NativeHorizonRoot& v){const auto& h=v.header;
     if((r.flags&1)&&(!minimum||r.local_boundary<minimum))minimum=r.local_boundary;
   }
   if(v.minimum_blocker!=minimum)return E::invalid_record;
-  References refs;if(!AddReferences(refs,v))return E::invalid_reference;
+  if(!references())return E::invalid_reference;
   return E::none;
 }
+E Validate(const NativeHorizonRoot& v){
+  std::set<Uuid> identities;
+  return ValidateValues(v,[&](const Uuid& id,std::size_t){return identities.insert(id).second;},
+    [&]{References refs;return AddReferences(refs,v);});
+}
+struct BorrowedReferences {
+  std::span<NativeHorizonReferenceScratch> entries;
+  std::size_t used=0;
+  bool Add(const disk::NativePageReference& r,u32 type,const Uuid& object,u64 generation){
+    if(!Ref(r)||used==entries.size())return false;
+    entries[used++]={r,type,object,generation};return true;
+  }
+  bool Consistent(){
+    auto values=entries.first(used);
+    std::sort(values.begin(),values.end(),[](const auto& a,const auto& b){
+      return Slot{a.reference.filespace_uuid,a.reference.page_number}<Slot{b.reference.filespace_uuid,b.reference.page_number};});
+    for(std::size_t i=1;i<values.size();++i){const auto& a=values[i-1];const auto& b=values[i];
+      if(a.reference.filespace_uuid!=b.reference.filespace_uuid)continue;
+      if(a.reference.page_size_profile_uuid!=b.reference.page_size_profile_uuid)return false;
+      if(a.reference.page_number==b.reference.page_number&&
+         (a.type!=b.type||a.reference!=b.reference||a.object!=b.object||a.generation!=b.generation))return false;
+    }
+    return true;
+  }
+};
 }
 
 NativeHorizonResult EncodeNativeHorizonRoot(const NativeHorizonRoot& v) noexcept {
@@ -94,22 +121,54 @@ NativeHorizonResult EncodeNativeHorizonRoot(const NativeHorizonRoot& v) noexcept
     return {E::none,v,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeHorizonResult DecodeNativeHorizonRoot(const std::vector<byte>& b) noexcept {
-  try{if(b.size()<start)return Fail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!h.ok()||h.header->page_type!=0x302||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto digest=Digest(b,true);if(!digest.ok())return Fail(E::hash_failure);if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return Fail(E::invalid_integrity);
+namespace {
+template<class Page> E DecodeValues(std::span<const byte> b,Page& v) noexcept {
+  try{if(b.size()<start)return E::invalid_header;const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!h.ok()||h.header->page_type!=0x302||h.header->flags||b.size()!=h.header->page_size_bytes)return E::invalid_header;
+    const auto digest=Digest(b,true);if(!digest.ok())return E::hash_failure;if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return E::invalid_integrity;
     const auto* f=b.data()+128;const auto count=LoadLittle32(f+88),used=LoadLittle32(f+12);
     if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBHOR002"||LoadLittle16(f+8)!=2||LoadLittle16(f+10)!=384||
-        count>(b.size()-start)/width||used!=start+width*count||!Zero(f+92,4)||!Zero(f+312,72)||!Zero(b.data()+used,b.size()-used))return Fail(E::invalid_family);
-    NativeHorizonRoot v;v.header=*h.header;v.object_uuid=GetUuid(f+16);v.epoch=LoadLittle64(f+32);v.creator_transaction_uuid=GetUuid(f+40);v.creator_local_transaction_id=LoadLittle64(f+56);
+        count>(b.size()-start)/width||used!=start+width*count||!Zero(f+92,4)||!Zero(f+312,72)||!Zero(b.data()+used,b.size()-used))return E::invalid_family;
+    v.header=*h.header;v.object_uuid=GetUuid(f+16);v.epoch=LoadLittle64(f+32);v.creator_transaction_uuid=GetUuid(f+40);v.creator_local_transaction_id=LoadLittle64(f+56);
     v.flags=LoadLittle64(f+64);v.total_records=LoadLittle64(f+72);v.first_record=LoadLittle64(f+80);v.retention=GetRef(f+96);v.retention_object_uuid=GetUuid(f+144);std::copy_n(f+160,32,v.retention_sha256.begin());
-    if(!Zero(f+192,48))v.next=GetRef(f+192);std::copy_n(f+240,32,v.next_sha256.begin());v.minimum_blocker=LoadLittle64(f+272);v.records.reserve(count);
-    for(u32 i=0;i<count;++i){const auto* p=b.data()+start+i*width;if(!Zero(p+168,24))return Fail(E::invalid_record);NativeHorizonRecord r;
+    if(!Zero(f+192,48))v.next=GetRef(f+192);std::copy_n(f+240,32,v.next_sha256.begin());v.minimum_blocker=LoadLittle64(f+272);if constexpr(std::is_same_v<Page,NativeHorizonRoot>)v.records.resize(count);
+    else {if(count>v.records.size())return E::resource_exhausted;v.records=v.records.first(count);}
+    for(u32 i=0;i<count;++i){const auto* p=b.data()+start+i*width;if(!Zero(p+168,24))return E::invalid_record;NativeHorizonRecord r;
       r.kind=static_cast<NativeHorizonKind>(LoadLittle16(p));r.owner_kind=static_cast<NativeHorizonOwner>(LoadLittle16(p+2));r.flags=LoadLittle32(p+4);r.local_boundary=LoadLittle64(p+8);
-      r.owner_uuid=GetUuid(p+16);r.pin_uuid=GetUuid(p+32);r.checkpoint_object_uuid=GetUuid(p+48);r.checkpoint_generation=LoadLittle64(p+64);r.diagnostic_uuid=GetUuid(p+72);if(!Zero(p+88,48))r.checkpoint=GetRef(p+88);r.horizon_uuid=GetUuid(p+136);r.timeline_uuid=GetUuid(p+152);v.records.push_back(std::move(r));
+      r.owner_uuid=GetUuid(p+16);r.pin_uuid=GetUuid(p+32);r.checkpoint_object_uuid=GetUuid(p+48);r.checkpoint_generation=LoadLittle64(p+64);r.diagnostic_uuid=GetUuid(p+72);if(!Zero(p+88,48))r.checkpoint=GetRef(p+88);r.horizon_uuid=GetUuid(p+136);r.timeline_uuid=GetUuid(p+152);v.records[i]=r;
     }
-    const auto valid=Validate(v);if(valid!=E::none)return Fail(valid);return {E::none,std::move(v),b};
-  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+    return E::none;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_family;}
+}
+}
+NativeHorizonResult DecodeNativeHorizonRoot(const std::vector<byte>& b) noexcept {
+  try{
+    NativeHorizonRoot v;const auto decoded=DecodeValues(b,v);
+    if(decoded!=E::none)return Fail(decoded);
+    const auto valid=Validate(v);if(valid!=E::none)return Fail(valid);
+    return {E::none,std::move(v),b};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(...){return Fail(E::invalid_family);}
+}
+NativeHorizonViewResult DecodeNativeHorizonRootInto(std::span<const byte> b,
+    std::span<NativeHorizonRecord> records,std::span<NativeHorizonIdentityScratch> identities,
+    std::span<NativeHorizonReferenceScratch> references) noexcept {
+  if(!detail::DisjointNativeDecodeRegions(b,records,identities,references))return {E::invalid_backing,std::nullopt};
+  NativeHorizonRootView v;v.records=records;
+  const auto decoded=DecodeValues(b,v);if(decoded!=E::none)return {decoded,std::nullopt};
+  const auto count=v.records.size();
+  if(identities.size()<count||references.size()<count+3)return {E::resource_exhausted,std::nullopt};
+  auto ids=identities.first(count);
+  for(std::size_t i=0;i<count;++i)ids[i]={v.records[i].horizon_uuid,i};
+  std::sort(ids.begin(),ids.end(),[](const auto& a,const auto& b){
+    return std::tie(a.identity,a.ordinal)<std::tie(b.identity,b.ordinal);});
+  const auto valid=ValidateValues(v,[&](const Uuid& id,std::size_t ordinal){
+    const auto first=std::lower_bound(ids.begin(),ids.end(),id,[](const auto& a,const Uuid& b){return a.identity<b;});
+    return first!=ids.end()&&first->identity==id&&first->ordinal==ordinal;
+  },[&]{BorrowedReferences refs{references};return AddReferences(refs,v)&&refs.Consistent();});
+  if(valid!=E::none)return {valid,std::nullopt};
+  return {E::none,v};
 }
 
 NativeHorizonChainResult ReadNativeHorizonRootFromOpenDevices(const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
