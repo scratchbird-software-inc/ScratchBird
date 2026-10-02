@@ -219,6 +219,7 @@ class FileDevice {
 
  private:
   friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
+  friend class RouteSourceTransition;
   // Only the native source factory may detach the path serialization guard,
   // while it transfers exclusive ownership of independently OS-locked handles.
   bool CanAdoptIndependentSource() const noexcept;

@@ -1155,6 +1155,82 @@ RouteOwnershipLease::~RouteOwnershipLease() {
 #endif
 }
 
+RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
+    std::unique_ptr<FileDevice>& primary) noexcept {
+  using E = RouteSourceTransitionError;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId())
+      return E::wrong_process;
+    if (primary) return E::invalid_owner;
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if (!owner_->issuing_ || !owner_->valid()) return E::withdrawn;
+    if (owner_->source_transferred_) return E::already_transferred;
+    if (owner_->source_admission_active_) return E::admission_busy;
+    if (owner_->legacy_borrowers_) return E::not_drained;
+    auto device = std::make_unique<FileDevice>();
+    // Diagnostic path only. The actual retained object is the source, even
+    // after unlink/rename/replacement. No path mutex or new path open is used.
+    device->path_ = owner_->route_path_;
+    device->metric_device_class_ = "file";
+#ifdef _WIN32
+    if (!owner_->data_handle_) return E::primary_not_bound;
+    HANDLE duplicate = nullptr;
+    if (!::DuplicateHandle(::GetCurrentProcess(), static_cast<HANDLE>(owner_->data_handle_),
+          ::GetCurrentProcess(), &duplicate, GENERIC_READ, FALSE, 0)) return E::io_failure;
+    device->file_handle_ = duplicate;
+#else
+    if (owner_->data_fd_ < 0) return E::primary_not_bound;
+#ifdef F_DUPFD_CLOEXEC
+    const int duplicate = ::fcntl(owner_->data_fd_, F_DUPFD_CLOEXEC, 0);
+#else
+    const int duplicate = ::dup(owner_->data_fd_);
+#endif
+    if (duplicate < 0) return E::io_failure;
+    device->file_fd_ = duplicate;
+#ifndef F_DUPFD_CLOEXEC
+    if (::fcntl(duplicate, F_SETFD, FD_CLOEXEC) != 0) return E::io_failure;
+#endif
+#endif
+    // An uncounted private pin is legitimate only after all legacy admissions
+    // drained, and remains inaccessible until native validation commits.
+    device->route_owner_lease_ = owner_;
+    device->open_process_id_ = OwnershipProcessId();
+    device->open_thread_id_ = std::this_thread::get_id();
+    device->read_only_ = true;
+    device->capabilities_.write_at = false;
+    device->capabilities_.extent_preallocation = false;
+    owner_->source_admission_active_ = true;
+    primary = std::move(device);
+    return E::none;
+  } catch (const std::bad_alloc&) { return E::resource_exhausted; }
+    catch (...) { return E::lock_failure; }
+}
+
+RouteSourceTransitionError RouteSourceTransition::CommitSourceAdmission() noexcept {
+  using E = RouteSourceTransitionError;
+  try {
+    auto& registry = LeaseRegistry();
+    if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId())
+      return E::wrong_process;
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if (!owner_->issuing_ || !owner_->valid()) return E::withdrawn;
+    if (owner_->source_transferred_) return E::already_transferred;
+    if (!owner_->source_admission_active_) return E::invalid_owner;
+    if (owner_->legacy_borrowers_) return E::not_drained;
+    owner_->source_transferred_ = true;
+    owner_->source_admission_active_ = false;
+    return E::none;
+  } catch (...) { return E::lock_failure; }
+}
+
+void RouteSourceTransition::AbortSourceAdmission() noexcept {
+  auto& registry = LeaseRegistry();
+  if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) return;
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  owner_->source_admission_active_ = false;
+}
+
 bool RouteOwnershipLease::valid() const {
   if (owner_pid_ != OwnershipProcessId()) return false;
 #ifdef _WIN32
