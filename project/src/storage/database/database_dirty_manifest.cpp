@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_dirty_manifest.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_management_control_authority.hpp"
 #include "hash_digest_parts.hpp"
@@ -579,7 +580,7 @@ void PutRef(byte* b,const disk::NativePageReference& r) {
   Put(b,r.filespace_uuid);StoreLittle64(b+16,r.page_number);StoreLittle64(b+24,r.page_generation);Put(b+32,r.page_size_profile_uuid);
 }
 disk::NativePageReference GetRef(const byte* b) {return {Get(b),LoadLittle64(b+16),LoadLittle64(b+24),Get(b+32)};}
-disk::NativePageReference Self(const NativeCheckpointRoot& r) {
+template<class Root> disk::NativePageReference Self(const Root& r) {
   return {r.header.filespace_uuid,r.header.page_number,r.header.page_generation,r.header.page_size_profile_uuid};
 }
 bool RefValid(const disk::NativePageReference& r) {
@@ -591,7 +592,7 @@ bool RefValid(const disk::NativePageReference& r) {
 bool SameSlot(const disk::NativePageReference& a,const disk::NativePageReference& b) {return a.filespace_uuid==b.filespace_uuid&&a.page_number==b.page_number;}
 bool ProfilesAgree(const disk::NativePageReference& a,const disk::NativePageReference& b) {return a.filespace_uuid!=b.filespace_uuid||a.page_size_profile_uuid==b.page_size_profile_uuid;}
 NativeCheckpointRootResult Fail(Error error) {return {error,std::nullopt,{}};}
-Error Validate(const NativeCheckpointRoot& r) {
+template<class Root> Error Validate(const Root& r) {
   if(!disk::EncodeNativeCommonPageHeader(r.header).ok()||r.header.page_type!=0x300)return Error::invalid_header;
   const bool transaction_owner=r.creator_operation_uuid.is_nil();
   const bool valid_creator=transaction_owner?
@@ -627,7 +628,7 @@ Error Validate(const NativeCheckpointRoot& r) {
     ||(!(r.flags&4)&&r.cluster_quorum_transaction_id))return Error::invalid_roots;
   return Error::none;
 }
-hash::HashDigestResult RootDigest(const std::vector<byte>& b,std::size_t used) {
+hash::HashDigestResult RootDigest(std::span<const byte> b,std::size_t used) {
   if(LoadLittle16(b.data()+family+8)==2){
     const hash::HashDigestSegment parts[]={{operation_domain.data(),operation_domain.size()},
       {b.data()+family+32,96},{b.data()+family+280,16},{b.data()+entries,used-entries}};
@@ -636,7 +637,7 @@ hash::HashDigestResult RootDigest(const std::vector<byte>& b,std::size_t used) {
   const hash::HashDigestSegment parts[]={{domain.data(),domain.size()},{b.data()+family+32,96},{b.data()+entries,used-entries}};
   return hash::ComputeSha256DigestParts(parts,3);
 }
-hash::HashDigestResult FullDigest(const std::vector<byte>& b) {
+hash::HashDigestResult FullDigest(std::span<const byte> b) {
   const std::array<byte,32> zero{};
   const hash::HashDigestSegment parts[]={{b.data(),digest_at},{zero.data(),zero.size()},{b.data()+digest_at+32,b.size()-digest_at-32}};
   return hash::ComputeSha256DigestParts(parts,3);
@@ -689,37 +690,63 @@ NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot
    catch(...){return Fail(Error::invalid_family);}
 }
 
-NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>& b) noexcept {
-  using namespace native_checkpoint;
-  try {
+namespace native_checkpoint {
+template<class Root,class Prepare> Error DecodeValues(std::span<const byte> b,Root& r,Prepare prepare) {
     const auto common=disk::DecodeNativeCommonPageHeader(b.data(),std::min<std::size_t>(b.size(),128));
-    if(!common.ok()||common.header->page_type!=0x300||b.size()!=common.header->page_size_bytes)return Fail(Error::invalid_header);
-    const auto full=FullDigest(b);if(!full.ok())return Fail(Error::hash_failure);
-    if(!std::equal(full.digest.begin(),full.digest.end(),b.begin()+digest_at))return Fail(Error::invalid_integrity);
+    if(!common.ok()||common.header->page_type!=0x300||b.size()!=common.header->page_size_bytes)return Error::invalid_header;
+    const auto full=FullDigest(b);if(!full.ok())return Error::hash_failure;
+    if(!std::equal(full.digest.begin(),full.digest.end(),b.begin()+digest_at))return Error::invalid_integrity;
     const auto* f=b.data()+family;const auto used=LoadLittle32(f+12);
     const auto version=LoadLittle16(f+8);
     if(!((version==1&&std::equal(magic.begin(),magic.end(),f))||
          (version==2&&std::equal(operation_magic.begin(),operation_magic.end(),f)))||LoadLittle16(f+10)!=384
       ||used<entries+112*10||used>entries+112*16||(used-entries)%112||LoadLittle64(f+272)>1
-      ||!Zero(f+(version==1?280:296),version==1?104:88)||!Zero(b.data()+used,b.size()-used))return Fail(Error::invalid_family);
-    const auto digest=RootDigest(b,used);if(!digest.ok())return Fail(Error::hash_failure);
-    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+root_digest_at))return Fail(Error::invalid_integrity);
-    NativeCheckpointRoot r;r.header=*common.header;r.object_uuid=Get(f+16);
+      ||!Zero(f+(version==1?280:296),version==1?104:88)||!Zero(b.data()+used,b.size()-used))return Error::invalid_family;
+    const auto digest=RootDigest(b,used);if(!digest.ok())return Error::hash_failure;
+    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+root_digest_at))return Error::invalid_integrity;
+    if(!prepare(r,(used-entries)/112))return Error::resource_exhausted;
+    r.header=*common.header;r.object_uuid=Get(f+16);
     r.checkpoint_generation=LoadLittle64(f+32);r.root_set_generation=LoadLittle64(f+40);
     r.selected_local_transaction_id=LoadLittle64(f+48);r.stable_local_transaction_id=LoadLittle64(f+56);
     r.local_durable_transaction_id=LoadLittle64(f+64);r.cluster_quorum_transaction_id=LoadLittle64(f+72);
     r.timeline_uuid=Get(f+80);r.creator_transaction_uuid=Get(f+96);r.creator_local_transaction_id=LoadLittle64(f+112);r.flags=LoadLittle64(f+120);
-    if(version==2){r.creator_operation_uuid=Get(f+280);if(r.creator_operation_uuid.is_nil())return Fail(Error::invalid_family);}
+    if(version==2){r.creator_operation_uuid=Get(f+280);if(r.creator_operation_uuid.is_nil())return Error::invalid_family;}
     if(!Zero(f+128,48))r.predecessor=GetRef(f+128);
     std::copy_n(f+176,32,r.predecessor_sha256.begin());r.completed=LoadLittle64(f+272)==1;
     for(std::size_t at=entries;at<used;at+=112){const auto* in=b.data()+at;NativeCheckpointRootReference target;
-      if(!Zero(in+2,2)||!Zero(in+104,8))return Fail(Error::invalid_roots);
+      if(!Zero(in+2,2)||!Zero(in+104,8))return Error::invalid_roots;
       target.role=LoadLittle16(in);target.page_type=LoadLittle32(in+4);target.page=GetRef(in+8);target.object_uuid=Get(in+56);
-      std::copy_n(in+72,32,target.sha256.begin());r.roots.push_back(target);}
-    const auto valid=Validate(r);if(valid!=Error::none)return Fail(valid);return {Error::none,std::move(r),b};
+      std::copy_n(in+72,32,target.sha256.begin());r.roots[(at-entries)/112]=target;}
+    return Validate(r);
+}
+} // namespace native_checkpoint
+
+NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>& b) noexcept {
+  using namespace native_checkpoint;
+  try {
+    NativeCheckpointRoot root;
+    const auto error=DecodeValues(b,root,[](auto& out,std::size_t count){out.roots.resize(count);return true;});
+    if(error!=Error::none)return Fail(error);
+    return {Error::none,std::move(root),b};
   }catch(const std::bad_alloc&){return Fail(Error::resource_exhausted);}
    catch(const std::length_error&){return Fail(Error::resource_exhausted);}
    catch(...){return Fail(Error::invalid_family);}
+}
+
+NativeCheckpointRootViewResult DecodeNativeCheckpointRootInto(
+    std::span<const scratchbird::core::platform::byte> b,std::span<NativeCheckpointRootReference> roots) noexcept {
+  using namespace native_checkpoint;
+  try {
+    if(!page::detail::DisjointNativeDecodeRegions(b,roots))return {Error::invalid_backing,{}};
+    NativeCheckpointRootView root;
+    const auto error=DecodeValues(b,root,[&](auto& out,std::size_t count){
+      if(count>roots.size())return false;out.roots=roots.first(count);return true;
+    });
+    if(error!=Error::none)return {error,{}};
+    return {Error::none,std::move(root)};
+  }catch(const std::bad_alloc&){return {Error::resource_exhausted,{}};}
+   catch(const std::length_error&){return {Error::resource_exhausted,{}};}
+   catch(...){return {Error::invalid_family,{}};}
 }
 
 NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
