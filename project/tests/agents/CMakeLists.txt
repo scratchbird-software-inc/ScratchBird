@@ -36,6 +36,9 @@ endif()
 add_test(NAME retained_condition_wait_gate COMMAND retained_condition_wait_gate)
 set_tests_properties(retained_condition_wait_gate PROPERTIES
   TIMEOUT 60 LABELS "concurrency;condition_wait;safe_retirement")
+add_test(NAME retained_condition_wait_measurement_gate COMMAND retained_condition_wait_gate --measure)
+set_tests_properties(retained_condition_wait_measurement_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;condition_wait;measurement;not_performance_acceptance")
 
 add_executable(concurrency_metric_definitions_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/concurrency_metric_definitions_gate.cpp")

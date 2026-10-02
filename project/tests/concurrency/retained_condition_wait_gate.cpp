@@ -3,6 +3,7 @@
 #include "retained_condition_wait.hpp"
 
 #include <atomic>
+#include <ctime>
 #include <future>
 #include <iostream>
 #include <latch>
@@ -240,6 +241,130 @@ void EntryAndValidation() {
     lock.unlock();
     Check(owner.Snapshot().descriptor.last_transition == Id(24), "repeat close preserves selected transition");
   });
+}
+
+// Measurement uses the actual primitive and governed fixture above. There is
+// no latency pass threshold: host scheduling and the selected build profile
+// must accompany these observations. Clock/check overhead is not subtracted.
+void Measurements() {
+  constexpr std::size_t samples = 1024, warmup = 64;
+  const auto nanos = [](auto duration) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  };
+  const auto cpu = [] {
+    const auto value = std::clock();
+    Check(value != std::clock_t(-1), "process CPU clock available");
+    return value;
+  };
+  const auto report = [&](const char* profile, auto values, auto wall, auto used_cpu) {
+    std::sort(values.begin(), values.end());
+    const double cpu_ns = static_cast<double>(used_cpu) * 1000000000.0 / CLOCKS_PER_SEC;
+    std::cout << "measurement=" << profile << " samples=" << values.size()
+              << " p50_ns=" << values[(values.size() - 1) / 2]
+              << " p99_ns=" << values[(values.size() - 1) * 99 / 100]
+              << " max_ns=" << values.back() << " wall_ns=" << wall
+              << " process_cpu_ns=" << cpu_ns
+              << " samples_per_second=" << (values.size() * 1000000000.0 / wall) << '\n';
+  };
+  std::cout << "measurement_profile=component_only clock=steady_clock cpu_clock=process"
+               " timing_storage=caller_owned clock_and_checks_included=true"
+               " benchmark_threads=2 fixture_exchange_slots=1 latency_slo_claimed=false";
+#if defined(SB_WAIT_NATIVE_FAULT_GATE)
+  std::cout << " native_fault_wrappers=enabled";
+#else
+  std::cout << " native_fault_wrappers=disabled";
+#endif
+#if defined(__OPTIMIZE__)
+  std::cout << " compiler_optimization=enabled\n";
+#else
+  std::cout << " compiler_optimization=disabled\n";
+#endif
+  std::optional<c::WaitClock::time_point> cleanup_started;
+  Run([&](auto& owner, auto& domain) {
+    auto op = Acquire(owner, 31);
+    std::array<std::int64_t, samples> durations{};
+    auto began = c::WaitClock::now(); auto cpu_began = cpu();
+    for (auto& duration : durations) {
+      const auto before = c::WaitClock::now();
+      duration = nanos(c::WaitClock::now() - before);
+    }
+    report("clock_pair", durations, nanos(c::WaitClock::now() - began), cpu() - cpu_began);
+    const auto immediate = [&] {
+      auto lock = op.LockPredicate();
+      const auto result = op.Wait(lock, [] { return true; }, {}, c::WaitClock::now() + 5s,
+                                  "bounded measurement");
+      Check(result.outcome == O::satisfied && lock.owns_lock(), "measured immediate wait");
+    };
+    for (std::size_t i = 0; i < warmup; ++i) immediate();
+    began = c::WaitClock::now(); cpu_began = cpu();
+    for (auto& duration : durations) {
+      const auto before = c::WaitClock::now(); immediate();
+      duration = nanos(c::WaitClock::now() - before);
+    }
+    report("uncontended_retained_wait", durations, nanos(c::WaitClock::now() - began), cpu() - cpu_began);
+    Check(owner.Snapshot().registered_waits == 0, "immediate measurement does not invent parks");
+
+    bool full = false;
+    std::size_t payload = 0, reply = 0;
+    std::latch ready(1);
+    auto consumer = std::async(std::launch::async, [&] {
+      auto reader = Acquire(owner, 32);
+      for (std::size_t i = 0; i < samples + warmup; ++i) {
+        auto lock = reader.LockPredicate();
+        if (i == 0) ready.count_down(); // Still holds predicate until real park.
+        const auto result = reader.Wait(lock, [&] { return full; }, {}, c::WaitClock::now() + 5s,
+                                        "bounded measurement consumer");
+        Check(result.outcome == O::satisfied && payload == i, "measured published payload sequence");
+        reply = payload + 1; full = false;
+        Check(reader.NotifyAll(), "measured consumer wake");
+      }
+    });
+    ready.wait();
+    const auto exchange = [&](std::size_t i) {
+      auto lock = op.LockPredicate();
+      Check(!full, "previous exchange actually acknowledged");
+      payload = i; full = true;
+      Check(op.NotifyAll(), "measured publication wake");
+      const auto result = op.Wait(lock, [&] { return !full; }, {}, c::WaitClock::now() + 5s,
+                                  "bounded measurement producer");
+      Check(result.outcome == O::satisfied && reply == i + 1, "actual round-trip response");
+    };
+    for (std::size_t i = 0; i < warmup; ++i) exchange(i);
+    began = c::WaitClock::now(); cpu_began = cpu();
+    for (std::size_t i = 0; i < samples; ++i) {
+      const auto before = c::WaitClock::now(); exchange(i + warmup);
+      durations[i] = nanos(c::WaitClock::now() - before);
+    }
+    consumer.get();
+    report("two_thread_round_trip", durations, nanos(c::WaitClock::now() - began), cpu() - cpu_began);
+    const auto snapshot = owner.Snapshot();
+    Check(snapshot.registered_waits != 0 && snapshot.waiter_count == 0 &&
+          snapshot.operation_ref_count == 1 && snapshot.selected_timeouts == 0,
+          "measured handoffs actually parked and completed all references");
+    std::cout << "registered_waits=" << snapshot.registered_waits
+              << " metadata_bytes=" << domain.Snapshot().metadata_bytes
+              << " retained_payload_bytes=" << domain.Snapshot().retained_payload_bytes << '\n';
+
+    std::array<std::int64_t, 16> overshoots{};
+    began = c::WaitClock::now(); cpu_began = cpu();
+    for (auto& overshoot : overshoots) {
+      auto lock = op.LockPredicate();
+      const auto deadline = c::WaitClock::now() + 2ms;
+      const auto result = op.Wait(lock, [] { return false; }, {}, deadline, "bounded deadline measurement");
+      const auto returned = c::WaitClock::now();
+      Check(result.outcome == O::timed_out && returned >= deadline && lock.owns_lock(),
+            "measured deadline never returns false success or early timeout");
+      overshoot = nanos(returned - deadline);
+    }
+    report("deadline_overshoot_2ms", overshoots, nanos(c::WaitClock::now() - began), cpu() - cpu_began);
+    Check(owner.Snapshot().selected_timeouts == overshoots.size(), "exact measured timeout count");
+    op.Reset();
+    cleanup_started = c::WaitClock::now();
+  });
+  // Run has now closed/fenced/drained, destroyed native state, collected real
+  // backing, and checked zero physical/parent reservation charges.
+  std::cout << "physical_cleanup_ns=" << nanos(c::WaitClock::now() - *cleanup_started)
+            << " actual_memory_and_reservation_charges=0\n";
 }
 
 void Precedence() {
@@ -810,6 +935,9 @@ void PrematureDestruction() {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string_view(argv[1]) == "--measure") {
+      Measurements(); return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--native-construction") {
       NativeConstructionFailure(); return 0;
     }
