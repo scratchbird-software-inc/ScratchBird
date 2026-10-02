@@ -1,10 +1,12 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_allocation_map.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include "disk_device.hpp"
 #include "filespace_page_zero.hpp"
 #include "hash_digest_parts.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <new>
 #include <set>
@@ -35,7 +37,7 @@ void PutRef(byte* p, const disk::NativePageReference& ref) {
 }
 NativeAllocationMapResult Fail(E error) { NativeAllocationMapResult result; result.error = error; return result; }
 NativeAllocationChainResult ChainFail(E error) { NativeAllocationChainResult result; result.error = error; return result; }
-auto Digest(const std::vector<byte>& bytes, bool zero_seal) {
+auto Digest(std::span<const byte> bytes, bool zero_seal) {
   const std::array<byte, 32> zero{};
   const hash::HashDigestSegment parts[] = {
       {bytes.data(), seal}, {zero_seal ? zero.data() : bytes.data() + seal, 32},
@@ -49,12 +51,12 @@ bool CreatorIdentityValid(const Uuid& transaction, const Uuid& operation) {
 bool CreatorNumberValid(u64 number, const Uuid& operation) {
   return operation.is_nil() ? number != 0 : number == 0;
 }
-bool HasOperationLineage(const NativeAllocationMap& map) {
+template<class Map> bool HasOperationLineage(const Map& map) {
   return !map.creator_operation_uuid.is_nil() ||
       std::any_of(map.records.begin(), map.records.end(),
                   [](const auto& r) { return !r.creator_operation_uuid.is_nil(); });
 }
-E Validate(const NativeAllocationMap& map) {
+template<class Map> E Validate(const Map& map) {
   const auto& h = map.header;
   if (!disk::EncodeNativeCommonPageHeader(h).ok() || h.page_type != 3 || (h.flags & ~u64(2)))
     return E::invalid_header;
@@ -146,14 +148,14 @@ NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& m
     catch (...) { return Fail(E::invalid_family); }
 }
 
-NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& bytes) noexcept {
-  try {
-    if (bytes.size() < start) return Fail(E::invalid_header);
+namespace {
+template<class Map,class Prepare> E DecodeValues(std::span<const byte> bytes,Map& map,Prepare prepare) {
+    if (bytes.size() < start) return E::invalid_header;
     const auto header = disk::DecodeNativeCommonPageHeader(bytes.data(), 128);
     if (!header.ok() || header.header->page_type != 3 || header.header->page_size_bytes != bytes.size() ||
-        (header.header->flags & ~u64(2))) return Fail(E::invalid_header);
-    const auto digest = Digest(bytes, true); if (!digest.ok()) return Fail(E::hash_failure);
-    if (!std::equal(digest.digest.begin(), digest.digest.end(), bytes.begin() + seal)) return Fail(E::invalid_integrity);
+        (header.header->flags & ~u64(2))) return E::invalid_header;
+    const auto digest = Digest(bytes, true); if (!digest.ok()) return E::hash_failure;
+    if (!std::equal(digest.digest.begin(), digest.digest.end(), bytes.begin() + seal)) return E::invalid_integrity;
     const auto* f = bytes.data() + 128;
     const auto count = LoadLittle64(f + 64);
     const auto record_count = LoadLittle32(f + 180), used = LoadLittle32(f + 12);
@@ -162,14 +164,15 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
     if (!((magic == "SBABM001" && version == 1) || (magic == "SBABM002" && version == 2)) ||
         LoadLittle16(f + 10) != 256 || !count ||
         count > (bytes.size() - start) * 2 || LoadLittle32(f + 176) != (count + 1) / 2 ||
-        !Zero(f + (version == 1 ? 216 : 232), version == 1 ? 40 : 24)) return Fail(E::invalid_family);
+        !Zero(f + (version == 1 ? 216 : 232), version == 1 ? 40 : 24)) return E::invalid_family;
     const auto records_at = RecordsAt(static_cast<std::size_t>(count));
     if (records_at > bytes.size() || record_count > (bytes.size() - records_at) / record_bytes ||
         used != records_at + record_count * record_bytes ||
         !Zero(bytes.data() + start + (count + 1) / 2, records_at - start - (count + 1) / 2) ||
         !Zero(bytes.data() + used, bytes.size() - used) ||
-        ((count & 1) && (bytes[start + count / 2] & 0xf0))) return Fail(E::invalid_family);
-    NativeAllocationMap map; map.header = *header.header;
+        ((count & 1) && (bytes[start + count / 2] & 0xf0))) return E::invalid_family;
+    if(!prepare(map,count,record_count))return E::resource_exhausted;
+    map.header = *header.header;
     map.object_uuid = GetUuid(f + 16); map.map_generation = LoadLittle64(f + 32);
     map.capacity_generation = LoadLittle64(f + 40); map.total_pages = LoadLittle64(f + 48);
     map.first_page = LoadLittle64(f + 56); map.creator_transaction_uuid = GetUuid(f + 72);
@@ -177,25 +180,50 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
     if (version == 2) map.creator_operation_uuid = GetUuid(f + 216);
     if (!Zero(f + 96, 48)) map.next = GetRef(f + 96);
     std::copy_n(f + 144, 32, map.next_sha256.begin());
-    map.states.reserve(count); map.records.reserve(record_count);
     for (std::size_t i = 0; i < count; ++i)
-      map.states.push_back(static_cast<S>((bytes[start + i / 2] >> (4 * (i % 2))) & 15));
+      map.states[i]=static_cast<S>((bytes[start + i / 2] >> (4 * (i % 2))) & 15);
     for (u32 i = 0; i < record_count; ++i) {
       const auto* p = bytes.data() + records_at + record_bytes * i;
-      if (!Zero(p + (version == 1 ? 100 : 116), version == 1 ? 28 : 12)) return Fail(E::invalid_record);
+      if (!Zero(p + (version == 1 ? 100 : 116), version == 1 ? 28 : 12)) return E::invalid_record;
       NativeAllocationRecord r; r.page_number = LoadLittle64(p); r.allocation_uuid = GetUuid(p + 8);
       r.page_uuid = GetUuid(p + 24); r.owner_uuid = GetUuid(p + 40); r.creator_transaction_uuid = GetUuid(p + 56);
       r.creator_local_transaction_id = LoadLittle64(p + 72); r.page_generation = LoadLittle64(p + 80);
       r.reuse_horizon = LoadLittle64(p + 88); r.page_type = LoadLittle32(p + 96);
       if (version == 2) r.creator_operation_uuid = GetUuid(p + 100);
-      map.records.push_back(r);
+      map.records[i]=r;
     }
-    if ((version == 2) != HasOperationLineage(map)) return Fail(E::invalid_family);
-    const auto valid = Validate(map); if (valid != E::none) return Fail(valid);
+    if ((version == 2) != HasOperationLineage(map)) return E::invalid_family;
+    return Validate(map);
+}
+} // namespace
+
+NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& bytes) noexcept {
+  try {
+    NativeAllocationMap map;
+    const auto error=DecodeValues(bytes,map,[](auto& out,std::size_t states,std::size_t records){
+      out.states.resize(states);out.records.resize(records);return true;
+    });
+    if(error!=E::none)return Fail(error);
     return {E::none, std::move(map), bytes};
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
     catch (const std::length_error&) { return Fail(E::resource_exhausted); }
     catch (...) { return Fail(E::invalid_family); }
+}
+
+NativeAllocationMapViewResult DecodeNativeAllocationMapInto(std::span<const byte> bytes,
+    std::span<NativeAllocationState> states,std::span<NativeAllocationRecord> records) noexcept {
+  try {
+    if(!detail::DisjointNativeDecodeRegions(bytes,states,records))return {E::invalid_range,{}};
+    NativeAllocationMapView map;
+    const auto error=DecodeValues(bytes,map,[&](auto& out,std::size_t state_count,std::size_t record_count){
+      if(state_count>states.size()||record_count>records.size())return false;
+      out.states=states.first(state_count);out.records=records.first(record_count);return true;
+    });
+    if(error!=E::none)return {error,{}};
+    return {E::none,std::move(map)};
+  }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}
+   catch(...){return {E::invalid_family,{}};}
 }
 
 static NativeAllocationChainResult ReadAllocationChain(

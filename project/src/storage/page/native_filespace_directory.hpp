@@ -5,6 +5,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -29,7 +30,7 @@ struct NativeFilespaceDirectoryRecord {
   std::optional<disk::NativePageReference> operation;
   std::optional<NativeFilespaceAllocationRoot> allocation_root{};
 };
-struct NativeFilespaceDirectory {
+template<class Records> struct NativeFilespaceDirectoryData {
   disk::NativeCommonPageHeader header;
   Uuid object_uuid;
   u64 directory_generation = 0;
@@ -39,13 +40,15 @@ struct NativeFilespaceDirectory {
   u64 first_record = 0;
   std::optional<disk::NativePageReference> next;
   std::array<byte,32> next_sha256{};
-  std::vector<NativeFilespaceDirectoryRecord> records;
+  Records records;
   Uuid creator_operation_uuid{};
 };
+using NativeFilespaceDirectory=NativeFilespaceDirectoryData<std::vector<NativeFilespaceDirectoryRecord>>;
+using NativeFilespaceDirectoryView=NativeFilespaceDirectoryData<std::span<NativeFilespaceDirectoryRecord>>;
 enum class NativeDirectoryError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, chain_mismatch, io_failure, physical_extent_changed
+  binding_mismatch, chain_mismatch, io_failure, physical_extent_changed, invalid_backing
 };
 struct NativeFilespaceDirectoryResult {
   NativeDirectoryError error = NativeDirectoryError::invalid_family;
@@ -55,6 +58,16 @@ struct NativeFilespaceDirectoryResult {
 };
 NativeFilespaceDirectoryResult EncodeNativeFilespaceDirectory(const NativeFilespaceDirectory&) noexcept;
 NativeFilespaceDirectoryResult DecodeNativeFilespaceDirectory(const std::vector<byte>&) noexcept;
+struct NativeFilespaceDirectoryViewResult {
+  NativeDirectoryError error=NativeDirectoryError::invalid_family;
+  std::optional<NativeFilespaceDirectoryView> directory;
+  bool ok() const noexcept {return error==NativeDirectoryError::none&&directory.has_value();}
+};
+// Each decoded record also requires one caller-owned UUID for uniqueness
+// validation. Scratch is not retained by the view; records must outlive it.
+// Input/records/scratch must be disjoint. On refusal no usable view is returned.
+NativeFilespaceDirectoryViewResult DecodeNativeFilespaceDirectoryInto(std::span<const byte>,
+    std::span<NativeFilespaceDirectoryRecord>,std::span<Uuid> uniqueness_scratch) noexcept;
 struct NativeFilespaceDirectoryChainResult {
   NativeDirectoryError error = NativeDirectoryError::invalid_family;
   std::vector<NativeFilespaceDirectoryResult> pages;

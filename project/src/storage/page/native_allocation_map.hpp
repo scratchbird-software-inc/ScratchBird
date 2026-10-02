@@ -6,6 +6,7 @@
 #include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -36,7 +37,7 @@ struct NativeAllocationRecord {
   Uuid creator_operation_uuid;
   bool operator==(const NativeAllocationRecord&) const = default;
 };
-struct NativeAllocationMap {
+template<class States,class Records> struct NativeAllocationMapData {
   disk::NativeCommonPageHeader header;
   Uuid object_uuid;
   u64 map_generation = 0;
@@ -47,10 +48,14 @@ struct NativeAllocationMap {
   u64 creator_local_transaction_id = 0;
   std::optional<disk::NativePageReference> next;
   std::array<byte, 32> next_sha256{};
-  std::vector<NativeAllocationState> states;
-  std::vector<NativeAllocationRecord> records;
+  States states;
+  Records records;
   Uuid creator_operation_uuid;
 };
+using NativeAllocationMap=NativeAllocationMapData<std::vector<NativeAllocationState>,
+  std::vector<NativeAllocationRecord>>;
+using NativeAllocationMapView=NativeAllocationMapData<std::span<NativeAllocationState>,
+  std::span<NativeAllocationRecord>>;
 enum class NativeAllocationError {
   none, invalid_header, invalid_family, invalid_identity, invalid_range,
   invalid_state, invalid_record, invalid_reference, invalid_integrity,
@@ -66,6 +71,17 @@ struct NativeAllocationMapResult {
 };
 NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap&) noexcept;
 NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>&) noexcept;
+struct NativeAllocationMapViewResult {
+  NativeAllocationError error=NativeAllocationError::invalid_family;
+  std::optional<NativeAllocationMapView> map;
+  bool ok() const noexcept {return error==NativeAllocationError::none&&map.has_value();}
+};
+// No image copy or metadata allocation. Caller-owned decoded buffers outlive
+// this view and must not overlap the input or each other. On failure there is
+// no usable view; scratch contents are unspecified, never a decoded prefix.
+// This validates an image, not its allocation chain or current-root authority.
+NativeAllocationMapViewResult DecodeNativeAllocationMapInto(std::span<const byte>,
+    std::span<NativeAllocationState>,std::span<NativeAllocationRecord>) noexcept;
 
 struct NativeAllocationChainResult {
   NativeAllocationError error = NativeAllocationError::invalid_family;

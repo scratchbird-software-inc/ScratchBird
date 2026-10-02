@@ -646,6 +646,30 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME native_checkpoint_selection_memory_gate COMMAND native_checkpoint_selection_memory_gate)
   set_tests_properties(native_checkpoint_selection_memory_gate PROPERTIES
     TIMEOUT 120 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
+  add_executable(native_allocation_map_memory_gate ../sbsql_sblr_alignment/native_allocation_map_test.cpp)
+  target_compile_features(native_allocation_map_memory_gate PRIVATE cxx_std_23)
+  target_compile_definitions(native_allocation_map_memory_gate PRIVATE SB_NATIVE_ALLOCATION_MEMORY_TESTS=1 NATIVE_HISTORICAL_IO_FAULTS=1)
+  target_include_directories(native_allocation_map_memory_gate PRIVATE ../../src/storage/database)
+  target_link_libraries(native_allocation_map_memory_gate PRIVATE sb_storage_page)
+  target_link_options(native_allocation_map_memory_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME native_allocation_map_memory_gate COMMAND native_allocation_map_memory_gate)
+  set_tests_properties(native_allocation_map_memory_gate PROPERTIES
+    TIMEOUT 180 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
+  add_executable(native_filespace_directory_memory_gate ../sbsql_sblr_alignment/native_filespace_directory_test.cpp)
+  target_compile_features(native_filespace_directory_memory_gate PRIVATE cxx_std_23)
+  target_compile_definitions(native_filespace_directory_memory_gate PRIVATE SB_NATIVE_DIRECTORY_MEMORY_TESTS=1 NATIVE_HISTORICAL_IO_FAULTS=1)
+  target_include_directories(native_filespace_directory_memory_gate PRIVATE ../../src/storage/database)
+  target_link_libraries(native_filespace_directory_memory_gate PRIVATE sb_storage_page)
+  target_link_options(native_filespace_directory_memory_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME native_filespace_directory_memory_gate COMMAND native_filespace_directory_memory_gate)
+  set_tests_properties(native_filespace_directory_memory_gate PROPERTIES
+    TIMEOUT 180 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")
   add_executable(native_storage_memory_buffer_gate native_storage_memory_buffer_gate.cpp)
   add_executable(native_storage_memory_arena_gate native_storage_memory_arena_gate.cpp)
   target_compile_features(native_storage_memory_arena_gate PRIVATE cxx_std_23)

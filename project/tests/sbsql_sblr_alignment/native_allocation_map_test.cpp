@@ -20,6 +20,10 @@
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+#include "native_allocation_map_memory.hpp"
+#include <thread>
+#endif
 
 namespace {
 long allocation_budget = -1;
@@ -35,6 +39,8 @@ bool fail_hash = false;
 std::mutex read_pause_mutex;
 std::condition_variable read_pause_cv;
 bool pause_read = false, read_entered = false, release_read = false;
+void* last_read_buffer=nullptr;
+unsigned short_read=0,eof_read=0;
 }
 void* operator new(std::size_t n) {
   if (count_allocations) ++observed_allocations;
@@ -48,10 +54,29 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+namespace {
+std::recursive_mutex* allocation_device_mutex=nullptr;
+std::recursive_mutex* deallocation_device_mutex=nullptr;
+bool allocation_lock_free=false,deallocation_lock_free=false;
+void ProbeCleanup(){if(deallocation_device_mutex){auto* mutex=deallocation_device_mutex;deallocation_device_mutex=nullptr;
+  bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();deallocation_lock_free=available;}}
+}
+void* operator new(std::size_t n,std::align_val_t a){
+  if(count_allocations)++observed_allocations;
+  if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
+  if(allocation_device_mutex){auto* mutex=allocation_device_mutex;allocation_device_mutex=nullptr;
+    bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();allocation_lock_free=available;}
+  void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(a),n?n:1)==0)return p;throw std::bad_alloc();
+}
+void operator delete(void* p,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
+#endif
 extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
 extern "C" ssize_t __wrap_pread(int fd, void* out, size_t n, off_t at) {
-  ++reads;
+  ++reads;last_read_buffer=out;
   if (fail_read && reads == fail_read) { errno = EIO; return -1; }
+  if(eof_read&&reads==eof_read)return 0;
   if (resize_at_read && reads == resize_at_read) {
     resized_during_read = ::ftruncate(fd, resize_to) == 0;
   }
@@ -62,7 +87,7 @@ extern "C" ssize_t __wrap_pread(int fd, void* out, size_t n, off_t at) {
       read_pause_cv.wait(lock,[]{return release_read;});
     }
   }
-  return __real_pread(fd, out, n, at);
+  return __real_pread(fd, out, short_read&&reads==short_read?n-1:n, at);
 }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 #ifdef NATIVE_HISTORICAL_IO_FAULTS
@@ -85,6 +110,22 @@ extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new() {
   if (fail_hash) { fail_hash = false; return nullptr; }
   return __real_EVP_MD_CTX_new();
 }
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+namespace {unsigned method_fault=0;}
+extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
+extern "C" int __wrap_EVP_Digest(const void* p,size_t s,unsigned char* b,unsigned int* n,const EVP_MD* m,ENGINE* e){
+  if(method_fault==1){method_fault=0;return 0;}return __real_EVP_Digest(p,s,b,n,m,e);}
+extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
+extern "C" int __wrap_EVP_DigestInit_ex(EVP_MD_CTX* c,const EVP_MD* m,ENGINE* e){
+  if(method_fault==2){method_fault=0;return 0;}return __real_EVP_DigestInit_ex(c,m,e);}
+extern "C" int __real_EVP_DigestUpdate(EVP_MD_CTX*,const void*,size_t);
+extern "C" int __wrap_EVP_DigestUpdate(EVP_MD_CTX* c,const void* b,size_t n){
+  if(method_fault==3){method_fault=0;return 0;}return __real_EVP_DigestUpdate(c,b,n);}
+extern "C" int __real_EVP_DigestFinal_ex(EVP_MD_CTX*,unsigned char*,unsigned int*);
+extern "C" int __wrap_EVP_DigestFinal_ex(EVP_MD_CTX* c,unsigned char* b,unsigned int* n){
+  if(method_fault==4){method_fault=0;return 0;}const auto r=__real_EVP_DigestFinal_ex(c,b,n);
+  if(method_fault==5){method_fault=0;*n=31;}return r;}
+#endif
 namespace {
 namespace p = scratchbird::storage::page;
 namespace d = scratchbird::storage::disk;
@@ -281,6 +322,219 @@ void OperationCodecs() {
     }
   }
 }
+void BorrowedCodecs() {
+  for(unsigned profile=0;profile<5;++profile)for(unsigned lineage=0;lineage<3;++lineage){
+    auto expected=Example(profile);
+    if(lineage)OperationOwned(expected);
+    if(lineage==2)for(auto& r:expected.records)OperationOwned(r);
+    auto bytes=Oracle(expected);
+    std::vector<S> states(expected.states.size());
+    std::vector<p::NativeAllocationRecord> records(expected.records.size());
+    observed_allocations=0;count_allocations=true;allocation_budget=0;
+    const auto value=p::DecodeNativeAllocationMapInto(bytes,states,records);
+    const auto remaining=allocation_budget;allocation_budget=-1;count_allocations=false;
+    Check(value.ok()&&remaining==0&&observed_allocations==0,"caller-backed decoder has no hidden image/metadata allocation");
+    const auto& m=*value.map;
+    Check(m.states.data()==states.data()&&m.records.data()==records.data()&&
+      std::equal(m.states.begin(),m.states.end(),expected.states.begin(),expected.states.end())&&
+      std::equal(m.records.begin(),m.records.end(),expected.records.begin(),expected.records.end()),"exact independent state and record arrays in supplied backing");
+    Check(m.object_uuid==expected.object_uuid&&m.map_generation==expected.map_generation&&
+      m.capacity_generation==expected.capacity_generation&&m.total_pages==expected.total_pages&&m.first_page==expected.first_page&&
+      m.creator_transaction_uuid==expected.creator_transaction_uuid&&m.creator_operation_uuid==expected.creator_operation_uuid&&
+      m.creator_local_transaction_id==expected.creator_local_transaction_id&&m.next==expected.next&&m.next_sha256==expected.next_sha256&&
+      m.header.database_uuid==expected.header.database_uuid&&m.header.filespace_uuid==expected.header.filespace_uuid&&
+      m.header.page_uuid==expected.header.page_uuid&&m.header.page_number==expected.header.page_number&&
+      m.header.page_generation==expected.header.page_generation&&m.header.page_size_profile_uuid==expected.header.page_size_profile_uuid&&
+      m.header.page_type==expected.header.page_type&&m.header.page_size_bytes==expected.header.page_size_bytes&&m.header.flags==expected.header.flags,
+      "all fixed metadata retains binary identity and exact header fields");
+    for(unsigned short_kind=0;short_kind<2;++short_kind){
+      const auto r=p::DecodeNativeAllocationMapInto(bytes,std::span(states).first(states.size()-(short_kind==0)),
+        std::span(records).first(records.size()-(short_kind==1)));
+      Check(r.error==E::resource_exhausted&&!r.map,"one-element-short backing returns no usable prefix");
+    }
+    Bytes unaligned(1,0);unaligned.insert(unaligned.end(),bytes.begin(),bytes.end());
+    Check(p::DecodeNativeAllocationMapInto(std::span<const byte>(unaligned).subspan(1),states,records).ok(),"unaligned input uses bytewise scalar decoding");
+    auto alias=p::DecodeNativeAllocationMapInto(bytes,
+      {reinterpret_cast<S*>(bytes.data()),expected.states.size()},records);
+    Check(alias.error==E::invalid_range&&!alias.map&&bytes==Oracle(expected),"overlapping input/state buffer rejected before writing");
+    alias=p::DecodeNativeAllocationMapInto(bytes,{reinterpret_cast<S*>(records.data()),1},records);
+    Check(alias.error==E::invalid_range&&!alias.map,"overlapping metadata regions rejected before writing");
+    fail_hash=true;auto hash_failure=p::DecodeNativeAllocationMapInto(bytes,states,records);
+    Check(!fail_hash&&hash_failure.error==E::hash_failure&&!hash_failure.map,"borrowed decoder preserves actual hash failure");
+    for(std::size_t at:{128u,136u,138u,140u,304u,308u,383u}){
+      auto bad=bytes;bad[at]^=0x80;Seal(bad);
+      const auto owned=p::DecodeNativeAllocationMap(bad);
+      const auto borrowed=p::DecodeNativeAllocationMapInto(bad,states,records);
+      Check(!borrowed.map&&borrowed.error==owned.error,"malformed resealed fields share exact decoder refusal");
+    }
+    Check(p::DecodeNativeAllocationMapInto(bytes,states,records).ok(),"legitimate retry after all failures");
+    std::fill(bytes.begin(),bytes.end(),0);
+    Check(std::equal(m.records.begin(),m.records.end(),expected.records.begin(),expected.records.end()),"decoded records do not borrow input image bytes");
+  }
+  for(unsigned profile=0;profile<5;++profile){auto expected=Example(profile);
+    expected.records.clear();expected.states.assign(2*(expected.header.page_size_bytes-384),S::free);expected.total_pages=expected.states.size();
+    const auto bytes=Oracle(expected);std::vector<S> states(expected.states.size());
+    const auto result=p::DecodeNativeAllocationMapInto(bytes,states,{});
+    Check(result.ok()&&result.map->states.size()==expected.states.size()&&result.map->records.empty()&&
+      std::all_of(states.begin(),states.end(),[](S s){return s==S::free;}),"maximum packed bitmap has exact decoded backing and no fabricated records");
+  }
+  const auto expected=Example();const auto bytes=Oracle(expected);
+  std::vector<S> states(expected.states.size());std::vector<p::NativeAllocationRecord> records(expected.records.size());
+  for(std::size_t at=0;at<bytes.size();++at){auto corrupt=bytes;corrupt[at]^=1;
+    const auto r=p::DecodeNativeAllocationMapInto(corrupt,states,records);
+    Check(!r.ok()&&!r.map,"every corrupted byte rejected without decoded prefix");
+  }
+  for(std::size_t size:{0u,127u,383u,8191u,8193u}){auto bad=bytes;bad.resize(size);
+    const auto r=p::DecodeNativeAllocationMapInto(bad,states,records);
+    Check(!r.map&&r.error==p::DecodeNativeAllocationMap(bad).error,"all malformed image sizes share owning errors");
+  }
+}
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+namespace db=scratchbird::storage::database;
+namespace m=scratchbird::core::memory;
+using ME=db::NativeAllocationMapMemoryError;
+struct MemoryFixture {
+  m::MemoryManager manager;
+  m::HierarchicalMemoryBudgetLedger ledger{3,5};
+  db::NativeStorageMemoryBinding binding{Id(1),Id(61),Id(62),Id(63)};
+  db::NativeStorageMemory memory;
+  static auto Policy(){auto p=m::DefaultLocalEngineMemoryPolicy();p.hard_limit_bytes=2097152;p.per_context_limit_bytes=2097152;return p;}
+  explicit MemoryFixture(u64 bytes):manager(Policy()){
+    m::ReservationBackedMemoryResourceRequest r;r.memory_manager=&manager;r.reservation_ledger=&ledger;
+    r.consumer_kind=m::ReservationBackedMemoryConsumerKind::background_maintenance;
+    r.category=m::MemoryCategory::page_buffer;r.requested_bytes=bytes;r.memory_class="page_buffer";
+    r.route_label="storage.allocation.conformance";r.purpose="actual allocation image and metadata";
+    r.binary_operation_uuid=binding.operation_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::database]=binding.database_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context_uuid.bytes;
+    r.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(64).bytes},
+      {m::HierarchicalMemoryScopeKind::database,{},binding.database_uuid.bytes}};
+    r.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+    r.provenance.source_label="allocation resource conformance";
+    for(const auto& scope:r.scope_chain){m::HierarchicalMemoryBudget b;b.scope=scope;b.hard_limit_bytes=bytes;
+      b.provenance=r.provenance;Check(ledger.SetBudget(b).ok(),"actual parent budget");}
+    auto grant=m::AcquireReservationBackedMemoryResource(r);Check(grant.ok(),"actual node-issued metadata grant");
+    auto adopted=db::AdoptNativeStorageMemory(binding,grant.resource);Check(adopted.ok()&&!grant.resource,"exclusive native adoption");
+    memory=std::move(adopted.memory);
+  }
+  void Empty(){const auto s=manager.Snapshot();Check(!s.current_bytes&&!s.reserved_capacity_bytes&&
+    !s.active_capacity_reservation_count&&!ledger.Snapshot().current_bytes,"all real allocation-map charges released");}
+};
+struct MemoryFile {
+  std::filesystem::path directory,path;
+  d::FileDevice device;
+  p::NativeAllocationMap value;
+  Bytes bytes;
+  d::NativeCommonPageHeaderBinding expected;
+  explicit MemoryFile(unsigned profile):value(Example(profile)),bytes(Oracle(value)){
+    char name[]="/tmp/sb-allocation-memory-XXXXXX";const auto* made=mkdtemp(name);if(!made)throw std::runtime_error("mkdtemp");
+    directory=made;path=directory/"native.bin";
+    Check(device.Open(path.string(),d::FileOpenMode::create_new).ok(),"actual allocation source");
+    expected={{value.header.database_uuid,value.header.filespace_uuid,value.header.page_size_profile_uuid},
+      value.header.page_number,value.header.page_generation,3,value.header.page_uuid};
+    Bootstrap();Store(bytes);Check(device.Sync().ok()&&device.Close().ok()&&
+      device.Open(path.string(),d::FileOpenMode::open_existing).ok(),"cold reopen independent allocation image");
+  }
+  ~MemoryFile(){(void)device.Close();std::error_code ec;std::filesystem::remove_all(directory,ec);}
+  void Bootstrap(u32 flags=0,Uuid database=Id(1)){
+    Bytes b(4096,0);std::copy_n("SBFP",4,b.begin());Num(b,4,2,1);Num(b,6,2,4096);
+    Num(b,8,4,value.header.page_size_bytes);Num(b,12,4,flags);Put(b,16,database);
+    Put(b,32,value.header.filespace_uuid);Put(b,48,value.header.page_size_profile_uuid);
+    Num(b,64,4,1);Num(b,68,2,1);Num(b,70,2,1);Put(b,72,d::kNativeBootstrapIntegrityProfile);
+    if(flags&1)Put(b,88,Id(71));std::array<byte,32> digest{};
+    Check(SHA256(b.data(),104,digest.data())!=nullptr,"independent bootstrap digest");
+    std::copy(digest.begin(),digest.end(),b.begin()+104);
+    Check(device.WriteAt(0,b.data(),b.size()).ok()&&device.Sync().ok(),"actual independent bootstrap");
+  }
+  void Store(const Bytes& image){Check(device.WriteAt(value.header.page_number*u64(value.header.page_size_bytes),image.data(),image.size()).ok()&&device.Sync().ok(),"actual independent map");}
+  auto Read(MemoryFixture& f){reads=hashes=0;return db::ReadNativeAllocationMapWithMemoryFromOpenDevice(device,expected,value.object_uuid,f.memory,f.binding);}
+};
+void NoMap(const db::NativeAllocationMapMemoryResult& r){Check(!r.ok()&&!r.map&&r.image.empty()&&!r.arena,"refusal exposes no image metadata or owner prefix");}
+void MemoryTests(){
+  for(unsigned profile=0;profile<5;++profile){MemoryFile file(profile);
+    const auto capacity=db::NativeAllocationMapWorkspaceBytes(file.value.header.page_size_profile_uuid);
+    Check(capacity==file.bytes.size()+2*(file.bytes.size()-384)*sizeof(S)+
+      ((file.bytes.size()-384)/128)*sizeof(p::NativeAllocationRecord)+2*(alignof(std::max_align_t)-1),"independent native backing size formula");
+    {
+      MemoryFixture f(capacity);
+      {auto guard=file.device.AcquireOperationGuard();allocation_device_mutex=guard.mutex();}
+      allocation_lock_free=false;auto read=file.Read(f);
+      Check(read.ok()&&allocation_lock_free,"real metadata backing allocated outside device guard");
+      Check(last_read_buffer==read.image.data()&&read.image.size()==file.bytes.size()&&
+        std::equal(read.image.begin(),read.image.end(),file.bytes.begin(),file.bytes.end()),"actual read destination is returned charged image");
+      const auto begin=reinterpret_cast<std::uintptr_t>(read.image.data());
+      const auto inside=[&](const void* ptr,usize bytes){auto n=reinterpret_cast<std::uintptr_t>(ptr);return n>=begin&&n-begin<=capacity&&bytes<=capacity-(n-begin);};
+      Check(inside(read.map->states.data(),read.map->states.size_bytes())&&inside(read.map->records.data(),read.map->records.size_bytes())&&
+        std::equal(read.map->states.begin(),read.map->states.end(),file.value.states.begin(),file.value.states.end())&&
+        std::equal(read.map->records.begin(),read.map->records.end(),file.value.records.begin(),file.value.records.end()),"actual metadata resides in same charged block with exact binary records");
+      Check(f.manager.Snapshot().current_bytes==capacity&&f.memory.Snapshot().allocated_bytes==capacity&&
+        f.ledger.Snapshot().current_bytes==capacity&&read.arena.Snapshot().retained_bytes==capacity,"actual physical parent and arena charges agree");
+      auto full=file.Read(f);NoMap(full);Check(full.error==ME::memory_allocation_failure&&reads==0,"simultaneous live image prevents uncharged second reader");
+      const auto revoked=f.ledger.CleanupOwner(f.binding.owner_uuid.bytes);Check(revoked.retained_bytes==capacity,"revocation retains actual image and metadata");
+      auto denied=file.Read(f);NoMap(denied);Check(denied.error==ME::memory_binding_failure&&reads==0,"revoked grant prevents new source reads");
+      f.memory={};Check(f.manager.Snapshot().current_bytes==capacity,"returned metadata owner survives caller workspace");
+      std::thread worker([retained=std::move(read)]()mutable{allocation_budget=0;retained={};if(allocation_budget!=0)std::abort();allocation_budget=-1;});worker.join();f.Empty();
+    }
+    MemoryFixture valid(capacity);const auto no_writes=writes,no_syncs=syncs;
+    const auto original_binding=file.expected;
+    for(unsigned invalid=0;invalid<7;++invalid){
+      if(invalid==0)file.expected.page_number=0;
+      if(invalid==1)file.expected.page_number=std::numeric_limits<u64>::max();
+      if(invalid==2)file.expected.page_generation=0;
+      if(invalid==3)file.expected.page_type=0x30e;
+      if(invalid==4)file.expected.filespace.filespace_uuid={};
+      if(invalid==5)file.expected.filespace.page_size_profile_uuid=Id(99);
+      if(invalid==6)file.expected.page_uuid=Uuid{};
+      auto r=file.Read(valid);NoMap(r);Check(r.error==ME::invalid_request&&reads==0&&
+        !valid.memory.Snapshot().allocation_count,"invalid typed page binding refuses before physical admission");
+      file.expected=original_binding;
+    }
+    for(unsigned field=0;field<4;++field){auto wrong=valid.binding;
+      const std::array<Uuid*,4> fields{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*fields[field]=Id(99);
+      reads=0;auto denied=db::ReadNativeAllocationMapWithMemoryFromOpenDevice(file.device,file.expected,file.value.object_uuid,valid.memory,wrong);
+      NoMap(denied);Check(denied.error==ME::memory_binding_failure&&!reads&&!valid.manager.Snapshot().current_bytes,"exact binary memory identity before allocation or I/O");}
+    MemoryFixture small(capacity-1);auto short_grant=file.Read(small);NoMap(short_grant);
+    Check(short_grant.error==ME::memory_allocation_failure&&!reads&&!small.manager.Snapshot().current_bytes,"one byte short cannot obtain image or metadata");small.memory={};small.Empty();
+    file.expected.page_generation++;{auto r=file.Read(valid);NoMap(r);Check(r.error==ME::header_failure,"stale generation binds actual source");}file.expected.page_generation--;
+    auto object=db::ReadNativeAllocationMapWithMemoryFromOpenDevice(file.device,file.expected,Id(99),valid.memory,valid.binding);NoMap(object);Check(object.error==ME::object_mismatch,"exact map object identity");
+    for(unsigned n=1;n<=2;++n){fail_read=n;auto r=file.Read(valid);fail_read=0;NoMap(r);
+      Check(reads==n&&!valid.manager.Snapshot().current_bytes,"every real read failure releases admitted payload");}
+    short_read=2;{auto r=file.Read(valid);Check(r.ok()&&reads==3,"legal short physical read completes");}short_read=0;
+    short_read=2;eof_read=3;{auto r=file.Read(valid);NoMap(r);Check(r.error==ME::io_failure&&r.page_bytes_read==file.bytes.size()-1,"partial then EOF retains actual read progress only");}short_read=eof_read=0;
+    for(unsigned fault=1;fault<=5;++fault){method_fault=fault;auto r=file.Read(valid);NoMap(r);Check(method_fault==0,"each real digest-provider failure reached");}
+    fail_hash=true;{auto r=file.Read(valid);NoMap(r);Check(!fail_hash&&r.map_error==E::hash_failure,"actual digest context failure typed");}
+    Check(writes==no_writes&&syncs==no_syncs,"reader and refusal paths never write or sync source");
+    auto corrupt=file.bytes;corrupt.back()^=1;file.Store(corrupt);
+    {auto guard=file.device.AcquireOperationGuard();deallocation_device_mutex=guard.mutex();}deallocation_lock_free=false;
+    {auto r=file.Read(valid);NoMap(r);Check(r.error==ME::map_failure&&deallocation_lock_free,"failed image cleanup occurs after releasing device guard");}file.Store(file.bytes);
+    file.Bootstrap(0,Id(99));{auto r=file.Read(valid);NoMap(r);Check(r.error==ME::bootstrap_failure,"actual bootstrap identity mismatch");}file.Bootstrap(1);
+    {auto r=file.Read(valid);Check(r.ok(),"allocation metadata remains cleartext in encrypted filespace");}file.Bootstrap();
+    for(unsigned version=0;version<3;++version){auto variant=file.value;
+      if(version==0)OperationOwned(variant);
+      if(version==1){OperationOwned(variant);for(auto& r:variant.records)OperationOwned(r);}
+      if(version==2){variant.records.clear();variant.states.assign(2*(file.bytes.size()-384),S::free);variant.total_pages=variant.states.size();}
+      file.Store(Oracle(variant));
+      {auto r=file.Read(valid);Check(r.ok()&&std::equal(r.map->states.begin(),r.map->states.end(),variant.states.begin(),variant.states.end())&&
+        std::equal(r.map->records.begin(),r.map->records.end(),variant.records.begin(),variant.records.end()),"actual governed metadata supports mixed operation lineage and maximum bitmap");}
+    }
+    file.Store(file.bytes);
+    if(!profile){unsigned long sites=0;
+      {observed_allocations=0;count_allocations=true;auto r=file.Read(valid);count_allocations=false;sites=observed_allocations;Check(r.ok(),"measure full admitted reader allocation sites");}
+      for(unsigned long n=0;n<sites;++n){allocation_budget=n;auto r=file.Read(valid);allocation_budget=-1;
+        if(r.ok())Check(std::equal(r.map->records.begin(),r.map->records.end(),file.value.records.begin(),file.value.records.end()),"optional telemetry loss cannot change decoded result");
+        else NoMap(r);
+        r={};Check(!valid.manager.Snapshot().current_bytes&&!valid.memory.Snapshot().allocated_bytes,"every allocation fault retains zero physical payload after cleanup");
+        {auto retry=file.Read(valid);Check(retry.ok(),"same-owner retry after each allocation failure");}
+      }
+      Check(sites>0,"allocation sweep executed");std::cout<<"governed allocation metadata faults="<<sites<<'\n';
+    }
+    Check(file.device.Close().ok(),"close source");auto closed=file.Read(valid);NoMap(closed);
+    Check(closed.error==ME::bootstrap_failure&&closed.bootstrap_error==d::FilespaceBootstrapError::device_not_open,"reader never reopens closed source");
+    valid.memory={};valid.Empty();
+  }
+}
+#endif
 struct Fixture {
   std::filesystem::path root;
   Fixture() { std::string path=(std::filesystem::temp_directory_path()/"sb-native-allocation.XXXXXX").string();
@@ -522,6 +776,10 @@ void RetainedChain() {
 }
 }  // namespace
 int main(){
-  try { Codecs();OperationCodecs();RetainedChain();std::cout<<"native allocation checks="<<checks<<" failures=0\n"; }
+  try { Codecs();OperationCodecs();BorrowedCodecs();RetainedChain();
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+    MemoryTests();
+#endif
+    std::cout<<"native allocation checks="<<checks<<" failures=0\n"; }
   catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }
