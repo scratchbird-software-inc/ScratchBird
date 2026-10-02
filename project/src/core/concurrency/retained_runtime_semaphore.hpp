@@ -39,7 +39,8 @@ inline std::optional<ConditionWaitDiagnostic> SemaphoreDiagnostic(
     name = "diag.mga.concurrency.fail_safe_release";
     action = "retain_storage_complete_drain";
   } else switch (code) {
-    case C::granted: case C::released: case C::closed: case C::cancelled: return std::nullopt;
+    case C::granted: case C::released: case C::closed: case C::cancelled:
+    case C::exhausted: return std::nullopt; // Actual quota refusal, not malformed primitive.
     case C::timed_out:
       name = "diag.mga.concurrency.latch_timeout";
       action = "abort_wait_preserve_operation_outcome"; break;
@@ -213,6 +214,19 @@ class RuntimeSemaphoreOperation {
   RuntimeSemaphoreAcquireResult Acquire(const agents::RuntimePermitRequest& request,
       memory::SafeRetirementHazard grant_hazard, agents::RuntimePermitAcquireControl control,
       std::string_view reason = {}) noexcept {
+    return AcquireImpl(request,grant_hazard,control,reason,true);
+  }
+  // One actual governor attempt, never waiter registration/parking or a new
+  // private budget. Optional terminal controls still precede grant commitment.
+  RuntimeSemaphoreAcquireResult TryAcquire(const agents::RuntimePermitRequest& request,
+      memory::SafeRetirementHazard grant_hazard,
+      agents::RuntimePermitAcquireControl control = {}) noexcept {
+    return AcquireImpl(request,grant_hazard,control,{},false);
+  }
+ private:
+  RuntimeSemaphoreAcquireResult AcquireImpl(const agents::RuntimePermitRequest& request,
+      memory::SafeRetirementHazard grant_hazard, agents::RuntimePermitAcquireControl control,
+      std::string_view reason, bool waiting) noexcept {
     using C = agents::RuntimePermitCode;
     RuntimeSemaphoreAcquireResult result;
     if (!state_) return result;
@@ -233,7 +247,7 @@ class RuntimeSemaphoreOperation {
       return result;
     }
     memory::SafeRetirementGuard grant_guard;
-    const bool callback_reference = control.cancellation.stop_possible();
+    const bool callback_reference = waiting && control.cancellation.stop_possible();
     {
       std::lock_guard lock(s.lifetime);
       const auto instance = s.governor.InspectRuntimePermitInstance(s.authority,s.profile,s.instance);
@@ -255,7 +269,9 @@ class RuntimeSemaphoreOperation {
         s.RecordFailureLocked(result.Diagnostic()); return result;
       }
     }
-    auto native = s.governor.WaitAcquireRuntimePermit(request,control,reason);
+    agents::RuntimePermitWaitResult native;
+    if (waiting) native = s.governor.WaitAcquireRuntimePermit(request,control,reason);
+    else native.admission = s.governor.AcquireRuntimePermit(request,control);
     result.code = native.admission.code; result.registered = native.registered;
     result.wait_duration_us = native.wait_duration_us;
     result.uninterruptible_reason = native.uninterruptible_reason;
@@ -335,7 +351,7 @@ class RuntimeSemaphoreOwner {
       return S::invalid_request;
     const auto instance = governor.InspectRuntimePermitInstance(authority,profile,
         {descriptor.primitive_id,descriptor.generation});
-    if (instance.code != agents::RuntimePermitCode::bound || !instance.waiter_limit) return S::invalid_request;
+    if (instance.code != agents::RuntimePermitCode::bound) return S::invalid_request;
     auto made = domain_.Emplace<detail::RuntimeSemaphoreState>(descriptor.primitive_id.bytes,
         memory::SafeRetirementObjectKind::temporary_descriptor,descriptor,limits,domain_,governor,authority,profile);
     if (!made.ok()) return made.status;

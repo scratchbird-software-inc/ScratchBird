@@ -360,10 +360,10 @@ struct RetainedFixture {
   a::RuntimePermitInstanceBinding instance;
   unsigned next_hazard = 1000;
   explicit RetainedFixture(bool worker_profile, std::uint32_t references = 16, m::usize readers = 32,
-      std::uint32_t capacity = 1) : worker(worker_profile),
+      std::uint32_t capacity = 1, std::uint32_t waiters = 3) : worker(worker_profile),
       instance(worker ? f.workers : f.queue) {
     f.policy.worker_capacity = f.policy.queue_capacity = capacity;
-    f.policy.worker_waiter_limit = f.policy.queue_waiter_limit = 3;
+    f.policy.worker_waiter_limit = f.policy.queue_waiter_limit = waiters;
     Check(f.Bind() == Code::bound, "selected bounded retained profile");
     domain.emplace(*f.resource,Id(80).bytes,4,readers);
     Check(domain->Initialize() == S::ok, "actual retained domain metadata");
@@ -570,6 +570,53 @@ void RetainedReferenceBounds(bool worker) {
   Check(grant.Release(f.f.Request(worker)) == Code::released, "moved actual grant release");
   f.Finish();
 }
+void RetainedImmediate(bool worker, bool wait_policy) {
+  RetainedFixture f(worker,1,32,1,wait_policy ? 3 : 0);
+  auto operation = f.Operation(20); std::stop_source stop;
+  auto first = operation.TryAcquire(f.f.Request(worker),f.Hazard(20),Control(stop));
+  Check(first.ok() && !first.registered && !first.wait_duration_us,
+        "actual immediate retained grant without wait or callback reference admission");
+  operation.Reset(); operation = f.Operation(21);
+  const auto bytes = f.f.manager.Snapshot().current_bytes;
+  auto refused = operation.TryAcquire(f.f.Request(worker,21),f.Hazard(21));
+  Check(refused.code == Code::exhausted && !refused.permit && !refused.registered && !refused.Diagnostic(),
+        "immediate actual capacity refusal is not a malformed-primitive diagnostic");
+  Check(f.owner->Snapshot().governor.holders == 1 && !f.owner->Snapshot().governor.wait_calls &&
+        f.f.manager.Snapshot().current_bytes == bytes, "immediate refusal preserves prior exact grant and backing");
+  if (!wait_policy) {
+    auto unselected = operation.Acquire(f.f.Request(worker,21),f.Hazard(21),
+        {{},Clock::now()+std::chrono::seconds(5)},"unselected native wait policy");
+    Check(unselected.code == Code::wait_policy_unbound && !unselected.registered && !unselected.permit,
+          "immediate-only pool never implicitly enables waiter admission");
+  }
+  Check(first.permit.Release(f.f.Request(worker)) == Code::released, "real immediate credit release");
+  auto second = operation.TryAcquire(f.f.Request(worker,21),f.Hazard(21));
+  Check(second.ok() && !second.registered, "real immediate retry after owning release");
+  Check(second.permit.Release(f.f.Request(worker,21)) == Code::released, "second immediate exact release");
+  Check(!f.owner->Snapshot().registered_waits && !f.owner->Snapshot().selected_timeouts,
+        "nonblocking capacity attempts do not manufacture registered waits or timeouts");
+  operation.Reset(); f.Finish();
+}
+void RetainedInitialTerminal(bool worker) {
+  for (bool immediate : {false,true}) for (unsigned mask = 0; mask != 8; ++mask) {
+    RetainedFixture f(worker); auto operation = f.Operation(20); std::stop_source stop;
+    if (mask & 1) f.Close();
+    if (mask & 2) stop.request_stop();
+    const auto control = a::RuntimePermitAcquireControl{stop.get_token(),
+        Clock::now() + ((mask & 4) ? std::chrono::seconds(0) : std::chrono::seconds(5))};
+    auto result = immediate ? operation.TryAcquire(f.f.Request(worker),f.Hazard(20),control)
+                            : operation.Acquire(f.f.Request(worker),f.Hazard(20),control);
+    const auto expected = (mask & 1) ? Code::closed : (mask & 2) ? Code::cancelled : (mask & 4) ? Code::timed_out : Code::granted;
+    Check(result.code == expected && bool(result.permit) == (expected == Code::granted),
+          "retained initial close cancellation deadline grant ordering with actual available capacity");
+    Check(!f.owner->Snapshot().governor.waiters && !f.owner->Snapshot().governor.wait_calls &&
+          f.owner->Snapshot().governor.holders == (expected == Code::granted ? 1u : 0u),
+          "initial selection has exact real counts and no phantom debit");
+    if (result.permit) Check(result.permit.Release(f.f.Request(worker)) == Code::released, "initial admitted result exact release");
+    else Check(!result.registered, "initial terminal avoids waiter registration");
+    operation.Reset(); f.Finish();
+  }
+}
 void RetainedHazardBounds(bool worker) {
   RetainedFixture f(worker,16,2); auto operation = f.Operation(20); std::stop_source stop;
   const auto bytes = f.f.manager.Snapshot().current_bytes;
@@ -614,7 +661,7 @@ void RetainedInitializationFailure(bool worker) {
   }
   NoCalls(f); f.Empty();
 }
-void RetainedAllocationFailures(bool worker) {
+void RetainedAllocationFailures(bool worker, bool immediate) {
   unsigned failures = 0, telemetry_successes = 0; bool complete = false;
   for (long position = 0; position != 2048 && !complete; ++position) {
     RetainedFixture f(worker,16,32,2); auto seed = f.Grant(20); auto operation = f.Operation(21);
@@ -622,7 +669,8 @@ void RetainedAllocationFailures(bool worker) {
     const auto before = f.f.governor.Snapshot(); const auto physical = f.f.manager.Snapshot();
     std::stop_source stop;
     fault::hit = false; fault::remaining = position;
-    auto result = operation.Acquire(request,hazard,Control(stop));
+    auto result = immediate ? operation.TryAcquire(request,hazard,Control(stop))
+                            : operation.Acquire(request,hazard,Control(stop));
     const bool hit = fault::hit; fault::remaining = -1;
     if (!result.ok()) {
       ++failures;
@@ -907,7 +955,8 @@ int main(int argc, char** argv) {
     RetainedInvalidRelease(worker); RetainedPhysicalReleaseFailure(worker);
     RetainedLifetimeLockFailure(worker);
     RetainedReferenceBounds(worker); RetainedHazardBounds(worker); RetainedInitializationFailure(worker);
-    RetainedAllocationFailures(worker);
+    RetainedImmediate(worker,false); RetainedImmediate(worker,true); RetainedInitialTerminal(worker);
+    RetainedAllocationFailures(worker,false); RetainedAllocationFailures(worker,true);
     for (unsigned mode = 0; mode != 3; ++mode) RetainedDrainFailure(worker,mode);
     RetainedWakeTerminal(worker,false); RetainedWakeTerminal(worker,true); RetainedCloseParkRace(worker);
   }
