@@ -78,11 +78,14 @@ inline StorageActionSecurityResult AcquireStorageActionSecurityLease(
     auto loaded=LoadSecurityPrincipalLifecycleState(source);
     if(!loaded.ok){result.diagnostics.push_back(std::move(loaded.diagnostic));return fail(E::source_failure);}
     const auto& state=loaded.state;
+    // AUTH_CONTEXT_SUCCESSOR binds durable authorization mutations. Runtime
+    // security/policy epochs instead bind the authenticated configuration;
+    // neither is the security/policy catalog's event counter. The owning
+    // admission boundary must retain its configuration activation fence.
     if(state.security_context_generation!=observed.security_context_generation||
-        !state.security_generation||state.security_generation!=observed.security_epoch||
-        !state.policy_generation||state.policy_generation!=observed.policy_epoch)return fail(E::stale_context);
+        !state.security_generation||!state.policy_generation)return fail(E::stale_context);
     auto durable=ProjectDurableAuthorizationState(state,{authenticated.database_uuid,
-        authenticated.principal_uuid,state.security_generation,state.policy_generation,
+        authenticated.principal_uuid,observed.security_epoch,observed.policy_epoch,
         authenticated.catalog_generation_id});
     // Resolve immutable bootstrap-role identity from the same owning catalog;
     // never infer it from a role name or accept the caller's marker.

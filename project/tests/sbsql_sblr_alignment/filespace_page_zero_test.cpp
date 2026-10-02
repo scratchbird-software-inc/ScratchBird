@@ -10,6 +10,8 @@
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_selection.hpp"
+#include "native_selected_checkpoint_read_lease.hpp"
+#include "native_owned_checkpoint_source.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
 #include "native_filespace_capacity.hpp"
@@ -38,6 +40,7 @@
 #include <string_view>
 #include <sys/wait.h>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 
 namespace {
@@ -4972,6 +4975,108 @@ Bytes SelectionOracle(const db::NativeCheckpointSelection& s){
   if(s.previous_checkpoint)ref(336,*s.previous_checkpoint);PutUuid(b,384,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),b.begin()+400);
   const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+432);return b;
 }
+void OwnedCheckpointSource(const std::filesystem::path& root,unsigned p,bool faults){
+  using Source=db::NativeOwnedCheckpointSource;using E=db::NativeOwnedSourceError;
+  static_assert(!std::is_default_constructible_v<Source>);
+  static_assert(!std::is_copy_constructible_v<Source>);
+  static_assert(!std::is_move_constructible_v<db::NativeOwnedCheckpointReadLease>);
+  const unsigned q=(p+1)%5;const u64 budget=32*u64{sizes[p]}+4*u64{sizes[q]};
+  const std::array<std::string,2> paths{(root/"bound-selector").string(),(root/"bound-selector-secondary").string()};
+  std::vector<std::unique_ptr<disk::FileDevice>> files;
+  const auto open=[&]{Check(files.empty(),"owned source fixture has no previous handles");
+    for(const auto& path:paths){auto f=std::make_unique<disk::FileDevice>();Check(f->Open(path,disk::FileOpenMode::open_existing).ok(),"fixture opens independent actual source");files.push_back(std::move(f));}};
+  const auto bytes=[](disk::FileDevice& f){const auto n=f.Size();Check(n.ok(),"owned source size");Bytes b(n.size_bytes);
+    const auto r=f.ReadAt(0,b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"owned source complete bytes");return b;};
+  open();const auto first=bytes(*files[0]),second=bytes(*files[1]);const auto writes=stage_writes;
+  unsigned fixture_writes=0;
+  const auto put=[&](disk::FileDevice& f,u64 offset,byte b){const auto previous=stage_writes;
+    Check(f.WriteAt(offset,&b,1).ok()&&f.Sync().ok(),"explicit owned-source corruption fixture write");fixture_writes+=stage_writes-previous;};
+  const auto refused=[&](const auto& r){Check(!r.ok()&&!r.owner&&r.error!=E::none&&files.size()==2&&files[0]->is_open()&&files[1]->is_open(),"failed adoption leaves both handles owned and open");};
+  refused(Source::Adopt({},Id(2),files,budget));refused(Source::Adopt(Id(250),Id(2),files,budget));
+  refused(Source::Adopt(Id(1),Id(250),files,budget));refused(Source::Adopt(Id(1),Id(2),files,0));
+  refused(Source::Adopt(Id(1),Id(2),files,1));
+  std::thread wrong_thread([&]{const auto r=Source::Adopt(Id(1),Id(2),files,budget);
+    Check(r.error==E::device_ownership&&!r.owner,"wrong opening thread refuses before acquiring device locks");});wrong_thread.join();
+  {auto missing=std::move(files[1]);const auto r=Source::Adopt(Id(1),Id(2),files,budget);
+    Check(r.error==E::device_ownership&&!r.owner&&files.size()==2&&files[0]->is_open(),"null member cannot take remaining device");files[1]=std::move(missing);}
+  // Closed and malformed sources cannot become owners.
+  Check(files[1]->Close().ok(),"close invalid ownership fixture");
+  {const auto r=Source::Adopt(Id(1),Id(2),files,budget);Check(r.error==E::device_ownership&&!r.owner&&files.size()==2,"closed handle rejected without taking remaining handle");}
+  Check(files[1]->Open(paths[1],disk::FileOpenMode::open_existing_read_only).ok(),"restore independent source fixture");
+  const auto acquire=[&]{return Source::Adopt(Id(1),Id(2),files,budget);};
+  for(const u64 at:{u64{0},16*u64{sizes[p]}-1,32*u64{sizes[p]}-1}){
+    put(*files[0],at,first.at(at)^1);const auto damaged=bytes(*files[0]);const auto count=stage_writes;
+    const auto rejected=acquire();refused(rejected);
+    Check(at==0?rejected.error==E::bootstrap_failure&&rejected.bootstrap_error!=disk::FilespaceBootstrapError::none:
+        rejected.error==E::source_failure&&rejected.source_error!=db::NativeSelectedCheckpointReadError::none,"distinct native bootstrap and selected source failures survive ownership refusal");
+    Check(bytes(*files[0])==damaged&&stage_writes==count,"admission never repairs corrupt source bytes");put(*files[0],at,first.at(at));
+  }
+  if(faults){
+    byte warm=0;for(unsigned n=0;n<4097;++n)Check(files[0]->ReadAt(0,&warm,1).ok()&&files[1]->ReadAt(0,&warm,1).ok(),"warm source telemetry");
+    observed_allocations=reads=observed_full_digests=0;count_allocations=track_reads=count_full_digests=true;
+    auto measured=acquire();count_allocations=track_reads=count_full_digests=false;
+    const auto na=observed_allocations;const auto nr=reads,nf=observed_full_digests;
+    Check(measured.ok()&&files.empty(),"measure actual owner admission");measured.owner.reset();open();
+    for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;auto r=acquire();track_reads=false;
+      Check(!read_fault,"owner consumes each physical read failure");refused(r);}
+    for(unsigned n=1;n<=nf;++n){full_digest_fault=n;auto r=acquire();Check(!full_digest_fault,"owner consumes each digest failure");refused(r);}
+    for(unsigned long n=0;n<=na;++n){
+      auto* a=files[0].get();auto* b=files[1].get();const auto loss=a->failed_io_latency_observations()+b->failed_io_latency_observations();
+      allocation_budget=n;auto r=acquire();const auto remainder=allocation_budget;allocation_budget=-1;
+      Check(n==na?remainder>=0:remainder<0,"complete owner allocation failure sweep");
+      if(r.ok()){
+        Check(files.empty(),"successful adoption takes all handles");
+        if(remainder<0)Check(a->failed_io_latency_observations()+b->failed_io_latency_observations()==loss+1,"only recorded telemetry allocation loss permits ownership");
+        r.owner.reset();open();
+      }else refused(r);
+      if(n==na)Check(r.error==E::none,"terminal owner allocation success");
+    }
+    std::cout<<"owned source reads="<<nr<<" digests="<<nf<<" allocations="<<na<<'\n';
+  }
+  auto result=acquire();Check(result.ok()&&files.empty()&&result.owner->database_uuid()==Id(1)&&result.owner->primary_uuid()==Id(2),"adopt actual complete native source without paths or member profiles");
+  auto owner=std::move(result.owner);
+  Check(!Source::Read({},budget).ok()&&!Source::Read(owner,0).ok(),"invalid owned source read refuses");
+  {auto lease=Source::Read(owner,budget);Check(lease.ok()&&lease.lease->source().checkpoint().page_number==36&&
+      lease.lease->devices().size()==2&&lease.lease->devices()[1].page_size_profile_uuid==Profile(q),"owned read independently resolves current checkpoint and actual profiles");
+    const auto actual=lease.lease->source().retained_image_bytes();lease.lease.reset();
+    Check(Source::Read(owner,actual).ok()&&!Source::Read(owner,actual-1).ok(),"owned reads preserve exact source image ceiling");}
+  {auto held=Source::Read(owner,budget);Check(held.ok(),"inspect owner before independent source mutation");
+    auto* physical=held.lease->devices()[0].device;held.lease.reset();
+    const auto at=32*u64{sizes[p]}-1;put(*physical,at,first.at(at)^1);
+    const auto stale=Source::Read(owner,budget);
+    Check(!stale.ok()&&!stale.lease&&stale.error==E::source_failure,"owner adoption is not cached source-currentness authority");
+    put(*physical,at,first.at(at));Check(Source::Read(owner,budget).ok(),"fresh read sees independently restored source");}
+  {const auto child=::fork();Check(child>=0,"fork inherited native owner");if(child==0){
+      const auto inherited=Source::Read(owner,budget);::_exit(!inherited.ok()&&inherited.error==E::wrong_process?0:9);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"inherited owner refuses without touching inherited locks");}
+  if(faults){
+    reads=0;read_fault=1;track_reads=true;const auto failed=Source::Read(owner,budget);track_reads=false;
+    Check(!read_fault&&!failed.ok()&&!failed.lease&&failed.error==E::source_failure&&failed.source_error!=db::NativeSelectedCheckpointReadError::none,"owned read preserves nested source failure");
+    allocation_budget=0;const auto memory=Source::Read(owner,budget);allocation_budget=-1;
+    Check(memory.error==E::resource_exhausted&&!memory.lease,"owned read allocation failure retains owner for retry");
+    Check(Source::Read(owner,budget).ok(),"fresh owned read succeeds after faults");
+  }
+  // Real worker lease survives withdrawal and loss of every external owner.
+  // Synchronize phases without holding a scheduler mutex across storage I/O.
+  std::atomic<unsigned> phase{0};std::atomic<bool> worker_ok{false};std::weak_ptr<Source> weak=owner;
+  std::thread worker([retained=owner,&phase,&worker_ok,&first,&second,&bytes,budget]() mutable {
+    auto held=Source::Read(retained,budget);retained.reset();
+    phase.store(1);phase.notify_all();while(phase.load()==1)phase.wait(1);
+    if(held.ok())worker_ok=bytes(*held.lease->devices()[0].device)==first&&bytes(*held.lease->devices()[1].device)==second;
+    held.lease.reset(); // Last owner closes handles on this worker, not opener.
+  });
+  while(!phase.load())phase.wait(0);
+  owner->Withdraw();owner->Withdraw();
+  reads=0;track_reads=true;const auto withdrawn=Source::Read(owner,budget);track_reads=false;
+  Check(withdrawn.error==E::withdrawn&&!withdrawn.lease&&!reads,"withdrawal refuses new source reads before I/O");
+  owner.reset();Check(!weak.expired(),"active source lease retains owner after runtime drops it");
+  {disk::FileDevice competing;Check(!competing.Open(paths[0],disk::FileOpenMode::open_existing_read_only).ok(),"actual independent OS ownership survives withdrawal");}
+  phase.store(2);phase.notify_all();worker.join();
+  Check(worker_ok&&weak.expired(),"last worker read releases guards before closing independently owned devices");
+  open();Check(bytes(*files[0])==first&&bytes(*files[1])==second&&stage_writes==writes+fixture_writes,"owner admission reading withdrawal and failures never mutate source files");
+  for(auto& f:files)Check(f->Close().ok(),"independent reopen after last owned read");
+}
+
 void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false,bool history_only=false,unsigned history_shard=0,unsigned history_stride=1,int inventory_allocation_shard=-1,bool directory_staging=false,bool directory_controls=false,bool directory_graph=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
     if(inventory_allocation_shard>=0&&(p!=0||role!=1))continue;
@@ -5511,6 +5616,82 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     if(!result.ok())std::cerr<<"bound selector error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" map="<<static_cast<int>(result.allocation_error)<<std::endl;
     Check(result.ok()&&result.selection->selection_generation==2&&result.checkpoint_inventory.checkpoint->header.page_number==36&&result.predecessor.checkpoint->header.page_number==19&&result.allocation.state_counts[0]==1&&result.retained_image_bytes==7*sizes[p],"actual bound selector and newer allocation counts");
     consumers(CheckpointRef(current),true);consumers(CheckpointRef(initial),false);empty(read(7*sizes[p]-1));
+    {
+      using LE=db::NativeSelectedCheckpointReadError;
+      static_assert(!std::is_default_constructible_v<db::NativeSelectedCheckpointReadLease>);
+      static_assert(!std::is_copy_constructible_v<db::NativeSelectedCheckpointReadLease>);
+      static_assert(!std::is_move_constructible_v<db::NativeSelectedCheckpointReadLease>);
+      const auto acquire=[&](u64 ceiling){return db::AcquireNativeSelectedCheckpointReadLease(Id(1),devices,Id(2),ceiling);};
+      const auto refused=[&](const auto& r){Check(!r.ok()&&!r.lease&&r.error!=LE::none,"failed selected read exposes no lease");};
+      const auto bytes=[](auto& file){const auto size=file.Size();Check(size.ok(),"read-fence actual source size");Bytes b(size.size_bytes);
+        const auto io=file.ReadAt(0,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read-fence full actual bytes");return b;};
+      const auto before=bytes(device),other_before=bytes(second_device);
+      const auto writes_before=stage_writes;
+      unsigned fixture_writes=0;
+      auto admitted=acquire(32*u64{sizes[p]}+4*u64{sizes[q]});
+      Check(admitted.ok(),"selected read fence binds actual current directory");
+      const auto retained=admitted.lease->retained_image_bytes();
+      Check(retained==admitted.lease->selection().retained_image_bytes+admitted.lease->directory().retained_image_bytes&&
+          admitted.lease->checkpoint().page_number==current.header.page_number&&
+          admitted.lease->checkpoint().page_number!=initial.header.page_number&&
+          admitted.lease->checkpoint().object_uuid==current.object_uuid&&
+          admitted.lease->directory().checkpoint_inventory.checkpoint_sha256==admitted.lease->selection().selection->checkpoint_sha256,
+          "lease selects newer on-disk checkpoint without a caller reference and counts both retained sources");
+      std::vector<std::recursive_mutex*> mutexes;
+      for(const auto& f:devices){auto guard=f.device->AcquireOperationGuard();mutexes.push_back(guard.mutex());}
+      const auto availability=[&]{unsigned available=0;std::thread contender([&]{for(auto* mutex:mutexes){
+          if(mutex->try_lock()){++available;mutex->unlock();}
+        }});contender.join();return available;};
+      Check(availability()==0,"returned read lease retains every actual device guard");
+      admitted.lease.reset();
+      Check(availability()==devices.size(),"destroyed read lease releases every borrowed device guard");
+      {const auto exact=acquire(retained);Check(exact.ok()&&exact.lease->retained_image_bytes()==retained,"exact retained source ceiling");}
+      refused(acquire(retained-1));refused(acquire(0));
+      for(unsigned bad=0;bad<7;++bad){auto wrong=devices;auto database=Id(1),primary=Id(2);
+        if(bad==0)database={};if(bad==1)primary=Id(250);if(bad==2)wrong.front().device=nullptr;
+        if(bad==3)wrong.front().filespace_uuid=wrong.back().filespace_uuid;
+        if(bad==4)wrong.front().page_size_profile_uuid=Id(250);
+        if(bad==5)wrong.front().device=wrong.back().device;if(bad==6)database=Id(250);
+        refused(db::AcquireNativeSelectedCheckpointReadLease(database,wrong,primary,retained));}
+      for(unsigned page_number:{15u,31u}){
+        const auto at=u64{page_number+1}*sizes[p]-1;const byte bad=before.at(at)^1;
+        auto count=stage_writes;Check(device.WriteAt(at,&bad,1).ok()&&device.Sync().ok(),"persist actual read-fence source corruption");
+        fixture_writes+=stage_writes-count;const auto corrupted=bytes(device);count=stage_writes;
+        auto rejected=acquire(retained);refused(rejected);
+        Check(stage_writes==count&&bytes(device)==corrupted,"corrupt source refusal never repairs bytes");
+        Check(page_number==15?rejected.error==LE::directory_failure&&rejected.checkpoint_error!=db::NativeCheckpointError::none:
+            rejected.error==LE::selection_failure&&rejected.selection_error!=db::NativeCheckpointSelectionError::none,
+            "preserve distinct selector versus current-directory failure");
+        count=stage_writes;Check(device.WriteAt(at,before.data()+at,1).ok()&&device.Sync().ok(),"restore explicit corrupted fixture byte");
+        fixture_writes+=stage_writes-count;
+        Check(acquire(retained).ok(),"source repair requires actual fresh verification not cached failure or success");
+      }
+      if(p==0&&role==1){
+        byte warm=0;for(unsigned n=0;n<4097;++n)Check(device.ReadAt(0,&warm,1).ok()&&second_device.ReadAt(0,&warm,1).ok(),"warm bounded telemetry before read-fence allocation faults");
+        reads=observed_full_digests=0;observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
+        auto measured=acquire(retained);track_reads=count_full_digests=count_allocations=false;
+        const auto nreads=reads,ndigests=observed_full_digests;const auto nallocs=observed_allocations;
+        Check(measured.ok(),"measure actual selected read fence faults");measured.lease.reset();
+        for(unsigned n=1;n<=nreads;++n){reads=0;read_fault=n;track_reads=true;auto r=acquire(retained);track_reads=false;
+          Check(!read_fault,"selected read fence consumes each read failure");refused(r);}
+        for(unsigned n=1;n<=ndigests;++n){full_digest_fault=n;auto r=acquire(retained);
+          Check(!full_digest_fault,"selected read fence consumes each hash failure");refused(r);}
+        for(unsigned long n=0;n<=nallocs;++n){const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+          allocation_budget=n;auto r=acquire(retained);const auto remainder=allocation_budget;allocation_budget=-1;
+          Check(n==nallocs?remainder>=0:remainder<0,"complete selected read fence allocation sweep");
+          if(r.ok()){Check(r.lease->retained_image_bytes()==retained,"successful fault sweep has full source");
+            if(remainder<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only recorded telemetry allocation loss permits read lease");}
+          else refused(r);
+          if(n==nallocs)Check(r.ok(),"selected read fence terminal allocation success");}
+        std::cout<<"selected read fence reads="<<nreads<<" hashes="<<ndigests<<" allocations="<<nallocs<<'\n';
+        auto reverse=devices;std::reverse(reverse.begin(),reverse.end());std::atomic<unsigned> completed{0};
+        std::thread one([&]{for(unsigned n=0;n<4;++n)if(acquire(retained).ok())++completed;}),
+          two([&]{for(unsigned n=0;n<4;++n)if(db::AcquireNativeSelectedCheckpointReadLease(Id(1),reverse,Id(2),retained).ok())++completed;});
+        one.join();two.join();Check(completed==8,"opposite-order selected read leases take binary-ordered guards");
+      }
+      Check(availability()==devices.size(),"all failed and completed read-fence attempts release their guards");
+      Check(stage_writes==writes_before+fixture_writes&&bytes(device)==before&&bytes(second_device)==other_before,"selected read fence and all failures preserve exact source bytes");
+    }
     Check(!page::ReadNativeAllocationChainFromOpenDevice(device,{Id(1),Id(2),Profile(p)},budget).ok(),"new map was not read from the stale bootstrap allocation address");
     auto leaf=LeafExample(p);stage_writes=stage_syncs=0;
     const auto insufficient_leaf=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,budget);
@@ -5724,6 +5905,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     map=saved;persist();auto bad=SelectionOracle(selection);bad.back()^=1;put(31,bad);empty(read(budget));consumers(CheckpointRef(initial),false);persist();
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only selector reopen");Check(read(budget).ok(),"actual bound selector survives reopen");consumers(CheckpointRef(current),true);
     Check(device.Close().ok()&&second_device.Close().ok(),"release node ownership before fresh selector process");
+    OwnedCheckpointSource(fixture.root,p,p==0&&role==1);
     const auto child=::fork();Check(child>=0,"fork actual selector reader");
     if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","bound-selector-probe","--bound-selector-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds actual selector and retained targets");
@@ -5838,7 +6020,9 @@ int main(int argc,char** argv) {
       r.error==db::NativeCheckpointSelectionError::checkpoint_binding_mismatch&&!r.selection&&
       r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&
       r.allocation.pages.empty()&&!r.retained_image_bytes?0:5;
-    return r.ok()&&r.selection->selection_generation==2&&r.checkpoint_inventory.checkpoint->header.page_number==36&&
+    const auto held=db::AcquireNativeSelectedCheckpointReadLease(Id(1),{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},Id(2),16*u64{sizes[p]});
+    return held.ok()&&held.lease->checkpoint().page_number==36&&held.lease->directory().ok()&&
+      r.ok()&&r.selection->selection_generation==2&&r.checkpoint_inventory.checkpoint->header.page_number==36&&
       r.predecessor.checkpoint->header.page_number==19&&r.allocation.state_counts[0]==1?0:4;
   }
   if(argc==2&&std::string_view(argv[1])=="--bound-selector-only"){

@@ -61,11 +61,19 @@ inline void Run() {
       api::EngineRequestContext c;c.database_path=config.path;c.database_uuid=fixture.database_uuid;
       c.principal_uuid=fixture.principal_uuid;c.security_context_present=true;c.catalog_generation_id=1;
       const auto loaded=api::LoadSecurityPrincipalLifecycleState(c);Require(loaded.ok,"fresh security source");
+      // Runtime configuration epochs and durable catalog event counters are
+      // independent namespaces. Authentication/configuration admission is an
+      // explicit component-fixture input, never inferred from event counts.
+      constexpr std::uint64_t configuration_security_epoch=100003;
+      constexpr std::uint64_t configuration_policy_epoch=200003;
+      Require(loaded.state.security_generation!=configuration_security_epoch&&
+          loaded.state.policy_generation!=configuration_policy_epoch,
+          "fixture must exercise unequal configuration and event generations");
       auto projected=api::ProjectDurableAuthorizationState(loaded.state,{c.database_uuid,c.principal_uuid,
-          loaded.state.security_generation,loaded.state.policy_generation,c.catalog_generation_id});
+          configuration_security_epoch,configuration_policy_epoch,c.catalog_generation_id});
       const auto materialized=api::MaterializeDurableAuthorizationContext(projected,{c.principal_uuid});
       Require(materialized.ok,"fixture admitted context");c.authorization_context=materialized.context;
-      c.security_epoch=loaded.state.security_generation;return c;
+      c.security_epoch=configuration_security_epoch;return c;
     };
     const auto bytes=[&]{std::ifstream in(config.path,std::ios::binary);Require(in.good(),"security file byte read");
       return std::vector<char>(std::istreambuf_iterator<char>(in),{});};
@@ -127,6 +135,10 @@ inline void Run() {
     {auto allowed=acquire(current);Require(allowed.ok()&&allowed.lease->database()==fixture.database_uuid&&
         allowed.lease->filespace()==fixture.filespace_uuid&&allowed.lease->operation()==operation&&
         allowed.lease->action()==K::growth,"exact binary action security binding");
+      Require(allowed.lease->authorization().security_epoch==current.security_epoch&&
+          allowed.lease->authorization().policy_epoch==current.authorization_context.policy_epoch&&
+          allowed.lease->authorization().security_context_generation==current.authorization_context.security_context_generation,
+          "lease preserves configuration epochs and actual durable context generation separately");
       Require(allowed.lease->authorization().engine_owned_bootstrap_role_uuid.is_nil(),"service receives no bootstrap privilege");
       // Same owning fence blocks another thread's security/finality guard.
       auto lookup=api::AcquireTransactionInventoryGuard(config.path);auto* publication_mutex=lookup.mutex();lookup.unlock();
@@ -142,7 +154,7 @@ inline void Run() {
       if(invalid==0)c.security_context_present=false;if(invalid==1)c.database_uuid={};if(invalid==2)c.principal_uuid={};
       if(invalid==3)c.database_path.clear();if(invalid==4)c.database_path.push_back('\0');
       if(invalid==5)++c.authorization_context.security_context_generation;
-      if(invalid==6)++c.authorization_context.policy_epoch;if(invalid==7)++c.security_epoch;
+      if(invalid==6)c.authorization_context.policy_epoch=0;if(invalid==7)++c.security_epoch;
       if(invalid==8)++c.catalog_generation_id;if(invalid==9)c.authorization_context.authority_uuid=operation;
       denied(acquire(c),invalid<5?E::invalid_request:E::stale_context);}
     auto wrong=current;wrong.database_path=(fixture.dir/"absent.sbdb").string();

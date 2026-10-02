@@ -15,6 +15,9 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <thread>
+
+namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; }
 
 namespace scratchbird::storage::disk {
 
@@ -215,6 +218,13 @@ class FileDevice {
   }
 
  private:
+  friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
+  // Only the native source factory may detach the path serialization guard,
+  // while it transfers exclusive ownership of independently OS-locked handles.
+  bool CanAdoptIndependentSource() const noexcept;
+  static u64 SourceOwnershipProcessId() noexcept;
+  u64 open_process_id_ = 0;
+  std::thread::id open_thread_id_;
   enum class LatencyOperation { read, write, sync };
   void ObserveIoLatency(LatencyOperation, double micros, const char* result) noexcept;
   std::atomic<u64> rejected_io_latency_{0}, failed_io_latency_{0};
