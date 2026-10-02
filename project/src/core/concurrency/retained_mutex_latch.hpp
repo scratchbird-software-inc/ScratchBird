@@ -4,13 +4,18 @@
 
 #include "checked_fifo_mutex.hpp"
 #include "memory_safe_retirement.hpp"
+#include <algorithm>
+#include <limits>
 #include <system_error>
 
 namespace scratchbird::core::concurrency {
 
-// Internal retained mechanism, not current runtime/security/lock-order admission.
+// Internal retained mechanism, not current runtime/security admission.
 // The caller supplies admitted binary identities and bounded memory grants. This
 // component implements ordinary FIFO only; it cannot authorize emergency bypass.
+// Declared global latch classes are enforced against this thread's actual held
+// retained grants. This does not cover unconverted primitives or authorize any
+// ordering exception. Same-class ordering still needs the owning cycle policy.
 using MutexUuid = memory::MemoryBinaryUuid;
 using MutexClock = platform::CheckedFifoMutex::Clock;
 enum class MutexOwnerScope {
@@ -18,6 +23,12 @@ enum class MutexOwnerScope {
   cluster, task, temporary, metrics, evidence
 };
 enum class MutexOwnershipProfile { owned, process_global };
+enum class MutexLatchClass : std::uint8_t {
+  unspecified, engine_lifecycle, database_state, transaction_inventory,
+  catalog_metadata, relation_index_descriptor, filespace_descriptor,
+  allocation_map, page_cache_bucket, page, record_lineage, archive_descriptor,
+  temporary_storage, metrics_evidence
+};
 enum class MutexLatchMode {
   none, shared_read, intent_read, intent_write, exclusive_write, upgrade,
   cleanup, recovery, flush, eviction, publication, verification
@@ -30,6 +41,7 @@ struct MutexLatchDescriptor {
   std::uint64_t creation_epoch = 0;
   MutexUuid last_transition{};
   MutexOwnershipProfile ownership_profile = MutexOwnershipProfile::owned;
+  MutexLatchClass latch_class = MutexLatchClass::unspecified;
 };
 struct MutexLatchLimits {
   std::uint32_t waiters = 0;
@@ -46,11 +58,17 @@ struct MutexLatchRequest {
 enum class MutexLatchCode {
   acquired, released, drained, closed, cancelled, timed_out, busy, recursive,
   exhausted, invalid_request, invalid_mode, wrong_owner, no_grant,
-  synchronization_failed, memory_failed
+  synchronization_failed, memory_failed, order_violation
+};
+struct MutexLatchOrderConflict {
+  MutexUuid held_primitive{};
+  std::uint64_t held_generation = 0;
+  MutexLatchClass held_class = MutexLatchClass::unspecified;
 };
 struct MutexLatchResult {
   MutexLatchCode code = MutexLatchCode::invalid_request;
   memory::SafeRetirementStatus memory_status = memory::SafeRetirementStatus::ok;
+  std::optional<MutexLatchOrderConflict> order_conflict{};
 };
 struct MutexLatchSnapshot {
   MutexLatchDescriptor descriptor;
@@ -72,8 +90,31 @@ struct MutexLatchWaitSetObservation {
   platform::CheckedFifoMutex::WaitObservation wait;
   std::size_t offset = 0;
 };
+struct MutexLatchCycleEdge {
+  std::size_t latch_index = 0;
+  std::size_t waiter_index = 0;
+  std::size_t next = 0;
+  std::size_t visit = 0;
+};
+enum class MutexLatchCycleStatus { capture_failed, exhausted, invalid_observation, execution_binding_required, no_cycle_in_set, cycle };
+struct MutexLatchCycleResult {
+  MutexLatchCycleStatus status = MutexLatchCycleStatus::capture_failed;
+  platform::CheckedFifoMutex::WaitSetResult capture = platform::CheckedFifoMutex::WaitSetResult::invalid;
+  std::size_t edge_count = 0;
+  std::size_t cycle_size = 0;
+};
 
 namespace detail {
+struct MutexLatchState;
+// Intrusive per-native-thread held stack; nodes live in the already governed
+// retained payload, not in movable grant wrappers or a private heap. A grant
+// move cannot change order ownership. Successful native release is still
+// thread-affine. No other thread reads or edits this thread's stack.
+struct MutexHeldLatches {
+  MutexLatchState* head = nullptr;
+  std::uint32_t count = 0;
+};
+inline thread_local MutexHeldLatches mutex_held_latches;
 inline bool MutexHazardValid(const memory::SafeRetirementHazard& hazard) noexcept {
   return memory::MemorySystemUuidValid(hazard.hazard_id) &&
       memory::MemorySystemUuidValid(hazard.owner_task) &&
@@ -95,11 +136,33 @@ struct MutexLatchState {
   bool retirement_admitted = false;
   std::uint32_t references = 0;
   std::uint32_t grants = 0;
+  MutexLatchState* held_previous = nullptr;
+  MutexLatchState* held_next = nullptr;
+  bool held_linked = false;
   MutexLatchState(MutexLatchDescriptor d, MutexLatchLimits l,
                   memory::MemorySafeRetirement& memory_domain)
       : descriptor(d), limits(l), domain(memory_domain), native(l.waiters) {}
   ~MutexLatchState() noexcept {
-    if (!closed || !fenced || references || grants) std::terminate();
+    if (!closed || !fenced || references || grants || held_linked ||
+        held_previous || held_next) std::terminate();
+  }
+  void LinkHeld() noexcept {
+    auto& held=mutex_held_latches;
+    if (held_linked || held.count==std::numeric_limits<std::uint32_t>::max()) std::terminate();
+    held_previous=nullptr; held_next=held.head;
+    if (held_next) held_next->held_previous=this;
+    held.head=this; ++held.count; held_linked=true;
+  }
+  void UnlinkHeld() noexcept {
+    auto& held=mutex_held_latches;
+    if (!held_linked || !held.count) std::terminate();
+    if (held_previous) held_previous->held_next=held_next;
+    else {
+      if (held.head!=this) std::terminate();
+      held.head=held_next;
+    }
+    if (held_next) held_next->held_previous=held_previous;
+    held_previous=nullptr; held_next=nullptr; held_linked=false; --held.count;
   }
   void Notify() noexcept { if (!changed.NotifyAll()) std::terminate(); }
   void ReleaseReference() noexcept {
@@ -108,6 +171,20 @@ struct MutexLatchState {
     --references; Notify();
   }
 };
+inline std::optional<MutexLatchOrderConflict> MutexOrderConflict(MutexLatchClass requested) noexcept {
+  // Bounded by actual retained grants and their owning physical admission.
+  // Count also guards structural corruption; this is a traversal, never a wait.
+  auto* current=mutex_held_latches.head;
+  auto remaining=mutex_held_latches.count;
+  while (current) {
+    if (!remaining-- || !current->held_linked) std::terminate();
+    const auto& d=current->descriptor;
+    if (d.latch_class>requested) return MutexLatchOrderConflict{d.primitive_id,d.generation,d.latch_class};
+    current=current->held_next;
+  }
+  if (remaining) std::terminate();
+  return {};
+}
 inline MutexLatchCode MutexNativeCode(platform::CheckedFifoMutex::Result result) noexcept {
   using N = platform::CheckedFifoMutex::Result;
   using C = MutexLatchCode;
@@ -155,6 +232,9 @@ class MutexLatchGrant {
       std::lock_guard lock(state_->lifetime);
       if (!state_->native.Unlock(request_.task_id)) return {C::wrong_owner};
       if (state_->grants != 1) std::terminate();
+      // The lifetime lock keeps a successor's commit from linking this same
+      // payload until the prior owner has removed its node after native release.
+      state_->UnlinkHeld();
       --state_->grants; state_->Notify();
       state_ = nullptr;
     } catch (const std::system_error&) {
@@ -179,6 +259,80 @@ class MutexLatchGrant {
 class MutexLatchOwner;
 class MutexLatchOperation {
  public:
+  // Always capture from real guarded objects; never consume caller-asserted
+  // graph edges. Scratch spans are exclusively borrowed, admitted by the caller.
+  // Nodes bind BOTH native thread and binary task: a task with concurrent
+  // executions must not create a false cycle by collapsing those executions.
+  // Closed/cancelled/expired waits cannot contribute a continuing wait edge.
+  // O(W^2) bounded edge linking, O(W) functional-graph walk, no allocation,
+  // recursion or polling. cycle[0..cycle_size) indexes edges from this call.
+  // This is a supplied-set observation, not global absence proof, current phase
+  // eligibility, a victim choice, cancellation acknowledgement or resolution.
+  // The owner MUST freshly revalidate graph/execution/phase before any action.
+  static MutexLatchCycleResult CaptureWaitCycle(
+      std::span<MutexLatchOperation* const> operations,
+      std::span<platform::CheckedFifoMutex::WaitSetEntry> frames,
+      std::span<MutexLatchWaitSetObservation> observations,
+      std::span<platform::CheckedFifoMutex::WaiterObservation> waiters,
+      std::span<MutexLatchCycleEdge> edges, std::span<std::size_t> cycle,
+      std::uint32_t max_latches, std::uint32_t max_waiters) {
+    using C = MutexLatchCycleStatus;
+    using R = platform::CheckedFifoMutex::WaitSetResult;
+    if (!max_waiters) return {};
+    const auto capture=SnapshotWaitSet(operations,frames,observations,
+        waiters.first(std::min<std::size_t>(waiters.size(),max_waiters)),max_latches);
+    if (capture!=R::captured) return {C::capture_failed,capture};
+    std::size_t count=0;
+    for (std::size_t i=0;i<operations.size();++i) count+=observations[i].wait.state.waiters;
+    if (edges.size()<count || cycle.size()<count) return {C::exhausted,capture};
+    const auto now=MutexClock::now();
+    std::size_t used=0;
+    for (std::size_t i=0;i<operations.size();++i) {
+      const auto& latch=observations[i]; const auto& owner=latch.wait;
+      if (owner.state.held && (owner.holder==std::thread::id{} || !owner.owner ||
+          !memory::MemorySystemUuidValid(*owner.owner))) return {C::invalid_observation,capture};
+      for (std::size_t j=0;j<owner.state.waiters;++j) {
+        const auto index=latch.offset+j; const auto& wait=waiters[index];
+        if (wait.thread==std::thread::id{} || !wait.owner ||
+            !memory::MemorySystemUuidValid(*wait.owner)) return {C::invalid_observation,capture};
+        if (!owner.state.held || owner.state.closed || wait.cancellation_requested ||
+            (wait.deadline && now>=*wait.deadline)) continue;
+        for (std::size_t k=0;k<used;++k)
+          if (waiters[edges[k].waiter_index].thread==wait.thread)
+            return {C::invalid_observation,capture};
+        edges[used++]={i,index,count,0};
+      }
+    }
+    // Each native execution can have at most one blocking outgoing wait.
+    // Missing successors terminate a path; no unobserved edge is manufactured.
+    for (std::size_t i=0;i<used;++i) {
+      const auto& owner=observations[edges[i].latch_index].wait;
+      for (std::size_t j=0;j<used;++j) {
+        const auto& wait=waiters[edges[j].waiter_index];
+        if (owner.holder==wait.thread) {
+          // A native thread reused/rebound across different tasks is not proof
+          // of either a bound cycle or its absence. Its owner must resolve the
+          // execution binding; do not splice tasks or silently drop this edge.
+          if (owner.owner!=wait.owner) return {C::execution_binding_required,capture,used,0};
+          edges[i].next=j; break;
+        }
+      }
+    }
+    for (std::size_t start=0;start<used;++start) {
+      if (edges[start].visit) continue;
+      const auto mark=start+1;
+      auto current=start;
+      while (current<used && !edges[current].visit) {
+        edges[current].visit=mark; current=edges[current].next;
+      }
+      if (current>=used || edges[current].visit!=mark) continue;
+      const auto first=current;
+      std::size_t length=0;
+      do { cycle[length++]=current; current=edges[current].next; } while (current!=first);
+      return {C::cycle,capture,used,length};
+    }
+    return {C::no_cycle_in_set,capture,used,0};
+  }
   // All operations must remain alive and must not be moved/reset concurrently.
   // Their existing real guards retain every native mutex throughout capture.
   // Caller-owned frames/output are bounded borrowed scratch, not a registry or
@@ -258,6 +412,10 @@ class MutexLatchOperation {
       return {C::invalid_request};
     if (request.mode != MutexLatchMode::exclusive_write) return {C::invalid_mode};
     auto& s = *state_;
+    if (const auto conflict=detail::MutexOrderConflict(s.descriptor.latch_class))
+      return {C::order_violation,S::ok,conflict};
+    if (detail::mutex_held_latches.count==std::numeric_limits<std::uint32_t>::max())
+      return {C::exhausted};
     memory::SafeRetirementGuard grant_guard;
     try {
       std::lock_guard lock(s.lifetime);
@@ -267,6 +425,12 @@ class MutexLatchOperation {
       const auto protected_state = s.domain.Protect(s.handle, grant_hazard, grant_guard);
       if (protected_state != S::ok) return {C::memory_failed, protected_state};
     } catch (const std::system_error&) { return {C::synchronization_failed}; }
+    // Memory preparation must not create an unchecked path if a future owning
+    // allocator enters another retained latch before returning to this thread.
+    if (const auto conflict=detail::MutexOrderConflict(s.descriptor.latch_class))
+      return {C::order_violation,S::ok,conflict};
+    if (detail::mutex_held_latches.count==std::numeric_limits<std::uint32_t>::max())
+      return {C::exhausted};
     platform::CheckedFifoMutex::Result native;
     try {
       native = immediate ? s.native.TryLock(deadline, stop, task_)
@@ -278,6 +442,7 @@ class MutexLatchOperation {
       try {
         std::lock_guard lock(s.lifetime);
         if (s.grants) std::terminate();
+        s.LinkHeld();
         ++s.grants;
         output.request_ = request;
         output.guard_ = std::move(grant_guard);
@@ -309,6 +474,8 @@ class MutexLatchOwner {
       MutexLatchLimits limits, memory::SafeRetirementHazard hazard) {
     using S = memory::SafeRetirementStatus;
     if (state_ || !memory::MemorySystemUuidValid(d.primitive_id) ||
+        d.latch_class<MutexLatchClass::engine_lifecycle ||
+        d.latch_class>MutexLatchClass::metrics_evidence ||
         !memory::MemorySystemUuidValid(d.last_transition) ||
         (d.owner_uuid && !memory::MemorySystemUuidValid(*d.owner_uuid)) ||
         d.owner_scope < MutexOwnerScope::engine || d.owner_scope > MutexOwnerScope::evidence ||
