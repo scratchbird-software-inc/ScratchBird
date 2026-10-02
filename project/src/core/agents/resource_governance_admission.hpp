@@ -210,10 +210,14 @@ ResourceGovernanceAdmissionResult AdmitResourceGovernance(
 std::string SerializeResourceGovernanceEvidence(
     const ResourceGovernanceAdmissionResult& result);
 
+enum class ResourceGovernanceReleaseCode { released, not_found, synchronization_failed };
+
 class ResourceGovernanceReservationLedger {
  public:
   explicit ResourceGovernanceReservationLedger(std::string ledger_id);
 
+  // Fallible result/evidence construction completes before ledger mutation.
+  // Allocation failure propagates with ownership, usage and sequences intact.
   ResourceGovernanceReservationAcquireResult Acquire(
       ResourceGovernanceReservationAcquireRequest request);
   ResourceGovernanceReservationReleaseResult Release(
@@ -231,6 +235,9 @@ class ResourceGovernanceReservationLedger {
   ResourceGovernanceReservationCleanupResult ExpireReservations(
       std::uint64_t now_tick);
   ResourceGovernanceReservationSnapshot Snapshot() const;
+  // Internal owning cleanup only. Caller must first quiesce actual resource use.
+  // No result allocation or evidence delivery; missing is not a release receipt.
+  ResourceGovernanceReleaseCode ReleaseNoAlloc(const std::string& token_id) noexcept;
 
  private:
   struct ActiveReservation {

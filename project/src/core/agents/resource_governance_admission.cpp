@@ -17,6 +17,12 @@
 namespace scratchbird::core::agents {
 namespace {
 
+// Returning a prepared result after publication must not introduce another
+// fallible allocation when named-return-value optimization is unavailable.
+static_assert(std::is_nothrow_move_constructible_v<ResourceGovernanceReservationAcquireResult>);
+static_assert(std::is_nothrow_move_constructible_v<ResourceGovernanceReservationReleaseResult>);
+static_assert(std::is_nothrow_move_constructible_v<ResourceGovernanceReservationCleanupResult>);
+
 std::string BoolText(bool value) { return value ? "true" : "false"; }
 
 void Add(std::vector<std::string>* evidence, std::string value) {
@@ -632,12 +638,14 @@ ResourceGovernanceReservationLedger::Acquire(
       FirstExceededWithActive(active_usage_,
                               request.admission.requested,
                               request.admission.descriptor.limits);
-  if (!exceeded.empty()) {
+  const bool sequence_exhausted = next_sequence_ == std::numeric_limits<std::uint64_t>::max();
+  if (!exceeded.empty() || sequence_exhausted) {
     result.ok = false;
     result.fail_closed = true;
     result.diagnostic_code =
         "SB_RESOURCE_GOVERNANCE.RESERVATION_LEDGER_LIMIT_EXCEEDED";
-    result.diagnostic_detail = "active_reservations_exceed_quota_limit";
+    result.diagnostic_detail = sequence_exhausted ? "reservation_sequence_exhausted"
+                                                : "active_reservations_exceed_quota_limit";
     result.exceeded_quota = exceeded;
     result.status = LocalAgentError(result.diagnostic_code, result.diagnostic_detail);
     result.snapshot = SnapshotLocked();
@@ -652,7 +660,7 @@ ResourceGovernanceReservationLedger::Acquire(
   }
 
   ResourceGovernanceReservationToken token;
-  token.created_sequence = ++next_sequence_;
+  token.created_sequence = next_sequence_ + 1;
   token.token_id = ledger_id_ + ":" + request.admission.operation_id + ":" +
                    std::to_string(token.created_sequence);
   token.operation_id = request.admission.operation_id;
@@ -662,11 +670,11 @@ ResourceGovernanceReservationLedger::Acquire(
   token.owner_scope = std::move(request.owner_scope);
   token.owner_uuid = request.owner_uuid;
   token.lease_deadline_tick = request.lease_deadline_tick;
-  AddQuota(&active_usage_, token.reserved);
-  active_[token.token_id] = ActiveReservation{token};
-
   result.reservation = token;
   result.snapshot = SnapshotLocked();
+  ++result.snapshot.active_reservation_count;
+  ++result.snapshot.created_reservation_count;
+  AddQuota(&result.snapshot.active, token.reserved);
   result.ok = true;
   result.reservation_created = true;
   result.status = LocalAgentOk();
@@ -678,7 +686,13 @@ ResourceGovernanceReservationLedger::Acquire(
       "resource_reservation.diagnostic_code=" + result.diagnostic_code);
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
-                    active_usage_);
+                    result.snapshot.active);
+  // Prepare every fallible response and map node before the atomic accounting
+  // publication. An exception leaves sequence, ownership and charges unchanged.
+  const auto inserted = active_.emplace(token.token_id, ActiveReservation{token});
+  if (!inserted.second) std::terminate(); // Unique monotonic issuance invariant.
+  AddQuota(&active_usage_, token.reserved);
+  ++next_sequence_;
   return result;
 }
 
@@ -714,10 +728,10 @@ ResourceGovernanceReservationLedger::Release(
   }
 
   result.reservation = it->second.token;
-  SubtractQuota(&active_usage_, it->second.token.reserved);
-  active_.erase(it);
-  ++released_count_;
   result.snapshot = SnapshotLocked();
+  SubtractQuota(&result.snapshot.active, it->second.token.reserved);
+  --result.snapshot.active_reservation_count;
+  ++result.snapshot.released_reservation_count;
   result.ok = true;
   result.released = true;
   result.status = LocalAgentOk();
@@ -728,7 +742,10 @@ ResourceGovernanceReservationLedger::Release(
       "resource_reservation.diagnostic_code=" + result.diagnostic_code);
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
-                    active_usage_);
+                    result.snapshot.active);
+  SubtractQuota(&active_usage_, it->second.token.reserved);
+  active_.erase(it);
+  ++released_count_;
   return result;
 }
 
@@ -737,6 +754,21 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservations(
     const std::string& owner_scope,
     ResourceGovernanceReservationReleaseReason reason) {
   return ReleaseOwnerReservationsImpl(owner_scope, {}, reason);
+}
+
+ResourceGovernanceReleaseCode ResourceGovernanceReservationLedger::ReleaseNoAlloc(
+    const std::string& token_id) noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = active_.find(token_id);
+    if (found == active_.end()) return ResourceGovernanceReleaseCode::not_found;
+    SubtractQuota(&active_usage_, found->second.token.reserved);
+    active_.erase(found);
+    ++released_count_;
+    return ResourceGovernanceReleaseCode::released;
+  } catch (const std::system_error&) {
+    return ResourceGovernanceReleaseCode::synchronization_failed;
+  }
 }
 
 ResourceGovernanceReservationCleanupResult
@@ -764,18 +796,17 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservationsImpl(
       "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = active_.begin(); it != active_.end();) {
-    if (it->second.token.owner_scope != owner_scope ||
-        it->second.token.owner_uuid != owner_uuid) {
-      ++it;
-      continue;
-    }
-    SubtractQuota(&active_usage_, it->second.token.reserved);
-    it = active_.erase(it);
-    ++released_count_;
+  result.snapshot = SnapshotLocked();
+  const auto matches = [&](const ActiveReservation& entry) {
+    return entry.token.owner_scope == owner_scope && entry.token.owner_uuid == owner_uuid;
+  };
+  for (const auto& entry : active_) {
+    if (!matches(entry.second)) continue;
+    SubtractQuota(&result.snapshot.active, entry.second.token.reserved);
+    --result.snapshot.active_reservation_count;
+    ++result.snapshot.released_reservation_count;
     ++result.released_count;
   }
-  result.snapshot = SnapshotLocked();
   result.ok = true;
   result.status = LocalAgentOk();
   result.diagnostic_code = "SB_RESOURCE_GOVERNANCE.RESERVATION_CLEANUP";
@@ -786,7 +817,13 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservationsImpl(
       "resource_reservation.diagnostic_code=" + result.diagnostic_code);
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
-                    active_usage_);
+                    result.snapshot.active);
+  for (auto it = active_.begin(); it != active_.end();) {
+    if (!matches(it->second)) { ++it; continue; }
+    SubtractQuota(&active_usage_, it->second.token.reserved);
+    it = active_.erase(it);
+    ++released_count_;
+  }
   return result;
 }
 
@@ -804,18 +841,18 @@ ResourceGovernanceReservationLedger::ExpireReservations(std::uint64_t now_tick) 
       "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = active_.begin(); it != active_.end();) {
-    const auto deadline = it->second.token.lease_deadline_tick;
-    if (deadline == 0 || deadline > now_tick) {
-      ++it;
-      continue;
-    }
-    SubtractQuota(&active_usage_, it->second.token.reserved);
-    it = active_.erase(it);
-    ++released_count_;
+  result.snapshot = SnapshotLocked();
+  const auto expired = [&](const ActiveReservation& entry) {
+    const auto deadline = entry.token.lease_deadline_tick;
+    return deadline != 0 && deadline <= now_tick;
+  };
+  for (const auto& entry : active_) {
+    if (!expired(entry.second)) continue;
+    SubtractQuota(&result.snapshot.active, entry.second.token.reserved);
+    --result.snapshot.active_reservation_count;
+    ++result.snapshot.released_reservation_count;
     ++result.released_count;
   }
-  result.snapshot = SnapshotLocked();
   result.ok = true;
   result.status = LocalAgentOk();
   result.diagnostic_code = "SB_RESOURCE_GOVERNANCE.RESERVATION_TIMEOUT_CLEANUP";
@@ -826,7 +863,13 @@ ResourceGovernanceReservationLedger::ExpireReservations(std::uint64_t now_tick) 
       "resource_reservation.diagnostic_code=" + result.diagnostic_code);
   AddVectorEvidence(&result.evidence,
                     "resource_reservation.active",
-                    active_usage_);
+                    result.snapshot.active);
+  for (auto it = active_.begin(); it != active_.end();) {
+    if (!expired(it->second)) { ++it; continue; }
+    SubtractQuota(&active_usage_, it->second.token.reserved);
+    it = active_.erase(it);
+    ++released_count_;
+  }
   return result;
 }
 

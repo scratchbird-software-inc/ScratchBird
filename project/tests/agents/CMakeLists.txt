@@ -8,6 +8,14 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(runtime_permit_governor_gate
+  "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_permit_governor_gate.cpp")
+target_compile_features(runtime_permit_governor_gate PRIVATE cxx_std_20)
+target_link_libraries(runtime_permit_governor_gate PRIVATE sb_core_resource_governance)
+add_test(NAME runtime_permit_governor_gate COMMAND runtime_permit_governor_gate)
+set_tests_properties(runtime_permit_governor_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;resource_governance;fault;runtime_permits")
+
 add_executable(runtime_authority_binding_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_gate.cpp")
 target_compile_features(runtime_authority_binding_gate PRIVATE cxx_std_23)
