@@ -773,250 +773,56 @@ void BoundOperationsRetainConcreteTypeIds() {
       "DATATYPE.NULL_NOT_ADMITTED",
       "set codec used a generic rejection for disallowed SQL NULL element");
 
-  dt::DatatypeSetDescriptor collision_descriptor;
-  collision_descriptor.element_type_id = dt::CanonicalTypeId::character;
-  collision_descriptor.element_descriptor =
+  dt::DatatypeSetDescriptor character_set_descriptor;
+  character_set_descriptor.element_type_id =
+      dt::CanonicalTypeId::character;
+  character_set_descriptor.element_descriptor =
       DescriptorFor(dt::CanonicalTypeId::character, 0x45u);
-  collision_descriptor.allow_null_elements = true;
-  collision_descriptor.allow_duplicates = false;
+  character_set_descriptor.allow_null_elements = true;
 
-  auto present_printable_null = dt::DatatypeOperationValue{
+  auto printable_null = dt::DatatypeOperationValue{
       dt::CanonicalTypeId::character, "<NULL>", false};
-  present_printable_null.descriptor =
-      collision_descriptor.element_descriptor;
-  const auto sql_null = TypedNull(dt::CanonicalTypeId::character,
-                                  collision_descriptor.element_descriptor);
-  auto descriptorless_present_profile = collision_descriptor;
-  descriptorless_present_profile.element_descriptor = {};
-  descriptorless_present_profile.allow_null_elements = false;
-  CheckRejectedAs(
-      dt::EncodeSetValue(descriptorless_present_profile,
-                         {present_printable_null}),
-      "DATATYPE.DESCRIPTOR.INVALID",
-      "set encoder silently stripped a present element descriptor");
-  const auto collision_set = dt::EncodeSetValue(
-      collision_descriptor,
-      {sql_null, present_printable_null, sql_null, present_printable_null});
-  Check(collision_set.ok(),
-        "set codec refused SQL NULL plus present printable <NULL>");
-  Check(collision_set.encoded_set.starts_with("SBSET2;") &&
-            collision_set.encoded_set.ends_with(
-                ";items=N,V3c4e554c4c3e") &&
-            collision_set.encoded_set.find("<NULL>") == std::string::npos,
-        "set codec did not keep element state separate from payload");
-
-  dt::DatatypeSetOperationRequest set_operation;
-  set_operation.descriptor = collision_descriptor;
-  set_operation.left_encoded_set = collision_set.encoded_set;
-  set_operation.operation = dt::DatatypeSetOperationKind::cardinality;
-  const auto cardinality = dt::ApplySetOperation(set_operation);
-  std::uint64_t cardinality_value = 0;
-  Check(cardinality.ok() &&
-            cardinality.value.type_id == dt::CanonicalTypeId::uint64 &&
-            !cardinality.value.is_null &&
-            dt::DecodeCanonicalUint64Value(cardinality.value.encoded_value,
-                                           &cardinality_value) &&
-            cardinality_value == 2,
-        "set duplicate suppression collapsed SQL NULL and present <NULL>");
-
-  set_operation.operation = dt::DatatypeSetOperationKind::membership;
-  set_operation.right_value = present_printable_null;
-  const auto membership = dt::ApplySetOperation(set_operation);
-  Check(membership.ok() && IsCanonicalBoolean(membership.value, true),
-        "set round trip lost present printable <NULL>");
-
-  set_operation.right_value = present_printable_null;
-  set_operation.right_value.descriptor = {};
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "present set membership without exact element descriptor");
-
-  set_operation.right_value = sql_null;
-  const auto null_membership = dt::ApplySetOperation(set_operation);
-  Check(null_membership.ok() &&
-            IsCanonicalBoolean(null_membership.value, true),
-        "typed set membership could not represent SQL NULL");
-
-  set_operation.right_value.descriptor = {};
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "SQL NULL membership without exact element descriptor");
-  set_operation.right_value = sql_null;
-  set_operation.right_value.encoded_value = "payload";
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.NULL_STATE.INVALID",
-                  "payload-bearing SQL NULL membership");
-
-  const auto reverse_set = dt::EncodeSetValue(
-      collision_descriptor, {present_printable_null, sql_null});
-  set_operation.operation = dt::DatatypeSetOperationKind::equals;
-  set_operation.right_encoded_set = reverse_set.encoded_set;
-  const auto equality = dt::ApplySetOperation(set_operation);
-  Check(reverse_set.ok() && equality.ok() &&
-            IsCanonicalBoolean(equality.value, true),
-        "set state-tagged round trip changed equality");
-
-  auto missing_element_descriptor = collision_descriptor;
-  missing_element_descriptor.element_descriptor = {};
-  CheckRejectedAs(
-      dt::EncodeSetValue(missing_element_descriptor,
-                         {sql_null, present_printable_null}),
-      "DATATYPE.DESCRIPTOR.INVALID",
-      "nullable set without exact element descriptor");
-
-  auto wrong_element_descriptor = collision_descriptor;
-  wrong_element_descriptor.element_descriptor =
-      DescriptorFor(dt::CanonicalTypeId::int64, 0x46u);
-  CheckRejectedAs(
-      dt::EncodeSetValue(wrong_element_descriptor,
-                         {sql_null, present_printable_null}),
-      "DATATYPE.DESCRIPTOR.INVALID",
-      "nullable set with wrong element descriptor");
-
-  set_operation.descriptor = missing_element_descriptor;
-  set_operation.left_encoded_set = collision_set.encoded_set;
-  set_operation.operation = dt::DatatypeSetOperationKind::cardinality;
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "nullable set operation without exact element descriptor");
-
-  set_operation.descriptor = collision_descriptor;
-  set_operation.left_encoded_set =
-      "SBSET1;element=character;ordered=0;nulls=1;duplicates=0;items=3c4e554c4c3e";
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
+  printable_null.descriptor = character_set_descriptor.element_descriptor;
+  const auto character_null = TypedNull(
+      dt::CanonicalTypeId::character,
+      character_set_descriptor.element_descriptor);
+  const auto refused_character_set = dt::EncodeSetValue(
+      character_set_descriptor, {character_null, printable_null});
+  CheckRejectedAs(refused_character_set,
                   "SB_DATATYPE_SET_OPERATION_REJECTED",
-                  "legacy collision-prone set frame");
+                  "character set without collation authority");
+  Check(DiagnosticDetail(refused_character_set.diagnostic) ==
+            "character_set_collation_policy_unresolved" &&
+            refused_character_set.encoded_set.empty(),
+        "character set refusal published output or lost policy detail");
 
-  auto unknown_set_descriptor = collision_descriptor;
-  unknown_set_descriptor.element_type_id = dt::CanonicalTypeId::unknown;
-  CheckRejectedAs(dt::EncodeSetValue(unknown_set_descriptor, {}),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "set with unknown element type");
-  auto null_set_descriptor = collision_descriptor;
-  null_set_descriptor.element_type_id = dt::CanonicalTypeId::null_type;
-  CheckRejectedAs(dt::EncodeSetValue(null_set_descriptor, {}),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "set with standalone NULL element type");
-  set_operation.descriptor = unknown_set_descriptor;
-  set_operation.left_encoded_set = collision_set.encoded_set;
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "set operation with unknown element type");
-  set_operation.descriptor = null_set_descriptor;
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "set operation with standalone NULL element type");
+  auto descriptorless_character_set = character_set_descriptor;
+  descriptorless_character_set.element_descriptor = {};
+  CheckRejectedAs(
+      dt::EncodeSetValue(descriptorless_character_set,
+                         {character_null, printable_null}),
+      "DATATYPE.DESCRIPTOR.INVALID",
+      "character set without exact element descriptor");
 
-  set_operation.descriptor = collision_descriptor;
-  auto malformed_frame = collision_set.encoded_set;
-  malformed_frame.push_back(',');
-  set_operation.left_encoded_set = malformed_frame;
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
+  dt::DatatypeSetOperationRequest character_set_operation;
+  character_set_operation.descriptor = character_set_descriptor;
+  character_set_operation.operation =
+      dt::DatatypeSetOperationKind::membership;
+  character_set_operation.left_encoded_set =
+      "SBSET2;element=character;descriptor=unresolved";
+  character_set_operation.right_value = printable_null;
+  const auto refused_character_operation =
+      dt::ApplySetOperation(character_set_operation);
+  CheckRejectedAs(refused_character_operation,
                   "SB_DATATYPE_SET_OPERATION_REJECTED",
-                  "set frame with trailing empty token");
-
-  const auto items_marker = collision_set.encoded_set.find(";items=");
-  Check(items_marker != std::string::npos,
-        "set collision fixture has no items marker");
-  if (items_marker != std::string::npos) {
-    const std::string prefix = collision_set.encoded_set.substr(
-        0, items_marker + std::string(";items=").size());
-
-    set_operation.left_encoded_set = prefix + "N,N,V3c4e554c4c3e";
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "duplicate token in duplicates=0 set frame");
-
-    set_operation.left_encoded_set = prefix + "V3c4e554c4c3e,N";
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "unsorted token sequence in unordered set frame");
-
-    set_operation.left_encoded_set = prefix + "N,V3c4E554c4c3e";
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "uppercase noncanonical payload hex");
-
-    set_operation.left_encoded_set = prefix + "N,V3c4e554c4c3e,X";
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "malformed trailing set token");
-
-    auto uppercase_element = collision_set.encoded_set;
-    const auto element_name = uppercase_element.find("element=character");
-    Check(element_name != std::string::npos,
-          "set collision fixture has no canonical element name");
-    if (element_name != std::string::npos) {
-      uppercase_element[element_name + 8] = 'C';
-      set_operation.left_encoded_set = uppercase_element;
-      CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                      "SB_DATATYPE_SET_OPERATION_REJECTED",
-                      "noncanonical element type spelling");
-    }
-  }
-
-  auto altered_complete_descriptor = collision_descriptor;
-  altered_complete_descriptor.element_descriptor.length = 64;
-  altered_complete_descriptor.element_descriptor.modifier_flags |=
-      engine::ExecutionTypeModifierFlagBit(
-          engine::ExecutionTypeModifierFlag::length);
-  set_operation.descriptor = altered_complete_descriptor;
-  set_operation.left_encoded_set = collision_set.encoded_set;
-  CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                  "DATATYPE.DESCRIPTOR.INVALID",
-                  "set frame matched only descriptor UUID and epoch");
-
-  set_operation.descriptor = collision_descriptor;
-  malformed_frame = collision_set.encoded_set;
-  const auto descriptor_begin = malformed_frame.find(";descriptor=");
-  const auto descriptor_end = malformed_frame.find(";ordered=");
-  Check(descriptor_begin != std::string::npos &&
-            descriptor_end != std::string::npos &&
-            descriptor_end >= descriptor_begin + 6,
-        "set collision fixture has no complete descriptor fingerprint");
-  if (descriptor_begin != std::string::npos &&
-      descriptor_end != std::string::npos &&
-      descriptor_end >= descriptor_begin + 6) {
-    auto uppercase_descriptor = malformed_frame;
-    bool changed_hex_case = false;
-    for (std::size_t index = descriptor_begin + 12;
-         index < descriptor_end; ++index) {
-      if (uppercase_descriptor[index] >= 'a' &&
-          uppercase_descriptor[index] <= 'f') {
-        uppercase_descriptor[index] = static_cast<char>(
-            uppercase_descriptor[index] - 'a' + 'A');
-        changed_hex_case = true;
-        break;
-      }
-    }
-    Check(changed_hex_case, "descriptor fingerprint had no lowercase hex");
-    set_operation.left_encoded_set = uppercase_descriptor;
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "uppercase noncanonical descriptor fingerprint");
-
-    auto trailing_descriptor_bytes = malformed_frame;
-    trailing_descriptor_bytes.insert(descriptor_end, "00");
-    set_operation.left_encoded_set = trailing_descriptor_bytes;
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "descriptor fingerprint with trailing bytes");
-
-    auto odd_descriptor_hex = malformed_frame;
-    odd_descriptor_hex.erase(descriptor_end - 1, 1);
-    set_operation.left_encoded_set = odd_descriptor_hex;
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "descriptor fingerprint with malformed odd hex");
-
-    auto nonnullable_null_frame = malformed_frame;
-    nonnullable_null_frame[descriptor_end - 6] = '0';
-    nonnullable_null_frame[descriptor_end - 5] = '0';
-    set_operation.left_encoded_set = nonnullable_null_frame;
-    CheckRejectedAs(dt::ApplySetOperation(set_operation),
-                    "SB_DATATYPE_SET_OPERATION_REJECTED",
-                    "N token with nonnullable parsed element descriptor");
-  }
+                  "character set operation without collation authority");
+  Check(DiagnosticDetail(refused_character_operation.diagnostic) ==
+            "character_set_collation_policy_unresolved" &&
+            refused_character_operation.value.type_id ==
+                dt::CanonicalTypeId::unknown &&
+            refused_character_operation.value.encoded_value.empty() &&
+            refused_character_operation.encoded_set.empty(),
+        "character set operation refusal published output or lost policy detail");
 }
 
 void DurableCodecsRequireConcreteTypes() {
@@ -1145,6 +951,16 @@ void SerializationRetainsConcreteType() {
                     "mac_address_serialization_policy_unresolved" &&
                 serialized.serialized_value.empty(),
             "typed MAC address NULL serialization failure published output or wrong detail");
+      continue;
+    }
+    if (descriptor.type_id == dt::CanonicalTypeId::character) {
+      CheckRejectedAs(
+          serialized, "SB_DATATYPE_SERIALIZATION_REJECTED",
+          "typed character NULL serialization without codec policy");
+      Check(DiagnosticDetail(serialized.diagnostic) ==
+                    "character_serialization_policy_unresolved" &&
+                serialized.serialized_value.empty(),
+            "typed character NULL serialization failure published output or wrong detail");
       continue;
     }
     Check(serialized.ok(), "typed NULL serialization failed for " + label);

@@ -8,12 +8,16 @@
 
 #include "datatype_physical_encoding.hpp"
 
+#include "canonical_utf8.hpp"
+
 #include <array>
 #include <cstring>
 #include <utility>
 
 namespace scratchbird::core::datatypes {
 namespace {
+
+inline constexpr std::size_t kCanonicalCharacterMaximumBytes = 16'777'216;
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::LoadLittle16;
@@ -117,13 +121,26 @@ bool PayloadAllowedByLayout(const DatatypePhysicalValue& value,
     return true;
   }
 
-  if (value.payload.empty()) {
+  const bool empty_character_value =
+      value.state == DatatypePhysicalValueState::value &&
+      value.type_id == CanonicalTypeId::character;
+  if (value.payload.empty() && !empty_character_value) {
     *detail = "payload_missing";
     return false;
   }
 
   switch (value.state) {
     case DatatypePhysicalValueState::value:
+      if (value.type_id == CanonicalTypeId::character) {
+        if (value.payload.size() > kCanonicalCharacterMaximumBytes) {
+          *detail = "character_length_exceeded";
+          return false;
+        }
+        if (!ValidateCanonicalUtf8(value.payload.data(), value.payload.size())) {
+          *detail = "character_utf8_invalid";
+          return false;
+        }
+      }
       if (layout.storage_class == DatatypeStorageClass::inline_fixed &&
           layout.inline_bytes != value.payload.size()) {
         *detail = "inline_fixed_size_mismatch";
@@ -243,7 +260,11 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
     return Failure(value.state == DatatypePhysicalValueState::sql_null
                        ? "DATATYPE.NULL_STATE.INVALID"
-                       : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+                       : detail == "character_length_exceeded"
+                             ? "CTB.TEXT.LENGTH_EXCEEDED"
+                             : detail == "character_utf8_invalid"
+                                   ? "CTB.TEXT.INVALID_ENCODING"
+                                   : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
                    "datatype.physical.payload_refused",
                    detail);
   }
@@ -322,6 +343,15 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
                    "datatype.physical.payload_refused",
                    "null_payload_present");
   }
+  // Reject oversized inline character frames before copying caller-controlled
+  // payload bytes into the owned value buffer.
+  if (state == DatatypePhysicalValueState::value &&
+      type_id == CanonicalTypeId::character &&
+      payload_size > kCanonicalCharacterMaximumBytes) {
+    return Failure("CTB.TEXT.LENGTH_EXCEEDED",
+                   "datatype.physical.payload_refused",
+                   "character_length_exceeded");
+  }
   DatatypePhysicalValue value;
   value.type_id = type_id;
   value.state = state;
@@ -337,7 +367,11 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
     return Failure(value.state == DatatypePhysicalValueState::sql_null
                        ? "DATATYPE.NULL_STATE.INVALID"
-                       : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+                       : detail == "character_length_exceeded"
+                             ? "CTB.TEXT.LENGTH_EXCEEDED"
+                             : detail == "character_utf8_invalid"
+                                   ? "CTB.TEXT.INVALID_ENCODING"
+                                   : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
                    "datatype.physical.payload_refused",
                    detail);
   }

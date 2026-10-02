@@ -25,6 +25,8 @@
 namespace scratchbird::core::datatypes {
 namespace {
 
+inline constexpr std::size_t kCanonicalCharacterMaximumBytes = 16'777'216;
+
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::LoadLittle16;
 using scratchbird::core::platform::LoadLittle32;
@@ -617,6 +619,13 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
       value.payload_data[0] != 0 && value.payload_data[0] != 1) {
     return BinaryViewError("SB-DATATYPE-BINARY-BOOLEAN-PAYLOAD-INVALID",
                        "datatype.binary.boolean_payload_invalid");
+  }
+
+  if (value.type_id == CanonicalTypeId::character &&
+      !value.payload_is_toast_reference &&
+      value.payload_bytes > kCanonicalCharacterMaximumBytes) {
+    return BinaryViewError("CTB.TEXT.LENGTH_EXCEEDED",
+                       "datatype.binary.text_payload_too_large");
   }
 
   if (value.type_id == CanonicalTypeId::character &&
