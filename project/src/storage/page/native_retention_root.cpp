@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_retention_root.hpp"
+#include "native_decoded_storage_ranges.hpp"
+#include <type_traits>
 #include "hash_digest_parts.hpp"
 #include "disk_device.hpp"
 #include <algorithm>
@@ -29,7 +31,7 @@ auto Digest(const byte* b,std::size_t size,std::size_t field,bool clear=true){co
 NativeRetentionPageResult Fail(E e){NativeRetentionPageResult r;r.error=e;return r;}
 NativeRetentionChainResult ChainFail(E e){NativeRetentionChainResult r;r.error=e;return r;}
 bool Legal(const NativeRetentionPin& r){return r.kind==NativeRetentionKind::legal_hold||r.access==NativeRetentionAccess::legal_hold;}
-E Validate(const NativeRetentionPage& v){const auto& h=v.header;const bool root=h.page_type==0x303;
+template<class Page> E Validate(const Page& v){const auto& h=v.header;const bool root=h.page_type==0x303;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||(!root&&h.page_type!=0x304)||h.flags||!h.page_number)return E::invalid_header;
   if(!V7(v.object_uuid)||!V7(v.creator_transaction_uuid)||!v.epoch||!v.creator_local_transaction_id||(v.flags&~u64{1})||v.records.size()>(h.page_size_bytes-start)/width)return E::invalid_family;
   if(root){if(!v.records.empty()||v.first_record||v.legal_hold_pins>v.total_pins)return E::invalid_family;
@@ -62,18 +64,35 @@ NativeRetentionPageResult EncodeNativeRetentionPage(const NativeRetentionPage& v
     const auto hash=Digest(b.data(),b.size(),seal);if(!hash.ok())return Fail(E::hash_failure);std::copy(hash.digest.begin(),hash.digest.end(),b.begin()+seal);return {E::none,v,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativeRetentionPageResult DecodeNativeRetentionPage(const std::vector<byte>& b) noexcept {
-  try{if(b.size()<start)return Fail(E::invalid_header);const auto header=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!header.ok()||(header.header->page_type!=0x303&&header.header->page_type!=0x304)||header.header->flags||b.size()!=header.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto hash=Digest(b.data(),b.size(),seal);if(!hash.ok())return Fail(E::hash_failure);if(!std::equal(hash.digest.begin(),hash.digest.end(),b.begin()+seal))return Fail(E::invalid_integrity);
+namespace {
+template<class Page> E DecodeValues(std::span<const byte> b,Page& v) noexcept {
+  try{if(b.size()<start)return E::invalid_header;const auto header=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!header.ok()||(header.header->page_type!=0x303&&header.header->page_type!=0x304)||header.header->flags||b.size()!=header.header->page_size_bytes)return E::invalid_header;
+    const auto hash=Digest(b.data(),b.size(),seal);if(!hash.ok())return E::hash_failure;if(!std::equal(hash.digest.begin(),hash.digest.end(),b.begin()+seal))return E::invalid_integrity;
     const auto* f=b.data()+128;const auto count=LoadLittle32(f+88),used=LoadLittle32(f+12);
-    if(std::string_view(reinterpret_cast<const char*>(f),8)!=(header.header->page_type==0x303?"SBPIN001":"SBPINL01")||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=256||count>(b.size()-start)/width||used!=start+count*width||!Zero(f+92,4)||!Zero(f+232,24)||!Zero(b.data()+used,b.size()-used))return Fail(E::invalid_family);
-    NativeRetentionPage v;v.header=*header.header;v.object_uuid=GetUuid(f+16);v.epoch=LoadLittle64(f+32);v.creator_transaction_uuid=GetUuid(f+40);v.creator_local_transaction_id=LoadLittle64(f+56);v.flags=LoadLittle64(f+64);v.total_pins=LoadLittle64(f+72);v.first_record=LoadLittle64(f+80);
-    if(!Zero(f+96,48))v.next=GetRef(f+96);std::copy_n(f+144,32,v.next_sha256.begin());v.legal_hold_pins=LoadLittle64(f+176);v.lowest_start=LoadLittle64(f+184);v.highest_end=LoadLittle64(f+192);v.records.reserve(count);
-    for(u32 i=0;i<count;++i){const auto* p=b.data()+start+i*width;const auto record_hash=Digest(p,width,112);if(!record_hash.ok())return Fail(E::hash_failure);if(!std::equal(record_hash.digest.begin(),record_hash.digest.end(),p+112))return Fail(E::invalid_integrity);if(!Zero(p+144,16))return Fail(E::invalid_record);
-      NativeRetentionPin r;r.pin_uuid=GetUuid(p);r.owner_uuid=GetUuid(p+16);r.kind=static_cast<NativeRetentionKind>(LoadLittle16(p+32));r.access=static_cast<NativeRetentionAccess>(LoadLittle16(p+34));r.flags=LoadLittle32(p+36);r.start_local=LoadLittle64(p+40);r.end_local=LoadLittle64(p+48);r.timeline_uuid=GetUuid(p+56);r.filespace_uuid=GetUuid(p+72);r.retain_until_local=LoadLittle64(p+88);r.retain_until_unix_ns=LoadLittle64(p+96);r.blocked_operations=LoadLittle64(p+104);v.records.push_back(r);}
-    const auto valid=Validate(v);if(valid!=E::none)return Fail(valid);return {E::none,std::move(v),b};
-  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+    if(std::string_view(reinterpret_cast<const char*>(f),8)!=(header.header->page_type==0x303?"SBPIN001":"SBPINL01")||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=256||count>(b.size()-start)/width||used!=start+count*width||!Zero(f+92,4)||!Zero(f+232,24)||!Zero(b.data()+used,b.size()-used))return E::invalid_family;
+    v.header=*header.header;v.object_uuid=GetUuid(f+16);v.epoch=LoadLittle64(f+32);v.creator_transaction_uuid=GetUuid(f+40);v.creator_local_transaction_id=LoadLittle64(f+56);v.flags=LoadLittle64(f+64);v.total_pins=LoadLittle64(f+72);v.first_record=LoadLittle64(f+80);
+    if(!Zero(f+96,48))v.next=GetRef(f+96);std::copy_n(f+144,32,v.next_sha256.begin());v.legal_hold_pins=LoadLittle64(f+176);v.lowest_start=LoadLittle64(f+184);v.highest_end=LoadLittle64(f+192);if constexpr(std::is_same_v<Page,NativeRetentionPage>)v.records.resize(count);
+    else {if(count>v.records.size())return E::resource_exhausted;v.records=v.records.first(count);}
+    for(u32 i=0;i<count;++i){const auto* p=b.data()+start+i*width;const auto record_hash=Digest(p,width,112);if(!record_hash.ok())return E::hash_failure;if(!std::equal(record_hash.digest.begin(),record_hash.digest.end(),p+112))return E::invalid_integrity;if(!Zero(p+144,16))return E::invalid_record;
+      NativeRetentionPin r;r.pin_uuid=GetUuid(p);r.owner_uuid=GetUuid(p+16);r.kind=static_cast<NativeRetentionKind>(LoadLittle16(p+32));r.access=static_cast<NativeRetentionAccess>(LoadLittle16(p+34));r.flags=LoadLittle32(p+36);r.start_local=LoadLittle64(p+40);r.end_local=LoadLittle64(p+48);r.timeline_uuid=GetUuid(p+56);r.filespace_uuid=GetUuid(p+72);r.retain_until_local=LoadLittle64(p+88);r.retain_until_unix_ns=LoadLittle64(p+96);r.blocked_operations=LoadLittle64(p+104);v.records[i]=r;}
+    const auto valid=Validate(v);return valid;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_family;}
+}
+}
+NativeRetentionPageResult DecodeNativeRetentionPage(const std::vector<byte>& b) noexcept {
+  NativeRetentionPage v;const auto error=DecodeValues(b,v);
+  if(error!=E::none)return Fail(error);
+  try{return {E::none,std::move(v),b};}
+  catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+  catch(const std::length_error&){return Fail(E::resource_exhausted);}
+}
+NativeRetentionPageViewResult DecodeNativeRetentionPageInto(
+    std::span<const byte> b,std::span<NativeRetentionPin> records) noexcept {
+  if(!detail::DisjointNativeDecodeRegions(b,records))return {E::invalid_backing,std::nullopt};
+  NativeRetentionPageView v;v.records=records;const auto error=DecodeValues(b,v);
+  if(error!=E::none)return {error,std::nullopt};
+  return {E::none,v};
 }
 NativeRetentionChainResult ReadNativeRetentionRootFromOpenDevices(const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
     const Uuid& object_uuid,const disk::NativePageReference& root,u64 budget) noexcept {
