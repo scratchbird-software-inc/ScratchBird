@@ -335,12 +335,15 @@ scratchbird::core::catalog::CatalogNameEnvelopeDecodeResult DecodeNativeName(
     const TypedUuid& database_uuid, const TypedUuid& filespace_uuid, u64 page_number,
     const RowDataRecord& row, const scratchbird::core::catalog::CatalogMetadataVersion& metadata) {
   namespace catalog=scratchbird::core::catalog;
-  auto result=catalog::DecodeCatalogNameEnvelope(
-      std::vector<scratchbird::core::platform::byte>(metadata.record.payload.begin(),metadata.record.payload.end()),
+  const auto result=catalog::DecodeCatalogNameEnvelopeView(
+      {reinterpret_cast<const scratchbird::core::platform::byte*>(metadata.record.payload.data()),
+       metadata.record.payload.size()},
       NativeNameBinding(database_uuid,filespace_uuid,page_number,row,metadata));
-  if (result.ok() && !catalog::CatalogNamePayloadMatchesMetadata(result.record->payload,metadata))
+  if (!result.ok()) return {result.error,{}};
+  if (!catalog::CatalogNamePayloadMatchesMetadata(result.record->payload,
+      catalog::BorrowCatalogMetadataVersion(metadata)))
     return {catalog::CatalogNameEnvelopeError::binding_mismatch,{}};
-  return result;
+  return {catalog::CatalogNameEnvelopeError::none,catalog::MaterializeCatalogNameEnvelope(*result.record)};
 }
 
 PhysicalMgaCowMutationResult MaterializeNativeName(const PhysicalMgaCowMutation& request,
@@ -1908,13 +1911,13 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
       return LeafFailure(LeafError::invalid_header);
     const auto digest=LeafDigest(bytes); if (!digest.ok()) return LeafFailure(LeafError::hash_failure);
     if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.end()-32)) return LeafFailure(LeafError::invalid_integrity);
-    std::vector<scratchbird::core::platform::byte> body_bytes(bytes.begin()+128,bytes.end()-32);
+    const std::span<const scratchbird::core::platform::byte> body_bytes(bytes.data()+128,bytes.size()-160);
     // CATALOG-BINARY-CELL-DIAGNOSTIC-001: the admitted type6/SBROW004
     // structural schema fixes base.binary v1. This native identity is only
     // diagnostic reporting context, never a live descriptor/security receipt.
     constexpr scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1 binary_context{
       {{0x2d,0x01,0x00,0x00,0x62,0x69,0x7e,0x61,0xb2,0x79,0x00,0x00,0x00,0x00,0x00,0x00}}, 1};
-    auto body=scratchbird::storage::page::ParseRowDataPageBodyWithCanonicalBinaryCells(
+    auto body=scratchbird::storage::page::ParseRowDataPageRowsWithCanonicalBinaryCells(
         body_bytes,header.header->page_number,binary_context);
     if (body.binary_diagnostic) {
       auto refused=LeafFailure(LeafError::invalid_body);
@@ -1929,7 +1932,8 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
     const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
     if (!canonical.ok()) return LeafFailure(canonical.resource_failure()
         ?LeafError::resource_exhausted:LeafError::invalid_body);
-    if (canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
+    if (!std::equal(canonical.serialized.begin(),canonical.serialized.end(),body_bytes.begin(),body_bytes.end()))
+      return LeafFailure(LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,header.header->database_uuid},
         {UuidKind::filespace,header.header->filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
@@ -2021,6 +2025,7 @@ NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
     std::map<std::pair<Uuid,u64>,std::size_t> catalog_slots;
     std::map<Uuid,std::pair<std::size_t,std::size_t>> versions;
     E failure=E::none;NativeCatalogLeafError leaf_error=NativeCatalogLeafError::none;
+    std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView> binary_diagnostic;
     const auto load=[&](const disk::NativePageReference& ref)->std::optional<std::size_t>{
       const auto slot=std::pair{ref.filespace_uuid,ref.page_number};
       if(navigation_slots.contains(slot)){failure=E::invalid_locator;return {};}
@@ -2033,12 +2038,12 @@ NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
       const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
       if(!profile||profile->page_size_bytes>maximum_retained_image_bytes-result.retained_image_bytes){failure=E::resource_exhausted;return {};}
       auto leaf=ReadNativeCatalogLeafFromOpenDevice(*fs->device,database_uuid,{head.role,6,ref,binding.relation_uuid});
-      if(!leaf.ok()){failure=E::leaf_failure;leaf_error=leaf.error;return {};}
+      if(!leaf.ok()){failure=E::leaf_failure;leaf_error=leaf.error;binary_diagnostic=leaf.binary_diagnostic;return {};}
       if(!page_ids.insert(leaf.page->header.page_uuid).second){failure=E::duplicate_identity;return {};}
       const auto index=result.catalogs.size();
       for(std::size_t i=0;i<leaf.page->body.rows.size();++i)if(!versions.emplace(leaf.page->body.rows[i].version_uuid,std::pair{index,i}).second){failure=E::duplicate_identity;return {};}
       catalog_slots.emplace(slot,index);result.retained_image_bytes+=leaf.bytes.size();result.catalogs.push_back(std::move(leaf));return index;};
-    const auto load_error=[&]{auto error=fail(failure);error.leaf_error=leaf_error;return error;};
+    const auto load_error=[&]{auto error=fail(failure);error.leaf_error=leaf_error;error.binary_diagnostic=binary_diagnostic;return error;};
     if(!result.index){const auto leaf=load(head.page);if(!leaf)return load_error();
       for(std::size_t i=0;i<result.catalogs[*leaf].page->body.rows.size();++i)result.bindings.push_back({{},*leaf,i});}
     else for(const auto node_index:result.index->leaves){const auto& node=*result.index->pages[node_index].page;
@@ -2106,6 +2111,7 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
       error.relation.error = result.relation.error;
       error.relation.tree_error = result.relation.tree_error;
       error.relation.leaf_error = result.relation.leaf_error;
+      error.relation.binary_diagnostic = result.relation.binary_diagnostic;
       return error;
     }
     const auto& entries = result.checkpoint.checkpoint_inventory.inventory.entries;

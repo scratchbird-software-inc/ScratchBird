@@ -1305,6 +1305,12 @@ void CatalogBinaryCells() {
       Check(!parsed.ok()&&parsed.body.rows.empty()&&parsed.body.slots.empty()&&parsed.serialized.empty()&&
           parsed.binary_diagnostic&&SameBinaryDiagnostic(*parsed.binary_diagnostic,provider.diagnostic),
           "row forwards complete native datatype vector without valid prefix");
+      const auto span_parsed=page::ParseRowDataPageRowsWithCanonicalBinaryCells(
+          {bytes.data()+128,bytes.size()-160},leaf.header.page_number,context);
+      Check(!span_parsed.ok()&&span_parsed.body.rows.empty()&&span_parsed.body.slots.empty()&&
+          span_parsed.serialized.empty()&&span_parsed.binary_diagnostic&&
+          SameBinaryDiagnostic(*span_parsed.binary_diagnostic,provider.diagnostic),
+          "input span row reader preserves full binary refusal without partial output");
       observed_allocations=0;count_allocations=true;
       auto result=db::DecodeNativeCatalogLeaf(bytes);
       count_allocations=false;const auto allocations=observed_allocations;
@@ -1355,6 +1361,54 @@ void CatalogBinaryCells() {
   // row pages as well as catalog pages. It need not escape as bad_alloc: every
   // containing admission must retain resource classification, never corruption.
   for(unsigned profile=0;profile<5;++profile){
+    const auto catalog=LeafExample(profile);const auto image=LeafOracle(catalog);
+    Bytes input(image.begin()+128,image.end()-32);
+    observed_allocations=0;count_allocations=true;
+    const auto copied=page::ParseRowDataPageBodyWithCanonicalBinaryCells(input,catalog.header.page_number,context);
+    count_allocations=false;const auto copy_count=observed_allocations;
+    observed_allocations=0;count_allocations=true;
+    const auto rows=page::ParseRowDataPageRowsWithCanonicalBinaryCells(input,catalog.header.page_number,context);
+    count_allocations=false;const auto row_count=observed_allocations;
+    Check(copied.ok()&&rows.ok()&&rows.serialized.empty()&&copy_count==row_count+1,
+        "rows-only canonical admission removes exactly one full body allocation");
+    Check(page::BuildRowDataPageBody(rows.body,catalog.header.page_size_bytes-32).serialized==input,
+        "rows-only admission preserves all canonical fields and cell bytes");
+    std::fill(input.begin(),input.end(),0);input.clear();input.shrink_to_fit();
+    Check(page::BuildRowDataPageBody(rows.body,catalog.header.page_size_bytes-32).serialized==copied.serialized,
+        "rows-only output owns final values independently of destroyed input");
+    // Shared structural diagnostics retain native Status and every owning
+    // diagnostic argument. Damage each complete body/row header and its slots.
+    const auto same_error=[](const auto& a,const auto& b){
+      if(a.status.code!=b.status.code||a.status.severity!=b.status.severity||
+          a.status.subsystem!=b.status.subsystem||a.diagnostic.diagnostic_code!=b.diagnostic.diagnostic_code||
+          a.diagnostic.message_key!=b.diagnostic.message_key||a.diagnostic.trace_id!=b.diagnostic.trace_id||
+          a.diagnostic.source_component!=b.diagnostic.source_component||
+          a.diagnostic.remediation_hint!=b.diagnostic.remediation_hint||
+          a.diagnostic.arguments.size()!=b.diagnostic.arguments.size())return false;
+      for(std::size_t i=0;i<a.diagnostic.arguments.size();++i)
+        if(a.diagnostic.arguments[i].key!=b.diagnostic.arguments[i].key||
+           a.diagnostic.arguments[i].value!=b.diagnostic.arguments[i].value)return false;
+      return true;
+    };
+    for(unsigned offset=0;offset<240;++offset){
+      auto bad=copied.serialized;bad[offset]^=0xff;
+      if(offset<32||offset>=40){Number(bad,32,8,0);Number(bad,32,8,BodyFnv(bad.data(),bad.size()));}
+      const auto a=page::ParseRowDataPageBodyWithCanonicalBinaryCells(bad,catalog.header.page_number,context);
+      const auto b=page::ParseRowDataPageRowsWithCanonicalBinaryCells(bad,catalog.header.page_number,context);
+      Check(a.ok()==b.ok()&&same_error(a,b),"span and owning row framing retain exact diagnostics");
+      if(!b.ok())Check(b.body.rows.empty()&&b.body.slots.empty()&&b.serialized.empty(),
+          "malformed span row publishes no prefix");
+    }
+    for(unsigned kind=0;kind<2;++kind){
+      auto general=catalog;
+      auto& cell=general.body.rows[0].cells[0].value;
+      if(kind==0){cell.is_null=true;cell.payload.clear();}
+      else {cell.type_id=dt::CanonicalTypeId::character;cell.payload={'4','2'};}
+      const auto wire=LeafOracle(general);
+      const auto decoded=page::ParseRowDataPageRows({wire.data()+128,wire.size()-160},general.header.page_number);
+      Check(decoded.ok()&&decoded.serialized.empty()&&decoded.body.rows[0].cells[0].value.is_null==(kind==0)&&
+          decoded.body.rows[0].cells[0].value.payload==cell.payload,"span general row preserves NULL and character values");
+    }
     auto fixture=LeafExample(profile);fixture.header.page_type=0x0100;
     const page::NativeRowDataPage row{fixture.header,fixture.body};
     const auto expected=LeafOracle(fixture);
@@ -4954,6 +5008,21 @@ void CheckpointCatalogRelations() {
       r.source.row_creators.empty()&&r.source.relation.catalogs.empty()&&!r.source.relation.index&&
       r.source.checkpoint.catalogs.empty()&&!r.source.checkpoint.checkpoint_inventory.checkpoint,
       "committed-only refusal retains no successful source prefix or rows");};
+    const auto poison_binary=[&](unsigned leaf_index,bool dirty_null){
+      namespace dt=scratchbird::core::datatypes;
+      images=original;auto& value=images.leaves[leaf_index].body.rows.back().cells[0].value;
+      value.is_null=true;if(!dirty_null)value.payload.clear();
+      const auto bytes=LeafOracle(images.leaves[leaf_index]);
+      const std::size_t row=224+platform::LoadLittle32(bytes.data()+280),cell=row+144;
+      constexpr dt::DatatypeBinaryDiagnosticContextV1 context{
+        {{0x2d,0x01,0,0,0x62,0x69,0x7e,0x61,0xb2,0x79,0,0,0,0,0,0}},1};
+      const auto expected=dt::DecodeCanonicalBinaryValueViewNoAlloc(
+        bytes.data()+cell+16,platform::LoadLittle32(bytes.data()+cell+4),context);
+      Check(!expected.ok()&&expected.diagnostic.diagnostic_code==
+        (dirty_null?"DATATYPE.NULL_STATE.INVALID":"DATATYPE.NULL_NOT_ADMITTED"),
+        "independent resealed late-row oracle produces exact binary diagnostic");
+      return expected.diagnostic;
+    };
     persist();auto result=read(budget);Check(result.ok()&&result.retained_image_bytes==budget&&result.row_creators.size()==8
       &&result.navigation_creator_entries.size()==7&&result.relation.bindings.size()==9,"checkpoint actual catalog role and every creator joined error="+std::to_string(static_cast<unsigned>(result.error))
         +" checkpoint="+std::to_string(static_cast<unsigned>(result.checkpoint.error))+" catalog="+std::to_string(static_cast<unsigned>(result.checkpoint.catalog_error))
@@ -4965,6 +5034,25 @@ void CheckpointCatalogRelations() {
       !stage_writes&&!stage_syncs&&initialization_entropy_calls==entropy_before,
       "actual committed catalog requires no active reader or invented transaction/snapshot identity and has no physical effects");
     for(const auto& row:committed_rows.rows)Check(!row.provisional,"committed-only selection never exposes provisional row");
+    for(unsigned leaf_index:{0u,3u})for(bool dirty_null:{false,true}){
+      const auto expected=poison_binary(leaf_index,dirty_null);persist();
+      result=read(budget);empty(result);
+      Check(result.error==E::relation_failure&&result.relation.error==db::NativeCatalogRelationError::leaf_failure&&
+        result.relation.binary_diagnostic&&SameBinaryDiagnostic(*result.relation.binary_diagnostic,expected),
+        "checkpoint relation preserves full binary diagnostic after discarding earlier pages");
+      committed_rows=committed_read(budget);no_committed_rows(committed_rows);
+      Check(committed_rows.source.relation.binary_diagnostic&&
+        SameBinaryDiagnostic(*committed_rows.source.relation.binary_diagnostic,expected),
+        "committed catalog preserves original typed binary diagnostic");
+      observed_allocations=0;count_allocations=true;committed_rows=committed_read(budget);count_allocations=false;
+      const auto refused_allocations=observed_allocations;
+      allocation_budget=refused_allocations;committed_rows=committed_read(budget);allocation_budget=-1;
+      no_committed_rows(committed_rows);
+      Check(committed_rows.source.relation.binary_diagnostic&&
+        SameBinaryDiagnostic(*committed_rows.source.relation.binary_diagnostic,expected),
+        "diagnostic propagation needs no allocation beyond actual failed read");
+    }
+    images=original;persist();Check(read(budget).ok(),"valid source recovers after malformed binary frames");
     no_committed_rows(committed_read(budget-1));
     result=read(budget-1);empty(result);Check(result.error==E::relation_failure&&result.relation.error==db::NativeCatalogRelationError::resource_exhausted,"combined exact budget enforced");
     result=read(3*sizes[s]);empty(result);Check(result.error==E::resource_exhausted,"no relation allowance remains");
@@ -5008,6 +5096,15 @@ void CheckpointCatalogRelations() {
     auto loaded=read(budget);Check(loaded.ok(),"actual own-writer inventory loaded");const auto own_identity=loaded.checkpoint.checkpoint_inventory.inventory.entries[1].identity;
     CatalogTestPin own_pin(loaded.checkpoint.checkpoint_inventory.inventory,13);
     auto selected=pinned(own_pin.pin,own_identity);Check(selected.ok()&&selected.rows.size()==8&&selected.snapshot_uuid==own_pin.published.descriptor.snapshot_uuid.value,"native pinned own versions selected across filespaces");
+    for(unsigned leaf_index:{0u,3u})for(bool dirty_null:{false,true}){
+      const auto expected=poison_binary(leaf_index,dirty_null);persist(false,13,13);
+      selected=pinned(own_pin.pin,own_identity);no_rows(selected);
+      Check(selected.error==PE::source_failure&&selected.source.relation.binary_diagnostic&&
+        SameBinaryDiagnostic(*selected.source.relation.binary_diagnostic,expected),
+        "pinned catalog preserves typed binary failure without snapshot or row prefix");
+    }
+    images=original;persist(false,13,13);selected=pinned(own_pin.pin,own_identity);
+    Check(selected.ok()&&selected.rows.size()==8,"original live pin reads restored source after binary refusal");
     committed_rows=committed_read(budget);Check(committed_rows.ok()&&committed_rows.rows.empty()&&committed_rows.observations.size()==8,
       "committed-only read cannot inherit any existing caller's own-uncommitted privilege");
     for(const auto& observation:committed_rows.observations)Check(observation.decision==mga::VisibilityDecision::wait_for_transaction,

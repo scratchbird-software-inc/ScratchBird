@@ -166,7 +166,7 @@ bool PreviousLinksMatchPage(const RowDataPageBody& body) {
   return true;
 }
 
-bool HasRowDataMagicPrefix(const std::vector<byte>& serialized) {
+bool HasRowDataMagicPrefix(std::span<const byte> serialized) {
   return serialized.size() >= sizeof(kRowDataMagicPrefix) &&
          std::memcmp(serialized.data() + kOffsetMagic,
                      kRowDataMagicPrefix,
@@ -499,8 +499,9 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
 
 namespace {
 RowDataPageResult ParseRowDataPageBodyImpl(
-    const std::vector<byte>& serialized, u64 page_number,
-    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context) {
+    std::span<const byte> serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context,
+    bool retain_serialized = true) {
   if (serialized.size() < kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-BODY-SHORT",
                         "storage.row_data_page.body_short",
@@ -534,7 +535,8 @@ RowDataPageResult ParseRowDataPageBodyImpl(
     return RowPageError("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-INVALID",
                         "storage.row_data_page.slot_directory_invalid");
   }
-  if (LoadLittle64(serialized.data() + kOffsetBodyChecksum) != ComputeRowDataPageChecksum(serialized)) {
+  if (LoadLittle64(serialized.data() + kOffsetBodyChecksum) !=
+      Fnv1a64WithZeroChecksum(serialized.data(), serialized.size(), kOffsetBodyChecksum)) {
     return RowPageError("SB-ROW-DATA-PAGE-CHECKSUM-MISMATCH",
                         "storage.row_data_page.checksum_mismatch");
   }
@@ -555,7 +557,7 @@ RowDataPageResult ParseRowDataPageBodyImpl(
   result.body.next_page_number = LoadLittle64(serialized.data() + kOffsetNextPageNumber);
   result.body.free_space_offset = body_bytes;
   result.body.free_space_bytes = free_space_bytes;
-  result.serialized = serialized;
+  if (retain_serialized) result.serialized.assign(serialized.begin(), serialized.end());
 
   if (!IsTypedEngineIdentity(result.body.relation_uuid, UuidKind::object) ||
       result.body.segment_id == 0 || result.body.segment_generation == 0 ||
@@ -738,6 +740,16 @@ RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
     const std::vector<byte>& serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) {
   return ParseRowDataPageBodyImpl(serialized, page_number, &context);
+}
+
+RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, nullptr, false);
+}
+
+RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(
+    std::span<const byte> serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, &context, false);
 }
 
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
