@@ -780,6 +780,7 @@ void NativeBoundaries() {
       const auto result=waiting.Acquire(Request(101,98),Hazard(34,98),grant,
           terminal==2 ? std::optional(c::MutexClock::now()+100ms) : std::nullopt,stop.get_token());
       Check(result.code==(terminal==0?C::closed:terminal==1?C::cancelled:C::timed_out),"actual native terminal selection");
+      Check(result.wait.registered,"retained terminal preserves native registered-call evidence");
       Check(!grant,"terminal return owns no grant");
     });
     Check(probe.entered.try_acquire_for(5s),"actual retained native waiter parked");
@@ -810,8 +811,10 @@ void NativeBoundaries() {
     std::thread waiter([&] {
       auto waiting=Operation(owner,33,98); c::MutexLatchGrant rejected;
       fail_wait=true;
-      Check(waiting.Acquire(Request(101,98),Hazard(34,98),rejected,c::MutexClock::now()+5s).code==C::synchronization_failed,
+      const auto failed=waiting.Acquire(Request(101,98),Hazard(34,98),rejected,c::MutexClock::now()+5s);
+      Check(failed.code==C::synchronization_failed,
             "native parking error cannot become grant");
+      Check(failed.wait.registered,"retained native failure preserves registered-call evidence");
     }); waiter.join();
     Check(owner.Snapshot().native.waiters==0 && domain.Snapshot().readers==3,"failed wait unlinks and drops real prepared guard");
     Check(owner.Close(Id(24)) && owner.FenceAdmission()==S::ok,"fault drain fence");
@@ -855,6 +858,7 @@ void NativeBoundaries() {
       park=&probe;
       const auto result=waiting.Acquire(Request(101,98),Hazard(34,98),grant,{},stop.get_token());
       Check(result.code==C::acquired && grant,"late close cannot rewrite committed retained acquisition");
+      Check(result.wait.registered,"retained delivery preserves actual native wait sample");
       Check(grant.Release(Request(101,98)).code==C::released,"late delivered grant has real release path after fence");
     });
     Check(probe.entered.try_acquire_for(5s),"late delivery waiter actually parked");
@@ -864,6 +868,7 @@ void NativeBoundaries() {
     Check(owner.Close(Id(24)) && owner.FenceAdmission()==S::ok,"close and fence delivery gap");
     stop.request_stop();
     const auto snapshot=owner.Snapshot();
+    Check(snapshot.native.registered_waits==1,"retained snapshot counts registration before result delivery");
     Check(snapshot.native.held && snapshot.native.calls==1 && snapshot.retained_grants==0 &&
           snapshot.operation_references==1,"whole operation covers grant delivery and callback join gap");
     const auto live=owner.SnapshotWaiters({});

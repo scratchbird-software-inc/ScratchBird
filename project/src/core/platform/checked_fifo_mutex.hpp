@@ -25,6 +25,14 @@ class CheckedFifoMutex {
   // owning layer validates it. Unbound use remains native-thread-affine only.
   using OwnerIdentity = std::array<std::uint8_t, 16>;
   enum class Result { acquired, busy, recursive, exhausted, timed_out, cancelled, closed, failed };
+  // Caller-owned per-call sample; never read concurrently with the call. A
+  // registered call counts once even after spurious wakes. Duration ends at
+  // native outcome selection, excluding callback join and result delivery.
+  // This is measurement input, not an activated metric or completion receipt.
+  struct WaitEvidence {
+    bool registered = false;
+    std::uint64_t duration_us = 0;
+  };
   explicit CheckedFifoMutex(std::uint32_t waiter_limit) : limit_(waiter_limit) {}
   CheckedFifoMutex(const CheckedFifoMutex&) = delete;
   CheckedFifoMutex& operator=(const CheckedFifoMutex&) = delete;
@@ -34,7 +42,8 @@ class CheckedFifoMutex {
   }
 
   Result TryLock(std::optional<Clock::time_point> deadline = {}, std::stop_token stop = {},
-                 std::optional<OwnerIdentity> owner = {}) {
+                 std::optional<OwnerIdentity> owner = {}, WaitEvidence* evidence = nullptr) {
+    if (evidence) *evidence = {};
     std::lock_guard lock(mutex_);
     if (Recursive(owner)) return Result::recursive;
     if (const auto terminal = Terminal(deadline, stop)) return *terminal;
@@ -46,7 +55,8 @@ class CheckedFifoMutex {
   // For a valid ungranted request, select closed, cancelled, expired, then grant
   // under the commit mutex. The owning layer still validates identity/policy.
   Result Lock(std::optional<Clock::time_point> deadline, std::stop_token stop = {},
-              std::optional<OwnerIdentity> owner = {}) {
+              std::optional<OwnerIdentity> owner = {}, WaitEvidence* evidence = nullptr) {
+    if (evidence) *evidence = {};
     std::unique_lock lock(mutex_);
     if (Recursive(owner)) return Result::recursive;
     if (const auto terminal = Terminal(deadline, stop)) return *terminal;
@@ -57,6 +67,7 @@ class CheckedFifoMutex {
     if (tail_) tail_->next = &node; else head_ = &node;
     tail_ = &node;
     ++waiters_; ++calls_;
+    if (registered_waits_ != UINT64_MAX) ++registered_waits_;
 
     // stop_callback may invoke inline. Registration and destruction must never
     // hold the mutex that the callback acquires. calls_ retains this whole gap.
@@ -75,6 +86,11 @@ class CheckedFifoMutex {
     } catch (...) {
       if (!lock.owns_lock()) std::terminate();
       // Native failure is not a grant or permission to release another holder.
+    }
+    if (evidence) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+          Clock::now() - node.observation.started).count();
+      *evidence = {true, elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0};
     }
     if (node.previous) node.previous->next = node.next; else head_ = node.next;
     if (node.next) node.next->previous = node.previous; else tail_ = node.previous;
@@ -103,7 +119,13 @@ class CheckedFifoMutex {
     closed_ = true;
     Notify();
   }
-  struct Observation { bool held; std::uint32_t waiters; std::uint32_t calls; bool closed; };
+  struct Observation {
+    bool held;
+    std::uint32_t waiters;
+    std::uint32_t calls;
+    bool closed;
+    std::uint64_t registered_waits = 0; // Saturates; never authority to reclaim.
+  };
   // Select an existing rejection/terminal outcome before owning-layer memory
   // admission. No result is not a grant or queue position: Lock/TryLock must
   // revalidate under their commit synchronization after preparing storage.
@@ -115,7 +137,7 @@ class CheckedFifoMutex {
   }
   Observation Observe() {
     std::lock_guard lock(mutex_);
-    return {held_, waiters_, calls_, closed_};
+    return {held_, waiters_, calls_, closed_, registered_waits_};
   }
   struct WaiterObservation {
     std::thread::id thread{};
@@ -206,7 +228,7 @@ class CheckedFifoMutex {
   }
  private:
   WaitObservation CopyWaiters(std::span<WaiterObservation> output) {
-    WaitObservation result{{held_, waiters_, calls_, closed_}, holder_, owner_,
+    WaitObservation result{{held_, waiters_, calls_, closed_, registered_waits_}, holder_, owner_,
                            output.size() >= waiters_};
     if (!result.complete) return result;
     std::size_t index=0;
@@ -255,6 +277,7 @@ class CheckedFifoMutex {
   std::optional<OwnerIdentity> owner_;
   std::uint32_t waiters_ = 0;
   std::uint32_t calls_ = 0;
+  std::uint64_t registered_waits_ = 0;
   bool held_ = false;
   bool closed_ = false;
 };

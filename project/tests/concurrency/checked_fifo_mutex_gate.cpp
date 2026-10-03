@@ -83,6 +83,65 @@ extern "C" int __wrap_pthread_cond_broadcast(pthread_cond_t* c) {
 }
 int main() {
   {
+    Mutex mutex(2);
+    Mutex::WaitEvidence evidence{true, 123};
+    Check(mutex.TryLock({}, {}, {}, &evidence)==Result::acquired &&
+          !evidence.registered && evidence.duration_us==0 && mutex.Observe().registered_waits==0,
+          "uncontended grant clears evidence without registering a wait");
+    evidence={true,123};
+    Check(mutex.Lock({}, {}, {}, &evidence)==Result::recursive &&
+          !evidence.registered && evidence.duration_us==0,
+          "recursive refusal cannot reuse prior wait sample");
+    Check(mutex.Unlock(),"measurement initial release");
+    evidence={true,123};
+    Check(mutex.Lock(Mutex::Clock::now(), {}, {}, &evidence)==Result::timed_out &&
+          !evidence.registered && evidence.duration_us==0 && mutex.Observe().registered_waits==0,
+          "expired immediate refusal is not a registered wait");
+  }
+  for (unsigned terminal=0; terminal<5; ++terminal) {
+    Mutex mutex(2); Park probe;
+    Check(mutex.TryLock()==Result::acquired,"measurement holder acquired");
+    std::stop_source stop;
+    Mutex::WaitEvidence sample;
+    Result outcome=Result::failed;
+    Mutex::Clock::time_point begin,end;
+    std::thread waiter([&] {
+      park=&probe; probe.fail=terminal==4;
+      begin=Mutex::Clock::now();
+      outcome=mutex.Lock(begin+(terminal==3?1s:5s),stop.get_token(),{},&sample);
+      end=Mutex::Clock::now();
+      if (outcome==Result::acquired) Check(mutex.Unlock(),"measured holder release");
+    });
+    Check(probe.entered.try_acquire_for(5s),"measured registration actually parks");
+    std::uint64_t lower=0;
+    if (terminal!=4) {
+      std::array<Mutex::WaiterObservation,1> rows;
+      const auto snapshot=mutex.ObserveWaiters(rows);
+      Check(snapshot.complete && snapshot.state.registered_waits==1 && snapshot.state.waiters==1,
+            "live native registration counted once before completion");
+      if (terminal==0) {
+        Check(__real_pthread_cond_broadcast(probe.condition)==0,"real spurious notification for measurement");
+        Check(probe.reparked.try_acquire_for(5s),"measurement waiter reparks after spurious wake");
+        Check(mutex.Observe().registered_waits==1,"spurious wake cannot increment wait count");
+      }
+      const auto elapsed=std::chrono::duration_cast<std::chrono::microseconds>(
+          Mutex::Clock::now()-rows[0].started).count();
+      lower=elapsed>0?static_cast<std::uint64_t>(elapsed):0;
+    }
+    if (terminal==0) Check(mutex.Unlock(),"measured grant trigger");
+    if (terminal==1) stop.request_stop();
+    if (terminal==2) mutex.Close();
+    waiter.join();
+    const std::array expected{Result::acquired,Result::cancelled,Result::closed,Result::timed_out,Result::failed};
+    const auto upper=std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count();
+    Check(outcome==expected[terminal] && sample.registered && sample.duration_us>=lower &&
+          sample.duration_us<=static_cast<std::uint64_t>(upper),
+          "actual selected outcome carries bounded monotonic registered-call duration");
+    Check(mutex.Observe().registered_waits==1,"one cumulative registration for every selected outcome");
+    if (terminal!=0) Check(mutex.Unlock(),"measured terminal preserves original holder");
+    Idle(mutex);
+  }
+  {
     Mutex left(1), right(1); Park left_wait, right_wait;
     Mutex::OwnerIdentity a{}, b{}; a[0]=0xa1; b[0]=0xb2;
     std::counting_semaphore<2> ready(0), proceed(0);

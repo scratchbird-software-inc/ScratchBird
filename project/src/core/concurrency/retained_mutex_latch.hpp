@@ -61,6 +61,7 @@ struct MutexLatchResult {
   MutexLatchCode code = MutexLatchCode::invalid_request;
   memory::SafeRetirementStatus memory_status = memory::SafeRetirementStatus::ok;
   std::optional<MutexLatchOrderConflict> order_conflict{};
+  platform::CheckedFifoMutex::WaitEvidence wait{};
 };
 struct MutexLatchSnapshot {
   MutexLatchDescriptor descriptor;
@@ -388,9 +389,10 @@ class MutexLatchOperation {
     if (detail::held_latches.count==std::numeric_limits<std::uint32_t>::max())
       return {C::exhausted};
     platform::CheckedFifoMutex::Result native;
+    platform::CheckedFifoMutex::WaitEvidence wait;
     try {
-      native = immediate ? s.native.TryLock(deadline, stop, task_)
-                         : s.native.Lock(deadline, stop, task_);
+      native = immediate ? s.native.TryLock(deadline, stop, task_, &wait)
+                         : s.native.Lock(deadline, stop, task_, &wait);
     } catch (const std::system_error&) { return {C::synchronization_failed}; }
     const auto code = detail::MutexNativeCode(native);
     if (code == C::acquired) {
@@ -405,7 +407,7 @@ class MutexLatchOperation {
         output.state_ = &s;
       } catch (...) { std::terminate(); }
     }
-    return {code};
+    return {code, S::ok, {}, wait};
   }
  private:
   friend class MutexLatchOwner;
