@@ -650,6 +650,58 @@ NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
   const auto* why=native_inventory::ValidateBorrowed(inventory,indices,markers);
   return {*why?E::invalid_inventory:E::none,why};
 }
+NativeInventoryViewValidation ValidateNativeTransactionInventoryEvolutionView(
+    const NativeTransactionInventoryView& before,const NativeTransactionInventoryView& after,
+    std::span<std::size_t> indices,std::span<std::size_t> uuid_indices,
+    std::span<byte> markers) noexcept {
+  using E=NativeInventoryError;
+  namespace mga=scratchbird::transaction::mga;
+  const auto disjoint=[&](auto input){
+    return disk::detail::DisjointNativeDecodeRegions(input,indices,uuid_indices,markers);};
+  if(reinterpret_cast<std::uintptr_t>(before.entries.data())%alignof(TransactionInventoryEntry)||
+     reinterpret_cast<std::uintptr_t>(after.entries.data())%alignof(TransactionInventoryEntry)||
+     reinterpret_cast<std::uintptr_t>(indices.data())%alignof(std::size_t)||
+     reinterpret_cast<std::uintptr_t>(uuid_indices.data())%alignof(std::size_t)||
+     !disjoint(std::span{&before,1})||!disjoint(std::span{&after,1})||
+     !disjoint(before.entries)||!disjoint(after.entries))
+    return {E::invalid_backing,"invalid_backing"};
+  const auto count=before.entries.size(),maximum=std::max(count,after.entries.size());
+  if(indices.size()<maximum||markers.size()<maximum||uuid_indices.size()<count)
+    return {E::resource_exhausted,"insufficient_backing"};
+  if(const auto* why=native_inventory::ValidateBorrowed(before,indices,markers);*why)
+    return {E::invalid_inventory,why};
+  if(const auto* why=native_inventory::ValidateBorrowed(after,indices,markers);*why)
+    return {E::invalid_inventory,why};
+  const auto old=before.entries;
+  for(std::size_t i=0;i<count;++i){indices[i]=uuid_indices[i]=i;markers[i]=0;}
+  auto locals=indices.first(count),uuids=uuid_indices.first(count);
+  if(count>1){
+    std::sort(locals.begin(),locals.end(),[&](auto a,auto b){
+      return old[a].identity.local_id.value<old[b].identity.local_id.value;});
+    std::sort(uuids.begin(),uuids.end(),[&](auto a,auto b){
+      return old[a].identity.transaction_uuid.value<old[b].identity.transaction_uuid.value;});
+  }
+  const auto* why=mga::detail::ValidateInventoryEvolutionValues(before,after,
+    [&](u64 id)->const TransactionInventoryEntry*{
+      const auto at=std::lower_bound(locals.begin(),locals.end(),id,
+        [&](auto index,u64 value){return old[index].identity.local_id.value<value;});
+      return at==locals.end()||old[*at].identity.local_id.value!=id?nullptr:&old[*at];
+    },
+    [&](const Uuid& uuid){
+      const auto at=std::lower_bound(uuids.begin(),uuids.end(),uuid,
+        [&](auto index,const auto& value){return old[index].identity.transaction_uuid.value<value;});
+      return at!=uuids.end()&&old[*at].identity.transaction_uuid.value==uuid;
+    },
+    [&](const auto& entry){markers[&entry-old.data()]=1;},
+    [&]{
+      for(std::size_t i=0;i<count;++i)if(!markers[i]){
+        const auto outcome=mga::InventoryVisibilityState(old[i]);
+        if(outcome!=mga::TransactionState::committed&&outcome!=mga::TransactionState::rolled_back)return true;
+      }
+      return false;
+    });
+  return {*why?E::invalid_inventory:E::none,why};
+}
 NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInto(
     std::span<const byte> bytes,std::span<TransactionInventoryEntry> entries,
     std::span<std::size_t> indices,std::span<byte> markers) noexcept {

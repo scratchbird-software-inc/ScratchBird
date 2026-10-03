@@ -11,6 +11,7 @@
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -109,6 +110,8 @@ const char* TransactionStateName(TransactionState state);
 const char* TransactionTransitionClassName(TransactionTransitionClass transition_class);
 LocalTransactionId MakeLocalTransactionId(u64 value);
 bool IsTerminalTransactionState(TransactionState state);
+// Immutable canonical transition metadata; cold calls allocate no backing.
+std::span<const TransactionStateTransition> BuiltinTransactionStateTransitionView() noexcept;
 const std::vector<TransactionStateTransition>& BuiltinTransactionStateTransitions();
 TransactionIdentityResult MakeTransactionIdentity(LocalTransactionId local_id,
                                                   TypedUuid transaction_uuid,

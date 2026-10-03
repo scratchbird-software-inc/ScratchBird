@@ -8,6 +8,7 @@
 
 #include "transaction_state.hpp"
 
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -28,7 +29,7 @@ Status TransactionErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::transaction_mga};
 }
 
-TransactionStateTransition Transition(TransactionState from,
+constexpr TransactionStateTransition Transition(TransactionState from,
                                       TransactionState to,
                                       TransactionTransitionClass transition_class,
                                       bool recovery_only,
@@ -93,8 +94,8 @@ bool IsTerminalTransactionState(TransactionState state) {
          state == TransactionState::failed_terminal || state == TransactionState::archived;
 }
 
-const std::vector<TransactionStateTransition>& BuiltinTransactionStateTransitions() {
-  static const std::vector<TransactionStateTransition> transitions = {
+std::span<const TransactionStateTransition> BuiltinTransactionStateTransitionView() noexcept {
+  static constexpr std::array transitions = {
       Transition(TransactionState::none,
                  TransactionState::created,
                  TransactionTransitionClass::coordinator,
@@ -214,6 +215,12 @@ const std::vector<TransactionStateTransition>& BuiltinTransactionStateTransition
   return transitions;
 }
 
+const std::vector<TransactionStateTransition>& BuiltinTransactionStateTransitions() {
+  const auto values=BuiltinTransactionStateTransitionView();
+  static const std::vector<TransactionStateTransition> transitions(values.begin(),values.end());
+  return transitions;
+}
+
 TransactionIdentityResult MakeTransactionIdentity(LocalTransactionId local_id,
                                                   TypedUuid transaction_uuid,
                                                   TransactionScope scope) {
@@ -271,7 +278,7 @@ TransactionTransitionResult CheckTransactionStateTransition(TransactionState fro
   result.status = TransactionErrorStatus();
   result.allowed = false;
 
-  for (const TransactionStateTransition& transition : BuiltinTransactionStateTransitions()) {
+  for (const TransactionStateTransition& transition : BuiltinTransactionStateTransitionView()) {
     if (transition.from == from && transition.to == to) {
       result.transition = transition;
       if (transition.recovery_only && !recovery_context) {

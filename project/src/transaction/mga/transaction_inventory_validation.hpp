@@ -86,17 +86,17 @@ inline const char* ValidateLocalTransactionInventoryStructure(const LocalTransac
 
 // Successor consistency only. Callers still own transition authorization,
 // retention release, recovery authority and publication/CAS synchronization.
-inline const char* ValidateLocalTransactionInventoryEvolution(
-    const LocalTransactionInventory& before, const LocalTransactionInventory& after) {
-  if (const auto* why = ValidateLocalTransactionInventoryStructure(before); *why) return why;
-  if (const auto* why = ValidateLocalTransactionInventoryStructure(after); *why) return why;
+namespace detail {
+template<class Inventory,class FindLocal,class ContainsUuid,class Retain,class Removed>
+const char* ValidateInventoryEvolutionValues(const Inventory& before,const Inventory& after,
+    FindLocal find_local,ContainsUuid contains_uuid,Retain retain,Removed unresolved_removed) {
   if (after.next_local_transaction_id < before.next_local_transaction_id ||
       after.next_commit_sequence < before.next_commit_sequence) return "counter_regression";
   constexpr auto state_count = static_cast<std::size_t>(TransactionState::read_only_active) + 1;
   static const auto reachable = [] {
     std::array<std::array<bool, state_count>, state_count> paths{};
     for (std::size_t i = 0; i < state_count; ++i) paths[i][i] = true;
-    for (const auto& edge : BuiltinTransactionStateTransitions())
+    for (const auto& edge : BuiltinTransactionStateTransitionView())
       paths[static_cast<std::size_t>(edge.from)][static_cast<std::size_t>(edge.to)] = true;
     for (std::size_t k = 0; k < state_count; ++k)
       for (std::size_t i = 0; i < state_count; ++i)
@@ -104,22 +104,16 @@ inline const char* ValidateLocalTransactionInventoryEvolution(
           paths[i][j] = paths[i][j] || (paths[i][k] && paths[k][j]);
     return paths;
   }();
-  std::map<u64, const TransactionInventoryEntry*> old_entries;
-  std::map<scratchbird::core::platform::Uuid, u64> old_uuids;
-  for (const auto& entry : before.entries) {
-    old_entries.emplace(entry.identity.local_id.value, &entry);
-    old_uuids.emplace(entry.identity.transaction_uuid.value, entry.identity.local_id.value);
-  }
   for (const auto& entry : after.entries) {
-    const auto found = old_entries.find(entry.identity.local_id.value);
-    if (found == old_entries.end()) {
+    const auto* found = find_local(entry.identity.local_id.value);
+    if (!found) {
       if (entry.identity.local_id.value < before.next_local_transaction_id) return "local_number_reused";
-      if (old_uuids.contains(entry.identity.transaction_uuid.value)) return "transaction_uuid_reused";
+      if (contains_uuid(entry.identity.transaction_uuid.value)) return "transaction_uuid_reused";
       if (HasCommittedInventoryOutcome(entry) && entry.commit_sequence < before.next_commit_sequence)
         return "commit_sequence_reused";
       continue;
     }
-    const auto& old = *found->second;
+    const auto& old = *found;
     if (old.identity.transaction_uuid.value != entry.identity.transaction_uuid.value ||
         old.identity.scope != entry.identity.scope) return "transaction_identity_changed";
     if (old.begin_unix_epoch_millis != entry.begin_unix_epoch_millis ||
@@ -140,14 +134,37 @@ inline const char* ValidateLocalTransactionInventoryEvolution(
       return "transaction_state_regressed";
     if (!HasCommittedInventoryOutcome(old) && HasCommittedInventoryOutcome(entry) &&
         entry.commit_sequence < before.next_commit_sequence) return "commit_sequence_reused";
-    old_entries.erase(found);
+    retain(*found);
   }
-  for (const auto& [local_id, entry] : old_entries) {
-    const auto outcome = InventoryVisibilityState(*entry);
-    if (outcome != TransactionState::committed && outcome != TransactionState::rolled_back)
-      return "unresolved_transaction_removed";
-  }
+  if (unresolved_removed()) return "unresolved_transaction_removed";
   return "";
+}
+} // namespace detail
+inline const char* ValidateLocalTransactionInventoryEvolution(
+    const LocalTransactionInventory& before, const LocalTransactionInventory& after) {
+  if (const auto* why = ValidateLocalTransactionInventoryStructure(before); *why) return why;
+  if (const auto* why = ValidateLocalTransactionInventoryStructure(after); *why) return why;
+  if (after.next_local_transaction_id < before.next_local_transaction_id ||
+      after.next_commit_sequence < before.next_commit_sequence) return "counter_regression";
+  std::map<u64, const TransactionInventoryEntry*> old_entries;
+  std::map<scratchbird::core::platform::Uuid, u64> old_uuids;
+  for (const auto& entry : before.entries) {
+    old_entries.emplace(entry.identity.local_id.value, &entry);
+    old_uuids.emplace(entry.identity.transaction_uuid.value, entry.identity.local_id.value);
+  }
+  return detail::ValidateInventoryEvolutionValues(before,after,
+      [&](u64 id)->const TransactionInventoryEntry*{
+        const auto at=old_entries.find(id);return at==old_entries.end()?nullptr:at->second;
+      },
+      [&](const auto& uuid){return old_uuids.contains(uuid);},
+      [&](const auto& entry){old_entries.erase(entry.identity.local_id.value);},
+      [&]{
+        for(const auto& [local,entry]:old_entries){(void)local;
+          const auto outcome=InventoryVisibilityState(*entry);
+          if(outcome!=TransactionState::committed&&outcome!=TransactionState::rolled_back)return true;
+        }
+        return false;
+      });
 }
 
 }  // namespace scratchbird::transaction::mga

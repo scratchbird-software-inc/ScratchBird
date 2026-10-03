@@ -71,6 +71,15 @@ struct NativeInventoryViewValidation {
 NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
     const NativeTransactionInventoryView&,std::span<std::size_t> uniqueness_indices,
     std::span<byte> duplicate_markers) noexcept;
+// Complete successor consistency for retained inventories, not transaction,
+// retention, recovery or publication authority. Indices/markers need max(before,
+// after) slots; UUID indices need before.size() slots. Reuses only caller scratch
+// and never changes either record array. Read-only inputs may share storage;
+// writable scratch must be aligned and disjoint from both inputs/descriptors.
+NativeInventoryViewValidation ValidateNativeTransactionInventoryEvolutionView(
+    const NativeTransactionInventoryView& before,const NativeTransactionInventoryView& after,
+    std::span<std::size_t> indices,std::span<std::size_t> prior_uuid_indices,
+    std::span<byte> markers) noexcept;
 struct NativeTransactionInventoryPageResult {
   NativeInventoryError error = NativeInventoryError::invalid_family;
   std::optional<NativeTransactionInventoryPage> page;
