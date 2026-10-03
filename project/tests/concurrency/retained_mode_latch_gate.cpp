@@ -653,6 +653,69 @@ void PreparationOrderRecheck() {
     fixture.Empty();
   }
 }
+void IntentUpgradeDeliveryLifetime() {
+  for (const bool selected:{false,true}) Run([&](auto& owner,auto& domain,auto&) {
+    auto reader_op=Operation(owner,41);
+    c::ModeLatchGrant reader;
+    const auto reader_request=Request(51);
+    Check(reader_op.Acquire(reader_request,Memory(120),reader,{}).code==C::acquired,
+          "delivery gap blocking reader");
+    Park paused; paused.pause_delivery=true;
+    std::stop_source stop;
+    std::binary_semaphore delivered{0},finish{0};
+    std::thread converter([&] {
+      auto op=Operation(owner,40);
+      c::ModeLatchGrant grant;
+      const auto original=Request(50,M::intent_write);
+      Check(op.Acquire(original,Memory(100),grant,{}).code==C::acquired,
+            "delivery gap original intent");
+      park=&paused;
+      const auto result=op.UpgradeIntent(grant,original,0,{},stop.get_token());
+      park=nullptr;
+      Check(result.original_released && result.result.code==(selected?C::acquired:C::closed),
+            "selected conversion outcome survives later cancellation and close");
+      Check(selected ? grant && grant.request().mode==M::upgrade : !grant,
+            "delivered conversion owns only its selected upgrade");
+      delivered.release(); finish.acquire();
+      if (grant) Check(grant.Release(grant.request()).code==C::released,
+                       "upgrade selected before close retains exact release path");
+    });
+    Check(paused.entered.try_acquire_for(2s),"conversion entered actual native wait");
+    if (!selected) Check(owner.Close(),"close selects conversion refusal");
+    if (selected) Check(reader.Release(reader_request).code==C::released,
+                        "reader release selects native upgrade");
+    Check(paused.committed.try_acquire_for(2s),"conversion paused before native result delivery");
+    if (!selected) Check(reader.Release(reader_request).code==C::released,
+                         "reader survives conversion refusal");
+    reader_op.Reset();
+    Check(owner.Close() && owner.FenceAdmission()==S::ok,"fence in conversion delivery gap");
+    domain.Close();
+    const auto pending=owner.Snapshot();
+    Check(pending.operations==1 && pending.grants==0 && pending.native.calls==1 &&
+          pending.native.waiters==0 && pending.native.holders==(selected?1u:0u),
+          "undelivered conversion retains whole call with no delivered grant");
+    Check(domain.Snapshot().readers==4,"conversion delivery retains all four actual guards");
+    Check(domain.Collect()==S::ok && domain.Snapshot().retired==2 &&
+          domain.Snapshot().reclamation_blocked_objects==2,
+          "closed domain cannot reclaim conversion state or record before delivery");
+    stop.request_stop();
+    Check(owner.Drain(c::ModeLatchClock::now()+20ms).code==C::timed_out,
+          "shutdown cannot drain an undelivered conversion result");
+    paused.resume.release();
+    Check(delivered.try_acquire_for(2s),"conversion result delivered after domain close");
+    const auto complete=owner.Snapshot();
+    Check(complete.operations==1 && complete.native.calls==0 &&
+          complete.grants==(selected?1u:0u) && complete.native.holders==(selected?1u:0u),
+          "delivered conversion separates operation and grant ownership");
+    Check(domain.Collect()==S::ok && domain.Snapshot().retired==(selected?2u:1u),
+          "only refused conversion record becomes reclaimable at delivery");
+    Check(owner.Drain(c::ModeLatchClock::now()+20ms).code==C::timed_out,
+          "delivered conversion still requires operation and grant release");
+    finish.release(); converter.join();
+    Check(owner.Drain(c::ModeLatchClock::now()+2s).code==C::drained,
+          "conversion shutdown drains after actual worker cleanup");
+  });
+}
 void IntentUpgradeParking() {
   // An earlier exclusive waiter must run first; retaining the original intent
   // while queued would deadlock this actual two-execution path.
@@ -749,6 +812,7 @@ int main() {
   PreparationOwnershipRecheck();
   PreparationOrderRecheck();
   IntentUpgradeParking();
+  IntentUpgradeDeliveryLifetime();
 #endif
   std::printf("PASS retained mode latch: %u checks\n",checks.load());
 }
