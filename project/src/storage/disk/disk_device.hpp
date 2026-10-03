@@ -16,6 +16,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <array>
 
 namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; }
 
@@ -180,6 +181,7 @@ struct DiskPageHeaderResult {
 };
 
 class FileDevice {
+  struct MetricContext;
  public:
   FileDevice();
   FileDevice(const FileDevice&) = delete;
@@ -189,6 +191,28 @@ class FileDevice {
   IoResult Open(std::string path, FileOpenMode mode);
   IoResult Close();
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
+  // Fixed stack capture for compound readers. Declare BEFORE the operation
+  // guard, and never enter with an already held device guard: destruction
+  // publishes the retained observations only after the compound fence unlocks.
+  // The device must outlive the batch. No detached work or registry authority.
+  class ReadLatencyBatch {
+   public:
+    explicit ReadLatencyBatch(FileDevice& device) noexcept : device_(device) {}
+    ReadLatencyBatch(const ReadLatencyBatch&) = delete;
+    ReadLatencyBatch& operator=(const ReadLatencyBatch&) = delete;
+    ~ReadLatencyBatch();
+    IoResult ReadAt(u64 offset, void* buffer, usize bytes);
+   private:
+    friend class FileDevice;
+    struct Sample {
+      std::shared_ptr<const MetricContext> context;
+      double micros = 0;
+      bool opened = false;
+    };
+    FileDevice& device_;
+    std::array<Sample,16> samples_{};
+    usize count_ = 0;
+  };
   IoResult WriteAt(u64 offset, const void* buffer, usize bytes);
   PreallocateExtentResult PreallocateExtent(u64 offset, u64 bytes);
   IoResult Sync();
@@ -228,6 +252,9 @@ class FileDevice {
   std::thread::id open_thread_id_;
   enum class LatencyOperation { read, write, sync };
   void ObserveIoLatency(LatencyOperation, double micros, const char* result) noexcept;
+  void PublishIoLatency(LatencyOperation, double micros, const char* result,
+                        const std::shared_ptr<const MetricContext>&, bool opened) noexcept;
+  IoResult ReadAtImpl(u64 offset, void* buffer, usize bytes, ReadLatencyBatch*);
   std::atomic<u64> rejected_io_latency_{0}, failed_io_latency_{0};
   mutable std::recursive_mutex operation_mutex_;
   IoResult MakeIoError(std::string diagnostic_code,
@@ -237,10 +264,7 @@ class FileDevice {
 
   std::string path_;
   std::string owner_lock_path_;
-  scratchbird::core::platform::Uuid metric_database_uuid_;
-  scratchbird::core::platform::Uuid metric_filespace_uuid_;
-  scratchbird::core::platform::Uuid metric_node_uuid_;
-  std::string metric_filespace_role_;
+  std::shared_ptr<const MetricContext> metric_context_;
   std::string metric_device_class_;
   DeviceCapabilities capabilities_;
   bool read_only_ = false;

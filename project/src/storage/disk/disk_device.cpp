@@ -1407,7 +1407,17 @@ int RouteOwnershipLease::AcquireDataFile(const std::string& path) {
 
 FileDevice::FileDevice() = default;
 
+struct FileDevice::MetricContext {
+  core::platform::Uuid database,filespace,node;
+  std::string role,device_class;
+};
+
 void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const char* result) noexcept {
+  PublishIoLatency(operation,micros,result,metric_context_,!path_.empty());
+}
+
+void FileDevice::PublishIoLatency(LatencyOperation operation,double micros,const char* result,
+    const std::shared_ptr<const MetricContext>& context,bool opened) noexcept {
   const auto increment=[](std::atomic<u64>& counter) noexcept {
     auto value=counter.load(std::memory_order_relaxed);
     while(value!=std::numeric_limits<u64>::max()&&
@@ -1419,12 +1429,11 @@ void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const
       operation==LatencyOperation::write?"sb_storage_device_write_latency_microseconds":"sb_storage_fsync_latency_microseconds";
     const auto name=operation==LatencyOperation::read?"read_at":operation==LatencyOperation::write?"write_at":"sync";
     bool accepted=metrics::ObserveHistogram(family,metrics::Labels({{"component","storage.disk"},{"operation",name},
-      {"result",result},{"device_class",path_.empty()?"unopened":"file"}}),micros,"storage_disk").ok;
-    if(!metric_filespace_uuid_.is_nil()){
+      {"result",result},{"device_class",opened?"file":"unopened"}}),micros,"storage_disk").ok;
+    if(context&&!context->filespace.is_nil()){
       const auto observe=operation==LatencyOperation::read?metrics::ObserveFilespaceDeviceReadLatency:
         operation==LatencyOperation::write?metrics::ObserveFilespaceDeviceWriteLatency:metrics::ObserveFilespaceFsyncLatency;
-      const auto scoped=observe(micros,metric_database_uuid_,metric_filespace_uuid_,metric_node_uuid_,metric_filespace_role_,
-        metric_device_class_.empty()?"file":metric_device_class_);
+      const auto scoped=observe(micros,context->database,context->filespace,context->node,context->role,context->device_class);
       accepted=scoped.ok&&accepted;
     }
     if(!accepted)increment(rejected_io_latency_);
@@ -1862,6 +1871,20 @@ IoResult FileDevice::Close() {
 }
 
 IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {
+  return ReadAtImpl(offset,buffer,bytes,nullptr);
+}
+
+FileDevice::ReadLatencyBatch::~ReadLatencyBatch() {
+  for(usize i=0;i<count_;++i){const auto& sample=samples_[i];
+    device_.PublishIoLatency(LatencyOperation::read,sample.micros,"ok",sample.context,sample.opened);
+  }
+}
+
+IoResult FileDevice::ReadLatencyBatch::ReadAt(u64 offset,void* buffer,usize bytes) {
+  return device_.ReadAtImpl(offset,buffer,bytes,this);
+}
+
+IoResult FileDevice::ReadAtImpl(u64 offset, void* buffer, usize bytes, ReadLatencyBatch* batch) {
   const auto operation_guard = AcquireOperationGuard();
   const auto metric_start = Clock::now();
   if (!is_open()) {
@@ -1911,7 +1934,14 @@ IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {
   IoResult result;
   result.status = DiskOkStatus();
   result.bytes_transferred = transferred;
-  ObserveIoLatency(LatencyOperation::read,ElapsedMicros(metric_start),"ok");
+  if(!batch)ObserveIoLatency(LatencyOperation::read,ElapsedMicros(metric_start),"ok");
+  else if(batch->count_<batch->samples_.size())
+    batch->samples_[batch->count_++]={metric_context_,ElapsedMicros(metric_start),!path_.empty()};
+  else {
+    auto value=rejected_io_latency_.load(std::memory_order_relaxed);
+    while(value!=std::numeric_limits<u64>::max()&&!rejected_io_latency_.compare_exchange_weak(
+      value,value+1,std::memory_order_relaxed)){}
+  }
   return result;
 }
 
@@ -2150,12 +2180,13 @@ void FileDevice::SetMetricContext(scratchbird::core::platform::Uuid database_uui
                                   scratchbird::core::platform::Uuid node_uuid,
                                   std::string filespace_role,
                                   std::string device_class) {
+  // Allocate immutable labels before the device fence. Each buffered sample
+  // retains this exact binary context across close/reopen or later replacement.
+  auto context=std::make_shared<const MetricContext>(MetricContext{
+    database_uuid,filespace_uuid,node_uuid,std::move(filespace_role),
+    device_class.empty()?std::string("file"):std::move(device_class)});
   const auto operation_guard = AcquireOperationGuard();
-  metric_database_uuid_ = std::move(database_uuid);
-  metric_filespace_uuid_ = std::move(filespace_uuid);
-  metric_node_uuid_ = std::move(node_uuid);
-  metric_filespace_role_ = std::move(filespace_role);
-  metric_device_class_ = device_class.empty() ? "file" : std::move(device_class);
+  metric_context_=std::move(context);
 }
 
 SizeResult FileDevice::Size() const {
@@ -2224,14 +2255,14 @@ IoResult FileDevice::MakeIoError(std::string diagnostic_code,
                                  std::string detail,
                                  usize bytes_transferred) const {
   RecordDiskError(diagnostic_code.c_str(), path_);
-  if (!metric_filespace_uuid_.is_nil()) {
+  if (metric_context_ && !metric_context_->filespace.is_nil()) {
     (void)scratchbird::core::metrics::RecordFilespaceDeviceError(
         diagnostic_code,
-        metric_database_uuid_,
-        metric_filespace_uuid_,
-        metric_node_uuid_,
-        metric_filespace_role_,
-        metric_device_class_.empty() ? "file" : metric_device_class_);
+        metric_context_->database,
+        metric_context_->filespace,
+        metric_context_->node,
+        metric_context_->role,
+        metric_context_->device_class);
   }
   IoResult result;
   result.status = DiskErrorStatus();

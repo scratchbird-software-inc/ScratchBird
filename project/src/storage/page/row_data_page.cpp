@@ -12,6 +12,8 @@
 #include "page_header.hpp"
 
 #include <algorithm>
+#include <array>
+#include <type_traits>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -124,7 +126,8 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
 
-bool ValidRowIdentity(const RowDataRecord& row) {
+template<class Row>
+bool ValidRowIdentity(const Row& row) {
   const auto valid_link = [&](const auto& id, u64 sequence) {
     return sequence == 0 ? id.is_nil()
                         : IsEngineIdentityUuid(id) && id != row.version_uuid &&
@@ -498,21 +501,141 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
 }
 
 namespace {
-RowDataPageResult ParseRowDataPageBodyImpl(
+
+template<bool Borrowed>
+using ReadResult = std::conditional_t<Borrowed, RowDataPageViewResult, RowDataPageResult>;
+
+template<bool Borrowed>
+ReadResult<Borrowed> RowReadError(const char* code, const char* key,
+                                 std::optional<u64> detail = {}) {
+  if constexpr (Borrowed) {
+    RowDataPageViewResult out; out.status=RowPageErrorStatus();
+    out.diagnostic={code,key,detail,"storage.page.row_data"}; return out;
+  } else {
+    return RowPageError(code,key,detail?std::to_string(*detail):std::string{});
+  }
+}
+RowDataPageViewResult RowWorkspaceError(bool invalid=false) noexcept {
+  RowDataPageViewResult out; out.error=invalid?RowDataPageViewError::invalid_workspace:RowDataPageViewError::insufficient_workspace;
+  out.status={invalid?StatusCode::memory_invalid_request:StatusCode::memory_limit_exceeded,Severity::error,Subsystem::storage_page};
+  return out;
+}
+
+template<bool Borrowed> struct RowReadState;
+template<> struct RowReadState<false> {
+  using Row=RowDataRecord;
+  using Cell=RowDataCell;
+  std::set<scratchbird::core::platform::Uuid> versions;
+  std::set<std::pair<scratchbird::core::platform::Uuid,u64>> sequences;
+  std::vector<RowDataSlot> slots;
+  explicit RowReadState(RowDataPageViewWorkspace) {}
+  void Prepare(u32 count) { slots.reserve(count); }
+  bool Remember(const Row& row) {
+    return versions.insert(row.version_uuid).second&&
+      sequences.emplace(row.row_uuid.value,row.row_version).second;
+  }
+  bool exhausted() const { return false; }
+  bool CellValue(Row& row, Cell cell) { row.cells.push_back(std::move(cell));return true; }
+  void Finish(RowDataPageBody& body,Row row,RowDataSlot slot) {
+    slots.push_back(slot);body.rows.push_back(std::move(row));
+  }
+  const RowDataSlot& Expected(u32 index) const { return slots[index]; }
+  void Slot(RowDataPageBody& body,RowDataSlot slot) { body.slots.push_back(slot); }
+  bool Links(const RowDataPageBody& body) const { return PreviousLinksMatchPage(body); }
+};
+
+template<> struct RowReadState<true> {
+  using Row=RowDataRecordView;
+  using Cell=RowDataCellView;
+  RowDataPageViewWorkspace workspace;
+  std::size_t row_count=0,cell_count=0,cell_start=0;
+  bool full=false;
+  explicit RowReadState(RowDataPageViewWorkspace supplied):workspace(supplied) {}
+  void Prepare(u32) {
+    std::fill(workspace.version_index.begin(),workspace.version_index.end(),0);
+    std::fill(workspace.sequence_index.begin(),workspace.sequence_index.end(),0);
+  }
+  static u64 Hash(const scratchbird::core::platform::Uuid& uuid,u64 sequence=0) {
+    u64 hash=Fnv1a64(uuid.bytes.data(),uuid.bytes.size());
+    for(unsigned i=0;i<8;++i){hash^=(sequence>>(8*i))&255;hash*=1099511628211ull;}
+    return hash;
+  }
+  // Exact equality remains native UUID plus sequence; hash collisions never
+  // establish identity. Probe count is bounded by caller-owned index capacity.
+  std::optional<std::size_t> Find(std::span<const u32> index,
+      const scratchbird::core::platform::Uuid& uuid,u64 sequence,bool version) const {
+    if(index.empty())return {};
+    const auto start=Hash(uuid,sequence)%index.size();
+    for(std::size_t probe=0;probe<index.size();++probe) {
+      const auto at=(start+probe)%index.size(); const auto entry=index[at];
+      if(!entry)return {};
+      const auto& row=workspace.rows[entry-1];
+      if(version?row.version_uuid==uuid:
+          row.row_uuid.value==uuid&&row.row_version==sequence)return entry-1;
+    }
+    return {};
+  }
+  bool Insert(std::span<u32> index,const scratchbird::core::platform::Uuid& uuid,
+              u64 sequence,bool version) {
+    if(index.empty()){full=true;return false;}
+    const auto start=Hash(uuid,sequence)%index.size();
+    for(std::size_t probe=0;probe<index.size();++probe) {
+      const auto at=(start+probe)%index.size();
+      if(!index[at]){index[at]=static_cast<u32>(row_count+1);return true;}
+      const auto& row=workspace.rows[index[at]-1];
+      if(version?row.version_uuid==uuid:
+          row.row_uuid.value==uuid&&row.row_version==sequence)return false;
+    }
+    full=true;return false;
+  }
+  bool Remember(const Row& row) {
+    if(row_count>=workspace.rows.size()||row_count>=workspace.slots.size()||
+       row_count>=std::numeric_limits<u32>::max()){full=true;return false;}
+    workspace.rows[row_count]=row;
+    return Insert(workspace.version_index,row.version_uuid,0,true)&&
+      Insert(workspace.sequence_index,row.row_uuid.value,row.row_version,false);
+  }
+  bool exhausted() const { return full; }
+  bool CellValue(Row&,Cell cell) {
+    if(cell_count>=workspace.cells.size()){full=true;return false;}
+    workspace.cells[cell_count++]=cell;return true;
+  }
+  void Finish(RowDataPageView& body,Row row,RowDataSlot slot) {
+    row.cells=workspace.cells.subspan(cell_start,cell_count-cell_start);
+    cell_start=cell_count;workspace.rows[row_count]=row;workspace.slots[row_count]=slot;
+    ++row_count;body.rows=workspace.rows.first(row_count);body.slots=workspace.slots.first(row_count);
+  }
+  const RowDataSlot& Expected(u32 index) const { return workspace.slots[index]; }
+  void Slot(RowDataPageView&,RowDataSlot) {}
+  bool Links(const RowDataPageView& body) const {
+    for(const auto& row:body.rows) {
+      if(!row.previous_row_version)continue;
+      const auto version=Find(workspace.version_index,row.previous_version_uuid,0,true);
+      if(version&&(workspace.rows[*version].row_uuid.value!=row.row_uuid.value||
+          workspace.rows[*version].row_version!=row.previous_row_version))return false;
+      const auto sequence=Find(workspace.sequence_index,row.row_uuid.value,row.previous_row_version,false);
+      if(sequence&&workspace.rows[*sequence].version_uuid!=row.previous_version_uuid)return false;
+    }
+    return true;
+  }
+};
+
+template<bool Borrowed = false>
+ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context,
-    bool retain_serialized = true) {
+    bool retain_serialized = true, RowDataPageViewWorkspace workspace = {}) {
   if (serialized.size() < kRowDataPageBodyHeaderBytes) {
-    return RowPageError("SB-ROW-DATA-PAGE-BODY-SHORT",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SHORT",
                         "storage.row_data_page.body_short",
-                        std::to_string(page_number));
+                        page_number);
   }
   if (std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0) {
     if (HasRowDataMagicPrefix(serialized)) {
-      return RowPageError("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
                           "storage.row_data_page.format_unsupported");
     }
-    return RowPageError("SB-ROW-DATA-PAGE-MAGIC-INVALID",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-MAGIC-INVALID",
                         "storage.row_data_page.magic_invalid");
   }
   const u32 row_header_bytes = kRowHeaderBytes;
@@ -525,23 +648,23 @@ RowDataPageResult ParseRowDataPageBodyImpl(
   if (header_bytes != kRowDataPageBodyHeaderBytes || body_bytes > serialized.size() ||
       serialized.size() > std::numeric_limits<u32>::max() ||
       LoadLittle32(serialized.data() + 20) != 0) {
-    return RowPageError("SB-ROW-DATA-PAGE-BODY-SIZE-INVALID",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SIZE-INVALID",
                         "storage.row_data_page.body_size_invalid");
   }
   const u64 slot_bytes = static_cast<u64>(row_count) * kSlotEntryBytes;
   if (slot_directory_offset < kRowDataPageBodyHeaderBytes ||
       static_cast<u64>(slot_directory_offset) + slot_bytes != body_bytes ||
       free_space_bytes != serialized.size() - body_bytes) {
-    return RowPageError("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-INVALID",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-INVALID",
                         "storage.row_data_page.slot_directory_invalid");
   }
   if (LoadLittle64(serialized.data() + kOffsetBodyChecksum) !=
       Fnv1a64WithZeroChecksum(serialized.data(), serialized.size(), kOffsetBodyChecksum)) {
-    return RowPageError("SB-ROW-DATA-PAGE-CHECKSUM-MISMATCH",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-CHECKSUM-MISMATCH",
                         "storage.row_data_page.checksum_mismatch");
   }
 
-  RowDataPageResult result;
+  ReadResult<Borrowed> result;
   result.status = RowPageOkStatus();
   result.body.page_number = page_number;
   result.body.relation_uuid.kind = UuidKind::object;
@@ -557,26 +680,26 @@ RowDataPageResult ParseRowDataPageBodyImpl(
   result.body.next_page_number = LoadLittle64(serialized.data() + kOffsetNextPageNumber);
   result.body.free_space_offset = body_bytes;
   result.body.free_space_bytes = free_space_bytes;
-  if (retain_serialized) result.serialized.assign(serialized.begin(), serialized.end());
+  if constexpr (!Borrowed) {
+    if (retain_serialized) result.serialized.assign(serialized.begin(), serialized.end());
+  }
 
   if (!IsTypedEngineIdentity(result.body.relation_uuid, UuidKind::object) ||
       result.body.segment_id == 0 || result.body.segment_generation == 0 ||
       result.body.page_generation == 0 || result.body.compaction_generation == 0) {
-    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.identity_scope_invalid");
+    return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.identity_scope_invalid");
   }
-  std::set<scratchbird::core::platform::Uuid> version_ids;
-  std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
+  RowReadState<Borrowed> state(workspace);
   u32 offset = kRowDataPageBodyHeaderBytes;
-  std::vector<RowDataSlot> expected_slots;
-  expected_slots.reserve(row_count);
+  state.Prepare(row_count);
   for (u32 row_index = 0; row_index < row_count; ++row_index) {
     if (offset > slot_directory_offset || row_header_bytes > slot_directory_offset - offset) {
-      return RowPageError("SB-ROW-DATA-PAGE-ROW-SHORT",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-ROW-SHORT",
                           "storage.row_data_page.row_short",
-                          std::to_string(row_index));
+                          row_index);
     }
     const u32 row_start = offset;
-    RowDataRecord row;
+    typename RowReadState<Borrowed>::Row row;
     row.row_uuid.kind = UuidKind::row;
     std::copy(serialized.begin() + offset, serialized.begin() + offset + 16, row.row_uuid.value.bytes.begin());
     row.transaction_uuid.kind = UuidKind::transaction;
@@ -585,10 +708,10 @@ RowDataPageResult ParseRowDataPageBodyImpl(
     row.row_version = LoadLittle64(serialized.data() + offset + 40);
     row.storage_generation = LoadLittle64(serialized.data() + offset + kRowOffsetStorageGeneration);
     if (row.storage_generation == 0 || row.storage_generation > result.body.page_generation)
-      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.storage_generation_invalid");
+      return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.storage_generation_invalid");
     const auto row_flags = LoadLittle16(serialized.data() + offset + 48);
     if ((row_flags & ~RowFlag::deleted) != 0) {
-      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.row_flags_invalid");
+      return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.row_flags_invalid");
     }
     row.deleted = (row_flags & RowFlag::deleted) != 0;
     const u16 cell_count = LoadLittle16(serialized.data() + offset + 50);
@@ -604,88 +727,95 @@ RowDataPageResult ParseRowDataPageBodyImpl(
     std::copy_n(serialized.begin() + offset + kRowOffsetPreviousVersionUuid, 16, row.previous_version_uuid.bytes.begin());
     std::copy_n(serialized.begin() + offset + kRowOffsetNextVersionUuid, 16, row.next_version_uuid.bytes.begin());
     if (!ValidRowIdentity(row) || row.internal_row_ordinal != row_index + 1 ||
-        row.stable_slot_id == 0 || !version_ids.insert(row.version_uuid).second ||
-        !row_sequences.emplace(row.row_uuid.value, row.row_version).second ||
+        row.stable_slot_id == 0 || !state.Remember(row) ||
         row_bytes < row_header_bytes || row_bytes > slot_directory_offset - row_start) {
-      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.row_identity_or_extent_invalid");
+      if constexpr (Borrowed) if (state.exhausted()) return RowWorkspaceError();
+      return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.row_identity_or_extent_invalid");
     }
     const u32 row_end = row_start + row_bytes;
     if (row.previous_row_version != 0 && row.previous_row_version >= row.row_version) {
-      return RowPageError("SB-ROW-DATA-PAGE-LINEAGE-INVALID",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-LINEAGE-INVALID",
                           "storage.row_data_page.previous_lineage_invalid",
-                          std::to_string(row_index));
+                          row_index);
     }
     if (row.next_row_version != 0 && row.next_row_version <= row.row_version) {
-      return RowPageError("SB-ROW-DATA-PAGE-LINEAGE-INVALID",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-LINEAGE-INVALID",
                           "storage.row_data_page.next_lineage_invalid",
-                          std::to_string(row_index));
+                          row_index);
     }
     offset += row_header_bytes;
 
     for (u16 cell_index = 0; cell_index < cell_count; ++cell_index) {
       if (offset > row_end || kCellHeaderBytes > row_end - offset) {
-        return RowPageError("SB-ROW-DATA-PAGE-CELL-SHORT",
+        return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-CELL-SHORT",
                             "storage.row_data_page.cell_short",
-                            std::to_string(cell_index));
+                            cell_index);
       }
-      RowDataCell cell;
+      typename RowReadState<Borrowed>::Cell cell;
       cell.column_ordinal = LoadLittle16(serialized.data() + offset);
       if (LoadLittle16(serialized.data() + offset + 2) != 0) {
-        return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_reserved_invalid");
+        return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_reserved_invalid");
       }
       const u32 payload_bytes = LoadLittle32(serialized.data() + offset + 4);
       const u64 payload_checksum = LoadLittle64(serialized.data() + offset + 8);
       offset += kCellHeaderBytes;
       if (payload_bytes > row_end - offset) {
-        return RowPageError("SB-ROW-DATA-PAGE-CELL-PAYLOAD-SHORT",
+        return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-CELL-PAYLOAD-SHORT",
                             "storage.row_data_page.cell_payload_short",
-                            std::to_string(cell_index));
+                            cell_index);
       }
       if (payload_checksum != Fnv1a64(serialized.data() + offset, payload_bytes)) {
-        return RowPageError("SB-ROW-DATA-PAGE-CELL-CHECKSUM-MISMATCH",
+        return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-CELL-CHECKSUM-MISMATCH",
                             "storage.row_data_page.cell_checksum_mismatch",
-                            std::to_string(cell_index));
+                            cell_index);
       }
       if (binary_context != nullptr) {
         const auto decoded = scratchbird::core::datatypes::DecodeCanonicalBinaryValueViewNoAlloc(
             serialized.data() + offset, payload_bytes, *binary_context);
         if (!decoded.ok()) {
-          RowDataPageResult refused;
+          ReadResult<Borrowed> refused;
+          if constexpr (Borrowed) refused.error=RowDataPageViewError::binary_failure;
           refused.status = decoded.status;
           refused.binary_diagnostic = decoded.diagnostic;
           return refused;
         }
-        cell.value.type_id = decoded.value.type_id;
-        // Only the final owning cell is materialized. No encoded-cell clone or
-        // owning diagnostic conversion lies between the provider and refusal.
-        if (decoded.value.payload_bytes != 0) {
-          cell.value.payload.assign(decoded.value.payload_data,
-              decoded.value.payload_data + decoded.value.payload_bytes);
+        if constexpr (Borrowed) {
+          cell.value = decoded.value;
+        } else {
+          cell.value.type_id = decoded.value.type_id;
+          if (decoded.value.payload_bytes != 0) {
+            cell.value.payload.assign(decoded.value.payload_data,
+                decoded.value.payload_data + decoded.value.payload_bytes);
+          }
         }
       } else {
-        std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
-        auto decoded = DecodeDatatypeBinaryValue(encoded);
-        if (!decoded.ok()) {
-          RowDataPageResult decoded_result;
-          decoded_result.status = decoded.status;
-          decoded_result.diagnostic = std::move(decoded.diagnostic);
-          return decoded_result;
+        if constexpr (!Borrowed) {
+          std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
+          auto decoded = DecodeDatatypeBinaryValue(encoded);
+          if (!decoded.ok()) {
+            RowDataPageResult decoded_result;
+            decoded_result.status = decoded.status;
+            decoded_result.diagnostic = std::move(decoded.diagnostic);
+            return decoded_result;
+          }
+          cell.value = std::move(decoded.value);
         }
-        cell.value = std::move(decoded.value);
       }
-      row.cells.push_back(std::move(cell));
+      if (!state.CellValue(row,std::move(cell))) {
+        if constexpr (Borrowed) return RowWorkspaceError();
+      }
       offset += payload_bytes;
     }
     if (row_bytes != offset - row_start) {
-      return RowPageError("SB-ROW-DATA-PAGE-ROW-BYTES-MISMATCH",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-ROW-BYTES-MISMATCH",
                           "storage.row_data_page.row_bytes_mismatch",
-                          std::to_string(row_index));
+                          row_index);
     }
     if (row_checksum != Fnv1a64WithZeroChecksum(serialized.data() + row_start,
                                                offset - row_start, kRowOffsetRowChecksum)) {
-      return RowPageError("SB-ROW-DATA-PAGE-ROW-CHECKSUM-MISMATCH",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-ROW-CHECKSUM-MISMATCH",
                           "storage.row_data_page.row_checksum_mismatch",
-                          std::to_string(row_index));
+                          row_index);
     }
     RowDataSlot slot;
     slot.stable_slot_id = row.stable_slot_id;
@@ -693,23 +823,22 @@ RowDataPageResult ParseRowDataPageBodyImpl(
     slot.row_bytes = row_bytes;
     slot.row_checksum = row_checksum;
     slot.deleted = row.deleted;
-    expected_slots.push_back(slot);
-    result.body.rows.push_back(std::move(row));
+    state.Finish(result.body,std::move(row),slot);
   }
   if (offset != slot_directory_offset) {
-    return RowPageError("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-OFFSET-MISMATCH",
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-OFFSET-MISMATCH",
                         "storage.row_data_page.slot_directory_offset_mismatch",
-                        std::to_string(offset));
+                        offset);
   }
   for (u32 slot_index = 0; slot_index < row_count; ++slot_index) {
-    const RowDataSlot& expected = expected_slots[slot_index];
+    const RowDataSlot& expected = state.Expected(slot_index);
     RowDataSlot slot;
     slot.stable_slot_id = LoadLittle32(serialized.data() + offset + kSlotOffsetStableSlotId);
     slot.row_offset = LoadLittle32(serialized.data() + offset + kSlotOffsetRowOffset);
     slot.row_bytes = LoadLittle32(serialized.data() + offset + kSlotOffsetRowBytes);
     const u32 slot_flags = LoadLittle32(serialized.data() + offset + kSlotOffsetFlags);
     if ((slot_flags & ~static_cast<u32>(RowFlag::deleted)) != 0) {
-      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.slot_flags_invalid");
+      return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.slot_flags_invalid");
     }
     slot.deleted = (slot_flags & RowFlag::deleted) != 0;
     slot.row_checksum = LoadLittle64(serialized.data() + offset + kSlotOffsetRowChecksum);
@@ -718,16 +847,17 @@ RowDataPageResult ParseRowDataPageBodyImpl(
         slot.row_bytes != expected.row_bytes ||
         slot.deleted != expected.deleted ||
         slot.row_checksum != expected.row_checksum) {
-      return RowPageError("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-MISMATCH",
+      return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-MISMATCH",
                           "storage.row_data_page.slot_directory_mismatch",
-                          std::to_string(slot_index));
+                          slot_index);
     }
-    result.body.slots.push_back(slot);
+    state.Slot(result.body,slot);
     offset += kSlotEntryBytes;
   }
-  if (!PreviousLinksMatchPage(result.body)) {
-    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
+  if (!state.Links(result.body)) {
+    return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
   }
+  if constexpr (Borrowed) result.error=RowDataPageViewError::none;
   return result;
 }
 }  // namespace
@@ -750,6 +880,41 @@ RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) {
   return ParseRowDataPageBodyImpl(serialized, page_number, &context, false);
+}
+
+
+RowDataPageViewRequirements RowDataPageViewBackingRequirements(std::size_t bytes) noexcept {
+  RowDataPageViewRequirements out;
+  if(bytes<kRowDataPageBodyHeaderBytes||bytes>std::numeric_limits<u32>::max())return out;
+  const auto payload=bytes-kRowDataPageBodyHeaderBytes;
+  out.rows=payload/(kRowHeaderBytes+kSlotEntryBytes);
+  out.cells=payload/(kCellHeaderBytes+32); // Direct binary envelope is at least 32 bytes.
+  out.index_slots=out.rows?out.rows*2+1:0;
+  return out;
+}
+
+RowDataPageViewResult ParseRowDataPageWithCanonicalBinaryCellsInto(
+    std::span<const byte> input,u64 page_number,RowDataPageViewWorkspace workspace,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) noexcept {
+  // Reject invalid/overlapping backing before the first scratch write.
+  struct Range { std::uintptr_t begin=0,end=0; };
+  std::array<Range,6> ranges{};
+  bool valid=true; std::size_t count=0;
+  const auto add=[&](const auto& span) {
+    using Item=typename std::remove_reference_t<decltype(span)>::element_type;
+    if(span.empty())return;
+    if(!span.data()||reinterpret_cast<std::uintptr_t>(span.data())%alignof(Item)||span.size()>std::numeric_limits<std::size_t>::max()/sizeof(Item)){valid=false;return;}
+    const auto begin=reinterpret_cast<std::uintptr_t>(span.data());
+    const auto bytes=span.size()*sizeof(Item);
+    if(begin>std::numeric_limits<std::uintptr_t>::max()-bytes){valid=false;return;}
+    ranges[count++]={begin,begin+bytes};
+  };
+  add(input);add(workspace.rows);add(workspace.cells);add(workspace.slots);
+  add(workspace.version_index);add(workspace.sequence_index);
+  for(std::size_t i=0;i<count;++i)for(std::size_t j=0;j<i;++j)
+    if(ranges[i].begin<ranges[j].end&&ranges[j].begin<ranges[i].end)valid=false;
+  if(!valid)return RowWorkspaceError(true);
+  return ParseRowDataPageBodyImpl<true>(input,page_number,&context,false,workspace);
 }
 
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
