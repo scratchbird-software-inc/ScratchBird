@@ -7,7 +7,7 @@ namespace scratchbird::storage::database {
 enum class NativeManagementControlAllocationError {
   none, invalid_request, invalid_checkpoint, invalid_plan, invalid_extent,
   invalid_allocation, binding_mismatch, invalid_delta, resource_exhausted,
-  hash_failure, cluster_requires_authority, encrypted_requires_authority
+  hash_failure, cluster_requires_authority, encrypted_requires_authority, invalid_workspace
 };
 // Complete immutable primary-only metadata/inventory allocation delta. Directory
 // publications require their complete base-directory delta, not this entry point.
@@ -36,4 +36,25 @@ NativeManagementControlAllocationError ValidateNativeManagementDirectoryControlA
   const NativeManagementDirectoryBase&, u64 maximum_input_image_bytes,
   const std::vector<std::vector<byte>>& control_bundle,
   const std::vector<std::vector<byte>>& base_inventory = {}) noexcept;
+
+struct NativeManagementDirectoryBaseView {
+  std::span<const std::span<const byte>> directory_images,page_zero_images;
+};
+struct NativeManagementControlAllocationInputs {
+  std::span<const byte> base_checkpoint,target_checkpoint,plan;
+  std::span<const std::span<const byte>> extent,base_allocation,target_allocation;
+  std::span<const std::span<const byte>> control_bundle,base_inventory;
+  const NativeManagementDirectoryBaseView* directory=nullptr;
+  u64 maximum_input_image_bytes=0;
+};
+struct NativeManagementControlAllocationViewResult {
+  NativeManagementControlAllocationError error=NativeManagementControlAllocationError::invalid_request;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeManagementControlAllocationError::none;}
+};
+// Complete immutable control delta with shared source-independent validation.
+// Backing excludes the whole request, all descriptor arrays and all input bytes.
+// No I/O, memory grant, selected source, admission or publication authority.
+NativeManagementControlAllocationViewResult ValidateNativeManagementControlAllocationInto(
+  const NativeManagementControlAllocationInputs&,std::span<byte> backing) noexcept;
 } // namespace scratchbird::storage::database

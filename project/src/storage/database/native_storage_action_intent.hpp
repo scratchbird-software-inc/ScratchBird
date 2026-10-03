@@ -55,6 +55,22 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
 NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(
     const NativeManagementOperation&,u64 maximum_encoded_bytes) noexcept;
 
+struct NativeStorageIntentViewImage {
+  NativeStorageIntentError error=NativeStorageIntentError::invalid_header;
+  NativeManagementOperationError operation_error=NativeManagementOperationError::none;
+  std::optional<NativeStorageActionIntent> intent;
+  std::span<const byte> bytes;
+  bool ok() const noexcept{return error==NativeStorageIntentError::none&&intent.has_value();}
+};
+// Full immutable intent admission without an owned byte copy or rendered hash
+// diagnostic. Intent is a fixed native value; bytes borrow the complete input.
+// Operation form freshly validates the whole record using disjoint identity
+// scratch and the same exact overlapping bindings. Neither grants execution,
+// selected policy/security/resource authority or completion.
+NativeStorageIntentViewImage DecodeNativeStorageActionIntentView(std::span<const byte>,u64) noexcept;
+NativeStorageIntentViewImage ReadNativeStorageActionIntentFromOperationView(
+  const NativeManagementOperationView&,u64,std::span<Uuid> identities) noexcept;
+
 enum class NativeStorageCapacityCheckError {
   none, invalid_intent, capacity_failure, identity_mismatch, profile_mismatch,
   checkpoint_mismatch, allocation_mismatch, generation_mismatch, capacity_mismatch

@@ -342,6 +342,16 @@ NativeManagementControlBundleRead DecodeNativeManagementControlBundle(const Page
   try{return Decode(pages,r,db,bootstrap,budget);}catch(E e){return Fail<NativeManagementControlBundleRead>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleRead>(E::invalid_extent);}
 }
 
+
+NativeManagementControlBundleViewRead detail::DecodeNativeManagementControlBundleBacked(
+    std::span<const std::span<const byte>> pages,const Root& root,const Uuid& db,const Uuid& bootstrap,
+    u64 budget,std::pmr::memory_resource& resource) noexcept {
+  try{Scratch scratch{&resource};return DecodeView(pages,root,db,bootstrap,budget,scratch);}
+  catch(E e){return Fail<NativeManagementControlBundleViewRead>(e);}
+  catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}
+  catch(const std::length_error&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}
+  catch(...){return Fail<NativeManagementControlBundleViewRead>(E::invalid_extent);}
+}
 NativeManagementControlBundleViewRead DecodeNativeManagementControlBundleInto(
     std::span<const std::span<const byte>> pages,const Root& root,const Uuid& db,const Uuid& bootstrap,
     u64 budget,std::span<byte> backing) noexcept {

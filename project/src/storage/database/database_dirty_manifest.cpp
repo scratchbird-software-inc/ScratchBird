@@ -661,11 +661,12 @@ LockedFilespaces LockFilespaces(const std::vector<disk::NativeFilespaceDevice>& 
 }
 } // namespace native_checkpoint
 
-NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot& r) noexcept {
-  using namespace native_checkpoint;
-  try {
-    const auto valid=Validate(r);if(valid!=Error::none)return Fail(valid);
-    const auto common=disk::EncodeNativeCommonPageHeader(r.header);std::vector<byte> b(r.header.page_size_bytes,0);
+namespace native_checkpoint {
+template<class Root> Error EncodeValues(const Root& r,std::span<byte> storage){
+    const auto valid=Validate(r);if(valid!=Error::none)return (valid);
+    if(storage.size()<r.header.page_size_bytes)return Error::resource_exhausted;
+    auto b=storage.first(r.header.page_size_bytes);std::fill(b.begin(),b.end(),0);
+    const auto common=disk::EncodeNativeCommonPageHeader(r.header);
     std::copy(common.bytes->begin(),common.bytes->end(),b.begin());auto* f=b.data()+family;
     const bool operation_owner=!r.creator_operation_uuid.is_nil();
     const auto& image_magic=operation_owner?operation_magic:magic;
@@ -681,13 +682,31 @@ NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot
     Put(f+280,r.creator_operation_uuid);
     for(std::size_t i=0;i<r.roots.size();++i){const auto& target=r.roots[i];auto* out=b.data()+entries+112*i;
       StoreLittle16(out,target.role);StoreLittle32(out+4,target.page_type);PutRef(out+8,target.page);Put(out+56,target.object_uuid);std::copy(target.sha256.begin(),target.sha256.end(),out+72);}
-    const auto root_digest=RootDigest(b,used);if(!root_digest.ok())return Fail(Error::hash_failure);
+    const auto root_digest=RootDigest(b,used);if(!root_digest.ok())return (Error::hash_failure);
     std::copy(root_digest.digest.begin(),root_digest.digest.end(),b.begin()+root_digest_at);
-    const auto full=FullDigest(b);if(!full.ok())return Fail(Error::hash_failure);
-    std::copy(full.digest.begin(),full.digest.end(),b.begin()+digest_at);return {Error::none,r,std::move(b)};
+    const auto full=FullDigest(b);if(!full.ok())return (Error::hash_failure);
+    std::copy(full.digest.begin(),full.digest.end(),b.begin()+digest_at);return Error::none;
+}
+}
+NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot& r) noexcept {
+  using namespace native_checkpoint;
+  try {
+    const auto valid=Validate(r);if(valid!=Error::none)return Fail(valid);
+    std::vector<byte> b(r.header.page_size_bytes);
+    const auto error=EncodeValues(r,b);if(error!=Error::none)return Fail(error);
+    return {Error::none,r,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(Error::resource_exhausted);}
    catch(const std::length_error&){return Fail(Error::resource_exhausted);}
    catch(...){return Fail(Error::invalid_family);}
+}
+NativeCheckpointRootEncodedView EncodeNativeCheckpointRootInto(
+    const NativeCheckpointRootView& root,std::span<core::platform::byte> backing) noexcept {
+  using namespace native_checkpoint;
+  if(!disk::detail::DisjointNativeDecodeRegions(backing,std::span{&root,1},root.roots))
+    return {Error::invalid_backing,{}};
+  const auto error=EncodeValues(root,backing);
+  if(error!=Error::none)return {error,{}};
+  return {Error::none,backing.first(root.header.page_size_bytes)};
 }
 
 namespace native_checkpoint {

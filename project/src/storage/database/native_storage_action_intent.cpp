@@ -104,13 +104,14 @@ NativeStorageIntentImage EncodeNativeStorageActionIntent(const I& i,u64 budget) 
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
   catch(const std::length_error&){return Fail(E::resource_exhausted);}
 }
-NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>& b,u64 budget) noexcept {
+NativeStorageIntentViewImage DecodeNativeStorageActionIntentView(std::span<const byte> b,u64 budget) noexcept {
+  const auto fail=[](E error){NativeStorageIntentViewImage out;out.error=error;return out;};
   try {
-    if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
+    if(budget<kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
     if(b.size()!=kNativeStorageActionIntentBytes||!std::equal(magic.begin(),magic.end(),b.begin())||
         Get(b.data()+8,2)!=4||Get(b.data()+12,4)!=b.size()||!Zero(b.data()+550,2)||!Zero(b.data()+676,60)||
         !Zero(b.data()+194,2)||!Zero(b.data()+264,8)||!Zero(b.data()+274,2)||!Zero(b.data()+344,8))
-      return Fail(E::invalid_header);
+      return fail(E::invalid_header);
     I i;i.action=static_cast<NativeStorageAction>(Get(b.data()+10,2));
     for(std::size_t n=0;n<ids.size();++n)i.*ids[n]=GetId(b.data()+16+16*n);
     i.checkpoint=GetRoot(b.data()+192);i.allocation_root=GetRoot(b.data()+272);
@@ -121,13 +122,32 @@ NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>
     for(std::size_t n=0;n<selected_ids.size();++n)i.*selected_ids[n]=GetId(b.data()+560+16*n);
     i.attachment_generation=Get(b.data()+640,8);i.storage_profile_generation=Get(b.data()+648,8);
     i.allocation_owner_uuid=GetId(b.data()+656);i.allocation_page_type=static_cast<u32>(Get(b.data()+672,4));
-    const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return Fail(error);
-    const auto hash=core::hash::ComputeSha256Digest(b.data(),736);
-    if(!hash.ok())return Fail(E::hash_failure);
-    if(!std::equal(hash.digest.begin(),hash.digest.end(),b.begin()+736))return Fail(E::invalid_integrity);
-    NativeStorageIntentImage r;r.intent=i;r.bytes=b;r.error=E::none;return r;
+    const auto error=ValidateNativeStorageActionIntent(i);if(error!=E::none)return fail(error);
+    const auto hash=core::hash::ComputeSha256DigestNative(b.data(),736);
+    if(!hash.ok())return fail(E::hash_failure);
+    if(!std::equal(hash.digest.begin(),hash.digest.end(),b.begin()+736))return fail(E::invalid_integrity);
+    NativeStorageIntentViewImage r;r.intent=i;r.bytes=b;r.error=E::none;return r;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
+  catch(const std::length_error&){return fail(E::resource_exhausted);}
+}
+NativeStorageIntentImage DecodeNativeStorageActionIntent(const std::vector<byte>& b,u64 budget) noexcept {
+  try{
+    const auto decoded=DecodeNativeStorageActionIntentView(b,budget);
+    if(!decoded.ok())return Fail(decoded.error);
+    NativeStorageIntentImage out;out.error=E::none;out.intent=decoded.intent;out.bytes=b;return out;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
-  catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+}
+
+namespace {
+template<class Operation> bool BindsIntent(const Operation& o,const I& i){
+  return !(o.scope==NativeManagementScope::cluster||o.uuid!=i.operation_uuid||o.database_uuid!=i.database_uuid||
+      o.target_uuid!=i.filespace_uuid||o.initiator_uuid!=i.initiator_uuid||
+      o.request_context_uuid!=i.request_context_uuid||o.policy_snapshot_uuid!=i.policy_snapshot_uuid||
+      (o.generation_guards[0]&&*o.generation_guards[0]!=i.catalog_generation)||
+      (o.generation_guards[1]&&*o.generation_guards[1]!=i.configuration_generation)||
+      (o.generation_guards[2]&&*o.generation_guards[2]!=i.security_generation));
+}
 }
 NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(const NativeManagementOperation& o,u64 budget) noexcept {
   if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
@@ -140,14 +160,24 @@ NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(const Native
     r.operation_error=validation;return r;
   }
   auto r=DecodeNativeStorageActionIntent(o.normalized_request_bytes,budget);if(!r.ok())return r;
-  const auto& i=*r.intent;
-  if(o.scope==NativeManagementScope::cluster||o.uuid!=i.operation_uuid||o.database_uuid!=i.database_uuid||
-      o.target_uuid!=i.filespace_uuid||o.initiator_uuid!=i.initiator_uuid||
-      o.request_context_uuid!=i.request_context_uuid||o.policy_snapshot_uuid!=i.policy_snapshot_uuid||
-      (o.generation_guards[0]&&*o.generation_guards[0]!=i.catalog_generation)||
-      (o.generation_guards[1]&&*o.generation_guards[1]!=i.configuration_generation)||
-      (o.generation_guards[2]&&*o.generation_guards[2]!=i.security_generation))return Fail(E::binding_mismatch);
+  if(!BindsIntent(o,*r.intent))return Fail(E::binding_mismatch);
   return r;
+}
+
+NativeStorageIntentViewImage ReadNativeStorageActionIntentFromOperationView(
+    const NativeManagementOperationView& o,u64 budget,std::span<Uuid> identities) noexcept {
+  const auto fail=[](E error){NativeStorageIntentViewImage out;out.error=error;return out;};
+  if(budget<kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
+  if(o.normalized_request_bytes.size()!=kNativeStorageActionIntentBytes)return fail(E::invalid_header);
+  const auto validation=ValidateNativeManagementOperationView(o,identities);
+  if(validation!=NativeManagementOperationError::none){
+    auto r=fail(validation==NativeManagementOperationError::hash_failure?E::hash_failure:
+      validation==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:E::operation_failure);
+    r.operation_error=validation;return r;
+  }
+  auto out=DecodeNativeStorageActionIntentView(o.normalized_request_bytes,budget);
+  if(out.ok()&&!BindsIntent(o,*out.intent))return fail(E::binding_mismatch);
+  return out;
 }
 NativeStorageCapacityCheck CheckNativeStorageIntentCapacityFromOpenDevices(
     const I& i,const std::vector<disk::NativeFilespaceDevice>& devices,u64 budget) noexcept {

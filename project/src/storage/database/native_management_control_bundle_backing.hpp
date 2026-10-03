@@ -8,6 +8,9 @@ namespace scratchbird::storage::database::detail {
 // immutable inputs. May run under an enclosing ordered source fence; a supplied
 // observation batch must outlive that fence. No grant, implicit heap fallback,
 // scheduling, authorization or durable completion is established.
+NativeManagementControlBundleViewRead DecodeNativeManagementControlBundleBacked(
+    std::span<const std::span<const byte>>,const NativeManagementControlBundleRoot&,
+    const Uuid& database,const Uuid& bootstrap,u64,std::pmr::memory_resource&) noexcept;
 NativeManagementControlBundleDeviceRead ReadNativeManagementControlBundleBacked(
     const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
     const Uuid& database,const Uuid& bootstrap,u64 budget,NativeManagementControlReadContext,

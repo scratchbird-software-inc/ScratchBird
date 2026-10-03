@@ -92,6 +92,16 @@ struct NativeCheckpointRootResult {
   bool ok() const noexcept { return error == NativeCheckpointError::none && root.has_value(); }
 };
 NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot&) noexcept;
+struct NativeCheckpointRootEncodedView {
+  NativeCheckpointError error=NativeCheckpointError::invalid_family;
+  std::span<const core::platform::byte> bytes;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&!bytes.empty();}
+};
+// Canonical complete image encoding into disjoint caller-owned backing. No
+// heap fallback, allocation/selection/publication authority or successful prefix.
+// On failure output bytes may have been modified, but no image view is returned.
+NativeCheckpointRootEncodedView EncodeNativeCheckpointRootInto(
+  const NativeCheckpointRootView&,std::span<core::platform::byte>) noexcept;
 NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>&) noexcept;
 struct NativeCheckpointRootViewResult {
   NativeCheckpointError error=NativeCheckpointError::invalid_family;

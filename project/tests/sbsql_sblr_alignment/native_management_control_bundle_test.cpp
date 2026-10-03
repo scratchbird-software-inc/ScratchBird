@@ -4,6 +4,8 @@
 #include "native_management_control_bundle_memory.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_management_control_allocation.hpp"
+#include "native_control_allocation_backing.hpp"
+#include "native_metadata_memory.hpp"
 #include "native_management_history.hpp"
 #include "native_management_history_memory.hpp"
 #include "native_management_control_authority.hpp"
@@ -302,6 +304,7 @@ void Rechain(Pages& pages,db::NativeManagementExtentRoot& root){std::array<byte,
 
 
 using CE=db::NativeManagementControlAllocationError;
+#include "native_management_control_allocation_memory_checks.hpp"
 namespace page=scratchbird::storage::page;
 using State=page::NativeAllocationState;
 using Maps=std::vector<page::NativeAllocationMap>;
@@ -581,7 +584,11 @@ struct Graph {
  }
  void Refresh(){after_bytes=EncodeMaps(after);auto& root=*std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==4;});root.page=Self(after.front().header);root.object_uuid=after.front().object_uuid;root.sha256=Sha(after_bytes.front());target_bytes=Finish(plan,target);plan_bytes=Oracle(plan);}
  u64 Budget()const{u64 n=base_bytes.size()+target_bytes.size()+plan_bytes.size();for(const auto* v:{&before_bytes,&after_bytes,&extent})for(const auto& b:*v)n+=b.size();return n;}
- CE CheckGraph(u64 budget=0)const{return db::ValidateNativeManagementControlAllocation(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,budget?budget:Budget());}
+ CE CheckGraph(u64 budget=0)const{
+  const bool bounded=!counting&&allocation_budget<0&&!hash_counting&&!hash_fault;const auto limit=budget?budget:Budget();
+  const auto result=db::ValidateNativeManagementControlAllocation(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,limit);
+  if(bounded)BoundedControlCheck(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,limit,{},{},nullptr,result);
+  return result;}
 };
 
 using BE=db::NativeManagementControlBundleError;
@@ -991,7 +998,11 @@ struct DirectoryTransition {
  }
  u64 Budget()const{u64 total=base_cp.size()+target_cp.size()+plan_image.size();for(const auto* group:{&extent,&before_images,&after_images,&bundle,&base.directory_images,&base.page_zero_images})for(const auto& raw:*group)total+=raw.size();
   for(const auto* group:{&inventory_before,&inventory_after})for(const auto& raw:*group)total+=4*raw.size();return total;}
- CE Validate(u64 budget=0)const{return db::ValidateNativeManagementDirectoryControlAllocation(base_cp,target_cp,plan_image,extent,before_images,after_images,base,budget?budget:Budget(),bundle,inventory_before);}
+ CE Validate(u64 budget=0)const{
+  const bool bounded=!counting&&allocation_budget<0&&!hash_counting&&!hash_fault;const auto limit=budget?budget:Budget();
+  const auto result=db::ValidateNativeManagementDirectoryControlAllocation(base_cp,target_cp,plan_image,extent,before_images,after_images,base,limit,bundle,inventory_before);
+  if(bounded)BoundedControlCheck(base_cp,target_cp,plan_image,extent,before_images,after_images,limit,bundle,inventory_before,&base,result);
+  return result;}
 };
 #include "native_management_history_memory_checks.hpp"
 
@@ -1588,6 +1599,7 @@ void DirectoryDelta(unsigned primary,unsigned secondary,bool reverse,unsigned pr
  DirectoryTransition t(primary,secondary,reverse,profile,target,reserve);const auto original=t.fixture.Read(0,512);
  const auto result=t.Validate();if(result!=CE::none)std::cerr<<"directory delta primary="<<primary<<" secondary="<<secondary<<" profile="<<profile<<" target="<<target<<" error="<<int(result)<<'\n';
  Check(result==CE::none,"complete exact directory allocation transition");
+ BoundedControlCheck(t.base_cp,t.target_cp,t.plan_image,t.extent,t.before_images,t.after_images,t.Budget(),t.bundle,t.inventory_before,&t.base,CE::none,primary==0&&secondary==0&&!reverse);
  Check(t.Validate(t.Budget()-1)==CE::resource_exhausted,"exact directory input budget boundary");
  Check(db::ValidateNativeManagementControlAllocation(t.base_cp,t.target_cp,t.plan_image,t.extent,t.before_images,t.after_images,t.Budget(),t.bundle,t.inventory_before)==CE::invalid_plan,"legacy entrypoint cannot omit base directory");
  const auto initial_after=t.after;const auto initial_directory=t.directory;const auto initial_base=t.base;const auto initial_request=t.request;
