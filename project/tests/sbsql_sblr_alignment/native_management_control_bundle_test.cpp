@@ -11,6 +11,8 @@
 #include "native_management_control_authority_memory.hpp"
 #include "native_bound_checkpoint_selection_memory.hpp"
 #include "native_current_checkpoint_source_memory.hpp"
+#include "native_selected_checkpoint_read_lease.hpp"
+#include "native_selected_checkpoint_memory_lease.hpp"
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
@@ -1015,6 +1017,8 @@ struct DirectoryTransition {
 #include "native_bound_checkpoint_selection_memory_checks.hpp"
 #define SB_CURRENT_SOURCE_HASH_PROBE 1
 #include "native_current_checkpoint_source_memory_checks.hpp"
+#define SB_SELECTED_LEASE_HASH_PROBE 1
+#include "native_selected_checkpoint_memory_lease_checks.hpp"
 
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
@@ -1556,6 +1560,29 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
+
+void DirectorySelectedLeaseMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
+ bool target,bool reserve,bool initial=false,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
+ if(repeated)f.NextGrowth();
+ const auto allowance=16*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+ const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),allowance);
+ Check(selected.ok(),"complete independent selected lease source");
+ const auto& raw=initial?f.t.base_cp:f.t.target_cp;
+ Check(db::EncodeNativeCheckpointRoot(*selected.checkpoint_inventory.checkpoint).bytes==raw&&
+  selected.selection->checkpoint_sha256==Sha(raw),"lease source binds exact independently encoded checkpoint");
+ const auto& s=*selected.selection;
+ const d::FilespaceRootReference root{9,0x300,s.checkpoint.filespace_uuid,s.checkpoint.page_number,
+  s.checkpoint.page_generation,s.checkpoint.page_size_profile_uuid,s.checkpoint_object_uuid};
+ const auto directory=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),f.t.fixture.devices,root,allowance);
+ Check(directory.ok()&&directory.directory.pages.size()==1&&directory.directory.pages.front().bytes==
+  (initial?f.t.base.directory_images.front():DirectoryImageOracle(f.t.directory)),
+  "lease source binds exact independent complete directory bytes");
+ const bool deep=primary==secondary&&!reverse&&!target&&reserve==(profile!=2);
+ selected_lease_memory::Checks(f.t.fixture.devices,allowance,deep,route,shard,shards);
+ if(route!=8)return;
+ f.Reopen();selected_lease_memory::Checks(f.t.fixture.devices,allowance);
+}
 template<bool allocation> void DirectoryCurrentSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2);if(repeated)f.NextGrowth();
  // This composite reader verifies the selector and the current object's full
@@ -3827,6 +3854,29 @@ int main(int argc,char** argv){
  }
  if(argc==3&&std::string_view(argv[1])=="--directory-control-close"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
+ }
+
+ if(argc==6&&std::string_view(argv[1])=="--directory-selected-lease-memory"){
+  const auto initial=std::stoi(argv[2]),profile=std::stoi(argv[3]),primary=std::stoi(argv[4]),secondary=std::stoi(argv[5]);
+  Check(initial>=0&&initial<=1&&profile>=2&&profile<=4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"selected lease pair arguments");
+  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+   if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
+   DirectorySelectedLeaseMemory(primary,secondary,reverse,profile,target,reserve,initial);
+  }
+  std::cout<<"PASS selected lease pair checks="<<checks<<'\n';return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--directory-selected-lease-repeat"){
+  const auto profile=std::stoi(argv[2]),size=std::stoi(argv[3]);
+  Check((profile==3||profile==4)&&size>=0&&size<5,"selected lease repeated size arguments");
+  for(bool target:{false,true})DirectorySelectedLeaseMemory(size,size,false,profile,target,true,false,true);
+  std::cout<<"PASS repeated selected lease checks="<<checks<<'\n';return 0;
+ }
+ if(argc==6&&std::string_view(argv[1])=="--directory-selected-lease-faults"){
+  const auto initial=std::stoi(argv[2]),profile=std::stoi(argv[3]),route=std::stoi(argv[4]),shard=std::stoi(argv[5]);
+  const unsigned shards=route<=5?16:1;
+  Check(initial>=0&&initial<=1&&profile>=2&&profile<=4&&route>=0&&route<=7&&shard>=0&&unsigned(shard)<shards,"selected lease fault arguments");
+  DirectorySelectedLeaseMemory(0,0,false,profile,false,profile!=2,initial,false,route,shard,shards);
+  std::cout<<"PASS selected lease fault checks="<<checks<<'\n';return 0;
  }
  if(argc==6&&std::string_view(argv[1])=="--directory-current-source-memory"){
   const auto allocation=std::stoi(argv[2]),profile=std::stoi(argv[3]),primary=std::stoi(argv[4]),secondary=std::stoi(argv[5]);
