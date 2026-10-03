@@ -7,6 +7,9 @@
 #include "transaction_inventory_page.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "native_filespace_directory.hpp"
+#include "native_decoded_storage_ranges.hpp"
+#include <memory_resource>
+#include <memory>
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -30,10 +33,81 @@ bool Zero(const byte* b,std::size_t n){return std::all_of(b,b+n,[](byte v){retur
 void Put(byte* b,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b);}
 Uuid Get(const byte* b){Uuid id;std::copy_n(b,16,id.bytes.begin());return id;}
 template<class T>T Fail(E e){T r;r.error=e;return r;}
-auto Hash(const Bytes& b){const auto h=core::hash::ComputeSha256Digest(b);Require(h.ok(),E::hash_failure);return h.digest;}
-auto Seal(const Bytes& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),320},{zero.data(),32},{b.data()+352,b.size()-352}};
-  const auto h=core::hash::ComputeSha256DigestParts(parts,3);Require(h.ok(),E::hash_failure);return h.digest;}
+auto Hash(std::span<const byte> b){const auto h=core::hash::ComputeSha256DigestNative(b.data(),b.size());Require(h.ok(),E::hash_failure);return h.digest;}
+auto Seal(std::span<const byte> b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),320},{zero.data(),32},{b.data()+352,b.size()-352}};
+  const auto h=core::hash::ComputeSha256DigestPartsNative(parts,3);Require(h.ok(),E::hash_failure);return h.digest;}
 auto Self(const Header& h){return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
+
+using Image=std::span<const byte>;
+using Images=std::span<Image>;
+// The bounded resource has no upstream allocator. Every payload byte,
+// container node, decoded value and sort scratch byte comes from this buffer.
+class BundleMemory final:public std::pmr::memory_resource {
+  std::span<byte> bytes_;
+  std::size_t used_=0;
+  void* do_allocate(std::size_t bytes,std::size_t alignment) override {
+    void* start=bytes_.data()?bytes_.data()+used_:nullptr;
+    auto remaining=bytes_.size()-used_;
+    if(!std::align(alignment,bytes,start,remaining))throw std::bad_alloc();
+    const auto offset=static_cast<byte*>(start)-bytes_.data();
+    used_=offset+bytes;return start;
+  }
+  void do_deallocate(void*,std::size_t,std::size_t) override {}
+  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {return this==&other;}
+public:
+  explicit BundleMemory(std::span<byte> bytes):bytes_(bytes){}
+  std::size_t used() const noexcept{return used_;}
+};
+struct Scratch {
+  std::pmr::memory_resource* resource;
+  template<class T> std::span<T> Array(std::size_t count){
+    static_assert(std::is_trivially_destructible_v<T>);
+    if(!count)return {};
+    if(count>std::numeric_limits<std::size_t>::max()/sizeof(T))throw std::bad_alloc();
+    auto* out=static_cast<T*>(resource->allocate(count*sizeof(T),alignof(T)));
+    std::uninitialized_value_construct_n(out,count);return {out,count};
+  }
+  auto Map(Image raw){
+    const auto available=raw.size()>=384?raw.size()-384:0;
+    const auto states=raw.size()>=384?std::min<u64>(LoadLittle64(raw.data()+192),u64{available}*2):0;
+    const auto records=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+308),available/128):0;
+    return page::DecodeNativeAllocationMapInto(raw,Array<page::NativeAllocationState>(states),Array<page::NativeAllocationRecord>(records));
+  }
+  auto Inventory(Image raw){
+    const auto count=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+184),(raw.size()-384)/72):0;
+    return page::DecodeNativeTransactionInventoryPageInto(raw,Array<transaction::mga::TransactionInventoryEntry>(count),
+      Array<std::size_t>(count),Array<byte>(count));
+  }
+  auto Directory(Image raw){
+    const auto count=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+208),(raw.size()-384)/192):0;
+    return page::DecodeNativeFilespaceDirectoryInto(raw,Array<page::NativeFilespaceDirectoryRecord>(count),Array<Uuid>(count));
+  }
+  auto PageZero(Image raw){return disk::DecodeFilespacePageZeroInto(raw,Array<disk::FilespaceRootReference>(32));}
+};
+// Keep ordinary owning callers' allocation sites visible to the existing
+// process allocation/fault instrumentation. The bounded API never uses this.
+class BundleHeapMemory final:public std::pmr::memory_resource {
+  void* do_allocate(std::size_t size,std::size_t alignment) override {
+    return alignment<=alignof(std::max_align_t)?::operator new(size):
+      ::operator new(size,std::align_val_t{alignment});
+  }
+  void do_deallocate(void* p,std::size_t,std::size_t alignment) override {
+    if(alignment<=alignof(std::max_align_t))::operator delete(p);
+    else ::operator delete(p,std::align_val_t{alignment});
+  }
+  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {return this==&other;}
+};
+struct InventoryScratch {
+  u64 next_local_transaction_id=1,next_commit_sequence=1;
+  std::pmr::vector<transaction::mga::TransactionInventoryEntry> entries;
+  explicit InventoryScratch(Scratch& scratch):entries(scratch.resource){}
+  bool Valid(Scratch& scratch) {
+    const page::NativeTransactionInventoryView view{next_local_transaction_id,next_commit_sequence,entries};
+    return page::ValidateNativeTransactionInventoryView(view,scratch.Array<std::size_t>(entries.size()),
+      scratch.Array<byte>(entries.size())).ok();
+  }
+};
+
 E CheckPayloadBytes(const Root& r,u64 size,u64& bytes){
   const auto limit=std::numeric_limits<u64>::max();
   if(!r.map_count||r.inventory_count>limit-r.map_count)return E::invalid_extent;
@@ -87,16 +161,17 @@ u32 Shape(const Root& r,const Uuid& database,const Uuid& bootstrap,u64 budget,bo
   u32 size=0;const auto error=CheckShape(r,database,bootstrap,budget,size,digests);
   Require(error==E::none,error);return size;
 }
-void Common(const Header& h,const Root& r,const Uuid& db,const Uuid& bootstrap,u32 size,u64 i,std::set<Uuid>& ids){
+void Common(const Header& h,const Root& r,const Uuid& db,const Uuid& bootstrap,u32 size,u64 i,std::pmr::set<Uuid>& ids){
   Require(h.database_uuid==db&&h.filespace_uuid==r.first.filespace_uuid&&h.page_size_profile_uuid==r.first.page_size_profile_uuid&&h.page_size_bytes==size&&h.page_number==r.first.page_number+i&&h.page_generation==r.first.page_generation&&h.page_type==0x500&&!h.flags,E::binding_mismatch);
   Require(V7(h.page_uuid)&&h.page_uuid!=db&&h.page_uuid!=bootstrap&&h.page_uuid!=r.object_uuid&&h.page_uuid!=r.operation_uuid&&ids.insert(h.page_uuid).second,E::invalid_identity);
 }
-u64 Maps(const Pages& images,const Pages& inventory_images,const std::vector<Header>& headers,const Root& root,const Uuid& db,u32 size){
+template<class ImageRange,class Headers>
+u64 Maps(const ImageRange& images,const ImageRange& inventory_images,const Headers& headers,const Root& root,const Uuid& db,u32 size,Scratch& scratch){
   Require(images.size()==root.map_count&&inventory_images.size()==root.inventory_count&&headers.size()==root.page_count,E::invalid_allocation);
-  std::vector<page::NativeAllocationMap> maps;maps.reserve(images.size());std::set<u64> slots;std::set<Uuid> page_ids,allocation_ids,record_ids;
+  std::pmr::vector<page::NativeAllocationMapView> maps(scratch.resource);maps.reserve(images.size());std::pmr::set<u64> slots(scratch.resource);std::pmr::set<Uuid> page_ids(scratch.resource),allocation_ids(scratch.resource),record_ids(scratch.resource);
   for(const auto& h:headers){Require(slots.insert(h.page_number).second&&page_ids.insert(h.page_uuid).second,E::invalid_identity);}
   u64 covered=0;
-  for(const auto& image:images){Require(image.size()==size,E::invalid_allocation);auto decoded=page::DecodeNativeAllocationMap(image);
+  for(const auto& image:images){Require(image.size()==size,E::invalid_allocation);auto decoded=scratch.Map(image);
     if(!decoded.ok())throw decoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::invalid_allocation;
     auto m=std::move(*decoded.map);const auto& h=m.header;Require(!h.flags,E::cluster_requires_authority);
     Require(h.database_uuid==db&&h.filespace_uuid==root.first.filespace_uuid&&h.page_size_profile_uuid==root.first.page_size_profile_uuid&&h.page_generation==root.first.page_generation&&m.map_generation==root.first.page_generation&&m.creator_transaction_uuid.is_nil()&&!m.creator_local_transaction_id&&m.creator_operation_uuid==root.operation_uuid&&m.first_page==covered,E::binding_mismatch);
@@ -112,13 +187,13 @@ u64 Maps(const Pages& images,const Pages& inventory_images,const std::vector<Hea
     Require(r!=map->records.end()&&r->page_number==h.page_number&&r->page_uuid==h.page_uuid&&r->page_generation==h.page_generation&&r->page_type==h.page_type&&r->owner_uuid==owner&&r->creator_transaction_uuid.is_nil()&&!r->creator_local_transaction_id&&r->creator_operation_uuid==root.operation_uuid&&!r->reuse_horizon,E::binding_mismatch);};
   for(const auto& m:maps)allocated(m.header,m.object_uuid);
   for(const auto& h:headers)allocated(h,root.object_uuid);
-  transaction::mga::LocalTransactionInventory inventory;
+  InventoryScratch inventory(scratch);
   std::optional<disk::NativePageReference> previous,next;
   Uuid object;
   for(std::size_t i=0;i<inventory_images.size();++i){const auto& raw=inventory_images[i];Require(raw.size()==size,E::invalid_allocation);
     const auto common=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(common.ok(),E::invalid_header);
     if(common.header->flags&1u)throw E::encrypted_requires_authority;
-    auto decoded=page::DecodeNativeTransactionInventoryPage(raw);
+    auto decoded=scratch.Inventory(raw);
     if(!decoded.ok())throw decoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::invalid_allocation;
     const auto& p=*decoded.page;const auto& h=p.header;
     Require(!h.flags&&h.database_uuid==db&&h.filespace_uuid==root.first.filespace_uuid&&h.page_size_profile_uuid==root.first.page_size_profile_uuid&&h.page_generation==root.first.page_generation&&p.inventory_generation==root.first.page_generation,E::binding_mismatch);
@@ -131,7 +206,7 @@ u64 Maps(const Pages& images,const Pages& inventory_images,const std::vector<Hea
     previous=Self(h);next=p.next;allocated(h,p.object_uuid);
   }
   Require(!next,E::binding_mismatch);
-  if(!inventory_images.empty())Require(!*transaction::mga::ValidateLocalTransactionInventoryStructure(inventory),E::invalid_allocation);
+  if(!inventory_images.empty())Require(inventory.Valid(scratch),E::invalid_allocation);
   return maps.front().total_pages;
 }
 Header MixedHeader(const byte* bytes,std::size_t length,const Root& root,const Uuid& db){
@@ -140,16 +215,17 @@ Header MixedHeader(const byte* bytes,std::size_t length,const Root& root,const U
   Require(profile&&length==profile->page_size_bytes&&h.page_size_bytes==length&&h.database_uuid==db&&h.page_generation==root.first.page_generation,E::binding_mismatch);
   if(h.flags&1u)throw E::encrypted_requires_authority;if(h.flags&2u)throw E::cluster_requires_authority;Require(!h.flags,E::invalid_header);return h;
 }
-u64 MixedMaps(const Pages& images,const Pages& inventory_images,const Pages& directory_images,const std::vector<Header>& headers,const Root& root,const Uuid& db){
+template<class ImageRange,class Headers>
+u64 MixedMaps(const ImageRange& images,const ImageRange& inventory_images,const ImageRange& directory_images,const Headers& headers,const Root& root,const Uuid& db,Scratch& scratch){
   Require(images.size()==root.map_count&&inventory_images.size()==root.inventory_count&&directory_images.size()==root.directory_count&&headers.size()==root.page_count,E::invalid_allocation);
-  using Maps=std::vector<page::NativeAllocationMap>;
-  std::map<Uuid,Maps> groups;std::map<Uuid,std::array<byte,32>> head_hashes;
-  std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids,allocation_ids,record_ids;
+  using Maps=std::pmr::vector<page::NativeAllocationMapView>;
+  std::pmr::map<Uuid,Maps> groups(scratch.resource);std::pmr::map<Uuid,std::array<byte,32>> head_hashes(scratch.resource);
+  std::pmr::set<std::pair<Uuid,u64>> slots(scratch.resource);std::pmr::set<Uuid> page_ids(scratch.resource),allocation_ids(scratch.resource),record_ids(scratch.resource);
   const auto unique=[&](const Header& h){Require(slots.emplace(h.filespace_uuid,h.page_number).second&&page_ids.insert(h.page_uuid).second,E::invalid_identity);};
   for(const auto& h:headers)unique(h);
   Uuid previous_file;
   for(const auto& image:images){const auto h=MixedHeader(image.data(),image.size(),root,db);
-    auto decoded=page::DecodeNativeAllocationMap(image);
+    auto decoded=scratch.Map(image);
     if(!decoded.ok())throw decoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::invalid_allocation;
     auto m=std::move(*decoded.map);Require(previous_file.is_nil()||!(h.filespace_uuid<previous_file),E::binding_mismatch);previous_file=h.filespace_uuid;
     unique(h);auto& group=groups[h.filespace_uuid];
@@ -172,9 +248,9 @@ u64 MixedMaps(const Pages& images,const Pages& inventory_images,const Pages& dir
       r->creator_transaction_uuid.is_nil()&&!r->creator_local_transaction_id&&r->creator_operation_uuid==root.operation_uuid&&!r->reuse_horizon,E::binding_mismatch);};
   for(const auto& [id,group]:groups)for(const auto& m:group)allocated(m.header,m.object_uuid);
   for(const auto& h:headers)allocated(h,root.object_uuid);
-  transaction::mga::LocalTransactionInventory inventory;std::optional<disk::NativePageReference> previous,next;Uuid object;
+  InventoryScratch inventory(scratch);std::optional<disk::NativePageReference> previous,next;Uuid object;
   for(std::size_t i=0;i<inventory_images.size();++i){const auto& raw=inventory_images[i];const auto h=MixedHeader(raw.data(),raw.size(),root,db);unique(h);
-    const auto decoded=page::DecodeNativeTransactionInventoryPage(raw);
+    const auto decoded=scratch.Inventory(raw);
     if(!decoded.ok())throw decoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::invalid_allocation;
     const auto& p=*decoded.page;Require(p.inventory_generation==root.first.page_generation&&p.previous==previous&&(!i||next==Self(h)),E::binding_mismatch);
     if(!i){object=p.object_uuid;inventory.next_local_transaction_id=p.inventory.next_local_transaction_id;inventory.next_commit_sequence=p.inventory.next_commit_sequence;}
@@ -182,10 +258,10 @@ u64 MixedMaps(const Pages& images,const Pages& inventory_images,const Pages& dir
     if(!inventory.entries.empty()&&!p.inventory.entries.empty())Require(inventory.entries.back().identity.local_id.value<p.inventory.entries.front().identity.local_id.value,E::binding_mismatch);
     inventory.entries.insert(inventory.entries.end(),p.inventory.entries.begin(),p.inventory.entries.end());previous=Self(h);next=p.next;allocated(h,p.object_uuid);
   }
-  Require(!next,E::binding_mismatch);if(!inventory_images.empty())Require(!*transaction::mga::ValidateLocalTransactionInventoryStructure(inventory),E::invalid_allocation);
-  u64 ordinal=0,total=0;Uuid directory_object,last_record;std::array<byte,32> next_hash{};std::set<Uuid> zero_ids,bound_groups;
+  Require(!next,E::binding_mismatch);if(!inventory_images.empty())Require(inventory.Valid(scratch),E::invalid_allocation);
+  u64 ordinal=0,total=0;Uuid directory_object,last_record;std::array<byte,32> next_hash{};std::pmr::set<Uuid> zero_ids(scratch.resource),bound_groups(scratch.resource);
   for(std::size_t i=0;i<directory_images.size();++i){const auto& raw=directory_images[i];const auto h=MixedHeader(raw.data(),raw.size(),root,db);unique(h);
-    const auto decoded=page::DecodeNativeFilespaceDirectory(raw);
+    const auto decoded=scratch.Directory(raw);
     if(!decoded.ok())throw decoded.error==page::NativeDirectoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeDirectoryError::hash_failure?E::hash_failure:E::invalid_allocation;
     const auto& p=*decoded.directory;Require(h.filespace_uuid==root.first.filespace_uuid&&h.page_size_profile_uuid==root.first.page_size_profile_uuid&&
       p.directory_generation==root.first.page_generation&&p.creator_operation_uuid==root.operation_uuid&&p.creator_transaction_uuid.is_nil()&&!p.creator_local_transaction_id&&p.first_record==ordinal,E::binding_mismatch);
@@ -200,7 +276,8 @@ u64 MixedMaps(const Pages& images,const Pages& inventory_images,const Pages& dir
   Require(ordinal==total&&!next&&bound_groups.size()==groups.size(),E::binding_mismatch);for(const auto& id:zero_ids)Require(!page_ids.contains(id),E::invalid_identity);
   return groups.at(root.first.filespace_uuid).front().total_pages;
 }
-void Growth(const Pages& images,const Pages& maps,const Pages& directory,const Root& root,const Uuid& db,const Uuid& bootstrap){
+template<class ImageRange>
+void Growth(const ImageRange& images,const ImageRange& maps,const ImageRange& directory,const Root& root,const Uuid& db,const Uuid& bootstrap,Scratch& scratch){
   Require(images.size()==root.growth_image_count,E::invalid_extent);
   if(images.empty())return;
   const auto image_error=[](disk::FilespacePageZeroError e){
@@ -208,23 +285,29 @@ void Growth(const Pages& images,const Pages& maps,const Pages& directory,const R
     throw e==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:
           e==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:E::invalid_allocation;
   };
-  const auto a=disk::DecodeFilespacePageZero(images[0].data(),images[0].size());image_error(a.error);
-  const auto b=disk::DecodeFilespacePageZero(images[1].data(),images[1].size());image_error(b.error);
+  const auto a=scratch.PageZero(images[0]);image_error(a.error);
+  const auto b=scratch.PageZero(images[1]);image_error(b.error);
   const auto& before=*a.record;const auto& after=*b.record;
   Require(before.bootstrap.database_uuid==db&&after.bootstrap.database_uuid==db&&images[0].size()==images[1].size(),E::binding_mismatch);
   if((before.bootstrap.flags|after.bootstrap.flags)&disk::FilespaceBootstrapFlag::payload_encrypted)throw E::encrypted_requires_authority;
   if((before.bootstrap.flags|after.bootstrap.flags)&disk::FilespaceBootstrapFlag::cluster_authority_required)throw E::cluster_requires_authority;
   Require(before.page_generation!=std::numeric_limits<u64>::max()&&before.root_set_generation!=std::numeric_limits<u64>::max()&&
     after.page_generation==before.page_generation+1&&after.root_set_generation==before.root_set_generation+1&&after.total_pages>before.total_pages,E::binding_mismatch);
-  auto normalized=after;normalized.page_generation=before.page_generation;normalized.root_set_generation=before.root_set_generation;
-  normalized.total_pages=before.total_pages;normalized.free_pages=before.free_pages;normalized.preallocated_pages=before.preallocated_pages;
-  const auto encoded=disk::EncodeFilespacePageZero(normalized);image_error(encoded.error);
-  Require(*encoded.bytes==images[0]&&std::equal(images[0].begin(),images[0].begin()+4096,images[1].begin())&&
-    std::equal(images[0].begin()+4480,images[0].end(),images[1].begin()+4480),E::binding_mismatch);
+  // Both images have already passed complete canonical validation. Only these
+  // five values, the repeated common generation and their dependent checksums
+  // may differ. Compare every other byte, including all reserved bytes/roots.
+  const std::array<std::pair<std::size_t,std::size_t>,5> changed{{
+    {4176,4184},{4192,4200},{4248,4256},{4368,4400},{4448,4480}}};
+  std::size_t compared=0;
+  for(const auto& [first,last]:changed){
+    Require(std::equal(images[0].begin()+compared,images[0].begin()+first,images[1].begin()+compared),E::binding_mismatch);
+    compared=last;
+  }
+  Require(std::equal(images[0].begin()+compared,images[0].end(),images[1].begin()+compared),E::binding_mismatch);
   const auto& fs=after.bootstrap.filespace_uuid;
   Require(fs!=root.first.filespace_uuid||after.page_uuid==bootstrap,E::binding_mismatch);
   bool found_zero=false;u64 free=0,preallocated=0;
-  for(const auto& raw:maps){auto m=page::DecodeNativeAllocationMap(raw);
+  for(const auto& raw:maps){auto m=scratch.Map(raw);
     if(!m.ok())throw m.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:m.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::invalid_allocation;
     if(m.map->header.filespace_uuid!=fs)continue;const auto& map=*m.map;
     Require(map.total_pages==after.total_pages&&map.header.page_size_profile_uuid==after.bootstrap.page_size_profile_uuid,E::binding_mismatch);
@@ -237,7 +320,7 @@ void Growth(const Pages& images,const Pages& maps,const Pages& directory,const R
   }
   Require(found_zero&&free==after.free_pages&&preallocated==after.preallocated_pages,E::binding_mismatch);
   bool found_member=false;
-  for(const auto& raw:directory){const auto decoded=page::DecodeNativeFilespaceDirectory(raw);
+  for(const auto& raw:directory){const auto decoded=scratch.Directory(raw);
     if(!decoded.ok())throw decoded.error==page::NativeDirectoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeDirectoryError::hash_failure?E::hash_failure:E::invalid_allocation;
     for(const auto& member:decoded.directory->records){if(member.bootstrap.filespace_uuid!=fs)continue;
       const auto& x=member.bootstrap;const auto& y=after.bootstrap;
@@ -250,28 +333,37 @@ void Growth(const Pages& images,const Pages& maps,const Pages& directory,const R
   }
   Require(found_member,E::binding_mismatch);
 }
-NativeManagementControlBundleRead Decode(const Pages& pages,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget){
+template<class PageRange>
+NativeManagementControlBundleViewRead DecodeView(const PageRange& pages,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget,Scratch& scratch){
   const auto size=Shape(r,db,bootstrap,budget),capacity=size-384;Require(pages.size()==r.page_count,E::invalid_extent);const u64 total=PayloadBytes(r,size);
-  Bytes payload;payload.reserve(static_cast<std::size_t>(total));std::vector<Header> headers;headers.reserve(pages.size());std::set<Uuid> ids;auto next=r.first_page_sha256;
-  for(std::size_t i=0;i<pages.size();++i){const auto& b=pages[i];Require(b.size()==size,E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);Require(h.ok(),E::invalid_header);Common(*h.header,r,db,bootstrap,size,i,ids);headers.push_back(*h.header);
+  auto payload=scratch.Array<byte>(static_cast<std::size_t>(total));auto headers=scratch.Array<Header>(pages.size());std::pmr::set<Uuid> ids(scratch.resource);auto next=r.first_page_sha256;
+  for(std::size_t i=0;i<pages.size();++i){const auto& b=pages[i];Require(b.size()==size,E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);Require(h.ok(),E::invalid_header);Common(*h.header,r,db,bootstrap,size,i,ids);headers[i]=*h.header;
     Require(Hash(b)==next,E::invalid_integrity);const auto seal=Seal(b);Require(std::equal(seal.begin(),seal.end(),b.begin()+320),E::invalid_integrity);
     const u64 offset=u64{i}*capacity;const u32 length=static_cast<u32>(std::min<u64>(capacity,total-offset));const auto* f=b.data()+128;
     Require(std::string_view(reinterpret_cast<const char*>(f),8)==Magic(r)&&LoadLittle16(f+8)==Version(r)&&LoadLittle16(f+10)==256&&LoadLittle32(f+12)==384+length&&LoadLittle64(f+64)==r.map_count&&LoadLittle64(f+72)==total&&LoadLittle64(f+80)==offset&&LoadLittle64(f+88)==i&&LoadLittle64(f+96)==r.page_count&&LoadLittle64(f+104)==r.first.page_number&&LoadLittle32(f+144)==length&&LoadLittle64(f+148)==r.inventory_count&&LoadLittle32(f+156)==(r.directory_count?8u:0u)&&LoadLittle64(f+224)==r.directory_count&&LoadLittle64(f+232)==r.growth_image_count&&Zero(f+240,16)&&Zero(b.data()+384+length,b.size()-384-length),E::invalid_header);
     Require(Get(f+16)==r.object_uuid&&Get(f+32)==bootstrap&&Get(f+48)==r.operation_uuid&&std::equal(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),f+112),E::binding_mismatch);
-    std::copy_n(f+160,32,next.begin());Require((i+1==pages.size())==Zero(next.data(),32),E::invalid_integrity);payload.insert(payload.end(),b.begin()+384,b.begin()+384+length);
+    std::copy_n(f+160,32,next.begin());Require((i+1==pages.size())==Zero(next.data(),32),E::invalid_integrity);std::copy_n(b.begin()+384,length,payload.begin()+offset);
   }
-  Require(Hash(payload)==r.aggregate_sha256,E::invalid_integrity);Pages images,inventory,directory,growth;images.reserve(static_cast<std::size_t>(r.map_count));inventory.reserve(static_cast<std::size_t>(r.inventory_count));directory.reserve(static_cast<std::size_t>(r.directory_count));growth.reserve(static_cast<std::size_t>(r.growth_image_count));
+  Require(Hash(payload)==r.aggregate_sha256,E::invalid_integrity);auto images=scratch.Array<Image>(r.map_count),inventory=scratch.Array<Image>(r.inventory_count),directory=scratch.Array<Image>(r.directory_count),growth=scratch.Array<Image>(r.growth_image_count);
   if(r.directory_count){std::size_t at=0;
-    const auto frames=[&](u64 count,Pages& out,bool zero=false){for(u64 i=0;i<count;++i){Require(payload.size()-at>=8,E::invalid_extent);const auto bytes=LoadLittle64(payload.data()+at);at+=8;
+    const auto frames=[&](u64 count,Images out,bool zero=false){for(u64 i=0;i<count;++i){Require(payload.size()-at>=8,E::invalid_extent);const auto bytes=LoadLittle64(payload.data()+at);at+=8;
       Require(bytes<=payload.size()-at,E::invalid_extent);
       if(zero)Require(std::any_of(disk::kCanonicalFilespacePageProfiles.begin(),disk::kCanonicalFilespacePageProfiles.end(),[&](const auto& p){return p.page_size_bytes==bytes;}),E::invalid_extent);
       else MixedHeader(payload.data()+at,static_cast<std::size_t>(bytes),r,db);
-      out.emplace_back(payload.begin()+at,payload.begin()+at+static_cast<std::size_t>(bytes));at+=static_cast<std::size_t>(bytes);}};
+      out[i]=payload.subspan(at,static_cast<std::size_t>(bytes));at+=static_cast<std::size_t>(bytes);}};
     frames(r.map_count,images);frames(r.inventory_count,inventory);frames(r.directory_count,directory);frames(r.growth_image_count,growth,true);Require(at==payload.size(),E::invalid_extent);
-  }else for(std::size_t at=0;at<payload.size();at+=size)(at/size<r.map_count?images:inventory).emplace_back(payload.begin()+at,payload.begin()+at+size);
-  const auto total_pages=r.directory_count?MixedMaps(images,inventory,directory,headers,r,db):Maps(images,inventory,headers,r,db,size);
-  Growth(growth,images,directory,r,db,bootstrap);
-  return {E::none,std::move(images),std::move(headers),total_pages,std::move(inventory),std::move(directory),std::move(growth)};
+  }else for(std::size_t at=0;at<payload.size();at+=size){const auto index=at/size;const auto raw=payload.subspan(at,size);if(index<r.map_count)images[index]=raw;else inventory[index-r.map_count]=raw;}
+  const auto total_pages=r.directory_count?MixedMaps(images,inventory,directory,headers,r,db,scratch):Maps(images,inventory,headers,r,db,size,scratch);
+  Growth(growth,images,directory,r,db,bootstrap,scratch);
+  return {E::none,images,headers,total_pages,inventory,directory,growth};
+}
+NativeManagementControlBundleRead Decode(const Pages& pages,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget){
+  BundleHeapMemory heap;std::pmr::monotonic_buffer_resource backing(&heap);
+  Scratch scratch{&backing};
+  const auto view=DecodeView(pages,r,db,bootstrap,budget,scratch);
+  const auto own=[](auto views){Pages out;out.reserve(views.size());for(const auto raw:views)out.emplace_back(raw.begin(),raw.end());return out;};
+  return {E::none,own(view.allocation_images),{view.page_headers.begin(),view.page_headers.end()},
+    view.total_pages,own(view.inventory_images),own(view.directory_images),own(view.growth_images)};
 }
 } // namespace
 NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget) noexcept {
@@ -279,11 +371,12 @@ NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(con
 }
 NativeManagementControlBundleImage EncodeNativeManagementControlBundle(const Pages& maps,const Uuid& db,const Uuid& bootstrap,const Uuid& object,const Uuid& attempt,const std::vector<Header>& headers,u64 budget,const Pages& inventory,const Pages& directory,const Pages& growth) noexcept {
   try{
+    BundleHeapMemory heap;std::pmr::monotonic_buffer_resource backing(&heap);Scratch scratch{&backing};
     Require(!headers.empty()&&!maps.empty(),E::invalid_request);Root root;root.first=Self(headers.front());root.object_uuid=object;root.operation_uuid=attempt;root.map_count=maps.size();root.inventory_count=inventory.size();root.directory_count=directory.size();root.page_count=headers.size();root.growth_image_count=growth.size();
     if(root.directory_count)for(const auto* chain:{&maps,&inventory,&directory,&growth})for(const auto& b:*chain){const auto limit=std::numeric_limits<u64>::max();Require(b.size()<=limit-8&&root.payload_bytes<=limit-8-b.size(),E::invalid_extent);root.payload_bytes+=8+b.size();}
-    const auto size=Shape(root,db,bootstrap,budget,false),capacity=size-384;std::set<Uuid> ids;for(std::size_t i=0;i<headers.size();++i)Common(headers[i],root,db,bootstrap,size,i,ids);
-    if(root.directory_count)MixedMaps(maps,inventory,directory,headers,root,db);else Maps(maps,inventory,headers,root,db,size);
-    Growth(growth,maps,directory,root,db,bootstrap);
+    const auto size=Shape(root,db,bootstrap,budget,false),capacity=size-384;std::pmr::set<Uuid> ids(scratch.resource);for(std::size_t i=0;i<headers.size();++i)Common(headers[i],root,db,bootstrap,size,i,ids);
+    if(root.directory_count)MixedMaps(maps,inventory,directory,headers,root,db,scratch);else Maps(maps,inventory,headers,root,db,size,scratch);
+    Growth(growth,maps,directory,root,db,bootstrap,scratch);
     Bytes payload;payload.reserve(static_cast<std::size_t>(PayloadBytes(root,size)));for(const auto* chain:{&maps,&inventory,&directory,&growth})for(const auto& b:*chain){
       if(root.directory_count){const auto at=payload.size();payload.resize(at+8);StoreLittle64(payload.data()+at,b.size());}payload.insert(payload.end(),b.begin(),b.end());}root.aggregate_sha256=Hash(payload);
     Pages pages(headers.size());std::array<byte,32> next{};
@@ -297,6 +390,26 @@ NativeManagementControlBundleImage EncodeNativeManagementControlBundle(const Pag
 NativeManagementControlBundleRead DecodeNativeManagementControlBundle(const Pages& pages,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget) noexcept {
   try{return Decode(pages,r,db,bootstrap,budget);}catch(E e){return Fail<NativeManagementControlBundleRead>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleRead>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleRead>(E::invalid_extent);}
 }
+
+NativeManagementControlBundleViewRead DecodeNativeManagementControlBundleInto(
+    std::span<const std::span<const byte>> pages,const Root& root,const Uuid& db,const Uuid& bootstrap,
+    u64 budget,std::span<byte> backing) noexcept {
+  // Validate the entire writable allocation, not merely the eventually used
+  // prefix. Inputs may alias each other but no writable byte may alias an input.
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(backing,input);};
+  if(!disjoint(pages)||!disjoint(std::span{&root,1})||!disjoint(std::span{&db,1})||
+     !disjoint(std::span{&bootstrap,1}))return Fail<NativeManagementControlBundleViewRead>(E::invalid_workspace);
+  for(const auto raw:pages)if(!disjoint(raw))return Fail<NativeManagementControlBundleViewRead>(E::invalid_workspace);
+  try {
+    BundleMemory memory(backing);Scratch scratch{&memory};
+    auto result=DecodeView(pages,root,db,bootstrap,budget,scratch);
+    result.backing_bytes_used=memory.used();return result;
+  }catch(E e){return Fail<NativeManagementControlBundleViewRead>(e);}
+   catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}
+   catch(...){return Fail<NativeManagementControlBundleViewRead>(E::invalid_extent);}
+}
+
 namespace {
 NativeManagementControlBundleRead ReadBundle(const disk::NativeFilespaceDevice& file,const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget,const Bytes* historical,bool result_context=false) noexcept {
   try{

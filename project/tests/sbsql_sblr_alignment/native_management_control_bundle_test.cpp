@@ -19,6 +19,7 @@
 #include <future>
 #include <chrono>
 #include <cstdlib>
+#include <cstddef>
 #include <iostream>
 #include <limits>
 #include <new>
@@ -50,6 +51,17 @@ int inventory_resolution_stage=-1,inventory_resolution_route=-1,inventory_resolu
 void Trace(off_t value){if(trace_io){if(io_trace_count==io_trace.size())std::abort();io_trace[io_trace_count++]=value;}}}
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
+void* operator new(std::size_t n,std::align_val_t alignment){
+ if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
+ const auto a=static_cast<std::size_t>(alignment);n=n?n:1;
+ if(n>std::numeric_limits<std::size_t>::max()-(a-1))throw std::bad_alloc();
+ if(auto* p=std::aligned_alloc(a,(n+a-1)/a*a))return p;throw std::bad_alloc();
+}
+void* operator new[](std::size_t n,std::align_val_t a){return ::operator new(n,a);}
+void operator delete(void* p,std::align_val_t) noexcept{std::free(p);}
+void operator delete[](void* p,std::align_val_t) noexcept{std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
+void operator delete[](void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count){++entropy_calls;if(entropy_fault&&!--entropy_fault)return 0;if(repeated_entropy){std::fill_n(out,count,0);if(count)out[count-1]=1;return 1;}return __real_RAND_bytes(out,count);}
 extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
@@ -279,6 +291,92 @@ namespace page=scratchbird::storage::page;
 using State=page::NativeAllocationState;
 using Maps=std::vector<page::NativeAllocationMap>;
 using Pages=std::vector<Bytes>;
+
+struct BundleBacking {
+ std::vector<std::span<const byte>> pages;
+ Bytes bytes;
+ explicit BundleBacking(const Pages& input){
+  std::size_t total=0;for(const auto& raw:input){pages.emplace_back(raw);total+=raw.size();}
+  Check(total<(std::numeric_limits<std::size_t>::max()-65536)/32,"bounded fixture size");
+  bytes.resize(total*32+65536);
+ }
+};
+void EmptyView(const db::NativeManagementControlBundleViewRead& r){
+ Check(!r.ok()&&!r.total_pages&&!r.backing_bytes_used&&r.page_headers.empty()&&r.allocation_images.empty()&&
+  r.inventory_images.empty()&&r.directory_images.empty()&&r.growth_images.empty(),"no bounded control bundle prefix");
+}
+void SameView(const db::NativeManagementControlBundleRead& owning,
+ const db::NativeManagementControlBundleViewRead& view,std::span<const byte> backing){
+ Check(view.error==owning.error,"complete bounded control bundle error parity");
+ if(!owning.ok()){EmptyView(view);return;}
+ Check(view.ok()&&view.total_pages==owning.total_pages&&view.backing_bytes_used&&view.backing_bytes_used<=backing.size(),
+  "complete bounded control bundle capacity and charged backing");
+ const auto inside=[&](const void* p,std::size_t bytes){
+  const auto at=reinterpret_cast<std::uintptr_t>(p),first=reinterpret_cast<std::uintptr_t>(backing.data());
+  return at>=first&&at-first<=backing.size()&&bytes<=backing.size()-(at-first);
+ };
+ const auto images=[&](const auto& owned,const auto& borrowed){
+  Check(owned.size()==borrowed.size(),"complete image family retained");
+  if(!borrowed.empty())Check(inside(borrowed.data(),borrowed.size_bytes()),"retained descriptors use caller backing");
+  for(std::size_t i=0;i<owned.size();++i)Check(std::equal(owned[i].begin(),owned[i].end(),borrowed[i].begin(),borrowed[i].end())&&
+    inside(borrowed[i].data(),borrowed[i].size()),"exact original image retained in caller backing");
+ };
+ images(owning.allocation_images,view.allocation_images);images(owning.inventory_images,view.inventory_images);
+ images(owning.directory_images,view.directory_images);images(owning.growth_images,view.growth_images);
+ Check(owning.page_headers.size()==view.page_headers.size()&&inside(view.page_headers.data(),view.page_headers.size_bytes()),
+  "complete physical headers use caller backing");
+ for(std::size_t i=0;i<owning.page_headers.size();++i){
+  const auto a=d::EncodeNativeCommonPageHeader(owning.page_headers[i]),b=d::EncodeNativeCommonPageHeader(view.page_headers[i]);
+  Check(a.ok()&&b.ok()&&a.bytes==b.bytes,"all physical header fields retained");
+ }
+}
+db::NativeManagementControlBundleRead DecodeBundle(const Pages& pages,const db::NativeManagementControlBundleRoot& root,
+ const Uuid& database,const Uuid& bootstrap,u64 budget){
+ const bool compare=allocation_budget<0&&!counting&&!hash_counting&&!hash_fault;
+ auto result=db::DecodeNativeManagementControlBundle(pages,root,database,bootstrap,budget);
+ if(compare){
+  BundleBacking backing(pages);allocation_budget=0;
+  const auto view=db::DecodeNativeManagementControlBundleInto(backing.pages,root,database,bootstrap,budget,backing.bytes);
+  const bool untouched=allocation_budget==0;allocation_budget=-1;
+  Check(untouched,"complete bundle decode uses no C++ heap fallback");SameView(result,view,backing.bytes);
+ }
+ return result;
+}
+void BoundedBundleChecks(const Pages& pages,const db::NativeManagementControlBundleRoot& root,
+ const Uuid& database,const Uuid& bootstrap,u64 budget){
+ using Error=db::NativeManagementControlBundleError;
+ BundleBacking backing(pages);const auto owned=db::DecodeNativeManagementControlBundle(pages,root,database,bootstrap,budget);
+ Check(owned.ok(),"bounded fixture is complete");
+ const auto call=[&](std::span<byte> bytes){
+  allocation_budget=0;const auto r=db::DecodeNativeManagementControlBundleInto(backing.pages,root,database,bootstrap,budget,bytes);
+  const bool untouched=allocation_budget==0;allocation_budget=-1;Check(untouched,"bounded result does not allocate process storage");return r;
+ };
+ const auto full=call(backing.bytes);SameView(owned,full,backing.bytes);const auto used=full.backing_bytes_used;
+ Check(used>1,"nonempty backing footprint");SameView(owned,call(std::span(backing.bytes).first(used)),backing.bytes);
+ for(const auto n:{std::size_t{0},std::size_t{1},used/2,used-1}){
+  const auto r=call(std::span(backing.bytes).first(n));Check(r.error==Error::resource_exhausted,"exact and short backing failure");EmptyView(r);
+ }
+ // Non-aligned byte storage must either account for padding or exhaust safely.
+ for(std::size_t offset=1;offset<alignof(std::max_align_t);++offset){
+  const auto r=call(std::span(backing.bytes).subspan(offset));SameView(owned,r,std::span(backing.bytes).subspan(offset));
+ }
+ const auto alias=[&](std::span<byte> bytes){
+  const Bytes before(bytes.begin(),bytes.end());const auto r=call(bytes);
+  Check(r.error==Error::invalid_workspace&&std::equal(before.begin(),before.end(),bytes.begin()),"whole aliased input rejected before mutation");EmptyView(r);
+ };
+ for(const auto& raw:pages){alias({const_cast<byte*>(raw.data()),raw.size()});alias({const_cast<byte*>(raw.data())+raw.size()-1,1});}
+ alias({reinterpret_cast<byte*>(backing.pages.data()),backing.pages.size()*sizeof(backing.pages[0])});
+ alias({reinterpret_cast<byte*>(const_cast<db::NativeManagementControlBundleRoot*>(&root)),sizeof(root)});
+ alias({reinterpret_cast<byte*>(const_cast<Uuid*>(&database)),sizeof(database)});
+ alias({reinterpret_cast<byte*>(const_cast<Uuid*>(&bootstrap)),sizeof(bootstrap)});
+ hash_seen=0;hash_counting=true;const auto baseline=call(backing.bytes);hash_counting=false;Check(baseline.ok(),"bounded provider baseline");
+ const auto hashes=hash_seen;Check(hashes>0,"all component provider sites observed");
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){
+  hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto r=call(backing.bytes);
+  const bool consumed=!hash_fault;hash_fault=0;hash_active=false;
+  Check(consumed&&r.error==Error::hash_failure,"every bounded provider failure retains its exact error under heap denial");EmptyView(r);
+ }
+}
 d::NativePageReference Self(const d::NativeCommonPageHeader& h){return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
 Bytes MapOracle(const page::NativeAllocationMap& m) {
   Bytes b(m.header.page_size_bytes, 0); const auto& h = m.header;
@@ -365,7 +463,7 @@ struct Bundle {
   Reseal();
  }
  auto Encode()const{return db::EncodeNativeManagementControlBundle(graph.after_bytes,Id(1),graph.zero.page_uuid,root.object_uuid,root.operation_uuid,headers,Budget(),inventory);}
- auto Decode(u64 budget=0)const{return db::DecodeNativeManagementControlBundle(pages,root,Id(1),graph.zero.page_uuid,budget?budget:Budget());}
+ auto Decode(u64 budget=0)const{return DecodeBundle(pages,root,Id(1),graph.zero.page_uuid,budget?budget:Budget());}
  auto Read()const{return db::ReadNativeManagementControlBundleFromOpenDevice(graph.fixture.devices.front(),root,Id(1),graph.zero.page_uuid,Budget());}
  void Install(){for(std::size_t n=0;n<pages.size();++n){const auto& b=pages[n];const auto io=graph.fixture.device.WriteAt((root.first.page_number+n)*graph.fixture.size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"isolated bundle fixture write");}Check(graph.fixture.device.Sync().ok(),"isolated bundle fixture sync");}
  void Good(const db::NativeManagementControlBundleRead& r)const{Check(r.ok()&&r.allocation_images==graph.after_bytes&&r.inventory_images==inventory&&r.page_headers.size()==headers.size()&&r.total_pages==graph.after.front().total_pages,"complete original target map and inventory images");for(unsigned n=0;n<headers.size();++n)Check(r.page_headers[n].page_uuid==headers[n].page_uuid&&Self(r.page_headers[n])==Self(headers[n]),"verified bundle page bindings");}
@@ -487,7 +585,7 @@ struct DirectoryBundle {
  void ResealPayload(){Bytes payload;for(const auto& raw:pages){const auto length=LoadLittle32(raw.data()+272);payload.insert(payload.end(),raw.begin()+384,raw.begin()+384+length);}root.aggregate_sha256=Sha(payload);for(auto& raw:pages)std::copy(root.aggregate_sha256.begin(),root.aggregate_sha256.end(),raw.begin()+240);Reseal();}
  void Reseal(){std::array<byte,32> next{};for(std::size_t n=pages.size();n;--n){auto& raw=pages[n-1];std::copy(next.begin(),next.end(),raw.begin()+288);std::fill(raw.begin()+320,raw.begin()+352,0);const auto seal=Sha(raw);std::copy(seal.begin(),seal.end(),raw.begin()+320);next=Sha(raw);}root.first_page_sha256=next;}
  auto Encode()const{return db::EncodeNativeManagementControlBundle(map_images,Id(1),zero.page_uuid,root.object_uuid,root.operation_uuid,headers,Budget(),inventory_images,directory_images,growth_images);}
- auto Decode(u64 budget=0)const{return db::DecodeNativeManagementControlBundle(pages,root,Id(1),zero.page_uuid,budget?budget:Budget());}
+ auto Decode(u64 budget=0)const{return DecodeBundle(pages,root,Id(1),zero.page_uuid,budget?budget:Budget());}
  auto Read()const{return db::ReadNativeManagementControlBundleFromOpenDevice(fixture.devices.front(),root,Id(1),zero.page_uuid,Budget());}
  void Install(){for(std::size_t i=0;i<pages.size();++i){const auto r=fixture.device.WriteAt((root.first.page_number+i)*fixture.size,pages[i].data(),pages[i].size());Check(r.ok()&&r.bytes_transferred==pages[i].size(),"isolated actual mixed bundle write");}Check(fixture.device.Sync().ok(),"actual mixed bundle barrier");}
  void Good(const db::NativeManagementControlBundleRead& r)const{Check(r.ok()&&r.allocation_images==map_images&&r.inventory_images==inventory_images&&r.directory_images==directory_images&&r.total_pages==256&&r.page_headers.size()==headers.size(),"complete exact original mixed bundle reconstruction");}
@@ -495,6 +593,7 @@ struct DirectoryBundle {
 void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  std::cout<<"growth bundle primary="<<primary<<" secondary="<<secondary<<" reverse="<<reverse<<" growing="<<growing<<'\n';
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse,growing);
+ BoundedBundleChecks(b.pages,b.root,Id(1),b.zero.page_uuid,b.Budget());
  const auto old_primary=f.Read(0);
  const auto historical=[&]{return db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,old_primary,b.Budget());};
  const auto historical_result=[&]{return db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,growing?old_primary:b.growth_images[1],b.Budget());};
@@ -1458,6 +1557,7 @@ void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
  DirectoryPlan(primary,secondary,reverse);
  GrowthBundle(primary,secondary,reverse,0);GrowthBundle(primary,secondary,reverse,1);
  Fixture f(primary);DirectoryBundle b(f,secondary,reverse);
+ BoundedBundleChecks(b.pages,b.root,Id(1),b.zero.page_uuid,b.Budget());
  const auto original_zero=f.Read(0);
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent complete version3 framing bytes and full hashes");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"mixed bundle exact checked allowance");Empty(short_budget);b.Install();b.Good(b.Read());
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
@@ -3316,7 +3416,9 @@ void InventoryPlan(Graph& g,const Bundle& b){
  }
 }
 void InventoryBundle(unsigned profile){
+ // Version2 is checked separately from the complete mixed-profile fixtures.
  Fixture f(profile);Graph g(f);Bundle b(g,3);const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent version2 bundle bytes include exact complete inventory");b.Good(b.Decode());Check(b.Decode(b.Budget()-1).error==BE::resource_exhausted,"version2 exact checked image allowance");
+ BoundedBundleChecks(b.pages,b.root,Id(1),g.zero.page_uuid,b.Budget());
  auto forbidden=g.plan;forbidden.control_bundle=b.root;Failed(db::EncodeNativePublicationPlan(forbidden));
  InventoryPlan(g,b);
  const auto historical_zero=f.Read(0);
@@ -3344,7 +3446,7 @@ void InventoryBundle(unsigned profile){
  for(unsigned mode=0;mode<2;++mode)for(unsigned at=1;at<=sites;++at){reads=0;if(mode)corrupt_read=at;else read_fault=at;io_counting=true;const auto r=b.Read();io_counting=false;read_fault=corrupt_read=0;Check(mode||r.error==BE::io_failure,"version2 exact I/O cause");Empty(r);}
  Check(f.Read(0,256)==original,"all version2 reader failures preserve full node");
 }
-void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent bundle bytes and root");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"exact bundle allowance");Empty(short_budget);
+void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBundleChecks(b.pages,b.root,Id(1),g.zero.page_uuid,b.Budget());const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent bundle bytes and root");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"exact bundle allowance");Empty(short_budget);
  const auto historical_zero=f.Read(0);
  b.Install();b.Good(b.Read());const auto untouched=f.Read(g.after.front().header.page_number);Check(std::all_of(untouched.begin(),untouched.end(),[](byte v){return !v;}),"bundle reconstructs target map not yet installed");
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
