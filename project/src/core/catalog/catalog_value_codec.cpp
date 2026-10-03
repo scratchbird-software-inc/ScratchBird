@@ -228,6 +228,60 @@ bool Overlap(std::span<A> a, std::span<B> b) {
   const auto y = reinterpret_cast<std::uintptr_t>(b.data());
   return x < y + b.size_bytes() && y < x + a.size_bytes();
 }
+Error ValidateField(const CatalogValueFieldSchema& field,
+                    const CatalogValueFieldView& value) {
+  if (!ValidRegion(value.bytes)) return Error::invalid_backing;
+  const auto bytes = value.bytes;
+  const std::size_t offset = 0, size = bytes.size();
+  if (value.type != field.type) return Error::type_mismatch;
+  if (value.identity_kind != field.identity_kind) return Error::invalid_value;
+  if (size > field.maximum_bytes) return Error::size_limit;
+  const auto fixed = FixedWidth(field.type);
+  if ((fixed && fixed != size) ||
+      (field.type == Type::engine_identity_list && size % 16))
+    return Error::invalid_value;
+  switch (field.type) {
+    case Type::unsigned_integer: break;
+    case Type::boolean:
+      if (bytes[offset] > 1) return Error::invalid_value;
+      break;
+    case Type::utf8_text:
+      if (!ValidUtf8(bytes.data() + offset, size)) return Error::invalid_value;
+      break;
+    case Type::opaque_bytes: break;
+    case Type::utf8_text_list: {
+      if (size < 4) return Error::invalid_value;
+      const auto element_count = Get(bytes, offset, 4);
+      if (element_count > (size - 4) / 4) return Error::invalid_value;
+      std::size_t current = offset + 4;
+      const std::size_t end = offset + size;
+      for (u64 n = 0; n < element_count; ++n) {
+        if (end - current < 4) return Error::invalid_value;
+        const auto length = Get(bytes, current, 4);
+        current += 4;
+        if (length > end - current || !ValidUtf8(bytes.data() + current, length))
+          return Error::invalid_value;
+        current += static_cast<std::size_t>(length);
+      }
+      if (current != end) return Error::invalid_value;
+      break;
+    }
+    case Type::engine_identity: {
+      TypedUuid identity{field.identity_kind, GetUuid(bytes, offset)};
+      if (!ValidIdentity(identity, field.identity_kind)) return Error::invalid_value;
+      break;
+    }
+    case Type::user_uuid_data: break;
+    case Type::engine_identity_list: {
+      for (std::size_t n = 0; n < size; n += 16) {
+        TypedUuid identity{field.identity_kind, GetUuid(bytes, offset + n)};
+        if (!ValidIdentity(identity, field.identity_kind)) return Error::invalid_value;
+      }
+      break;
+    }
+  }
+  return Error::none;
+}
 ValidationResult ValidateBlock(CatalogValueSchemaView schema, std::span<const byte> bytes) {
   if (!ValidRegion(schema.fields) || !ValidRegion(bytes)) return {Error::invalid_backing, {}};
   if (!ValidSchema(schema)) return {Error::invalid_schema, {}};
@@ -260,52 +314,9 @@ ValidationResult ValidateBlock(CatalogValueSchemaView schema, std::span<const by
     if (cursor == schema.fields.size() || schema.fields[cursor].id != id)
       return {Error::unknown_field, {}};
     const auto& field = schema.fields[cursor++];
-    if (tag != static_cast<u8>(field.type)) return {Error::type_mismatch, {}};
-    if (size > field.maximum_bytes) return {Error::size_limit, {}};
-    const auto fixed = FixedWidth(field.type);
-    if ((fixed && fixed != size) ||
-        (field.type == Type::engine_identity_list && size % 16))
-      return {Error::invalid_value, {}};
-    switch (field.type) {
-      case Type::unsigned_integer: break;
-      case Type::boolean:
-        if (bytes[offset] > 1) return {Error::invalid_value, {}};
-        break;
-      case Type::utf8_text:
-        if (!ValidUtf8(bytes.data() + offset, size)) return {Error::invalid_value, {}};
-        break;
-      case Type::opaque_bytes: break;
-      case Type::utf8_text_list: {
-        if (size < 4) return {Error::invalid_value, {}};
-        const auto element_count = Get(bytes, offset, 4);
-        if (element_count > (size - 4) / 4) return {Error::invalid_value, {}};
-        std::size_t current = offset + 4;
-        const std::size_t end = offset + size;
-        for (u64 n = 0; n < element_count; ++n) {
-          if (end - current < 4) return {Error::invalid_value, {}};
-          const auto length = Get(bytes, current, 4);
-          current += 4;
-          if (length > end - current || !ValidUtf8(bytes.data() + current, length))
-            return {Error::invalid_value, {}};
-          current += static_cast<std::size_t>(length);
-        }
-        if (current != end) return {Error::invalid_value, {}};
-        break;
-      }
-      case Type::engine_identity: {
-        TypedUuid identity{field.identity_kind, GetUuid(bytes, offset)};
-        if (!ValidIdentity(identity, field.identity_kind)) return {Error::invalid_value, {}};
-        break;
-      }
-      case Type::user_uuid_data: break;
-      case Type::engine_identity_list: {
-        for (std::size_t n = 0; n < size; n += 16) {
-          TypedUuid identity{field.identity_kind, GetUuid(bytes, offset + n)};
-          if (!ValidIdentity(identity, field.identity_kind)) return {Error::invalid_value, {}};
-        }
-        break;
-      }
-    }
+    const auto field_error = ValidateField(field,
+        {id, static_cast<Type>(tag), field.identity_kind, bytes.subspan(offset, size)});
+    if (field_error != Error::none) return {field_error, {}};
     offset += size;
     previous = id;
   }
@@ -375,6 +386,32 @@ std::optional<TypedUuid> CatalogValueFieldView::identity() const noexcept {
   TypedUuid value{identity_kind, GetUuid(bytes, 0)};
   if (!ValidIdentity(value, identity_kind)) return {};
   return value;
+}
+
+CatalogValueError ValidateCatalogValueFields(
+    CatalogValueSchemaView schema, std::span<const CatalogValueFieldView> fields) {
+  if (!ValidRegion(schema.fields) || !ValidRegion(fields)) return Error::invalid_backing;
+  if (!ValidSchema(schema)) return Error::invalid_schema;
+  if (fields.size() > schema.fields.size()) return Error::unknown_field;
+  std::size_t cursor = 0, total = kCatalogValueBlockHeaderBytes;
+  u16 previous = 0;
+  for (const auto& value : fields) {
+    if (value.id <= previous) return Error::invalid_framing;
+    while (cursor < schema.fields.size() && schema.fields[cursor].id < value.id)
+      if (schema.fields[cursor++].required) return Error::missing_field;
+    if (cursor == schema.fields.size() || schema.fields[cursor].id != value.id)
+      return Error::unknown_field;
+    const auto error = ValidateField(schema.fields[cursor++], value);
+    if (error != Error::none) return error;
+    if (kFieldHeader > kCatalogValueBlockMaxBytes - total ||
+        value.bytes.size() > kCatalogValueBlockMaxBytes - total - kFieldHeader)
+      return Error::size_limit;
+    total += kFieldHeader + value.bytes.size();
+    previous = value.id;
+  }
+  while (cursor < schema.fields.size())
+    if (schema.fields[cursor++].required) return Error::missing_field;
+  return Error::none;
 }
 
 CatalogValueDecodeViewResult DecodeCatalogValueBlockInto(

@@ -125,11 +125,21 @@ std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields) {
   for(const auto& f:fields){append(Little(f.id,2));append({f.tag,0});append(Little(f.bytes.size(),4));append(f.bytes);}
   return out;
 }
-c::CatalogValueEncodeResult Encode(const c::CatalogNameVector& r){return c::EncodeCatalogNameVector(r);}
-c::CatalogValueEncodeResult Encode(const c::CatalogNameEntry& r){return c::EncodeCatalogNameEntry(r);}
 #ifndef SB_NATIVE_NAME_MEMORY_TESTS
 template<class F> auto WithoutNameHeap(F action){return action();}
 #endif
+c::CatalogValueEncodeResult Encode(const c::CatalogNameVector& r){
+  const auto error=WithoutNameHeap([&]{return c::ValidateCatalogNameVector(c::BorrowCatalogNameVector(r));});
+  auto result=c::EncodeCatalogNameVector(r);
+  Check(error==result.error,"vector no-encode admission preserves exact encoder error");
+  return result;
+}
+c::CatalogValueEncodeResult Encode(const c::CatalogNameEntry& r){
+  const auto error=WithoutNameHeap([&]{return c::ValidateCatalogNameEntry(c::BorrowCatalogNameEntry(r));});
+  auto result=c::EncodeCatalogNameEntry(r);
+  Check(error==result.error,"entry no-encode admission preserves exact encoder error");
+  return result;
+}
 auto DecodeView(const c::CatalogNameVector&,std::span<const byte> b){
   return WithoutNameHeap([&]{return c::DecodeCatalogNameVectorView(b);});
 }

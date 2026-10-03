@@ -119,6 +119,10 @@ template <typename Record> struct CatalogNameRecordDecodeResult {
 };
 const CatalogValueSchema& CatalogNameVectorSchema();
 const CatalogValueSchema& CatalogNameEntrySchema();
+CatalogNameVectorView BorrowCatalogNameVector(const CatalogNameVector& record);
+CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& record);
+CatalogValueError ValidateCatalogNameVector(const CatalogNameVectorView& record);
+CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record);
 CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView(std::span<const byte> bytes);
 CatalogNameRecordDecodeResult<CatalogNameEntryView> DecodeCatalogNameEntryView(std::span<const byte> bytes);
 CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& record);

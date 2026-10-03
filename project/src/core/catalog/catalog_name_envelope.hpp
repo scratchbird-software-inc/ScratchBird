@@ -33,6 +33,9 @@ struct CatalogNameEnvelope {
 // Immutable input owner and its actual grant outlive every structural view.
 // Expected binding still comes from the owning MGA/storage authority.
 using CatalogNamePayloadView = std::variant<CatalogNameVectorView, CatalogNameEntryView>;
+CatalogNamePayloadView BorrowCatalogNamePayload(const CatalogNamePayload&);
+bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView&, const CatalogMetadataVersionView&);
+bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayloadView&, const CatalogNamePayloadView&);
 struct CatalogNameEnvelopeView {
   CatalogNameVersionBinding binding;
   CatalogNamePayloadView payload;

@@ -70,6 +70,11 @@ struct CatalogValueDecodeViewResult {
   std::span<const CatalogValueFieldView> fields;
   bool ok() const { return error == CatalogValueError::none; }
 };
+// Full field/schema/value and complete block-size admission without encoding.
+// Native scalar bytes use canonical little endian; UUID bytes remain binary.
+// Structural validation only; neither views nor this result grant authority.
+CatalogValueError ValidateCatalogValueFields(
+    CatalogValueSchemaView schema, std::span<const CatalogValueFieldView> fields);
 // No C++ heap allocation, including schema setup and malformed input. Validates
 // the whole block before touching backing. On any refusal no fields are returned
 // and backing is unchanged. Backing must not overlap input or schema storage.

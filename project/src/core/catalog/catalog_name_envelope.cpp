@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::catalog {
@@ -80,13 +81,24 @@ CatalogNameVersionBinding ReadBinding(std::span<const byte> bytes) {
   return b;
 }
 }  // namespace
+CatalogNamePayloadView BorrowCatalogNamePayload(const CatalogNamePayload& payload) {
+  return std::visit([](const auto& record) -> CatalogNamePayloadView {
+    if constexpr (std::is_same_v<std::decay_t<decltype(record)>, CatalogNameVector>)
+      return BorrowCatalogNameVector(record);
+    else return BorrowCatalogNameEntry(record);
+  }, payload);
+}
 bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload& payload, const CatalogMetadataVersion& m) {
+  if (payload.valueless_by_exception()) return false;
+  return CatalogNamePayloadMatchesMetadata(BorrowCatalogNamePayload(payload), BorrowCatalogMetadataVersion(m));
+}
+bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, const CatalogMetadataVersionView& m) {
   if (m.record.header.kind != CatalogRecordKind::localized_name) return false;
   const auto optional_matches=[](const auto& value,const TypedUuid& common) {
     return value ? SameIdentity(*value,common) : common.kind == UuidKind::unknown && common.value.is_nil();
   };
-  if (const auto* v=std::get_if<CatalogNameVector>(&payload)) {
-    return EncodeCatalogNameVector(*v).ok() && m.object_subtype == "name_vector" &&
+  if (const auto* v=std::get_if<CatalogNameVectorView>(&payload)) {
+    return ValidateCatalogNameVector(*v) == CatalogValueError::none && m.object_subtype == "name_vector" &&
         SameIdentity(v->name_vector_uuid,m.record.header.object_uuid) &&
         SameIdentity(v->object_uuid,m.record.header.parent_uuid) &&
         SameIdentity(v->name_vector_uuid,m.name_vector_uuid) &&
@@ -99,8 +111,8 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload& payload, const 
         v->object_uuid.value != v->default_name_entry_uuid.value &&
         (!m.record.header.deleted || v->lifecycle_state == CatalogNameLifecycle::dropped);
   }
-  if (const auto* e=std::get_if<CatalogNameEntry>(&payload)) {
-    return EncodeCatalogNameEntry(*e).ok() && m.object_subtype == "name_entry" &&
+  if (const auto* e=std::get_if<CatalogNameEntryView>(&payload)) {
+    return ValidateCatalogNameEntry(*e) == CatalogValueError::none && m.object_subtype == "name_entry" &&
         SameIdentity(e->name_entry_uuid,m.record.header.object_uuid) &&
         SameIdentity(e->name_vector_uuid,m.record.header.parent_uuid) &&
         SameIdentity(e->name_vector_uuid,m.name_vector_uuid) &&
@@ -118,13 +130,17 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload& payload, const 
   return false;
 }
 bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayload& before,const CatalogNamePayload& after) {
-  if (const auto* a=std::get_if<CatalogNameVector>(&before)) {
-    const auto* b=std::get_if<CatalogNameVector>(&after);
+  if (before.valueless_by_exception() || after.valueless_by_exception()) return false;
+  return CatalogNamePayloadPreservesIdentity(BorrowCatalogNamePayload(before), BorrowCatalogNamePayload(after));
+}
+bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayloadView& before,const CatalogNamePayloadView& after) {
+  if (const auto* a=std::get_if<CatalogNameVectorView>(&before)) {
+    const auto* b=std::get_if<CatalogNameVectorView>(&after);
     return b && SameIdentity(a->name_vector_uuid,b->name_vector_uuid) &&
         SameIdentity(a->object_uuid,b->object_uuid) && a->object_class == b->object_class;
   }
-  if (const auto* a=std::get_if<CatalogNameEntry>(&before)) {
-    const auto* b=std::get_if<CatalogNameEntry>(&after);
+  if (const auto* a=std::get_if<CatalogNameEntryView>(&before)) {
+    const auto* b=std::get_if<CatalogNameEntryView>(&after);
     return b && SameIdentity(a->name_entry_uuid,b->name_entry_uuid) &&
         SameIdentity(a->name_vector_uuid,b->name_vector_uuid) && SameIdentity(a->object_uuid,b->object_uuid) &&
         a->object_class == b->object_class && SameIdentity(a->created_transaction_uuid,b->created_transaction_uuid) &&
