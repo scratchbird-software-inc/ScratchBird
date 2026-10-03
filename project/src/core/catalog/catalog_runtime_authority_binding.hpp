@@ -140,7 +140,7 @@ inline bool CatalogRuntimeAuthorityBindingMatchesHeader(const CatalogTypedRecord
   return CatalogRuntimeAuthorityBindingMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 
-inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataVersion& m) {
+inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataVersionView& m) {
   using runtime_binding_detail::Identity;
   if (!CatalogRuntimeAuthorityBindingMatchesHeader(m.record) ||
       m.object_subtype != "agent_runtime_authority" || m.authority_scope != CatalogAuthorityScope::local ||
@@ -160,7 +160,7 @@ inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataV
 }
 
 inline bool CatalogRuntimeAuthorityBindingPreservesOrigin(
-    const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+    const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
   const auto family = [](const auto& m) {
     return m.object_subtype == "agent_runtime_authority" || IsCatalogRuntimeAuthorityBindingPayload(m.record.payload);
   };
@@ -171,5 +171,11 @@ inline bool CatalogRuntimeAuthorityBindingPreservesOrigin(
   return x.record->binding_uuid == y.record->binding_uuid && x.record->database_uuid == y.record->database_uuid &&
       x.record->origin_transaction_uuid.value == y.record->origin_transaction_uuid.value &&
       x.record->origin_local_transaction_id == y.record->origin_local_transaction_id;
+}
+inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogRuntimeAuthorityBindingMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+inline bool CatalogRuntimeAuthorityBindingPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogRuntimeAuthorityBindingPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

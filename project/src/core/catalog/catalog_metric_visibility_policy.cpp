@@ -24,7 +24,7 @@ template <typename Record> bool Valid(const Record& r) {
       r.policy_uuid != r.metric_uuid && Right(r.read_right,false) && Right(r.sensitive_read_right,true) &&
       Identity(r.origin_transaction_uuid,UuidKind::transaction) && r.origin_local_transaction_id;
 }
-bool Family(const CatalogMetadataVersion& m) {
+bool Family(const CatalogMetadataVersionView& m) {
   return m.object_subtype == "metric_visibility" || IsCatalogMetricVisibilityPolicyPayload(m.record.payload);
 }
 }
@@ -92,7 +92,7 @@ bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecordView& r)
 bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricVisibilityPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricVisibilityPolicyMatchesHeader(m.record) || m.object_subtype!="metric_visibility" ||
       m.authority_scope!=CatalogAuthorityScope::local || !Identity(m.owning_schema_uuid,UuidKind::schema) ||
       !Identity(m.record.header.parent_uuid,UuidKind::object) ||
@@ -106,7 +106,7 @@ bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersion& 
         p.origin_local_transaction_id==m.creator_local_transaction_id));
 }
 bool CatalogMetricVisibilityPolicyPreservesOrigin(
-    const CatalogMetadataVersion& a,const CatalogMetadataVersion& b) {
+    const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
   if (!Family(a) && !Family(b)) return true;
   if (!CatalogMetricVisibilityPolicyMatchesMetadata(a) || !CatalogMetricVisibilityPolicyMatchesMetadata(b)) return false;
   const auto before=DecodeCatalogMetricVisibilityPolicyView(a.record.payload);
@@ -115,5 +115,11 @@ bool CatalogMetricVisibilityPolicyPreservesOrigin(
       before.record->database_uuid==after.record->database_uuid && before.record->metric_uuid==after.record->metric_uuid &&
       before.record->origin_transaction_uuid.value==after.record->origin_transaction_uuid.value &&
       before.record->origin_local_transaction_id==after.record->origin_local_transaction_id;
+}
+bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricVisibilityPolicyMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricVisibilityPolicyPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricVisibilityPolicyPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

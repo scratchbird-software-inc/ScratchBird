@@ -55,4 +55,6 @@ bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricRetentionPolicyPreservesOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor);
+bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogMetricRetentionPolicyPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

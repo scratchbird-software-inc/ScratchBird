@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include <span>
 #include <array>
 #include <vector>
 
@@ -106,6 +107,79 @@ struct CatalogMetadataVersion {
   std::string retention_class;
 };
 
+// Complete structural view. The immutable input and its actual grant must
+// outlive every copy and every family-origin comparison. No runtime authority.
+struct CatalogMetadataVersionView {
+  CatalogTypedRecordView record;
+  CatalogAuthorityScope authority_scope = CatalogAuthorityScope::local;
+  CatalogObjectLifecycle lifecycle = CatalogObjectLifecycle::creating;
+  CatalogObjectStatus status = CatalogObjectStatus::proposed;
+  CatalogVisibilityClass visibility = CatalogVisibilityClass::internal_only;
+  u64 definition_version = 0;
+  u64 schema_epoch = 0;
+  u64 security_epoch = 0;
+  u64 resource_epoch = 0;
+  u64 catalog_generation = 0;
+  u64 dependency_generation = 0;
+  u64 invalidation_generation = 0;
+  u64 creator_local_transaction_id = 0;
+  TypedUuid owner_uuid;
+  TypedUuid creator_transaction_uuid;
+  TypedUuid retired_transaction_uuid;
+  TypedUuid default_name_uuid;
+  TypedUuid name_vector_uuid;
+  TypedUuid security_policy_uuid;
+  TypedUuid dependency_group_uuid;
+  TypedUuid storage_binding_uuid;
+  TypedUuid donor_overlay_uuid;
+  TypedUuid audit_uuid;
+  TypedUuid owning_schema_uuid;
+  std::string_view trace_search_key;
+  std::string_view object_subtype;
+  std::string_view retention_class;
+};
+inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMetadataVersion& r) {
+  return {BorrowCatalogTypedRecord(r.record),
+      r.authority_scope,
+      r.lifecycle,
+      r.status,
+      r.visibility,
+      r.definition_version,
+      r.schema_epoch,
+      r.security_epoch,
+      r.resource_epoch,
+      r.catalog_generation,
+      r.dependency_generation,
+      r.invalidation_generation,
+      r.creator_local_transaction_id,
+      r.owner_uuid,
+      r.creator_transaction_uuid,
+      r.retired_transaction_uuid,
+      r.default_name_uuid,
+      r.name_vector_uuid,
+      r.security_policy_uuid,
+      r.dependency_group_uuid,
+      r.storage_binding_uuid,
+      r.donor_overlay_uuid,
+      r.audit_uuid,
+      r.owning_schema_uuid,
+      r.trace_search_key,
+      r.object_subtype,
+      r.retention_class};
+}
+struct CatalogMetadataVersionViewResult {
+  std::optional<CatalogMetadataVersionView> record;
+  std::array<scratchbird::core::platform::byte,32> definition_sha256{};
+  CatalogRecordDiagnosticView diagnostic;
+  bool ok() const { return record.has_value(); }
+};
+CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(
+    std::span<const scratchbird::core::platform::byte> bytes);
+std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(
+    const CatalogMetadataVersionView&);
+CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVersionView&);
+
+
 struct CatalogMetadataVersionCodecResult {
   Status status;
   CatalogMetadataVersion record;
@@ -124,6 +198,8 @@ CatalogMetadataVersionCodecResult DecodeCatalogMetadataVersion(
 // May propagate allocation failure; never converts it into successful admission.
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor);
+bool CatalogMetadataPreservesFamilyOrigin(
+    const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor);
 
 struct CatalogRecordCodecResult {
   Status status;

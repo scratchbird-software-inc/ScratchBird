@@ -50,4 +50,6 @@ bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecord&);
 bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecordView&);
 bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogMetricVisibilityPolicyPreservesOrigin(const CatalogMetadataVersion&, const CatalogMetadataVersion&);
+bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogMetricVisibilityPolicyPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

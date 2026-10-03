@@ -60,10 +60,10 @@ HashDigestResult ComputeSha256Digest(const std::vector<byte>& payload) {
                              payload.size());
 }
 
-HashDigestResult ComputeSha256DigestParts(const HashDigestSegment* segments,
+Sha256PartsResult ComputeSha256DigestPartsNative(const HashDigestSegment* segments,
                                         std::size_t segment_count) {
   if (segment_count != 0 && segments == nullptr)
-    return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed", "segments_missing");
+    return Sha256PartsResult{Sha256PartsError::segments_missing,{}};
   // SHA256 encodes the input length in a 64-bit bit count. Check every borrowed
   // extent before reading any payload or allocating the digest context.
   constexpr u64 maximum_bytes = std::numeric_limits<u64>::max() / 8;
@@ -71,23 +71,35 @@ HashDigestResult ComputeSha256DigestParts(const HashDigestSegment* segments,
   for (std::size_t i = 0; i < segment_count; ++i) {
     if ((segments[i].size != 0 && segments[i].data == nullptr) ||
         segments[i].size > maximum_bytes - total)
-      return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed", "segment_extent_invalid");
+      return Sha256PartsResult{Sha256PartsError::segment_extent_invalid,{}};
     total += segments[i].size;
   }
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
   if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
-    return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed");
+    return Sha256PartsResult{Sha256PartsError::provider_failure,{}};
   for (std::size_t i = 0; i < segment_count; ++i)
     if (segments[i].size != 0 &&
         EVP_DigestUpdate(context.get(), segments[i].data, segments[i].size) != 1)
-      return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed");
-  HashDigestResult result;
-  result.status = HashOkStatus();
+      return Sha256PartsResult{Sha256PartsError::provider_failure,{}};
+  Sha256PartsResult result;
   unsigned int digest_len = 0;
   if (EVP_DigestFinal_ex(context.get(), result.digest.data(), &digest_len) != 1 ||
       digest_len != result.digest.size())
-    return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed");
-  result.digest_bytes = static_cast<u16>(digest_len);
+    return Sha256PartsResult{Sha256PartsError::provider_failure,{}};
+  result.error = Sha256PartsError::none;
+  return result;
+}
+
+HashDigestResult ComputeSha256DigestParts(const HashDigestSegment* segments,
+                                        std::size_t segment_count) {
+  const auto native = ComputeSha256DigestPartsNative(segments, segment_count);
+  if (!native.ok())
+    return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed",
+                     Sha256PartsErrorDetail(native.error));
+  HashDigestResult result;
+  result.status = HashOkStatus();
+  result.digest = native.digest;
+  result.digest_bytes = static_cast<u16>(native.digest.size());
   return result;
 }
 

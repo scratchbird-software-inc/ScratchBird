@@ -56,7 +56,7 @@ void LabelRoundTrip(const c::CatalogMetricLabelSchema& r) {
   Check(c::CatalogMetricLabelSchemaMatchesMetadata(metadata),"valid label schema common binding refused");
   const auto envelope=c::EncodeCatalogMetadataVersion(metadata);Check(envelope.ok(),"label schema native envelope refused");
   if(envelope.ok()){
-    const auto reread=c::DecodeCatalogMetadataVersion(envelope.bytes);
+    const auto reread=CheckedMetadataDecode(envelope.bytes);
     Check(reread.ok()&&reread.record.record.payload==golden,"label schema envelope lost payload");
   }
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);
@@ -170,7 +170,7 @@ void LabelBinding() {
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);
     std::array<unsigned char,32> hash{};SHA256(bytes.data(),bytes.size(),hash.data());std::copy(hash.begin(),hash.end(),bytes.begin()+320);
-    Check(!c::DecodeCatalogMetadataVersion(bytes).ok(),"rehash bypassed label schema binding");
+    Check(!CheckedMetadataDecode(bytes).ok(),"rehash bypassed label schema binding");
   }
   for(unsigned which=0;which<3;++which){auto r=initial.record;
     if(which==0)r.header.kind=c::CatalogRecordKind::metric_descriptor;

@@ -77,7 +77,7 @@ template<class R> bool Valid(const R& r) {
   }
   return true;
 }
-bool Family(const CatalogMetadataVersion& m) {
+bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind==CatalogRecordKind::metric_series || m.object_subtype=="metric_series" ||
       IsCatalogMetricSeriesPayload(m.record.payload);
 }
@@ -223,7 +223,7 @@ bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecordView& r) {
 bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricSeriesMatchesHeader(BorrowCatalogTypedRecord(r));
 }
-bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersionView& m) {
   if(!CatalogMetricSeriesMatchesHeader(m.record) || m.object_subtype!="metric_series" ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value!=m.record.header.parent_uuid.value ||
@@ -236,7 +236,7 @@ bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersion& m) {
       (r.generation!=1 || (r.origin_transaction_uuid.value==m.creator_transaction_uuid.value &&
                           r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersion& previous,const CatalogMetadataVersion& successor) {
+bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersionView& previous,const CatalogMetadataVersionView& successor) {
   if(!Family(previous) && !Family(successor))return true;
   if(!CatalogMetricSeriesMatchesMetadata(previous) || !CatalogMetricSeriesMatchesMetadata(successor))return false;
   const auto a=DecodeCatalogMetricSeriesView(previous.record.payload),b=DecodeCatalogMetricSeriesView(successor.record.payload);
@@ -257,5 +257,11 @@ metrics::MetricHistoryRecordResult<metrics::MetricSeriesIdentity> BindCatalogMet
     labels.push_back({l.key,l.value});
   }
   return metrics::MakeMetricSeriesIdentity(d,std::move(labels),policy,r.binding,r.series_uuid,r.generation);
+}
+bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricSeriesMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricSeriesPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricSeriesPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

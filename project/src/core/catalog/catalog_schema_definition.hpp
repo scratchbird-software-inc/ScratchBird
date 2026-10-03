@@ -40,4 +40,6 @@ CatalogSchemaDefinitionResult DecodeCatalogSchemaDefinition(std::string_view);
 bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion&);
 bool CatalogSchemaDefinitionPreservesOrigin(
     const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor);
+bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog
