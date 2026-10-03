@@ -30,6 +30,11 @@ thread_local std::binary_semaphore* parked = nullptr;
 thread_local bool fail_wait = false;
 thread_local std::binary_semaphore* woke = nullptr;
 thread_local std::binary_semaphore* resume = nullptr;
+struct PromotionGap {
+  std::binary_semaphore entered{0}, proceed{0};
+  bool after_unlock=false;
+};
+thread_local PromotionGap* promotion_gap=nullptr;
 void WaitEntered() { if (auto* signal = parked) { parked = nullptr; signal->release(); } }
 int AfterWake(int result, pthread_mutex_t* mutex) {
   if (woke && (result==0 || result==ETIMEDOUT)) {
@@ -45,6 +50,54 @@ int AfterWake(int result, pthread_mutex_t* mutex) {
 void Empty(L& latch) {
   const auto state = latch.Observe();
   Check(state.holders == 0 && state.waiters == 0 && state.calls == 0);
+}
+void PromotionCloseBoundary() {
+  for (const bool committed:{false,true}) for (unsigned state=0;state<8;++state) {
+    L latch(1,2);
+    PromotionGap gap; gap.after_unlock=committed;
+    std::stop_source stop;
+    std::binary_semaphore delivered{0},finish{0};
+    std::atomic<bool> returned=false;
+    L::Clock::time_point deadline;
+    std::thread worker([&] {
+      L::OwnerIdentity owner{}; owner[6]=0x70; owner[8]=0x80; owner[15]=1;
+      L::Grant grant;
+      Check(latch.TryAcquire(grant,M::upgrade,{},{},owner)==R::acquired);
+      deadline=L::Clock::now()+500ms;
+      promotion_gap=&gap;
+      const auto result=latch.PromoteUpgradeToExclusive(grant,
+          state&4 ? std::optional{deadline} : std::nullopt,stop.get_token(),owner);
+      returned=true;
+      Check(promotion_gap==nullptr,"promotion reached its actual native boundary");
+      const auto expected=committed ? R::acquired :
+          state&1 ? R::closed : state&2 ? R::cancelled : state&4 ? R::timed_out : R::acquired;
+      Check(result==expected,"promotion commitment survives result-delivery signals");
+      if (result==R::acquired)
+        Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==R::invalid,
+              "delayed promotion result still owns exclusive mode");
+      else
+        Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==(state&1?R::closed:R::acquired),
+              "precommit refusal still owns upgrade for cleanup or retry");
+      delivered.release(); finish.acquire();
+      Check(latch.Release(grant,owner),"delayed promotion keeps actual native release ownership");
+    });
+    Check(gap.entered.try_acquire_for(2s),"controlled promotion boundary reached");
+    Check(!returned,"promotion result not delivered at controlled boundary");
+    if (state&1) latch.Close();
+    if (state&2) stop.request_stop();
+    if (state&4) {
+      std::this_thread::sleep_until(deadline);
+      Check(L::Clock::now()>=deadline,"real promotion deadline expired while delivery paused");
+    }
+    const auto paused=latch.Observe();
+    Check(paused.holders==1 && paused.waiters==0 && paused.calls==0,
+          "promotion close boundary never loses the real holder");
+    gap.proceed.release();
+    Check(delivered.try_acquire_for(2s),"promotion delivery completed");
+    latch.Close();
+    Check(latch.Observe().holders==1,"close after delivery cannot revoke promotion ownership");
+    finish.release(); worker.join(); Empty(latch);
+  }
 }
 void UpgradePromotion() {
   L::OwnerIdentity owner{}; owner[6]=0x70; owner[8]=0x80; owner[15]=1;
@@ -439,6 +492,22 @@ void WakeSelection() {
 }
 } // namespace
 extern "C" int __real_pthread_cond_wait(pthread_cond_t*, pthread_mutex_t*);
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __real_pthread_mutex_unlock(pthread_mutex_t*);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (promotion_gap && !promotion_gap->after_unlock) {
+    auto* gap=promotion_gap; promotion_gap=nullptr;
+    gap->entered.release(); gap->proceed.acquire();
+  }
+  return __real_pthread_mutex_lock(mutex);
+}
+extern "C" int __wrap_pthread_mutex_unlock(pthread_mutex_t* mutex) {
+  auto* gap=promotion_gap && promotion_gap->after_unlock ? promotion_gap : nullptr;
+  if (gap) promotion_gap=nullptr;
+  const auto result=__real_pthread_mutex_unlock(mutex);
+  if (gap) { gap->entered.release(); gap->proceed.acquire(); }
+  return result;
+}
 extern "C" int __real_pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, const timespec*);
 extern "C" int __wrap_pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* mutex) {
   WaitEntered();
@@ -450,6 +519,7 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex
 }
 int main() {
   UpgradePromotion();
+  PromotionCloseBoundary();
   Matrix(); Terminal(); Recursion(); Queues(); ParkedOutcomes(); Boundaries(); BatchAndHeadRemoval(); WakeSelection();
   std::printf("PASS checked mode latch: %u checks\n", checks.load());
 }
