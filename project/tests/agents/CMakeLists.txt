@@ -16,7 +16,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_include_directories(checked_mode_latch_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/platform")
   target_link_libraries(checked_mode_latch_gate PRIVATE Threads::Threads)
   target_link_options(checked_mode_latch_gate PRIVATE
-    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait)
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait
+    -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_unlock)
   add_test(NAME checked_mode_latch_gate COMMAND checked_mode_latch_gate)
   set_tests_properties(checked_mode_latch_gate PROPERTIES
     TIMEOUT 60 LABELS "concurrency;multiholder;platform;fault")
