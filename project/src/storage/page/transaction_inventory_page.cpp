@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_inventory_page.hpp"
+#include "native_inventory_chain_backing.hpp"
+#include "native_metadata_memory.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "transaction_horizon_projection.hpp"
 #include "native_decoded_storage_ranges.hpp"
@@ -718,22 +720,45 @@ NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInt
 }
 
 namespace {
-NativeTransactionInventoryChainResult ReadNativeInventoryChain(
-    const scratchbird::core::platform::Uuid& database_uuid,
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
-    const scratchbird::storage::disk::FilespaceRootReference& head,
-    u64 maximum_retained_image_bytes,
-    const std::array<byte,32>* root_sha256=nullptr,
-    const std::map<Uuid,std::vector<byte>>* historical=nullptr) noexcept {
+NativeInventoryChainView ReadInventoryChainView(
+    const Uuid& database_uuid,std::span<const disk::NativeFilespaceDevice> devices,
+    const disk::FilespaceRootReference& head,u64 maximum_retained_image_bytes,
+    const std::array<byte,32>* root_sha256,
+    const std::span<const NativeInventoryHistoricalPageZero>* historical,
+    std::pmr::memory_resource& resource,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> observations,
+    NativeInventoryChainDeviceRead& receipt) noexcept {
   using namespace native_inventory;
-  const auto fail=[](Error e) { NativeTransactionInventoryChainResult r; r.error=e; return r; };
+  const auto fail=[](Error e) { NativeInventoryChainView r; r.error=e; return r; };
   try {
+    disk::detail::NativeMetadataScratch scratch{&resource};
+    std::pmr::map<disk::FileDevice*,disk::FileDevice::ReadLatencyBatch*> batches(&resource);
+    const auto read=[&](disk::FileDevice& device,u64 offset,void* data,std::size_t count){
+      const auto it=batches.find(&device);
+      auto io=it==batches.end()?device.ReadAt(offset,data,count):it->second->ReadAt(offset,data,count);
+      receipt.io_status=io.status;receipt.io_diagnostic=std::move(io.diagnostic);
+      if(io.bytes_transferred>std::numeric_limits<u64>::max()-receipt.physical_bytes_read)throw Error::invalid_reference;
+      receipt.physical_bytes_read+=io.bytes_transferred;return io;
+    };
+    const auto extent=[&](disk::FileDevice& device){auto io=device.Size();receipt.io_status=io.status;
+      receipt.io_diagnostic=std::move(io.diagnostic);return io;};
+
     disk::NativePageReference next{head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid};
     if (!V7(database_uuid) || !V7(head.object_uuid) || head.kind!=4 || head.page_type!=0x0301
         || !RefValid(next) || devices.empty() || !maximum_retained_image_bytes) return fail(Error::invalid_reference);
     if (historical && (historical->size()!=devices.size() || !root_sha256 ||
         std::none_of(root_sha256->begin(),root_sha256->end(),[](byte v){return v!=0;}))) return fail(Error::invalid_reference);
-    auto ordered=devices;
+    if(!observations.empty()){
+      if(observations.size()!=devices.size())return fail(Error::invalid_reference);
+      for(std::size_t i=0;i<devices.size();++i){
+        if(!devices[i].device||!observations[i]||&observations[i]->device()!=devices[i].device)return fail(Error::invalid_reference);
+        batches.emplace(devices[i].device,observations[i]);
+      }
+    }
+    std::pmr::map<Uuid,std::span<const byte>> historical_images(&resource);
+    if(historical)for(const auto& image:*historical)
+      if(!historical_images.emplace(image.filespace_uuid,image.image).second)return fail(Error::invalid_filespace);
+    std::pmr::vector<disk::NativeFilespaceDevice> ordered(devices.begin(),devices.end(),&resource);
     std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b) { return a.filespace_uuid.bytes<b.filespace_uuid.bytes; });
     for (std::size_t i=0;i<ordered.size();++i) {
       const auto& fs=ordered[i];
@@ -741,31 +766,34 @@ NativeTransactionInventoryChainResult ReadNativeInventoryChain(
           || !fs.device || (i && fs.filespace_uuid==ordered[i-1].filespace_uuid)) return fail(Error::invalid_filespace);
       for (std::size_t j=0;j<i;++j) if (fs.device==ordered[j].device) return fail(Error::invalid_filespace);
     }
-    std::vector<std::unique_lock<std::recursive_mutex>> guards; guards.reserve(ordered.size());
+    std::pmr::vector<std::unique_lock<std::recursive_mutex>> guards(&resource); guards.reserve(ordered.size());
     for (const auto& fs:ordered) guards.push_back(fs.device->AcquireOperationGuard());
     u64 context_bytes=0;
-    std::vector<u64> physical_sizes; if(historical)physical_sizes.reserve(ordered.size());
-    const auto observe=[&](const disk::NativeFilespaceDevice& fs,const disk::FilespacePageZero& zero,bool final,std::size_t index)->Error {
-      const auto size=fs.device->Size(); if(!size.ok())return Error::io_failure;
+    std::pmr::vector<u64> physical_sizes(&resource); if(historical)physical_sizes.reserve(ordered.size());
+    const auto observe=[&](const disk::NativeFilespaceDevice& fs,const disk::FilespacePageZeroView& zero,bool final,std::size_t index)->Error {
+      const auto size=extent(*fs.device); if(!size.ok())return Error::io_failure;
       if(final){if(size.size_bytes!=physical_sizes[index])return Error::binding_mismatch;}
       else {if(size.size_bytes<zero.total_pages*u64{zero.bootstrap.page_size_bytes})return Error::invalid_filespace;physical_sizes.push_back(size.size_bytes);}
-      std::vector<byte> actual(zero.bootstrap.page_size_bytes);const auto io=fs.device->ReadAt(0,actual.data(),actual.size());
+      auto actual=scratch.Array<byte>(zero.bootstrap.page_size_bytes);const auto io=read(*fs.device,0,actual.data(),actual.size());
       if(!io.ok()||io.bytes_transferred!=actual.size())return Error::io_failure;
-      const auto& retained=historical->at(fs.filespace_uuid);
+      const auto& retained=historical_images.at(fs.filespace_uuid);
       if(!std::equal(retained.begin(),retained.begin()+4096,actual.begin())||
          !std::equal(retained.begin()+4480,retained.end(),actual.begin()+4480))return Error::binding_mismatch;
       return Error::none;
     };
-    std::vector<disk::FilespacePageZero> zeros; zeros.reserve(ordered.size());
+    std::pmr::vector<disk::FilespacePageZeroView> zeros(&resource); zeros.reserve(ordered.size());
     for (const auto& fs:ordered) {
       const disk::FilespaceBootstrapBinding binding{database_uuid,fs.filespace_uuid,fs.page_size_profile_uuid};
-      disk::FilespacePageZeroDecodeResult zero;
-      if(historical){const auto at=historical->find(fs.filespace_uuid);if(at==historical->end())return fail(Error::invalid_filespace);
+      disk::FilespacePageZeroViewResult zero;
+      if(historical){const auto at=historical_images.find(fs.filespace_uuid);if(at==historical_images.end())return fail(Error::invalid_filespace);
         const u64 size=disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)->page_size_bytes;
         if(at->second.size()!=size)return fail(Error::invalid_filespace);
         if(size>(maximum_retained_image_bytes-context_bytes)/3)return fail(Error::resource_exhausted);context_bytes+=3*size;
-        zero=disk::DecodeFilespacePageZero(at->second.data(),at->second.size(),&binding);
-      }else zero=disk::ReadFilespacePageZeroFromOpenDevice(*fs.device,&binding);
+        zero=disk::DecodeFilespacePageZeroInto(scratch.Copy<byte>(at->second),scratch.Array<disk::FilespaceRootReference>(32),&binding);
+      }else {std::span<const byte> raw;
+        zero=disk::detail::ReadNativeMetadataPageZero(binding,scratch,
+          [&](u64 offset,void* data,std::size_t count){return read(*fs.device,offset,data,count);},
+          [&]{return extent(*fs.device);},raw);}
       if (!zero.ok()) {
         if (zero.error==disk::FilespacePageZeroError::resource_exhausted) return fail(Error::resource_exhausted);
         if (zero.error==disk::FilespacePageZeroError::hash_provider_failure) return fail(Error::hash_failure);
@@ -776,8 +804,9 @@ NativeTransactionInventoryChainResult ReadNativeInventoryChain(
         const auto error=observe(fs,*zero.record,false,zeros.size());if(error!=Error::none)return fail(error);}
       zeros.push_back(*zero.record);
     }
-    NativeTransactionInventoryChainResult result; result.retained_image_bytes=context_bytes;
-    std::set<std::pair<Uuid,u64>> slots; std::set<Uuid> page_ids;
+    NativeInventoryChainView result;std::pmr::vector<NativeInventoryChainPageView> pages(&resource);
+    std::pmr::vector<TransactionInventoryEntry> entries(&resource); result.retained_image_bytes=context_bytes;
+    std::pmr::set<std::pair<Uuid,u64>> slots(&resource);std::pmr::set<Uuid> page_ids(&resource);
     for (;;) {
       const auto fs=std::lower_bound(ordered.begin(),ordered.end(),next.filespace_uuid,
           [](const auto& a,const auto& id) { return a.filespace_uuid.bytes<id.bytes; });
@@ -789,48 +818,129 @@ NativeTransactionInventoryChainResult ReadNativeInventoryChain(
       if (!slots.emplace(next.filespace_uuid,next.page_number).second) return fail(Error::chain_mismatch);
       const auto size=zero.bootstrap.page_size_bytes;
       if (size>maximum_retained_image_bytes-result.retained_image_bytes) return fail(Error::resource_exhausted);
-      std::vector<byte> bytes(size);
-      const auto io=fs->device->ReadAt(next.page_number*size,bytes.data(),bytes.size());
+      auto bytes=scratch.Array<byte>(size);
+      const auto io=read(*fs->device,next.page_number*size,bytes.data(),bytes.size());
       if (!io.ok() || io.bytes_transferred!=bytes.size()) return fail(Error::io_failure);
       const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
       if (!header.ok()) return fail(Error::invalid_header);
       if (header.header->flags&1u) return fail(Error::encrypted_requires_crypto_authority);
-      auto decoded=DecodeNativeTransactionInventoryPage(bytes); if (!decoded.ok()) return fail(decoded.error);
+      const auto count=std::min<std::size_t>(LoadLittle32(bytes.data()+184),(bytes.size()-384)/72);
+      auto decoded=DecodeNativeTransactionInventoryPageInto(bytes,scratch.Array<TransactionInventoryEntry>(count),
+        scratch.Array<std::size_t>(count),scratch.Array<byte>(count));
+      if(!decoded.ok())return fail(decoded.error);
       const auto& p=*decoded.page;
       if (p.header.database_uuid!=database_uuid || Self(p)!=next || p.object_uuid!=head.object_uuid)
         return fail(Error::binding_mismatch);
       if (!page_ids.insert(p.header.page_uuid).second) return fail(Error::chain_mismatch);
-      if (result.pages.empty()) {
+      if (pages.empty()) {
         if (p.previous) return fail(Error::chain_mismatch);
-        if(root_sha256){const auto hash=core_hash::ComputeSha256Digest(decoded.bytes);if(!hash.ok())return fail(Error::hash_failure);
+        if(root_sha256){const auto hash=core_hash::ComputeSha256DigestNative(bytes.data(),bytes.size());if(!hash.ok())return fail(Error::hash_failure);
           if(hash.digest!=*root_sha256)return fail(Error::binding_mismatch);}
         result.inventory.next_local_transaction_id=p.inventory.next_local_transaction_id;
         result.inventory.next_commit_sequence=p.inventory.next_commit_sequence;
       } else {
-        const auto& prior=*result.pages.back().page;
+        const auto& prior=pages.back().page;
         if (!p.previous || *p.previous!=Self(prior) || p.inventory_generation!=prior.inventory_generation
             || p.inventory.next_local_transaction_id!=result.inventory.next_local_transaction_id
             || p.inventory.next_commit_sequence!=result.inventory.next_commit_sequence) return fail(Error::chain_mismatch);
       }
-      if (!result.inventory.entries.empty() && !p.inventory.entries.empty()
-          && p.inventory.entries.front().identity.local_id.value<=result.inventory.entries.back().identity.local_id.value)
+      if (!entries.empty() && !p.inventory.entries.empty()
+          && p.inventory.entries.front().identity.local_id.value<=entries.back().identity.local_id.value)
         return fail(Error::chain_mismatch);
-      result.inventory.entries.insert(result.inventory.entries.end(),p.inventory.entries.begin(),p.inventory.entries.end());
-      result.retained_image_bytes+=size; result.pages.push_back(std::move(decoded));
-      const auto& tail=*result.pages.back().page;
+      entries.insert(entries.end(),p.inventory.entries.begin(),p.inventory.entries.end());
+      result.retained_image_bytes+=size; pages.push_back({p,bytes});
+      const auto& tail=pages.back().page;
       if (!tail.next) break;
       next=*tail.next;
     }
-    if (*mga::ValidateLocalTransactionInventoryStructure(result.inventory)) return fail(Error::invalid_inventory);
-    const auto horizons=ComputeLocalTransactionHorizons(result.inventory);
-    if (!horizons.ok()) return fail(Error::invalid_inventory);
+    result.inventory.entries=scratch.Copy<TransactionInventoryEntry>(entries);
+    const auto valid=ValidateNativeTransactionInventoryView(result.inventory,
+      scratch.Array<std::size_t>(entries.size()),scratch.Array<byte>(entries.size()));
+    if(!valid.ok())return fail(valid.error);
+    LocalTransactionHorizons horizons;
+    if(mga::detail::ProjectValidatedLocalHorizons(result.inventory,{},horizons))return fail(Error::invalid_inventory);
     if(historical)for(std::size_t i=0;i<ordered.size();++i){const auto error=observe(ordered[i],zeros[i],true,i);if(error!=Error::none)return fail(error);}
-    result.horizons=horizons.horizons; result.error=Error::none; return result;
-  } catch (const std::bad_alloc&) { return fail(Error::resource_exhausted); }
+    result.pages=scratch.Copy<NativeInventoryChainPageView>(pages);result.horizons=horizons; result.error=Error::none; return result;
+  } catch (Error error) { return fail(error); }
+    catch (const std::bad_alloc&) { return fail(Error::resource_exhausted); }
     catch (const std::length_error&) { return fail(Error::resource_exhausted); }
     catch (...) { return fail(Error::io_failure); }
 }
+
+NativeTransactionInventoryChainResult ReadNativeInventoryChain(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& files,
+    const disk::FilespaceRootReference& head,u64 allowance,
+    const std::array<byte,32>* sha=nullptr,const std::map<Uuid,std::vector<byte>>* historical=nullptr) noexcept {
+  const auto fail=[](NativeInventoryError e){NativeTransactionInventoryChainResult r;r.error=e;return r;};
+  try{
+    disk::detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);
+    disk::detail::NativeMetadataScratch scratch{&resource};
+    std::span<NativeInventoryHistoricalPageZero> values;
+    if(historical){values=scratch.Array<NativeInventoryHistoricalPageZero>(historical->size());
+      std::size_t i=0;for(const auto& [id,image]:*historical)values[i++]={id,image};}
+    const std::span<const NativeInventoryHistoricalPageZero> contexts=values;
+    NativeInventoryChainDeviceRead receipt;
+    const auto view=ReadInventoryChainView(database,files,head,allowance,sha,
+      historical?&contexts:nullptr,resource,{},receipt);
+    if(!view.ok())return fail(view.error);
+    NativeTransactionInventoryChainResult out;out.retained_image_bytes=view.retained_image_bytes;
+    out.horizons=view.horizons;out.inventory.next_local_transaction_id=view.inventory.next_local_transaction_id;
+    out.inventory.next_commit_sequence=view.inventory.next_commit_sequence;
+    out.inventory.entries.assign(view.inventory.entries.begin(),view.inventory.entries.end());
+    out.pages.reserve(view.pages.size());
+    // Full owning compatibility copies verified fields/images after fencing,
+    // without fabricating a publication-CAS base or replaying provider checks.
+    for(const auto& image:view.pages){
+      const auto& page=image.page;NativeTransactionInventoryPage value;
+      value.header=page.header;value.object_uuid=page.object_uuid;value.inventory_generation=page.inventory_generation;
+      value.previous=page.previous;value.next=page.next;
+      value.inventory.next_local_transaction_id=page.inventory.next_local_transaction_id;
+      value.inventory.next_commit_sequence=page.inventory.next_commit_sequence;
+      value.inventory.entries.assign(page.inventory.entries.begin(),page.inventory.entries.end());
+      NativeTransactionInventoryPageResult r;r.error=NativeInventoryError::none;r.page=std::move(value);
+      r.bytes.assign(image.image.begin(),image.image.end());out.pages.push_back(std::move(r));
+    }
+    out.error=NativeInventoryError::none;return out;
+  }catch(const std::bad_alloc&){return fail(NativeInventoryError::resource_exhausted);}
+   catch(const std::length_error&){return fail(NativeInventoryError::resource_exhausted);}
+   catch(...){return fail(NativeInventoryError::io_failure);}
+}
+
 } // namespace
+
+NativeInventoryChainDeviceRead detail::ReadNativeInventoryChainBacked(
+    const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,
+    const disk::FilespaceRootReference& head,u64 allowance,NativeInventoryChainReadContext context,
+    const std::array<byte,32>* sha,std::span<const NativeInventoryHistoricalPageZero> historical,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches,std::pmr::memory_resource& resource) noexcept {
+  NativeInventoryChainDeviceRead out;using C=NativeInventoryChainReadContext;
+  if((context!=C::current&&context!=C::historical)||
+     (context==C::historical?(!sha||historical.size()!=files.size()):(sha||!historical.empty()))||
+     files.empty()||batches.size()!=files.size())return out;
+  out.chain=ReadInventoryChainView(database,files,head,allowance,sha,
+    context==C::historical?&historical:nullptr,resource,batches,out);return out;
+}
+NativeInventoryChainDeviceRead ReadNativeTransactionInventoryChainInto(
+    const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,
+    const disk::FilespaceRootReference& head,u64 allowance,NativeInventoryChainReadContext context,
+    const std::array<byte,32>* sha,std::span<const NativeInventoryHistoricalPageZero> historical,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches,std::span<byte> backing) noexcept {
+  NativeInventoryChainDeviceRead out;using C=NativeInventoryChainReadContext;
+  if((context!=C::current&&context!=C::historical)||
+     (context==C::historical?(!sha||historical.size()!=files.size()):(sha||!historical.empty()))||
+     files.empty()||batches.size()!=files.size())return out;
+  for(std::size_t i=0;i<files.size();++i)if(!files[i].device||!batches[i]||&batches[i]->device()!=files[i].device)return out;
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(backing,input);};
+  bool valid=disjoint(std::span{&database,1})&&disjoint(std::span{&head,1})&&disjoint(files)&&disjoint(batches)&&
+    disjoint(historical)&&(!sha||disjoint(std::span{sha,1}));
+  for(std::size_t i=0;i<files.size();++i)valid=valid&&disjoint(std::span{files[i].device,1})&&disjoint(std::span{batches[i],1});
+  for(const auto& input:historical)valid=valid&&disjoint(input.image);
+  if(!valid){out.chain.error=NativeInventoryError::invalid_backing;return out;}
+  disk::detail::NativeMetadataMemory resource(backing);
+  out=detail::ReadNativeInventoryChainBacked(database,files,head,allowance,context,sha,historical,batches,resource);
+  if(out.ok())out.chain.backing_bytes_used=resource.used();return out;
+}
+
 
 NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainFromOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
