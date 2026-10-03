@@ -121,6 +121,9 @@ endif()
 add_test(NAME retained_condition_wait_gate COMMAND retained_condition_wait_gate)
 add_executable(retained_mutex_latch_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/retained_mutex_latch_gate.cpp")
+add_test(NAME retained_mutex_latch_measurement_gate COMMAND retained_mutex_latch_gate --measure)
+set_tests_properties(retained_mutex_latch_measurement_gate PROPERTIES
+  TIMEOUT 60 LABELS "concurrency;measurement;not_performance_acceptance")
 add_executable(local_latch_victim_policy_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/local_latch_victim_policy_gate.cpp")
 target_compile_features(local_latch_victim_policy_gate PRIVATE cxx_std_23)

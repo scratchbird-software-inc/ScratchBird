@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "retained_mutex_latch.hpp"
 #include <atomic>
+#include <ctime>
 #include <iostream>
+#include <latch>
 #include <semaphore>
 #include <vector>
 #if defined(__unix__)
@@ -883,8 +885,126 @@ void NativeBoundaries() {
   });
 }
 #endif
+// Actual retained mutex and governed memory, not a simulated task queue. No
+// latency SLO: report host observations with clock/assertion overhead included.
+template<std::size_t Workers>
+void Measurements() {
+  constexpr std::size_t samples=1024,warmup=64;
+  const auto ns=[](auto duration) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  };
+  std::array<std::uint64_t,Workers*samples> elapsed{};
+  std::array<std::uint64_t,Workers> registered{};
+  std::array<std::uint64_t,1024> calibration{};
+  for(auto& value:calibration) {
+    const auto begin=c::MutexClock::now();
+    value=ns(c::MutexClock::now()-begin);
+  }
+  std::sort(calibration.begin(),calibration.end());
+  Fixture f;
+  c::MutexClock::time_point cleanup;
+  {
+    m::MemorySafeRetirement domain(*f.resource,Id(10),2,2*Workers+4);
+    Check(domain.Initialize()==S::ok,"measurement real domain");
+    {
+      c::MutexLatchOwner owner(domain);
+      Check(owner.Initialize(Descriptor(),{Workers+1,Workers+2},Hazard(30))==S::ok,
+            "measurement real retained mutex");
+      std::latch ready(Workers),go(1);
+      std::array<std::thread,Workers> workers;
+      std::uint64_t payload=0;
+      for(std::size_t worker=0;worker<Workers;++worker) {
+        workers[worker]=std::thread([&,worker] {
+          const unsigned task=99-worker;
+          auto operation=Operation(owner,50+worker,task);
+          const auto hazard=Hazard(100+worker,task);
+          auto request=Request(1000+worker*(samples+warmup),task);
+          for(std::size_t i=0;i<warmup;++i) {
+            request.request_id=Id(1000+worker*(samples+warmup)+i);
+            c::MutexLatchGrant grant;
+            Check(operation.Acquire(request,hazard,grant,c::MutexClock::now()+5s).code==C::acquired,
+                  "warmup real acquisition");
+            ++payload;
+            Check(grant.Release(request).code==C::released,"warmup real release");
+          }
+          ready.count_down(); go.wait();
+          std::uint64_t waits=0;
+          for(std::size_t i=0;i<samples;++i) {
+            request.request_id=Id(1000+worker*(samples+warmup)+warmup+i);
+            c::MutexLatchGrant grant;
+            const auto begin=c::MutexClock::now();
+            const auto result=operation.Acquire(request,hazard,grant,begin+5s);
+            Check(result.code==C::acquired && grant,"measured real acquisition");
+            ++payload; // Ordinary shared payload; synchronization is the mutex under test.
+            Check(grant.Release(request).code==C::released,"measured real release");
+            elapsed[worker*samples+i]=ns(c::MutexClock::now()-begin);
+            waits+=result.wait.registered;
+          }
+          registered[worker]=waits;
+        });
+      }
+      ready.wait();
+      Check(payload==Workers*warmup,"warmup exact protected payload");
+      payload=0; // All workers are held at go; release publishes this reset.
+      const auto initial=owner.Snapshot().native.registered_waits;
+      const auto bytes=f.manager.Snapshot().current_bytes;
+      const auto cpu_begin=std::clock();
+      const auto begin=c::MutexClock::now();
+      go.count_down();
+      for(auto& worker:workers) worker.join();
+      const auto wall=ns(c::MutexClock::now()-begin);
+      const auto cpu_end=std::clock();
+      Check(cpu_begin!=std::clock_t(-1) && cpu_end!=std::clock_t(-1) && wall>0,
+            "measurement clocks available");
+      Check(payload==Workers*samples,"all measured payload updates published exactly once");
+      const auto state=owner.Snapshot();
+      std::uint64_t waits=0;
+      for(const auto count:registered) waits+=count;
+      Check(state.native.registered_waits-initial==waits &&
+            state.operation_references==0 && state.retained_grants==0 &&
+            !state.native.held && !state.native.waiters && !state.native.calls,
+            "all sampled registrations and actual worker references reconciled");
+      if constexpr(Workers==1) Check(!waits,"uncontended profile invents no queue registrations");
+      std::sort(elapsed.begin(),elapsed.end());
+      std::cout<<"measurement=retained_mutex_acquire_release workers="<<Workers
+          <<" samples="<<elapsed.size()<<" p50_ns="<<elapsed[(elapsed.size()-1)/2]
+          <<" p99_ns="<<elapsed[(elapsed.size()-1)*99/100]<<" max_ns="<<elapsed.back()
+          <<" wall_ns="<<wall<<" process_cpu_ns="
+          <<static_cast<double>(cpu_end-cpu_begin)*1000000000.0/CLOCKS_PER_SEC
+          <<" samples_per_second="<<elapsed.size()*1000000000.0/wall
+          <<" registered_waits="<<waits<<" contention_observed="<<(waits!=0)
+          <<" governed_bytes="<<bytes<<" sample_storage_bytes="<<sizeof(elapsed)
+          <<" clock_pair_p50_ns="<<calibration[(calibration.size()-1)/2]
+          <<" clock_pair_p99_ns="<<calibration[(calibration.size()-1)*99/100]<<'\n';
+      cleanup=c::MutexClock::now();
+      Finish(owner);
+    }
+    Check(domain.Collect()==S::ok && domain.Snapshot().retired==0,
+          "measured owner actual physical collection");
+  }
+  f.Empty();
+  std::cout<<"measurement=retained_mutex_cleanup workers="<<Workers
+           <<" cleanup_ns="<<ns(c::MutexClock::now()-cleanup)<<" final_governed_bytes=0\n";
+}
 } // namespace
 int main(int argc,char** argv) {
+  if(argc==2 && std::string_view(argv[1])=="--measure") {
+    std::cout<<"measurement_profile=component_only clock=steady_clock cpu_clock=process"
+        " timing_storage=caller_owned clock_and_checks_included=true"
+        " wall_includes_worker_join=true latency_slo_claimed=false";
+#if defined(SB_MUTEX_NATIVE_FAULT_GATE)
+    std::cout<<" native_fault_wrappers=enabled";
+#else
+    std::cout<<" native_fault_wrappers=disabled";
+#endif
+#if defined(__OPTIMIZE__)
+    std::cout<<" compiler_optimization=enabled\n";
+#else
+    std::cout<<" compiler_optimization=disabled\n";
+#endif
+    Measurements<1>(); Measurements<2>(); Measurements<4>(); Measurements<8>();
+    return 0;
+  }
   if (argc==2 && std::string_view(argv[1])=="--unsafe-owner") {
     std::set_terminate([] { std::_Exit(73); });
     Fixture f; m::MemorySafeRetirement domain(*f.resource,Id(10),1,2);
