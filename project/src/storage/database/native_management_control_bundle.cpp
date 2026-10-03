@@ -34,29 +34,58 @@ auto Hash(const Bytes& b){const auto h=core::hash::ComputeSha256Digest(b);Requir
 auto Seal(const Bytes& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),320},{zero.data(),32},{b.data()+352,b.size()-352}};
   const auto h=core::hash::ComputeSha256DigestParts(parts,3);Require(h.ok(),E::hash_failure);return h.digest;}
 auto Self(const Header& h){return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
-u64 PayloadBytes(const Root& r,u64 size){
+E CheckPayloadBytes(const Root& r,u64 size,u64& bytes){
   const auto limit=std::numeric_limits<u64>::max();
-  Require(r.map_count&&r.inventory_count<=limit-r.map_count,E::invalid_extent);
-  const auto count=r.map_count+r.inventory_count;Require(r.directory_count<=limit-count,E::invalid_extent);
-  Require(!r.growth_image_count||(r.directory_count&&r.growth_image_count==2),E::invalid_extent);
-  if(!r.directory_count){Require(!r.payload_bytes&&count<=limit/size,E::invalid_extent);return count*size;}
-  u64 minimum=limit,maximum=0;for(const auto& p:disk::kCanonicalFilespacePageProfiles){minimum=std::min<u64>(minimum,p.page_size_bytes);maximum=std::max<u64>(maximum,p.page_size_bytes);}
-  Require(r.growth_image_count<=limit-count-r.directory_count,E::invalid_extent);
-  const auto frames=count+r.directory_count+r.growth_image_count;const auto bytes=r.payload_bytes;
-  Require(bytes&&frames<=bytes/(minimum+8)&&bytes/(maximum+8)+(bytes%(maximum+8)!=0)<=frames,E::invalid_extent);return bytes;
+  if(!r.map_count||r.inventory_count>limit-r.map_count)return E::invalid_extent;
+  const auto count=r.map_count+r.inventory_count;
+  if(r.directory_count>limit-count)return E::invalid_extent;
+  if(r.growth_image_count&&(!r.directory_count||r.growth_image_count!=2))return E::invalid_extent;
+  if(!r.directory_count){
+    if(r.payload_bytes||count>limit/size)return E::invalid_extent;
+    bytes=count*size;return E::none;
+  }
+  u64 minimum=limit,maximum=0;
+  for(const auto& p:disk::kCanonicalFilespacePageProfiles){
+    minimum=std::min<u64>(minimum,p.page_size_bytes);maximum=std::max<u64>(maximum,p.page_size_bytes);
+  }
+  if(r.growth_image_count>limit-count-r.directory_count)return E::invalid_extent;
+  const auto frames=count+r.directory_count+r.growth_image_count;
+  bytes=r.payload_bytes;
+  if(!bytes||frames>bytes/(minimum+8)||bytes/(maximum+8)+(bytes%(maximum+8)!=0)>frames)
+    return E::invalid_extent;
+  return E::none;
+}
+u64 PayloadBytes(const Root& r,u64 size){
+  u64 bytes=0;const auto error=CheckPayloadBytes(r,size,bytes);Require(error==E::none,error);return bytes;
+}
+E CheckShape(const Root& r,const Uuid& database,const Uuid& bootstrap,u64 budget,u32& page_size,bool digests=true){
+  const auto* profile=disk::FindCanonicalFilespacePageProfile(r.first.page_size_profile_uuid);
+  if(!profile||!V7(database)||!V7(bootstrap)||!V7(r.object_uuid)||!V7(r.operation_uuid)||
+     !V7(r.first.filespace_uuid))return E::invalid_identity;
+  const std::array<Uuid,4> ids{database,bootstrap,r.object_uuid,r.operation_uuid};
+  for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=0;j<i;++j)
+    if(ids[i]==ids[j])return E::invalid_identity;
+  const u64 size=profile->page_size_bytes,capacity=size-384,limit=std::numeric_limits<u64>::max();
+  if(!r.first.page_number||!r.first.page_generation)return E::invalid_extent;
+  u64 bytes=0;const auto payload=CheckPayloadBytes(r,size,bytes);
+  if(payload!=E::none)return payload;
+  if(r.page_count!=bytes/capacity+(bytes%capacity!=0))return E::invalid_extent;
+  if(r.first.page_number>limit/size||r.page_count-1>limit/size-r.first.page_number)return E::invalid_extent;
+  const u64 offset=(r.first.page_number+r.page_count-1)*size;
+  const u64 max_offset=static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+  const u64 max_bytes=static_cast<u64>(std::numeric_limits<std::streamsize>::max());
+  if(size>max_bytes||offset>max_offset||size>max_offset-offset)return E::invalid_extent;
+  if(digests&&(Zero(r.aggregate_sha256.data(),32)||Zero(r.first_page_sha256.data(),32)))return E::invalid_integrity;
+  if(bytes>std::numeric_limits<std::size_t>::max()||budget<2*size)return E::resource_exhausted;
+  u64 remaining=budget-2*size;
+  if(r.page_count>remaining/size)return E::resource_exhausted;
+  remaining-=r.page_count*size;
+  if(bytes>remaining/4)return E::resource_exhausted;
+  page_size=static_cast<u32>(size);return E::none;
 }
 u32 Shape(const Root& r,const Uuid& database,const Uuid& bootstrap,u64 budget,bool digests=true){
-  const auto* profile=disk::FindCanonicalFilespacePageProfile(r.first.page_size_profile_uuid);
-  Require(profile&&V7(database)&&V7(bootstrap)&&V7(r.object_uuid)&&V7(r.operation_uuid)&&V7(r.first.filespace_uuid),E::invalid_identity);
-  const std::array<Uuid,4> ids{database,bootstrap,r.object_uuid,r.operation_uuid};for(std::size_t i=0;i<ids.size();++i)for(std::size_t j=0;j<i;++j)Require(ids[i]!=ids[j],E::invalid_identity);
-  const u64 size=profile->page_size_bytes,capacity=size-384,limit=std::numeric_limits<u64>::max();
-  Require(r.first.page_number&&r.first.page_generation,E::invalid_extent);
-  const u64 bytes=PayloadBytes(r,size);Require(r.page_count==bytes/capacity+(bytes%capacity!=0),E::invalid_extent);
-  Require(r.first.page_number<=limit/size&&r.page_count-1<=limit/size-r.first.page_number&&disk::CheckFileDeviceExtent((r.first.page_number+r.page_count-1)*size,size).ok(),E::invalid_extent);
-  Require(!digests||(!Zero(r.aggregate_sha256.data(),32)&&!Zero(r.first_page_sha256.data(),32)),E::invalid_integrity);
-  Require(bytes<=std::numeric_limits<std::size_t>::max()&&budget>=2*size,E::resource_exhausted);
-  u64 remaining=budget-2*size;Require(r.page_count<=remaining/size,E::resource_exhausted);remaining-=r.page_count*size;Require(bytes<=remaining/4,E::resource_exhausted);
-  return static_cast<u32>(size);
+  u32 size=0;const auto error=CheckShape(r,database,bootstrap,budget,size,digests);
+  Require(error==E::none,error);return size;
 }
 void Common(const Header& h,const Root& r,const Uuid& db,const Uuid& bootstrap,u32 size,u64 i,std::set<Uuid>& ids){
   Require(h.database_uuid==db&&h.filespace_uuid==r.first.filespace_uuid&&h.page_size_profile_uuid==r.first.page_size_profile_uuid&&h.page_size_bytes==size&&h.page_number==r.first.page_number+i&&h.page_generation==r.first.page_generation&&h.page_type==0x500&&!h.flags,E::binding_mismatch);
@@ -246,7 +275,7 @@ NativeManagementControlBundleRead Decode(const Pages& pages,const Root& r,const 
 }
 } // namespace
 NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(const Root& r,const Uuid& db,const Uuid& bootstrap,u64 budget) noexcept {
-  try{Shape(r,db,bootstrap,budget);return E::none;}catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_extent;}
+  u32 size=0;return CheckShape(r,db,bootstrap,budget,size);
 }
 NativeManagementControlBundleImage EncodeNativeManagementControlBundle(const Pages& maps,const Uuid& db,const Uuid& bootstrap,const Uuid& object,const Uuid& attempt,const std::vector<Header>& headers,u64 budget,const Pages& inventory,const Pages& directory,const Pages& growth) noexcept {
   try{

@@ -69,19 +69,60 @@ void Ref(Bytes& b,std::size_t at,const d::NativePageReference& r){Put(b,at,r.fil
 auto Sha(const Bytes& b){std::array<byte,32> h{};Check(SHA256(b.data(),b.size(),h.data()),"independent SHA");return h;}
 void HeaderSeal(Bytes& b){std::fill(b.begin()+96,b.begin()+104,0);u64 hash=14695981039346656037ull;for(unsigned i=0;i<128;++i){hash^=b[i];hash*=1099511628211ull;}Num(b,96,8,hash);}
 void PlanSeal(Bytes& b){std::fill(b.begin()+688,b.begin()+720,0);const auto h=Sha(b);std::copy(h.begin(),h.end(),b.begin()+688);}
-Bytes Oracle(const db::NativePublicationPlan& p){
+Bytes Oracle(const db::NativePublicationPlan& p,unsigned version=1){
  const auto& h=p.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);
  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
- std::copy_n("SBPPM001",8,b.begin()+128);Num(b,136,2,1);Num(b,138,2,640);Num(b,140,4,768);
+ const std::array<std::string_view,9> magic{"SBPPM001","SBPPM002","SBPPM003","SBPPM004","SBPPM005","SBPPM006","SBPPM007","SBPPM008","SBPPM009"};
+ Check(version>=1&&version<=9,"oracle version");
+ std::copy(magic[version-1].begin(),magic[version-1].end(),b.begin()+128);
+ Num(b,136,2,version);Num(b,138,2,version==1?640:version==2?896:1024);Num(b,140,4,version==1?768:version==2?1024:1152);
  Put(b,144,p.object_uuid);Put(b,160,p.bootstrap_uuid);Put(b,176,p.timeline_uuid);Put(b,192,p.operation_uuid);Put(b,208,p.intent.initiator_uuid);Put(b,224,p.intent.request_context_uuid);Put(b,240,p.intent.policy_snapshot_uuid);Put(b,256,p.security_snapshot_uuid);
  std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),b.begin()+272);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+304);
  Num(b,336,8,p.reserved_generation);Num(b,344,8,p.base_checkpoint_generation);Num(b,352,8,p.base_root_set_generation);Num(b,360,8,p.target_root_set_generation);
  Ref(b,368,p.base_checkpoint);Put(b,416,p.base_checkpoint_object_uuid);std::copy(p.base_checkpoint_sha256.begin(),p.base_checkpoint_sha256.end(),b.begin()+432);Ref(b,464,p.target_checkpoint);Put(b,512,p.target_checkpoint_object_uuid);std::copy(p.target_graph_sha256.begin(),p.target_graph_sha256.end(),b.begin()+528);
  if(p.previous_plan)Ref(b,560,*p.previous_plan);Put(b,608,p.previous_plan_object_uuid);std::copy(p.previous_plan_sha256.begin(),p.previous_plan_sha256.end(),b.begin()+624);
- Num(b,656,8,p.catalog_generation);Num(b,664,8,p.configuration_generation);Num(b,672,8,p.security_generation);Num(b,680,2,p.intent.initiator_kind);Num(b,682,2,1);Num(b,684,2,2);PlanSeal(b);return b;
+ Num(b,656,8,p.catalog_generation);Num(b,664,8,p.configuration_generation);Num(b,672,8,p.security_generation);Num(b,680,2,p.intent.initiator_kind);Num(b,682,2,1);Num(b,684,2,2);
+ if(version>=2){const auto& e=*p.management_extent;
+  Num(b,720,4,p.generation_guard_flags);Ref(b,736,e.first);Put(b,784,e.object_uuid);Put(b,800,e.operation_uuid);
+  Num(b,816,8,e.revision);Num(b,824,4,e.aggregate_bytes);Num(b,828,4,e.page_count);
+  std::copy(e.aggregate_sha256.begin(),e.aggregate_sha256.end(),b.begin()+832);
+  std::copy(e.first_page_sha256.begin(),e.first_page_sha256.end(),b.begin()+864);
+ }
+ if(version>=3){const auto& e=*p.control_bundle;
+  Ref(b,896,e.first);Put(b,944,e.object_uuid);Num(b,960,8,e.map_count);Num(b,968,8,e.page_count);
+  std::copy(e.aggregate_sha256.begin(),e.aggregate_sha256.end(),b.begin()+976);
+  std::copy(e.first_page_sha256.begin(),e.first_page_sha256.end(),b.begin()+1008);
+ }
+ if(version>=4)Num(b,1040,8,*p.base_selection_generation);
+ if(version>=5)Num(b,1048,2,p.intent.recovery_profile);
+ if(version==6||version>=8)Num(b,1056,8,p.control_bundle->inventory_count);
+ if(version>=8){Num(b,1064,8,p.control_bundle->directory_count);Num(b,1072,8,p.control_bundle->payload_bytes);Num(b,1080,8,p.control_bundle->growth_image_count);}
+ if(version==9){const auto& s=*p.intent.startup_binding;
+  Put(b,1088,s.operation_uuid);Put(b,1104,s.session_uuid);Put(b,1120,s.transaction_uuid);
+  Num(b,1136,8,s.local_transaction_id);Num(b,1144,8,s.fence_generation);
+ }
+ PlanSeal(b);return b;
 }
 void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed plan prefix");}
-void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
+void Failed(const db::NativePublicationPlanViewImage& r){
+ Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed borrowed plan prefix");
+}
+db::NativePublicationPlanImage Decode(const Bytes& image){
+ const bool compare=allocation_budget<0&&!counting&&!hash_fault&&!hash_counting;
+ auto result=db::DecodeNativePublicationPlan(image);
+ if(compare){
+  allocation_budget=0;const auto view=db::DecodeNativePublicationPlanView(image);
+  const bool no_allocation=allocation_budget==0;allocation_budget=-1;
+  Check(no_allocation&&view.error==result.error,"complete borrowed publication parity without allocation");
+  if(result.ok()){
+   const auto version=LoadLittle16(image.data()+136);
+   Check(view.ok()&&view.bytes.data()==image.data()&&view.bytes.size()==image.size()&&view.sha256==result.sha256&&
+    Oracle(*view.plan,version)==image&&Oracle(*result.plan,version)==image,"independent every-field borrowed publication reconstruction");
+  }else Failed(view);
+ }
+ return result;
+}
+void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(Decode(raw));}
 struct Fixture {
  std::filesystem::path path;d::FileDevice device;std::vector<d::NativeFilespaceDevice> devices;u64 size,budget;
  Fixture(unsigned profile){
@@ -203,6 +244,66 @@ void InstallTests(Fixture& f,db::NativePublicationReservation& reservation,const
  }
  reset_io();
 }
+void BorrowedVersions(const db::NativePublicationPlan& base){
+ for(unsigned version=1;version<=9;++version)for(unsigned variant=0;variant<(version>=8?2u:1u);++variant){
+  auto p=base;const u64 size=p.header.page_size_bytes;
+  if(version>=2){
+   p.header.page_generation=p.reserved_generation;
+   db::NativeManagementExtentRoot e;e.first={p.header.filespace_uuid,1000,p.reserved_generation,p.header.page_size_profile_uuid};
+   e.object_uuid=Id(2000);e.operation_uuid=Id(2001);e.revision=1;e.aggregate_bytes=513;e.page_count=1;
+   e.aggregate_sha256.fill(31);e.first_page_sha256.fill(32);p.management_extent=e;
+  }
+  if(version>=3){
+   db::NativeManagementControlBundleRoot e;e.first={p.header.filespace_uuid,2000,p.reserved_generation,p.header.page_size_profile_uuid};
+   e.object_uuid=Id(2002);e.operation_uuid=p.operation_uuid;e.map_count=1;
+   e.aggregate_sha256.fill(33);e.first_page_sha256.fill(34);p.control_bundle=e;
+  }
+  if(version>=4)p.base_selection_generation=1;
+  if(version>=5)p.intent.recovery_profile=version==6||version==9?2:version==7?3:version==8?(variant?4:3):1;
+  if(version==6||version==9)p.control_bundle->inventory_count=1;
+  if(version==8||(version==9&&variant)){
+   auto& e=*p.control_bundle;e.directory_count=1;e.growth_image_count=version==8&&variant?2:0;
+   e.payload_bytes=(e.map_count+e.inventory_count+e.directory_count+e.growth_image_count)*(size+8);
+  }
+  if(version>=3){auto& e=*p.control_bundle;const auto bytes=e.directory_count?e.payload_bytes:(e.map_count+e.inventory_count)*size;
+   e.page_count=bytes/(size-384)+(bytes%(size-384)!=0);}
+  if(version==9)p.intent.startup_binding=db::NativeStartupBinding{p.management_extent->operation_uuid,Id(2003),Id(2004),2,3};
+  const auto image=Oracle(p,version);const auto encoded=db::EncodeNativePublicationPlan(p);
+  Check(encoded.ok()&&encoded.bytes==image,"independent all-nine-version canonical bytes");
+  const auto decoded=Decode(image);Check(decoded.ok()&&decoded.sha256==Sha(image),"borrowed version full reference hash");
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){
+   allocation_budget=0;hash_fault=mode;hash_target=digest;hash_seen=0;hash_active=false;
+   const auto failed=db::DecodeNativePublicationPlanView(image);
+   const bool denied=allocation_budget==0,consumed=!hash_fault;allocation_budget=-1;hash_fault=0;hash_active=false;
+   Check(denied&&consumed&&failed.error==E::hash_failure,"fixed borrowed provider failure in every wire generation");Failed(failed);
+  }
+  for(const auto at:{136u,138u,140u,144u,160u,192u,336u,344u,368u,416u,464u,512u,560u,608u,656u,680u,682u,684u,686u,720u,724u,736u,784u,800u,816u,824u,828u,864u,896u,944u,960u,968u,1008u,1040u,1048u,1050u,1056u,1064u,1072u,1080u,1088u,1104u,1120u,1136u,1144u,1152u}){
+   auto bad=image;bad[at]^=0x80;PlanSeal(bad);
+   // Some binary field changes are valid; compare exact complete outcomes,
+   // not an assumption that any changed byte must be rejected.
+   const auto changed=Decode(bad);if(!changed.ok())Failed(changed);
+  }
+  for(const auto bytes:{std::size_t{0},std::size_t{127},std::size_t{767},std::size_t{1023},std::size_t{1151},image.size()-1}){
+   Bytes short_image(image.begin(),image.begin()+bytes);Failed(Decode(short_image));
+  }
+  const u64 max_offset=static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+  auto invalid=p;invalid.target_checkpoint.page_number=max_offset/size;
+  const auto raw=Oracle(invalid,version);
+  Check(Decode(raw).error==E::invalid_reference,"signed reference overflow remains a fixed rejection");
+  if(version>=2){invalid=p;invalid.management_extent->first.page_number=max_offset/size;
+   Check(Decode(Oracle(invalid,version)).error==E::invalid_reference,"extent signed overflow fixed rejection");
+   invalid=p;invalid.management_extent->operation_uuid=invalid.management_extent->object_uuid;
+   if(invalid.intent.startup_binding){
+    Check(Decode(Oracle(invalid,version)).error==E::binding_mismatch,"startup operation binding checked before extent identity shape");
+    invalid.intent.startup_binding->operation_uuid=invalid.management_extent->operation_uuid;
+   }
+   Check(Decode(Oracle(invalid,version)).error==E::invalid_reference,"extent exact identity alias rejection");}
+  if(version>=3){invalid=p;invalid.control_bundle->first.page_number=max_offset/size;
+   Check(Decode(Oracle(invalid,version)).error==E::invalid_reference,"bundle signed overflow fixed rejection");
+   invalid=p;invalid.control_bundle->map_count=~u64{0};
+   Check(Decode(Oracle(invalid,version)).error==E::invalid_reference,"bundle count overflow fixed rejection");}
+ }
+}
 void Test(unsigned profile){
  Fixture f(profile);const auto prior=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(prior.ok(),"actual reserve base");
  db::NativePublicationIntent intent;intent.initiator_uuid=Id(4);intent.request_context_uuid=Id(90);intent.policy_snapshot_uuid=Id(91);intent.normalized_request_sha256.fill(92);intent.initiator_kind=4;
@@ -213,8 +314,8 @@ void Test(unsigned profile){
  p.object_uuid=Id(302);p.bootstrap_uuid=w.bootstrap_uuid;p.timeline_uuid=w.timeline_uuid;p.operation_uuid=w.operation_uuid;p.security_snapshot_uuid=Id(303);p.intent=intent;
  p.reservation_state_sha256=s.state_sha256;p.base_checkpoint_sha256=w.base_checkpoint_sha256;p.target_graph_sha256.fill(1);p.reserved_generation=w.watermark;p.base_checkpoint_generation=w.base_checkpoint_generation;p.base_root_set_generation=w.base_root_set_generation;p.target_root_set_generation=2;
  p.base_checkpoint=w.base_checkpoint;p.target_checkpoint={Id(2),31,1,w.header.page_size_profile_uuid};p.base_checkpoint_object_uuid=p.target_checkpoint_object_uuid=w.base_checkpoint_object_uuid;p.catalog_generation=p.configuration_generation=p.security_generation=1;
- auto cp=*old.root;cp.header.page_uuid=Id(304);const auto target=Finish(p,cp);const auto encoded=db::EncodeNativePublicationPlan(p);
- const auto decoded=db::DecodeNativePublicationPlan(Oracle(p));Check(decoded.ok()&&decoded.sha256==encoded.sha256&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==encoded.bytes,"plan decode preserves complete bytes");
+ auto cp=*old.root;cp.header.page_uuid=Id(304);const auto target=Finish(p,cp);BorrowedVersions(p);const auto encoded=db::EncodeNativePublicationPlan(p);
+ const auto decoded=Decode(Oracle(p));Check(decoded.ok()&&decoded.sha256==encoded.sha256&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==encoded.bytes,"plan decode preserves complete bytes");
  Check(encoded.sha256==Sha(encoded.bytes),"plan root reference hashes all stored bytes including embedded seal");
  Check(db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none,"actual lease preflight");
  auto wrong_plan_digest=*db::DecodeNativeCheckpointRoot(target).root;wrong_plan_digest.roots.back().sha256[0]^=1;const auto wrong_digest_image=db::EncodeNativeCheckpointRoot(wrong_plan_digest);
@@ -224,9 +325,9 @@ void Test(unsigned profile){
  for(unsigned field=0;field<3;++field){auto bad=p;auto* id=field==0?&bad.intent.initiator_uuid:field==1?&bad.intent.request_context_uuid:&bad.intent.policy_snapshot_uuid;*id={};Bad(bad);}
  for(unsigned field=0;field<9;++field){auto bad=p;switch(field){case 0:bad.reserved_generation=1;break;case 1:bad.base_checkpoint_generation=0;break;case 2:bad.base_root_set_generation=0;break;case 3:bad.target_root_set_generation=1;break;case 4:bad.target_root_set_generation=3;break;case 5:bad.catalog_generation=0;break;case 6:bad.configuration_generation=0;break;case 7:bad.security_generation=0;break;case 8:bad.intent.initiator_kind=9;break;}Bad(bad);}
  for(unsigned field=0;field<4;++field){auto bad=p;(field==0?bad.intent.normalized_request_sha256:field==1?bad.reservation_state_sha256:field==2?bad.base_checkpoint_sha256:bad.target_graph_sha256).fill(0);Bad(bad);}
- for(unsigned at=686;at<768;++at)if(at<688||at>=720){auto b=Oracle(p);b[at]=1;PlanSeal(b);Failed(db::DecodeNativePublicationPlan(b));}
- for(auto at:{std::size_t{128},std::size_t{136},std::size_t{138},std::size_t{140},std::size_t{682},std::size_t{684},std::size_t{768},encoded.bytes.size()-1}){auto b=encoded.bytes;b[at]^=0x40;PlanSeal(b);Failed(db::DecodeNativePublicationPlan(b));}
- auto previous=p;previous.previous_plan=d::NativePageReference{Id(2),29,1,w.header.page_size_profile_uuid};previous.previous_plan_object_uuid=p.object_uuid;previous.previous_plan_sha256.fill(7);Check(db::DecodeNativePublicationPlan(Oracle(previous)).ok(),"previous plan image");previous.previous_plan_object_uuid={};Bad(previous);
+ for(unsigned at=686;at<768;++at)if(at<688||at>=720){auto b=Oracle(p);b[at]=1;PlanSeal(b);Failed(Decode(b));}
+ for(auto at:{std::size_t{128},std::size_t{136},std::size_t{138},std::size_t{140},std::size_t{682},std::size_t{684},std::size_t{768},encoded.bytes.size()-1}){auto b=encoded.bytes;b[at]^=0x40;PlanSeal(b);Failed(Decode(b));}
+ auto previous=p;previous.previous_plan=d::NativePageReference{Id(2),29,1,w.header.page_size_profile_uuid};previous.previous_plan_object_uuid=p.object_uuid;previous.previous_plan_sha256.fill(7);Check(Decode(Oracle(previous)).ok(),"previous plan image");previous.previous_plan_object_uuid={};Bad(previous);
  for(unsigned field=0;field<7;++field){auto bad=p;switch(field){case 0:bad.target_checkpoint=bad.base_checkpoint;break;case 1:bad.target_checkpoint.page_number=30;break;case 2:bad.target_checkpoint.page_number=std::numeric_limits<u64>::max();break;case 3:bad.target_checkpoint.page_size_profile_uuid=Id(999);break;case 4:bad.previous_plan_sha256.fill(1);break;case 5:bad.previous_plan=d::NativePageReference{Id(2),30,1,w.header.page_size_profile_uuid};bad.previous_plan_object_uuid=p.object_uuid;bad.previous_plan_sha256.fill(1);break;case 6:bad.previous_plan=d::NativePageReference{Id(2),29,1,w.header.page_size_profile_uuid};bad.previous_plan_object_uuid=p.object_uuid;break;}Bad(bad);}
  auto all_roots=*db::DecodeNativeCheckpointRoot(target).root;const auto plan_role=all_roots.roots.back();all_roots.roots.pop_back();
  const std::array<u32,5> extra_types{0x305,0x307,0x308,0x309,0x30b};
@@ -244,14 +345,14 @@ void Test(unsigned profile){
  auto changed=cp;changed.creator_operation_uuid=Id(300);changed.creator_transaction_uuid={};changed.creator_local_transaction_id=0;changed.header.page_number=31;changed.checkpoint_generation=changed.root_set_generation=2;changed.predecessor=p.base_checkpoint;changed.predecessor_sha256=p.base_checkpoint_sha256;
  const auto no_plan=db::EncodeNativeCheckpointRoot(changed);Check(no_plan.ok()&&!db::ComputeNativePublicationTargetGraphDigest(no_plan.bytes).ok(),"operation checkpoint without plan cannot project");
  for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;Failed(db::EncodeNativePublicationPlan(p));hash_fault=0;hash_active=false;
-  hash_fault=mode;hash_target=digest;hash_seen=0;Failed(db::DecodeNativePublicationPlan(encoded.bytes));hash_fault=0;hash_active=false;}
+  hash_fault=mode;hash_target=digest;hash_seen=0;Failed(Decode(encoded.bytes));hash_fault=0;hash_active=false;}
  for(unsigned mode=1;mode<=5;++mode){
   for(unsigned digest=1;digest<=3;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;const auto failed=db::ComputeNativePublicationTargetGraphDigest(target);hash_fault=0;hash_active=false;
    Check(hash_seen>=digest&&failed.error==E::hash_failure&&std::all_of(failed.sha256.begin(),failed.sha256.end(),[](byte v){return !v;}),"every graph hash failure has no digest prefix");}
   for(unsigned digest=1;digest<=7;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;const auto failed=db::BindNativePublicationPlanToLease(p,*reservation.lease,target);hash_fault=0;hash_active=false;
    Check(hash_seen>=digest&&failed==E::hash_failure,"every lease preflight hash failure refuses binding");}
  }
- Allocations([&]{return db::EncodeNativePublicationPlan(p).ok();});Allocations([&]{return db::DecodeNativePublicationPlan(encoded.bytes).ok();});
+ Allocations([&]{return db::EncodeNativePublicationPlan(p).ok();});Allocations([&]{return Decode(encoded.bytes).ok();});
  Allocations([&]{return db::ComputeNativePublicationTargetGraphDigest(target).ok();});Allocations([&]{return db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none;});
  Check(f.Read(0,64)==unchanged,"preflight never writes plan or checkpoint or reports execution");
  InstallTests(f,reservation,p,target,unchanged,profile);

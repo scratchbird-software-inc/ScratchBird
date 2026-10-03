@@ -5,6 +5,7 @@
 #include "hash_digest_parts.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include <type_traits>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -20,11 +21,18 @@ Uuid Get(const byte* b){Uuid id;std::copy_n(b,16,id.bytes.begin());return id;}
 void PutRef(byte* b,const disk::NativePageReference& r){Put(b,r.filespace_uuid);StoreLittle64(b+16,r.page_number);StoreLittle64(b+24,r.page_generation);Put(b+32,r.page_size_profile_uuid);}
 disk::NativePageReference GetRef(const byte* b){return {Get(b),LoadLittle64(b+16),LoadLittle64(b+24),Get(b+32)};}
 disk::NativePageReference Self(const disk::NativeCommonPageHeader& h){return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
-bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
-  return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes&&disk::CheckFileDeviceExtent(r.page_number*p->page_size_bytes,p->page_size_bytes).ok();}
+bool Ref(const disk::NativePageReference& r){
+  const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
+  if(!V7(r.filespace_uuid)||!p||!r.page_number||!r.page_generation||
+     r.page_number>=std::numeric_limits<u64>::max()/p->page_size_bytes)return false;
+  const u64 size=p->page_size_bytes,offset=r.page_number*size;
+  const u64 max_offset=static_cast<u64>(std::numeric_limits<std::streamoff>::max());
+  return size<=static_cast<u64>(std::numeric_limits<std::streamsize>::max())&&
+         offset<=max_offset&&size<=max_offset-offset;
+}
 NativePublicationPlanImage Fail(E e){NativePublicationPlanImage r;r.error=e;return r;}
 E CheckpointError(NativeCheckpointError e){return e==NativeCheckpointError::resource_exhausted?E::resource_exhausted:e==NativeCheckpointError::hash_failure?E::hash_failure:E::invalid_checkpoint;}
-auto ImageHash(const std::vector<byte>& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),688},{zero.data(),32},{b.data()+720,b.size()-720}};return core::hash::ComputeSha256DigestParts(parts,3);}
+auto ImageHash(std::span<const byte> b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),688},{zero.data(),32},{b.data()+720,b.size()-720}};return core::hash::ComputeSha256DigestPartsNative(parts,3);}
 E Validate(const NativePublicationPlan& p){
   const auto& h=p.header;if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x500||h.flags)return E::invalid_header;
   if(p.control_bundle&&!p.management_extent)return E::invalid_family;
@@ -103,21 +111,25 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     return {E::none,p,reference.digest,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
-NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& b) noexcept {
+namespace {
+template<bool Borrowed> auto DecodePlan(std::span<const byte> b) noexcept
+ -> std::conditional_t<Borrowed,NativePublicationPlanViewImage,NativePublicationPlanImage> {
+  using Result=std::conditional_t<Borrowed,NativePublicationPlanViewImage,NativePublicationPlanImage>;
+  const auto fail=[](E e){Result r;r.error=e;return r;};
   try {
-    if(b.size()<768)return Fail(E::invalid_header);
+    if(b.size()<768)return fail(E::invalid_header);
     const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!h.ok()||h.header->page_type!=0x500||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
-    const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);if(!std::equal(sha.digest.begin(),sha.digest.end(),b.begin()+688))return Fail(E::invalid_integrity);
+    if(!h.ok()||h.header->page_type!=0x500||h.header->flags||b.size()!=h.header->page_size_bytes)return fail(E::invalid_header);
+    const auto sha=ImageHash(b);if(!sha.ok())return fail(E::hash_failure);if(!std::equal(sha.digest.begin(),sha.digest.end(),b.begin()+688))return fail(E::invalid_integrity);
     const auto* f=b.data()+128;const auto magic=std::string_view(reinterpret_cast<const char*>(f),8);const bool startup=magic=="SBPPM009",directory=magic=="SBPPM008"||(startup&&LoadLittle64(f+936)),preallocation=magic=="SBPPM007",inventory=startup||magic=="SBPPM006",profile=directory||preallocation||inventory||magic=="SBPPM005",sequence=profile||magic=="SBPPM004",bundle=sequence||magic=="SBPPM003",extent=bundle||magic=="SBPPM002";
-    if((!extent&&magic!="SBPPM001")||LoadLittle16(f+8)!=(startup?9:directory?8:preallocation?7:inventory?6:profile?5:sequence?4:bundle?3:extent?2:1)||LoadLittle16(f+10)!=(bundle?1024:extent?896:640)||LoadLittle32(f+12)!=(bundle?1152:extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
-    if(bundle){if(!Zero(f+596,12)||!Zero(b.data()+1152,b.size()-1152)||(!directory&&profile&&LoadLittle16(f+920)!=(preallocation?3:inventory?2:1)))return Fail(E::invalid_family);
-      if(startup){if(LoadLittle16(f+920)!=2||!Zero(f+922,6)||LoadLittle64(f+952)||(!directory&&!Zero(f+936,24)))return Fail(E::invalid_family);}
-      else if(directory){if(!LoadLittle64(f+936)||!Zero(f+922,6)||!Zero(f+960,64))return Fail(E::invalid_family);}
-      else if(inventory){if(!Zero(f+922,6)||!Zero(f+936,88))return Fail(E::invalid_family);}
-      else if(!Zero(f+(profile?922:sequence?920:912),profile?102:sequence?104:112))return Fail(E::invalid_family);}
-    else if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return Fail(E::invalid_family);}
-    else if(!Zero(f+592,48)||!Zero(b.data()+768,b.size()-768))return Fail(E::invalid_family);
+    if((!extent&&magic!="SBPPM001")||LoadLittle16(f+8)!=(startup?9:directory?8:preallocation?7:inventory?6:profile?5:sequence?4:bundle?3:extent?2:1)||LoadLittle16(f+10)!=(bundle?1024:extent?896:640)||LoadLittle32(f+12)!=(bundle?1152:extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return fail(E::invalid_family);
+    if(bundle){if(!Zero(f+596,12)||!Zero(b.data()+1152,b.size()-1152)||(!directory&&profile&&LoadLittle16(f+920)!=(preallocation?3:inventory?2:1)))return fail(E::invalid_family);
+      if(startup){if(LoadLittle16(f+920)!=2||!Zero(f+922,6)||LoadLittle64(f+952)||(!directory&&!Zero(f+936,24)))return fail(E::invalid_family);}
+      else if(directory){if(!LoadLittle64(f+936)||!Zero(f+922,6)||!Zero(f+960,64))return fail(E::invalid_family);}
+      else if(inventory){if(!Zero(f+922,6)||!Zero(f+936,88))return fail(E::invalid_family);}
+      else if(!Zero(f+(profile?922:sequence?920:912),profile?102:sequence?104:112))return fail(E::invalid_family);}
+    else if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return fail(E::invalid_family);}
+    else if(!Zero(f+592,48)||!Zero(b.data()+768,b.size()-768))return fail(E::invalid_family);
     NativePublicationPlan p;p.header=*h.header;p.object_uuid=Get(f+16);p.bootstrap_uuid=Get(f+32);p.timeline_uuid=Get(f+48);p.operation_uuid=Get(f+64);p.intent.initiator_uuid=Get(f+80);p.intent.request_context_uuid=Get(f+96);p.intent.policy_snapshot_uuid=Get(f+112);p.security_snapshot_uuid=Get(f+128);
     std::copy_n(f+144,32,p.intent.normalized_request_sha256.begin());std::copy_n(f+176,32,p.reservation_state_sha256.begin());p.reserved_generation=LoadLittle64(f+208);p.base_checkpoint_generation=LoadLittle64(f+216);p.base_root_set_generation=LoadLittle64(f+224);p.target_root_set_generation=LoadLittle64(f+232);
     p.base_checkpoint=GetRef(f+240);p.base_checkpoint_object_uuid=Get(f+288);std::copy_n(f+304,32,p.base_checkpoint_sha256.begin());p.target_checkpoint=GetRef(f+336);p.target_checkpoint_object_uuid=Get(f+384);std::copy_n(f+400,32,p.target_graph_sha256.begin());
@@ -130,10 +142,18 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
     if(inventory||directory)p.control_bundle->inventory_count=LoadLittle64(f+928);
     if(directory){auto& r=*p.control_bundle;r.directory_count=LoadLittle64(f+936);r.payload_bytes=LoadLittle64(f+944);r.growth_image_count=LoadLittle64(f+952);}
     if(startup)p.intent.startup_binding=NativeStartupBinding{Get(f+960),Get(f+976),Get(f+992),LoadLittle64(f+1008),LoadLittle64(f+1016)};
-    const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
-    const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
-    return {E::none,p,reference.digest,b};
-  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+    const auto valid=Validate(p);if(valid!=E::none)return fail(valid);
+    const auto reference=core::hash::ComputeSha256DigestNative(b.data(),b.size());if(!reference.ok())return fail(E::hash_failure);
+    if constexpr(Borrowed)return {E::none,p,reference.digest,b};
+    else return {E::none,p,reference.digest,std::vector<byte>(b.begin(),b.end())};
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
+}
+} // namespace
+NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& b) noexcept {
+  return DecodePlan<false>(b);
+}
+NativePublicationPlanViewImage DecodeNativePublicationPlanView(std::span<const byte> b) noexcept {
+  return DecodePlan<true>(b);
 }
 NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigest(const std::vector<byte>& b) noexcept {
   try {

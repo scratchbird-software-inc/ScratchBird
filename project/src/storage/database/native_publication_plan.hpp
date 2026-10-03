@@ -40,6 +40,16 @@ struct NativePublicationPlanImage {
   std::vector<byte> bytes;
   bool ok() const noexcept{return error==NativePublicationPlanError::none&&plan.has_value();}
 };
+struct NativePublicationPlanViewImage {
+  NativePublicationPlanError error=NativePublicationPlanError::invalid_family;
+  std::optional<NativePublicationPlan> plan;
+  std::array<byte,32> sha256{};
+  std::span<const byte> bytes;
+  bool ok() const noexcept{return error==NativePublicationPlanError::none&&plan.has_value();}
+};
+// Complete fixed-field decode borrowing immutable image bytes. This gives no
+// selected-history, storage-policy, publication or memory-grant authority.
+NativePublicationPlanViewImage DecodeNativePublicationPlanView(std::span<const byte>) noexcept;
 struct NativePublicationGraphDigest {
   NativePublicationPlanError error=NativePublicationPlanError::invalid_checkpoint;
   std::array<byte,32> sha256{};
