@@ -9,6 +9,8 @@
 #include "native_management_history.hpp"
 #include "native_management_history_memory.hpp"
 #include "native_management_control_authority_memory.hpp"
+#include "native_bound_checkpoint_selection_memory.hpp"
+#include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_creation_workspace.hpp"
@@ -1007,6 +1009,9 @@ struct DirectoryTransition {
 };
 #include "native_management_history_memory_checks.hpp"
 #include "native_management_control_authority_memory_checks.hpp"
+#include "native_checkpoint_inventory_memory_checks.hpp"
+#define SB_BOUND_SELECTION_HASH_PROBE 1
+#include "native_bound_checkpoint_selection_memory_checks.hpp"
 
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
@@ -1548,6 +1553,21 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
+void DirectorySelectionMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve,bool repeated=false,int fault_route=8,unsigned fault_shard=0,unsigned fault_shards=1){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2);
+ if(repeated)f.NextGrowth();
+ const auto read=[&]{return db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),f.budget);};
+ const auto original=read();Check(original.ok(),"complete independently authored directory selector");
+ const auto& cp=*original.checkpoint_inventory.checkpoint;
+ Check(db::EncodeNativeCheckpointRoot(cp).bytes==f.t.target_cp&&cp.creator_operation_uuid==f.t.graph.plan.operation_uuid&&
+  original.selection->checkpoint==f.t.graph.plan.target_checkpoint&&original.selection->checkpoint_sha256==Sha(f.t.target_cp),
+  "actual selected checkpoint equals the independent fixture image and binary operation");
+ const bool deep=primary==0&&secondary==0&&!reverse&&!target&&reserve==(profile!=2);
+ bound_selection_memory::Checks(f.t.fixture.devices,original,f.budget,deep,fault_route,fault_shard,fault_shards);
+ if(fault_route!=8)return;
+ f.Reopen();const auto reopened=read();Check(reopened.ok(),"read-only reopen complete selector");
+ bound_selection_memory::Checks(f.t.fixture.devices,reopened,f.budget);
+}
 void DirectoryHistory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve);reads=writes=syncs=0;io_counting=true;const auto first=f.Read();io_counting=false;
  if(!first.ok())std::cerr<<"history profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" error="<<int(first.error)<<'\n';
@@ -3764,6 +3784,28 @@ int main(int argc,char** argv){
  }
  if(argc==3&&std::string_view(argv[1])=="--directory-control-close"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
+ }
+ if(argc==6&&std::string_view(argv[1])=="--directory-selection-faults"){
+   const auto profile=std::stoi(argv[2]),repeated=std::stoi(argv[3]),route=std::stoi(argv[4]),shard=std::stoi(argv[5]);
+   const unsigned shards=route<=5?(repeated?16:4):1;
+   Check(profile>=2&&profile<=4&&repeated>=0&&repeated<=1&&(!repeated||profile>2)&&route>=0&&route<=7&&shard>=0&&unsigned(shard)<shards,"selector fault route and shard arguments");
+   DirectorySelectionMemory(0,0,false,profile,false,profile!=2,repeated,route,shard,shards);
+   std::cout<<"PASS directory selector fault route="<<route<<" shard="<<shard<<" checks="<<checks<<'\n';return 0;
+ }
+ if(argc==5&&std::string_view(argv[1])=="--directory-selection-memory"){
+   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+   Check(profile>=2&&profile<=4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"memory selector pair arguments");
+   for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+     if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
+     DirectorySelectionMemory(primary,secondary,reverse,profile,target,reserve);
+   }
+   std::cout<<"PASS directory selector memory pair checks="<<checks<<'\n';return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--directory-selection-repeat-memory"){
+   const auto profile=std::stoi(argv[2]),size=std::stoi(argv[3]);
+   Check((profile==3||profile==4)&&size>=0&&size<5,"repeated memory selector size arguments");
+   for(bool target:{false,true})DirectorySelectionMemory(size,size,false,profile,target,true,true);
+   std::cout<<"PASS repeated directory selector memory checks="<<checks<<'\n';return 0;
  }
  if(argc==5&&std::string_view(argv[1])=="--directory-history-memory"){
    const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);

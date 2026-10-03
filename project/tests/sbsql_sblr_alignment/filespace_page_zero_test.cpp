@@ -13,6 +13,7 @@
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_inventory_memory.hpp"
+#include "native_bound_checkpoint_selection_memory.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
@@ -2687,6 +2688,7 @@ void CanonicalCheckpoints() {
   }
 }
 #include "native_checkpoint_inventory_memory_checks.hpp"
+#include "native_bound_checkpoint_selection_memory_checks.hpp"
 
 void CheckpointInventoryMemoryFaults(const std::vector<disk::NativeFilespaceDevice>& files,
  const disk::FilespaceRootReference& root,const db::NativeCheckpointInventoryResult& expected,u64 allowance) {
@@ -6974,6 +6976,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       const auto child=::fork();Check(child>=0,"fork inventory staging probe");if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","inventory-stage-probe","--inventory-stage-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
       int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies actual staged inventory chain");continue;
     }
+    persist();bound_selection_memory::Checks(devices,read(budget),budget);
     persist();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;auto result=read(budget);track_reads=count_full_digests=count_allocations=false;
     const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"bound selector error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" map="<<static_cast<int>(result.allocation_error)<<std::endl;

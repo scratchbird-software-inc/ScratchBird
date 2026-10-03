@@ -497,6 +497,30 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       LABELS "storage;binary_uuid;real_files;actual_control_ancestry;retained_device_concurrency;not_runtime_acceptance")
   endforeach()
   foreach(profile RANGE 2 4)
+    if(profile GREATER 2)
+      set(selection_repeat_last 1)
+    else()
+      set(selection_repeat_last 0)
+    endif()
+    foreach(repeated RANGE 0 ${selection_repeat_last})
+      foreach(route RANGE 0 7)
+        if(route LESS 6)
+          if(repeated)
+            set(selection_shard_last 15)
+          else()
+            set(selection_shard_last 3)
+          endif()
+        else()
+          set(selection_shard_last 0)
+        endif()
+        foreach(shard RANGE 0 ${selection_shard_last})
+          add_test(NAME native_directory_selection_memory_fault_${profile}_${repeated}_${route}_${shard}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selection-faults ${profile} ${repeated} ${route} ${shard})
+          set_tests_properties(native_directory_selection_memory_fault_${profile}_${repeated}_${route}_${shard}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;selected_control_ancestry;memory;fault_injection;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+    endforeach()
     foreach(route RANGE 0 2)
       if(route EQUAL 2)
         set(control_fault_last 7)
@@ -514,6 +538,10 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     endforeach()
     if(profile GREATER 2)
       foreach(size RANGE 0 4)
+        add_test(NAME native_directory_selection_memory_repeat_${profile}_${size}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selection-repeat-memory ${profile} ${size})
+        set_tests_properties(native_directory_selection_memory_repeat_${profile}_${size}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;selected_control_ancestry;memory;not_runtime_acceptance")
         add_test(NAME native_directory_history_memory_repeat_${profile}_${size}_gate
           COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat-memory ${profile} ${size})
         set_tests_properties(native_directory_history_memory_repeat_${profile}_${size}_gate PROPERTIES TIMEOUT 120
@@ -532,6 +560,10 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       # Additional grant/heap/retirement checks are independently sharded for
       # every ordered pair. Keep the original grouped tests unchanged.
       foreach(secondary RANGE 0 4)
+        add_test(NAME native_directory_selection_memory_${profile}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selection-memory ${profile} ${primary} ${secondary})
+        set_tests_properties(native_directory_selection_memory_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;selected_control_ancestry;memory;not_runtime_acceptance")
         add_test(NAME native_directory_history_memory_${profile}_${primary}_${secondary}_gate
           COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-memory ${profile} ${primary} ${secondary})
         set_tests_properties(native_directory_history_memory_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120

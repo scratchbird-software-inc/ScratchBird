@@ -31,7 +31,7 @@ enum class NativeCheckpointSelectionError {
   invalid_integrity, hash_failure, resource_exhausted, invalid_pair, repair_required,
   invalid_filespace, bootstrap_failure, slot_binding_mismatch, checkpoint_failure,
   checkpoint_binding_mismatch, allocation_failure, allocation_binding_mismatch,
-  creator_mismatch, io_failure, encrypted_requires_authority, cluster_requires_authority
+  creator_mismatch, io_failure, encrypted_requires_authority, cluster_requires_authority, invalid_backing
 };
 struct NativeCheckpointSelectionImage {
   NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_family;
@@ -79,4 +79,30 @@ struct NativeBoundCheckpointSelection {
 NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices(
     const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>&,
     const Uuid& primary_filespace_uuid,u64 maximum_retained_image_bytes) noexcept;
+struct NativeBoundCheckpointSelectionView {
+  NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_pair;
+  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
+  page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
+  std::optional<NativeCheckpointSelection> selection;
+  std::array<std::span<const byte>,2> slots;
+  NativeCheckpointInventoryView checkpoint_inventory,predecessor;
+  page::NativeAllocationChainView allocation;
+  u64 retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeCheckpointSelectionError::none&&selection.has_value()&&
+    !slots[0].empty()&&!slots[1].empty()&&checkpoint_inventory.ok()&&allocation.ok()&&
+    (selection->selection_generation==1?!predecessor.checkpoint.has_value():predecessor.ok());}
+};
+struct NativeBoundCheckpointSelectionDeviceRead {
+  NativeBoundCheckpointSelectionView selection;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return selection.ok();}
+};
+// Full actual selector, predecessor/creator and global allocation inspection,
+// not a caller-asserted publication, current-source lease or serving grant.
+NativeBoundCheckpointSelectionDeviceRead ReadNativeBoundCheckpointSelectionInto(
+    const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,u64,
+    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<byte>) noexcept;
 }  // namespace scratchbird::storage::database
