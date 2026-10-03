@@ -513,6 +513,12 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       endforeach()
     endforeach()
     if(profile GREATER 2)
+      foreach(size RANGE 0 4)
+        add_test(NAME native_directory_history_memory_repeat_${profile}_${size}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat-memory ${profile} ${size})
+        set_tests_properties(native_directory_history_memory_repeat_${profile}_${size}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;historical_provenance;memory;not_runtime_acceptance")
+      endforeach()
       add_test(NAME native_directory_history_repeat_${profile}_gate
         COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-repeat ${profile})
       set_tests_properties(native_directory_history_repeat_${profile}_gate PROPERTIES TIMEOUT 120
@@ -523,6 +529,14 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     set_tests_properties(native_directory_history_faults_${profile}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;historical_provenance;fault_injection;not_runtime_acceptance")
     foreach(primary RANGE 0 4)
+      # Additional grant/heap/retirement checks are independently sharded for
+      # every ordered pair. Keep the original grouped tests unchanged.
+      foreach(secondary RANGE 0 4)
+        add_test(NAME native_directory_history_memory_${profile}_${primary}_${secondary}_gate
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history-memory ${profile} ${primary} ${secondary})
+        set_tests_properties(native_directory_history_memory_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+          LABELS "storage;binary_uuid;real_files;historical_provenance;memory;not_runtime_acceptance")
+      endforeach()
       add_test(NAME native_directory_history_${profile}_${primary}_gate
         COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-history ${profile} ${primary})
       set_tests_properties(native_directory_history_${profile}_${primary}_gate PROPERTIES TIMEOUT 120

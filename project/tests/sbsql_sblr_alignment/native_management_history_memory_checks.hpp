@@ -92,6 +92,14 @@ void Same(const db::NativeManagementGraphHistory& a,const db::NativeManagementHi
   const auto aggregate=db::EncodeNativeManagementOperation(x.record,std::numeric_limits<u64>::max());
   Check(aggregate.ok()&&std::equal(aggregate.bytes.begin(),aggregate.bytes.end(),y.aggregate.begin(),y.aggregate.end()),"whole retained canonical record");
   headers(x.extent_pages,y.extent_pages);headers(x.bundle_pages,y.bundle_pages);
+  Check(std::equal(plan.bytes.begin(),plan.bytes.end(),y.plan_image.begin(),y.plan_image.end()),"exact observed canonical plan retained");
+  if(x.plan.management_extent){const auto extent=db::EncodeNativeManagementExtent(x.record,x.plan.management_extent->object_uuid,x.extent_pages,std::numeric_limits<u64>::max());
+   Check(extent.ok()&&extent.root==x.plan.management_extent,"complete retained extent oracle");images(extent.pages,y.extent_images);}
+  if(x.plan.control_bundle){const auto bundle=db::EncodeNativeManagementControlBundle(x.control_allocation_images,x.plan.header.database_uuid,
+    x.plan.bootstrap_uuid,x.plan.control_bundle->object_uuid,x.plan.operation_uuid,x.bundle_pages,std::numeric_limits<u64>::max(),
+    x.control_inventory_images,x.control_directory_images,x.control_growth_images);
+   Check(bundle.ok()&&bundle.root==x.plan.control_bundle,"complete retained bundle oracle");images(bundle.pages,y.bundle_images);}
+
   images(x.control_allocation_images,y.control_allocation_images);images(x.control_inventory_images,y.control_inventory_images);
   images(x.control_directory_images,y.control_directory_images);images(x.control_growth_images,y.control_growth_images);
  }

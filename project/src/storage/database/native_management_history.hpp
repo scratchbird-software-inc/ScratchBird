@@ -55,6 +55,10 @@ struct NativeManagementHistoryEntryView {
   std::span<const std::span<const byte>> control_allocation_images,control_inventory_images,
     control_directory_images,control_growth_images;
   std::span<const byte> aggregate;
+  // Exact canonical observed images, retained in caller backing, not synthetic
+  // re-encodings. Full control-allocation verification must still revalidate.
+  std::span<const byte> plan_image;
+  std::span<const std::span<const byte>> extent_images,bundle_images;
 };
 struct NativeManagementHistoryLatest {Uuid operation_uuid;std::size_t entry=0;};
 struct NativeManagementHistoryIdempotency {u16 scope=0;std::string_view key;Uuid operation_uuid;};

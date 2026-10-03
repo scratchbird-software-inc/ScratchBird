@@ -8,6 +8,7 @@
 #include "native_metadata_memory.hpp"
 #include "native_management_history.hpp"
 #include "native_management_history_memory.hpp"
+#include "native_management_control_authority_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_creation_workspace.hpp"
@@ -33,7 +34,7 @@
 #include <stdexcept>
 #include <cerrno>
 #include <sys/wait.h>
-namespace {std::uint64_t history_observed_read_bytes=0;}
+namespace {std::uint64_t history_observed_read_bytes=0;bool control_authority_memory_tests=false;}
 #include <sys/stat.h>
 #include <thread>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
@@ -1005,6 +1006,7 @@ struct DirectoryTransition {
   return result;}
 };
 #include "native_management_history_memory_checks.hpp"
+#include "native_management_control_authority_memory_checks.hpp"
 
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
@@ -1312,6 +1314,7 @@ void DirectoryAuthority(DirectoryHistoryFixture& f,unsigned expected=1){
  const auto actual=db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),f.budget);
  if(!actual.ok())std::cerr<<"directory authority profile="<<f.t.profile<<" error="<<int(actual.error)<<'\n';
  Check(actual.ok()&&actual.publications.size()==expected,"actual complete directory control ancestry");
+ if(control_authority_memory_tests)control_authority_memory::Checks(f.t.fixture.devices,actual,f.budget);
  const auto& p=f.t.graph.plan;const auto operation=actual.publications.find(p.operation_uuid);
  Check(operation!=actual.publications.end()&&operation->second.page==p.target_checkpoint&&operation->second.sha256==Sha(f.t.target_cp),"exact selected directory publication");
  std::size_t allocations=0,preallocations=0;
@@ -1321,6 +1324,7 @@ void DirectoryAuthority(DirectoryHistoryFixture& f,unsigned expected=1){
  Check(actual.allocations.size()==allocations&&actual.preallocations.size()==preallocations,"no additional allocation authority");
  const auto graph=db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*actual.anchor,f.budget);
  Check(graph.ok()&&graph.allocations==actual.allocations&&graph.preallocations==actual.preallocations,"explicit actual graph and selected metadata agree");
+ if(control_authority_memory_tests)control_authority_memory::Checks(f.t.fixture.devices,graph,f.budget,control_authority_memory::C::anchored,&*actual.anchor);
 }
 void DirectoryGrowthSelectionRecovery(unsigned primary,unsigned secondary,int fault_route=-1,unsigned shard=0){
  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserved:{false,true}){
@@ -1515,7 +1519,8 @@ void DirectoryControlClose(unsigned profile){
   Check(entered&&blocked&&closed.ok()&&result.ok()&&result.publications.size()==1,"Close on every participating filespace waits for complete actual control verification");
  }
 }
-void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++size)for(bool target:{false,true}){
+void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned size=0;size<5;++size)for(bool target:{false,true}){
+ if(only_size>=0&&size!=unsigned(only_size))continue;
  DirectoryHistoryFixture f(size,size,true,profile,target,true);const auto first=f.Read();f.Good(first);const auto original=first.entries.front();const auto context=f.Context();
  const auto original_graph=db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),f.budget);Check(original_graph.ok(),"original graph before further growth");f.NextGrowth();
  DirectoryAuthority(f,2);const auto next=f.Read();Check(next.ok()&&next.entries.size()==2&&next.entries[0].control_growth_images==original.control_growth_images&&
@@ -1526,6 +1531,7 @@ void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++siz
  history_memory::Checks(f.t.fixture.devices,old,f.budget,history_memory::C::historical_result,&*first.anchor,&context);
  const auto control=[&]{return db::ReadNativeManagementControlGraphAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,context,f.budget);};
  const auto earlier=control();Check(earlier.ok()&&earlier.allocations==original_graph.allocations&&earlier.preallocations==original_graph.preallocations,"older actual control graph is not compared to later page-zero capacity");
+ if(control_authority_memory_tests)control_authority_memory::Checks(f.t.fixture.devices,earlier,f.budget,control_authority_memory::C::historical_result,&*first.anchor,&context,size==0&&!target);
  auto missing=context;missing.erase(missing.begin());EmptyGraph(historical(missing));auto wrong=context;wrong.begin()->second.back()^=1;EmptyGraph(historical(wrong));
  auto substituted=context;auto& image=substituted.begin()->second;const auto decoded=d::DecodeFilespacePageZero(image.data(),image.size());Check(decoded.ok(),"historical context negative source");
  auto zero=*decoded.record;++zero.page_generation;const auto canonical=d::EncodeFilespacePageZero(zero);Check(canonical.ok(),"canonical substituted historical context");image=*canonical.bytes;EmptyGraph(historical(substituted));
@@ -1537,6 +1543,7 @@ void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++siz
  const auto recovered=historical(context);Check(recovered.ok()&&recovered.entries.size()==1&&recovered.entries[0].control_directory_images==original.control_directory_images,"historical graph never needs a valid current mutable body");
  history_memory::Checks(f.t.fixture.devices,recovered,f.budget,history_memory::C::historical_result,&*first.anchor,&context);
  const auto actual_old=control();Check(actual_old.ok()&&actual_old.allocations==original_graph.allocations&&actual_old.preallocations==original_graph.preallocations,"torn current body cannot invalidate exact retained actual old control ancestry");
+ if(control_authority_memory_tests)control_authority_memory::Checks(f.t.fixture.devices,actual_old,f.budget,control_authority_memory::C::historical_result,&*first.anchor,&context);
  Bytes observed(torn.size());Check(device->ReadAt(0,observed.data(),observed.size()).ok()&&observed==torn,"historical graph does not repair a torn body");
  const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
@@ -3757,6 +3764,22 @@ int main(int argc,char** argv){
  }
  if(argc==3&&std::string_view(argv[1])=="--directory-control-close"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
+ }
+ if(argc==5&&std::string_view(argv[1])=="--directory-history-memory"){
+   const auto profile=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
+   Check(profile>=2&&profile<=4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"memory history pair arguments");
+   control_authority_memory_tests=true;
+   for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+     if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
+     DirectoryHistory(primary,secondary,reverse,profile,target,reserve);
+   }
+   std::cout<<"PASS directory control memory pair checks="<<checks<<'\n';return 0;
+ }
+ if(argc==4&&std::string_view(argv[1])=="--directory-history-repeat-memory"){
+   const auto profile=std::stoi(argv[2]),size=std::stoi(argv[3]);
+   Check((profile==3||profile==4)&&size>=0&&size<5,"repeated memory history size arguments");
+   control_authority_memory_tests=true;RepeatedDirectoryHistory(profile,size);
+   std::cout<<"PASS repeated directory control memory checks="<<checks<<'\n';return 0;
  }
  if(argc==5&&std::string_view(argv[1])=="--directory-control-faults"){
    const auto profile=std::stoi(argv[2]),route=std::stoi(argv[3]),shard=std::stoi(argv[4]);

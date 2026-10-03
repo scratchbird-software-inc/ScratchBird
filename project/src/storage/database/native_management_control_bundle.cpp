@@ -418,7 +418,7 @@ NativeManagementControlBundleViewRead ReadBundleView(const disk::NativeFilespace
       Require(found,E::binding_mismatch);
     }
     if(historical){const auto extent=size_observation();Require(extent.ok(),E::io_failure);Require(extent.size_bytes==observed_size,E::physical_extent_changed);}
-    return decoded;
+    decoded.physical_images=pages;return decoded;
   }catch(E e){return Fail<NativeManagementControlBundleViewRead>(e);}catch(const std::bad_alloc&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}catch(const std::length_error&){return Fail<NativeManagementControlBundleViewRead>(E::resource_exhausted);}catch(...){return Fail<NativeManagementControlBundleViewRead>(E::io_failure);}
 }
 NativeManagementControlBundleRead ReadBundle(const disk::NativeFilespaceDevice& file,const Root& root,

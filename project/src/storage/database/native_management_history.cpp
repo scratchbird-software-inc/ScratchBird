@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_history.hpp"
+#include "native_management_history_backing.hpp"
 #include "native_filespace_directory.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
@@ -125,7 +126,7 @@ struct Context {
     auto p=Read(*r.predecessor,r.object_uuid,r.predecessor_sha256);
     Require(p.root.checkpoint_generation<r.checkpoint_generation&&p.root.root_set_generation<r.root_set_generation,E::history_mismatch);return p;
   }
-  NativeManagementExtentViewRead Extent(const disk::NativeFilespaceDevice& file,const NativeManagementExtentRoot& r,const Uuid& bootstrap,u64 allowance){
+  NativeManagementExtentViewRead Extent(const disk::NativeFilespaceDevice& file,const NativeManagementExtentRoot& r,const Uuid& bootstrap,u64 allowance,std::span<const Image>& physical){
     const auto valid=ValidateNativeManagementExtentRoot(r,database,bootstrap,allowance);
     if(valid!=NativeManagementExtentError::none)return {valid,{},{},{}};
     const auto& z=zeros.at(file.filespace_uuid);
@@ -161,7 +162,8 @@ struct Context {
     NativeManagementExtentViewWorkspace workspace{scratch.Array<byte>(r.aggregate_bytes),
       scratch.Array<disk::NativeCommonPageHeader>(r.page_count),scratch.Array<NativeManagementStepView>(step_count),
       scratch.Array<Uuid>(std::max(std::size_t(r.page_count)*2+1,std::size_t(step_count)*2+7))};
-    return DecodeNativeManagementExtentInto(pages,r,database,bootstrap,allowance,workspace);
+    auto decoded=DecodeNativeManagementExtentInto(pages,r,database,bootstrap,allowance,workspace);
+    if(decoded.ok())physical=pages;return decoded;
   }
   NativeManagementControlBundleViewRead Bundle(const disk::NativeFilespaceDevice& file,
       const NativeManagementControlBundleRoot& root,const Uuid& bootstrap,u64 allowance){
@@ -291,7 +293,8 @@ NativeManagementHistoryView ReadHistoryView(const Uuid& database,std::span<const
       auto base=c.Parent(current);Require(p.base_checkpoint==Self(base.root)&&p.base_checkpoint_object_uuid==base.root.object_uuid&&p.base_checkpoint_sha256==base.sha&&p.base_checkpoint_generation==base.root.checkpoint_generation&&p.base_root_set_generation==base.root.root_set_generation,E::history_mismatch);
       const auto previous=Head(base.root);if(previous)Require(p.previous_plan&&*p.previous_plan==previous->page&&p.previous_plan_object_uuid==previous->object_uuid&&p.previous_plan_sha256==previous->sha256,E::history_mismatch);else Require(!p.previous_plan,E::history_mismatch);
       const auto& r=*p.management_extent;const u64 allowance=u64{r.page_count}*size+4*u64{r.aggregate_bytes}+2*size;c.Charge(allowance);
-      auto extent=c.Extent(file,r,z.page_uuid,allowance);
+      std::span<const Image> extent_images,bundle_images;
+      auto extent=c.Extent(file,r,z.page_uuid,allowance,extent_images);
       if(!extent.ok())throw extent.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:extent.error==NativeManagementExtentError::hash_failure?E::hash_failure:extent.error==NativeManagementExtentError::io_failure?E::io_failure:extent.error==NativeManagementExtentError::cluster_requires_authority?E::cluster_requires_authority:extent.error==NativeManagementExtentError::encrypted_requires_authority?E::encrypted_requires_authority:E::extent_failure;
       PlanError(BindNativePublicationPlanToManagementRecordInto(p,extent.aggregate,scratch.OperationWorkspace(extent.aggregate)));
       for(const auto& h:extent.page_headers)Require(h.page_uuid!=p.header.page_uuid,E::history_mismatch);
@@ -332,11 +335,12 @@ NativeManagementHistoryView ReadHistoryView(const Uuid& database,std::span<const
           Require(p.header.page_number<capacity&&p.target_checkpoint.page_number<capacity&&p.management_extent->first.page_number<capacity&&
             p.management_extent->page_count<=capacity-p.management_extent->first.page_number&&root.first.page_number<capacity&&root.page_count<=capacity-root.first.page_number,E::history_mismatch);
         }
+        bundle_images=bundle.physical_images;
         bundle_headers=std::move(bundle.page_headers);allocation_images=std::move(bundle.allocation_images);
         inventory_images=std::move(bundle.inventory_images);
         directory_images=std::move(bundle.directory_images);growth_images=std::move(bundle.growth_images);
       }
-      entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images),std::move(inventory_images),std::move(directory_images),std::move(growth_images),extent.aggregate});current=std::move(base);
+      entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images),std::move(inventory_images),std::move(directory_images),std::move(growth_images),extent.aggregate,bytes,extent_images,bundle_images});current=std::move(base);
     }
     std::reverse(entries.begin(),entries.end());
     std::pmr::map<Uuid,std::size_t> latest(scratch.resource);
@@ -392,6 +396,28 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
    catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
 }
 } // namespace
+NativeManagementHistoryDeviceRead detail::ReadNativeManagementHistoryBacked(
+    const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,const Uuid& primary,
+    u64 budget,NativeManagementHistoryReadContext context,const NativeManagementCheckpointAnchor* anchor,
+    std::span<const NativeManagementHistoricalPageZero> historical,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> observations,std::pmr::memory_resource& resource) noexcept {
+  NativeManagementHistoryDeviceRead out;
+  if((context!=NativeManagementHistoryReadContext::selected&&context!=NativeManagementHistoryReadContext::anchored&&
+      context!=NativeManagementHistoryReadContext::historical_result)||
+     (context==NativeManagementHistoryReadContext::selected?anchor!=nullptr:anchor==nullptr)||
+     (context==NativeManagementHistoryReadContext::historical_result?historical.size()!=files.size():!historical.empty())||
+     files.empty()||observations.size()!=files.size())return out;
+  for(std::size_t i=0;i<files.size();++i)
+    if(!files[i].device||!observations[i]||&observations[i]->device()!=files[i].device)return out;
+  try{
+    Scratch scratch{&resource};
+    out.history=ReadHistoryView(database,files,primary,budget,anchor,
+      context==NativeManagementHistoryReadContext::historical_result?&historical:nullptr,scratch,observations,&out);
+  }catch(const std::bad_alloc&){out.history=FailView(E::resource_exhausted);}
+   catch(const std::length_error&){out.history=FailView(E::resource_exhausted);}
+   catch(...){out.history=FailView(E::io_failure);}
+  return out;
+}
 NativeManagementHistoryDeviceRead ReadNativeManagementHistoryInto(
     const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,const Uuid& primary,
     u64 budget,NativeManagementHistoryReadContext context,const NativeManagementCheckpointAnchor* anchor,

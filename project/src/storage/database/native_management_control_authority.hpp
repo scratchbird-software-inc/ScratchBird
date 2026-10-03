@@ -7,7 +7,7 @@ namespace scratchbird::storage::database {
 enum class NativeManagementControlAuthorityError {
   none,invalid_request,history_failure,checkpoint_failure,inventory_failure,
   allocation_failure,binding_mismatch,creator_mismatch,resource_exhausted,
-  hash_failure,io_failure,encrypted_requires_authority,cluster_requires_authority
+  hash_failure,io_failure,encrypted_requires_authority,cluster_requires_authority,invalid_workspace
 };
 struct NativeManagementPublishedCheckpoint {
   disk::NativePageReference page;
@@ -28,6 +28,44 @@ struct NativeManagementControlAuthority : NativeManagementControlGraph {
   std::optional<NativeCheckpointSelection> selection;
   bool ok() const noexcept {return NativeManagementControlGraph::ok()&&selection.has_value();}
 };
+using NativeManagementPublicationEntry=std::pair<Uuid,NativeManagementPublishedCheckpoint>;
+using NativeManagementAllocationEntry=std::pair<std::pair<Uuid,u64>,page::NativeAllocationRecord>;
+struct NativeManagementControlAuthorityView {
+  NativeManagementControlAuthorityError error=NativeManagementControlAuthorityError::invalid_request;
+  std::optional<NativeManagementCheckpointAnchor> anchor;
+  std::optional<NativeCheckpointSelection> selection;
+  // Complete binary-key ordered immutable values; no textual identity index.
+  std::span<const NativeManagementPublicationEntry> publications;
+  std::span<const NativeManagementAllocationEntry> allocations,preallocations;
+  u64 verified_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeManagementControlAuthorityError::none&&anchor.has_value();}
+};
+struct NativeManagementControlAuthorityDeviceRead {
+  NativeManagementControlAuthorityView authority;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return authority.ok();}
+};
+// Complete history plus exact original control allocation, inventory outcomes,
+// directory membership and chronological publication validation. All images,
+// metadata, indexes and guard storage use caller backing. Exact-device batches
+// precede and outlive ALL enclosing fences; all input objects/bytes are disjoint.
+// This is inspection, never a serving, security, memory or recovery grant.
+NativeManagementControlAuthorityDeviceRead ReadNativeManagementControlAuthorityInto(
+  const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,u64,
+  NativeManagementHistoryReadContext,const NativeManagementCheckpointAnchor*,
+  std::span<const NativeManagementHistoricalPageZero>,
+  std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<byte>) noexcept;
+bool MatchesNativeManagementPublishedCheckpoint(const NativeManagementControlAuthorityView&,
+  const NativeCheckpointRootView&,const std::array<byte,32>&) noexcept;
+bool MatchesNativeManagementPublishedDirectory(const NativeManagementControlAuthorityView&,
+  const page::NativeDirectoryChainView&,const std::array<byte,32>&) noexcept;
+bool MatchesNativeManagementControlAllocation(const NativeManagementControlAuthorityView&,
+  const Uuid&,const page::NativeAllocationRecord&,page::NativeAllocationState) noexcept;
+bool MatchesNativeManagementControlMap(const NativeManagementControlAuthorityView&,
+  const page::NativeAllocationMapView&) noexcept;
 // Actual immutable graph inspection. No selection payload or publication,
 // repair, authentication, transaction or user-operation authority is granted.
 NativeManagementControlGraph ReadNativeManagementControlGraphFromOpenDevices(
