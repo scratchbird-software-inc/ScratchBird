@@ -113,6 +113,8 @@ struct NativeCatalogLeafResult {
   std::map<scratchbird::core::platform::Uuid,
            scratchbird::core::catalog::CatalogMetadataVersion> metadata;
   std::vector<scratchbird::core::platform::byte> bytes;
+  std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView>
+      binary_diagnostic;
   bool ok() const noexcept { return error == NativeCatalogLeafError::none && page.has_value(); }
 };
 // Logical image and common metadata binding only. No inventory finality,

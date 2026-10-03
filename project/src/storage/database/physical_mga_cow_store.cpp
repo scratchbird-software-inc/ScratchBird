@@ -1908,7 +1908,18 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
     const auto digest=LeafDigest(bytes); if (!digest.ok()) return LeafFailure(LeafError::hash_failure);
     if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.end()-32)) return LeafFailure(LeafError::invalid_integrity);
     std::vector<scratchbird::core::platform::byte> body_bytes(bytes.begin()+128,bytes.end()-32);
-    auto body=ParseRowDataPageBody(body_bytes,header.header->page_number);
+    // CATALOG-BINARY-CELL-DIAGNOSTIC-001: the admitted type6/SBROW004
+    // structural schema fixes base.binary v1. This native identity is only
+    // diagnostic reporting context, never a live descriptor/security receipt.
+    constexpr scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1 binary_context{
+      {{0x2d,0x01,0x00,0x00,0x62,0x69,0x7e,0x61,0xb2,0x79,0x00,0x00,0x00,0x00,0x00,0x00}}, 1};
+    auto body=scratchbird::storage::page::ParseRowDataPageBodyWithCanonicalBinaryCells(
+        body_bytes,header.header->page_number,binary_context);
+    if (body.binary_diagnostic) {
+      auto refused=LeafFailure(LeafError::invalid_body);
+      refused.binary_diagnostic=body.binary_diagnostic;
+      return refused;
+    }
     if (!body.ok() || !ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
     // The generic row reader also supports other owners. The catalog family
     // requires the exact canonical body, including its zero unused region.

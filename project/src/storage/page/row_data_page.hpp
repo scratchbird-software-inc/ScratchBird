@@ -10,10 +10,12 @@
 
 // SB-ROW-DATA-PAGE-ANCHOR
 #include "datatype_binary.hpp"
+#include "datatype_binary_view.hpp"
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -111,6 +113,11 @@ struct RowDataPageResult {
   RowDataPageBody body;
   std::vector<byte> serialized;
   DiagnosticRecord diagnostic;
+  // Present only for the canonical catalog-cell policy. Keep the producer's
+  // native arguments intact; the owning DiagnosticRecord cannot represent all
+  // of them. A failure never publishes body or serialized prefixes.
+  std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView>
+      binary_diagnostic;
 
   bool ok() const {
     return status.ok();
@@ -129,6 +136,13 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(const RowDataPageBody& 
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size);
 RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size);
 RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number);
+// Same row framing/identity/checksum admission as the general reader, but every
+// cell must use the datatype owner's direct, non-NULL binary component profile.
+// Context is reporting-only and must come from the containing admitted schema.
+// This remains an owning row API, not whole-page allocation-free admission.
+RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
+    const std::vector<byte>& serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context);
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
                                            std::string diagnostic_code,
                                            std::string message_key,
