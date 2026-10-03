@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_history.hpp"
+#include "native_management_history_memory.hpp"
 #include "native_creation_workspace.hpp"
 #include "disk_device.hpp"
 #include <filesystem>
@@ -16,10 +17,22 @@
 #include <stdexcept>
 #include <cerrno>
 #include <sys/wait.h>
+namespace {std::uint64_t history_observed_read_bytes=0;}
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
 bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;}
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
+void* operator new(std::size_t n,std::align_val_t alignment){
+ if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
+ const auto a=static_cast<std::size_t>(alignment);n=n?n:1;
+ if(n>std::numeric_limits<std::size_t>::max()-(a-1))throw std::bad_alloc();
+ if(auto* p=std::aligned_alloc(a,(n+a-1)/a*a))return p;throw std::bad_alloc();
+}
+void* operator new[](std::size_t n,std::align_val_t a){return ::operator new(n,a);}
+void operator delete(void* p,std::align_val_t) noexcept{std::free(p);}
+void operator delete[](void* p,std::align_val_t) noexcept{std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
+void operator delete[](void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
@@ -43,6 +56,7 @@ extern "C" int __wrap_EVP_Digest(const void* data,size_t bytes,unsigned char* ou
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
+ if(io_counting&&result>0)history_observed_read_bytes+=static_cast<std::uint64_t>(result);
  if(io_counting&&reads==corrupt_read&&result>0)static_cast<unsigned char*>(data)[result-1]^=1;return result;
 }
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
@@ -198,7 +212,18 @@ struct Chain {
  auto Read(u64 budget=0){return db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),budget?budget:f.budget);}
  void Verify(const db::NativeManagementHistory& result){Check(result.ok()&&result.entries.size()==records.size()&&result.latest.size()==2&&result.idempotency.size()==2,"complete chronological interleaved history");for(unsigned i=0;i<records.size();++i)Check(result.entries[i].record==records[i]&&result.entries[i].extent_pages.size()==1,"exact record and verified page binding");Check(result.latest.at(Id(333))==6&&result.latest.at(Id(444))==5,"latest binary UUID indexes");}
 };
-void Test(unsigned profile,bool exact=false){Fixture f(profile);Chain chain(f);const auto empty=chain.Read();Check(empty.ok()&&empty.entries.empty()&&empty.latest.empty(),"actual genesis empty history");auto baseline=chain.Baseline(exact);chain.Build(baseline);const auto read=chain.Read();chain.Verify(read);const auto needed=read.verified_image_bytes;chain.Verify(chain.Read(needed));Empty(chain.Read(needed-1));chain.Transaction();chain.Verify(chain.Read());
+#include "native_management_history_memory_checks.hpp"
+
+void Test(unsigned profile,bool exact=false){Fixture f(profile);Chain chain(f);const auto empty=chain.Read();Check(empty.ok()&&empty.entries.empty()&&empty.latest.empty(),"actual genesis empty history");auto baseline=chain.Baseline(exact);chain.Build(baseline);const auto read=chain.Read();chain.Verify(read);
+ if(allocation_shard<0){
+  history_memory::Checks(f.devices,read,f.budget,history_memory::C::selected,nullptr,nullptr,!profile);
+  const auto anchored=db::ReadNativeManagementGraphHistoryFromOpenDevices(Id(1),f.devices,Id(2),*read.anchor,f.budget);
+  history_memory::Checks(f.devices,anchored,f.budget,history_memory::C::anchored,&*read.anchor);
+  const std::map<Uuid,Bytes> contexts{{Id(2),f.Read(0)}};
+  const auto old=db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.devices,Id(2),*read.anchor,contexts,f.budget);
+  history_memory::Checks(f.devices,old,f.budget,history_memory::C::historical_result,&*read.anchor,&contexts);
+ }
+ const auto needed=read.verified_image_bytes;chain.Verify(chain.Read(needed));Empty(chain.Read(needed-1));chain.Transaction();chain.Verify(chain.Read());
  // This is pure record/index conformance, not fabricated physical authority.
  {auto prefix=read;prefix.entries.clear();
   for(const auto& record:baseline){Check(db::ValidateNativeManagementHistoryAppend(prefix,record,f.budget)==HE::none,"every legitimate interleaved record transition passes pre-effect append validation");db::NativeManagementHistoryEntry entry;entry.record=record;prefix.entries.push_back(std::move(entry));}

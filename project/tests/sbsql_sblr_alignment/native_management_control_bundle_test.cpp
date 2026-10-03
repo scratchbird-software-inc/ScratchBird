@@ -5,6 +5,7 @@
 #include "physical_mga_cow_store.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_history.hpp"
+#include "native_management_history_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_creation_workspace.hpp"
@@ -30,6 +31,7 @@
 #include <stdexcept>
 #include <cerrno>
 #include <sys/wait.h>
+namespace {std::uint64_t history_observed_read_bytes=0;}
 #include <sys/stat.h>
 #include <thread>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
@@ -116,6 +118,7 @@ extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
  if(at==0){unsigned expected=1;if(historical_read_pause.compare_exchange_strong(expected,2))while(historical_read_pause==2)std::this_thread::yield();}
  if(race_bytes&&at==race_offset&&n==race_length&&++race_seen==2&&__real_pwrite(fd,race_bytes,race_length,at)!=static_cast<ssize_t>(race_length)){errno=EIO;return -1;}
  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
+ if(io_counting&&result>0)history_observed_read_bytes+=static_cast<std::uint64_t>(result);
  if(growth_extend_to&&at==0&&result>0){const auto size=growth_extend_to;growth_extend_to=0;if(ftruncate(fd,size)){errno=EIO;return -1;}}
  if(io_counting&&reads==corrupt_read&&result>0){corrupt_offset=at;const auto* bytes=static_cast<const unsigned char*>(data);corrupt_was_zero=std::all_of(bytes,bytes+result,[](auto b){return !b;});static_cast<unsigned char*>(data)[result-1]^=1;}
  if(replacement_bytes&&at==replacement_offset&&n==replacement_length&&result==static_cast<ssize_t>(n)&&++replacement_seen==replacement_at)std::copy_n(replacement_bytes,n,static_cast<unsigned char*>(data));return result;
@@ -990,6 +993,8 @@ struct DirectoryTransition {
   for(const auto* group:{&inventory_before,&inventory_after})for(const auto& raw:*group)total+=4*raw.size();return total;}
  CE Validate(u64 budget=0)const{return db::ValidateNativeManagementDirectoryControlAllocation(base_cp,target_cp,plan_image,extent,before_images,after_images,base,budget?budget:Budget(),bundle,inventory_before);}
 };
+#include "native_management_history_memory_checks.hpp"
+
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
  DirectoryHistoryFixture(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve,bool inventory_on_primary=false,bool install=true)
@@ -1506,6 +1511,8 @@ void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++siz
    next.entries[0].control_directory_images==original.control_directory_images&&next.entries[1].control_growth_images==f.t.growth,"reverse growth history retains both exact generations");
  const auto historical=[&](const std::map<Uuid,Bytes>& images){return db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,images,f.budget);};
  const auto old=historical(context);Check(old.ok()&&old.entries.size()==1&&old.entries[0].control_growth_images==original.control_growth_images,"explicit older anchor uses its original result context after later growth");
+ history_memory::Checks(f.t.fixture.devices,next,f.budget);
+ history_memory::Checks(f.t.fixture.devices,old,f.budget,history_memory::C::historical_result,&*first.anchor,&context);
  const auto control=[&]{return db::ReadNativeManagementControlGraphAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,context,f.budget);};
  const auto earlier=control();Check(earlier.ok()&&earlier.allocations==original_graph.allocations&&earlier.preallocations==original_graph.preallocations,"older actual control graph is not compared to later page-zero capacity");
  auto missing=context;missing.erase(missing.begin());EmptyGraph(historical(missing));auto wrong=context;wrong.begin()->second.back()^=1;EmptyGraph(historical(wrong));
@@ -1517,6 +1524,7 @@ void RepeatedDirectoryHistory(unsigned profile){for(unsigned size=0;size<5;++siz
  const auto actual=f.Context();auto torn=actual.at(f.t.changed);std::fill(torn.begin()+4096,torn.begin()+4480,0);auto* device=f.File(f.t.changed);
  Check(device->WriteAt(0,torn.data(),torn.size()).ok()&&device->Sync().ok(),"actual torn later result fixture");EmptyHistory(f.Read());
  const auto recovered=historical(context);Check(recovered.ok()&&recovered.entries.size()==1&&recovered.entries[0].control_directory_images==original.control_directory_images,"historical graph never needs a valid current mutable body");
+ history_memory::Checks(f.t.fixture.devices,recovered,f.budget,history_memory::C::historical_result,&*first.anchor,&context);
  const auto actual_old=control();Check(actual_old.ok()&&actual_old.allocations==original_graph.allocations&&actual_old.preallocations==original_graph.preallocations,"torn current body cannot invalidate exact retained actual old control ancestry");
  Bytes observed(torn.size());Check(device->ReadAt(0,observed.data(),observed.size()).ok()&&observed==torn,"historical graph does not repair a torn body");
  const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
@@ -1526,6 +1534,8 @@ void DirectoryHistory(unsigned primary,unsigned secondary,bool reverse,unsigned 
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve);reads=writes=syncs=0;io_counting=true;const auto first=f.Read();io_counting=false;
  if(!first.ok())std::cerr<<"history profile="<<profile<<" primary="<<primary<<" secondary="<<secondary<<" error="<<int(first.error)<<'\n';
  f.Good(first);Check(!writes&&!syncs,"history never installs or selects candidate pages");
+ const bool deep_memory=primary==0&&secondary==0&&!reverse&&!target&&reserve==(profile!=2);
+ history_memory::Checks(f.t.fixture.devices,first,f.budget,history_memory::C::selected,nullptr,nullptr,deep_memory);
  HistoricalInventory(f);if(profile!=2){DirectoryAuthority(f);if(primary==secondary&&!reverse)DirectoryControlInstalledPages(f);}
  else{const auto denied=db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),f.budget);
    Check(!denied.ok()&&!denied.anchor&&!denied.selection&&denied.allocations.empty()&&denied.publications.empty(),"secondary-data inventory images are not eligible actual inventory");
@@ -1534,6 +1544,9 @@ void DirectoryHistory(unsigned primary,unsigned secondary,bool reverse,unsigned 
  const auto anchored=db::ReadNativeManagementGraphHistoryFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,f.budget);
  Check(anchored.ok()&&anchored.entries.size()==1&&anchored.entries.front().control_growth_images==f.t.growth,"exact graph anchor retains directory growth history");
  const auto historical=db::ReadNativeManagementGraphHistoryAtHistoricalContextFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),*first.anchor,f.Context(),f.budget);f.Good(historical);
+ history_memory::Checks(f.t.fixture.devices,anchored,f.budget,history_memory::C::anchored,&*first.anchor);
+ const auto memory_context=f.Context();
+ history_memory::Checks(f.t.fixture.devices,historical,f.budget,history_memory::C::historical_result,&*first.anchor,&memory_context,deep_memory);
  if(primary==secondary){auto files=f.t.fixture.devices;files.pop_back();EmptyHistory(db::ReadNativeManagementHistoryFromOpenDevices(Id(1),files,Id(2),f.budget));
   const auto plan=f.t.graph.plan;const auto cp=f.t.target_cp;auto wrong=f.t.graph.target;
   *std::find_if(wrong.roots.begin(),wrong.roots.end(),[](const auto& r){return r.role==3;})=*std::find_if(f.t.graph.base.roots.begin(),f.t.graph.base.roots.end(),[](const auto& r){return r.role==3;});
