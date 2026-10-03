@@ -31,7 +31,9 @@ NativeBoundCheckpointSelectionView CheckpointFailure(const NativeCheckpointInven
     source.error==C::io_failure||nested==I::io_failure?E::io_failure:
     source.error==C::encrypted_requires_crypto_authority||nested==I::encrypted_requires_crypto_authority?E::encrypted_requires_authority:
     source.error==C::cluster_requires_authority?E::cluster_requires_authority:E::checkpoint_failure);
-  r.checkpoint_error=source.error;return r;
+  r.checkpoint_error=source.error;
+  r.checkpoint_inventory.error=source.error;
+  r.checkpoint_inventory.inventory_error=source.inventory_error;return r;
 }
 NativeBoundCheckpointSelectionView AllocationFailure(page::NativeAllocationError error){
   using A=page::NativeAllocationError;
@@ -327,6 +329,8 @@ page::NativeAllocationChainResult OwnAllocation(const page::NativeAllocationChai
 }
 NativeBoundCheckpointSelection Materialize(const NativeBoundCheckpointSelectionView& v){
  NativeBoundCheckpointSelection out;out.error=v.error;out.checkpoint_error=v.checkpoint_error;out.allocation_error=v.allocation_error;
+ out.checkpoint_inventory.error=v.checkpoint_inventory.error;
+ out.checkpoint_inventory.inventory_error=v.checkpoint_inventory.inventory_error;
  if(!v.ok())return out;
  out.selection=v.selection;for(unsigned n=0;n<2;++n)out.slots[n].assign(v.slots[n].begin(),v.slots[n].end());
  out.checkpoint_inventory=OwnInventory(v.checkpoint_inventory);out.predecessor=OwnInventory(v.predecessor);

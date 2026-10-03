@@ -4,6 +4,7 @@
 #include "native_management_control_authority.hpp"
 #include "native_management_control_authority_memory.hpp"
 #include "native_bound_checkpoint_selection_memory.hpp"
+#include "native_current_checkpoint_source_memory.hpp"
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_management_control_allocation.hpp"
@@ -795,6 +796,8 @@ void ResolutionPlanCodec(){
 #include "native_checkpoint_inventory_memory_checks.hpp"
 #define SB_BOUND_SELECTION_HASH_PROBE 1
 #include "native_bound_checkpoint_selection_memory_checks.hpp"
+#define SB_CURRENT_SOURCE_HASH_PROBE 1
+#include "native_current_checkpoint_source_memory_checks.hpp"
 void Sequences(){
  for(unsigned profile=0;profile<5;++profile){
   Fixture f(profile);f.budget*=4;
@@ -844,6 +847,9 @@ void Sequences(){
   SelectFixture(f,g);Good(f,g,1);
   checkpoint_inventory_memory::Checks(f.devices,inventory_root,Inventory(f,g),f.budget,true);
   bound_selection_memory::Checks(f.devices,Bound(f),f.budget,profile==0);
+  const auto allocation=db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),f.devices,inventory_root,f.budget);
+  Check(allocation.ok(),"actual selected operation current allocation proof");
+  current_source_memory::Checks<true>(f.devices,inventory_root,allocation,f.budget,true);
   const auto complete=Read(f);control_authority_memory::Checks(f.devices,complete,f.budget,control_authority_memory::C::selected,nullptr,nullptr,profile==0);
 
   const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);

@@ -21,6 +21,7 @@ struct NativeBoundCheckpointSelectionMemoryResult {
   NativeCheckpointSelectionError selection_error=NativeCheckpointSelectionError::none;
   NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
   page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
+  page::NativeInventoryError inventory_error=page::NativeInventoryError::none;
   core::platform::Status allocation_status,io_status;
   core::platform::DiagnosticRecord allocation_diagnostic,io_diagnostic;
   u64 physical_bytes_read=0;
@@ -71,6 +72,7 @@ inline NativeBoundCheckpointSelectionMemoryResult ReadNativeBoundCheckpointSelec
       auto result=ReadNativeBoundCheckpointSelectionInto(database,files,primary,
         limits.maximum_verification_image_bytes,pointers,region.subspan(prefix));
       out.selection_error=result.selection.error;out.checkpoint_error=result.selection.checkpoint_error;
+      out.inventory_error=result.selection.checkpoint_inventory.inventory_error;
       out.allocation_error=result.selection.allocation_error;out.io_status=result.io_status;
       out.io_diagnostic=std::move(result.io_diagnostic);out.physical_bytes_read=result.physical_bytes_read;
       if(!result.ok()){out.error=E::selection_failure;return out;}

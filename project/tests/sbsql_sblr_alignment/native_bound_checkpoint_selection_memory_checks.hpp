@@ -14,6 +14,7 @@ void Empty(const db::NativeBoundCheckpointSelectionView& v){
  c::Empty(v.checkpoint_inventory);c::Empty(v.predecessor);
 }
 void Same(const db::NativeBoundCheckpointSelection& a,const db::NativeBoundCheckpointSelectionView& b){
+ Check(a.checkpoint_inventory.inventory_error==b.checkpoint_inventory.inventory_error,"complete selector concrete inventory failure parity");
  Check(a.error==b.error&&a.checkpoint_error==b.checkpoint_error&&a.allocation_error==b.allocation_error,
   "complete selector and nested failure parity");
  if(!a.ok()){Empty(b);return;}
@@ -110,12 +111,16 @@ void Checks(std::span<const d::NativeFilespaceDevice> files,const db::NativeBoun
   failed(r);Check(r.selection_error==E::io_failure&&!r.io_status.ok()&&
    r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT"&&r.physical_bytes_read==history_observed_read_bytes,
    "complete selector preserves every actual read diagnostic and independent transferred-byte total");
+  if(r.checkpoint_error==db::NativeCheckpointError::inventory_failure)
+   Check(r.inventory_error==page::NativeInventoryError::io_failure,"selector receipt preserves concrete inventory read error");
   released_payload();}
  for(unsigned mode=1;mode<=5;++mode)if(fault_route<0||fault_route==int(mode))for(unsigned site=1;site<=hash_sites;++site){
   if((site-1)%fault_shards!=fault_shard)continue;
   hash_fault=mode;hash_target=site;hash_seen=0;hash_active=false;const auto r=granted();
   const bool consumed=!hash_fault;hash_fault=0;hash_active=false;failed(r);
   Check(consumed&&r.selection_error==E::hash_failure,"every full-selector provider failure retains exact typed refusal");
+  if(r.checkpoint_error==db::NativeCheckpointError::inventory_failure)
+   Check(r.inventory_error==page::NativeInventoryError::hash_failure,"selector receipt preserves concrete inventory hash error");
   released_payload();}
 #ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
  if(fault_route<0||fault_route==6){historical_stats=0;historical_stat_counting=true;{const auto r=granted();Check(r.ok(),"complete selector extent fault baseline");}

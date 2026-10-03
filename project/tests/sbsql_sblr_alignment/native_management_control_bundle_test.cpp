@@ -10,6 +10,7 @@
 #include "native_management_history_memory.hpp"
 #include "native_management_control_authority_memory.hpp"
 #include "native_bound_checkpoint_selection_memory.hpp"
+#include "native_current_checkpoint_source_memory.hpp"
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_publication_recovery.hpp"
@@ -1012,6 +1013,8 @@ struct DirectoryTransition {
 #include "native_checkpoint_inventory_memory_checks.hpp"
 #define SB_BOUND_SELECTION_HASH_PROBE 1
 #include "native_bound_checkpoint_selection_memory_checks.hpp"
+#define SB_CURRENT_SOURCE_HASH_PROBE 1
+#include "native_current_checkpoint_source_memory_checks.hpp"
 
 struct DirectoryHistoryFixture {
  DirectoryTransition t;d::FileDevice untouched;std::filesystem::path secondary_path,untouched_path;u64 budget;
@@ -1553,6 +1556,46 @@ void RepeatedDirectoryHistory(unsigned profile,int only_size=-1){for(unsigned si
  const auto& restored=actual.at(f.t.changed);Check(device->WriteAt(0,restored.data(),restored.size()).ok()&&device->Sync().ok(),"restore exact current result");
  f.Reopen();const auto reopened=f.Read();Check(reopened.ok()&&reopened.entries.size()==2&&reopened.entries[0].control_allocation_images==original.control_allocation_images,"old allocation capacity survives repeated growth and readonly reopen");
 }}
+template<bool allocation> void DirectoryCurrentSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve,bool repeated=false,int route=8,unsigned shard=0,unsigned shards=1){
+ DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2);if(repeated)f.NextGrowth();
+ // This composite reader verifies the selector and the current object's full
+ // proof. Size its positive fixture allowance for both member profiles, not
+ // only the primary; actual backing grants remain independently bounded.
+ const auto image_budget=8*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
+ const auto& cp=f.t.graph.plan.target_checkpoint;
+ const d::FilespaceRootReference root{9,0x300,cp.filespace_uuid,cp.page_number,cp.page_generation,cp.page_size_profile_uuid,f.t.graph.plan.target_checkpoint_object_uuid};
+ const auto read=[&](u64 limit){
+  if constexpr(allocation)return db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),f.t.fixture.devices,root,limit);
+  else return db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),f.t.fixture.devices,root,limit);};
+ const auto expected=read(image_budget);
+ if(!expected.ok()){
+  std::cerr<<"current source allocation="<<allocation<<" profile="<<profile<<" primary="<<primary<<" secondary="<<secondary
+   <<" reverse="<<reverse<<" target="<<target<<" reserve="<<reserve<<" budget="<<image_budget<<" error="<<unsigned(expected.error)
+   <<" inventory="<<unsigned(expected.checkpoint_inventory.inventory_error);
+  if constexpr(allocation)std::cerr<<" allocation_error="<<unsigned(expected.allocation_error);
+  else std::cerr<<" directory_error="<<unsigned(expected.directory_error);
+  std::cerr<<'\n';
+ }
+ Check(expected.ok(),"actual independently authored current source after publication");
+ if(!allocation&&profile==2&&primary==0&&secondary==4&&!reverse&&!target&&!reserve&&!repeated){
+  const auto short_source=read(f.budget);
+  Check(expected.retained_image_bytes>f.budget&&short_source.error==db::NativeCheckpointError::resource_exhausted,
+   "primary-only mixed-profile allowance remains a real resource refusal");
+  Check(!short_source.checkpoint_inventory.checkpoint&&!short_source.retained_image_bytes,
+   "insufficient composite source allowance exposes no checkpoint prefix");
+ }
+ Check(db::EncodeNativeCheckpointRoot(*expected.checkpoint_inventory.checkpoint).bytes==f.t.target_cp&&
+  expected.checkpoint_inventory.checkpoint->creator_operation_uuid==f.t.graph.plan.operation_uuid,
+  "current source resolves exact independent checkpoint image and publication identity");
+ if constexpr(allocation){const auto& maps=f.t.after.at(Id(2));Check(expected.allocation.pages.size()==maps.size(),"full original allocation chain dimensions");
+  for(std::size_t n=0;n<maps.size();++n)Check(expected.allocation.pages[n].bytes==MapOracle(maps[n]),"every independent current allocation image");}
+ else Check(expected.directory.pages.size()==1&&expected.directory.pages.front().bytes==DirectoryImageOracle(f.t.directory),"complete independent current directory image");
+ const bool deep=primary==secondary&&!reverse&&!target&&reserve==(profile!=2);
+ current_source_memory::Checks<allocation>(f.t.fixture.devices,root,expected,image_budget,deep,route,shard,shards);
+ if(route!=8)return;
+ f.Reopen();const auto reopened=read(image_budget);Check(reopened.ok(),"current source after real read-only reopen");
+ current_source_memory::Checks<allocation>(f.t.fixture.devices,root,reopened,image_budget);
+}
 void DirectorySelectionMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,bool target,bool reserve,bool repeated=false,int fault_route=8,unsigned fault_shard=0,unsigned fault_shards=1){
  DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2);
  if(repeated)f.NextGrowth();
@@ -3784,6 +3827,32 @@ int main(int argc,char** argv){
  }
  if(argc==3&&std::string_view(argv[1])=="--directory-control-close"){
    const auto profile=std::stoi(argv[2]);Check(profile>=0&&profile<5,"control graph Close profile");DirectoryControlClose(profile);return 0;
+ }
+ if(argc==6&&std::string_view(argv[1])=="--directory-current-source-memory"){
+  const auto allocation=std::stoi(argv[2]),profile=std::stoi(argv[3]),primary=std::stoi(argv[4]),secondary=std::stoi(argv[5]);
+  Check(allocation>=0&&allocation<=1&&profile>=2&&profile<=4&&primary>=0&&primary<5&&secondary>=0&&secondary<5,"current source pair arguments");
+  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
+   if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
+   if(allocation)DirectoryCurrentSourceMemory<true>(primary,secondary,reverse,profile,target,reserve);
+   else DirectoryCurrentSourceMemory<false>(primary,secondary,reverse,profile,target,reserve);
+  }
+  std::cout<<"PASS current source pair checks="<<checks<<'\n';return 0;
+ }
+ if(argc==5&&std::string_view(argv[1])=="--directory-current-source-repeat-memory"){
+  const auto allocation=std::stoi(argv[2]),profile=std::stoi(argv[3]),size=std::stoi(argv[4]);
+  Check(allocation>=0&&allocation<=1&&(profile==3||profile==4)&&size>=0&&size<5,"current source repeated size arguments");
+  for(bool target:{false,true}){
+   if(allocation)DirectoryCurrentSourceMemory<true>(size,size,false,profile,target,true,true);
+   else DirectoryCurrentSourceMemory<false>(size,size,false,profile,target,true,true);
+  }
+  std::cout<<"PASS repeated current source checks="<<checks<<'\n';return 0;
+ }
+ if(argc==6&&std::string_view(argv[1])=="--directory-current-source-faults"){
+  const auto allocation=std::stoi(argv[2]),profile=std::stoi(argv[3]),route=std::stoi(argv[4]),shard=std::stoi(argv[5]);const unsigned shards=route<=5?4:1;
+  Check(allocation>=0&&allocation<=1&&profile>=2&&profile<=4&&route>=0&&route<=7&&shard>=0&&unsigned(shard)<shards,"current source fault route and shard");
+  if(allocation)DirectoryCurrentSourceMemory<true>(0,0,false,profile,false,profile!=2,false,route,shard,shards);
+  else DirectoryCurrentSourceMemory<false>(0,0,false,profile,false,profile!=2,false,route,shard,shards);
+  std::cout<<"PASS current source fault route="<<route<<" shard="<<shard<<" checks="<<checks<<'\n';return 0;
  }
  if(argc==6&&std::string_view(argv[1])=="--directory-selection-faults"){
    const auto profile=std::stoi(argv[2]),repeated=std::stoi(argv[3]),route=std::stoi(argv[4]),shard=std::stoi(argv[5]);

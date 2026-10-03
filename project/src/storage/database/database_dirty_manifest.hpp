@@ -223,6 +223,46 @@ NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDe
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
 
+// Complete actual current-source inspection; not an execution or serving grant.
+struct NativeCheckpointAllocationView {
+ NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+ page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
+ NativeCheckpointInventoryView checkpoint_inventory;
+ page::NativeAllocationChainView allocation;
+ u64 retained_image_bytes=0;
+ std::size_t backing_bytes_used=0;
+ bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint_inventory.ok()&&allocation.ok();}
+};
+struct NativeCurrentCheckpointAllocationDeviceRead {
+ NativeCheckpointAllocationView allocation;
+ core::platform::Status io_status;
+ core::platform::DiagnosticRecord io_diagnostic;
+ u64 physical_bytes_read=0;
+ bool ok() const noexcept{return allocation.ok();}
+};
+NativeCurrentCheckpointAllocationDeviceRead VerifyCurrentNativeCheckpointAllocationInto(
+ const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,const disk::FilespaceRootReference&,
+ u64,std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
+struct NativeCheckpointDirectoryView {
+ NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+ page::NativeDirectoryError directory_error=page::NativeDirectoryError::none;
+ NativeCheckpointInventoryView checkpoint_inventory;
+ page::NativeDirectoryChainView directory;
+ u64 retained_image_bytes=0;
+ std::size_t backing_bytes_used=0;
+ bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint_inventory.ok()&&directory.ok();}
+};
+struct NativeCurrentCheckpointDirectoryDeviceRead {
+ NativeCheckpointDirectoryView directory;
+ core::platform::Status io_status;
+ core::platform::DiagnosticRecord io_diagnostic;
+ u64 physical_bytes_read=0;
+ bool ok() const noexcept{return directory.ok();}
+};
+NativeCurrentCheckpointDirectoryDeviceRead VerifyCurrentNativeCheckpointDirectoryInto(
+ const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,const disk::FilespaceRootReference&,
+ u64,std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
+
 struct NativeCheckpointPolicyRootsResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;
   scratchbird::storage::page::NativeCatalogRootError catalog_error =

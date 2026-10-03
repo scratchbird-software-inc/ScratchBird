@@ -497,6 +497,35 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
       LABELS "storage;binary_uuid;real_files;actual_control_ancestry;retained_device_concurrency;not_runtime_acceptance")
   endforeach()
   foreach(profile RANGE 2 4)
+    foreach(allocation RANGE 0 1)
+      foreach(primary RANGE 0 4)
+        foreach(secondary RANGE 0 4)
+          add_test(NAME native_current_source_memory_${allocation}_${profile}_${primary}_${secondary}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-current-source-memory ${allocation} ${profile} ${primary} ${secondary})
+          set_tests_properties(native_current_source_memory_${allocation}_${profile}_${primary}_${secondary}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;current_source;memory;not_runtime_acceptance")
+        endforeach()
+        if(profile GREATER 2)
+          add_test(NAME native_current_source_memory_repeat_${allocation}_${profile}_${primary}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-current-source-repeat-memory ${allocation} ${profile} ${primary})
+          set_tests_properties(native_current_source_memory_repeat_${allocation}_${profile}_${primary}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;current_source;memory;not_runtime_acceptance")
+        endif()
+      endforeach()
+      foreach(route RANGE 0 7)
+        if(route LESS 6)
+          set(current_source_shard_last 3)
+        else()
+          set(current_source_shard_last 0)
+        endif()
+        foreach(shard RANGE 0 ${current_source_shard_last})
+          add_test(NAME native_current_source_memory_fault_${allocation}_${profile}_${route}_${shard}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-current-source-faults ${allocation} ${profile} ${route} ${shard})
+          set_tests_properties(native_current_source_memory_fault_${allocation}_${profile}_${route}_${shard}_gate PROPERTIES TIMEOUT 120
+            LABELS "storage;binary_uuid;real_files;current_source;memory;fault_injection;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+    endforeach()
     if(profile GREATER 2)
       set(selection_repeat_last 1)
     else()
@@ -864,6 +893,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME native_current_source_bootstrap_memory_gate
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --current-source-memory-only)
+  set_tests_properties(native_current_source_bootstrap_memory_gate PROPERTIES TIMEOUT 300
+    LABELS "storage;binary_uuid;real_files;current_source;memory;not_runtime_acceptance")
   add_test(NAME native_filespace_directory_memory_gate COMMAND native_filespace_directory_memory_gate)
   set_tests_properties(native_filespace_directory_memory_gate PROPERTIES
     TIMEOUT 180 LABELS "storage;memory;binary_uuid;actual_files;fault_injection;not_runtime_acceptance")

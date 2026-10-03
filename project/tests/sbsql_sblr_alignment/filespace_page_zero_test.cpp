@@ -14,6 +14,7 @@
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_bound_checkpoint_selection_memory.hpp"
+#include "native_current_checkpoint_source_memory.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
@@ -2689,6 +2690,7 @@ void CanonicalCheckpoints() {
 }
 #include "native_checkpoint_inventory_memory_checks.hpp"
 #include "native_bound_checkpoint_selection_memory_checks.hpp"
+#include "native_current_checkpoint_source_memory_checks.hpp"
 
 void CheckpointInventoryMemoryFaults(const std::vector<disk::NativeFilespaceDevice>& files,
  const disk::FilespaceRootReference& root,const db::NativeCheckpointInventoryResult& expected,u64 allowance) {
@@ -3203,7 +3205,11 @@ void CanonicalCheckpointAllocation() {
     };
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
     const u64 budget=3*sizes[profile];
-    const auto read=[&](u64 limit){return db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),limit);};
+    const auto read=[&](u64 limit){
+      const bool compare=allocation_budget<0&&!track_reads&&!count_allocations&&!count_full_digests&&!full_digest_fault&&!hash_fault;
+      const auto r=db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),limit);
+      if(compare)current_source_memory::Checks<true>(devices,CheckpointRef(checkpoint),r,limit);
+      return r;};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.checkpoint_inventory.checkpoint&&
       r.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint_inventory.inventory.publication_base&&
       r.checkpoint_inventory.retained_image_bytes==0&&r.allocation.pages.empty()&&r.retained_image_bytes==0&&
@@ -3939,10 +3945,10 @@ void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::Nat
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable resolves staged B-tree");
   }
 }
-void CanonicalCheckpointDirectory(bool extended=false) {
+void CanonicalCheckpointDirectory(bool extended=false,bool all_pairs=false) {
   using E=db::NativeCheckpointError;
   const auto image=[](const page::NativeFilespaceDirectory& d){return !d.creator_operation_uuid.is_nil()||std::any_of(d.records.begin(),d.records.end(),[](const auto& r){return r.allocation_root.has_value();})?DirectoryAllocationOracle(d):DirectoryOracle(d);};
-  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
+  for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q){if(!all_pairs&&q!=(p+1)%5)continue;Fixture fixture;disk::FileDevice first,second;
     const auto path1=(fixture.root/"checkpoint-directory-primary").string(),path2=(fixture.root/"checkpoint-directory-secondary").string();
     auto z1=Example(p),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
     Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own actual checkpoint directory filespaces");
@@ -3974,7 +3980,11 @@ void CanonicalCheckpointDirectory(bool extended=false) {
       put(first,15,sizes[p],hb);put(second,15,sizes[q],image(t));put(first,19,sizes[p],CheckpointOracle(cp));
     };
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
-    const u64 limit=3*sizes[p]+sizes[q];const auto read=[&](u64 budget){return db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);};
+    const u64 limit=3*sizes[p]+sizes[q];const auto read=[&](u64 budget){
+      const bool compare=allocation_budget<0&&!track_reads&&!count_allocations&&!count_full_digests&&!full_digest_fault&&!hash_fault;
+      const auto r=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);
+      if(compare)current_source_memory::Checks<false>(devices,CheckpointRef(checkpoint),r,budget);
+      return r;};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.directory.pages.empty()&&!r.directory.retained_image_bytes&&
       !r.checkpoint_inventory.checkpoint&&r.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint_inventory.inventory.publication_base&&
       !r.checkpoint_inventory.retained_image_bytes,"checkpoint directory failure exposes no authority prefix");};
@@ -6977,6 +6987,11 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies actual staged inventory chain");continue;
     }
     persist();bound_selection_memory::Checks(devices,read(budget),budget);
+    const auto current_allocation=db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,CheckpointRef(current),16*u64{sizes[p]}+4*u64{sizes[q]});
+    const auto current_directory=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(current),16*u64{sizes[p]}+4*u64{sizes[q]});
+    Check(current_allocation.ok()&&current_directory.ok(),"independent transaction-selected complete current sources");
+    current_source_memory::Checks<true>(devices,CheckpointRef(current),current_allocation,16*u64{sizes[p]}+4*u64{sizes[q]},role==1);
+    current_source_memory::Checks<false>(devices,CheckpointRef(current),current_directory,16*u64{sizes[p]}+4*u64{sizes[q]},role==1);
     persist();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;auto result=read(budget);track_reads=count_full_digests=count_allocations=false;
     const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"bound selector error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" map="<<static_cast<int>(result.allocation_error)<<std::endl;
@@ -7281,6 +7296,11 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--current-source-memory-only"){
+    try{CanonicalCheckpointAllocation();CanonicalCheckpointDirectory(false,true);CanonicalCheckpointDirectory(true,true);
+      std::cout<<"PASS current-source bootstrap memory checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+
   if(argc==2&&std::string_view(argv[1])=="--catalog-binary-cells-only"){
     try{CatalogBinaryCells();CatalogLeafFiles();std::cout<<"catalog binary cell checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
