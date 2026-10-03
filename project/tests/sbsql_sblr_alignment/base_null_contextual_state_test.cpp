@@ -963,6 +963,28 @@ void SerializationRetainsConcreteType() {
             "typed character NULL serialization failure published output or wrong detail");
       continue;
     }
+    if (descriptor.type_id == dt::CanonicalTypeId::binary) {
+      CheckRejectedAs(
+          serialized, "CTB.BINARY.SERIALIZATION_PROFILE_MISSING",
+          "typed binary NULL generic serialization without receipt profile");
+      Check(serialized.serialized_value.empty(),
+            "typed binary NULL generic serialization published output");
+
+      dt::DatatypeDeserializationRequest decode;
+      decode.expected_type_id = dt::CanonicalTypeId::binary;
+      decode.serialized_value =
+          "SBDV1;type=binary;state=null;payload=";
+      decode.expected_descriptor = execution_descriptor;
+      const auto decoded = dt::DeserializeDatatypeValue(decode);
+      CheckRejectedAs(
+          decoded, "CTB.BINARY.SERIALIZATION_PROFILE_MISSING",
+          "typed binary NULL generic deserialization without receipt profile");
+      Check(decoded.value.type_id == dt::CanonicalTypeId::unknown &&
+                !decoded.value.is_null &&
+                decoded.value.encoded_value.empty(),
+            "typed binary NULL generic deserialization published a value");
+      continue;
+    }
     Check(serialized.ok(), "typed NULL serialization failed for " + label);
     Check(DescriptorEquals(serialized.descriptor, execution_descriptor),
           "typed NULL serialization lost descriptor sidecar for " + label);

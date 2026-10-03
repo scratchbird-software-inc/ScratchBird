@@ -18,6 +18,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <set>
 #include <utility>
 #include <vector>
@@ -26,6 +27,13 @@ namespace scratchbird::core::datatypes {
 namespace {
 
 inline constexpr std::size_t kCanonicalCharacterMaximumBytes = 16'777'216;
+inline constexpr std::size_t kCanonicalBinaryMaximumBytes = 16'777'216;
+inline constexpr std::string_view kBinaryComponentBoundary = "SBDVAL01";
+inline constexpr scratchbird::core::platform::Uuid kCurrentBinaryDescriptorUuid{
+    std::array<byte, 16>{0x2d, 0x01, 0x00, 0x00, 0x62, 0x69, 0x7e, 0x61,
+                         0xb2, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+inline constexpr DatatypeBinaryDiagnosticContextV1 kCurrentBinaryContext{
+    kCurrentBinaryDescriptorUuid, 1};
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::LoadLittle16;
@@ -70,12 +78,176 @@ inline constexpr u16 is_null = 1u << 0;
 inline constexpr u16 payload_is_toast_reference = 1u << 1;
 }  // namespace BinaryFlag
 
-Status BinaryOkStatus() {
+Status BinaryOkStatus() noexcept {
   return {StatusCode::ok, Severity::info, Subsystem::datatypes};
 }
 
-Status BinaryErrorStatus() {
+Status BinaryErrorStatus() noexcept {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocOk(
+    const DatatypeBinaryValueView& value) noexcept {
+  DatatypeBinaryAllocationFreeViewResult result;
+  result.status = BinaryOkStatus();
+  result.diagnostic.status = result.status;
+  result.value = value;
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocError(
+    std::string_view diagnostic_code, std::string_view message_key) noexcept {
+  DatatypeBinaryAllocationFreeViewResult result;
+  result.status = BinaryErrorStatus();
+  result.diagnostic.status = result.status;
+  result.diagnostic.diagnostic_code = diagnostic_code;
+  result.diagnostic.message_key = message_key;
+  result.diagnostic.origin = "core.datatypes.binary";
+  return result;
+}
+
+void AddBinaryNoAllocTextArgument(
+    DatatypeBinaryAllocationFreeViewResult* result, std::string_view key,
+    std::string_view value) noexcept {
+  auto& argument =
+      result->diagnostic.arguments[result->diagnostic.argument_count++];
+  argument.key = key;
+  argument.kind = DatatypeBinaryDiagnosticArgumentKind::text;
+  argument.text = value;
+}
+
+void AddBinaryNoAllocUnsignedArgument(
+    DatatypeBinaryAllocationFreeViewResult* result, std::string_view key,
+    u64 value) noexcept {
+  auto& argument =
+      result->diagnostic.arguments[result->diagnostic.argument_count++];
+  argument.key = key;
+  argument.kind = DatatypeBinaryDiagnosticArgumentKind::unsigned_integer;
+  argument.unsigned_integer = value;
+}
+
+void AddBinaryNoAllocDescriptorArgument(
+    DatatypeBinaryAllocationFreeViewResult* result, std::string_view key,
+    const DatatypeBinaryDiagnosticContextV1& context) noexcept {
+  auto& argument =
+      result->diagnostic.arguments[result->diagnostic.argument_count++];
+  argument.key = key;
+  argument.kind = DatatypeBinaryDiagnosticArgumentKind::descriptor_reference;
+  argument.uuid = context.descriptor_uuid;
+  argument.generation = context.descriptor_generation;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocFrameError(
+    u64 offset, std::string_view reason) noexcept {
+  auto result = BinaryNoAllocError("CTB.BINARY.FRAME_INVALID",
+                                   "datatype.binary.frame_invalid");
+  AddBinaryNoAllocTextArgument(&result, "boundary", kBinaryComponentBoundary);
+  AddBinaryNoAllocUnsignedArgument(&result, "offset", offset);
+  AddBinaryNoAllocTextArgument(&result, "reason", reason);
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocIntegrityError(
+    std::string_view reason) noexcept {
+  auto result = BinaryNoAllocError("CTB.BINARY.INTEGRITY_FAILED",
+                                   "datatype.binary.integrity_failed");
+  AddBinaryNoAllocTextArgument(&result, "boundary", kBinaryComponentBoundary);
+  AddBinaryNoAllocTextArgument(&result, "reason", reason);
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocLengthError(
+    u64 actual_bytes) noexcept {
+  auto result = BinaryNoAllocError("CTB.BINARY.LENGTH_EXCEEDED",
+                                   "datatype.binary.length_exceeded");
+  AddBinaryNoAllocUnsignedArgument(&result, "actual_bytes", actual_bytes);
+  AddBinaryNoAllocUnsignedArgument(&result, "maximum_bytes",
+                                   kCanonicalBinaryMaximumBytes);
+  AddBinaryNoAllocTextArgument(&result, "operation",
+                               "binary_component_decode");
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocNullStateError(
+    const DatatypeBinaryDiagnosticContextV1& context, u64 payload_bytes,
+    std::string_view reason) noexcept {
+  auto result = BinaryNoAllocError("DATATYPE.NULL_STATE.INVALID",
+                                   "datatype.null_state_invalid");
+  AddBinaryNoAllocDescriptorArgument(&result, "descriptor_ref", context);
+  AddBinaryNoAllocTextArgument(&result, "boundary", kBinaryComponentBoundary);
+  AddBinaryNoAllocUnsignedArgument(&result, "payload_length", payload_bytes);
+  AddBinaryNoAllocTextArgument(&result, "reason", reason);
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryNoAllocNullNotAdmittedError(
+    const DatatypeBinaryDiagnosticContextV1& context) noexcept {
+  auto result = BinaryNoAllocError("DATATYPE.NULL_NOT_ADMITTED",
+                                   "datatype.null_not_admitted");
+  AddBinaryNoAllocDescriptorArgument(&result, "descriptor_ref", context);
+  AddBinaryNoAllocTextArgument(&result, "boundary", kBinaryComponentBoundary);
+  AddBinaryNoAllocTextArgument(&result, "reason",
+                               "nonnullable_catalog_metadata_cell");
+  return result;
+}
+
+DiagnosticRecord MaterializeBinaryDiagnostic(
+    const DatatypeBinaryDiagnosticView& diagnostic) {
+  std::vector<DiagnosticArgument> arguments;
+  arguments.reserve(diagnostic.argument_count);
+  for (std::size_t i = 0; i < diagnostic.argument_count; ++i) {
+    const auto& argument = diagnostic.arguments[i];
+    switch (argument.kind) {
+      case DatatypeBinaryDiagnosticArgumentKind::text:
+        arguments.push_back(
+            {std::string(argument.key), std::string(argument.text)});
+        break;
+      case DatatypeBinaryDiagnosticArgumentKind::unsigned_integer:
+        arguments.push_back(
+            {std::string(argument.key),
+             std::to_string(argument.unsigned_integer)});
+        break;
+      case DatatypeBinaryDiagnosticArgumentKind::uuid:
+        arguments.push_back({std::string(argument.key), argument.uuid});
+        break;
+      case DatatypeBinaryDiagnosticArgumentKind::descriptor_reference:
+        arguments.push_back({std::string(argument.key), argument.uuid});
+        arguments.push_back(
+            {std::string(argument.key) + "_generation",
+             std::to_string(argument.generation)});
+        break;
+      case DatatypeBinaryDiagnosticArgumentKind::none:
+        break;
+    }
+  }
+  return MakeDiagnostic(diagnostic.status.code, diagnostic.status.severity,
+                        diagnostic.status.subsystem,
+                        std::string(diagnostic.diagnostic_code),
+                        std::string(diagnostic.message_key),
+                        std::move(arguments), {},
+                        std::string(diagnostic.origin));
+}
+
+DatatypeBinaryViewResult MaterializeBinaryViewResult(
+    const DatatypeBinaryAllocationFreeViewResult& source) {
+  DatatypeBinaryViewResult result;
+  result.status = source.status;
+  if (!source.ok()) {
+    result.diagnostic = MaterializeBinaryDiagnostic(source.diagnostic);
+  }
+  return result;
+}
+
+DatatypeBinaryDecodedViewResult MaterializeBinaryDecodedViewResult(
+    const DatatypeBinaryAllocationFreeViewResult& source) {
+  DatatypeBinaryDecodedViewResult result;
+  result.status = source.status;
+  if (source.ok()) {
+    result.value = source.value;
+  } else {
+    result.diagnostic = MaterializeBinaryDiagnostic(source.diagnostic);
+  }
+  return result;
 }
 
 DatatypeBinaryResult BinaryError(std::string diagnostic_code,
@@ -87,6 +259,16 @@ DatatypeBinaryResult BinaryError(std::string diagnostic_code,
                                                    std::move(diagnostic_code),
                                                    std::move(message_key),
                                                    std::move(detail));
+  return result;
+}
+
+DatatypeBinaryResult BinaryResourceError(std::string detail) {
+  DatatypeBinaryResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error,
+                   Subsystem::datatypes};
+  result.diagnostic = MakeDatatypeBinaryDiagnostic(
+      result.status, "CTB.BINARY.RESOURCE_EXHAUSTED",
+      "datatype.binary.resource_exhausted", std::move(detail));
   return result;
 }
 
@@ -119,7 +301,7 @@ bool IsValidFixedPayloadSize(const DatatypeStorageLayout& layout, u32 payload_si
   return true;
 }
 
-u64 PayloadChecksum(const byte* bytes, std::size_t size) {
+u64 PayloadChecksum(const byte* bytes, std::size_t size) noexcept {
   u64 hash = kFnvOffsetBasis64;
   for (std::size_t i = 0; i < size; ++i) {
     hash ^= static_cast<u64>(bytes[i]);
@@ -559,7 +741,143 @@ DatatypeDescriptorEnvelopeResult DecodeDatatypeDescriptorEnvelope(
   return result;
 }
 
+static DatatypeBinaryAllocationFreeViewResult
+ValidateCanonicalBinaryValueViewNoAllocCore(
+    const DatatypeBinaryValueView& value,
+    const DatatypeBinaryDiagnosticContextV1& context,
+    bool admit_clean_null) noexcept {
+  if (value.type_id != CanonicalTypeId::binary) {
+    return BinaryNoAllocFrameError(kOffsetTypeId,
+                                   "expected_binary_type_code_301");
+  }
+
+  // SQL_NULL is authoritative. Diagnose a dirty NULL before inspecting a
+  // caller-controlled payload address, and never publish that address.
+  if (value.is_null) {
+    if (value.payload_bytes != 0 || value.payload_is_toast_reference) {
+      return BinaryNoAllocNullStateError(
+          context, value.payload_bytes, "null_payload_or_reference_state");
+    }
+    return admit_clean_null ? BinaryNoAllocOk(value)
+                            : BinaryNoAllocNullNotAdmittedError(context);
+  }
+
+  if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
+      value.payload_bytes > std::numeric_limits<u32>::max() ||
+      value.payload_bytes > std::numeric_limits<std::size_t>::max() -
+                                kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(0, "borrowed_payload_bounds_invalid");
+  }
+  if (value.payload_is_toast_reference) {
+    return BinaryNoAllocFrameError(
+        kOffsetFlags, "binary_reference_state_not_admitted");
+  }
+  if (value.payload_bytes > kCanonicalBinaryMaximumBytes) {
+    return BinaryNoAllocLengthError(value.payload_bytes);
+  }
+  return BinaryNoAllocOk(value);
+}
+
+DatatypeBinaryAllocationFreeViewResult
+ValidateCanonicalBinaryValueViewNoAlloc(
+    const DatatypeBinaryValueView& value,
+    const DatatypeBinaryDiagnosticContextV1& context) noexcept {
+  return ValidateCanonicalBinaryValueViewNoAllocCore(value, context, false);
+}
+
+static DatatypeBinaryAllocationFreeViewResult
+DecodeCanonicalBinaryValueViewNoAllocCore(
+    const byte* encoded, std::size_t encoded_bytes,
+    const DatatypeBinaryDiagnosticContextV1& context,
+    bool admit_clean_null) noexcept {
+  if (encoded == nullptr ||
+      encoded_bytes < kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(encoded_bytes,
+                                   "source_null_or_truncated_header");
+  }
+  if (encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes >
+      std::numeric_limits<u32>::max()) {
+    return BinaryNoAllocFrameError(0, "source_extent_unrepresentable");
+  }
+  if (std::memcmp(encoded + kOffsetMagic, kDatatypeBinaryMagic,
+                  sizeof(kDatatypeBinaryMagic)) != 0) {
+    return BinaryNoAllocFrameError(kOffsetMagic, "bad_magic");
+  }
+
+  const u16 header_bytes = LoadLittle16(encoded + kOffsetHeaderBytes);
+  const u32 payload_bytes = LoadLittle32(encoded + kOffsetPayloadBytes);
+  if (header_bytes != kDatatypeBinaryEnvelopeHeaderBytes ||
+      payload_bytes != encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(
+        header_bytes != kDatatypeBinaryEnvelopeHeaderBytes
+            ? kOffsetHeaderBytes
+            : kOffsetPayloadBytes,
+        header_bytes != kDatatypeBinaryEnvelopeHeaderBytes
+            ? "bad_header_size"
+            : "payload_extent_mismatch_or_trailing");
+  }
+
+  DatatypeBinaryValueView value;
+  value.type_id =
+      static_cast<CanonicalTypeId>(LoadLittle32(encoded + kOffsetTypeId));
+  const u16 flags = LoadLittle16(encoded + kOffsetFlags);
+  value.is_null = (flags & BinaryFlag::is_null) != 0;
+  value.payload_is_toast_reference =
+      (flags & BinaryFlag::payload_is_toast_reference) != 0;
+  value.payload_data = value.is_null
+      ? nullptr
+      : encoded + kDatatypeBinaryEnvelopeHeaderBytes;
+  value.payload_bytes = payload_bytes;
+
+  if (value.type_id != CanonicalTypeId::binary) {
+    return BinaryNoAllocFrameError(kOffsetTypeId,
+                                   "expected_binary_type_code_301");
+  }
+
+  const u64 expected_checksum =
+      LoadLittle64(encoded + kOffsetPayloadChecksum);
+  std::array<byte, kDatatypeBinaryEnvelopeHeaderBytes> canonical_header{};
+  WriteBinaryValueHeader(value, expected_checksum, canonical_header.data());
+  if (std::memcmp(canonical_header.data(), encoded,
+                  canonical_header.size()) != 0) {
+    std::size_t mismatch_offset = 0;
+    while (mismatch_offset < canonical_header.size() &&
+           canonical_header[mismatch_offset] == encoded[mismatch_offset]) {
+      ++mismatch_offset;
+    }
+    return BinaryNoAllocFrameError(
+        mismatch_offset, "unknown_flags_or_reserved_nonzero");
+  }
+
+  // Validate state and extent before traversing payload bytes. The successful
+  // borrowed value is held locally until checksum validation also succeeds.
+  const auto validation = ValidateCanonicalBinaryValueViewNoAllocCore(
+      value, context, admit_clean_null);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (expected_checksum !=
+      PayloadChecksum(value.payload_data, value.payload_bytes)) {
+    return BinaryNoAllocIntegrityError("payload_checksum_mismatch");
+  }
+  return BinaryNoAllocOk(value);
+}
+
+DatatypeBinaryAllocationFreeViewResult
+DecodeCanonicalBinaryValueViewNoAlloc(
+    const byte* encoded, std::size_t encoded_bytes,
+    const DatatypeBinaryDiagnosticContextV1& context) noexcept {
+  return DecodeCanonicalBinaryValueViewNoAllocCore(
+      encoded, encoded_bytes, context, false);
+}
+
 DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryValueView& value) {
+  if (value.type_id == CanonicalTypeId::binary) {
+    return MaterializeBinaryViewResult(
+        ValidateCanonicalBinaryValueViewNoAllocCore(
+            value, kCurrentBinaryContext, true));
+  }
+  // SQL_NULL state is authoritative for the remaining general canonical types.
   if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
       value.payload_bytes > std::numeric_limits<u32>::max() ||
       value.payload_bytes > std::numeric_limits<std::size_t>::max() -
@@ -682,7 +1000,15 @@ DatatypeBinaryResult ValidateDatatypeBinaryValue(const DatatypeBinaryValue& valu
   DatatypeBinaryResult result;
   result.status = validated.status;
   result.diagnostic = std::move(validated.diagnostic);
-  if (validated.ok()) result.value = value;
+  if (validated.ok()) {
+    try {
+      result.value = value;
+    } catch (const std::bad_alloc&) {
+      if (value.type_id != CanonicalTypeId::binary) throw;
+      return BinaryResourceError(
+          "binary_validation_result_allocation_failed");
+    }
+  }
   return result;
 }
 
@@ -695,8 +1021,11 @@ DatatypeBinaryViewResult EncodeDatatypeBinaryValueInto(
                                 kDatatypeBinaryEnvelopeHeaderBytes ||
       destination == nullptr || destination_bytes < kDatatypeBinaryEnvelopeHeaderBytes ||
       value.payload_bytes > destination_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
-    auto failure = BinaryViewError("RESOURCE.BUDGET_EXCEEDED",
-                                   "datatype.binary.destination_capacity_insufficient");
+    auto failure = BinaryViewError(
+        value.type_id == CanonicalTypeId::binary
+            ? "CTB.BINARY.RESOURCE_EXHAUSTED"
+            : "RESOURCE.BUDGET_EXCEEDED",
+        "datatype.binary.destination_capacity_insufficient");
     failure.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::datatypes};
     failure.diagnostic.status = failure.status;
     return failure;
@@ -714,14 +1043,31 @@ DatatypeBinaryResult EncodeDatatypeBinaryValue(const DatatypeBinaryValue& value)
   result.status = validation.status;
   result.diagnostic = std::move(validation.diagnostic);
   if (!validation.ok()) return result;
-  result.value = value;
-  result.encoded.assign(kDatatypeBinaryEnvelopeHeaderBytes + value.payload.size(), 0);
-  WriteValidatedBinaryValue(view, result.encoded.data());
+  try {
+    result.value = value;
+    result.encoded.assign(
+        kDatatypeBinaryEnvelopeHeaderBytes + value.payload.size(), 0);
+    WriteValidatedBinaryValue(view, result.encoded.data());
+  } catch (const std::bad_alloc&) {
+    if (value.type_id != CanonicalTypeId::binary) throw;
+    return BinaryResourceError("binary_encode_allocation_failed");
+  }
   return result;
 }
 
 DatatypeBinaryDecodedViewResult DecodeDatatypeBinaryValueView(
     const byte* encoded, std::size_t encoded_bytes) {
+  // The exact base.binary profile uses the allocation-free datatype-owned
+  // parser. This owning API materializes its diagnostic only after the fixed
+  // result is final. Other canonical types retain the general SBDVAL01 path.
+  if (encoded != nullptr &&
+      encoded_bytes >= kDatatypeBinaryEnvelopeHeaderBytes &&
+      static_cast<CanonicalTypeId>(
+          LoadLittle32(encoded + kOffsetTypeId)) == CanonicalTypeId::binary) {
+    return MaterializeBinaryDecodedViewResult(
+        DecodeCanonicalBinaryValueViewNoAllocCore(
+            encoded, encoded_bytes, kCurrentBinaryContext, true));
+  }
   const auto error = [](std::string code, std::string key, std::string detail = {}) {
     auto failure = BinaryViewError(std::move(code), std::move(key), std::move(detail));
     return DatatypeBinaryDecodedViewResult{failure.status, std::move(failure.diagnostic), {}};
@@ -779,12 +1125,21 @@ DatatypeBinaryResult DecodeDatatypeBinaryValue(const std::vector<byte>& encoded)
   result.status = decoded.status;
   result.diagnostic = std::move(decoded.diagnostic);
   if (!decoded.ok()) return result;
-  result.value.type_id = decoded.value.type_id;
-  result.value.is_null = decoded.value.is_null;
-  result.value.payload_is_toast_reference = decoded.value.payload_is_toast_reference;
-  result.value.payload.assign(decoded.value.payload_data,
-                             decoded.value.payload_data + decoded.value.payload_bytes);
-  result.encoded = encoded;
+  try {
+    result.value.type_id = decoded.value.type_id;
+    result.value.is_null = decoded.value.is_null;
+    result.value.payload_is_toast_reference =
+        decoded.value.payload_is_toast_reference;
+    if (decoded.value.payload_bytes != 0) {
+      result.value.payload.assign(
+          decoded.value.payload_data,
+          decoded.value.payload_data + decoded.value.payload_bytes);
+    }
+    result.encoded = encoded;
+  } catch (const std::bad_alloc&) {
+    if (decoded.value.type_id != CanonicalTypeId::binary) throw;
+    return BinaryResourceError("binary_decode_allocation_failed");
+  }
   return result;
 }
 

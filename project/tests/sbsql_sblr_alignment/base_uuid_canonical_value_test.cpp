@@ -493,14 +493,19 @@ void PresentSemanticsRefuse() {
   for (const auto candidate : {dt::CanonicalTypeId::uuid,
                                dt::CanonicalTypeId::binary,
                                dt::CanonicalTypeId::character}) {
+    const auto expected = candidate == dt::CanonicalTypeId::binary
+        ? dt::DatatypeCastCategory::lossless_explicit
+        : dt::DatatypeCastCategory::forbidden;
     Check(dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uuid, candidate) ==
-              dt::DatatypeCastCategory::forbidden &&
+              expected &&
               dt::ClassifyDatatypeCast(candidate, dt::CanonicalTypeId::uuid) ==
-              dt::DatatypeCastCategory::forbidden &&
+              expected &&
               dt::ClassifyDatatypeCast(dt::CanonicalTypeId::uuid, candidate,
                                        true) ==
-              dt::DatatypeCastCategory::forbidden,
-          "all representative UUID incident cast classifications refuse");
+              expected &&
+              dt::ClassifyDatatypeCast(candidate, dt::CanonicalTypeId::uuid,
+                                       true) == expected,
+          "UUID/binary classifications are explicit-only while UUID identity and text remain unresolved");
   }
   for (const auto context : {dt::DatatypeCastContext::implicit,
                              dt::DatatypeCastContext::assignment,
@@ -526,22 +531,59 @@ void PresentSemanticsRefuse() {
       incoming.target_type_id = dt::CanonicalTypeId::uuid;
       incoming.target_descriptor = present.descriptor;
       const auto incoming_result = dt::CastDatatypeValue(incoming);
-      Check(RejectedAs(identity_result, "DATATYPE.CAST_FORBIDDEN",
-                       "uuid_present_cast_policy_unresolved") &&
-                RejectedAs(outgoing_result, "DATATYPE.CAST_FORBIDDEN",
-                           "uuid_present_cast_policy_unresolved") &&
-                RejectedAs(incoming_result, "DATATYPE.CAST_FORBIDDEN",
-                           "uuid_present_cast_policy_unresolved") &&
-                identity_result.value.type_id == dt::CanonicalTypeId::unknown &&
-                outgoing_result.value.type_id == dt::CanonicalTypeId::unknown &&
-                incoming_result.value.type_id == dt::CanonicalTypeId::unknown &&
-                identity_result.value.encoded_value.empty() &&
-                outgoing_result.value.encoded_value.empty() &&
-                incoming_result.value.encoded_value.empty() &&
-                present.encoded_value == original,
-            "UUID PRESENT identity and binary casts refuse atomically");
+      const bool identity_refused =
+          RejectedAs(identity_result, "DATATYPE.CAST_FORBIDDEN",
+                     "uuid_present_cast_policy_unresolved") &&
+          identity_result.value.type_id == dt::CanonicalTypeId::unknown &&
+          identity_result.value.encoded_value.empty();
+      if (context == dt::DatatypeCastContext::explicit_cast) {
+        Check(identity_refused && outgoing_result.ok() && incoming_result.ok() &&
+                  outgoing_result.category ==
+                      dt::DatatypeCastCategory::lossless_explicit &&
+                  incoming_result.category ==
+                      dt::DatatypeCastCategory::lossless_explicit &&
+                  outgoing_result.value.type_id ==
+                      dt::CanonicalTypeId::binary &&
+                  incoming_result.value.type_id ==
+                      dt::CanonicalTypeId::uuid &&
+                  !outgoing_result.value.is_null &&
+                  !incoming_result.value.is_null &&
+                  outgoing_result.value.encoded_value == original &&
+                  incoming_result.value.encoded_value == original &&
+                  present.encoded_value == original,
+              "explicit UUID/binary raw16 casts preserve all 16 bytes while UUID identity remains owner-refused");
+      } else {
+        Check(identity_refused &&
+                  RejectedAs(outgoing_result, "DATATYPE.CAST_FORBIDDEN",
+                             "explicit_cast_required") &&
+                  RejectedAs(incoming_result, "DATATYPE.CAST_FORBIDDEN",
+                             "explicit_cast_required") &&
+                  outgoing_result.value.type_id ==
+                      dt::CanonicalTypeId::unknown &&
+                  incoming_result.value.type_id ==
+                      dt::CanonicalTypeId::unknown &&
+                  outgoing_result.value.encoded_value.empty() &&
+                  incoming_result.value.encoded_value.empty() &&
+                  present.encoded_value == original,
+              "implicit and assignment UUID/binary raw16 casts refuse atomically");
+      }
     }
   }
+
+  dt::DatatypeCastRequest truncated_binary;
+  truncated_binary.value = {dt::CanonicalTypeId::binary,
+                            original.substr(0, original.size() - 1), false};
+  truncated_binary.value.descriptor = binary_descriptor;
+  truncated_binary.target_type_id = dt::CanonicalTypeId::uuid;
+  truncated_binary.target_descriptor = present.descriptor;
+  truncated_binary.context = dt::DatatypeCastContext::explicit_cast;
+  truncated_binary.explicit_cast = true;
+  const auto truncated_result = dt::CastDatatypeValue(truncated_binary);
+  Check(RejectedAs(truncated_result, "DATATYPE.CAST_FORBIDDEN",
+                   "binary_uuid_requires_exactly_16_octets") &&
+            truncated_result.value.type_id == dt::CanonicalTypeId::unknown &&
+            truncated_result.value.encoded_value.empty(),
+        "explicit binary-to-UUID cast refuses a truncated raw15 value atomically");
 
   character_descriptor.nullable_allowed = true;
   dt::DatatypeCastRequest cross_null;

@@ -12,12 +12,14 @@
 
 #include <array>
 #include <cstring>
+#include <new>
 #include <utility>
 
 namespace scratchbird::core::datatypes {
 namespace {
 
 inline constexpr std::size_t kCanonicalCharacterMaximumBytes = 16'777'216;
+inline constexpr std::size_t kCanonicalBinaryMaximumBytes = 16'777'216;
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::LoadLittle16;
@@ -79,6 +81,16 @@ DatatypePhysicalEncodingResult Failure(std::string diagnostic_code,
   return result;
 }
 
+DatatypePhysicalEncodingResult BinaryResourceFailure(std::string detail) {
+  DatatypePhysicalEncodingResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error,
+                   Subsystem::datatypes};
+  result.diagnostic = PhysicalDiagnostic(
+      result.status, "CTB.BINARY.RESOURCE_EXHAUSTED",
+      "datatype.physical.resource_exhausted", std::move(detail));
+  return result;
+}
+
 u32 Checksum(CanonicalTypeId type_id,
              DatatypePhysicalValueState state,
              const byte* payload,
@@ -121,10 +133,20 @@ bool PayloadAllowedByLayout(const DatatypePhysicalValue& value,
     return true;
   }
 
-  const bool empty_character_value =
+  // SBDPV001 is a structural component envelope, not page/LOB authority.
+  // base.binary therefore admits only a direct VALUE or payload-free SQL_NULL
+  // at this boundary.
+  if (value.type_id == CanonicalTypeId::binary &&
+      value.state != DatatypePhysicalValueState::value) {
+    *detail = "binary_state_not_admitted";
+    return false;
+  }
+
+  const bool empty_direct_value =
       value.state == DatatypePhysicalValueState::value &&
-      value.type_id == CanonicalTypeId::character;
-  if (value.payload.empty() && !empty_character_value) {
+      (value.type_id == CanonicalTypeId::character ||
+       value.type_id == CanonicalTypeId::binary);
+  if (value.payload.empty() && !empty_direct_value) {
     *detail = "payload_missing";
     return false;
   }
@@ -140,6 +162,11 @@ bool PayloadAllowedByLayout(const DatatypePhysicalValue& value,
           *detail = "character_utf8_invalid";
           return false;
         }
+      }
+      if (value.type_id == CanonicalTypeId::binary &&
+          value.payload.size() > kCanonicalBinaryMaximumBytes) {
+        *detail = "binary_length_exceeded";
+        return false;
       }
       if (layout.storage_class == DatatypeStorageClass::inline_fixed &&
           layout.inline_bytes != value.payload.size()) {
@@ -189,6 +216,27 @@ bool PayloadAllowedByLayout(const DatatypePhysicalValue& value,
   }
   *detail = "state_unknown";
   return false;
+}
+
+const char* PayloadRefusalDiagnosticCode(
+    DatatypePhysicalValueState state,
+    const std::string& detail) noexcept {
+  if (state == DatatypePhysicalValueState::sql_null) {
+    return "DATATYPE.NULL_STATE.INVALID";
+  }
+  if (detail == "character_length_exceeded") {
+    return "CTB.TEXT.LENGTH_EXCEEDED";
+  }
+  if (detail == "character_utf8_invalid") {
+    return "CTB.TEXT.INVALID_ENCODING";
+  }
+  if (detail == "binary_length_exceeded") {
+    return "CTB.BINARY.LENGTH_EXCEEDED";
+  }
+  if (detail == "binary_state_not_admitted") {
+    return "CTB.BINARY.FRAME_INVALID";
+  }
+  return "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED";
 }
 
 }  // namespace
@@ -258,13 +306,7 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
   }
   std::string detail;
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
-    return Failure(value.state == DatatypePhysicalValueState::sql_null
-                       ? "DATATYPE.NULL_STATE.INVALID"
-                       : detail == "character_length_exceeded"
-                             ? "CTB.TEXT.LENGTH_EXCEEDED"
-                             : detail == "character_utf8_invalid"
-                                   ? "CTB.TEXT.INVALID_ENCODING"
-                                   : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+    return Failure(PayloadRefusalDiagnosticCode(value.state, detail),
                    "datatype.physical.payload_refused",
                    detail);
   }
@@ -274,26 +316,33 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
                    CanonicalTypeName(value.type_id));
   }
 
-  DatatypePhysicalEncodingResult result;
-  result.status = PhysicalOkStatus();
-  result.value = value;
-  result.bytes.resize(kHeaderBytes + value.payload.size());
-  std::memcpy(result.bytes.data() + kOffsetMagic,
-              kPhysicalEncodingMagic.data(),
-              kPhysicalEncodingMagic.size());
-  StoreLittle32(result.bytes.data() + kOffsetType,
-                static_cast<u32>(value.type_id));
-  StoreLittle16(result.bytes.data() + kOffsetState,
-                static_cast<u16>(value.state));
-  StoreLittle16(result.bytes.data() + kOffsetFlags, 0);
-  StoreLittle32(result.bytes.data() + kOffsetPayloadBytes,
-                static_cast<u32>(value.payload.size()));
-  StoreLittle32(result.bytes.data() + kOffsetChecksum,
-                Checksum(value.type_id, value.state, value.payload));
-  std::memcpy(result.bytes.data() + kHeaderBytes,
-              value.payload.data(),
-              value.payload.size());
-  return result;
+  try {
+    DatatypePhysicalEncodingResult result;
+    result.status = PhysicalOkStatus();
+    result.value = value;
+    result.bytes.resize(kHeaderBytes + value.payload.size());
+    std::memcpy(result.bytes.data() + kOffsetMagic,
+                kPhysicalEncodingMagic.data(),
+                kPhysicalEncodingMagic.size());
+    StoreLittle32(result.bytes.data() + kOffsetType,
+                  static_cast<u32>(value.type_id));
+    StoreLittle16(result.bytes.data() + kOffsetState,
+                  static_cast<u16>(value.state));
+    StoreLittle16(result.bytes.data() + kOffsetFlags, 0);
+    StoreLittle32(result.bytes.data() + kOffsetPayloadBytes,
+                  static_cast<u32>(value.payload.size()));
+    StoreLittle32(result.bytes.data() + kOffsetChecksum,
+                  Checksum(value.type_id, value.state, value.payload));
+    if (!value.payload.empty()) {
+      std::memcpy(result.bytes.data() + kHeaderBytes,
+                  value.payload.data(),
+                  value.payload.size());
+    }
+    return result;
+  } catch (const std::bad_alloc&) {
+    if (value.type_id != CanonicalTypeId::binary) throw;
+    return BinaryResourceFailure("binary_encode_allocation_failed");
+  }
 }
 
 DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
@@ -325,6 +374,27 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
                    "datatype.physical.length_mismatch",
                    CanonicalTypeName(type_id));
   }
+  // Reject base.binary states and lengths from the fixed header before
+  // checksum traversal and before materializing caller-controlled bytes.
+  if (type_id == CanonicalTypeId::binary) {
+    if (state == DatatypePhysicalValueState::sql_null && payload_size != 0) {
+      return Failure("DATATYPE.NULL_STATE.INVALID",
+                     "datatype.physical.payload_refused",
+                     "null_payload_present");
+    }
+    if (state != DatatypePhysicalValueState::sql_null &&
+        state != DatatypePhysicalValueState::value) {
+      return Failure("CTB.BINARY.FRAME_INVALID",
+                     "datatype.physical.payload_refused",
+                     "binary_state_not_admitted");
+    }
+    if (state == DatatypePhysicalValueState::value &&
+        payload_size > kCanonicalBinaryMaximumBytes) {
+      return Failure("CTB.BINARY.LENGTH_EXCEEDED",
+                     "datatype.physical.payload_refused",
+                     "binary_length_exceeded");
+    }
+  }
   if (Checksum(type_id, state, data + kHeaderBytes, payload_size) !=
       LoadLittle32(data + kOffsetChecksum)) {
     return Failure("SB-DATATYPE-PHYSICAL-CHECKSUM-MISMATCH",
@@ -355,7 +425,12 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
   DatatypePhysicalValue value;
   value.type_id = type_id;
   value.state = state;
-  value.payload.assign(data + kHeaderBytes, data + size);
+  try {
+    value.payload.assign(data + kHeaderBytes, data + size);
+  } catch (const std::bad_alloc&) {
+    if (type_id != CanonicalTypeId::binary) throw;
+    return BinaryResourceFailure("binary_decode_payload_allocation_failed");
+  }
 
   const auto layout = LookupDatatypeStorageLayout(value.type_id);
   if (!layout.ok()) {
@@ -365,13 +440,7 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
   }
   std::string detail;
   if (!PayloadAllowedByLayout(value, layout.layout, &detail)) {
-    return Failure(value.state == DatatypePhysicalValueState::sql_null
-                       ? "DATATYPE.NULL_STATE.INVALID"
-                       : detail == "character_length_exceeded"
-                             ? "CTB.TEXT.LENGTH_EXCEEDED"
-                             : detail == "character_utf8_invalid"
-                                   ? "CTB.TEXT.INVALID_ENCODING"
-                                   : "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+    return Failure(PayloadRefusalDiagnosticCode(value.state, detail),
                    "datatype.physical.payload_refused",
                    detail);
   }
@@ -379,7 +448,12 @@ DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
   DatatypePhysicalEncodingResult result;
   result.status = PhysicalOkStatus();
   result.value = std::move(value);
-  result.bytes.assign(data, data + size);
+  try {
+    result.bytes.assign(data, data + size);
+  } catch (const std::bad_alloc&) {
+    if (type_id != CanonicalTypeId::binary) throw;
+    return BinaryResourceFailure("binary_decode_frame_allocation_failed");
+  }
   return result;
 }
 

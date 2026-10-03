@@ -714,8 +714,11 @@ void TestExplicitDisplayBoundaryRendering() {
               rendered_null.display_value == "NULL",
           "MDF-014 null display boundary drifted");
 
-  const auto rendered_binary = dt::RenderDatatypeValueForDisplay(
-      {Value(dt::CanonicalTypeId::binary, std::string("A\0B", 3))});
+  auto binary_display_value =
+      Value(dt::CanonicalTypeId::binary, std::string("A\0B", 3));
+  binary_display_value.descriptor = Descriptor(dt::CanonicalTypeId::binary);
+  const auto rendered_binary =
+      dt::RenderDatatypeValueForDisplay({binary_display_value});
   Require(rendered_binary.ok() &&
               rendered_binary.canonical_type_name == "binary" &&
               rendered_binary.display_value == "0x410042",
@@ -935,34 +938,83 @@ void TestBinaryUuidOperations() {
   dt::DatatypeCastRequest cast;
   cast.value = UuidValue(bytes);
   cast.explicit_cast = true;
-  for (auto target : {dt::CanonicalTypeId::uuid, dt::CanonicalTypeId::binary}) {
-    cast.target_type_id = target;
-    cast.target_descriptor = Descriptor(target);
-    const auto result = dt::CastDatatypeValue(cast);
-    Require(!result.ok() &&
-                result.diagnostic.diagnostic_code ==
-                    "DATATYPE.CAST_FORBIDDEN" &&
-                DiagnosticDetail(result.diagnostic) ==
-                    "uuid_present_cast_policy_unresolved" &&
-                result.value.type_id == dt::CanonicalTypeId::unknown &&
-                result.value.encoded_value.empty(),
-            "UUID identity/binary cast did not fail closed");
+  cast.context = dt::DatatypeCastContext::explicit_cast;
+  cast.target_type_id = dt::CanonicalTypeId::uuid;
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
+  const auto uuid_identity = dt::CastDatatypeValue(cast);
+  Require(!uuid_identity.ok() &&
+              uuid_identity.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(uuid_identity.diagnostic) ==
+                  "uuid_present_cast_policy_unresolved" &&
+              uuid_identity.value.type_id == dt::CanonicalTypeId::unknown &&
+              uuid_identity.value.encoded_value.empty(),
+          "UUID identity did not retain its unresolved owner policy");
+
+  cast.target_type_id = dt::CanonicalTypeId::binary;
+  cast.target_descriptor = Descriptor(dt::CanonicalTypeId::binary);
+  const auto uuid_to_binary = dt::CastDatatypeValue(cast);
+  Require(uuid_to_binary.ok() &&
+              uuid_to_binary.category ==
+                  dt::DatatypeCastCategory::lossless_explicit &&
+              uuid_to_binary.value.type_id == dt::CanonicalTypeId::binary &&
+              !uuid_to_binary.value.is_null &&
+              uuid_to_binary.value.encoded_value == bytes,
+          "explicit UUID-to-binary cast did not preserve raw16 bytes");
+
+  for (const auto context : {dt::DatatypeCastContext::implicit,
+                             dt::DatatypeCastContext::assignment}) {
+    cast.context = context;
+    cast.explicit_cast = true;
+    const auto refused_outgoing = dt::CastDatatypeValue(cast);
+    auto refused_incoming_request = cast;
+    refused_incoming_request.value =
+        Value(dt::CanonicalTypeId::binary, bytes);
+    refused_incoming_request.value.descriptor =
+        Descriptor(dt::CanonicalTypeId::binary);
+    refused_incoming_request.target_type_id = dt::CanonicalTypeId::uuid;
+    refused_incoming_request.target_descriptor =
+        Descriptor(dt::CanonicalTypeId::uuid);
+    const auto refused_incoming =
+        dt::CastDatatypeValue(refused_incoming_request);
+    Require(!refused_outgoing.ok() && !refused_incoming.ok() &&
+                DiagnosticDetail(refused_outgoing.diagnostic) ==
+                    "explicit_cast_required" &&
+                DiagnosticDetail(refused_incoming.diagnostic) ==
+                    "explicit_cast_required" &&
+                refused_outgoing.value.type_id ==
+                    dt::CanonicalTypeId::unknown &&
+                refused_incoming.value.type_id ==
+                    dt::CanonicalTypeId::unknown &&
+                refused_outgoing.value.encoded_value.empty() &&
+                refused_incoming.value.encoded_value.empty(),
+            "legacy explicit flag upgraded an implicit/assignment UUID-binary cast");
   }
+
   cast.value = Value(dt::CanonicalTypeId::binary, bytes);
   cast.value.descriptor = Descriptor(dt::CanonicalTypeId::binary);
   cast.target_type_id = dt::CanonicalTypeId::uuid;
   cast.target_descriptor = Descriptor(dt::CanonicalTypeId::uuid);
+  cast.context = dt::DatatypeCastContext::explicit_cast;
+  cast.explicit_cast = true;
   const auto binary_to_uuid = dt::CastDatatypeValue(cast);
-  Require(!binary_to_uuid.ok() &&
-              binary_to_uuid.diagnostic.diagnostic_code ==
-                  "DATATYPE.CAST_FORBIDDEN" &&
-              DiagnosticDetail(binary_to_uuid.diagnostic) ==
-                  "uuid_present_cast_policy_unresolved" &&
-              binary_to_uuid.value.type_id == dt::CanonicalTypeId::unknown &&
-              binary_to_uuid.value.encoded_value.empty(),
-          "binary16-to-UUID cast did not fail at unresolved policy");
+  Require(binary_to_uuid.ok() &&
+              binary_to_uuid.category ==
+                  dt::DatatypeCastCategory::lossless_explicit &&
+              binary_to_uuid.value.type_id == dt::CanonicalTypeId::uuid &&
+              !binary_to_uuid.value.is_null &&
+              binary_to_uuid.value.encoded_value == bytes,
+          "explicit binary16-to-UUID cast did not preserve raw16 bytes");
   cast.value.encoded_value.pop_back();
-  Require(!dt::CastDatatypeValue(cast).ok(), "truncated UUID accepted");
+  const auto truncated_uuid = dt::CastDatatypeValue(cast);
+  Require(!truncated_uuid.ok() &&
+              truncated_uuid.diagnostic.diagnostic_code ==
+                  "DATATYPE.CAST_FORBIDDEN" &&
+              DiagnosticDetail(truncated_uuid.diagnostic) ==
+                  "binary_uuid_requires_exactly_16_octets" &&
+              truncated_uuid.value.type_id == dt::CanonicalTypeId::unknown &&
+              truncated_uuid.value.encoded_value.empty(),
+          "truncated binary-to-UUID cast did not refuse atomically");
   cast.value = Value(dt::CanonicalTypeId::character, "01020304-0506-7000-8000-090a3b7c00ff");
   cast.value.descriptor = Descriptor(dt::CanonicalTypeId::character);
   const auto text_to_uuid = dt::CastDatatypeValue(cast);

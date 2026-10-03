@@ -595,9 +595,9 @@ void PresentSemanticsRefuse() {
       Check(RejectedAs(identity_result, "DATATYPE.CAST_FORBIDDEN",
                        "ip_address_present_cast_policy_unresolved") &&
                 RejectedAs(outgoing_result, "DATATYPE.CAST_FORBIDDEN",
-                           "ip_address_present_cast_policy_unresolved") &&
+                           "base_binary_ordered_pair_forbidden") &&
                 RejectedAs(incoming_result, "DATATYPE.CAST_FORBIDDEN",
-                           "ip_address_present_cast_policy_unresolved") &&
+                           "base_binary_ordered_pair_forbidden") &&
                 identity_result.value.type_id == dt::CanonicalTypeId::unknown &&
                 outgoing_result.value.type_id == dt::CanonicalTypeId::unknown &&
                 incoming_result.value.type_id == dt::CanonicalTypeId::unknown &&
