@@ -1,7 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_allocation_map.hpp"
+#include "native_allocation_chain_backing.hpp"
 #include "native_decoded_storage_ranges.hpp"
+#include "native_metadata_memory.hpp"
 #include "disk_device.hpp"
 #include "filespace_page_zero.hpp"
 #include "hash_digest_parts.hpp"
@@ -226,103 +228,127 @@ NativeAllocationMapViewResult DecodeNativeAllocationMapInto(std::span<const byte
    catch(...){return {E::invalid_family,{}};}
 }
 
-static NativeAllocationChainResult ReadAllocationChain(
-    disk::FileDevice& device, const disk::FilespaceBootstrapBinding& binding,
+static NativeAllocationChainView ReadAllocationChainBacked(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
     const disk::FilespaceRootReference* selected,u64 maximum_retained_image_bytes,
-    const std::vector<byte>* historical_zero = nullptr,
-    const std::array<byte, 32>* root_sha256 = nullptr) noexcept {
+    const std::span<const byte>* historical_zero,const std::array<byte,32>* root_sha256,
+    std::pmr::memory_resource& resource,disk::FileDevice::ReadLatencyBatch* batch,
+    NativeAllocationChainDeviceRead& receipt) noexcept {
+  const auto fail=[](E error){NativeAllocationChainView r;r.error=error;return r;};
   try {
-    if (!maximum_retained_image_bytes) return ChainFail(E::resource_exhausted);
+    disk::detail::NativeMetadataScratch scratch{&resource};
+    const auto read=[&](u64 offset,void* bytes,std::size_t count){
+      auto io=batch?batch->ReadAt(offset,bytes,count):device.ReadAt(offset,bytes,count);
+      receipt.io_status=io.status;receipt.io_diagnostic=std::move(io.diagnostic);
+      if(io.bytes_transferred>std::numeric_limits<u64>::max()-receipt.physical_bytes_read)throw E::invalid_range;
+      receipt.physical_bytes_read+=io.bytes_transferred;return io;
+    };
+    const auto size=[&]{auto io=device.Size();receipt.io_status=io.status;
+      receipt.io_diagnostic=std::move(io.diagnostic);return io;};
+
+    if (!maximum_retained_image_bytes) return fail(E::resource_exhausted);
     const auto guard = device.AcquireOperationGuard();
     u64 initial_size = 0, retained_bytes = 0;
     if (historical_zero) {
       if (!selected || !root_sha256 || Zero(root_sha256->data(), root_sha256->size()))
-        return ChainFail(E::invalid_reference);
+        return fail(E::invalid_reference);
       if (historical_zero->size() > maximum_retained_image_bytes ||
           disk::kFilespaceBootstrapBytes > maximum_retained_image_bytes - historical_zero->size())
-        return ChainFail(E::resource_exhausted);
+        return fail(E::resource_exhausted);
       retained_bytes = historical_zero->size() + disk::kFilespaceBootstrapBytes;
     }
+    std::span<const byte> zero_image;
     const auto zero = historical_zero
-        ? disk::DecodeFilespacePageZero(historical_zero->data(), historical_zero->size(), &binding)
-        : disk::ReadFilespacePageZeroFromOpenDevice(device, &binding);
+        ? disk::DecodeFilespacePageZeroInto(scratch.Copy<byte>(*historical_zero),
+            scratch.Array<disk::FilespaceRootReference>(32),&binding)
+        : disk::detail::ReadNativeMetadataPageZero(binding,scratch,read,size,zero_image);
     if (!zero.ok()) {
-      if (zero.error == disk::FilespacePageZeroError::resource_exhausted) return ChainFail(E::resource_exhausted);
-      if (zero.error == disk::FilespacePageZeroError::hash_provider_failure) return ChainFail(E::hash_failure);
-      if (zero.error == disk::FilespacePageZeroError::io_failure) return ChainFail(E::io_failure);
-      return ChainFail(E::invalid_filespace);
+      if (zero.error == disk::FilespacePageZeroError::resource_exhausted) return fail(E::resource_exhausted);
+      if (zero.error == disk::FilespacePageZeroError::hash_provider_failure) return fail(E::hash_failure);
+      if (zero.error == disk::FilespacePageZeroError::io_failure) return fail(E::io_failure);
+      return fail(E::invalid_filespace);
     }
     const auto& z = *zero.record;
     if (z.bootstrap.flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
-      return ChainFail(E::cluster_requires_authority);
+      return fail(E::cluster_requires_authority);
     if (historical_zero) {
-      const auto actual = disk::ReadFilespaceBootstrapFromOpenDevice(device, &binding);
+      auto prefix=scratch.Array<byte>(disk::kFilespaceBootstrapBytes);
+      const auto io=read(0,prefix.data(),prefix.size());
+      if(!io.ok()||io.bytes_transferred!=prefix.size())return fail(E::io_failure);
+      const auto actual=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
       if (!actual.ok()) {
-        if (actual.error == disk::FilespaceBootstrapError::resource_exhausted) return ChainFail(E::resource_exhausted);
-        if (actual.error == disk::FilespaceBootstrapError::hash_provider_failure) return ChainFail(E::hash_failure);
+        if (actual.error == disk::FilespaceBootstrapError::resource_exhausted) return fail(E::resource_exhausted);
+        if (actual.error == disk::FilespaceBootstrapError::hash_provider_failure) return fail(E::hash_failure);
         if (actual.error == disk::FilespaceBootstrapError::io_failure ||
-            actual.error == disk::FilespaceBootstrapError::device_not_open) return ChainFail(E::io_failure);
-        return ChainFail(E::invalid_filespace);
+            actual.error == disk::FilespaceBootstrapError::device_not_open) return fail(E::io_failure);
+        return fail(E::invalid_filespace);
       }
       if (actual.preamble->flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
-        return ChainFail(E::cluster_requires_authority);
-      const auto size = device.Size();
-      if (!size.ok()) return ChainFail(E::io_failure);
-      initial_size = size.size_bytes;
+        return fail(E::cluster_requires_authority);
+      const auto observation = size();
+      if (!observation.ok()) return fail(E::io_failure);
+      initial_size = observation.size_bytes;
       if (initial_size < z.total_pages * z.bootstrap.page_size_bytes)
-        return ChainFail(E::invalid_range);
+        return fail(E::invalid_range);
     }
     const auto initial = std::find_if(z.roots.begin(), z.roots.end(), [](const auto& r) { return r.kind == 3; });
     const auto* root=selected?selected:initial==z.roots.end()?nullptr:&*initial;
     if (!root||root->kind!=3||root->page_type!=3||!V7(root->object_uuid)||!root->page_number||!root->page_generation||
-        root->filespace_uuid != binding.filespace_uuid || root->page_size_profile_uuid != binding.page_size_profile_uuid) return ChainFail(E::invalid_reference);
+        root->filespace_uuid != binding.filespace_uuid || root->page_size_profile_uuid != binding.page_size_profile_uuid) return fail(E::invalid_reference);
     disk::NativePageReference ref{root->filespace_uuid, root->page_number, root->page_generation, root->page_size_profile_uuid};
-    std::set<u64> slots; std::set<Uuid> page_ids{z.page_uuid};
-    NativeAllocationChainResult result;
+    std::pmr::set<u64> slots(&resource);std::pmr::set<Uuid> page_ids(&resource);
+    page_ids.insert(z.page_uuid);
+    std::pmr::vector<NativeAllocationChainPageView> pages(&resource);
+    NativeAllocationChainView result;
     result.retained_image_bytes = retained_bytes;
     std::array<byte, 32> expected_digest = root_sha256 ? *root_sha256 : std::array<byte, 32>{};
     u64 covered = 0;
     for (;;) {
-      if (!slots.insert(ref.page_number).second) return ChainFail(E::chain_mismatch);
+      if (!slots.insert(ref.page_number).second) return fail(E::chain_mismatch);
       if (z.bootstrap.page_size_bytes > maximum_retained_image_bytes - result.retained_image_bytes)
-        return ChainFail(E::resource_exhausted);
-      if (ref.page_number >= z.total_pages) return ChainFail(E::invalid_range);
-      std::vector<byte> bytes(z.bootstrap.page_size_bytes);
-      const auto io = device.ReadAt(ref.page_number * z.bootstrap.page_size_bytes, bytes.data(), bytes.size());
-      if (!io.ok() || io.bytes_transferred != bytes.size()) return ChainFail(E::io_failure);
+        return fail(E::resource_exhausted);
+      if (ref.page_number >= z.total_pages) return fail(E::invalid_range);
+      auto bytes=scratch.Array<byte>(z.bootstrap.page_size_bytes);
+      const auto io = read(ref.page_number * z.bootstrap.page_size_bytes, bytes.data(), bytes.size());
+      if (!io.ok() || io.bytes_transferred != bytes.size()) return fail(E::io_failure);
       const disk::NativeCommonPageHeaderBinding expected{binding, ref.page_number, ref.page_generation, 3, {}};
       const auto common = disk::DecodeNativeCommonPageHeader(bytes.data(), 128, &expected);
-      if (!common.ok()) return ChainFail(E::binding_mismatch);
-      if (common.header->flags & 2) return ChainFail(E::cluster_requires_authority);
-      if (!page_ids.insert(common.header->page_uuid).second) return ChainFail(E::chain_mismatch);
-      if (!result.pages.empty() || root_sha256) {
-        const auto digest = Digest(bytes, false); if (!digest.ok()) return ChainFail(E::hash_failure);
-        if (digest.digest != expected_digest) return ChainFail(E::invalid_integrity);
+      if (!common.ok()) return fail(E::binding_mismatch);
+      if (common.header->flags & 2) return fail(E::cluster_requires_authority);
+      if (!page_ids.insert(common.header->page_uuid).second) return fail(E::chain_mismatch);
+      if (!pages.empty() || root_sha256) {
+        const auto digest = Digest(bytes, false); if (!digest.ok()) return fail(E::hash_failure);
+        if (digest.digest != expected_digest) return fail(E::invalid_integrity);
       }
-      auto decoded = DecodeNativeAllocationMap(bytes); if (!decoded.ok()) return ChainFail(decoded.error);
+      const auto available=bytes.size()-384;
+      const auto state_count=std::min<u64>(LoadLittle64(bytes.data()+192),u64{available}*2);
+      const auto record_count=std::min<std::size_t>(LoadLittle32(bytes.data()+308),available/128);
+      auto decoded=DecodeNativeAllocationMapInto(bytes,scratch.Array<NativeAllocationState>(state_count),
+        scratch.Array<NativeAllocationRecord>(record_count));
+      if(!decoded.ok())return fail(decoded.error);
       const auto& map = *decoded.map;
       if (map.object_uuid != root->object_uuid || map.total_pages != z.total_pages || map.first_page != covered)
-        return ChainFail(E::chain_mismatch);
-      if (!result.pages.empty()) {
-        const auto& head = *result.pages.front().map;
+        return fail(E::chain_mismatch);
+      if (!pages.empty()) {
+        const auto& head = pages.front().map;
         if (map.map_generation != head.map_generation || map.capacity_generation != head.capacity_generation ||
             map.creator_transaction_uuid != head.creator_transaction_uuid ||
             map.creator_operation_uuid != head.creator_operation_uuid ||
-            map.creator_local_transaction_id != head.creator_local_transaction_id) return ChainFail(E::chain_mismatch);
+            map.creator_local_transaction_id != head.creator_local_transaction_id) return fail(E::chain_mismatch);
       }
       covered += map.states.size();
       for (auto state : map.states) ++result.state_counts[static_cast<byte>(state)];
       result.retained_image_bytes += bytes.size();
       const auto next = map.next; expected_digest = map.next_sha256;
-      result.pages.push_back(std::move(decoded));
+      pages.push_back({map,bytes});
       if (!next) break;
       ref = *next;
     }
     if (covered != z.total_pages || (!selected&&(result.state_counts[0] + result.state_counts[4] != z.free_pages ||
-        result.state_counts[7] != z.preallocated_pages))) return ChainFail(E::counter_mismatch);
+        result.state_counts[7] != z.preallocated_pages))) return fail(E::counter_mismatch);
     const auto allocated = [&](u64 number, const Uuid& id, u64 generation, u32 type, const Uuid& owner) {
-      for (const auto& image : result.pages) {
-        const auto& map = *image.map;
+      for (const auto& image : pages) {
+        const auto& map = image.map;
         if (number < map.first_page || number - map.first_page >= map.states.size()) continue;
         if (map.states[number - map.first_page] != S::allocated) return false;
         const auto r = std::lower_bound(map.records.begin(), map.records.end(), number,
@@ -334,22 +360,98 @@ static NativeAllocationChainResult ReadAllocationChain(
     };
     const u32 zero_type = z.bootstrap.filespace_role <= 4 ? 1 : 2;
     if (!allocated(0, z.page_uuid, z.page_generation, zero_type, z.bootstrap.filespace_uuid))
-      return ChainFail(E::physical_owner_mismatch);
-    for (const auto& image : result.pages) {
-      const auto& map = *image.map; const auto& h = map.header;
+      return fail(E::physical_owner_mismatch);
+    for (const auto& image : pages) {
+      const auto& map = image.map; const auto& h = map.header;
       if (!allocated(h.page_number, h.page_uuid, h.page_generation, 3, map.object_uuid))
-        return ChainFail(E::physical_owner_mismatch);
+        return fail(E::physical_owner_mismatch);
     }
     if (historical_zero) {
-      const auto size = device.Size();
-      if (!size.ok()) return ChainFail(E::io_failure);
-      if (size.size_bytes != initial_size) return ChainFail(E::physical_extent_changed);
+      const auto observation = size();
+      if (!observation.ok()) return fail(E::io_failure);
+      if (observation.size_bytes != initial_size) return fail(E::physical_extent_changed);
     }
+    result.pages=scratch.Copy<NativeAllocationChainPageView>(pages);
     result.error = E::none;
     return result;
-  } catch (const std::bad_alloc&) { return ChainFail(E::resource_exhausted); }
-    catch (const std::length_error&) { return ChainFail(E::resource_exhausted); }
-    catch (...) { return ChainFail(E::io_failure); }
+  } catch (E error) { return fail(error); }
+    catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
+    catch (const std::length_error&) { return fail(E::resource_exhausted); }
+    catch (...) { return fail(E::io_failure); }
+}
+static NativeAllocationChainResult ReadAllocationChain(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
+    const disk::FilespaceRootReference* selected,u64 budget,
+    const std::vector<byte>* historical_zero=nullptr,
+    const std::array<byte,32>* root_sha256=nullptr) noexcept {
+  try {
+    disk::detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);
+    const std::span<const byte> historical=historical_zero?std::span<const byte>(*historical_zero):std::span<const byte>{};
+    NativeAllocationChainDeviceRead receipt;
+    const auto view=ReadAllocationChainBacked(device,binding,selected,budget,
+      historical_zero?&historical:nullptr,root_sha256,resource,nullptr,receipt);
+    if(!view.ok())return ChainFail(view.error);
+    // Materialize after the complete source fence releases. Both APIs use the
+    // same canonical decode and chain rules; no second provider pass is needed.
+    NativeAllocationChainResult out;out.retained_image_bytes=view.retained_image_bytes;
+    out.state_counts=view.state_counts;out.pages.reserve(view.pages.size());
+    for(const auto& page:view.pages){
+      NativeAllocationMapResult value;
+      NativeAllocationMap map;
+      static_cast<disk::NativeCommonPageHeader&>(map.header)=page.map.header;
+      map.object_uuid=page.map.object_uuid;map.map_generation=page.map.map_generation;
+      map.capacity_generation=page.map.capacity_generation;map.total_pages=page.map.total_pages;
+      map.first_page=page.map.first_page;map.creator_transaction_uuid=page.map.creator_transaction_uuid;
+      map.creator_local_transaction_id=page.map.creator_local_transaction_id;
+      map.creator_operation_uuid=page.map.creator_operation_uuid;
+      map.next=page.map.next;map.next_sha256=page.map.next_sha256;
+      map.states.assign(page.map.states.begin(),page.map.states.end());
+      map.records.assign(page.map.records.begin(),page.map.records.end());
+      value.map=std::move(map);value.bytes.assign(page.image.begin(),page.image.end());
+      value.error=E::none;out.pages.push_back(std::move(value));
+    }
+    out.error=E::none;return out;
+  }catch(const std::bad_alloc&){return ChainFail(E::resource_exhausted);}
+   catch(const std::length_error&){return ChainFail(E::resource_exhausted);}
+   catch(...){return ChainFail(E::io_failure);}
+}
+NativeAllocationChainDeviceRead detail::ReadNativeAllocationChainBacked(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,u64 budget,
+    NativeAllocationChainReadContext context,const disk::FilespaceRootReference* root,
+    const std::array<byte,32>* root_sha256,std::span<const byte> historical,
+    disk::FileDevice::ReadLatencyBatch& batch,std::pmr::memory_resource& resource) noexcept {
+  NativeAllocationChainDeviceRead out;
+  using C=NativeAllocationChainReadContext;
+  if((context!=C::bootstrap&&context!=C::selected&&context!=C::historical)||
+     (context==C::bootstrap?root!=nullptr:root==nullptr)||
+     (context==C::historical?(!root_sha256||historical.empty()):(root_sha256||!historical.empty()))||
+     &batch.device()!=&device)return out;
+  out.chain=ReadAllocationChainBacked(device,binding,root,budget,
+    context==C::historical?&historical:nullptr,root_sha256,resource,&batch,out);
+  return out;
+}
+NativeAllocationChainDeviceRead ReadNativeAllocationChainInto(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
+    u64 budget,NativeAllocationChainReadContext context,
+    const disk::FilespaceRootReference* root,const std::array<byte,32>* root_sha256,
+    std::span<const byte> historical,disk::FileDevice::ReadLatencyBatch& batch,
+    std::span<byte> backing) noexcept {
+  NativeAllocationChainDeviceRead out;
+  using C=NativeAllocationChainReadContext;
+  if((context!=C::bootstrap&&context!=C::selected&&context!=C::historical)||
+     (context==C::bootstrap?root!=nullptr:root==nullptr)||
+     (context==C::historical?(!root_sha256||historical.empty()):(root_sha256||!historical.empty()))||
+     &batch.device()!=&device)return out;
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(backing,input);};
+  if(!disjoint(std::span{&device,1})||!disjoint(std::span{&binding,1})||
+     !disjoint(std::span{&batch,1})||!disjoint(historical)||
+     (root&&!disjoint(std::span{root,1}))||(root_sha256&&!disjoint(std::span{root_sha256,1}))){
+    out.chain.error=E::invalid_workspace;return out;
+  }
+  disk::detail::NativeMetadataMemory resource(backing);
+  out=detail::ReadNativeAllocationChainBacked(device,binding,budget,context,root,root_sha256,historical,batch,resource);
+  if(out.ok())out.chain.backing_bytes_used=resource.used();
+  return out;
 }
 NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
     disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,u64 budget) noexcept {
