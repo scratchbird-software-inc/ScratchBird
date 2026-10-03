@@ -4,6 +4,7 @@
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include "uuid.hpp"
+#include "../disk/native_decoded_storage_ranges.hpp"
 #include <algorithm>
 #include <type_traits>
 #include <limits>
@@ -155,15 +156,36 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
 NativePublicationPlanViewImage DecodeNativePublicationPlanView(std::span<const byte> b) noexcept {
   return DecodePlan<true>(b);
 }
+namespace {
+template<class Checkpoint>
+NativePublicationGraphDigest GraphDigest(std::span<const byte> b,const Checkpoint& cp) {
+  if(!cp.completed||cp.creator_operation_uuid.is_nil()||(cp.flags&4))return {E::invalid_checkpoint,{}};
+  const auto role=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;});
+  if(role==cp.roots.end())return {E::invalid_checkpoint,{}};
+  const auto at=512+112*static_cast<std::size_t>(role-cp.roots.begin())+72;
+  const std::array<byte,64> zero{};const std::array<byte,8> domain{'S','B','P','P','G','R','0','1'};
+  const core::hash::HashDigestSegment parts[]={{domain.data(),8},{b.data(),336},{zero.data(),64},{b.data()+400,at-400},{zero.data(),32},{b.data()+at+32,b.size()-at-32}};
+  const auto sha=core::hash::ComputeSha256DigestPartsNative(parts,6);
+  return sha.ok()?NativePublicationGraphDigest{E::none,sha.digest}:NativePublicationGraphDigest{E::hash_failure,{}};
+}
+}
 NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigest(const std::vector<byte>& b) noexcept {
   try {
     const auto decoded=DecodeNativeCheckpointRoot(b);if(!decoded.ok())return {CheckpointError(decoded.error),{}};
-    const auto& cp=*decoded.root;if(!cp.completed||cp.creator_operation_uuid.is_nil()||(cp.flags&4))return {E::invalid_checkpoint,{}};
-    const auto role=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;});if(role==cp.roots.end())return {E::invalid_checkpoint,{}};
-    const auto at=512+112*static_cast<std::size_t>(role-cp.roots.begin())+72;const std::array<byte,64> zero{};const std::array<byte,8> domain{'S','B','P','P','G','R','0','1'};
-    const core::hash::HashDigestSegment parts[]={{domain.data(),8},{b.data(),336},{zero.data(),64},{b.data()+400,at-400},{zero.data(),32},{b.data()+at+32,b.size()-at-32}};
-    const auto sha=core::hash::ComputeSha256DigestParts(parts,6);return sha.ok()?NativePublicationGraphDigest{E::none,sha.digest}:NativePublicationGraphDigest{E::hash_failure,{}};
+    return GraphDigest(b,*decoded.root);
   }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::invalid_checkpoint,{}};}
+}
+NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigestInto(
+    std::span<const byte> bytes,std::span<NativeCheckpointRootReference> roots) noexcept {
+  try {
+    if(!roots.empty()&&reinterpret_cast<std::uintptr_t>(roots.data())%alignof(NativeCheckpointRootReference))return {E::invalid_workspace,{}};
+    const auto decoded=DecodeNativeCheckpointRootInto(bytes,roots);
+    if(!decoded.ok())return {decoded.error==NativeCheckpointError::invalid_backing?
+      E::invalid_workspace:CheckpointError(decoded.error),{}};
+    return GraphDigest(bytes,*decoded.root);
+  }catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}
+   catch(...){return {E::invalid_checkpoint,{}};}
 }
 NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicationPlan& p,const NativePublicationLease& lease,const std::vector<byte>& b) noexcept {
   try {
@@ -181,7 +203,8 @@ NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicat
   }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
 }
 namespace {
-E RecordFields(const NativePublicationPlan& p,const NativeManagementOperation& o){
+template<class Operation>
+E RecordFields(const NativePublicationPlan& p,const Operation& o){
   if(p.intent.startup_binding&&o.normalized_request_bytes.empty())return E::binding_mismatch;
   if(!p.management_extent||o.database_uuid!=p.header.database_uuid||o.bootstrap_uuid!=p.bootstrap_uuid||o.uuid!=p.management_extent->operation_uuid||o.revision!=p.management_extent->revision)return E::binding_mismatch;
   if(o.scope==NativeManagementScope::cluster)return E::cluster_requires_authority;
@@ -210,5 +233,25 @@ NativePublicationPlanError BindNativePublicationPlanToManagementRecord(const Nat
     if(!encoded.ok())return encoded.error==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:encoded.error==NativeManagementOperationError::hash_failure?E::hash_failure:E::binding_mismatch;
     return encoded.bytes.size()==p.management_extent->aggregate_bytes&&encoded.sha256==p.management_extent->aggregate_sha256?E::none:E::binding_mismatch;
   }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
+}
+NativePublicationPlanError BindNativePublicationPlanToManagementRecordInto(
+    const NativePublicationPlan& plan,std::span<const byte> bytes,
+    NativeManagementOperationViewWorkspace workspace) noexcept {
+  try {
+    const auto valid=Validate(plan);if(valid!=E::none)return valid;
+    if(!plan.management_extent)return E::binding_mismatch;
+    if((!workspace.steps.empty()&&reinterpret_cast<std::uintptr_t>(workspace.steps.data())%alignof(NativeManagementStepView))||
+       !disk::detail::DisjointNativeDecodeRegions(std::span{&plan,1},workspace.steps,workspace.identities))
+      return E::invalid_workspace;
+    const auto decoded=DecodeNativeManagementOperationInto(bytes,plan.management_extent->aggregate_bytes,workspace);
+    if(!decoded.ok())return decoded.error==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:
+      decoded.error==NativeManagementOperationError::hash_failure?E::hash_failure:
+      decoded.error==NativeManagementOperationError::invalid_workspace?E::invalid_workspace:E::binding_mismatch;
+    const auto fields=RecordFields(plan,*decoded.record);if(fields!=E::none)return fields;
+    return bytes.size()==plan.management_extent->aggregate_bytes&&
+      decoded.sha256==plan.management_extent->aggregate_sha256?E::none:E::binding_mismatch;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}
+   catch(const std::length_error&){return E::resource_exhausted;}
+   catch(...){return E::binding_mismatch;}
 }
 } // namespace scratchbird::storage::database

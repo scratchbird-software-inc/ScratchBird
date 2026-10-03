@@ -140,15 +140,150 @@ auto GraphOracle(Bytes b){const auto used=LoadLittle32(b.data()+140);std::fill(b
  for(std::size_t at=512;at<used;at+=112)if(LoadLittle16(b.data()+at)==16){std::fill(b.begin()+at+72,b.begin()+at+104,0);found=true;}
  Check(found,"oracle plan role");const std::string_view domain="SBPPGR01";b.insert(b.begin(),domain.begin(),domain.end());return Sha(b);
 }
+
+db::NativePublicationGraphDigest Graph(const Bytes& bytes){
+ const bool compare=allocation_budget<0&&!counting&&!hash_fault&&!hash_counting;
+ const auto result=db::ComputeNativePublicationTargetGraphDigest(bytes);
+ if(compare){
+  std::array<db::NativeCheckpointRootReference,16> roots;
+  allocation_budget=0;const auto view=db::ComputeNativePublicationTargetGraphDigestInto(bytes,roots);
+  const bool denied=allocation_budget==0;allocation_budget=-1;
+  Check(denied&&view.error==result.error&&view.sha256==result.sha256,
+   "complete checkpoint projection parity without owning allocation");
+ }
+ return result;
+}
+void GraphBackingChecks(const Bytes& image){
+ std::array<db::NativeCheckpointRootReference,16> roots;
+ const auto count=(LoadLittle32(image.data()+140)-512)/112;
+ const auto call=[&](std::span<const byte> bytes,std::span<db::NativeCheckpointRootReference> backing){
+  allocation_budget=0;const auto r=db::ComputeNativePublicationTargetGraphDigestInto(bytes,backing);
+  const bool denied=allocation_budget==0;allocation_budget=-1;
+  Check(denied,"graph projection never falls back to process backing");return r;
+ };
+ const auto expected=GraphOracle(image);
+ Check(call(image,std::span(roots).first(count)).sha256==expected,"exact checkpoint-root backing");
+ const auto short_backing=call(image,std::span(roots).first(count-1));
+ Check(short_backing.error==E::resource_exhausted&&short_backing.sha256==std::array<byte,32>{},
+  "short projection backing has no digest prefix");
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=3;++digest){
+  hash_fault=mode;hash_target=digest;hash_seen=0;hash_active=false;
+  const auto r=call(image,roots);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;
+  Check(consumed&&r.error==E::hash_failure&&r.sha256==std::array<byte,32>{},
+   "every graph provider failure is fixed and prefix-free under heap denial");
+ }
+ auto mutable_image=image;
+ auto* alias=reinterpret_cast<db::NativeCheckpointRootReference*>(mutable_image.data()+128);
+ Check(call(mutable_image,{alias,1}).error==E::invalid_workspace&&mutable_image==image,
+  "graph root backing cannot mutate any part of its source");
+ alignas(db::NativeCheckpointRootReference) std::array<byte,sizeof(db::NativeCheckpointRootReference)+16> misaligned{};
+ Check(call(image,{reinterpret_cast<db::NativeCheckpointRootReference*>(misaligned.data()+1),1}).error==E::invalid_workspace,
+  "misaligned typed graph backing rejected before writes");
+ for(std::size_t bytes:{std::size_t{0},std::size_t{127},std::size_t{511},image.size()-1}){
+  const auto bad=call(std::span(image).first(bytes),roots);
+  Check(!bad.ok()&&bad.sha256==std::array<byte,32>{},"truncated graph has no digest prefix");
+ }
+}
+void RecordBindingBackingChecks(db::NativePublicationPlan plan,unsigned version){
+ if(!plan.management_extent)return;
+ for(unsigned count:{0u,1u,4u}){
+  auto p=plan;db::NativeManagementOperation o;
+  o.database_uuid=p.header.database_uuid;o.bootstrap_uuid=p.bootstrap_uuid;o.uuid=p.management_extent->operation_uuid;
+  o.descriptor_uuid=Id(4101);o.family_uuid=Id(4102);o.target_type_uuid=Id(4103);o.target_uuid=Id(4104);
+  o.initiator_uuid=p.intent.initiator_uuid;o.request_context_uuid=p.intent.request_context_uuid;
+  o.policy_snapshot_uuid=p.intent.policy_snapshot_uuid;o.security_snapshot_uuid=p.security_snapshot_uuid;
+  o.created_at=Id(4200);o.updated_at=Id(4300);o.revision=p.management_extent->revision;
+  o.generation_guards={p.catalog_generation,p.configuration_generation,p.security_generation,std::nullopt};
+  o.normalized_request_sha256=p.intent.normalized_request_sha256;
+  o.idempotency_key=std::string("record\0key",10);o.initiator_kind=p.intent.initiator_kind;
+  o.state=db::NativeManagementState::planned;o.phase_uuid=Id(4105);o.resource_plan_uuid=Id(4106);o.lock_plan_uuid=Id(4107);
+  if(version==9){o.normalized_request_bytes={0,1,0,255};o.normalized_request_sha256=Sha(o.normalized_request_bytes);
+   p.intent.normalized_request_sha256=o.normalized_request_sha256;}
+  for(unsigned i=0;i<count;++i){db::NativeManagementStep step;step.uuid=Id(4400+i);step.operation_uuid=o.uuid;
+   step.family_uuid=Id(4500);step.ordinal=i+1;step.idempotency_key=std::string("step\0key",8);o.steps.push_back(step);}
+  const auto encoded=db::EncodeNativeManagementOperation(o,1<<20);
+  Check(encoded.ok(),"complete canonical management binding fixture");
+  p.management_extent->aggregate_bytes=encoded.bytes.size();p.management_extent->aggregate_sha256=Sha(encoded.bytes);
+  const auto capacity=p.header.page_size_bytes-384;
+  p.management_extent->page_count=(encoded.bytes.size()+capacity-1)/capacity;
+  Check(db::EncodeNativePublicationPlan(p).ok(),"record fixture retains valid publication shape");
+  std::vector<db::NativeManagementStepView> steps(count);std::vector<Uuid> identities(2*count+7);
+  const auto call=[&](const db::NativePublicationPlan& candidate,std::span<const byte> bytes,
+      db::NativeManagementOperationViewWorkspace scratch){
+   allocation_budget=0;const auto r=db::BindNativePublicationPlanToManagementRecordInto(candidate,bytes,scratch);
+   const bool denied=allocation_budget==0;allocation_budget=-1;
+   Check(denied,"canonical record commitment uses supplied backing only");return r;
+  };
+  const db::NativeManagementOperationViewWorkspace scratch{steps,identities};
+  Check(db::BindNativePublicationPlanToManagementRecord(p,o)==E::none&&call(p,encoded.bytes,scratch)==E::none,
+   "exact full canonical aggregate and provenance bind");
+  Check(call(p,encoded.bytes,{steps,std::span(identities).first(identities.size()-1)})==E::resource_exhausted,
+   "short binary identity backing refuses binding");
+  if(count)Check(call(p,encoded.bytes,{std::span(steps).first(count-1),identities})==E::resource_exhausted,
+   "short complete step backing refuses binding");
+  for(unsigned field=0;field<15;++field){auto bad=p;
+   switch(field){
+    case 0:bad.intent.initiator_uuid=Id(5000);break;
+    case 1:bad.intent.request_context_uuid=Id(5000);break;
+    case 2:bad.intent.policy_snapshot_uuid=Id(5000);break;
+    case 3:bad.security_snapshot_uuid=Id(5000);break;
+    case 4:bad.intent.normalized_request_sha256[0]^=1;break;
+    case 5:bad.catalog_generation++;break;
+    case 6:bad.configuration_generation++;break;
+    case 7:bad.security_generation++;break;
+    case 8:bad.generation_guard_flags&=~1u;bad.catalog_generation=0;break;
+    case 9:bad.management_extent->revision++;break;
+    case 10:bad.management_extent->aggregate_sha256[0]^=1;break;
+    case 11:bad.bootstrap_uuid=Id(5000);break;
+    case 12:bad.intent.initiator_kind=3;break;
+    case 13:bad.header.database_uuid=Id(5000);break;
+    case 14:bad.management_extent->operation_uuid=Id(5000);if(bad.intent.startup_binding)bad.intent.startup_binding->operation_uuid=Id(5000);break;
+   }
+   Check(call(bad,encoded.bytes,scratch)==E::binding_mismatch&&
+    db::BindNativePublicationPlanToManagementRecord(bad,o)==E::binding_mismatch,
+    "every canonical provenance guard and complete hash binds exactly");
+  }
+  auto zero_plan=p;auto zero_record=o;zero_plan.catalog_generation=0;zero_record.generation_guards[0]=0;
+  const auto zero_image=db::EncodeNativeManagementOperation(zero_record,1<<20);Check(zero_image.ok(),"present zero guard fixture");
+  zero_plan.management_extent->aggregate_sha256=Sha(zero_image.bytes);
+  Check(call(zero_plan,zero_image.bytes,scratch)==E::none,"present zero generation remains a real guard");
+  zero_plan.generation_guard_flags&=~1u;
+  Check(call(zero_plan,zero_image.bytes,scratch)==E::binding_mismatch,"absent generation is not present zero");
+  auto unbound=o;unbound.updated_at=Id(4301);const auto changed=db::EncodeNativeManagementOperation(unbound,1<<20);
+  Check(changed.ok()&&call(p,changed.bytes,scratch)==E::binding_mismatch,
+   "complete stored hash binds fields outside plan provenance");
+  auto corrupted=encoded.bytes;corrupted.back()^=1;
+  Check(call(p,corrupted,scratch)==E::binding_mismatch,"canonical integrity failure refuses binding");
+  auto cluster=o;cluster.scope=db::NativeManagementScope::cluster;cluster.cluster_uuid=Id(4600);cluster.generation_guards[3]=1;
+  const auto cluster_image=db::EncodeNativeManagementOperation(cluster,1<<20);
+  Check(cluster_image.ok()&&call(p,cluster_image.bytes,scratch)==E::cluster_requires_authority,
+   "local binding cannot manufacture cluster authority");
+  auto alias_bytes=encoded.bytes;
+  Check(call(p,alias_bytes,{steps,{reinterpret_cast<Uuid*>(alias_bytes.data()),identities.size()}})==E::invalid_workspace&&
+   alias_bytes==encoded.bytes,"binary identity scratch never overwrites aggregate input");
+  const auto prior_plan=Oracle(p,version);
+  Check(call(p,encoded.bytes,{steps,{&p.header.database_uuid,1}})==E::invalid_workspace&&Oracle(p,version)==prior_plan,
+   "binary identity scratch never overwrites plan input");
+  alignas(db::NativeManagementStepView) std::array<byte,sizeof(db::NativeManagementStepView)+16> misaligned{};
+  Check(call(p,encoded.bytes,{{reinterpret_cast<db::NativeManagementStepView*>(misaligned.data()+1),1},identities})==E::invalid_workspace,
+   "misaligned step workspace refuses without dereference");
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=(version==9?3u:2u);++digest){
+   hash_fault=mode;hash_target=digest;hash_seen=0;hash_active=false;
+   const auto failed=call(p,encoded.bytes,scratch);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;
+   Check(consumed&&failed==E::hash_failure,"every aggregate provider failure remains typed under heap denial");
+  }
+ }
+}
+
 Bytes Finish(db::NativePublicationPlan& p,db::NativeCheckpointRoot cp){
  cp.header.database_uuid=p.header.database_uuid;cp.header.filespace_uuid=p.target_checkpoint.filespace_uuid;cp.header.page_number=p.target_checkpoint.page_number;cp.header.page_generation=p.target_checkpoint.page_generation;cp.header.page_size_profile_uuid=p.target_checkpoint.page_size_profile_uuid;
  cp.object_uuid=p.target_checkpoint_object_uuid;cp.timeline_uuid=p.timeline_uuid;cp.creator_transaction_uuid={};cp.creator_local_transaction_id=0;cp.creator_operation_uuid=p.operation_uuid;cp.checkpoint_generation=p.reserved_generation;cp.root_set_generation=p.target_root_set_generation;cp.predecessor=p.base_checkpoint;cp.predecessor_sha256=p.base_checkpoint_sha256;
  db::NativeCheckpointRootReference role;role.role=16;role.page_type=0x500;role.page={p.header.filespace_uuid,p.header.page_number,p.header.page_generation,p.header.page_size_profile_uuid};role.object_uuid=p.object_uuid;role.sha256.fill(1);
  if(cp.roots.back().role==16)cp.roots.back()=role;else cp.roots.push_back(role);
  auto first=db::EncodeNativeCheckpointRoot(cp);Check(first.ok(),"target checkpoint fixture");
- const auto projected=db::ComputeNativePublicationTargetGraphDigest(first.bytes);Check(projected.ok()&&projected.sha256==GraphOracle(first.bytes),"independent target projection");p.target_graph_sha256=projected.sha256;
+ const auto projected=Graph(first.bytes);Check(projected.ok()&&projected.sha256==GraphOracle(first.bytes),"independent target projection");p.target_graph_sha256=projected.sha256;
  const auto plan=db::EncodeNativePublicationPlan(p);Check(plan.ok()&&plan.bytes==Oracle(p),"independent plan image");cp.roots.back().sha256=plan.sha256;
- const auto final=db::EncodeNativeCheckpointRoot(cp);Check(final.ok()&&db::ComputeNativePublicationTargetGraphDigest(final.bytes).sha256==p.target_graph_sha256,"noncircular final graph");return final.bytes;
+ const auto final=db::EncodeNativeCheckpointRoot(cp);Check(final.ok()&&Graph(final.bytes).sha256==p.target_graph_sha256,"noncircular final graph");return final.bytes;
 }
 template<class F> void Allocations(F&& call){
  counting=true;allocations=0;const auto baseline=call();counting=false;const auto sites=allocations;Check(baseline,"allocation baseline");
@@ -271,6 +406,7 @@ void BorrowedVersions(const db::NativePublicationPlan& base){
   const auto image=Oracle(p,version);const auto encoded=db::EncodeNativePublicationPlan(p);
   Check(encoded.ok()&&encoded.bytes==image,"independent all-nine-version canonical bytes");
   const auto decoded=Decode(image);Check(decoded.ok()&&decoded.sha256==Sha(image),"borrowed version full reference hash");
+  RecordBindingBackingChecks(p,version);
   for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){
    allocation_budget=0;hash_fault=mode;hash_target=digest;hash_seen=0;hash_active=false;
    const auto failed=db::DecodeNativePublicationPlanView(image);
@@ -314,7 +450,7 @@ void Test(unsigned profile){
  p.object_uuid=Id(302);p.bootstrap_uuid=w.bootstrap_uuid;p.timeline_uuid=w.timeline_uuid;p.operation_uuid=w.operation_uuid;p.security_snapshot_uuid=Id(303);p.intent=intent;
  p.reservation_state_sha256=s.state_sha256;p.base_checkpoint_sha256=w.base_checkpoint_sha256;p.target_graph_sha256.fill(1);p.reserved_generation=w.watermark;p.base_checkpoint_generation=w.base_checkpoint_generation;p.base_root_set_generation=w.base_root_set_generation;p.target_root_set_generation=2;
  p.base_checkpoint=w.base_checkpoint;p.target_checkpoint={Id(2),31,1,w.header.page_size_profile_uuid};p.base_checkpoint_object_uuid=p.target_checkpoint_object_uuid=w.base_checkpoint_object_uuid;p.catalog_generation=p.configuration_generation=p.security_generation=1;
- auto cp=*old.root;cp.header.page_uuid=Id(304);const auto target=Finish(p,cp);BorrowedVersions(p);const auto encoded=db::EncodeNativePublicationPlan(p);
+ auto cp=*old.root;cp.header.page_uuid=Id(304);const auto target=Finish(p,cp);GraphBackingChecks(target);BorrowedVersions(p);const auto encoded=db::EncodeNativePublicationPlan(p);
  const auto decoded=Decode(Oracle(p));Check(decoded.ok()&&decoded.sha256==encoded.sha256&&db::EncodeNativePublicationPlan(*decoded.plan).bytes==encoded.bytes,"plan decode preserves complete bytes");
  Check(encoded.sha256==Sha(encoded.bytes),"plan root reference hashes all stored bytes including embedded seal");
  Check(db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none,"actual lease preflight");
@@ -335,25 +471,25 @@ void Test(unsigned profile){
  all_roots.roots.push_back(plan_role);all_roots.flags|=4;const auto sixteen=db::EncodeNativeCheckpointRoot(all_roots);
  const auto decoded_sixteen=db::DecodeNativeCheckpointRoot(sixteen.bytes);
  Check(sixteen.ok()&&decoded_sixteen.ok()&&decoded_sixteen.root->roots.size()==16,"all sixteen checkpoint roles roundtrip");
- Check(!db::ComputeNativePublicationTargetGraphDigest(sixteen.bytes).ok(),"local plan never supplies cluster authority");
+ Check(!Graph(sixteen.bytes).ok(),"local plan never supplies cluster authority");
  all_roots.roots.erase(all_roots.roots.begin()+13);all_roots.flags&=~u64{4};const auto fifteen=db::EncodeNativeCheckpointRoot(all_roots);
- Check(fifteen.ok()&&db::ComputeNativePublicationTargetGraphDigest(fifteen.bytes).ok(),"all fifteen local roles project");
+ Check(fifteen.ok()&&Graph(fifteen.bytes).ok(),"all fifteen local roles project");GraphBackingChecks(fifteen.bytes);
  all_roots.roots.back().role=17;Check(!db::EncodeNativeCheckpointRoot(all_roots).ok(),"unknown checkpoint role refused");
  for(unsigned field=0;field<14;++field){auto changed=p;switch(field){case 0:changed.operation_uuid=Id(305);break;case 1:changed.bootstrap_uuid=Id(306);break;case 2:changed.timeline_uuid=Id(307);break;case 3:changed.intent.initiator_uuid=Id(308);break;case 4:changed.intent.request_context_uuid=Id(309);break;case 5:changed.intent.policy_snapshot_uuid=Id(310);break;case 6:changed.intent.normalized_request_sha256[0]^=1;break;case 7:changed.reservation_state_sha256[0]^=1;break;case 8:changed.base_checkpoint_sha256[0]^=1;break;case 9:changed.intent.initiator_kind=3;break;case 10:changed.reserved_generation=3;break;case 11:changed.header.database_uuid=Id(311);break;case 12:changed.base_checkpoint.page_number=28;break;case 13:changed.base_checkpoint.page_generation=2;break;}
   const auto forged=Finish(changed,cp);Check(db::BindNativePublicationPlanToLease(changed,*reservation.lease,forged)==E::binding_mismatch,"resealed plan cannot change retained reservation");
  }
  auto changed=cp;changed.creator_operation_uuid=Id(300);changed.creator_transaction_uuid={};changed.creator_local_transaction_id=0;changed.header.page_number=31;changed.checkpoint_generation=changed.root_set_generation=2;changed.predecessor=p.base_checkpoint;changed.predecessor_sha256=p.base_checkpoint_sha256;
- const auto no_plan=db::EncodeNativeCheckpointRoot(changed);Check(no_plan.ok()&&!db::ComputeNativePublicationTargetGraphDigest(no_plan.bytes).ok(),"operation checkpoint without plan cannot project");
+ const auto no_plan=db::EncodeNativeCheckpointRoot(changed);Check(no_plan.ok()&&!Graph(no_plan.bytes).ok(),"operation checkpoint without plan cannot project");
  for(unsigned mode=1;mode<=5;++mode)for(unsigned digest=1;digest<=2;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;Failed(db::EncodeNativePublicationPlan(p));hash_fault=0;hash_active=false;
   hash_fault=mode;hash_target=digest;hash_seen=0;Failed(Decode(encoded.bytes));hash_fault=0;hash_active=false;}
  for(unsigned mode=1;mode<=5;++mode){
-  for(unsigned digest=1;digest<=3;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;const auto failed=db::ComputeNativePublicationTargetGraphDigest(target);hash_fault=0;hash_active=false;
+  for(unsigned digest=1;digest<=3;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;const auto failed=Graph(target);hash_fault=0;hash_active=false;
    Check(hash_seen>=digest&&failed.error==E::hash_failure&&std::all_of(failed.sha256.begin(),failed.sha256.end(),[](byte v){return !v;}),"every graph hash failure has no digest prefix");}
   for(unsigned digest=1;digest<=7;++digest){hash_fault=mode;hash_target=digest;hash_seen=0;const auto failed=db::BindNativePublicationPlanToLease(p,*reservation.lease,target);hash_fault=0;hash_active=false;
    Check(hash_seen>=digest&&failed==E::hash_failure,"every lease preflight hash failure refuses binding");}
  }
  Allocations([&]{return db::EncodeNativePublicationPlan(p).ok();});Allocations([&]{return Decode(encoded.bytes).ok();});
- Allocations([&]{return db::ComputeNativePublicationTargetGraphDigest(target).ok();});Allocations([&]{return db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none;});
+ Allocations([&]{return Graph(target).ok();});Allocations([&]{return db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none;});
  Check(f.Read(0,64)==unchanged,"preflight never writes plan or checkpoint or reports execution");
  InstallTests(f,reservation,p,target,unchanged,profile);
  reservation.lease.reset();
