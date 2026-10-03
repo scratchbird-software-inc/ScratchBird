@@ -9,6 +9,21 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_executable(ipc_client_io_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/ipc_client_io_gate.cpp")
+  target_compile_features(ipc_client_io_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipc_client_io_gate PRIVATE pthread)
+  target_link_options(ipc_client_io_gate PRIVATE -Wl,--wrap=poll -Wl,--wrap=__poll_chk)
+  add_test(NAME ipc_client_io_gate COMMAND ipc_client_io_gate)
+  set_tests_properties(ipc_client_io_gate PROPERTIES TIMEOUT 30 LABELS "concurrency;ipc;shutdown")
+  add_executable(ipc_client_drain_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/ipc_client_drain_gate.cpp")
+  target_compile_features(ipc_client_drain_gate PRIVATE cxx_std_23)
+  target_link_libraries(ipc_client_drain_gate PRIVATE sb_server_core)
+  target_link_options(ipc_client_drain_gate PRIVATE -static-libstdc++ -Wl,--wrap=accept -Wl,--wrap=recv
+    -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=_Znwm)
+  foreach(mode partial-header partial-payload complete-frame launch-failure cohort-allocation-failure allocation-failure callback-failure)
+    add_test(NAME ipc_client_drain_${mode} COMMAND ipc_client_drain_gate ${mode})
+    set_tests_properties(ipc_client_drain_${mode} PROPERTIES TIMEOUT 45 LABELS "concurrency;ipc;shutdown")
+  endforeach()
   add_executable(startup_credential_source_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_credential_source_gate.cpp")
   target_compile_features(startup_credential_source_gate PRIVATE cxx_std_23)
