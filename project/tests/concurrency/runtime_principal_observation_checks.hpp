@@ -4,15 +4,29 @@
 #include "security/runtime_principal_observation.hpp"
 #include "security/durable_authorization_projection.hpp"
 #include "security/authentication_api.hpp"
+#include "security/runtime_principal_credential.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "memory.hpp"
 #include "../support/durable_authorization_fixture.hpp"
+#include <future>
+#include <thread>
+#include <type_traits>
 
 // Included after the inventory fixture's Check/NewId helpers. These checks
 // exercise real principal publication, observation and authentication identity,
 // not a startup admission/recovery receipt or a selected-provider fence.
 namespace runtime_principal_checks {
 using O = api::RuntimePrincipalObservationOutcome;
+using CredentialError = api::RuntimePrincipalCredentialError;
+static_assert(!std::is_default_constructible_v<api::RuntimePrincipalCredentialLease>);
+static_assert(!std::is_copy_constructible_v<api::RuntimePrincipalCredentialLease>);
+static_assert(!std::is_move_constructible_v<api::RuntimePrincipalCredentialLease>);
+
+inline api::RuntimePrincipalCredentialRequest CredentialRequest(
+    const api::RuntimePrincipalObservationRequest& source) {
+  return {source.database_path, source.database_uuid, source.principal_uuid,
+          "DBLC013G-fixture-password"};
+}
 
 inline api::EngineAuthenticateRequest AuthenticationRequest(
     const api::RuntimePrincipalObservationRequest& source) {
@@ -26,11 +40,12 @@ inline api::EngineAuthenticateRequest AuthenticationRequest(
   return request;
 }
 
-inline api::EngineRequestContext Begin(api::EngineRequestContext context) {
+inline api::EngineRequestContext Begin(api::EngineRequestContext context,
+                                      std::uint64_t begin_millis = 100) {
   const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
   Check(loaded.ok(), "principal fixture inventory load");
   const auto begun = mga::BeginLocalTransaction(loaded.inventory,
-      NewId(platform::UuidKind::transaction), 100);
+      NewId(platform::UuidKind::transaction), begin_millis);
   Check(begun.ok(), "principal fixture begin");
   Check(db::PersistLocalTransactionInventoryToDatabase(context.database_path, begun.inventory).ok(),
         "principal fixture durable begin");
@@ -74,13 +89,18 @@ inline int ColdMain(const char* path) {
   if (!configured.ok() || !configured.fixture_mode) return 4;
   const auto read = api::InspectRuntimePrincipal(request);
   const auto authentication = api::EngineAuthenticate(AuthenticationRequest(request));
+  const auto credential = api::VerifyRuntimePrincipalCredential(CredentialRequest(request));
   if (expect_active != 0) {
     if (!authentication.ok || !authentication.authenticated ||
         !authentication.durable_security_state ||
         authentication.connection_security_context.effective_user_uuid != request.principal_uuid)
       return 6;
+    if (!credential.ok() || credential.lease->principal_uuid() != request.principal_uuid ||
+        credential.lease->security_context_generation() != context_generation) return 8;
   } else if (authentication.ok || authentication.authenticated || authentication.durable_security_state) {
     return 7;
+  } else if (credential.ok() || credential.lease || credential.error != CredentialError::credential_rejected) {
+    return 9;
   }
   if (expect_active == 0) return read.outcome == O::no_active_principal &&
       !read.observation && !read.source_diagnostic ? 0 : 5;
@@ -266,6 +286,113 @@ inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationR
   }
 }
 
+inline void CredentialFenceChecks(const api::EngineRequestContext& admin,
+                                  const api::RuntimePrincipalObservationRequest& source) {
+  const auto request = CredentialRequest(source);
+  const auto refuse = [&](const auto& input, CredentialError expected) {
+    auto result = api::VerifyRuntimePrincipalCredential(input);
+    Check(!result.ok() && !result.lease && result.error == expected,
+          "credential refusal has exact disposition and no retained fence");
+  };
+  for (int invalid = 0; invalid < 7; ++invalid) {
+    auto input = request;
+    if (invalid == 0) input.database_path.clear();
+    if (invalid == 1) input.database_path.push_back('\0');
+    if (invalid == 2) input.database_uuid = {};
+    if (invalid == 3) input.principal_uuid.bytes[6] &= 0x0f;
+    if (invalid == 4) input.password = {};
+    const std::string oversized(1025, 'x');
+    if (invalid == 5) input.password = oversized;
+    if (invalid == 6) input.password = std::string_view("x\0y", 3);
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    const auto guards_before = inventory_guard_calls.load();
+#endif
+    refuse(input, CredentialError::invalid_request);
+#ifdef SB_STARTUP_INVENTORY_GUARD_PROBE
+    Check(inventory_guard_calls.load() == guards_before, "invalid credential input acquires no inventory guard");
+#endif
+  }
+  auto wrong = request;
+  wrong.password = "wrong-password";
+  refuse(wrong, CredentialError::credential_rejected);
+  wrong = request; wrong.principal_uuid = admin.principal_uuid;
+  refuse(wrong, CredentialError::credential_rejected); // no bootstrap fallback
+  wrong = request; wrong.principal_uuid = NewId(platform::UuidKind::principal).value;
+  refuse(wrong, CredentialError::credential_rejected);
+  wrong = request; wrong.database_uuid = NewId(platform::UuidKind::database).value;
+  refuse(wrong, CredentialError::source_failure);
+#ifdef SB_RUNTIME_CREDENTIAL_FAULT_PROBE
+  auto fault_lookup = api::AcquireTransactionInventoryGuard(source.database_path);
+  auto* fault_mutex = fault_lookup.mutex(); fault_lookup.unlock();
+  fail_credential_mutex = fault_mutex->native_handle();
+  refuse(request, CredentialError::lock_failure);
+  Check(!fail_credential_mutex, "exact owning publication lock fault consumed");
+  fail_after_password_verification = true;
+  refuse(request, CredentialError::resource_exhausted);
+  Check(!fail_after_password_verification && !fail_credential_allocation,
+        "actual post-verification lease allocation fault consumed");
+  bool fault_unlocked = false;
+  std::thread fault_probe([&] {
+    fault_unlocked = fault_mutex->try_lock();
+    if (fault_unlocked) fault_mutex->unlock();
+  });
+  fault_probe.join();
+  Check(fault_unlocked, "failed credential issuance releases the owning mutex");
+#endif
+
+  // Stage a real disable before the lease: it must still authenticate against
+  // the current committed state, then exclude the actual engine commit path.
+  api::EngineSecurityAlterPrincipalRequest alter;
+  const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
+  Check(clock.ok(), "credential fixture actual clock");
+  const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
+  Check(millis.ok(), "credential fixture actual begin milliseconds");
+  alter.context = Begin(admin, millis.unix_epoch_millis); alter.principal_uuid = source.principal_uuid;
+  const auto session = uuid::IssueRuntimeIdentityV7();
+  Check(session.has_value(), "credential fixture binary runtime session identity");
+  alter.context.session_uuid = *session;
+  alter.lifecycle_state = "disabled";
+  Check(api::EngineSecurityAlterPrincipal(alter).ok, "credential fixture staged disable");
+  const auto observation = api::InspectRuntimePrincipal(source);
+  Check(observation.observation.has_value(), "committed service remains active before fence");
+  auto admitted = api::VerifyRuntimePrincipalCredential(request);
+  Check(admitted.ok() && admitted.lease->database_uuid() == source.database_uuid &&
+        admitted.lease->principal_uuid() == source.principal_uuid &&
+        admitted.lease->security_context_generation() == observation.observation->security_context_generation &&
+        admitted.lease->security_generation() == observation.observation->security_generation &&
+        admitted.lease->policy_generation() == observation.observation->policy_generation,
+        "credential lease binds actual committed binary principal and all source generations");
+  auto lookup = api::AcquireTransactionInventoryGuard(source.database_path);
+  auto* publication_mutex = lookup.mutex(); lookup.unlock();
+  std::promise<bool> probed;
+  auto observed_lock = probed.get_future();
+  api::EngineCommitTransactionResult committed;
+  std::exception_ptr worker_error;
+  std::thread worker([&] {
+    const bool available = publication_mutex->try_lock();
+    if (available) publication_mutex->unlock();
+    probed.set_value(available);
+    try {
+      api::EngineCommitTransactionRequest commit;
+      commit.context = alter.context;
+      committed = api::EngineCommitTransaction(commit);
+    } catch (...) { worker_error = std::current_exception(); }
+  });
+  // No assertion/throw while the worker could be blocked on our retained guard.
+  const bool blocked = !observed_lock.get();
+  admitted.lease.reset();
+  worker.join();
+  if (worker_error) std::rethrow_exception(worker_error);
+  Check(blocked, "credential lease retains the real security/finality publication mutex");
+  if (!committed.ok) for (const auto& diagnostic : committed.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Check(committed.ok && committed.engine_finality_known &&
+        committed.commit_finality_state == "committed_by_engine_inventory",
+        "actual engine commit of disable completes after credential fence release");
+  refuse(request, CredentialError::credential_rejected);
+  ColdRead(source, *observation.observation, false);
+}
+
 inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   const auto path = root / ("principal-" + std::to_string(page_size) + ".sbdb");
   db::DatabaseCreateConfig create;
@@ -309,6 +436,8 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   if (!provisioned.ok) for (const auto& d : provisioned.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
   Check(provisioned.ok && provisioned.principal_created, "actual service principal create");
   Check(api::InspectRuntimePrincipal(request).outcome == O::no_active_principal, "uncommitted principal hidden");
+  Check(api::VerifyRuntimePrincipalCredential(CredentialRequest(request)).error ==
+        CredentialError::credential_rejected, "uncommitted principal cannot issue credential fence");
   Finish(transaction, true);
   const auto committed_bytes = bytes();
   const auto observed = api::InspectRuntimePrincipal(request);
@@ -354,9 +483,9 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(rolled_back.observation && rolled_back.observation->lifecycle_state == "active", "rollback preserves active state");
   Check(api::EngineAuthenticate(AuthenticationRequest(request)).authenticated,
         "rolled back disable preserves actual password authentication");
-  transaction = Begin(admin); alter.context = transaction;
-  Check(api::EngineSecurityAlterPrincipal(alter).ok, "actual repeated disable");
-  Finish(transaction, true);
+  // This final disable now goes through actual engine commit while a retained
+  // credential lease excludes publication, rather than direct fixture finality.
+  CredentialFenceChecks(admin, request);
   const auto disabled = api::InspectRuntimePrincipal(request);
   Check(disabled.outcome == O::no_active_principal && !disabled.observation && !disabled.source_diagnostic,
         "committed disable removes active principal without cached authority");

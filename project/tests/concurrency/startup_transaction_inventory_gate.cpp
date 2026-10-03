@@ -18,6 +18,12 @@
 #include <stdexcept>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef SB_RUNTIME_CREDENTIAL_FAULT_PROBE
+#include <openssl/evp.h>
+#include <cerrno>
+#include <new>
+#include <pthread.h>
+#endif
 
 extern char** environ;
 
@@ -36,6 +42,41 @@ extern "C" std::unique_lock<std::recursive_mutex>
 __wrap__ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(const std::string& path) {
   inventory_guard_calls.fetch_add(1, std::memory_order_relaxed);
   return __real__ZN11scratchbird6engine12internal_api32AcquireTransactionInventoryGuardERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(path);
+}
+#endif
+
+#ifdef SB_RUNTIME_CREDENTIAL_FAULT_PROBE
+thread_local bool fail_after_password_verification = false;
+thread_local bool fail_credential_allocation = false;
+thread_local pthread_mutex_t* fail_credential_mutex = nullptr;
+extern "C" void* __real__Znwm(std::size_t);
+extern "C" void* __wrap__Znwm(std::size_t size) {
+  if (fail_credential_allocation) {
+    fail_credential_allocation = false;
+    throw std::bad_alloc();
+  }
+  return __real__Znwm(size);
+}
+extern "C" int __real_PKCS5_PBKDF2_HMAC(const char*, int, const unsigned char*,
+    int, int, const EVP_MD*, int, unsigned char*);
+extern "C" int __wrap_PKCS5_PBKDF2_HMAC(const char* password, int length,
+    const unsigned char* salt, int salt_length, int iterations,
+    const EVP_MD* digest, int key_length, unsigned char* output) {
+  const int result = __real_PKCS5_PBKDF2_HMAC(password, length, salt, salt_length,
+      iterations, digest, key_length, output);
+  if (fail_after_password_verification) {
+    fail_after_password_verification = false;
+    fail_credential_allocation = true;
+  }
+  return result;
+}
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (mutex == fail_credential_mutex) {
+    fail_credential_mutex = nullptr;
+    return EINVAL;
+  }
+  return __real_pthread_mutex_lock(mutex);
 }
 #endif
 

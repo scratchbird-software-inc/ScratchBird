@@ -14,6 +14,8 @@
 #include "security/auth_provider_model.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#include "security/runtime_principal_credential.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <openssl/crypto.h>
@@ -529,6 +531,57 @@ EngineApiDiagnostic VerifySecurityDatabaseTemporaryTokenEvidence(
 }
 
 }  // namespace
+
+RuntimePrincipalCredentialResult VerifyRuntimePrincipalCredential(
+    const RuntimePrincipalCredentialRequest& request) noexcept {
+  using Error = RuntimePrincipalCredentialError;
+  RuntimePrincipalCredentialResult result;
+  try {
+    if (request.database_path.empty() || request.database_path.find('\0') != std::string::npos ||
+        !core::uuid::IsEngineIdentityUuid(request.database_uuid) ||
+        !IsDurablePrincipalUuid(request.principal_uuid) || request.password.empty() ||
+        request.password.size() > 1024 || request.password.find('\0') != std::string_view::npos)
+      return result;
+    auto guard = AcquireTransactionInventoryGuard(request.database_path);
+    EngineRequestContext source;
+    source.database_path = request.database_path;
+    source.database_uuid = request.database_uuid;
+    // No transaction/snapshot from the caller: authentication cannot expose its
+    // own uncommitted principal or credential changes as committed authority.
+    auto loaded = LoadSecurityPrincipalLifecycleState(source);
+    if (!loaded.ok) {
+      result.error = Error::source_failure;
+      result.source_diagnostic = std::move(loaded.diagnostic);
+      return result;
+    }
+    const auto& state = loaded.state;
+    if (!state.security_context_generation || !state.security_generation || !state.policy_generation) {
+      result.error = Error::source_failure;
+      return result;
+    }
+    const EngineSecurityPrincipalRecord* selected = nullptr;
+    result.error = Error::credential_rejected;
+    for (const auto& principal : state.principals) {
+      if (principal.principal_uuid != request.principal_uuid) continue;
+      if (selected || principal.deleted || principal.lifecycle_state != "active" ||
+          principal.principal_kind != "service") return result;
+      selected = &principal;
+    }
+    if (!selected || !VerifyLocalPasswordCredentialFingerprint(
+                         selected->credential_fingerprint, request.password)) return result;
+    result.lease.reset(new RuntimePrincipalCredentialLease(
+        std::move(guard), request.database_uuid, selected->principal_uuid,
+        state.security_context_generation, state.security_generation, state.policy_generation));
+    result.error = Error::none;
+  } catch (const std::bad_alloc&) {
+    result.error = Error::resource_exhausted;
+  } catch (const std::length_error&) {
+    result.error = Error::resource_exhausted;
+  } catch (const std::system_error&) {
+    result.error = Error::lock_failure;
+  }
+  return result;
+}
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_AUTHENTICATION_API_BEHAVIOR
 EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& request) {
