@@ -15,6 +15,7 @@
 #include "native_checkpoint_inventory_memory.hpp"
 #include "native_bound_checkpoint_selection_memory.hpp"
 #include "native_current_checkpoint_source_memory.hpp"
+#include "native_selected_checkpoint_memory_lease.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
@@ -40,6 +41,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -2691,6 +2693,7 @@ void CanonicalCheckpoints() {
 #include "native_checkpoint_inventory_memory_checks.hpp"
 #include "native_bound_checkpoint_selection_memory_checks.hpp"
 #include "native_current_checkpoint_source_memory_checks.hpp"
+#include "native_selected_checkpoint_memory_lease_checks.hpp"
 
 void CheckpointInventoryMemoryFaults(const std::vector<disk::NativeFilespaceDevice>& files,
  const disk::FilespaceRootReference& root,const db::NativeCheckpointInventoryResult& expected,u64 allowance) {
@@ -3216,6 +3219,7 @@ void CanonicalCheckpointAllocation() {
       r.allocation.retained_image_bytes==0&&std::all_of(r.allocation.state_counts.begin(),r.allocation.state_counts.end(),[](u64 n){return n==0;}),
       "checkpoint allocation failure exposes no authority prefix");};
     persist(inventory,map,zero,checkpoint);
+    selected_lease_memory::NoSelector(devices,budget);
     if(profile==0){byte warm=0;for(unsigned n=0;n<4097;++n){const auto io=device.ReadAt(0,&warm,1);Check(io.ok()&&io.bytes_transferred==1,"warm optional allocation-reader telemetry before fault measurement");}}
     reads=0;track_reads=true;count_allocations=true;observed_allocations=0;
     auto result=read(budget);count_allocations=false;track_reads=false;const auto allocation_count=observed_allocations;const auto read_count=reads;
@@ -6992,6 +6996,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     Check(current_allocation.ok()&&current_directory.ok(),"independent transaction-selected complete current sources");
     current_source_memory::Checks<true>(devices,CheckpointRef(current),current_allocation,16*u64{sizes[p]}+4*u64{sizes[q]},role==1);
     current_source_memory::Checks<false>(devices,CheckpointRef(current),current_directory,16*u64{sizes[p]}+4*u64{sizes[q]},role==1);
+    selected_lease_memory::Checks(devices,64*std::max<u64>(sizes[p],sizes[q]),p==0&&q==0&&role==1);
     persist();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;auto result=read(budget);track_reads=count_full_digests=count_allocations=false;
     const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"bound selector error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" map="<<static_cast<int>(result.allocation_error)<<std::endl;

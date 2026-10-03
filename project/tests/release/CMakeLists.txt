@@ -496,6 +496,45 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
     set_tests_properties(native_directory_control_close_${profile}_gate PROPERTIES TIMEOUT 120
       LABELS "storage;binary_uuid;real_files;actual_control_ancestry;retained_device_concurrency;not_runtime_acceptance")
   endforeach()
+
+  # Full retained source lease, initial and later selections, every ordered
+  # page-profile pair. Fault shards retain every actual provider/I/O site.
+  # These are conformance sweeps, not latency thresholds: the largest full
+  # profile takes over 100s alongside compilation before concurrent repetition.
+  foreach(initial RANGE 0 1)
+    foreach(profile RANGE 2 4)
+      foreach(primary RANGE 0 4)
+        foreach(secondary RANGE 0 4)
+          add_test(NAME native_selected_lease_memory_${initial}_${profile}_${primary}_${secondary}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selected-lease-memory
+              ${initial} ${profile} ${primary} ${secondary})
+          set_tests_properties(native_selected_lease_memory_${initial}_${profile}_${primary}_${secondary}_gate
+            PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;retained_device_concurrency;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+      foreach(route RANGE 0 7)
+        set(last_shard 0)
+        if(route LESS_EQUAL 5)
+          set(last_shard 15)
+        endif()
+        foreach(shard RANGE 0 ${last_shard})
+          add_test(NAME native_selected_lease_memory_fault_${initial}_${profile}_${route}_${shard}_gate
+            COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selected-lease-faults
+              ${initial} ${profile} ${route} ${shard})
+          set_tests_properties(native_selected_lease_memory_fault_${initial}_${profile}_${route}_${shard}_gate
+            PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;retained_device_concurrency;not_runtime_acceptance")
+        endforeach()
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(profile RANGE 3 4)
+    foreach(size RANGE 0 4)
+      add_test(NAME native_selected_lease_memory_repeat_${profile}_${size}_gate
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-selected-lease-repeat ${profile} ${size})
+      set_tests_properties(native_selected_lease_memory_repeat_${profile}_${size}_gate
+        PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;retained_device_concurrency;not_runtime_acceptance")
+    endforeach()
+  endforeach()
   foreach(profile RANGE 2 4)
     foreach(allocation RANGE 0 1)
       foreach(primary RANGE 0 4)
