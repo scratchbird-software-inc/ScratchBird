@@ -16,6 +16,8 @@ std::binary_semaphore parked{0};
 std::atomic<void*> secret{nullptr};
 std::atomic<unsigned> erased{0};
 std::atomic<bool> clean{true}, deny_lock{false};
+std::atomic<bool> pause_import{false};
+std::binary_semaphore import_entered{0}, import_resume{0};
 void Check(bool pass, const char* label) {
   ++checks;
   if (!pass) { ++failures; std::cerr << "FAIL " << label << '\n'; }
@@ -52,7 +54,12 @@ extern "C" int __real_munlock(const void*, size_t);
 extern "C" int __real_mlock(const void*, size_t);
 extern "C" ssize_t __wrap_pread(int fd, void* p, size_t n, off_t at) {
   if (at == 88) secret = p;
-  return __real_pread(fd, p, n, at);
+  const auto result = __real_pread(fd, p, n, at);
+  if (at == 88 && pause_import.exchange(false)) {
+    import_entered.release();
+    import_resume.acquire();
+  }
+  return result;
 }
 extern "C" int __wrap_munlock(const void* p, size_t n) {
   if (secret.load() == p) {
@@ -207,6 +214,61 @@ int main() {
           "generation exhaustion never wraps to lower source generation");
   }
   Check(manager.Snapshot().active_allocation_count == 0, "all owner tests release protected allocations");
+  // Native admission already succeeded. Close and cancellation may not rewrite
+  // that result, revoke a delivered lease, or stand in for the caller's join.
+  for (bool publication : {false, true}) {
+    Source closing(Id(10), 2);
+    Source::Request admitted{Id(10), Id(11), 0, {}, {}};
+    if (!publication) {
+      Check(closing.Publish(admitted, first.fd, binding, manager, tag).ok(),
+            "close-import fixture publication");
+      admitted.generation = binding.generation;
+    }
+    std::stop_source stop;
+    admitted.stop = stop.get_token();
+    Source::Outcome outcome;
+    std::atomic<bool> completed{false};
+    std::binary_semaphore delivered{0}, release{0};
+    bool credential_valid = false;
+    const auto before = erased.load();
+    pause_import = true;
+    std::thread worker([&] {
+      if (publication) {
+        outcome = closing.Publish(admitted, first.fd, binding, manager, tag);
+        delivered.release();
+      } else {
+        auto acquired = closing.Acquire(admitted, manager, tag);
+        outcome = acquired.outcome;
+        credential_valid = acquired.lease && acquired.lease->credential() == "fixture";
+        delivered.release();
+        release.acquire();
+        acquired.lease.reset(); // The granting thread performs actual erasure.
+      }
+      completed = true;
+    });
+    Check(import_entered.try_acquire_for(std::chrono::seconds(5)),
+          "close races actual protected payload import after native admission");
+    closing.Close(); stop.request_stop();
+    Check(!completed.load() && manager.Snapshot().active_allocation_count == 1,
+          "close is not in-flight completion or protected material release");
+    auto late = admitted; late.task = Id(12); late.generation = binding.generation;
+    Check(closing.Acquire(late, manager, tag).outcome.wait == Source::Mutex::Result::closed,
+          "close fences new credential admission during actual import");
+    import_resume.release();
+    const bool arrived = delivered.try_acquire_for(std::chrono::seconds(5));
+    Check(arrived, "admitted import delivers after close");
+    Check(arrived && outcome.ok(), "close and late cancellation preserve admitted import outcome");
+    if (!publication) {
+      Check(arrived && credential_valid && !completed.load() &&
+            manager.Snapshot().active_allocation_count == 1,
+            "delivered lease after close retains actual protected credential");
+      release.release();
+    }
+    worker.join();
+    Check(completed.load() && erased.load() > before && clean.load() && !secret.load() &&
+          manager.Snapshot().active_allocation_count == 0,
+          "actual caller join follows zeroization and governed release");
+  }
   std::cout << checks << " source checks; failures=" << failures << '\n';
   return failures ? 1 : 0;
 }
