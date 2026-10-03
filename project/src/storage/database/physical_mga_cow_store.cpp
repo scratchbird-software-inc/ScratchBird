@@ -1885,7 +1885,8 @@ NativeCatalogLeafResult EncodeNativeCatalogLeaf(const NativeCatalogLeafPage& pag
     if (!header.ok() || page.header.page_type!=6) return LeafFailure(LeafError::invalid_header);
     if (!ValidLeafBinding(page.header,page.body)) return LeafFailure(LeafError::invalid_body);
     auto body=BuildRowDataPageBody(page.body,page.header.page_size_bytes-32);
-    if (!body.ok()) return LeafFailure(LeafError::invalid_body);
+    if (!body.ok()) return LeafFailure(body.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,page.header.database_uuid},
         {UuidKind::filespace,page.header.filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
@@ -1908,12 +1909,27 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
     const auto digest=LeafDigest(bytes); if (!digest.ok()) return LeafFailure(LeafError::hash_failure);
     if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.end()-32)) return LeafFailure(LeafError::invalid_integrity);
     std::vector<scratchbird::core::platform::byte> body_bytes(bytes.begin()+128,bytes.end()-32);
-    auto body=ParseRowDataPageBody(body_bytes,header.header->page_number);
-    if (!body.ok() || !ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
+    // CATALOG-BINARY-CELL-DIAGNOSTIC-001: the admitted type6/SBROW004
+    // structural schema fixes base.binary v1. This native identity is only
+    // diagnostic reporting context, never a live descriptor/security receipt.
+    constexpr scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1 binary_context{
+      {{0x2d,0x01,0x00,0x00,0x62,0x69,0x7e,0x61,0xb2,0x79,0x00,0x00,0x00,0x00,0x00,0x00}}, 1};
+    auto body=scratchbird::storage::page::ParseRowDataPageBodyWithCanonicalBinaryCells(
+        body_bytes,header.header->page_number,binary_context);
+    if (body.binary_diagnostic) {
+      auto refused=LeafFailure(LeafError::invalid_body);
+      refused.binary_diagnostic=body.binary_diagnostic;
+      return refused;
+    }
+    if (!body.ok()) return LeafFailure(body.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
+    if (!ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
     // The generic row reader also supports other owners. The catalog family
     // requires the exact canonical body, including its zero unused region.
     const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
-    if (!canonical.ok() || canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
+    if (!canonical.ok()) return LeafFailure(canonical.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
+    if (canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,header.header->database_uuid},
         {UuidKind::filespace,header.header->filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));

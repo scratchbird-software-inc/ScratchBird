@@ -32,7 +32,7 @@ NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage& p) noexcept
     if(!h.ok()||p.header.page_type!=0x0100)return Fail(E::invalid_header);
     if(!Bound(p))return Fail(E::invalid_body);
     auto body=BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
-    if(!body.ok())return Fail(E::invalid_body);
+    if(!body.ok())return Fail(body.resource_failure()?E::resource_exhausted:E::invalid_body);
     std::vector<byte> b(p.header.page_size_bytes,0);
     std::copy(h.bytes->begin(),h.bytes->end(),b.begin());
     std::copy(body.serialized.begin(),body.serialized.end(),b.begin()+128);
@@ -51,10 +51,11 @@ NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>& b) noexcept
     if(!std::equal(hash.digest.begin(),hash.digest.end(),b.end()-32))return Fail(E::invalid_integrity);
     std::vector<byte> bytes(b.begin()+128,b.end()-32);
     auto body=ParseRowDataPageBody(bytes,h.header->page_number);
-    if(!body.ok())return Fail(E::invalid_body);
+    if(!body.ok())return Fail(body.resource_failure()?E::resource_exhausted:E::invalid_body);
     NativeRowDataPage p{*h.header,std::move(body.body)};if(!Bound(p))return Fail(E::invalid_body);
     const auto canonical=BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
-    if(!canonical.ok()||canonical.serialized!=bytes)return Fail(E::invalid_body);
+    if(!canonical.ok())return Fail(canonical.resource_failure()?E::resource_exhausted:E::invalid_body);
+    if(canonical.serialized!=bytes)return Fail(E::invalid_body);
     return {E::none,std::move(p),b};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}

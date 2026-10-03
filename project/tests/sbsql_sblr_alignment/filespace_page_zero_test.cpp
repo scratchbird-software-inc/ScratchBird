@@ -1242,7 +1242,149 @@ void LeafReject(const db::NativeCatalogLeafResult& r,db::NativeCatalogLeafError 
   Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty()&&r.error==error,"leaf rejects without partial page/metadata actual="+
     std::to_string(static_cast<unsigned>(r.error))+" expected="+std::to_string(static_cast<unsigned>(error)),at);
 }
+
+bool SameBinaryDiagnostic(const scratchbird::core::datatypes::DatatypeBinaryDiagnosticView& a,
+                          const scratchbird::core::datatypes::DatatypeBinaryDiagnosticView& b) {
+  if(a.abi_version!=b.abi_version || a.status.code!=b.status.code ||
+     a.status.severity!=b.status.severity || a.status.subsystem!=b.status.subsystem ||
+     a.diagnostic_code!=b.diagnostic_code || a.message_key!=b.message_key ||
+     a.origin!=b.origin || a.argument_count!=b.argument_count)return false;
+  for(std::size_t i=0;i<a.arguments.size();++i){const auto& x=a.arguments[i];const auto& y=b.arguments[i];
+    if(x.key!=y.key || x.kind!=y.kind || x.text!=y.text || x.unsigned_integer!=y.unsigned_integer ||
+       x.uuid!=y.uuid || x.generation!=y.generation)return false;
+  }
+  return true;
+}
+
+void CatalogBinaryCells() {
+  namespace dt=scratchbird::core::datatypes;
+  constexpr dt::DatatypeBinaryDiagnosticContextV1 context{
+    {{0x2d,0x01,0,0,0x62,0x69,0x7e,0x61,0xb2,0x79,0,0,0,0,0,0}},1};
+  using K=dt::DatatypeBinaryDiagnosticArgumentKind;
+  // Independent oracle alters/reseals the containing row, slot, body and page.
+  // No production encode/checksum routine constructs these malformed frames.
+  const auto reseal=[](Bytes& bytes,std::size_t row,std::size_t cell,unsigned index){
+    const auto extent=platform::LoadLittle32(bytes.data()+cell+4);
+    Number(bytes,cell+8,8,BodyFnv(bytes.data()+cell+16,extent));
+    Number(bytes,row+64,8,0);
+    const auto checksum=BodyFnv(bytes.data()+row,platform::LoadLittle32(bytes.data()+row+56));
+    Number(bytes,row+64,8,checksum);
+    const auto directory=128+platform::LoadLittle32(bytes.data()+216);
+    Number(bytes,directory+24*index+16,8,checksum);
+    Number(bytes,160,8,0);Number(bytes,160,8,BodyFnv(bytes.data()+128,bytes.size()-160));LeafSeal(bytes);
+  };
+  for(unsigned profile=0;profile<5;++profile)for(unsigned index=0;index<2;++index){
+    for(unsigned fault=0;fault<14;++fault){
+      auto leaf=LeafExample(profile);auto& value=leaf.body.rows[index].cells[0].value;
+      if(fault==0){value.is_null=true;value.payload.clear();}
+      if(fault==1)value.is_null=true;
+      if(fault==2)value.payload_is_toast_reference=true;
+      if(fault==3)value.type_id=dt::CanonicalTypeId::character;
+      if(fault==11){value.is_null=true;value.payload.clear();value.payload_is_toast_reference=true;}
+      auto bytes=LeafOracle(leaf);
+      const std::size_t row=index==0?224:224+platform::LoadLittle32(bytes.data()+280);
+      const std::size_t cell=row+144,encoded=cell+16;
+      if(fault==4)bytes[encoded]^=1;
+      if(fault==5)Number(bytes,encoded+14,2,31);
+      if(fault==6)Number(bytes,encoded+16,4,value.payload.size()+1);
+      if(fault==7)bytes[encoded+12]|=4;
+      if(fault==8)bytes[encoded+20]=1;
+      if(fault==9)bytes[encoded+24]^=1;
+      if(fault==10){Number(bytes,encoded+16,4,16777217);bytes[encoded+24]^=1;}
+      if(fault==12)Number(bytes,cell+4,4,31);
+      if(fault==13)Number(bytes,cell+4,4,0);
+      reseal(bytes,row,cell,index);
+      const std::string_view code=fault==0?"DATATYPE.NULL_NOT_ADMITTED":
+          fault==1||fault==11?"DATATYPE.NULL_STATE.INVALID":
+          fault==9?"CTB.BINARY.INTEGRITY_FAILED":"CTB.BINARY.FRAME_INVALID";
+      const auto provider=dt::DecodeCanonicalBinaryValueViewNoAlloc(bytes.data()+encoded,
+          platform::LoadLittle32(bytes.data()+cell+4),context);
+      Check(!provider.ok()&&provider.diagnostic.diagnostic_code==code,"independent binary error class");
+      Bytes body(bytes.begin()+128,bytes.end()-32);
+      const auto parsed=page::ParseRowDataPageBodyWithCanonicalBinaryCells(body,leaf.header.page_number,context);
+      Check(!parsed.ok()&&parsed.body.rows.empty()&&parsed.body.slots.empty()&&parsed.serialized.empty()&&
+          parsed.binary_diagnostic&&SameBinaryDiagnostic(*parsed.binary_diagnostic,provider.diagnostic),
+          "row forwards complete native datatype vector without valid prefix");
+      observed_allocations=0;count_allocations=true;
+      auto result=db::DecodeNativeCatalogLeaf(bytes);
+      count_allocations=false;const auto allocations=observed_allocations;
+      LeafReject(result,db::NativeCatalogLeafError::invalid_body);
+      Check(result.binary_diagnostic&&SameBinaryDiagnostic(*result.binary_diagnostic,provider.diagnostic),
+          "leaf forwards exact ABI status message origin and all native arguments");
+      if(fault==0||fault==1||fault==11){const auto& descriptor=result.binary_diagnostic->arguments[0];
+        Check(descriptor.kind==K::descriptor_reference&&descriptor.uuid==context.descriptor_uuid&&
+            descriptor.generation==1&&descriptor.text.empty(),"descriptor error has binary UUID and native generation");
+      }
+      if(fault==1)Check(result.binary_diagnostic->arguments[2].kind==K::unsigned_integer&&
+          result.binary_diagnostic->arguments[2].unsigned_integer==value.payload.size(),"NULL length is native integer");
+      // Fail every actual allocation before the producer, then deny any further
+      // allocation exactly at the typed refusal. No bad_alloc may erase the
+      // producer's diagnostic once it has been reached.
+      if(profile==0)for(unsigned long budget=0;budget<=allocations;++budget){
+        allocation_budget=budget;const auto injected=db::DecodeNativeCatalogLeaf(bytes);allocation_budget=-1;
+        if(budget<allocations){LeafReject(injected,db::NativeCatalogLeafError::resource_exhausted);
+          Check(!injected.binary_diagnostic,"pre-producer allocation failure invents no datatype refusal");
+        }else Check(injected.binary_diagnostic&&SameBinaryDiagnostic(*injected.binary_diagnostic,provider.diagnostic),
+            "complete binary refusal requires no trailing diagnostic allocation");
+      }
+      allocation_budget=0;const auto saved=*result.binary_diagnostic;allocation_budget=-1;
+      std::fill(bytes.begin(),bytes.end(),0);body.clear();
+      Check(SameBinaryDiagnostic(saved,provider.diagnostic),"fixed diagnostic survives source mutation and result copy");
+      if(fault==0){const auto null_bytes=LeafOracle(leaf);Bytes null_body(null_bytes.begin()+128,null_bytes.end()-32);
+        const auto generic=page::ParseRowDataPageBody(null_body,leaf.header.page_number);
+        Check(generic.ok()&&generic.body.rows[index].cells[0].value.is_null,
+            "general row reader still supports clean typed NULL");
+      }
+    }
+    auto empty=LeafExample(profile);empty.body.rows[index].cells[0].value.payload.clear();
+    const auto empty_bytes=LeafOracle(empty);Bytes empty_body(empty_bytes.begin()+128,empty_bytes.end()-32);
+    const auto present=page::ParseRowDataPageBodyWithCanonicalBinaryCells(empty_body,empty.header.page_number,context);
+    Check(present.ok()&&!present.binary_diagnostic&&!present.body.rows[index].cells[0].value.is_null&&
+        present.body.rows[index].cells[0].value.payload.empty(),"empty PRESENT binary remains distinct from NULL");
+    const auto metadata_refusal=db::DecodeNativeCatalogLeaf(empty_bytes);
+    LeafReject(metadata_refusal,db::NativeCatalogLeafError::invalid_metadata);
+    Check(!metadata_refusal.binary_diagnostic,"empty metadata is not falsely reported as malformed binary");
+    auto text=LeafExample(profile);text.body.rows[index].cells[0].value.type_id=dt::CanonicalTypeId::character;
+    text.body.rows[index].cells[0].value.payload={'4','2'};
+    const auto text_bytes=LeafOracle(text);Bytes text_body(text_bytes.begin()+128,text_bytes.end()-32);
+    const auto generic_text=page::ParseRowDataPageBody(text_body,text.header.page_number);
+    Check(generic_text.ok()&&generic_text.body.rows[index].cells[0].value.payload==Bytes({'4','2'}),
+          "canonical catalog policy does not remove general character row support");
+  }
+  // Exercise the owning provider's typed allocation failure in ordinary binary
+  // row pages as well as catalog pages. It need not escape as bad_alloc: every
+  // containing admission must retain resource classification, never corruption.
+  for(unsigned profile=0;profile<5;++profile){
+    auto fixture=LeafExample(profile);fixture.header.page_type=0x0100;
+    const page::NativeRowDataPage row{fixture.header,fixture.body};
+    const auto expected=LeafOracle(fixture);
+    for(unsigned mode=0;mode<2;++mode){
+      observed_allocations=0;count_allocations=true;
+      const auto baseline=mode?page::DecodeNativeRowDataPage(expected):page::EncodeNativeRowDataPage(row);
+      count_allocations=false;const auto count=observed_allocations;
+      Check(baseline.ok()&&baseline.bytes==expected,"independent ordinary binary row image");
+      for(unsigned long budget=0;budget<=count;++budget){
+        allocation_budget=budget;
+        const auto result=mode?page::DecodeNativeRowDataPage(expected):page::EncodeNativeRowDataPage(row);
+        allocation_budget=-1;
+        if(budget<count)Check(result.error==page::NativeRowDataError::resource_exhausted&&
+            !result.page&&result.bytes.empty(),"every binary row allocation failure remains a resource failure");
+        else Check(result.ok()&&result.bytes==expected,"uninjected binary row terminal success");
+      }
+    }
+  }
+  // Streaming checksum matches the old logical-zero algorithm at every short
+  // extent, including a partial checksum field, under complete heap denial.
+  for(unsigned n=0;n<300;++n){Bytes input(n);for(unsigned i=0;i<n;++i)input[i]=(i*37+19)&255;
+    auto normalized=input;if(normalized.size()>=40)std::fill(normalized.begin()+32,normalized.begin()+40,byte{0});
+    const auto expected=BodyFnv(normalized.data(),normalized.size());
+    allocation_budget=0;const auto actual=page::ComputeRowDataPageChecksum(input);allocation_budget=-1;
+    Check(actual==expected,"streamed body checksum exact at every small boundary without allocation");
+  }
+}
+
 void CatalogLeaves() {
+  CatalogBinaryCells();
   using Error=db::NativeCatalogLeafError;
   for(unsigned p=0;p<5;++p) {
     auto leaf=LeafExample(p); const auto expected=LeafOracle(leaf);
@@ -1328,6 +1470,20 @@ void CatalogLeafFiles() {
       &&device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"actual canonical leaf persisted");
     auto r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
     Check(r.ok()&&r.bytes==image&&r.metadata.size()==2,"read actual bound leaf in primary/secondary filespace");
+    {
+      auto invalid=LeafExample(p);invalid.body.rows.back().cells[0].value.is_null=true;
+      invalid.body.rows.back().cells[0].value.payload.clear();const auto damaged=LeafOracle(invalid);
+      const auto expected=db::DecodeNativeCatalogLeaf(damaged);
+      Check(device.WriteAt(21*sizes[p],damaged.data(),damaged.size()).ok()&&device.Sync().ok(),
+          "persist resealed invalid later binary cell");
+      const auto refused=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
+      LeafReject(refused,db::NativeCatalogLeafError::invalid_body);
+      Check(expected.binary_diagnostic&&refused.binary_diagnostic&&
+          SameBinaryDiagnostic(*expected.binary_diagnostic,*refused.binary_diagnostic),
+          "retained device read preserves full typed binary refusal without valid prefix");
+      Check(device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),
+          "restore valid independent image for existing device regressions");
+    }
     if(p!=0) {
       const auto root_image=RootOracle(RootExample(p));
       Check(device.WriteAt(12*sizes[p],root_image.data(),root_image.size()).ok()&&device.Sync().ok(),"persist owning canonical catalog root");
@@ -6157,6 +6313,9 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--catalog-binary-cells-only"){
+    try{CatalogBinaryCells();CatalogLeafFiles();std::cout<<"catalog binary cell checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-committed-only"){
     try{CheckpointCatalogRelations();std::cout<<"committed and pinned catalog checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

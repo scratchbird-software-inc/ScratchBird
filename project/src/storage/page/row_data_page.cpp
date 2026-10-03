@@ -107,6 +107,19 @@ u64 Fnv1a64(const byte* data, std::size_t size) {
   return hash;
 }
 
+u64 Fnv1a64WithZeroChecksum(const byte* data, std::size_t size,
+                           std::size_t checksum_offset) noexcept {
+  const bool complete_field = checksum_offset <= size && size - checksum_offset >= sizeof(u64);
+  u64 hash = 1469598103934665603ull;
+  for (std::size_t i = 0; i < size; ++i) {
+    const byte value = complete_field && i >= checksum_offset &&
+        i - checksum_offset < sizeof(u64) ? byte{0} : data[i];
+    hash ^= static_cast<u64>(value);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
 bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
@@ -183,11 +196,7 @@ DenseRowOrdinalValidation RowOrdinalRefusal(const RowDataPageBody& body,
 }  // namespace
 
 u64 ComputeRowDataPageChecksum(const std::vector<byte>& body) {
-  std::vector<byte> normalized = body;
-  if (normalized.size() >= kOffsetBodyChecksum + sizeof(u64)) {
-    StoreLittle64(normalized.data() + kOffsetBodyChecksum, 0);
-  }
-  return Fnv1a64(normalized.data(), normalized.size());
+  return Fnv1a64WithZeroChecksum(body.data(), body.size(), kOffsetBodyChecksum);
 }
 
 void AssignDenseInternalRowOrdinals(RowDataPageBody* body) {
@@ -488,7 +497,10 @@ RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_siz
   return BuildRowDataPageBodyOwned(body, page_size);
 }
 
-RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number) {
+namespace {
+RowDataPageResult ParseRowDataPageBodyImpl(
+    const std::vector<byte>& serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1* binary_context) {
   if (serialized.size() < kRowDataPageBodyHeaderBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-BODY-SHORT",
                         "storage.row_data_page.body_short",
@@ -627,20 +639,38 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
                             "storage.row_data_page.cell_payload_short",
                             std::to_string(cell_index));
       }
-      std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
-      if (payload_checksum != Fnv1a64(encoded.data(), encoded.size())) {
+      if (payload_checksum != Fnv1a64(serialized.data() + offset, payload_bytes)) {
         return RowPageError("SB-ROW-DATA-PAGE-CELL-CHECKSUM-MISMATCH",
                             "storage.row_data_page.cell_checksum_mismatch",
                             std::to_string(cell_index));
       }
-      const auto decoded = DecodeDatatypeBinaryValue(encoded);
-      if (!decoded.ok()) {
-        RowDataPageResult decoded_result;
-        decoded_result.status = decoded.status;
-        decoded_result.diagnostic = decoded.diagnostic;
-        return decoded_result;
+      if (binary_context != nullptr) {
+        const auto decoded = scratchbird::core::datatypes::DecodeCanonicalBinaryValueViewNoAlloc(
+            serialized.data() + offset, payload_bytes, *binary_context);
+        if (!decoded.ok()) {
+          RowDataPageResult refused;
+          refused.status = decoded.status;
+          refused.binary_diagnostic = decoded.diagnostic;
+          return refused;
+        }
+        cell.value.type_id = decoded.value.type_id;
+        // Only the final owning cell is materialized. No encoded-cell clone or
+        // owning diagnostic conversion lies between the provider and refusal.
+        if (decoded.value.payload_bytes != 0) {
+          cell.value.payload.assign(decoded.value.payload_data,
+              decoded.value.payload_data + decoded.value.payload_bytes);
+        }
+      } else {
+        std::vector<byte> encoded(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
+        auto decoded = DecodeDatatypeBinaryValue(encoded);
+        if (!decoded.ok()) {
+          RowDataPageResult decoded_result;
+          decoded_result.status = decoded.status;
+          decoded_result.diagnostic = std::move(decoded.diagnostic);
+          return decoded_result;
+        }
+        cell.value = std::move(decoded.value);
       }
-      cell.value = decoded.value;
       row.cells.push_back(std::move(cell));
       offset += payload_bytes;
     }
@@ -649,10 +679,8 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
                           "storage.row_data_page.row_bytes_mismatch",
                           std::to_string(row_index));
     }
-    std::vector<byte> row_image(serialized.begin() + row_start,
-                                serialized.begin() + offset);
-    StoreLittle64(row_image.data() + kRowOffsetRowChecksum, 0);
-    if (row_checksum != Fnv1a64(row_image.data(), row_image.size())) {
+    if (row_checksum != Fnv1a64WithZeroChecksum(serialized.data() + row_start,
+                                               offset - row_start, kRowOffsetRowChecksum)) {
       return RowPageError("SB-ROW-DATA-PAGE-ROW-CHECKSUM-MISMATCH",
                           "storage.row_data_page.row_checksum_mismatch",
                           std::to_string(row_index));
@@ -699,6 +727,17 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
   }
   return result;
+}
+}  // namespace
+
+RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 page_number) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, nullptr);
+}
+
+RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
+    const std::vector<byte>& serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) {
+  return ParseRowDataPageBodyImpl(serialized, page_number, &context);
 }
 
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
