@@ -8,9 +8,30 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace allocation_probe {
+thread_local bool fail_next = false;
+}
+
+void* operator new(std::size_t bytes) {
+  if (allocation_probe::fail_next) {
+    allocation_probe::fail_next = false;
+    throw std::bad_alloc();
+  }
+  if (void* value = std::malloc(bytes == 0 ? 1 : bytes)) return value;
+  throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+
+void operator delete(void* value) noexcept { std::free(value); }
+void operator delete[](void* value) noexcept { std::free(value); }
+void operator delete(void* value, std::size_t) noexcept { std::free(value); }
+void operator delete[](void* value, std::size_t) noexcept { std::free(value); }
 
 namespace {
 namespace dt = scratchbird::core::datatypes;
@@ -214,42 +235,51 @@ void TestPopulationAndAuthoritativeRows() {
   static_assert(HasDescriptorPolicyMember<dt::DatatypeTypeCodecIdentityRowV3>);
 
   const auto v3 = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
-  Check(v3.size() == 127, "V3 registry does not contain 127 rows");
+  Check(v3.size() == 160, "V3 registry does not contain 160 rows");
 
-  std::array<std::size_t, 6> counts{};
+  std::array<std::size_t, 7> counts{};
   for (const auto& row : v3) {
     const auto generation = row.legacy_fields.catalog_generation;
-    Check(generation >= 1 && generation <= 6 &&
+    Check(generation >= 1 && generation <= 7 &&
               row.legacy_fields.registry_generation == generation,
           "V3 row has a mixed or invalid cohort generation");
     ++counts[generation - 1];
   }
-  Check(counts == std::array<std::size_t, 6>{6, 12, 13, 31, 32, 33},
-        "V3 cohort row counts differ from Core V6");
+  Check(counts == std::array<std::size_t, 7>{6, 12, 13, 31, 32, 33, 33},
+        "V3 cohort row counts differ from admitted Core d707");
+
+  Check(dt::kDatatypeCohortV7IdentityDigestSha256 ==
+            "f10857ec395d4ebca02ec21c785251a668d98f3c0e69eeba11324f3807832dcc",
+        "d707 Core cohort digest binding changed");
 
   const auto registry_digest = RegistryDigest(v3);
   if (registry_digest !=
-      "3d34b8e5ae035272b60f65ea4839a175060e137216f93d04f38c5b6bc1d2e7e1") {
+      "65025eb67c8f3e3b1d24425441c66a8bdecac53cea273ad5c61f9d2442460ac7") {
     std::cerr << "observed_v3_authority_digest=" << registry_digest << '\n';
     Fail("materialized V3 authority rows changed");
   }
 
-  constexpr std::array<std::string_view, 6> expected_cohort_digests{{
+  constexpr std::array<std::string_view, 7> expected_cohort_digests{{
       "c3f32a278b09243fe3556ba9520c6ad95fb0995035813f92244c775b1bc4e3e2",
       "72399142c162281c1f81e1ec64175f546b26baa45f0fd241abab5823d913e166",
       "3ca980ce8e214c713d53bffcfb34e73bc64094065c8e2f93ed264e530cfeb299",
       "e2487d9e772f3e0ddb1a9873dffd70f13f55b930df111efc07e7889eb7581968",
       "d2422a08f9c7f4eb5c5c7cc984c6df54128ce5375a7fde25000c0a9842c436ad",
       "f5b95f6de3b668d5fe325f0016d224d2faa591076327e795e63b0858e35aa2b0",
+      "f8f70ee80dbc9e877bd497d7f07d117d99abd994126403b7bfd0f3c684357e3b",
   }};
-  for (std::uint64_t generation = 1; generation <= 6; ++generation) {
+  for (std::uint64_t generation = 1; generation <= 7; ++generation) {
     std::vector<dt::DatatypeTypeCodecIdentityRowV3> cohort;
     for (const auto& row : v3) {
       if (row.legacy_fields.catalog_generation == generation)
         cohort.push_back(row);
     }
-    Check(RegistryDigest(cohort) == expected_cohort_digests[generation - 1],
-          "materialized V3 predecessor cohort digest changed");
+    const auto cohort_digest = RegistryDigest(cohort);
+    if (cohort_digest != expected_cohort_digests[generation - 1]) {
+      std::cerr << "generation=" << generation
+                << " observed_cohort_digest=" << cohort_digest << '\n';
+      Fail("materialized V3 cohort digest changed");
+    }
   }
 
   using scratchbird::tests::FixtureUuidLiteral;
@@ -257,8 +287,11 @@ void TestPopulationAndAuthoritativeRows() {
       FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
   const auto bit_descriptor =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
   std::size_t binary_policy_rows = 0;
   std::size_t bit_policy_rows = 0;
+  std::size_t date_policy_rows = 0;
   for (const auto& row : v3) {
     const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
         row.legacy_fields.catalog_snapshot_uuid,
@@ -290,6 +323,20 @@ void TestPopulationAndAuthoritativeRows() {
                 !row.operation_policy.uuid.is_nil(),
             "base.bit_string V3 policy authority is incomplete");
       ++bit_policy_rows;
+    } else if (row.legacy_fields.descriptor_uuid == date_descriptor &&
+               row.legacy_fields.catalog_generation == 7) {
+      Check(!row.descriptor_policy.uuid.is_nil() &&
+                !row.canonicalization_policy.uuid.is_nil() &&
+                !row.ordering_policy.uuid.is_nil() &&
+                !row.hash_policy.uuid.is_nil() &&
+                !row.operation_policy.uuid.is_nil() &&
+                row.descriptor_policy.generation == 1 &&
+                row.canonicalization_policy.generation == 1 &&
+                row.ordering_policy.generation == 1 &&
+                row.hash_policy.generation == 1 &&
+                row.operation_policy.generation == 1,
+            "base.date d707 policy authority is incomplete");
+      ++date_policy_rows;
     } else {
       Check(row.descriptor_policy.uuid.is_nil() &&
                 row.descriptor_policy.generation == 0 &&
@@ -304,11 +351,12 @@ void TestPopulationAndAuthoritativeRows() {
             "V3 row contains an unregistered policy identity");
     }
   }
-  Check(binary_policy_rows == 4 && bit_policy_rows == 1,
+  Check(binary_policy_rows == 5 && bit_policy_rows == 2 &&
+            date_policy_rows == 1,
         "V3 policy-bearing row population changed");
 
-  const std::array<std::size_t, 6> expected_inherited{0, 6, 12, 13, 31, 32};
-  std::array<std::size_t, 6> inherited_counts{};
+  const std::array<std::size_t, 7> expected_inherited{0, 6, 12, 13, 31, 32, 27};
+  std::array<std::size_t, 7> inherited_counts{};
   for (const auto& current : v3) {
     const auto generation = current.legacy_fields.catalog_generation;
     if (generation == 1) continue;
@@ -325,6 +373,15 @@ void TestPopulationAndAuthoritativeRows() {
           current.legacy_fields.catalog_snapshot_uuid;
       expected_legacy.catalog_generation = generation;
       expected_legacy.registry_generation = generation;
+      const bool d707_codec_closure = generation == 7 &&
+          (current.legacy_fields.canonical_name == "boolean" ||
+           current.legacy_fields.canonical_name == "int32" ||
+           current.legacy_fields.canonical_name == "bigint" ||
+           current.legacy_fields.canonical_name == "decimal" ||
+           current.legacy_fields.canonical_name == "int128");
+      const bool d707_date_closure = generation == 7 &&
+          current.legacy_fields.canonical_name == "date";
+      if (d707_codec_closure || d707_date_closure) continue;
       Check(SameLegacyIdentity(expected_legacy, current.legacy_fields) &&
                 SamePolicy(predecessor.descriptor_policy,
                            current.descriptor_policy) &&
@@ -341,6 +398,64 @@ void TestPopulationAndAuthoritativeRows() {
   }
   Check(inherited_counts == expected_inherited,
         "V3 successor inheritance counts changed");
+
+  const std::array<std::string_view, 5> codec_closure_names{
+      "boolean", "int32", "bigint", "decimal", "int128"};
+  std::size_t codec_closures = 0;
+  for (const auto& row : v3) {
+    if (row.legacy_fields.catalog_generation != 7) continue;
+    Check(!row.legacy_fields.codec_uuid.is_nil() &&
+              row.legacy_fields.codec_uuid != row.legacy_fields.descriptor_uuid &&
+              row.legacy_fields.codec_uuid != row.legacy_fields.type_uuid,
+          "d707 executable row lacks a distinct codec UUID");
+    for (const auto name : codec_closure_names) {
+      if (row.legacy_fields.canonical_name == name) ++codec_closures;
+    }
+  }
+  Check(codec_closures == codec_closure_names.size(),
+        "d707 codec-identity closure population changed");
+
+  std::vector<const dt::DatatypeTypeCodecIdentityRowV3*> d706;
+  std::vector<const dt::DatatypeTypeCodecIdentityRowV3*> d707;
+  for (const auto& row : v3) {
+    if (row.legacy_fields.catalog_generation == 6) d706.push_back(&row);
+    if (row.legacy_fields.catalog_generation == 7) d707.push_back(&row);
+  }
+  Check(d706.size() == 33 && d707.size() == 33,
+        "successor cohorts are incomplete");
+  for (std::size_t i = 0; i < d707.size(); ++i) {
+    Check(d706[i]->legacy_fields.descriptor_uuid ==
+              d707[i]->legacy_fields.descriptor_uuid,
+          "d707 row order differs from its declared predecessor order");
+    for (std::size_t j = i + 1; j < d707.size(); ++j) {
+      Check(d707[i]->legacy_fields.descriptor_uuid !=
+                d707[j]->legacy_fields.descriptor_uuid &&
+                d707[i]->legacy_fields.type_uuid !=
+                    d707[j]->legacy_fields.type_uuid &&
+                d707[i]->legacy_fields.codec_uuid !=
+                    d707[j]->legacy_fields.codec_uuid,
+            "d707 same-role UUID is not globally unique");
+    }
+  }
+  std::size_t cross_role_aliases = 0;
+  for (const auto* left : d707) {
+    for (const auto* right : d707) {
+      if (left->legacy_fields.descriptor_uuid ==
+          right->legacy_fields.type_uuid) {
+        Check(left->legacy_fields.canonical_name == "boolean" &&
+                  right->legacy_fields.canonical_name == "boolean",
+              "unapproved d707 descriptor/type cross-role alias");
+        ++cross_role_aliases;
+      }
+      Check(left->legacy_fields.codec_uuid !=
+                    right->legacy_fields.descriptor_uuid &&
+                left->legacy_fields.codec_uuid !=
+                    right->legacy_fields.type_uuid,
+            "d707 codec UUID aliases another authority role");
+    }
+  }
+  Check(cross_role_aliases == 1,
+        "boolean is not the sole d707 descriptor/type alias");
 }
 
 void TestExactBitStringIdentity() {
@@ -349,9 +464,9 @@ void TestExactBitStringIdentity() {
   const auto type = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82a");
   const auto codec = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
   const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+      dt::kDatatypeCohortV7, 7, 7, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(lookup.row),
-        "exact V6 bit-string row did not resolve");
+        "exact d707 bit-string row did not resolve");
   const auto& row = lookup.row;
   const auto& legacy = row.legacy_fields;
   Check(legacy.type_uuid == type && legacy.codec_uuid == codec &&
@@ -368,7 +483,7 @@ void TestExactBitStringIdentity() {
                 "logical_count_then_MSB_first_packed_bits_unused_low_tail_zero" &&
             legacy.invalid_encoding_diagnostic_id ==
                 "CTB.BIT.CANONICAL_ENCODING_INVALID",
-        "V6 bit-string identity/bounds/representation drifted");
+        "d707 bit-string identity/bounds/representation drifted");
   Check(row.descriptor_policy.uuid == FixtureUuidLiteral("01a0ff27-2715-75d2-98fb-c853527d3811") &&
             row.canonicalization_policy.uuid == FixtureUuidLiteral("01a0ff27-2716-7c83-9ae4-23bbc73e6a9d") &&
             row.ordering_policy.uuid == FixtureUuidLiteral("01a0ff27-2717-7a54-bdbc-a3c1fee7c5e3") &&
@@ -379,22 +494,22 @@ void TestExactBitStringIdentity() {
             row.ordering_policy.generation == 1 &&
             row.hash_policy.generation == 1 &&
             row.operation_policy.generation == 1,
-        "V6 bit-string policy identity drifted");
+        "d707 bit-string policy identity drifted");
 
   for (unsigned generation = 1; generation <= 5; ++generation) {
-    auto snapshot = dt::kDatatypeCohortV6;
+    auto snapshot = dt::kDatatypeCohortV7;
     snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
     Check(!dt::LookupDatatypeTypeCodecIdentityV3(
                snapshot, generation, generation, descriptor, 1).ok,
           "bit-string identity leaked into a predecessor cohort");
   }
-  Check(!dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 5, 6,
+  Check(!dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV7, 6, 7,
                                                descriptor, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 5,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV7, 7, 6,
                                                    descriptor, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 6,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV7, 7, 7,
                                                    type, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 6,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV7, 7, 7,
                                                    codec, 1).ok,
         "V3 lookup inferred an identity from a mismatched tuple");
 
@@ -429,8 +544,14 @@ void TestExactBitStringIdentity() {
                   "altered descriptor generation admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.type_generation; },
                   "altered type generation admitted");
-  reject_mutation([](auto& value) { value.legacy_fields.codec_id += ".other"; },
-                  "altered codec id admitted");
+  auto renamed_codec = row;
+  renamed_codec.legacy_fields.codec_id = "packed_bit_sequence_codec";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(renamed_codec),
+        "renamed bit-string codec label changed exact identity");
+  auto translated_codec = row;
+  translated_codec.legacy_fields.codec_id = "codec_cadena_de_bits";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(translated_codec),
+        "translated bit-string codec label changed exact identity");
   reject_mutation([](auto& value) { ++value.legacy_fields.codec_version; },
                   "altered codec version admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.codec_generation; },
@@ -439,8 +560,14 @@ void TestExactBitStringIdentity() {
                   "altered canonical value width admitted");
   reject_mutation([](auto& value) { value.legacy_fields.null_supported = false; },
                   "altered NULL support admitted");
-  reject_mutation([](auto& value) { value.legacy_fields.canonical_name += ".other"; },
-                  "altered canonical name admitted");
+  auto renamed = row;
+  renamed.legacy_fields.canonical_name = "bit_sequence";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(renamed),
+        "renamed bit-string presentation label changed exact identity");
+  auto translated = row;
+  translated.legacy_fields.canonical_name = "cadena_de_bits";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(translated),
+        "translated bit-string presentation label changed exact identity");
   reject_mutation([](auto& value) { ++value.legacy_fields.datatype_identity_code; },
                   "altered datatype identity code admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.null_encoding_code; },
@@ -530,8 +657,297 @@ void TestExactBitStringIdentity() {
   }
 
   const auto projected = dt::ProjectDatatypeTypeCodecIdentityV3ToV1(row);
-  Check(SameLegacyIdentity(projected, legacy),
+  Check(projected.ok && projected.diagnostic_id.empty() &&
+            SameLegacyIdentity(projected.row, legacy),
         "one-way V3-to-V1 projection changed legacy fields");
+}
+
+void TestExactCurrentBinaryDateAndCodecClosures() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto binary_descriptor =
+      FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
+  const auto bit_descriptor =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+
+  const auto binary = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, binary_descriptor, 1);
+  const auto bit = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, bit_descriptor, 1);
+  const auto date = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, date_descriptor, 1);
+  Check(binary.ok && dt::IsExactCanonicalBinaryTypeCodecIdentityV3(binary.row),
+        "exact current binary identity is absent");
+  Check(bit.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(bit.row),
+        "exact current bit-string identity is absent");
+  Check(date.ok && dt::IsExactCanonicalDateTypeCodecIdentityV3(date.row),
+        "exact current date identity is absent");
+
+  auto renamed_binary = binary.row;
+  renamed_binary.legacy_fields.canonical_name = "octet_sequence";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(renamed_binary),
+        "renamed binary presentation label changed exact identity");
+  auto translated_binary = binary.row;
+  translated_binary.legacy_fields.canonical_name = "secuencia_binaria";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(translated_binary),
+        "translated binary presentation label changed exact identity");
+  auto renamed_binary_codec = binary.row;
+  renamed_binary_codec.legacy_fields.codec_id = "octet_sequence_codec";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(renamed_binary_codec),
+        "renamed binary codec label changed exact identity");
+  auto translated_binary_codec = binary.row;
+  translated_binary_codec.legacy_fields.codec_id = "codec_secuencia_binaria";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(
+            translated_binary_codec),
+        "translated binary codec label changed exact identity");
+
+  auto renamed_date = date.row;
+  renamed_date.legacy_fields.canonical_name = "calendar_date";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(renamed_date),
+        "renamed date presentation label changed exact identity");
+  auto translated_date = date.row;
+  translated_date.legacy_fields.canonical_name = "fecha";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(translated_date),
+        "translated date presentation label changed exact identity");
+  auto renamed_date_codec = date.row;
+  renamed_date_codec.legacy_fields.codec_id = "epoch_day_codec";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(renamed_date_codec),
+        "renamed date codec label changed exact identity");
+  auto translated_date_codec = date.row;
+  translated_date_codec.legacy_fields.codec_id = "codec_dias_desde_epoca";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(translated_date_codec),
+        "translated date codec label changed exact identity");
+
+  Check(date.row.legacy_fields.type_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81c") &&
+            date.row.legacy_fields.codec_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d") &&
+            date.row.legacy_fields.codec_id == "datatype.date.days.le.v1" &&
+            date.row.legacy_fields.codec_version == 1 &&
+            date.row.legacy_fields.codec_generation == 1 &&
+            date.row.legacy_fields.canonical_value_minimum_bytes == 4 &&
+            date.row.legacy_fields.canonical_value_maximum_bytes == 4 &&
+            date.row.legacy_fields.canonical_value_exact_bytes == 4 &&
+            date.row.legacy_fields.canonical_binary_type_code == 400 &&
+            date.row.legacy_fields.canonical_byte_order == "little_endian" &&
+            date.row.legacy_fields.canonical_representation ==
+                "signed_i32_days_since_Unix_epoch",
+        "current date descriptor/type/codec material drifted");
+  Check(date.row.descriptor_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f0-7913-9a16-000409f9ffb1") &&
+            date.row.canonicalization_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f1-72b9-ba08-95b604caebf3") &&
+            date.row.ordering_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f2-7feb-85a8-2d74fe2fde38") &&
+            date.row.hash_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f3-7a61-a159-5ddb1cbc1df6") &&
+            date.row.operation_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f6-7b7a-8ee0-ffbacbcd7dff"),
+        "current date policy tuple drifted");
+
+  const auto reject_date_mutation = [&](auto mutate,
+                                        std::string_view message) {
+    auto changed = date.row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed), message);
+  };
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.catalog_snapshot_uuid.bytes[15] ^= 1;
+    }, "mutated date receipt UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.catalog_generation;
+    }, "mutated date catalog generation was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.registry_generation;
+    }, "mutated date registry generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.descriptor_uuid.bytes[0] ^= 1;
+    }, "mutated date descriptor UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.descriptor_generation;
+    }, "mutated date descriptor generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.type_uuid.bytes[0] ^= 1;
+    }, "mutated date type UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.type_generation;
+    }, "mutated date type generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.codec_uuid.bytes[0] ^= 1;
+    }, "mutated date codec UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.codec_version;
+    }, "mutated date codec version was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.codec_generation;
+    }, "mutated date codec generation was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_minimum_bytes;
+    }, "mutated date minimum extent was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_maximum_bytes;
+    }, "mutated date maximum extent was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_exact_bytes;
+    }, "mutated date exact extent was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.canonical_byte_order += ".other";
+    }, "mutated date byte order was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.canonical_representation += ".other";
+    }, "mutated date representation was admitted");
+  for (const auto member : {
+           &dt::DatatypeTypeCodecIdentityRowV3::descriptor_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::canonicalization_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::ordering_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::hash_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::operation_policy}) {
+    auto changed = date.row;
+    (changed.*member).uuid.bytes[0] ^= 1;
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed),
+          "mutated date policy UUID was admitted");
+    changed = date.row;
+    (changed.*member).generation = 2;
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed),
+          "mutated date policy generation was admitted");
+  }
+
+  const auto reject_binary_mutation = [&](auto mutate,
+                                          std::string_view message) {
+    auto changed = binary.row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed), message);
+  };
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.catalog_snapshot_uuid.bytes[15] ^= 1;
+    }, "mutated binary receipt UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.catalog_generation;
+    }, "mutated binary catalog generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.registry_generation;
+    }, "mutated binary registry generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.descriptor_uuid.bytes[0] ^= 1;
+    }, "mutated binary descriptor UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.descriptor_generation;
+    }, "mutated binary descriptor generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.type_uuid.bytes[0] ^= 1;
+    }, "mutated binary type UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.type_generation;
+    }, "mutated binary type generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.codec_uuid.bytes[0] ^= 1;
+    }, "mutated binary codec UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.codec_version;
+    }, "mutated binary codec version was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.codec_generation;
+    }, "mutated binary codec generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_maximum_bytes;
+    }, "mutated binary maximum extent was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.canonical_byte_order += ".other";
+    }, "mutated binary byte order was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.canonical_representation += ".other";
+    }, "mutated binary representation was admitted");
+  for (const auto member : {
+           &dt::DatatypeTypeCodecIdentityRowV3::descriptor_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::canonicalization_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::ordering_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::hash_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::operation_policy}) {
+    auto changed = binary.row;
+    (changed.*member).uuid.bytes[15] ^= 1;
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed),
+          "mutated binary policy UUID was admitted");
+    changed = binary.row;
+    (changed.*member).generation = 2;
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed),
+          "mutated binary policy generation was admitted");
+  }
+  Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(
+            dt::LookupDatatypeTypeCodecIdentityV3(
+                dt::kDatatypeCohortV6, 6, 6, date_descriptor, 1).row),
+        "historical date row was admitted as current");
+
+  constexpr std::array<std::array<scratchbird::core::platform::Uuid, 2>, 5>
+      closures{{
+      {FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"),
+       FixtureUuidLiteral("01a1010b-2e50-73c3-bdc8-ca82fc1fae5c")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"),
+       FixtureUuidLiteral("01a1010b-2e51-7c10-b90a-af9f08d9cd79")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"),
+       FixtureUuidLiteral("01a1010b-2e52-79a4-8669-a9a7cb89bd21")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"),
+       FixtureUuidLiteral("01a1010b-2e53-7fef-b6fa-1d9300cd10c8")},
+      {FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000"),
+       FixtureUuidLiteral("01a1010b-2e54-777f-8089-a807f43084c2")},
+  }};
+  for (const auto& closure : closures) {
+    const auto row = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV7, 7, 7, closure[0], 1);
+    Check(row.ok &&
+              row.row.legacy_fields.codec_uuid == closure[1],
+          "d707 codec-identity closure differs from Core");
+  }
+}
+
+void TestLookupAllocationFailureIsContained() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+
+  allocation_probe::fail_next = true;
+  const auto invalid = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 6, 7, date_descriptor, 1);
+  const bool invalid_path_did_not_allocate = allocation_probe::fail_next;
+  allocation_probe::fail_next = false;
+  Check(invalid_path_did_not_allocate && !invalid.ok &&
+            invalid.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
+        "invalid identity lookup allocated its diagnostic");
+
+  allocation_probe::fail_next = true;
+  const auto refused = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, date_descriptor, 1);
+  Check(!allocation_probe::fail_next,
+        "identity row copy did not exercise the allocation-failure probe");
+  Check(!refused.ok &&
+            refused.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED" &&
+            SameV3Identity(refused.row, {}),
+        "identity row allocation failure escaped or lost its admitted diagnostic");
+
+  const auto recovered = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, date_descriptor, 1);
+  Check(recovered.ok && recovered.diagnostic_id.empty() &&
+            dt::IsExactCanonicalDateTypeCodecIdentityV3(recovered.row),
+        "identity lookup did not recover after an injected allocation failure");
+
+  const auto projection_source = recovered.row;
+  const dt::DatatypeTypeCodecIdentityRowV1 default_projection_row;
+  allocation_probe::fail_next = true;
+  const auto projection_refused =
+      dt::ProjectDatatypeTypeCodecIdentityV3ToV1(projection_source);
+  Check(!allocation_probe::fail_next,
+        "V3-to-V1 projection did not exercise the allocation-failure probe");
+  Check(!projection_refused.ok &&
+            projection_refused.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED" &&
+            SameLegacyIdentity(projection_refused.row, default_projection_row),
+        "V3-to-V1 projection failure escaped, published a partial row, or lost its diagnostic");
+
+  const auto projection_recovered =
+      dt::ProjectDatatypeTypeCodecIdentityV3ToV1(projection_source);
+  Check(projection_recovered.ok && projection_recovered.diagnostic_id.empty() &&
+            SameLegacyIdentity(projection_recovered.row,
+                               projection_source.legacy_fields),
+        "V3-to-V1 projection did not recover with exact legacy fields");
 }
 
 }  // namespace
@@ -539,6 +955,8 @@ void TestExactBitStringIdentity() {
 int main() {
   TestPopulationAndAuthoritativeRows();
   TestExactBitStringIdentity();
+  TestExactCurrentBinaryDateAndCodecClosures();
+  TestLookupAllocationFailureIsContained();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;
 }

@@ -49,18 +49,33 @@ std::vector<platform::byte> Hex(std::string_view text) {
 }
 
 dt::BitStringAuthorityReceiptV1 Receipt() {
-  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV6,
-          6, 6};
+  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV7,
+          7, 7};
 }
 
 dt::BitStringDescriptorProfileV1 Profile(
     dt::BitStringSurfaceProfileKindV1 kind, std::uint32_t length) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7,
+      scratchbird::tests::FixtureUuidLiteral(
+          "019d0000-0000-7000-8000-00000000d829"),
+      1);
+  Check(identity.ok &&
+            dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
+        "exact d707 bit identity lookup failed");
+  const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"),
       1);
-  Check(identity.ok, "V6 bit identity lookup failed");
+  Check(historical.ok &&
+            !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
+        "d706 bit identity did not remain historical-only");
+  const auto historical_profile = dt::BuildBitStringDescriptorProfileV1(
+      {{scratchbird::tests::FixtureUuid(9901, 2), dt::kDatatypeCohortV6,
+        6, 6}, historical.row, kind, length});
+  Check(!historical_profile.ok(),
+        "d706 historical identity established a current bit profile");
   const auto profile = dt::BuildBitStringDescriptorProfileV1(
       {Receipt(), identity.row, kind, length});
   Check(profile.ok(), "profile construction failed");
@@ -87,16 +102,16 @@ void ProfilesAreExact() {
             varying_max.canonical_profile_material,
         "unqualified and varying(max) differ");
   CheckDigest(unqualified.profile_fingerprint,
-              "67fffa28d558db70a925055b9d4f1f87bf921412fd5918e90d48fffba62cb43d",
+              "a05158819508578e8836e21c1c01342946fc5b6cea7c9528010c02761dcbba08",
               "unqualified profile fingerprint drifted");
   CheckDigest(unqualified.comparison_cohort_fingerprint,
-              "27906ad944f885be1650cb140f6e77a5d2921c293789b18eee94023004a2a98f",
+              "f9768ffcfa9be763d5769c145314bdfa4b3577518e940510d3bea0e79ef0df77",
               "unqualified cohort fingerprint drifted");
   CheckDigest(fixed8.profile_fingerprint,
-              "38be6a4c7c2147d61271e53369aa9376c5a3fc39ae7267327b8b379e301cbf2e",
+              "55aab4a874cf03f439ba708b12bd22780706c0b237ce98ce6451ba088c2174dd",
               "fixed8 profile fingerprint drifted");
   CheckDigest(varying8.profile_fingerprint,
-              "f698877fafe34bab5e5ddbc75c6738acb586aa8a0e3f5f03dc06d5581ec80dff",
+              "682022aad38f6c6ddbbf850c76664d12b4f2ec298c2f2b515ebdce0561b05b54",
               "varying8 profile fingerprint drifted");
 
   const auto decoded = dt::DecodeBitStringDescriptorProfileMaterialV1(
@@ -408,7 +423,7 @@ void BoundsOwnershipAndAtomicity() {
                 Hex("4d9300e99759561a1adf3fd28eeb2faa55922c46a6ed6fa82e182c40113cb692"),
         "maximum canonical component hash drifted");
   Check(dt::HashBitStringValueV1(max_view).bytes ==
-            Hex("9d5d3a8438e06e1be235c38261fe707912a4d03fac15e886a5692a9cd1d1a743"),
+            Hex("c3f342e1454e6d4d4bede81074031bb76239cd378000a5b4b889283bf57f61c6"),
         "maximum value hash drifted");
 
   std::array<bool, 4> concurrent_ok{};

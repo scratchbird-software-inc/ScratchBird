@@ -44,15 +44,24 @@ dt::BitStringAuthorityReceiptV1 BitStringReceipt() {
   receipt.statement_receipt_uuid.bytes = {
       0x01, 0xa0, 0xff, 0x27, 0x45, 0x62, 0x7a, 0x11,
       0x8b, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV6;
-  receipt.catalog_generation = 6;
-  receipt.registry_generation = 6;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV7;
+  receipt.catalog_generation = 7;
+  receipt.registry_generation = 7;
+  return receipt;
+}
+
+dt::DateAuthorityReceiptV1 DateReceipt() {
+  dt::DateAuthorityReceiptV1 receipt;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV7;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV7;
+  receipt.catalog_generation = 7;
+  receipt.registry_generation = 7;
   return receipt;
 }
 
 dt::DatatypeConformanceManifestResult LoadManifest() {
   return dt::LoadCurrentCoreDatatypeConformanceManifest(
-      BitStringReceipt(), false);
+      BitStringReceipt(), false, DateReceipt(), false);
 }
 
 dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
@@ -95,7 +104,8 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
               "project/src/core/datatypes/datatype_descriptor.cpp",
           "MDF-015 manifest inventory must be project source evidence");
   Require(loaded.manifest.examples.size() +
-                  loaded.manifest.bit_string_examples.size() ==
+                  loaded.manifest.bit_string_examples.size() +
+                  loaded.manifest.date_examples.size() ==
               dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 manifest must inventory every canonical datatype row");
   Require(loaded.manifest.bit_string_examples.size() == 1,
@@ -105,6 +115,13 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
           "MDF-015 bit-string example must carry the exact V3 identity");
   Require(bit.canonical_component.size() == 4,
           "MDF-015 bit-string example must use canonical empty PRESENT bytes");
+  Require(loaded.manifest.date_examples.size() == 1,
+          "MDF-015 must carry exactly one separate d707 date example");
+  const auto& date = loaded.manifest.date_examples.front();
+  Require(dt::IsExactCanonicalDateTypeCodecIdentityV3(date.identity),
+          "MDF-015 date example must carry the exact d707 identity");
+  Require(date.canonical_component == std::vector<scratchbird::core::platform::byte>(4, 0),
+          "MDF-015 date example must use the exact epoch LE4 component");
 
   const auto executed =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
@@ -113,6 +130,52 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
           "MDF-015 did not execute every encoded datatype example");
   Require(executed.executed_bit_string_examples == 1,
           "MDF-015 did not execute the exact V3 bit-string example");
+  Require(executed.executed_date_examples == 1,
+          "MDF-015 did not execute the exact d707 date example");
+}
+
+void TestLegacyDateEvidenceIsRefused() {
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::date);
+  Require(descriptor.ok(), "MDF-015 date descriptor row missing");
+  const auto encoded = dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Require(!encoded.ok(), "MDF-015 admitted date through SBDTV001");
+  Require(encoded.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy date serialization diagnostic mismatch");
+
+  const auto exact_legacy = EncodeDescriptorFixture(descriptor.descriptor);
+  const auto parsed = dt::ParseDatatypeDescriptor(exact_legacy);
+  Require(!parsed.ok(), "MDF-015 parsed date through SBDTV001");
+  Require(parsed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy date parse diagnostic mismatch");
+
+  const auto conversion = dt::DescribeDatatypeConversion(
+      dt::CanonicalTypeId::date, dt::CanonicalTypeId::date);
+  Require(!conversion.ok(),
+          "MDF-015 admitted enum-derived date conversion evidence");
+  Require(conversion.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy date conversion diagnostic mismatch");
+
+  auto loaded = LoadManifest();
+  loaded.manifest.date_examples[0].profile.profile_fingerprint[0] ^= 1u;
+  const auto corrupt =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!corrupt.ok(), "MDF-015 accepted a mutated date profile");
+  Require(HasDiagnostic(corrupt, "CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+          "MDF-015 mutated date profile diagnostic missing");
+
+  loaded = LoadManifest();
+  auto& dirty_null = loaded.manifest.date_examples[0];
+  dirty_null.null_allowed = true;
+  dirty_null.state = dt::DateValueStateV1::sql_null;
+  const auto invalid_null =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!invalid_null.ok(), "MDF-015 accepted date SQL NULL with bytes");
+  Require(HasDiagnostic(invalid_null, "DATATYPE.NULL_STATE.INVALID"),
+          "MDF-015 date NULL_STATE diagnostic missing");
 }
 
 void TestLegacyBitStringEvidenceIsRefused() {
@@ -277,6 +340,7 @@ int main() {
   TestDocumentationOnlyAndPrivateExamplesAreRejected();
   TestParserAuthorityAndCorruptEncodingAreRejected();
   TestLegacyBitStringEvidenceIsRefused();
+  TestLegacyDateEvidenceIsRefused();
   std::cout << "current_core_datatype_conformance_manifest_gate=passed\n";
   return EXIT_SUCCESS;
 }

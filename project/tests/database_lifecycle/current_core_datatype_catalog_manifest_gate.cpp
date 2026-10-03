@@ -526,7 +526,7 @@ void TestDecimal128SuccessorCohort() {
           "decimal128 NULL state lost");
 }
 
-void TestBitStringV6IdentityAndLayout() {
+void TestCurrentD707IdentitiesAndLayout() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto descriptor =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
@@ -536,36 +536,36 @@ void TestBitStringV6IdentityAndLayout() {
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
 
   const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
-  Require(rows.size() == 127, "V3 registry row count is not 127");
-  std::array<std::size_t, 6> counts{};
+  Require(rows.size() == 160, "V3 registry row count is not 160");
+  std::array<std::size_t, 7> counts{};
   for (const auto& row : rows) {
     Require(row.legacy_fields.catalog_generation >= 1 &&
-                row.legacy_fields.catalog_generation <= 6 &&
+                row.legacy_fields.catalog_generation <= 7 &&
                 row.legacy_fields.catalog_generation ==
                     row.legacy_fields.registry_generation,
             "V3 registry contains a mixed cohort tuple");
     ++counts[row.legacy_fields.catalog_generation - 1];
   }
-  Require(counts == std::array<std::size_t, 6>{6, 12, 13, 31, 32, 33},
-          "V3 predecessor/V6 cohort counts drifted");
+  Require(counts == std::array<std::size_t, 7>{6, 12, 13, 31, 32, 33, 33},
+          "V3 predecessor/d707 cohort counts drifted");
 
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+      dt::kDatatypeCohortV7, 7, 7, descriptor, 1);
   Require(identity.ok &&
               dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row) &&
               identity.row.legacy_fields.type_uuid == type &&
               identity.row.legacy_fields.codec_uuid == codec,
-          "exact V6 bit-string identity is absent or incomplete");
+          "exact d707 bit-string identity is absent or incomplete");
   Require(!dt::LookupDatatypeTypeCodecIdentityV1(
-               dt::kDatatypeCohortV6, 6, 6, descriptor, 1).ok,
+               dt::kDatatypeCohortV7, 7, 7, descriptor, 1).ok,
           "legacy V1 lookup synthesized the policy-bearing bit row");
   auto altered = identity.row;
   altered.operation_policy.generation = 2;
   Require(!dt::IsExactCanonicalBitStringTypeCodecIdentityV3(altered),
-          "altered V6 bit-string policy tuple was admitted");
+          "altered d707 bit-string policy tuple was admitted");
 
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  Require(manifest.ok(), "catalog manifest failed with V6 bit-string admission");
+  Require(manifest.ok(), "catalog manifest failed with d707 admission");
   const auto catalog_row = dt::LookupDatatypeCatalogRow(
       manifest.manifest, dt::CanonicalTypeId::bit_string);
   Require(catalog_row.ok() &&
@@ -585,17 +585,71 @@ void TestBitStringV6IdentityAndLayout() {
 
   dt::DatatypeStorageIdentityV1 storage;
   Require(dt::LookupDatatypeStorageIdentityV1(
-              dt::kDatatypeCohortV6, 6, 6, descriptor, 1, &storage) &&
+              dt::kDatatypeCohortV7, 7, 7, descriptor, 1, &storage) &&
               storage.type_uuid == type &&
               storage.type_id == dt::CanonicalTypeId::bit_string &&
               storage.codec && storage.codec->codec_uuid == codec,
           "storage lookup did not consume exact current V3 bit identity");
   for (unsigned generation = 1; generation <= 5; ++generation) {
-    auto snapshot = dt::kDatatypeCohortV6;
+    auto snapshot = dt::kDatatypeCohortV7;
     snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
     Require(!dt::LookupDatatypeStorageIdentityV1(
                  snapshot, generation, generation, descriptor, 1, &storage),
             "storage lookup admitted bit string under a predecessor cohort");
+  }
+
+  const auto historical_bit = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+  Require(historical_bit.ok &&
+              !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(
+                  historical_bit.row),
+          "d706 bit identity was not preserved as historical-only");
+
+  const auto binary_descriptor =
+      FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
+  const auto binary = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, binary_descriptor, 1);
+  Require(binary.ok &&
+              dt::IsExactCanonicalBinaryTypeCodecIdentityV3(binary.row),
+          "exact current binary identity is absent");
+
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+  const auto date_type =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81c");
+  const auto date_codec =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d");
+  const auto date = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, date_descriptor, 1);
+  Require(date.ok && dt::IsExactCanonicalDateTypeCodecIdentityV3(date.row) &&
+              date.row.legacy_fields.type_uuid == date_type &&
+              date.row.legacy_fields.codec_uuid == date_codec,
+          "exact current date identity is absent");
+  const auto date_layout =
+      dt::LookupDatatypeStorageLayout(dt::CanonicalTypeId::date);
+  Require(date_layout.ok() &&
+              date_layout.layout.storage_class ==
+                  dt::DatatypeStorageClass::inline_fixed &&
+              date_layout.layout.encoding ==
+                  dt::DatatypeBinaryEncoding::days_since_unix_epoch_i32 &&
+              date_layout.layout.inline_bytes == 4 &&
+              date_layout.layout.alignment_bytes == 4 &&
+              date_layout.layout.requires_descriptor,
+          "date LE4 layout lost its exact-profile requirement");
+  Require(dt::LookupDatatypeStorageIdentityV1(
+              dt::kDatatypeCohortV7, 7, 7, date_descriptor, 1, &storage) &&
+              storage.type_uuid == date_type && storage.codec &&
+              storage.codec->codec_uuid == date_codec,
+          "storage lookup lost exact current date identity");
+  for (unsigned generation = 4; generation <= 6; ++generation) {
+    auto snapshot = dt::kDatatypeCohortV7;
+    snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
+    Require(dt::LookupDatatypeStorageIdentityV1(
+                snapshot, generation, generation, date_descriptor, 1,
+                &storage) &&
+                storage.type_id == dt::CanonicalTypeId::date &&
+                storage.codec.has_value(),
+            "historical date storage identity was not preserved");
   }
 }
 
@@ -613,7 +667,7 @@ int main() {
   TestFailClosedCatalogValidation();
   TestInt32ExactDescriptorTypeCodecIdentity();
   TestTextExactDescriptorTypeCodecIdentity();
-  TestBitStringV6IdentityAndLayout();
+  TestCurrentD707IdentitiesAndLayout();
   std::cout << "current_core_datatype_catalog_manifest_gate=passed\n";
   return EXIT_SUCCESS;
 }

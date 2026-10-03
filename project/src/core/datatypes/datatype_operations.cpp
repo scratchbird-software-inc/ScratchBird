@@ -418,7 +418,7 @@ inline constexpr std::size_t kCanonicalBinaryMaximumBytes =
 
 constexpr scratchbird::core::platform::Uuid kCurrentBinarySnapshotUuid{{
     0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
-    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x06}};
+    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x07}};
 constexpr scratchbird::core::platform::Uuid kBinaryDescriptorUuid{{
     0x2d, 0x01, 0x00, 0x00, 0x62, 0x69, 0x7e, 0x61,
     0xb2, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
@@ -443,7 +443,7 @@ constexpr scratchbird::core::platform::Uuid kBinaryHashPolicyUuid{{
 
 DatatypeTypeCodecIdentityLookupV3 CurrentBinaryIdentityRow() noexcept {
   auto result = LookupDatatypeTypeCodecIdentityV3(
-      kCurrentBinarySnapshotUuid, 6, 6, kBinaryDescriptorUuid, 1);
+      kCurrentBinarySnapshotUuid, 7, 7, kBinaryDescriptorUuid, 1);
   if (!result.ok) return result;
 
   const auto& row = result.row.legacy_fields;
@@ -451,7 +451,7 @@ DatatypeTypeCodecIdentityLookupV3 CurrentBinaryIdentityRow() noexcept {
     return policy.uuid.is_nil() && policy.generation == 0;
   };
   if (row.catalog_snapshot_uuid != kCurrentBinarySnapshotUuid ||
-      row.catalog_generation != 6 || row.registry_generation != 6 ||
+      row.catalog_generation != 7 || row.registry_generation != 7 ||
       row.descriptor_uuid != kBinaryDescriptorUuid ||
       row.descriptor_generation != 1 || row.type_generation != 1 ||
       row.type_uuid != kBinaryTypeUuid || row.codec_uuid != kBinaryCodecUuid ||
@@ -703,6 +703,8 @@ bool CanonicalOperationValueValid(const DatatypeOperationValue& value) {
   if (!LookupDatatypeDescriptor(value.type_id).ok()) {
     return false;
   }
+  // The generic carrier has no d707 receipt or complete date profile.
+  if (value.type_id == CanonicalTypeId::date) return false;
   if (value.is_null) {
     return value.encoded_value.empty() &&
         ExecutionDescriptorValidForType(value.descriptor, value.type_id) &&
@@ -841,6 +843,9 @@ const char* CanonicalOperationValueDiagnosticCode(
   if (value.is_null && !value.descriptor.nullable_allowed) {
     return "DATATYPE.NULL_NOT_ADMITTED";
   }
+  if (value.type_id == CanonicalTypeId::date) {
+    return "CTI.TEMPORAL.DESCRIPTOR_INVALID";
+  }
   if (IsUnresolvedRealSemantics(value.type_id) && !value.is_null &&
       (!ExecutionDescriptorPresent(value.descriptor) ||
        !ExecutionDescriptorExactlyMatchesCurrentBuiltin(value.descriptor,
@@ -885,6 +890,20 @@ const char* GenericBitStringStructuralDiagnosticCode(
   if (ExecutionDescriptorPresent(value.descriptor) &&
       !ExecutionDescriptorValidForType(value.descriptor, value.type_id))
     return "CTB.BIT.DESCRIPTOR_INVALID";
+  if (value.is_null && !value.encoded_value.empty())
+    return "DATATYPE.NULL_STATE.INVALID";
+  if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
+      !value.descriptor.nullable_allowed)
+    return "DATATYPE.NULL_NOT_ADMITTED";
+  return nullptr;
+}
+
+const char* GenericDateStructuralDiagnosticCode(
+    const DatatypeOperationValue& value) {
+  if (value.type_id != CanonicalTypeId::date) return nullptr;
+  if (ExecutionDescriptorPresent(value.descriptor) &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id))
+    return "CTI.TEMPORAL.DESCRIPTOR_INVALID";
   if (value.is_null && !value.encoded_value.empty())
     return "DATATYPE.NULL_STATE.INVALID";
   if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
@@ -2982,11 +3001,13 @@ const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering) {
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile) {
-  // base.bit_string requires its authenticated V3 receipt and complete
-  // descriptor profile. This legacy enum-only classifier cannot admit even an
-  // apparent identity pair; callers must use CastBitStringValueV1.
+  // base.bit_string and base.date require authenticated V3 receipts and
+  // complete profiles. This legacy enum-only classifier cannot admit even an
+  // apparent identity pair; callers must use the profile-aware type API.
   if (source_type_id == CanonicalTypeId::bit_string ||
-      target_type_id == CanonicalTypeId::bit_string) {
+      target_type_id == CanonicalTypeId::bit_string ||
+      source_type_id == CanonicalTypeId::date ||
+      target_type_id == CanonicalTypeId::date) {
     return DatatypeCastCategory::forbidden;
   }
   if (target_type_id == CanonicalTypeId::null_type ||
@@ -3120,6 +3141,22 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::date ||
+      request.target_type_id == CanonicalTypeId::date) {
+    if (const char* code = GenericDateStructuralDiagnosticCode(request.value))
+      return CastFailure("date_generic_structural_refusal",
+                         DatatypeCastCategory::forbidden, code);
+    if (request.target_type_id == CanonicalTypeId::date &&
+        ExecutionDescriptorPresent(request.target_descriptor) &&
+        !ExecutionDescriptorValidForType(request.target_descriptor,
+                                         CanonicalTypeId::date))
+      return CastFailure("date_target_descriptor_invalid",
+                         DatatypeCastCategory::forbidden,
+                         "CTI.TEMPORAL.DESCRIPTOR_INVALID");
+    return CastFailure("date_d707_profile_required",
+                       DatatypeCastCategory::forbidden,
+                       "CTI.TEMPORAL.DESCRIPTOR_INVALID");
+  }
   if (request.value.type_id == CanonicalTypeId::bit_string ||
       request.target_type_id == CanonicalTypeId::bit_string) {
     if (const char* code =
@@ -3892,11 +3929,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     }
     return CastFailure("boolean_invalid", result.category);
   }
-  if (request.target_type_id == CanonicalTypeId::date) {
-    if (!DateText(value)) { return CastFailure("date_invalid", result.category); }
-    result.value.encoded_value = value.substr(0, 10);
-    return result;
-  }
   if (request.target_type_id == CanonicalTypeId::time) {
     if (!TimeText(value)) { return CastFailure("time_invalid", result.category); }
     return result;
@@ -3935,6 +3967,12 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
 }
 
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::date) {
+    if (const char* code = GenericDateStructuralDiagnosticCode(request.value))
+      return ExtractFailure("date_generic_structural_refusal", code);
+    return ExtractFailure("date_d707_profile_required",
+                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
+  }
   if (IsBinary(request.value.type_id) &&
       !BinaryDescriptorExactlyCurrent(request.value.descriptor)) {
     return ExtractFailure("binary_extract_descriptor_invalid",
@@ -5339,6 +5377,20 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.left.type_id == CanonicalTypeId::date ||
+      request.right.type_id == CanonicalTypeId::date) {
+    const char* date_code = GenericDateStructuralDiagnosticCode(request.left);
+    if (date_code == nullptr)
+      date_code = GenericDateStructuralDiagnosticCode(request.right);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "datatype.comparison.rejected",
+        date_code != nullptr ? "date_generic_structural_refusal"
+                             : "date_d707_profile_required");
+    return result;
+  }
   if (request.left.type_id == CanonicalTypeId::bit_string ||
       request.right.type_id == CanonicalTypeId::bit_string) {
     const char* bit_code =
@@ -6403,6 +6455,17 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::date) {
+    const char* date_code = GenericDateStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "datatype.sort_key.rejected",
+        date_code != nullptr ? "date_generic_structural_refusal"
+                             : "date_d707_profile_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
     if (const char* code =
             GenericBitStringStructuralDiagnosticCode(request.value)) {
@@ -6796,6 +6859,17 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::date) {
+    const char* date_code = GenericDateStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "datatype.hash.rejected",
+        date_code != nullptr ? "date_generic_structural_refusal"
+                             : "date_d707_profile_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
     if (const char* code =
             GenericBitStringStructuralDiagnosticCode(request.value)) {
@@ -6912,6 +6986,19 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::date) {
+    const char* date_code = GenericDateStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        date_code != nullptr
+            ? date_code
+            : "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.serialization.rejected",
+        date_code != nullptr ? "date_generic_structural_refusal"
+                             : "date_composed_adapter_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
     if (const char* code =
             GenericBitStringStructuralDiagnosticCode(request.value)) {
@@ -7124,6 +7211,14 @@ static DatatypeDeserializationResult DeserializeDatatypeValueUnchecked(
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
         "datatype.deserialization.rejected", "bit_string_composed_adapter_required");
+    return result;
+  }
+  if (request.expected_type_id == CanonicalTypeId::date ||
+      StartsWith(request.serialized_value, "SBDV1;type=date;")) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.deserialization.rejected", "date_composed_adapter_required");
     return result;
   }
   if (request.expected_type_id == CanonicalTypeId::binary &&
@@ -7578,6 +7673,17 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
+  if (request.value.type_id == CanonicalTypeId::date) {
+    const char* date_code = GenericDateStructuralDiagnosticCode(request.value);
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+        "datatype.display_render.rejected",
+        date_code != nullptr ? "date_generic_structural_refusal"
+                             : "date_d707_profile_required");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
     if (const char* code =
             GenericBitStringStructuralDiagnosticCode(request.value)) {

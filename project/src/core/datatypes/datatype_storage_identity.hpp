@@ -6,6 +6,8 @@
 #include "admitted_datatype_cohort.hpp"
 #include <algorithm>
 #include <optional>
+#include <type_traits>
+#include <utility>
 
 namespace scratchbird::core::datatypes {
 
@@ -31,10 +33,12 @@ inline bool LookupDatatypeStorageIdentityV1(
     const auto& legacy = codec.row.legacy_fields;
     if (legacy.canonical_binary_type_code == static_cast<u32>(CanonicalTypeId::unknown))
       return false;
+    auto projection = ProjectDatatypeTypeCodecIdentityV3ToV1(codec.row);
+    if (!projection.ok) return false;
     selected = {legacy.descriptor_uuid, legacy.descriptor_generation,
                 legacy.type_uuid,
                 static_cast<CanonicalTypeId>(legacy.canonical_binary_type_code),
-                ProjectDatatypeTypeCodecIdentityV3ToV1(codec.row)};
+                std::move(projection.row)};
   } else {
     const auto registry = CurrentDatatypeTypeCodecIdentityRowsV3();
     // A codec admitted in this or an earlier cohort never downgrades to
@@ -58,7 +62,8 @@ inline bool LookupDatatypeStorageIdentityV1(
          descriptor != decimal_float_storage_only_predecessor) ||
         !((snapshot == kDatatypeCohortV4 && catalog_generation == 4 && registry_generation == 4) ||
                 (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5) ||
-                (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6)))
+                (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6) ||
+                (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7)))
       return false;
     static const auto catalog = LoadCurrentCoreDatatypeCatalogManifest();
     if (!catalog.ok()) return false;
@@ -74,7 +79,8 @@ inline bool LookupDatatypeStorageIdentityV1(
     selected = {row->descriptor_uuid.value, row->descriptor_epoch,
                 row->descriptor_uuid.value, row->type_id, std::nullopt};
   }
-  *output = selected;
+  static_assert(std::is_nothrow_move_assignable_v<DatatypeStorageIdentityV1>);
+  *output = std::move(selected);
   return true;
 }
 }  // namespace scratchbird::core::datatypes
