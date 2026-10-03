@@ -384,7 +384,7 @@ int main(int argc, char** argv) {
       runtime_principal_checks::Run(root, profile);
     }
     std::filesystem::remove_all(root);
-    std::cout << "PASS " << checks << " checks; native inventory/principal observation only\n";
+    std::cout << "PASS " << checks << " checks; native inventory/principal and authentication identity; no startup admission\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL after " << checks << " checks: " << error.what()

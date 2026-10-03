@@ -112,10 +112,17 @@ bool IsDurablePrincipalUuid(const EngineUuid& value) {
       scratchbird::core::platform::UuidKind::principal, value).ok();
 }
 
+bool HasTextPrincipalUuid(const EngineAuthenticateRequest& request,
+                         const std::map<std::string, std::string>& fields) {
+  return fields.contains("principal_uuid") || std::any_of(
+      request.option_envelopes.begin(), request.option_envelopes.end(),
+      [](const auto& option) { return option.starts_with("durable_principal_uuid:"); });
+}
+
 EngineUuid DurablePrincipalUuid(const EngineAuthenticateRequest& request,
                                const std::map<std::string, std::string>& fields) {
   // Text evidence is never a second source of identity, even alongside a native candidate.
-  if (fields.contains("principal_uuid") || !SecurityOptionValue(request, "durable_principal_uuid:").empty()) return {};
+  if (HasTextPrincipalUuid(request, fields)) return {};
   return request.durable_principal_uuid;
 }
 
@@ -545,6 +552,15 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
                                   SecurityOptionPresent(request, "credential:valid");
   const std::string canonical_provider = CanonicalAuthProviderFamily(provider.empty() ? "local_password" : provider);
   auto credential_fields = ParseEvidenceFields(request.credential_evidence);
+  // Rejected identity input is not an absent candidate. Otherwise the raw
+  // password path could turn a textual or malformed identity into name-only
+  // authentication after DurablePrincipalUuid returned nil.
+  if (HasTextPrincipalUuid(request, credential_fields) ||
+      (!request.durable_principal_uuid.is_nil() &&
+       !IsDurablePrincipalUuid(request.durable_principal_uuid))) {
+    return AuthenticationFailureResult(request, "SECURITY.AUTHENTICATION.REQUEST_INVALID",
+                                       "binary_principal_identity_required");
+  }
   EngineUuid authenticated_principal_uuid = DurablePrincipalUuid(request, credential_fields);
   std::vector<std::string> engine_authorization_tags;
   std::shared_ptr<const EngineSecurityPrincipalLifecycleState>
@@ -580,6 +596,14 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
       return AuthenticationFailureResult(request, local_password.code, local_password.detail);
     }
     if (!resolved_principal_uuid.is_nil()) {
+      // Preserve the original selection across name/password resolution. The
+      // final durable lookup must never compare against a replacement of the
+      // candidate the caller actually supplied.
+      if (!authenticated_principal_uuid.is_nil() &&
+          authenticated_principal_uuid != resolved_principal_uuid) {
+        return AuthenticationFailureResult(request, "SECURITY.AUTHENTICATION.FAILED",
+                                           "durable_principal_identity_mismatch");
+      }
       authenticated_principal_uuid = resolved_principal_uuid;
       credential_fields.emplace("storage_authority", "mga_security_principal_lifecycle");
     }
