@@ -259,6 +259,19 @@ void ContextualBindingPreservesTargetType() {
                         "generic typed bit-string NULL identity without V3 profile");
         continue;
       }
+      if (descriptor.type_id == dt::CanonicalTypeId::date) {
+        CheckRejectedAs(bound, "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                        "generic contextual date NULL without d707 profile");
+        dt::DatatypeCastRequest identity;
+        identity.value = TypedNull(descriptor.type_id, target_descriptor);
+        identity.target_type_id = descriptor.type_id;
+        identity.context = context;
+        identity.target_descriptor = target_descriptor;
+        CheckRejectedAs(dt::CastDatatypeValue(identity),
+                        "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                        "generic typed date NULL identity without d707 profile");
+        continue;
+      }
       Check(bound.ok(), "contextual NULL did not bind in " + label);
       Check(bound.value.type_id == descriptor.type_id,
             "contextual NULL lost target descriptor in " + label);
@@ -403,6 +416,8 @@ void ContextualBindingPreservesTargetType() {
       CheckRejectedAs(dt::CastDatatypeValue(cast_to_null),
                       descriptor.type_id == dt::CanonicalTypeId::bit_string
                           ? "CTB.BIT.DESCRIPTOR_INVALID"
+                          : descriptor.type_id == dt::CanonicalTypeId::date
+                          ? "CTI.TEMPORAL.DESCRIPTOR_INVALID"
                           : "DATATYPE.CAST_FORBIDDEN",
                       std::string("concrete typed NULL cast to null_type from ") +
                           descriptor.stable_name + "/" +
@@ -612,7 +627,7 @@ void ExactDescriptorFidelityAndRefusal() {
       DescriptorFor(dt::CanonicalTypeId::date, 0x62u));
   extract.field = "year";
   CheckRejectedAs(dt::ExtractDatatypeField(extract),
-                  "SB_DATATYPE_EXTRACT_REJECTED",
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                   "unresolved temporal NULL extraction without result profile");
 }
 
@@ -682,7 +697,7 @@ void BoundOperationsRetainConcreteTypeIds() {
   extract.result_descriptor =
       DescriptorFor(dt::CanonicalTypeId::int32, 0x42u);
   CheckRejectedAs(dt::ExtractDatatypeField(extract),
-                  "SB_DATATYPE_EXTRACT_REJECTED",
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                   "unresolved temporal-to-int32 NULL extraction");
 
   extract.value.encoded_value = "payload";
@@ -721,7 +736,7 @@ void BoundOperationsRetainConcreteTypeIds() {
       dt::CanonicalTypeId::date,
       DescriptorFor(dt::CanonicalTypeId::date, 0x44u));
   CheckRejectedAs(dt::CompareDatatypeValues(comparison),
-                  "SB_DATATYPE_COMPARISON_REJECTED",
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                   "different concrete typed NULL comparison");
   comparison.right = PresentInt64(1, int64_descriptor);
 
@@ -859,6 +874,17 @@ void DurableCodecsRequireConcreteTypes() {
                       "generic bit-string NULL physical encode without V3 profile");
       continue;
     }
+    if (descriptor.type_id == dt::CanonicalTypeId::date) {
+      CheckRejectedAs(encoded, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+                      "generic date NULL binary encode without d707 profile");
+      dt::DatatypePhysicalValue physical_null;
+      physical_null.type_id = descriptor.type_id;
+      physical_null.state = dt::DatatypePhysicalValueState::sql_null;
+      CheckRejectedAs(dt::EncodeDatatypePhysicalValue(physical_null),
+                      "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+                      "generic date NULL physical encode without d707 profile");
+      continue;
+    }
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
     Check(encoded.encoded.size() == dt::kDatatypeBinaryEnvelopeHeaderBytes,
           "typed NULL binary envelope contains payload bytes for " + label);
@@ -947,6 +973,14 @@ void SerializationRetainsConcreteType() {
                       "generic bit-string NULL serialization without V3 profile");
       Check(serialized.serialized_value.empty(),
             "generic bit-string NULL serialization published output");
+      continue;
+    }
+    if (descriptor.type_id == dt::CanonicalTypeId::date) {
+      CheckRejectedAs(serialized,
+                      "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+                      "generic date NULL serialization without d707 profile");
+      Check(serialized.serialized_value.empty(),
+            "generic date NULL serialization published output");
       continue;
     }
     if (descriptor.type_id == dt::CanonicalTypeId::uuid) {
@@ -2004,10 +2038,17 @@ void BitStringNullRequiresExactV3Profile() {
   const auto descriptor = platform::Uuid{{
       0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV7, 7, 7, descriptor, 1);
+  Check(identity.ok &&
+            dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
+        "lookup exact current d707 bit-string identity for typed NULL");
+  const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
-  Check(identity.ok, "lookup bit-string V3 identity for typed NULL");
+  Check(historical.ok &&
+            !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
+        "d706 bit-string identity remains exact historical evidence");
   dt::BitStringAuthorityReceiptV1 receipt{
-      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV6, 6, 6};
+      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV7, 7, 7};
   const auto profile = dt::BuildBitStringDescriptorProfileV1(
       {receipt, identity.row,
        dt::BitStringSurfaceProfileKindV1::unqualified,

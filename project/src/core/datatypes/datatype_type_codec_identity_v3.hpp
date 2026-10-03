@@ -7,6 +7,7 @@
 
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace scratchbird::core::datatypes {
 
@@ -31,7 +32,17 @@ struct DatatypeTypeCodecIdentityRowV3 {
 struct DatatypeTypeCodecIdentityLookupV3 {
   bool ok = false;
   DatatypeTypeCodecIdentityRowV3 row;
-  std::string diagnostic_id;
+  // Lookup is noexcept. Diagnostics are admitted static identifiers rather
+  // than owned text so refusal reporting never needs an allocation.
+  std::string_view diagnostic_id;
+};
+
+// Allocation-safe one-way projection to the frozen V1 carrier. A failed
+// projection leaves row default-constructed and reports a static diagnostic.
+struct DatatypeTypeCodecIdentityProjectionV1 {
+  bool ok = false;
+  DatatypeTypeCodecIdentityRowV1 row;
+  std::string_view diagnostic_id;
 };
 
 std::span<const DatatypeTypeCodecIdentityRowV3>
@@ -44,14 +55,26 @@ DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     const platform::Uuid& descriptor_uuid,
     u64 descriptor_generation) noexcept;
 
-// This predicate compares the entire admitted V6 bit-string row, including
-// representation bounds and all five policy identities.
+// Core's canonical JSON digest of the exact 33-row d707 successor cohort.
+inline constexpr std::string_view kDatatypeCohortV7IdentityDigestSha256 =
+    "f10857ec395d4ebca02ec21c785251a668d98f3c0e69eeba11324f3807832dcc";
+
+// These predicates compare the semantic current d707 row. Canonical-name and
+// codec-id strings are presentation labels and never establish identity. Type
+// codes, payloads, and predecessor identities cannot substitute for the exact
+// UUID/generation/codec-version/policy tuple and physical/semantic fields.
+bool IsExactCanonicalBinaryTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept;
+
 bool IsExactCanonicalBitStringTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept;
+
+bool IsExactCanonicalDateTypeCodecIdentityV3(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 // The only cross-carrier conversion is the explicit lossy V3-to-V1
 // projection. No V1-to-V3 API exists because policy identity is not inferable.
-DatatypeTypeCodecIdentityRowV1 ProjectDatatypeTypeCodecIdentityV3ToV1(
+DatatypeTypeCodecIdentityProjectionV1 ProjectDatatypeTypeCodecIdentityV3ToV1(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 }  // namespace scratchbird::core::datatypes

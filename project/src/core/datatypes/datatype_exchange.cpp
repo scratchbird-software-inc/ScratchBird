@@ -182,6 +182,15 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         "SBDTV001 cannot carry the exact V3 identity, live receipt, or bit-string profile");
     return result;
   }
+  if (descriptor.type_id == CanonicalTypeId::date) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.date.legacy_descriptor_serialization_refused",
+        "SBDTV001 cannot carry the exact d707 receipt or complete date profile");
+    return result;
+  }
   result.status = DatatypeExchangeOkStatus();
   std::memcpy(result.serialized.data() + kOffsetMagic, kDatatypeDescriptorMagic.data(), kDatatypeDescriptorMagic.size());
   StoreLittle32(result.serialized.data() + kOffsetTypeId, static_cast<u32>(descriptor.type_id));
@@ -241,6 +250,15 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
         "datatype.bit_string.legacy_descriptor_parse_refused",
         "SBDTV001 cannot establish exact V3 bit-string authority");
+    return result;
+  }
+  if (type_id == CanonicalTypeId::date) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.date.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact d707 date authority");
     return result;
   }
 
@@ -328,6 +346,17 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
         "datatype.bit_string.legacy_conversion_description_refused",
         "canonical enum or name cannot replace the exact V3 profile and closed cast registry");
+    return result;
+  }
+  if (source_type_id == CanonicalTypeId::date ||
+      target_type_id == CanonicalTypeId::date) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.kind = ConversionDiagnosticKind::unsupported;
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.date.legacy_conversion_description_refused",
+        "canonical enum or name cannot replace the exact d707 date profile and closed cast registry");
     return result;
   }
 

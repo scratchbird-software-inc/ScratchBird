@@ -180,7 +180,9 @@ const char* DatatypeConformanceExampleSourceName(
 
 DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const BitStringAuthorityReceiptV1& bit_string_receipt,
-    bool bit_string_null_allowed) {
+    bool bit_string_null_allowed,
+    const DateAuthorityReceiptV1& date_receipt,
+    bool date_null_allowed) {
   DatatypeConformanceManifestResult result;
   result.status = ManifestOkStatus();
   result.manifest.manifest_key = kCurrentCoreDatatypeConformanceManifestKey;
@@ -189,7 +191,8 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   result.manifest.parser_authority_allowed = false;
 
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
-    if (descriptor.type_id == CanonicalTypeId::bit_string) {
+    if (descriptor.type_id == CanonicalTypeId::bit_string ||
+        descriptor.type_id == CanonicalTypeId::date) {
       continue;
     }
     DatatypeConformanceExample example;
@@ -258,6 +261,42 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
   bit_example.source_marker = "BASE-BIT-STRING-CONFORMANCE-V1";
   result.manifest.bit_string_examples.push_back(std::move(bit_example));
 
+  const auto date_identity = std::find_if(
+      current_v3.begin(), current_v3.end(),
+      [](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IsExactCanonicalDateTypeCodecIdentityV3(row);
+      });
+  if (date_identity == current_v3.end()) {
+    AddFailure(&result,
+               "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+               "datatype.conformance.date_v3_identity_missing");
+    return result;
+  }
+  const auto date_profile =
+      BuildDateValidatedProfileHandleV1(date_receipt, *date_identity);
+  if (!date_profile.ok()) {
+    AddOwnedFailure(
+        &result,
+        MakeDateDiagnosticV1(
+            date_profile.status,
+            std::string(date_profile.diagnostic.diagnostic_code),
+            "datatype.conformance.date_profile_build_refused",
+            std::string(date_profile.diagnostic.detail)));
+    return result;
+  }
+  DateConformanceExampleV1 date_example;
+  date_example.receipt = date_receipt;
+  date_example.identity = *date_identity;
+  date_example.profile = date_profile.profile;
+  date_example.null_allowed = date_null_allowed;
+  date_example.state = DateValueStateV1::value;
+  date_example.canonical_component = {0, 0, 0, 0};
+  date_example.source = DatatypeConformanceExampleSource::current_core_registry;
+  date_example.evidence_path =
+      "project/src/core/datatypes/datatype_date.cpp";
+  date_example.source_marker = "BASE-DATE-CONFORMANCE-V1";
+  result.manifest.date_examples.push_back(std::move(date_example));
+
   return result;
 }
 
@@ -283,7 +322,8 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
 
   std::set<CanonicalTypeId> required;
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
-    if (descriptor.type_id != CanonicalTypeId::bit_string) {
+    if (descriptor.type_id != CanonicalTypeId::bit_string &&
+        descriptor.type_id != CanonicalTypeId::date) {
       required.insert(descriptor.type_id);
     }
   }
@@ -438,6 +478,82 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     }
     ++result.executed_examples;
     ++result.executed_bit_string_examples;
+  }
+
+  if (manifest.date_examples.size() != 1) {
+    AddFailure(&result,
+               "SB-DATATYPE-CONFORMANCE-MANIFEST-ROW-MISSING",
+               "datatype.conformance.date_v3_example_count",
+               std::to_string(manifest.date_examples.size()));
+  }
+  for (const DateConformanceExampleV1& example : manifest.date_examples) {
+    if (example.source !=
+        DatatypeConformanceExampleSource::current_core_registry) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-DOCS-ONLY-EXAMPLE-REFUSED",
+                 "datatype.conformance.date_docs_only_refused",
+                 DatatypeConformanceExampleSourceName(example.source));
+      continue;
+    }
+    if (EvidencePathForbidden(example.evidence_path)) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-EVIDENCE-PATH-REFUSED",
+                 "datatype.conformance.date_evidence_path_refused",
+                 example.evidence_path);
+      continue;
+    }
+    if (!IsExactCanonicalDateTypeCodecIdentityV3(example.identity)) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.date_identity_refused");
+      continue;
+    }
+    const auto profile = ValidateDateProfileHandleV1(example.profile);
+    if (!profile.ok()) {
+      AddOwnedFailure(
+          &result,
+          MakeDateDiagnosticV1(
+              profile.status,
+              std::string(profile.diagnostic.diagnostic_code),
+              "datatype.conformance.date_profile_validation_refused",
+              std::string(profile.diagnostic.detail)));
+      continue;
+    }
+    if (example.receipt.statement_receipt_uuid !=
+            example.profile.receipt.statement_receipt_uuid ||
+        example.receipt.catalog_snapshot_uuid !=
+            example.profile.receipt.catalog_snapshot_uuid ||
+        example.receipt.catalog_generation !=
+            example.profile.receipt.catalog_generation ||
+        example.receipt.registry_generation !=
+            example.profile.receipt.registry_generation) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+                 "datatype.conformance.date_receipt_refused");
+      continue;
+    }
+    const auto decoded = DecodeCanonicalDateComponentNoAllocV1(
+        example.profile, example.state, example.null_allowed,
+        example.canonical_component);
+    if (!decoded.ok()) {
+      AddOwnedFailure(
+          &result,
+          MakeDateDiagnosticV1(
+              decoded.status,
+              std::string(decoded.diagnostic.diagnostic_code),
+              "datatype.conformance.date_component_refused",
+              std::string(decoded.diagnostic.detail)));
+      continue;
+    }
+    if (decoded.value.profile != &example.profile ||
+        decoded.value.state != example.state || decoded.value.day != 0) {
+      AddFailure(&result,
+                 "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                 "datatype.conformance.date_component_refused");
+      continue;
+    }
+    ++result.executed_examples;
+    ++result.executed_date_examples;
   }
 
   for (const CanonicalTypeId type_id : required) {
