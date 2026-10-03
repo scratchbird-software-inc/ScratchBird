@@ -14,7 +14,9 @@
 namespace descriptor_allocation_fault {
 thread_local long remaining=-1;
 thread_local bool fired=false;
+thread_local std::size_t allocations=0;
 void* Allocate(std::size_t size){
+  ++allocations;
   if(remaining==0){fired=true;throw std::bad_alloc();}
   if(remaining>0)--remaining;
   if(void* p=std::malloc(size?size:1))return p;
@@ -39,6 +41,37 @@ namespace {
 unsigned checks=0,failures=0;
 
 void Check(bool ok,const char* why){++checks;if(!ok){++failures;std::cerr<<"FAIL "<<why<<'\n';}}
+template<class F> auto WithoutDescriptorHeap(F action) {
+  descriptor_allocation_fault::remaining=0;descriptor_allocation_fault::fired=false;
+  try {
+    auto result=action();
+    descriptor_allocation_fault::remaining=-1;
+    Check(!descriptor_allocation_fault::fired,"borrowed descriptor attempted heap allocation");
+    return result;
+  } catch (...) {
+    descriptor_allocation_fault::remaining=-1;
+    Check(false,"borrowed descriptor threw under denied heap");throw;
+  }
+}
+c::CatalogMetadataVersionCodecResult CheckedMetadataDecode(const std::vector<p::byte>& bytes) {
+  const auto owned=c::DecodeCatalogMetadataVersion(bytes);
+  const auto view=WithoutDescriptorHeap([&]{return c::DecodeCatalogMetadataVersionView(bytes);});
+  Check(view.ok()==owned.ok(),"borrowed complete envelope admission parity");
+  if(view.ok()) {
+    Check(view.record->record.payload==owned.record.record.payload&&
+        view.definition_sha256==owned.definition_sha256,"borrowed complete envelope values");
+    const auto copy=c::MaterializeCatalogMetadataVersion(*view.record);
+    Check(c::EncodeCatalogMetadataVersion(copy).bytes==bytes,"borrowed all metadata fields preserved");
+    Check(WithoutDescriptorHeap([&]{return c::CatalogMetadataPreservesFamilyOrigin(*view.record,*view.record);}),
+        "borrowed complete family origin no heap");
+  } else {
+    const auto error=c::MaterializeCatalogRecordDiagnostic(view.diagnostic);
+    Check(!view.record&&error.status.code==owned.status.code&&
+        error.diagnostic_code==owned.diagnostic.diagnostic_code&&error.message_key==owned.diagnostic.message_key&&
+        error.source_component==owned.diagnostic.source_component,"borrowed envelope exact refusal");
+  }
+  return owned;
+}
 bool SharedDescriptorOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
   const bool family=c::CatalogMetricDescriptorPreservesOrigin(a,b);
   const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
@@ -131,17 +164,22 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricDescriptor& r){
   return v;
 }
 void RoundTrip(const c::CatalogMetricDescriptor& r){
-  const auto expected=Golden(r);const auto encoded=c::EncodeCatalogMetricDescriptor(r);
+  const auto expected=Golden(r);
+  const auto borrowed=WithoutDescriptorHeap([&]{return c::DecodeCatalogMetricDescriptorView(expected);});
+  Check(borrowed.ok(),"independent descriptor borrowed decode mismatch");
+  const auto encoded=c::EncodeCatalogMetricDescriptor(r);
   Check(encoded.ok()&&std::string(encoded.bytes.begin(),encoded.bytes.end())==expected,"independent byte oracle mismatch");
   const auto decoded=c::DecodeCatalogMetricDescriptor(expected);
   Check(decoded.ok()&&Golden(*decoded.record)==expected,"independent descriptor decode mismatch");
-  const auto metadata=Metadata(r);Check(c::CatalogMetricDescriptorMatchesMetadata(metadata),"valid metadata refused");
+  const auto metadata=Metadata(r);Check(WithoutDescriptorHeap([&]{return c::CatalogMetricDescriptorMatchesMetadata(metadata);}),"valid metadata refused");
   const auto wrapped=c::EncodeCatalogMetadataVersion(metadata);Check(wrapped.ok(),"native envelope refused descriptor");
-  if(wrapped.ok()){const auto reread=c::DecodeCatalogMetadataVersion(wrapped.bytes);Check(reread.ok()&&reread.record.record.payload==expected,"envelope lost descriptor");}
+  if(wrapped.ok()){const auto reread=CheckedMetadataDecode(wrapped.bytes);Check(reread.ok()&&reread.record.record.payload==expected,"envelope lost descriptor");}
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);Check(typed.ok()&&c::DecodeCatalogTypedRecord(typed.row).ok(),"typed record refused descriptor");
 }
 void Refused(std::string_view bytes){
   const auto r=c::DecodeCatalogMetricDescriptor(bytes);Check(!r.ok()&&!r.record,"malformed bytes published descriptor");
+  const auto borrowed=WithoutDescriptorHeap([&]{return c::DecodeCatalogMetricDescriptorView(bytes);});
+  Check(!borrowed.ok()&&!borrowed.record&&borrowed.error==r.error,"borrowed refusal or diagnostic diverged");
 }
 void Invalid(const c::CatalogMetricDescriptor& r){
   const auto encoded=c::EncodeCatalogMetricDescriptor(r);Check(!encoded.ok()&&encoded.bytes.empty(),"invalid definition encoded");
@@ -262,7 +300,7 @@ void Binding(){
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);
     std::array<unsigned char,32> hash{};SHA256(bytes.data(),bytes.size(),hash.data());std::copy(hash.begin(),hash.end(),bytes.begin()+320);
-    Check(!c::DecodeCatalogMetadataVersion(bytes).ok(),"rehash bypassed binding");
+    Check(!CheckedMetadataDecode(bytes).ok(),"rehash bypassed binding");
   }
   for(unsigned i=0;i<3;++i){auto r=initial.record;
     if(i==0)r.payload="metric_uuid=seed";
@@ -362,28 +400,52 @@ void CurrentValues() {
   Check(!c::EncodeCatalogMetricCurrentValue(r).ok(),"text in system UUID label rejected");
 }
 void AllocationFailures(){
-  auto r=Descriptor();r.definition.family=std::string(256,'f');r.definition.help=std::string(512,'h');
-  r.definition.aliases={std::string(256,'a'),std::string(256,'b')};r.definition.labels[0].key=std::string(256,'k');
-  const auto golden=Golden(r);
-  for(unsigned operation=0;operation<2;++operation){
-    unsigned injected=0;bool completed=false;
-    for(long index=0;index<2048;++index){
-      descriptor_allocation_fault::remaining=index;descriptor_allocation_fault::fired=false;
-      bool succeeded=false,partial=false;
-      try{
-        if(operation==0){const auto result=c::EncodeCatalogMetricDescriptor(r);succeeded=result.ok();partial=!succeeded&&!result.bytes.empty();}
-        else{const auto result=c::DecodeCatalogMetricDescriptor(golden);succeeded=result.ok();partial=!succeeded&&result.record.has_value();}
-      }catch(const std::bad_alloc&){}
-      descriptor_allocation_fault::remaining=-1;
-      const bool fired=descriptor_allocation_fault::fired;
-      Check(!partial,"allocation failure published partial definition");
-      Check(Golden(r)==golden,"allocation failure mutated input definition");
-      if(fired){++injected;Check(!succeeded,"allocation failure reported success");}
-      else{Check(succeeded,"valid operation did not recover after allocation faults");completed=true;break;}
+  auto original=Descriptor();original.definition.family=std::string(256,'f');
+  original.definition.help=std::string(512,'h');
+  original.definition.aliases={std::string(256,'a'),std::string(256,'b')};
+  original.definition.labels[0].key=std::string(256,'k');
+  for (unsigned shape=0;shape<3;++shape) {
+    auto r=original;
+    if (shape==1) {
+      r.definition.type=m::MetricType::histogram;
+      for (p::u64 n=0;n<4096;++n) r.definition.histogram_buckets.emplace_back(n);
     }
-    Check(completed&&injected>10,"allocation fault sweep did not reach all allocation sites");
-    std::cout<<"descriptor allocation operation="<<operation<<" injected="<<injected<<'\n';
+    if (shape==2) {
+      r.definition.type=m::MetricType::state;r.definition.value_type=m::MetricScalarType::enumeration;
+      r.definition.min_value.reset();r.definition.max_value.reset();
+      for (p::u64 n=0;n<4096;++n) r.definition.enum_values.push_back(n);
+    }
+    const auto golden=Golden(r);
+    for(unsigned operation=0;operation<2;++operation){
+      const auto perform=[&]{
+        if(operation==0){const auto result=c::EncodeCatalogMetricDescriptor(r);return result.ok();}
+        const auto result=c::DecodeCatalogMetricDescriptor(golden);return result.ok();
+      };
+      descriptor_allocation_fault::allocations=0;
+      const bool baseline=perform();
+      const auto sites=descriptor_allocation_fault::allocations;
+      Check(baseline && sites<40960,"measured owning allocation sites");
+      for(std::size_t index=0;index<=sites;++index){
+        descriptor_allocation_fault::remaining=static_cast<long>(index);
+        descriptor_allocation_fault::fired=false;
+        bool succeeded=false,partial=false;
+        try{
+          if(operation==0){const auto result=c::EncodeCatalogMetricDescriptor(r);succeeded=result.ok();partial=!succeeded&&!result.bytes.empty();}
+          else{const auto result=c::DecodeCatalogMetricDescriptor(golden);succeeded=result.ok();partial=!succeeded&&result.record.has_value();}
+        }catch(const std::bad_alloc&){}
+        descriptor_allocation_fault::remaining=-1;
+        const bool fired=descriptor_allocation_fault::fired;
+        Check(!partial,"allocation failure published partial definition");
+        Check(Golden(r)==golden,"allocation failure mutated input definition");
+        Check(fired==(index<sites),"every measured site injected exactly once");
+        Check(succeeded==(index==sites),"only exact post-sweep budget succeeds");
+      }
+      const auto recovered=c::DecodeCatalogMetricDescriptor(golden);
+      Check(recovered.ok() && Golden(*recovered.record)==golden,"canonical recovery after complete fault sweep");
+      std::cout<<"descriptor allocation shape="<<shape<<" operation="<<operation<<" measured/injected="<<sites<<'\n';
+    }
   }
 }
+
 }
 int main(){CurrentValues();Shapes();Malformed();Binding();Limits();AllocationFailures();std::cout<<"metric descriptor native checks="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}

@@ -20,8 +20,24 @@ struct CatalogStorageRecordDecodeResult {
   std::optional<CatalogStorageRecord> record;
   bool ok() const { return error == CatalogValueError::none && record.has_value(); }
 };
+// Fixed native identities/counters plus borrowed presentation text. Retain the
+// immutable input owner and memory grant while using descriptor_name.
+struct CatalogStorageRecordView {
+  TypedUuid descriptor_uuid{};
+  TypedUuid filespace_uuid{};
+  u64 page_size = 0;
+  u64 creator_transaction_number = 0;
+  std::string_view descriptor_name;
+};
+struct CatalogStorageRecordViewResult {
+  CatalogValueError error = CatalogValueError::none;
+  std::optional<CatalogStorageRecordView> record;
+  bool ok() const { return error == CatalogValueError::none && record.has_value(); }
+};
+CatalogStorageRecordViewResult DecodeCatalogStorageRecordView(std::string_view bytes);
 const CatalogValueSchema& CatalogStorageRecordSchema();
 CatalogValueEncodeResult EncodeCatalogStorageRecord(const CatalogStorageRecord& record);
 CatalogStorageRecordDecodeResult DecodeCatalogStorageRecord(std::string_view bytes);
 bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecord& record);
+bool CatalogStoragePayloadMatchesHeader(const CatalogTypedRecordView& record);
 }  // namespace scratchbird::core::catalog

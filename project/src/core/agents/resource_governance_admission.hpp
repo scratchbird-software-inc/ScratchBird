@@ -249,6 +249,13 @@ class ResourceGovernanceReservationLedger {
   RuntimePermitCode CloseRuntimePermits() noexcept;
   RuntimePermitCode CloseRuntimePermitInstance(const RuntimePermitAuthority&,
       RuntimePermitProfile, RuntimePermitInstanceBinding) noexcept;
+  RuntimePermitInstanceSnapshot InspectRuntimePermitInstance(const RuntimePermitAuthority&,
+      RuntimePermitProfile, RuntimePermitInstanceBinding) const noexcept;
+  // Sole lifecycle owner's retained observer. Close first. Completed local
+  // drain does NOT join external owner calls, retire memory or reconcile effects.
+  RuntimePermitDrainResult DrainRuntimePermitInstance(const RuntimePermitAuthority&,
+      RuntimePermitProfile, RuntimePermitInstanceBinding, RuntimePermitAcquireControl,
+      std::string_view uninterruptible_reason = {}) noexcept;
 
   // Fallible result/evidence construction completes before ledger mutation.
   // Allocation failure propagates with ownership, usage and sequences intact.
@@ -295,13 +302,16 @@ class ResourceGovernanceReservationLedger {
         RuntimePermitInstanceBinding w, RuntimePermitInstanceBinding q,
         std::pmr::memory_resource& resource, core::uuid::StandaloneUuidV7Issuer& u)
         : governor(id), policy(p), workers(w), queue(q), issuer(u), permits(&resource) {
-      if (p.worker_waiter_limit || p.queue_waiter_limit) changed.emplace();
+      // Even an immediate-acquisition-only pool needs lifecycle drain wakes.
+      changed.emplace();
     }
   };
   RuntimePermitCode ValidateRuntimePermitLocked(const RuntimePermitRequest&,
       const RuntimePermitAcquireControl&) const noexcept;
   RuntimePermitAcquireResult AcquireRuntimePermitLocked(const RuntimePermitRequest&,
       const RuntimePermitAcquireControl&);
+  RuntimePermitInstanceSnapshot InspectRuntimePermitInstanceLocked(const RuntimePermitAuthority&,
+      RuntimePermitProfile, RuntimePermitInstanceBinding) const noexcept;
   void NotifyRuntimeWaitersLocked() noexcept;
   RuntimePermitCode ReleaseRuntimePermit(RuntimePermitGrant&) noexcept;
   bool RuntimePermitQuiescenceRequested(const RuntimePermitGrant&) const;

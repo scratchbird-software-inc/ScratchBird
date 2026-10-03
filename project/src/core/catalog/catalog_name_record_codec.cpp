@@ -3,6 +3,7 @@
 #include "catalog_name_record_codec.hpp"
 
 #include <algorithm>
+#include <array>
 #include <type_traits>
 #include <utility>
 
@@ -14,11 +15,11 @@ bool ValidLifecycle(CatalogNameLifecycle state) {
   const auto raw = static_cast<u64>(state);
   return raw >= 1 && raw <= 7;
 }
-bool Valid(const CatalogNameVector& r) {
+template<class Record> bool ValidVector(const Record& r) {
   return !r.object_class.empty() && !r.default_language_tag.empty() &&
       r.catalog_generation_id != 0 && ValidLifecycle(r.lifecycle_state);
 }
-bool Valid(const CatalogNameEntry& r) {
+template<class Record> bool ValidEntry(const Record& r) {
   return !r.object_class.empty() && !r.language_tag.empty() &&
       r.catalog_generation_id != 0 && r.resource_epoch != 0 &&
       r.name_resolution_epoch != 0 && ValidLifecycle(r.lifecycle_state) &&
@@ -85,39 +86,48 @@ void Add(std::vector<CatalogValueField>& fields, u16 id,
          const std::optional<TypedUuid>& value) {
   if (value) fields.push_back({id, *value});
 }
-const CatalogValue* Find(const std::vector<CatalogValueField>& fields, u16 id) {
+const CatalogValueFieldView* Find(std::span<const CatalogValueFieldView> fields, u16 id) {
   const auto found = std::lower_bound(fields.begin(), fields.end(), id,
-      [](const CatalogValueField& field, u16 key) { return field.id < key; });
-  return found != fields.end() && found->id == id ? &found->value : nullptr;
+      [](const CatalogValueFieldView& field, u16 key) { return field.id < key; });
+  return found != fields.end() && found->id == id ? &*found : nullptr;
 }
 template <typename Value>
-bool Read(const std::vector<CatalogValueField>& fields, u16 id, Value* value) {
+bool Read(std::span<const CatalogValueFieldView> fields, u16 id, Value* value) {
   const auto* found = Find(fields, id);
   if (!found) return false;
-  if constexpr (std::is_enum_v<Value>) {
-    const auto* typed = std::get_if<u64>(found);
-    if (!typed) return false;
-    *value = static_cast<Value>(*typed);
+  if constexpr (std::is_enum_v<Value> || std::is_same_v<Value, u64>) {
+    const auto number = found->unsigned_value();
+    if (!number) return false;
+    *value = static_cast<Value>(*number);
+  } else if constexpr (std::is_same_v<Value, TypedUuid>) {
+    const auto identity = found->identity();
+    if (!identity) return false;
+    *value = *identity;
+  } else if constexpr (std::is_same_v<Value, bool>) {
+    if (found->type != Type::boolean || found->bytes.size() != 1) return false;
+    *value = found->bytes[0] != 0;
+  } else if constexpr (std::is_same_v<Value, std::string_view>) {
+    if (found->type != Type::utf8_text) return false;
+    *value = {reinterpret_cast<const char*>(found->bytes.data()), found->bytes.size()};
   } else {
-    const auto* typed = std::get_if<Value>(found);
-    if (!typed) return false;
-    *value = *typed;
+    static_assert(std::is_same_v<Value, std::span<const byte>>);
+    if (found->type != Type::opaque_bytes) return false;
+    *value = found->bytes;
   }
   return true;
 }
-bool Read(const std::vector<CatalogValueField>& fields, u16 id,
+bool Read(std::span<const CatalogValueFieldView> fields, u16 id,
           std::optional<TypedUuid>* value) {
   const auto* found = Find(fields, id);
   if (!found) { value->reset(); return true; }
-  const auto* typed = std::get_if<TypedUuid>(found);
-  if (!typed) return false;
-  *value = *typed;
-  return true;
+  *value = found->identity();
+  return value->has_value();
 }
 }  // namespace
 
-const CatalogValueSchema& CatalogNameVectorSchema() {
-  static const CatalogValueSchema schema{327681, 1, {
+namespace {
+CatalogValueSchemaView CatalogNameVectorSchemaView() {
+  static constexpr CatalogValueFieldSchema fields[]{
     {1, Type::engine_identity, true, 16, UuidKind::object},  // name_vector_uuid
     {2, Type::engine_identity, true, 16, UuidKind::object},  // object_uuid
     {3, Type::utf8_text, true, 131040},  // object_class
@@ -128,11 +138,20 @@ const CatalogValueSchema& CatalogNameVectorSchema() {
     {8, Type::unsigned_integer, true, 8},  // catalog_generation_id
     {9, Type::engine_identity, true, 16, UuidKind::object},  // security_policy_uuid
     {10, Type::unsigned_integer, true, 8},  // lifecycle_state
-  }};
+  };
+  return {327681, 1, fields};
+}
+}  // namespace
+const CatalogValueSchema& CatalogNameVectorSchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogNameVectorSchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
-const CatalogValueSchema& CatalogNameEntrySchema() {
-  static const CatalogValueSchema schema{327682, 1, {
+namespace {
+CatalogValueSchemaView CatalogNameEntrySchemaView() {
+  static constexpr CatalogValueFieldSchema fields[]{
     {1, Type::engine_identity, true, 16, UuidKind::object},  // name_entry_uuid
     {2, Type::engine_identity, true, 16, UuidKind::object},  // name_vector_uuid
     {3, Type::engine_identity, true, 16, UuidKind::object},  // object_uuid
@@ -166,39 +185,106 @@ const CatalogValueSchema& CatalogNameEntrySchema() {
     {31, Type::unsigned_integer, true, 8},  // resource_epoch
     {32, Type::unsigned_integer, true, 8},  // name_resolution_epoch
     {33, Type::unsigned_integer, true, 8},  // lifecycle_state
-  }};
+  };
+  return {327682, 1, fields};
+}
+}  // namespace
+const CatalogValueSchema& CatalogNameEntrySchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogNameEntrySchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 CatalogValueEncodeResult EncodeCatalogNameVector(const CatalogNameVector& record) {
-  if (!Valid(record)) return {Error::invalid_value, {}};
+  if (!ValidVector(record)) return {Error::invalid_value, {}};
   std::vector<CatalogValueField> fields;
   VisitVector(record, [&](u16 id, const auto& value) { Add(fields, id, value); });
   return EncodeCatalogValueBlock(CatalogNameVectorSchema(), fields);
 }
 CatalogValueEncodeResult EncodeCatalogNameEntry(const CatalogNameEntry& record) {
-  if (!Valid(record)) return {Error::invalid_value, {}};
+  if (!ValidEntry(record)) return {Error::invalid_value, {}};
   std::vector<CatalogValueField> fields;
   VisitEntry(record, [&](u16 id, const auto& value) { Add(fields, id, value); });
   return EncodeCatalogValueBlock(CatalogNameEntrySchema(), fields);
 }
-CatalogNameRecordDecodeResult<CatalogNameVector> DecodeCatalogNameVector(const std::vector<byte>& bytes) {
-  const auto decoded = DecodeCatalogValueBlock(CatalogNameVectorSchema(), bytes);
+CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView(std::span<const byte> bytes) {
+  std::array<CatalogValueFieldView, 10> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogNameVectorSchemaView(), bytes, fields);
   if (!decoded.ok()) return {decoded.error, {}};
-  CatalogNameVector record;
+  CatalogNameVectorView record;
   bool complete = true;
   VisitVector(record, [&](u16 id, auto& value) { complete = Read(decoded.fields, id, &value) && complete; });
   if (!complete) return {Error::type_mismatch, {}};
-  if (!Valid(record)) return {Error::invalid_value, {}};
-  return {Error::none, std::move(record)};
+  if (!ValidVector(record)) return {Error::invalid_value, {}};
+  return {Error::none, record};
 }
-CatalogNameRecordDecodeResult<CatalogNameEntry> DecodeCatalogNameEntry(const std::vector<byte>& bytes) {
-  const auto decoded = DecodeCatalogValueBlock(CatalogNameEntrySchema(), bytes);
+CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& record) {
+  return {record.name_vector_uuid,
+      record.object_uuid,
+      std::string(record.object_class),
+      record.owning_schema_uuid,
+      std::string(record.default_language_tag),
+      record.default_name_entry_uuid,
+      record.name_collision_policy_uuid,
+      record.catalog_generation_id,
+      record.security_policy_uuid,
+      record.lifecycle_state};
+}
+CatalogNameRecordDecodeResult<CatalogNameVector> DecodeCatalogNameVector(const std::vector<byte>& bytes) {
+  const auto decoded = DecodeCatalogNameVectorView(bytes);
   if (!decoded.ok()) return {decoded.error, {}};
-  CatalogNameEntry record;
+  return {Error::none, MaterializeCatalogNameVector(*decoded.record)};
+}
+CatalogNameRecordDecodeResult<CatalogNameEntryView> DecodeCatalogNameEntryView(std::span<const byte> bytes) {
+  std::array<CatalogValueFieldView, 33> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogNameEntrySchemaView(), bytes, fields);
+  if (!decoded.ok()) return {decoded.error, {}};
+  CatalogNameEntryView record;
   bool complete = true;
   VisitEntry(record, [&](u16 id, auto& value) { complete = Read(decoded.fields, id, &value) && complete; });
   if (!complete) return {Error::type_mismatch, {}};
-  if (!Valid(record)) return {Error::invalid_value, {}};
-  return {Error::none, std::move(record)};
+  if (!ValidEntry(record)) return {Error::invalid_value, {}};
+  return {Error::none, record};
+}
+CatalogNameEntry MaterializeCatalogNameEntry(const CatalogNameEntryView& record) {
+  return {record.name_entry_uuid,
+      record.name_vector_uuid,
+      record.object_uuid,
+      std::string(record.object_class),
+      record.scope_uuid,
+      record.parent_object_uuid,
+      record.parent_schema_uuid,
+      std::string(record.language_tag),
+      record.name_class,
+      std::string(record.donor_id),
+      record.dialect_profile_uuid,
+      record.identifier_profile_uuid,
+      record.case_fold_profile_uuid,
+      record.quoted_identifier_profile_uuid,
+      std::string(record.raw_name_text),
+      std::string(record.display_name),
+      record.was_quoted,
+      record.quote_style,
+      record.requires_exact_match,
+      {record.normalized_lookup_key.begin(), record.normalized_lookup_key.end()},
+      {record.exact_lookup_key.begin(), record.exact_lookup_key.end()},
+      {record.full_path_lookup_key.begin(), record.full_path_lookup_key.end()},
+      record.path_component_count,
+      record.search_path_eligible,
+      record.default_for_language,
+      record.default_for_object,
+      record.catalog_generation_id,
+      record.created_transaction_uuid,
+      record.dropped_transaction_uuid,
+      record.security_policy_uuid,
+      record.resource_epoch,
+      record.name_resolution_epoch,
+      record.lifecycle_state};
+}
+CatalogNameRecordDecodeResult<CatalogNameEntry> DecodeCatalogNameEntry(const std::vector<byte>& bytes) {
+  const auto decoded = DecodeCatalogNameEntryView(bytes);
+  if (!decoded.ok()) return {decoded.error, {}};
+  return {Error::none, MaterializeCatalogNameEntry(*decoded.record)};
 }
 }  // namespace scratchbird::core::catalog

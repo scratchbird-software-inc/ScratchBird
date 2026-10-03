@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_schema_definition.hpp"
 #include "uuid.hpp"
+#include <array>
 
 namespace scratchbird::core::catalog {
 namespace {
@@ -45,9 +46,9 @@ const char* CatalogSchemaTypeName(CatalogSchemaType type) {
   }
   return nullptr;
 }
-const CatalogValueSchema& CatalogSchemaDefinitionSchema() {
+constexpr CatalogValueSchemaView CatalogSchemaDefinitionSchemaView() {
   using T = CatalogValueType;
-  static const CatalogValueSchema schema{65540, 1, {
+  static constexpr CatalogValueFieldSchema fields[]{
       {1,T::engine_identity,true,16,UuidKind::object},
       {2,T::engine_identity,true,16,UuidKind::object},
       {3,T::engine_identity,false,16,UuidKind::object},
@@ -57,7 +58,14 @@ const CatalogValueSchema& CatalogSchemaDefinitionSchema() {
       {7,T::engine_identity,false,16,UuidKind::object},
       {8,T::engine_identity,false,16,UuidKind::object},
       {9,T::engine_identity,true,16,UuidKind::transaction},
-      {10,T::unsigned_integer,true,8}}};
+      {10,T::unsigned_integer,true,8}};
+  return {65540, 1, fields};
+}
+const CatalogValueSchema& CatalogSchemaDefinitionSchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogSchemaDefinitionSchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 CatalogValueEncodeResult EncodeCatalogSchemaDefinition(const CatalogSchemaDefinition& d) {
@@ -75,29 +83,30 @@ CatalogValueEncodeResult EncodeCatalogSchemaDefinition(const CatalogSchemaDefini
 }
 CatalogSchemaDefinitionResult DecodeCatalogSchemaDefinition(std::string_view bytes) {
   if (bytes.size() < 128 || bytes.size() > 248) return {CatalogValueError::invalid_framing,{}};
-  const auto decoded = DecodeCatalogValueBlock(CatalogSchemaDefinitionSchema(),
-      std::vector<byte>(bytes.begin(),bytes.end()));
+  std::array<CatalogValueFieldView, 10> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogSchemaDefinitionSchemaView(),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if (!decoded.ok()) return {decoded.error,{}};
   CatalogSchemaDefinition d;
   for (const auto& field : decoded.fields) {
     switch (field.id) {
-      case 1: d.schema_object_uuid=std::get<TypedUuid>(field.value); break;
-      case 2: d.database_catalog_object_uuid=std::get<TypedUuid>(field.value); break;
-      case 3: d.parent_schema_uuid=std::get<TypedUuid>(field.value); break;
-      case 4: d.schema_type=static_cast<CatalogSchemaType>(std::get<u64>(field.value)); break;
-      case 5: d.default_filespace_uuid=std::get<TypedUuid>(field.value); break;
-      case 6: d.default_charset_uuid=std::get<TypedUuid>(field.value); break;
-      case 7: d.default_collation_uuid=std::get<TypedUuid>(field.value); break;
-      case 8: d.permissions_policy_uuid=std::get<TypedUuid>(field.value); break;
-      case 9: d.origin_transaction_uuid=std::get<TypedUuid>(field.value); break;
-      case 10: d.origin_local_transaction_id=std::get<u64>(field.value); break;
+      case 1: d.schema_object_uuid=*field.identity(); break;
+      case 2: d.database_catalog_object_uuid=*field.identity(); break;
+      case 3: d.parent_schema_uuid=*field.identity(); break;
+      case 4: d.schema_type=static_cast<CatalogSchemaType>(*field.unsigned_value()); break;
+      case 5: d.default_filespace_uuid=*field.identity(); break;
+      case 6: d.default_charset_uuid=*field.identity(); break;
+      case 7: d.default_collation_uuid=*field.identity(); break;
+      case 8: d.permissions_policy_uuid=*field.identity(); break;
+      case 9: d.origin_transaction_uuid=*field.identity(); break;
+      case 10: d.origin_local_transaction_id=*field.unsigned_value(); break;
       default: return {CatalogValueError::unknown_field,{}};
     }
   }
   if (!Valid(d)) return {CatalogValueError::invalid_value,{}};
   return {CatalogValueError::none,std::move(d)};
 }
-bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (m.record.header.kind != CatalogRecordKind::schema) return false;
   const auto decoded=DecodeCatalogSchemaDefinition(m.record.payload);
   if (!decoded.ok()) return false;
@@ -123,7 +132,7 @@ bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
     default: return false;
   }
 }
-bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a,const CatalogMetadataVersion& b) {
+bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
   if (a.record.header.kind != CatalogRecordKind::schema && b.record.header.kind != CatalogRecordKind::schema) return true;
   if (!CatalogSchemaDefinitionMatchesMetadata(a) || !CatalogSchemaDefinitionMatchesMetadata(b)) return false;
   const auto before=DecodeCatalogSchemaDefinition(a.record.payload);
@@ -132,5 +141,11 @@ bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a,cons
       Same(before.definition->database_catalog_object_uuid,after.definition->database_catalog_object_uuid) &&
       Same(before.definition->origin_transaction_uuid,after.definition->origin_transaction_uuid) &&
       before.definition->origin_local_transaction_id == after.definition->origin_local_transaction_id;
+}
+bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogSchemaDefinitionMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogSchemaDefinitionPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogSchemaDefinitionPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

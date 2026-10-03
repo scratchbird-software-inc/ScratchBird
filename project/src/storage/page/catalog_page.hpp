@@ -15,6 +15,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -47,8 +48,31 @@ struct NativeCatalogRoot {
 enum class NativeCatalogRootError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, io_failure, encrypted_requires_crypto_authority, history_mismatch
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority, history_mismatch, invalid_backing
 };
+struct NativeCatalogRootView {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::u16 root_kind = 2;
+  scratchbird::core::platform::Uuid object_uuid;
+  scratchbird::core::platform::Uuid creator_transaction_uuid;
+  scratchbird::core::platform::u64 creator_local_transaction_id = 0;
+  scratchbird::core::platform::u64 catalog_generation = 0;
+  scratchbird::core::platform::u64 schema_epoch = 0;
+  scratchbird::core::platform::u64 security_epoch = 0;
+  scratchbird::core::platform::u64 resource_epoch = 0;
+  std::optional<NativeCatalogPageReference> predecessor;
+  std::array<scratchbird::core::platform::byte, 32> predecessor_sha256{};
+  std::span<NativeCatalogRootReference> roots;
+};
+struct NativeCatalogRootViewResult {
+  NativeCatalogRootError error=NativeCatalogRootError::invalid_family;
+  std::optional<NativeCatalogRootView> root;
+  bool ok() const noexcept {return error==NativeCatalogRootError::none&&root.has_value();}
+};
+// Borrowed image inspection only. Scratch may change on refusal, but no usable
+// view escapes. No hidden reference vector or image copy is allocated.
+NativeCatalogRootViewResult DecodeNativeCatalogRootInto(
+    std::span<const scratchbird::core::platform::byte>,std::span<NativeCatalogRootReference>) noexcept;
 struct NativeCatalogRootResult {
   NativeCatalogRootError error = NativeCatalogRootError::invalid_family;
   std::optional<NativeCatalogRoot> root;

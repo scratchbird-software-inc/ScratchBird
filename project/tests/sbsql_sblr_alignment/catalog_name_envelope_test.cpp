@@ -13,6 +13,22 @@ unsigned checks=0,failures=0;
 void Check(bool ok,const char* message) {
   ++checks;if(!ok && ++failures<16)std::cerr<<"FAIL "<<message<<'\n';
 }
+
+#ifndef SB_NATIVE_NAME_ENVELOPE_MEMORY_TESTS
+template<class F> auto WithoutEnvelopeHeap(F action){return action();}
+#endif
+c::CatalogNameEnvelopeDecodeResult CheckedEnvelopeDecode(
+    const std::vector<byte>& bytes,const c::CatalogNameVersionBinding& expected) {
+  const auto view=WithoutEnvelopeHeap([&]{return c::DecodeCatalogNameEnvelopeView(bytes,expected);});
+  auto owning=c::DecodeCatalogNameEnvelope(bytes,expected);
+  Check(view.error==owning.error&&view.ok()==owning.ok(),"borrowed envelope exact diagnostic parity");
+  if(view.ok()){
+    const auto materialized=c::MaterializeCatalogNameEnvelope(*view.record);
+    Check(c::EncodeCatalogNameEnvelope(materialized).bytes==c::EncodeCatalogNameEnvelope(*owning.record).bytes,
+        "borrowed envelope all-field parity");
+  }else Check(!view.record,"no partial envelope view");
+  return owning;
+}
 template<class Result>void Refused(const Result& r) {
   Check(!r.ok() && r.error!=c::CatalogNameEnvelopeError::none,"invalid envelope accepted");
   if constexpr(requires{r.record;})Check(!r.record,"partial record returned");
@@ -84,7 +100,7 @@ std::vector<byte> Golden() {
 void Roundtrip(const c::CatalogNameEnvelope& r) {
   const auto encoded=c::EncodeCatalogNameEnvelope(r);
   Check(encoded.ok(),"valid envelope refused");if(!encoded.ok())return;
-  const auto decoded=c::DecodeCatalogNameEnvelope(encoded.bytes,r.binding);
+  const auto decoded=CheckedEnvelopeDecode(encoded.bytes,r.binding);
   Check(decoded.ok(),"valid envelope decode refused");if(!decoded.ok())return;
   const auto again=c::EncodeCatalogNameEnvelope(*decoded.record);
   Check(again.ok() && again.bytes==encoded.bytes,"envelope changed on roundtrip");
@@ -93,7 +109,7 @@ void HeaderAndIdentity() {
   const auto base=Fixture();const auto golden=Golden();
   const auto encoded=c::EncodeCatalogNameEnvelope(base);
   Check(encoded.ok() && encoded.bytes==golden,"complete independent golden mismatch");
-  auto decoded=c::DecodeCatalogNameEnvelope(golden,base.binding);
+  auto decoded=CheckedEnvelopeDecode(golden,base.binding);
   Check(decoded.ok(),"golden decode refused");
   if(decoded.ok()) {
     const auto& v=std::get<c::CatalogNameVector>(decoded.record->payload);
@@ -102,11 +118,11 @@ void HeaderAndIdentity() {
   }
   for(unsigned offset=0;offset<176;++offset)for(unsigned value=0;value<256;++value) {
     if(golden[offset]==value)continue;
-    auto bad=golden;bad[offset]=value;Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
+    auto bad=golden;bad[offset]=value;Refused(CheckedEnvelopeDecode(bad,base.binding));
   }
   for(std::size_t n=0;n<golden.size();++n)
-    Refused(c::DecodeCatalogNameEnvelope({golden.begin(),golden.begin()+n},base.binding));
-  auto trailing=golden;trailing.push_back(0);Refused(c::DecodeCatalogNameEnvelope(trailing,base.binding));
+    Refused(CheckedEnvelopeDecode({golden.begin(),golden.begin()+n},base.binding));
+  auto trailing=golden;trailing.push_back(0);Refused(CheckedEnvelopeDecode(trailing,base.binding));
   using B=c::CatalogNameVersionBinding;
   const std::array<TypedUuid B::*,6> members={&B::database_uuid,&B::filespace_uuid,&B::row_uuid,
       &B::version_uuid,&B::catalog_object_uuid,&B::creating_transaction_uuid};
@@ -115,7 +131,7 @@ void HeaderAndIdentity() {
     for(unsigned kind=0;kind<256;++kind) {
       auto r=base;(r.binding.*member).kind=static_cast<UuidKind>(kind);
       if(kind==static_cast<unsigned>(expected))Roundtrip(r);
-      else{Refused(c::EncodeCatalogNameEnvelope(r));Refused(c::DecodeCatalogNameEnvelope(golden,r.binding));}
+      else{Refused(c::EncodeCatalogNameEnvelope(r));Refused(CheckedEnvelopeDecode(golden,r.binding));}
     }
     for(unsigned version=0;version<16;++version)for(unsigned variant=0;variant<4;++variant) {
       auto r=base;auto& value=(r.binding.*member).value;
@@ -124,12 +140,12 @@ void HeaderAndIdentity() {
       else {
         Refused(c::EncodeCatalogNameEnvelope(r));
         auto bad=golden;bad[24+16*slot+6]=value.bytes[6];bad[24+16*slot+8]=value.bytes[8];
-        Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
+        Refused(CheckedEnvelopeDecode(bad,base.binding));
       }
     }
     auto r=base;(r.binding.*member).value={};Refused(c::EncodeCatalogNameEnvelope(r));
     auto expected_other=base.binding;(expected_other.*member).value.bytes[15]++;
-    const auto mismatch=c::DecodeCatalogNameEnvelope(golden,expected_other);
+    const auto mismatch=CheckedEnvelopeDecode(golden,expected_other);
     Refused(mismatch);Check(mismatch.error==c::CatalogNameEnvelopeError::binding_mismatch,"valid foreign binding category");
   }
 }
@@ -147,13 +163,13 @@ void BindingAndPayload() {
   for(auto member:{&B::page_id,&B::storage_generation,&B::version_sequence,
                    &B::creating_transaction_number,&B::catalog_generation}) {
     auto wrong=base.binding;wrong.*member+=1;
-    auto result=c::DecodeCatalogNameEnvelope(golden,wrong);Refused(result);
+    auto result=CheckedEnvelopeDecode(golden,wrong);Refused(result);
     Check(result.error==c::CatalogNameEnvelopeError::binding_mismatch,"scalar binding mismatch category");
     auto invalid=base;invalid.binding.*member=0;Refused(c::EncodeCatalogNameEnvelope(invalid));
-    Refused(c::DecodeCatalogNameEnvelope(golden,invalid.binding));
+    Refused(CheckedEnvelopeDecode(golden,invalid.binding));
   }
   auto wrong_slot=base.binding;wrong_slot.slot_id++;
-  Refused(c::DecodeCatalogNameEnvelope(golden,wrong_slot));
+  Refused(CheckedEnvelopeDecode(golden,wrong_slot));
   auto r=base;r.binding.slot_id=0;Roundtrip(r);
   r.binding.slot_id=std::numeric_limits<u32>::max();Roundtrip(r);
   r=base;r.binding.page_id=std::numeric_limits<u64>::max();Roundtrip(r);
@@ -164,14 +180,14 @@ void BindingAndPayload() {
     Refused(c::EncodeCatalogNameEnvelope(changed));
     auto payload=entry?c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(changed.payload)):
                        c::EncodeCatalogNameVector(std::get<c::CatalogNameVector>(changed.payload));
-    Refused(c::DecodeCatalogNameEnvelope(Repack(r,payload.bytes),r.binding));
+    Refused(CheckedEnvelopeDecode(Repack(r,payload.bytes),r.binding));
     changed=r;
     if(entry)std::get<c::CatalogNameEntry>(changed.payload).name_entry_uuid.value.bytes[15]++;
     else std::get<c::CatalogNameVector>(changed.payload).name_vector_uuid.value.bytes[15]++;
     Refused(c::EncodeCatalogNameEnvelope(changed));
     payload=entry?c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(changed.payload)):
                   c::EncodeCatalogNameVector(std::get<c::CatalogNameVector>(changed.payload));
-    Refused(c::DecodeCatalogNameEnvelope(Repack(r,payload.bytes),r.binding));
+    Refused(CheckedEnvelopeDecode(Repack(r,payload.bytes),r.binding));
     changed=r;std::visit([](auto& p){p.object_class.clear();},changed.payload);
     Refused(c::EncodeCatalogNameEnvelope(changed));
   }
@@ -179,19 +195,19 @@ void BindingAndPayload() {
   std::get<c::CatalogNameEntry>(changed.payload).created_transaction_uuid.value.bytes[15]++;
   Refused(c::EncodeCatalogNameEnvelope(changed));
   auto payload=c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(changed.payload));
-  Refused(c::DecodeCatalogNameEnvelope(Repack(r,payload.bytes),r.binding));
+  Refused(CheckedEnvelopeDecode(Repack(r,payload.bytes),r.binding));
   auto successor=r;successor.binding.version_sequence=2;
   successor.binding.creating_transaction_uuid.value.bytes[15]++;
   const auto successor_bytes=c::EncodeCatalogNameEnvelope(successor);
   Check(successor_bytes.ok(),"name successor must preserve original creation under another writer");
-  const auto successor_record=c::DecodeCatalogNameEnvelope(successor_bytes.bytes,successor.binding);
+  const auto successor_record=CheckedEnvelopeDecode(successor_bytes.bytes,successor.binding);
   Check(successor_record.ok() && std::get<c::CatalogNameEntry>(successor_record.record->payload).created_transaction_uuid.value ==
       std::get<c::CatalogNameEntry>(r.payload).created_transaction_uuid.value,
       "name successor envelope rewrote original entry creation");
-  auto bad=golden;bad[16]=2;Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
-  bad=golden;bad[176+16]=2;Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
+  auto bad=golden;bad[16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
+  bad=golden;bad[176+16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff67\n";
-  Refused(c::DecodeCatalogNameEnvelope({legacy.begin(),legacy.end()},base.binding));
+  Refused(CheckedEnvelopeDecode({legacy.begin(),legacy.end()},base.binding));
   Check(!c::CatalogNameEnvelopeEncodeResult{}.ok() && !c::CatalogNameEnvelopeDecodeResult{}.ok(),
         "default constructed result asserts success");
 }
@@ -202,7 +218,7 @@ void SizeAndPageContainer() {
   Check(encoded.ok() && encoded.bytes.size()==131072,"exact envelope size maximum");
   Roundtrip(r);v.object_class.push_back('x');
   Refused(c::EncodeCatalogNameEnvelope(r));
-  encoded.bytes.push_back(0);Refused(c::DecodeCatalogNameEnvelope(encoded.bytes,r.binding));
+  encoded.bytes.push_back(0);Refused(CheckedEnvelopeDecode(encoded.bytes,r.binding));
   r=Fixture();encoded=c::EncodeCatalogNameEnvelope(r);
   page::CatalogPageRow row;
   row.kind=page::CatalogPageRowKind::typed_catalog_record;row.ordinal=3;
@@ -215,14 +231,14 @@ void SizeAndPageContainer() {
         "page container altered binary envelope");
   if(parsed.ok() && parsed.body.rows.size()==1) {
     const auto& bytes=parsed.body.rows[0].payload;
-    Check(c::DecodeCatalogNameEnvelope({bytes.begin(),bytes.end()},r.binding).ok(),
+    Check(CheckedEnvelopeDecode({bytes.begin(),bytes.end()},r.binding).ok(),
           "page recovered envelope did not bind");
   }
   // Envelope structural validation is NOT a checksum or visibility oracle.
   auto changed=encoded.bytes;const std::vector<byte> needle{'t','a','b','l','e'};
   auto at=std::search(changed.begin()+176,changed.end(),needle.begin(),needle.end());
   Check(at!=changed.end(),"fixture class not located");if(at==changed.end())return;
-  *at='c';Check(c::DecodeCatalogNameEnvelope(changed,r.binding).ok(),"codec invents metadata authority");
+  *at='c';Check(CheckedEnvelopeDecode(changed,r.binding).ok(),"codec invents metadata authority");
   auto damaged=pages.pages[0].body;
   auto record_at=std::search(damaged.begin(),damaged.end(),encoded.bytes.begin(),encoded.bytes.end());
   Check(record_at!=damaged.end(),"packed record bytes not found");if(record_at==damaged.end())return;

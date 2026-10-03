@@ -23,15 +23,15 @@ bool Valid(const CatalogMetricRetentionPolicy& record) {
       Identity(record.origin_transaction_uuid, UuidKind::transaction) &&
       record.origin_local_transaction_id != 0;
 }
-bool IsFamily(const CatalogMetadataVersion& record) {
+bool IsFamily(const CatalogMetadataVersionView& record) {
   return record.object_subtype == "metric_retention" ||
       IsCatalogMetricRetentionPolicyPayload(record.record.payload);
 }
 }  // namespace
 
-const CatalogValueSchema& CatalogMetricRetentionPolicySchema() {
+constexpr CatalogValueSchemaView CatalogMetricRetentionPolicySchemaView() {
   using T = CatalogValueType;
-  static const CatalogValueSchema schema{65543, 1, {
+  static constexpr CatalogValueFieldSchema fields[]{
       {1, T::engine_identity, true, 16, UuidKind::object},
       {2, T::unsigned_integer, true, 8},
       {3, T::utf8_text, true, 4096},
@@ -48,7 +48,14 @@ const CatalogValueSchema& CatalogMetricRetentionPolicySchema() {
       {14, T::boolean, true, 1},
       {15, T::engine_identity, true, 16, UuidKind::transaction},
       {16, T::unsigned_integer, true, 8},
-  }};
+  };
+  return {65543, 1, fields};
+}
+const CatalogValueSchema& CatalogMetricRetentionPolicySchema() {
+  static const CatalogValueSchema schema = [] {
+    const auto view = CatalogMetricRetentionPolicySchemaView();
+    return CatalogValueSchema{view.id, view.version, {view.fields.begin(), view.fields.end()}};
+  }();
   return schema;
 }
 
@@ -67,55 +74,77 @@ CatalogValueEncodeResult EncodeCatalogMetricRetentionPolicy(const CatalogMetricR
   });
 }
 
-CatalogMetricRetentionPolicyResult DecodeCatalogMetricRetentionPolicy(std::string_view bytes) {
+CatalogMetricRetentionPolicyViewResult DecodeCatalogMetricRetentionPolicyView(std::string_view bytes) {
   if (bytes.size() > kCatalogValueBlockMaxBytes)
     return {CatalogValueError::size_limit, {}};
-  const auto decoded = DecodeCatalogValueBlock(CatalogMetricRetentionPolicySchema(),
-      std::vector<byte>(bytes.begin(), bytes.end()));
+  std::array<CatalogValueFieldView, 16> fields;
+  const auto decoded = DecodeCatalogValueBlockInto(CatalogMetricRetentionPolicySchemaView(),
+      {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, fields);
   if (!decoded.ok()) return {decoded.error, {}};
   const auto& f = decoded.fields;
-  const auto scope = std::get<u64>(f[3].value);
-  const auto mode = std::get<u64>(f[4].value);
-  const auto overflow = std::get<u64>(f[10].value);
+  const auto scope = *f[3].unsigned_value(), mode = *f[4].unsigned_value();
+  const auto overflow = *f[10].unsigned_value();
   if (scope == 0 || scope > kScopes.size() || mode > 2 ||
       overflow == 0 || overflow > kOverflow.size())
     return {CatalogValueError::invalid_value, {}};
-  CatalogMetricRetentionPolicy r;
-  auto& p = r.policy;
-  p.policy_uuid = std::get<TypedUuid>(f[0].value).value;
-  p.generation = std::get<u64>(f[1].value);
-  p.policy_name = std::get<std::string>(f[2].value);
-  p.scope = kScopes[scope - 1];
-  p.mode = static_cast<metrics::MetricRetentionMode>(mode);
-  p.raw_retention_seconds = std::get<u64>(f[5].value);
-  p.rollup_retention_seconds = std::get<u64>(f[6].value);
-  for (const auto grain : std::get<std::vector<byte>>(f[7].value)) {
+  const auto text = [&](std::size_t i) {
+    return std::string_view(reinterpret_cast<const char*>(f[i].bytes.data()), f[i].bytes.size());
+  };
+  CatalogMetricRetentionPolicyView r;
+  r.policy_uuid = f[0].identity()->value;
+  r.generation = *f[1].unsigned_value();
+  r.policy_name = text(2); r.scope = kScopes[scope - 1];
+  r.mode = static_cast<metrics::MetricRetentionMode>(mode);
+  r.raw_retention_seconds = *f[5].unsigned_value();
+  r.rollup_retention_seconds = *f[6].unsigned_value();
+  for (const auto grain : f[7].bytes) {
     if (grain > 3) return {CatalogValueError::invalid_value, {}};
-    p.rollup_grains.push_back(static_cast<metrics::MetricRollupGrain>(grain));
+    r.rollup_grains[r.rollup_grain_count++] = static_cast<metrics::MetricRollupGrain>(grain);
   }
-  p.purge_batch_limit = std::get<u64>(f[8].value);
-  p.max_cardinality = std::get<u64>(f[9].value);
-  p.overflow_behavior = kOverflow[overflow - 1];
-  p.edit_right = std::get<std::string>(f[11].value);
-  p.default_admin_group = std::get<std::string>(f[12].value);
-  p.evidence_required = std::get<bool>(f[13].value);
-  r.origin_transaction_uuid = std::get<TypedUuid>(f[14].value);
-  r.origin_local_transaction_id = std::get<u64>(f[15].value);
-  if (!Valid(r)) return {CatalogValueError::invalid_value, {}};
-  return {CatalogValueError::none, std::move(r)};
+  r.purge_batch_limit = *f[8].unsigned_value(); r.max_cardinality = *f[9].unsigned_value();
+  r.overflow_behavior = kOverflow[overflow - 1];
+  r.edit_right = text(11); r.default_admin_group = text(12);
+  r.evidence_required = f[13].bytes[0] != 0;
+  r.origin_transaction_uuid = *f[14].identity();
+  r.origin_local_transaction_id = *f[15].unsigned_value();
+  if (!r.generation || !r.origin_local_transaction_id ||
+      !metrics::ValidateMetricRetentionPolicyDefinitionView({
+          r.policy_name, r.scope, r.mode, r.raw_retention_seconds, r.rollup_retention_seconds,
+          std::span(r.rollup_grains).first(r.rollup_grain_count), r.purge_batch_limit,
+          r.max_cardinality, r.overflow_behavior, r.edit_right, r.default_admin_group,
+          r.evidence_required}).ok)
+    return {CatalogValueError::invalid_value, {}};
+  return {CatalogValueError::none, r};
+}
+
+CatalogMetricRetentionPolicyResult DecodeCatalogMetricRetentionPolicy(std::string_view bytes) {
+  const auto decoded = DecodeCatalogMetricRetentionPolicyView(bytes);
+  if (!decoded.ok()) return {decoded.error, {}};
+  const auto& v = *decoded.record;
+  return {CatalogValueError::none, CatalogMetricRetentionPolicy{
+      metrics::MetricRetentionPolicy{metrics::MetricRetentionPolicyDefinition{
+          std::string(v.policy_name), std::string(v.scope), v.mode,
+          v.raw_retention_seconds, v.rollup_retention_seconds,
+          {v.rollup_grains.begin(), v.rollup_grains.begin() + v.rollup_grain_count},
+          v.purge_batch_limit, v.max_cardinality, std::string(v.overflow_behavior),
+          std::string(v.edit_right), std::string(v.default_admin_group), v.evidence_required},
+          v.policy_uuid, v.generation}, v.origin_transaction_uuid, v.origin_local_transaction_id}};
 }
 
 bool IsCatalogMetricRetentionPolicyPayload(std::string_view bytes) {
   return bytes.size() >= kCatalogValueBlockHeaderBytes && bytes.substr(0, 4) == "SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16) == 65543;
 }
-bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind != CatalogRecordKind::policy ||
       !Identity(r.header.object_uuid, UuidKind::object)) return false;
-  const auto decoded = DecodeCatalogMetricRetentionPolicy(r.payload);
-  return decoded.ok() && decoded.record->policy.policy_uuid == r.header.object_uuid.value;
+  const auto decoded = DecodeCatalogMetricRetentionPolicyView(r.payload);
+  return decoded.ok() && decoded.record->policy_uuid == r.header.object_uuid.value;
 }
-bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricRetentionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
+}
+bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricRetentionPolicyMatchesHeader(m.record) ||
       m.object_subtype != "metric_retention" ||
       !Identity(m.owning_schema_uuid, UuidKind::schema) ||
@@ -124,25 +153,31 @@ bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m
       !Identity(m.default_name_uuid, UuidKind::object) ||
       !Identity(m.name_vector_uuid, UuidKind::object) ||
       !Identity(m.creator_transaction_uuid, UuidKind::transaction)) return false;
-  const auto decoded = DecodeCatalogMetricRetentionPolicy(m.record.payload);
+  const auto decoded = DecodeCatalogMetricRetentionPolicyView(m.record.payload);
   const auto& r = *decoded.record;
-  const auto scope = r.policy.scope == "cluster" ? CatalogAuthorityScope::cluster : CatalogAuthorityScope::local;
-  return r.policy.generation == m.definition_version && m.authority_scope == scope &&
+  const auto scope = r.scope == "cluster" ? CatalogAuthorityScope::cluster : CatalogAuthorityScope::local;
+  return r.generation == m.definition_version && m.authority_scope == scope &&
       r.origin_local_transaction_id <= m.creator_local_transaction_id &&
       (m.definition_version != 1 ||
        (r.origin_transaction_uuid.value == m.creator_transaction_uuid.value &&
         r.origin_local_transaction_id == m.creator_local_transaction_id));
 }
 bool CatalogMetricRetentionPolicyPreservesOrigin(
-    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+    const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   if (!IsFamily(previous) && !IsFamily(successor)) return true;
   if (!CatalogMetricRetentionPolicyMatchesMetadata(previous) ||
       !CatalogMetricRetentionPolicyMatchesMetadata(successor)) return false;
-  const auto a = DecodeCatalogMetricRetentionPolicy(previous.record.payload);
-  const auto b = DecodeCatalogMetricRetentionPolicy(successor.record.payload);
-  return a.record->policy.policy_uuid == b.record->policy.policy_uuid &&
-      a.record->policy.scope == b.record->policy.scope &&
+  const auto a = DecodeCatalogMetricRetentionPolicyView(previous.record.payload);
+  const auto b = DecodeCatalogMetricRetentionPolicyView(successor.record.payload);
+  return a.record->policy_uuid == b.record->policy_uuid &&
+      a.record->scope == b.record->scope &&
       a.record->origin_transaction_uuid.value == b.record->origin_transaction_uuid.value &&
       a.record->origin_local_transaction_id == b.record->origin_local_transaction_id;
+}
+bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricRetentionPolicyMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricRetentionPolicyPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricRetentionPolicyPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

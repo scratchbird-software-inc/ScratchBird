@@ -66,7 +66,7 @@ void SeriesRoundTrip(const c::CatalogMetricSeries& r) {
   Check(decoded.ok()&&SeriesGolden(*decoded.record,false)==golden,"series canonical decode differs");
   const auto metadata=SeriesMetadata(r);Check(c::CatalogMetricSeriesMatchesMetadata(metadata),"series metadata refused");
   const auto envelope=c::EncodeCatalogMetadataVersion(metadata);Check(envelope.ok(),"series envelope failed");
-  if(envelope.ok()){const auto reread=c::DecodeCatalogMetadataVersion(envelope.bytes);Check(reread.ok()&&reread.record.record.payload==golden,"series envelope reread lost payload");}
+  if(envelope.ok()){const auto reread=CheckedMetadataDecode(envelope.bytes);Check(reread.ok()&&reread.record.record.payload==golden,"series envelope reread lost payload");}
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);Check(typed.ok()&&c::DecodeCatalogTypedRecord(typed.row).ok(),"series typed record failed");
 }
 void SeriesShapes() {
@@ -186,17 +186,55 @@ void SeriesBindings() {
   }
 }
 void SeriesAllocations() {
-  auto r=Series();r.labels[0].value=std::string(512,'v');const auto golden=SeriesGolden(r);
-  for(unsigned operation=0;operation<2;++operation){unsigned injected=0;bool completed=false;
-    for(long index=0;index<2048;++index){descriptor_allocation_fault::remaining=index;descriptor_allocation_fault::fired=false;
-      bool success=false,partial=false;try {
-        if(operation==0){const auto x=c::EncodeCatalogMetricSeries(r);success=x.ok();partial=!success&&!x.bytes.empty();}
-        else {const auto x=c::DecodeCatalogMetricSeries(golden);success=x.ok();partial=!success&&x.record.has_value();}
+  for(unsigned shape=0;shape<3;++shape){
+  auto r=Series();r.labels[0].value=std::string(512,'v');
+  if(shape==1)for(std::size_t i=0;i<r.labels.size();++i)r.labels[i].key=std::string(4096,char('a'+i));
+  if(shape==2)r.labels.clear();
+  const auto golden=SeriesGolden(r);
+  for(unsigned operation=0;operation<2;++operation){
+    struct Attempt { long allocations; bool fired,success,partial,canonical; };
+    const auto run=[&](long budget){
+      c::CatalogValueEncodeResult encoded;
+      c::CatalogMetricSeriesResult decoded;
+      bool returned=false;
+      descriptor_allocation_fault::remaining=budget;descriptor_allocation_fault::fired=false;
+      try {
+        if(operation==0)encoded=c::EncodeCatalogMetricSeries(r);
+        else decoded=c::DecodeCatalogMetricSeries(golden);
+        returned=true;
       }catch(const std::bad_alloc&){}
-      descriptor_allocation_fault::remaining=-1;const bool fired=descriptor_allocation_fault::fired;
-      Check(!partial&&SeriesGolden(r)==golden,"series allocation failure mutated or published partial state");
-      if(fired){++injected;Check(!success,"series allocation failure succeeded");}else{completed=true;Check(success,"series failed recovery");break;}
-    }Check(completed&&injected>10,"series allocation fault sweep incomplete");std::cout<<"series allocation operation="<<operation<<" injected="<<injected<<'\n';
+      const long allocations=budget-descriptor_allocation_fault::remaining;
+      const bool fired=descriptor_allocation_fault::fired;
+      descriptor_allocation_fault::remaining=-1;
+      // Independent oracles run only after accounting/injection has stopped.
+      const bool success=returned&&(operation==0?encoded.ok():decoded.ok());
+      const bool partial=!success&&(operation==0?!encoded.bytes.empty():decoded.record.has_value());
+      const bool canonical=success&&(operation==0?
+          std::string(encoded.bytes.begin(),encoded.bytes.end())==golden:
+          SeriesGolden(*decoded.record,false)==golden);
+      Check(SeriesGolden(r)==golden,"series allocation attempt mutated input");
+      return Attempt{allocations,fired,success,partial,canonical};
+    };
+    const auto measured=run(std::numeric_limits<long>::max());
+    Check(measured.success&&measured.canonical&&!measured.fired&&!measured.partial,
+          "series allocation measurement failed canonical operation");
+    const bool empty_decode=shape==2&&operation==1;
+    Check(measured.allocations>=0&&measured.allocations<2048&&
+          (empty_decode?measured.allocations==0:measured.allocations>0),"series measured allocation bound invalid");
+    if(!measured.success||measured.allocations<0||measured.allocations>=2048)continue;
+    long injected=0;
+    for(long index=0;index<measured.allocations;++index){
+      const auto fault=run(index);
+      Check(fault.fired&&fault.allocations==index,"series measured allocation fault did not fire at exact site");
+      Check(!fault.success&&!fault.partial,"series allocation failure succeeded or published partial state");
+      if(fault.fired)++injected;
+    }
+    const auto recovered=run(measured.allocations);
+    Check(!recovered.fired&&recovered.success&&recovered.canonical&&!recovered.partial&&
+          recovered.allocations==measured.allocations,"series exact allocation boundary failed recovery");
+    Check(injected==measured.allocations,"series allocation fault sweep incomplete");
+    std::cout<<"series allocation shape="<<shape<<" operation="<<operation<<" measured="<<measured.allocations<<" injected="<<injected<<'\n';
+  }
   }
 }
 }

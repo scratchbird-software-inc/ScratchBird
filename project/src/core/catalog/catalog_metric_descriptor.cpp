@@ -3,6 +3,7 @@
 #include "catalog_metric_descriptor.hpp"
 #include "metric_label_key.hpp"
 #include "metric_value_update.hpp"
+#include "metric_descriptor_validation.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <array>
@@ -47,26 +48,27 @@ std::size_t Width(MetricScalarType type) {
     default: return 0;
   }
 }
-bool Valid(const CatalogMetricDescriptor& r) {
+template<class R> bool Valid(const R& r) {
   const auto& d = r.definition;
   if (!MetricDescriptorReferencesValid(d, r.binding) ||
       !Identity(r.origin_transaction_uuid, UuidKind::transaction) || !r.origin_local_transaction_id ||
       !Code(d.type, kClasses) || !Code(d.unit, kUnits) || !Code(d.visibility, kVisibility) ||
-      ValidateMetricScalarDescriptor(d) != MetricScalarError::none ||
-      !ValidateMetricHistogramDescriptor(d) || d.histogram_buckets.size() > 4096 || d.enum_values.size() > 4096 ||
+      metrics::detail::ValidateScalarDescriptor(d) != MetricScalarError::none ||
+      !metrics::detail::ValidateHistogramDescriptor(d) || d.histogram_buckets.size() > 4096 || d.enum_values.size() > 4096 ||
       ((d.type == MetricType::counter || d.type == MetricType::rate) && !Width(d.value_type)) ||
       (d.type == MetricType::state && d.value_type != MetricScalarType::enumeration) ||
       !Text(d.family, 4096) || !Text(d.namespace_path, 4096) || !Text(d.producer_owner, 4096) ||
       !Text(d.help, 16384, true) || !Text(d.security_family, 4096, true) ||
       d.labels.size() > 1024 || d.aliases.size() > 1024) return false;
   if (!MetricNamespaceMatchesScope(d)) return false;
-  for (std::size_t i = 0; i < d.labels.size(); ++i) {
-    if (!Text(d.labels[i].key, 4096) || !Code(d.labels[i].value_type, kLabels)) return false;
-    for (std::size_t j = 0; j < i; ++j) if (d.labels[i].key == d.labels[j].key) return false;
+  for (auto it=d.labels.begin();it!=d.labels.end();++it) {
+    const auto& label=*it;
+    if (!Text(label.key,4096) || !Code(label.value_type,kLabels)) return false;
+    for (auto prior=d.labels.begin();prior!=it;++prior) if (label.key==(*prior).key) return false;
   }
-  for (std::size_t i = 0; i < d.aliases.size(); ++i) {
-    if (!Text(d.aliases[i], 4096)) return false;
-    for (std::size_t j = 0; j < i; ++j) if (d.aliases[i] == d.aliases[j]) return false;
+  for (auto it=d.aliases.begin();it!=d.aliases.end();++it) {
+    if (!Text(*it,4096)) return false;
+    for (auto prior=d.aliases.begin();prior!=it;++prior) if (*it==*prior) return false;
   }
   return true;
 }
@@ -96,15 +98,15 @@ std::optional<MetricScalar> NumericValue(MetricScalarType type, std::span<const 
   }
   return MetricScalarValid(value) ? std::optional<MetricScalar>(std::move(value)) : std::nullopt;
 }
-bool Family(const CatalogMetadataVersion& m) {
+bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind == CatalogRecordKind::metric_descriptor ||
       m.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(m.record.payload);
 }
 }  // namespace
 
-const CatalogValueSchema& CatalogMetricDescriptorSchema() {
-  using T = CatalogValueType;
-  static const CatalogValueSchema schema{65544, 1, {
+namespace {
+using T = CatalogValueType;
+constexpr std::array<CatalogValueFieldSchema,32> kFields{{
       {1,T::engine_identity,true,16,UuidKind::object}, {2,T::unsigned_integer,true,8},
       {3,T::utf8_text,true,4096}, {4,T::utf8_text,true,4096},
       {5,T::unsigned_integer,true,8}, {6,T::unsigned_integer,true,8}, {7,T::unsigned_integer,true,8},
@@ -120,7 +122,10 @@ const CatalogValueSchema& CatalogMetricDescriptorSchema() {
       {27,T::unsigned_integer,true,8}, {28,T::utf8_text,true,4096},
       {29,T::utf8_text_list,true,65536}, {30,T::opaque_bytes,true,1024},
       {31,T::opaque_bytes,true,1024}, {32,T::utf8_text_list,true,16384}
-  }};
+}};
+}
+const CatalogValueSchema& CatalogMetricDescriptorSchema() {
+  static const CatalogValueSchema schema{65544,1,{kFields.begin(),kFields.end()}};
   return schema;
 }
 
@@ -162,17 +167,23 @@ CatalogValueEncodeResult EncodeCatalogMetricDescriptor(const CatalogMetricDescri
   return EncodeCatalogValueBlock(CatalogMetricDescriptorSchema(),fields);
 }
 
-CatalogMetricDescriptorResult DecodeCatalogMetricDescriptor(std::string_view bytes) {
-  if (bytes.size() > kCatalogValueBlockMaxBytes) return {CatalogValueError::size_limit,{}};
-  const auto decoded = DecodeCatalogValueBlock(CatalogMetricDescriptorSchema(),std::vector<byte>(bytes.begin(),bytes.end()));
+metrics::MetricScalar CatalogMetricNumericSequenceView::operator[](std::size_t index) const {
+  const auto width=Width(type_);
+  return *NumericValue(type_,bytes_.subspan(index*width,width));
+}
+CatalogMetricDescriptorViewResult DecodeCatalogMetricDescriptorView(std::string_view bytes) {
+  if (bytes.size()>kCatalogValueBlockMaxBytes) return {CatalogValueError::size_limit,{}};
+  std::array<CatalogValueFieldView,32> backing;
+  const auto decoded=DecodeCatalogValueBlockInto({65544,1,kFields},
+      {reinterpret_cast<const byte*>(bytes.data()),bytes.size()},backing);
   if (!decoded.ok()) return {decoded.error,{}};
-  std::array<const CatalogValue*,33> f{};
-  for (const auto& field : decoded.fields) f[field.id] = &field.value;
-  const auto n = [&](std::size_t id) { return std::get<u64>(*f[id]); };
-  const auto text = [&](std::size_t id) -> const std::string& { return std::get<std::string>(*f[id]); };
-  const auto raw = [&](std::size_t id) -> const std::vector<byte>& { return std::get<std::vector<byte>>(*f[id]); };
-  const auto object = [&](std::size_t id) { return std::get<TypedUuid>(*f[id]).value; };
-  CatalogMetricDescriptor r; auto& d = r.definition; auto& b = r.binding;
+  std::array<const CatalogValueFieldView*,33> f{};
+  for (const auto& field:decoded.fields) f[field.id]=&field;
+  const auto n=[&](std::size_t id){return *f[id]->unsigned_value();};
+  const auto raw=[&](std::size_t id){return f[id]->bytes;};
+  const auto text=[&](std::size_t id){const auto b=raw(id);return std::string_view(reinterpret_cast<const char*>(b.data()),b.size());};
+  const auto object=[&](std::size_t id){return f[id]->identity()->value;};
+  CatalogMetricDescriptorView r; auto& d=r.definition; auto& b=r.binding;
   if (!FromCode(n(5),kClasses,d.type) || !FromCode(n(6),kTypes,d.value_type) ||
       !FromCode(n(7),kUnits,d.unit) || !FromCode(n(27),kVisibility,d.visibility)) return {};
   b.metric_uuid=object(1); b.descriptor_generation=n(2); d.family=text(3); d.namespace_path=text(4);
@@ -180,66 +191,98 @@ CatalogMetricDescriptorResult DecodeCatalogMetricDescriptor(std::string_view byt
   if (f[10]) b.label_schema_uuid=object(10);
   b.label_schema_generation=n(11); b.retention_policy_uuid=object(12); b.retention_policy_generation=n(13);
   b.visibility_policy_uuid=object(14); b.visibility_policy_generation=n(15);
-  for (const auto id : {16,17}) if (!raw(id).empty()) {
+  for (const auto id:{16,17}) if (!raw(id).empty()) {
     auto value=NumericValue(d.value_type,raw(id)); if (!value) return {};
     (id==16?d.min_value:d.max_value)=std::move(value);
   }
-  const auto& bounds=raw(18); if (bounds.size()<4) return {};
+  const auto bounds=raw(18); if (bounds.size()<4) return {};
   const auto count=platform::LoadLittle32(bounds.data()); const auto width=Width(d.value_type);
   if (count>4096 || (count && !width) || bounds.size()!=4+count*width) return {};
-  for (std::size_t i=0;i<count;++i) {
-    auto value=NumericValue(d.value_type,std::span<const byte>(bounds).subspan(4+i*width,width));
-    if (!value) return {};
-    d.histogram_buckets.push_back(std::move(*value));
-  }
-  d.histogram_cumulative=std::get<bool>(*f[19]);
-  const auto& codes=raw(20); if (codes.size()<4) return {};
+  for (std::size_t i=0;i<count;++i)
+    if (!NumericValue(d.value_type,bounds.subspan(4+i*width,width))) return {};
+  d.histogram_buckets=CatalogMetricNumericSequenceView(bounds.subspan(4),d.value_type,count);
+  d.histogram_cumulative=raw(19)[0]!=0;
+  const auto codes=raw(20); if (codes.size()<4) return {};
   const auto code_count=platform::LoadLittle32(codes.data());
   if (code_count>4096 || codes.size()!=4+std::size_t(code_count)*8) return {};
-  for (std::size_t i=0;i<code_count;++i) d.enum_values.push_back(platform::LoadLittle64(codes.data()+4+8*i));
-  d.cluster_only=std::get<bool>(*f[21]); r.origin_transaction_uuid=std::get<TypedUuid>(*f[22]);
+  d.enum_values=CatalogMetricEnumSequenceView(codes.subspan(4));
+  d.cluster_only=raw(21)[0]!=0; r.origin_transaction_uuid=*f[22]->identity();
   r.origin_local_transaction_id=n(23);
   if (f[24]) b.rate_source_counter_uuid=object(24);
   b.rate_source_counter_generation=n(25); d.rate_window_nanoseconds=n(26); d.security_family=text(28);
-  const auto& keys=std::get<std::vector<std::string>>(*f[29]); const auto& flags=raw(30); const auto& types=raw(31);
-  if (keys.size()>1024 || keys.size()!=flags.size() || keys.size()!=types.size()) return {};
-  for (std::size_t i=0;i<keys.size();++i) {
-    MetricLabelType type;
-    if ((flags[i]&~3u) || !FromCode(types[i],kLabels,type)) return {};
-    d.labels.push_back({keys[i],bool(flags[i]&1),bool(flags[i]&2),type});
-  }
-  d.aliases=std::get<std::vector<std::string>>(*f[32]);
+  const auto keys=raw(29),flags=raw(30),types=raw(31);
+  const auto key_count=platform::LoadLittle32(keys.data());
+  if (key_count>1024 || key_count!=flags.size() || key_count!=types.size()) return {};
+  for (std::size_t i=0;i<key_count;++i)
+    if ((flags[i]&~3u) || types[i]<1 || types[i]>3) return {};
+  d.labels=CatalogMetricLabelSequenceView(keys.subspan(4),flags,types);
+  const auto aliases=raw(32); const auto alias_count=platform::LoadLittle32(aliases.data());
+  if (alias_count>1024) return {};
+  d.aliases=CatalogMetricAliasSequenceView(aliases.subspan(4),alias_count);
+  // The common codec has validated every text and list member's strict UTF8.
   if (!Valid(r)) return {};
+  return {CatalogValueError::none,std::move(r)};
+}
+CatalogMetricDescriptorResult DecodeCatalogMetricDescriptor(std::string_view bytes) {
+  const auto decoded=DecodeCatalogMetricDescriptorView(bytes);
+  if (!decoded.ok()) return {decoded.error,{}};
+  const auto& v=*decoded.record; const auto& s=v.definition;
+  CatalogMetricDescriptor r; auto& d=r.definition;
+  r.binding=v.binding; r.origin_transaction_uuid=v.origin_transaction_uuid;
+  r.origin_local_transaction_id=v.origin_local_transaction_id;
+  d.family=s.family; d.namespace_path=s.namespace_path; d.help=s.help;
+  d.producer_owner=s.producer_owner; d.security_family=s.security_family;
+  d.type=s.type; d.unit=s.unit; d.visibility=s.visibility; d.cluster_only=s.cluster_only;
+  d.value_type=s.value_type; d.min_value=s.min_value; d.max_value=s.max_value;
+  d.histogram_cumulative=s.histogram_cumulative; d.rate_window_nanoseconds=s.rate_window_nanoseconds;
+  d.labels.reserve(s.labels.size());
+  for (const auto label:s.labels)
+    d.labels.push_back({std::string(label.key),label.required,label.sensitive,label.value_type});
+  d.aliases.reserve(s.aliases.size());
+  for (const auto alias:s.aliases) d.aliases.emplace_back(alias);
+  d.histogram_buckets.reserve(s.histogram_buckets.size());
+  for (std::size_t i=0;i<s.histogram_buckets.size();++i) d.histogram_buckets.push_back(s.histogram_buckets[i]);
+  d.enum_values.reserve(s.enum_values.size());
+  for (std::size_t i=0;i<s.enum_values.size();++i) d.enum_values.push_back(s.enum_values[i]);
   return {CatalogValueError::none,std::move(r)};
 }
 bool IsCatalogMetricDescriptorPayload(std::string_view bytes) {
   return bytes.size()>=kCatalogValueBlockHeaderBytes && bytes.substr(0,4)=="SBCV" &&
       platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16)==65544;
 }
-bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
+bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecordView& r) {
   if (r.header.kind!=CatalogRecordKind::metric_descriptor || !Identity(r.header.object_uuid,UuidKind::object)) return false;
-  const auto decoded=DecodeCatalogMetricDescriptor(r.payload);
+  const auto decoded=DecodeCatalogMetricDescriptorView(r.payload);
   return decoded.ok() && decoded.record->binding.metric_uuid==r.header.object_uuid.value;
 }
-bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
+bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
+  return CatalogMetricDescriptorMatchesHeader(BorrowCatalogTypedRecord(r));
+}
+bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!="metric_descriptor" ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.record.header.parent_uuid.value!=m.owning_schema_uuid.value ||
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Identity(m.security_policy_uuid,UuidKind::object) || !Identity(m.creator_transaction_uuid,UuidKind::transaction)) return false;
-  const auto decoded=DecodeCatalogMetricDescriptor(m.record.payload); const auto& r=*decoded.record;
+  const auto decoded=DecodeCatalogMetricDescriptorView(m.record.payload); const auto& r=*decoded.record;
   return m.definition_version==r.binding.descriptor_generation && m.security_policy_uuid.value==r.binding.visibility_policy_uuid &&
       m.authority_scope==(r.definition.cluster_only?CatalogAuthorityScope::cluster:CatalogAuthorityScope::local) &&
       r.origin_local_transaction_id<=m.creator_local_transaction_id &&
       (m.definition_version!=1 || (r.origin_transaction_uuid.value==m.creator_transaction_uuid.value &&
                                  r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion& previous,const CatalogMetadataVersion& successor) {
+bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersionView& previous,const CatalogMetadataVersionView& successor) {
   if (!Family(previous) && !Family(successor)) return true;
   if (!CatalogMetricDescriptorMatchesMetadata(previous) || !CatalogMetricDescriptorMatchesMetadata(successor)) return false;
-  const auto a=DecodeCatalogMetricDescriptor(previous.record.payload), b=DecodeCatalogMetricDescriptor(successor.record.payload);
+  const auto a=DecodeCatalogMetricDescriptorView(previous.record.payload), b=DecodeCatalogMetricDescriptorView(successor.record.payload);
   return a.record->binding.metric_uuid==b.record->binding.metric_uuid && a.record->definition.cluster_only==b.record->definition.cluster_only &&
       a.record->origin_transaction_uuid.value==b.record->origin_transaction_uuid.value &&
       a.record->origin_local_transaction_id==b.record->origin_local_transaction_id;
+}
+bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersion& m) {
+  return CatalogMetricDescriptorMatchesMetadata(BorrowCatalogMetadataVersion(m));
+}
+bool CatalogMetricDescriptorPreservesOrigin(const CatalogMetadataVersion& a, const CatalogMetadataVersion& b) {
+  return CatalogMetricDescriptorPreservesOrigin(BorrowCatalogMetadataVersion(a), BorrowCatalogMetadataVersion(b));
 }
 }  // namespace scratchbird::core::catalog

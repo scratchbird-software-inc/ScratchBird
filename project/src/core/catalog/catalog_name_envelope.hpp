@@ -30,6 +30,13 @@ struct CatalogNameEnvelope {
   CatalogNameVersionBinding binding;
   CatalogNamePayload payload;
 };
+// Immutable input owner and its actual grant outlive every structural view.
+// Expected binding still comes from the owning MGA/storage authority.
+using CatalogNamePayloadView = std::variant<CatalogNameVectorView, CatalogNameEntryView>;
+struct CatalogNameEnvelopeView {
+  CatalogNameVersionBinding binding;
+  CatalogNamePayloadView payload;
+};
 enum class CatalogNameEnvelopeError : u8 {
   none, invalid_header, unsupported_format, invalid_identity, invalid_payload,
   binding_mismatch, size_limit
@@ -44,6 +51,14 @@ struct CatalogNameEnvelopeDecodeResult {
   std::optional<CatalogNameEnvelope> record;
   bool ok() const { return error == CatalogNameEnvelopeError::none && record.has_value(); }
 };
+struct CatalogNameEnvelopeViewResult {
+  CatalogNameEnvelopeError error = CatalogNameEnvelopeError::none;
+  std::optional<CatalogNameEnvelopeView> record;
+  bool ok() const { return error == CatalogNameEnvelopeError::none && record.has_value(); }
+};
+CatalogNameEnvelopeViewResult DecodeCatalogNameEnvelopeView(
+    std::span<const byte> bytes, const CatalogNameVersionBinding& expected);
+CatalogNameEnvelope MaterializeCatalogNameEnvelope(const CatalogNameEnvelopeView& record);
 CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvelope& record);
 // expected must come from owning MGA/storage authority, never copied from
 // untrusted envelope bytes to manufacture agreement.

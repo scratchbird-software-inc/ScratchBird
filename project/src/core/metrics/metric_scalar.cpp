@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "metric_scalar.hpp"
+#include "metric_descriptor_validation.hpp"
 #include "metric_registry.hpp"
 #include "sbl_numeric.hpp"
 #include <boost/multiprecision/cpp_int.hpp>
@@ -20,7 +21,7 @@ bool Numeric(MetricScalarType t) noexcept {
   return t >= MetricScalarType::uint64 && t <= MetricScalarType::decimal128;
 }
 template<class T> int Compare(const T& a, const T& b) noexcept { return a < b ? -1 : a > b ? 1 : 0; }
-bool Utf8(const std::string& text) noexcept {
+bool Utf8(std::string_view text) noexcept {
   for (std::size_t i=0; i<text.size();) {
     const auto first=static_cast<unsigned char>(text[i++]);
     if (first<0x80) continue;
@@ -76,26 +77,7 @@ int Decimal128Compare(const MetricDecimal128& a, const MetricDecimal128& b) noex
   }
   return an?-c:c;
 }
-MetricScalar IntegerConstant(MetricScalarType type, unsigned n) {
-  switch(type){
-    case MetricScalarType::uint64:return std::uint64_t(n);
-    case MetricScalarType::int64:return std::int64_t(n);
-    case MetricScalarType::float64:return double(n);
-    case MetricScalarType::float128:{
-      MetricFloat128 value;
-      // The only callers require exactly0 and100. 100 =1.5625 *2^6.
-      if(n){value.bytes[13]=0x90;value.bytes[14]=0x05;value.bytes[15]=0x40;}
-      return value;
-    }
-    case MetricScalarType::decimal128:{
-      MetricDecimal128 value;value.bytes[0]=static_cast<std::uint8_t>(n);
-      const std::uint64_t high=std::uint64_t(6176)<<49;
-      for(unsigned i=0;i<8;++i)value.bytes[i+8]=static_cast<std::uint8_t>(high>>(i*8));
-      return value;
-    }
-    default:return {};
-  }
-}
+using detail::IntegerConstant;
 Big Power(unsigned radix,unsigned exponent) {
   Big value=1,base=radix;
   while(exponent){if(exponent&1)value*=base;exponent>>=1;if(exponent)base*=base;}
@@ -199,6 +181,7 @@ MetricScalarType MetricScalarTypeOf(const MetricScalar& value) noexcept {
     case 9:return MetricScalarType::enumeration;default:return MetricScalarType::invalid;
   }
 }
+bool MetricTextValid(std::string_view text) noexcept { return Utf8(text); }
 bool MetricScalarValid(const MetricScalar& value) noexcept {
   switch(MetricScalarTypeOf(value)){
     case MetricScalarType::uint64:case MetricScalarType::int64:case MetricScalarType::boolean:
@@ -206,7 +189,7 @@ bool MetricScalarValid(const MetricScalar& value) noexcept {
     case MetricScalarType::float64:return std::isfinite(std::get<double>(value));
     case MetricScalarType::float128:{const auto& bytes=std::get<MetricFloat128>(value).bytes;return ((High(bytes)>>48)&0x7fff)!=0x7fff;}
     case MetricScalarType::decimal128:{const auto& v=std::get<MetricDecimal128>(value);return Exponent(v)<=12287&&Coefficient(v)<DecimalLimit();}
-    case MetricScalarType::text:return Utf8(std::get<std::string>(value));
+    case MetricScalarType::text:return MetricTextValid(std::get<std::string>(value));
     case MetricScalarType::uuid:{const auto& v=std::get<MetricUuid>(value);return (v.bytes[8]&0xc0)==0x80&&(v.bytes[6]>>4)>=1&&(v.bytes[6]>>4)<=7;}
     default:return false;
   }
@@ -223,30 +206,9 @@ std::optional<int> CompareMetricScalars(const MetricScalar& a,const MetricScalar
   }
 }
 MetricScalarError ValidateMetricScalarDescriptor(const MetricDescriptorDefinition& d) noexcept {
-  if(d.value_type<MetricScalarType::uint64||d.value_type>MetricScalarType::enumeration)return E::invalid_descriptor;
-  if(d.value_type==MetricScalarType::enumeration){
-    if(d.enum_values.empty())return E::invalid_descriptor;
-    for(std::size_t i=0;i<d.enum_values.size();++i)for(std::size_t j=0;j<i;++j)if(d.enum_values[i]==d.enum_values[j])return E::invalid_descriptor;
-  }else if(!d.enum_values.empty())return E::invalid_descriptor;
-  if(!Numeric(d.value_type)&&(d.min_value||d.max_value||d.unit==MetricUnit::percent))return E::invalid_descriptor;
-  for(const auto* bound:{&d.min_value,&d.max_value})if(*bound&&
-      (MetricScalarTypeOf(**bound)!=d.value_type||!MetricScalarValid(**bound)))return E::invalid_descriptor;
-  if(d.min_value&&d.max_value&&*CompareMetricScalars(*d.min_value,*d.max_value)>0)return E::invalid_descriptor;
-  return E::none;
+  return detail::ValidateScalarDescriptor(d);
 }
 MetricScalarError ValidateMetricObservationScalar(const MetricDescriptorDefinition& d,const MetricScalar& value) noexcept {
-  const auto definition=ValidateMetricScalarDescriptor(d);if(definition!=E::none)return definition;
-  if(MetricScalarTypeOf(value)!=d.value_type)return E::type_mismatch;
-  if(!MetricScalarValid(value))return E::invalid_value;
-  if(d.value_type==MetricScalarType::enumeration){
-    const auto code=std::get<MetricEnumValue>(value).code;
-    for(auto member:d.enum_values)if(member==code)return E::none;
-    return E::out_of_range;
-  }
-  if(d.min_value&&*CompareMetricScalars(value,*d.min_value)<0)return E::out_of_range;
-  if(d.max_value&&*CompareMetricScalars(value,*d.max_value)>0)return E::out_of_range;
-  if(d.unit==MetricUnit::percent&&(*CompareMetricScalars(value,IntegerConstant(d.value_type,0))<0||
-      *CompareMetricScalars(value,IntegerConstant(d.value_type,100))>0))return E::out_of_range;
-  return E::none;
+  return detail::ValidateObservationScalar(d,value);
 }
 }  // namespace scratchbird::core::metrics

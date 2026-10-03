@@ -27,7 +27,7 @@ std::size_t FixedWidth(Type type) {
 bool IdentityType(Type type) {
   return type == Type::engine_identity || type == Type::engine_identity_list;
 }
-bool ValidSchema(const CatalogValueSchema& schema) {
+bool ValidSchema(CatalogValueSchemaView schema) {
   if (!schema.id || !schema.version) return false;
   u16 previous = 0;
   for (const auto& field : schema.fields) {
@@ -75,7 +75,7 @@ bool ValidUtf8(const byte* data, std::size_t size) {
 void Put(std::vector<byte>& bytes, u64 value, unsigned width) {
   for (unsigned i = 0; i < width; ++i) bytes.push_back(static_cast<byte>(value >> (8 * i)));
 }
-u64 Get(const std::vector<byte>& bytes, std::size_t offset, unsigned width) {
+u64 Get(std::span<const byte> bytes, std::size_t offset, unsigned width) {
   u64 value = 0;
   for (unsigned i = 0; i < width; ++i) value |= static_cast<u64>(bytes[offset + i]) << (8 * i);
   return value;
@@ -130,7 +130,7 @@ Error ValueSize(const CatalogValue& value, const CatalogValueFieldSchema& field,
 void PutUuid(std::vector<byte>& bytes, const Uuid& value) {
   bytes.insert(bytes.end(), value.bytes.begin(), value.bytes.end());
 }
-Uuid GetUuid(const std::vector<byte>& bytes, std::size_t offset) {
+Uuid GetUuid(std::span<const byte> bytes, std::size_t offset) {
   Uuid value;
   std::copy_n(bytes.begin() + offset, 16, value.bytes.begin());
   return value;
@@ -139,7 +139,7 @@ Uuid GetUuid(const std::vector<byte>& bytes, std::size_t offset) {
 
 CatalogValueEncodeResult EncodeCatalogValueBlock(
     const CatalogValueSchema& schema, const std::vector<CatalogValueField>& fields) {
-  if (!ValidSchema(schema)) return {Error::invalid_schema, {}};
+  if (!ValidSchema(BorrowCatalogValueSchema(schema))) return {Error::invalid_schema, {}};
   // Validate the entire request before assembling any output.
   std::size_t cursor = 0, total = kCatalogValueBlockHeaderBytes;
   u16 previous = 0;
@@ -207,8 +207,29 @@ CatalogValueEncodeResult EncodeCatalogValueBlock(
   return result;
 }
 
-CatalogValueDecodeResult DecodeCatalogValueBlock(
-    const CatalogValueSchema& schema, const std::vector<byte>& bytes) {
+namespace {
+// One wire admission path. Neither this pass nor borrowed publication allocates.
+// Owning materialization runs only after the entire block has been admitted.
+struct ValidationResult {
+  Error error = Error::none;
+  std::size_t count = 0;
+  bool ok() const { return error == Error::none; }
+};
+template <typename T> bool ValidRegion(std::span<T> region) {
+  if (region.empty()) return true;
+  const auto address = reinterpret_cast<std::uintptr_t>(region.data());
+  return address && address % alignof(T) == 0 &&
+      region.size() <= (std::numeric_limits<std::uintptr_t>::max() - address) / sizeof(T);
+}
+template <typename A, typename B>
+bool Overlap(std::span<A> a, std::span<B> b) {
+  if (a.empty() || b.empty()) return false;
+  const auto x = reinterpret_cast<std::uintptr_t>(a.data());
+  const auto y = reinterpret_cast<std::uintptr_t>(b.data());
+  return x < y + b.size_bytes() && y < x + a.size_bytes();
+}
+ValidationResult ValidateBlock(CatalogValueSchemaView schema, std::span<const byte> bytes) {
+  if (!ValidRegion(schema.fields) || !ValidRegion(bytes)) return {Error::invalid_backing, {}};
   if (!ValidSchema(schema)) return {Error::invalid_schema, {}};
   if (bytes.size() > kCatalogValueBlockMaxBytes) return {Error::size_limit, {}};
   if (bytes.size() < kCatalogValueBlockHeaderBytes ||
@@ -224,7 +245,6 @@ CatalogValueDecodeResult DecodeCatalogValueBlock(
   if (count > schema.fields.size() ||
       count > (bytes.size() - kCatalogValueBlockHeaderBytes) / kFieldHeader)
     return {Error::invalid_framing, {}};
-  CatalogValueDecodeResult result;
   std::size_t offset = kCatalogValueBlockHeaderBytes, cursor = 0;
   u16 previous = 0;
   for (u64 i = 0; i < count; ++i) {
@@ -246,23 +266,19 @@ CatalogValueDecodeResult DecodeCatalogValueBlock(
     if ((fixed && fixed != size) ||
         (field.type == Type::engine_identity_list && size % 16))
       return {Error::invalid_value, {}};
-    CatalogValue value;
     switch (field.type) {
-      case Type::unsigned_integer: value = Get(bytes, offset, 8); break;
+      case Type::unsigned_integer: break;
       case Type::boolean:
         if (bytes[offset] > 1) return {Error::invalid_value, {}};
-        value = bytes[offset] != 0; break;
+        break;
       case Type::utf8_text:
         if (!ValidUtf8(bytes.data() + offset, size)) return {Error::invalid_value, {}};
-        value = std::string(reinterpret_cast<const char*>(bytes.data() + offset), size); break;
-      case Type::opaque_bytes:
-        value = std::vector<byte>(bytes.begin() + offset, bytes.begin() + offset + size); break;
+        break;
+      case Type::opaque_bytes: break;
       case Type::utf8_text_list: {
         if (size < 4) return {Error::invalid_value, {}};
         const auto element_count = Get(bytes, offset, 4);
         if (element_count > (size - 4) / 4) return {Error::invalid_value, {}};
-        std::vector<std::string> values;
-        values.reserve(static_cast<std::size_t>(element_count));
         std::size_t current = offset + 4;
         const std::size_t end = offset + size;
         for (u64 n = 0; n < element_count; ++n) {
@@ -271,38 +287,120 @@ CatalogValueDecodeResult DecodeCatalogValueBlock(
           current += 4;
           if (length > end - current || !ValidUtf8(bytes.data() + current, length))
             return {Error::invalid_value, {}};
-          values.emplace_back(reinterpret_cast<const char*>(bytes.data() + current),
-                              static_cast<std::size_t>(length));
           current += static_cast<std::size_t>(length);
         }
         if (current != end) return {Error::invalid_value, {}};
-        value = std::move(values);
         break;
       }
       case Type::engine_identity: {
         TypedUuid identity{field.identity_kind, GetUuid(bytes, offset)};
         if (!ValidIdentity(identity, field.identity_kind)) return {Error::invalid_value, {}};
-        value = identity; break;
+        break;
       }
-      case Type::user_uuid_data: value = GetUuid(bytes, offset); break;
+      case Type::user_uuid_data: break;
       case Type::engine_identity_list: {
-        std::vector<TypedUuid> identities;
-        identities.reserve(size / 16);
         for (std::size_t n = 0; n < size; n += 16) {
           TypedUuid identity{field.identity_kind, GetUuid(bytes, offset + n)};
           if (!ValidIdentity(identity, field.identity_kind)) return {Error::invalid_value, {}};
-          identities.push_back(identity);
         }
-        value = std::move(identities); break;
+        break;
       }
     }
-    result.fields.push_back({id, std::move(value)});
     offset += size;
     previous = id;
   }
   if (offset != bytes.size()) return {Error::invalid_framing, {}};
   while (cursor < schema.fields.size())
     if (schema.fields[cursor++].required) return {Error::missing_field, {}};
+  return {Error::none, static_cast<std::size_t>(count)};
+}
+
+template <typename Emit>
+void PublishFields(CatalogValueSchemaView schema, std::span<const byte> bytes,
+                   std::size_t count, Emit emit) {
+  std::size_t offset = kCatalogValueBlockHeaderBytes, cursor = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto id = static_cast<u16>(Get(bytes, offset, 2));
+    const auto size = static_cast<std::size_t>(Get(bytes, offset + 4, 4));
+    while (schema.fields[cursor].id < id) ++cursor;
+    const auto& field = schema.fields[cursor++];
+    offset += kFieldHeader;
+    emit(i, CatalogValueFieldView{id, field.type, field.identity_kind, bytes.subspan(offset, size)});
+    offset += size;
+  }
+}
+
+CatalogValue MaterializeField(const CatalogValueFieldView& f) {
+  switch (f.type) {
+    case Type::unsigned_integer: return Get(f.bytes, 0, 8);
+    case Type::boolean: return f.bytes[0] != 0;
+    case Type::utf8_text:
+      return std::string(reinterpret_cast<const char*>(f.bytes.data()), f.bytes.size());
+    case Type::opaque_bytes: return std::vector<byte>(f.bytes.begin(), f.bytes.end());
+    case Type::engine_identity: return TypedUuid{f.identity_kind, GetUuid(f.bytes, 0)};
+    case Type::user_uuid_data: return GetUuid(f.bytes, 0);
+    case Type::engine_identity_list: {
+      std::vector<TypedUuid> values;
+      values.reserve(f.bytes.size() / 16);
+      for (std::size_t n = 0; n < f.bytes.size(); n += 16)
+        values.push_back({f.identity_kind, GetUuid(f.bytes, n)});
+      return values;
+    }
+    case Type::utf8_text_list: {
+      const auto count = Get(f.bytes, 0, 4);
+      std::vector<std::string> values;
+      values.reserve(static_cast<std::size_t>(count));
+      std::size_t offset = 4;
+      for (u64 n = 0; n < count; ++n) {
+        const auto length = static_cast<std::size_t>(Get(f.bytes, offset, 4));
+        offset += 4;
+        values.emplace_back(reinterpret_cast<const char*>(f.bytes.data() + offset), length);
+        offset += length;
+      }
+      return values;
+    }
+  }
+  // Unreachable for the fully validated fields produced by PublishFields.
+  std::terminate();
+}
+}  // namespace
+
+std::optional<u64> CatalogValueFieldView::unsigned_value() const noexcept {
+  if (type != Type::unsigned_integer || bytes.size() != 8 || !ValidRegion(bytes)) return {};
+  return Get(bytes, 0, 8);
+}
+std::optional<TypedUuid> CatalogValueFieldView::identity() const noexcept {
+  if (type != Type::engine_identity || bytes.size() != 16 || !ValidRegion(bytes) ||
+      !uuid::IsDurableEngineIdentityKind(identity_kind)) return {};
+  TypedUuid value{identity_kind, GetUuid(bytes, 0)};
+  if (!ValidIdentity(value, identity_kind)) return {};
+  return value;
+}
+
+CatalogValueDecodeViewResult DecodeCatalogValueBlockInto(
+    CatalogValueSchemaView schema, std::span<const byte> bytes,
+    std::span<CatalogValueFieldView> backing) {
+  const auto validation = ValidateBlock(schema, bytes);
+  if (!validation.ok()) return {validation.error, {}};
+  if (!ValidRegion(backing) || backing.size() < validation.count ||
+      Overlap(backing, bytes) || Overlap(backing, schema.fields))
+    return {Error::invalid_backing, {}};
+  PublishFields(schema, bytes, validation.count,
+      [&](std::size_t i, CatalogValueFieldView field) { backing[i] = field; });
+  return {Error::none, backing.first(validation.count)};
+}
+
+CatalogValueDecodeResult DecodeCatalogValueBlock(
+    const CatalogValueSchema& schema, const std::vector<byte>& bytes) {
+  const auto view = BorrowCatalogValueSchema(schema);
+  const auto validation = ValidateBlock(view, bytes);
+  if (!validation.ok()) return {validation.error, {}};
+  CatalogValueDecodeResult result;
+  result.fields.reserve(validation.count);
+  PublishFields(view, bytes, validation.count,
+      [&](std::size_t, const CatalogValueFieldView& field) {
+        result.fields.push_back({field.id, MaterializeField(field)});
+      });
   return result;
 }
 }  // namespace scratchbird::core::catalog

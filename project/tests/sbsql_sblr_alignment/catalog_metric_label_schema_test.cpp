@@ -56,7 +56,7 @@ void LabelRoundTrip(const c::CatalogMetricLabelSchema& r) {
   Check(c::CatalogMetricLabelSchemaMatchesMetadata(metadata),"valid label schema common binding refused");
   const auto envelope=c::EncodeCatalogMetadataVersion(metadata);Check(envelope.ok(),"label schema native envelope refused");
   if(envelope.ok()){
-    const auto reread=c::DecodeCatalogMetadataVersion(envelope.bytes);
+    const auto reread=CheckedMetadataDecode(envelope.bytes);
     Check(reread.ok()&&reread.record.record.payload==golden,"label schema envelope lost payload");
   }
   const auto typed=c::EncodeCatalogTypedRecord(metadata.record,3);
@@ -170,7 +170,7 @@ void LabelBinding() {
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);
     std::array<unsigned char,32> hash{};SHA256(bytes.data(),bytes.size(),hash.data());std::copy(hash.begin(),hash.end(),bytes.begin()+320);
-    Check(!c::DecodeCatalogMetadataVersion(bytes).ok(),"rehash bypassed label schema binding");
+    Check(!CheckedMetadataDecode(bytes).ok(),"rehash bypassed label schema binding");
   }
   for(unsigned which=0;which<3;++which){auto r=initial.record;
     if(which==0)r.header.kind=c::CatalogRecordKind::metric_descriptor;
@@ -201,23 +201,48 @@ void LabelDescriptorMatching() {
   Check(!c::CatalogMetricLabelSchemaMatchesDescriptor(empty,descriptor.definition,descriptor.binding),"absent reference substituted with empty schema");
 }
 void LabelAllocationFailures() {
-  auto schema=LabelSchema();schema.labels[0].key=std::string(256,'k');const auto golden=LabelGolden(schema);
+  auto r=LabelSchema();r.labels[0].key=std::string(256,'k');const auto golden=LabelGolden(r);
   for(unsigned operation=0;operation<2;++operation){
-    unsigned injected=0;bool completed=false;
-    for(long index=0;index<2048;++index){
-      descriptor_allocation_fault::remaining=index;descriptor_allocation_fault::fired=false;
-      bool success=false,partial=false;
-      try{
-        if(operation==0){const auto r=c::EncodeCatalogMetricLabelSchema(schema);success=r.ok();partial=!success&&!r.bytes.empty();}
-        else{const auto r=c::DecodeCatalogMetricLabelSchema(golden);success=r.ok();partial=!success&&r.record.has_value();}
+    struct Attempt { long allocations; bool fired,success,partial,canonical; };
+    const auto run=[&](long budget){
+      c::CatalogValueEncodeResult encoded;
+      c::CatalogMetricLabelSchemaResult decoded;
+      bool returned=false;
+      descriptor_allocation_fault::remaining=budget;descriptor_allocation_fault::fired=false;
+      try {
+        if(operation==0)encoded=c::EncodeCatalogMetricLabelSchema(r);
+        else decoded=c::DecodeCatalogMetricLabelSchema(golden);
+        returned=true;
       }catch(const std::bad_alloc&){}
-      descriptor_allocation_fault::remaining=-1;const bool fired=descriptor_allocation_fault::fired;
-      Check(!partial&&LabelGolden(schema)==golden,"label schema allocation failure mutated or partially published");
-      if(fired){++injected;Check(!success,"label schema allocation failure succeeded");}
-      else{completed=true;Check(success,"label schema failed allocation recovery");break;}
+      const long allocations=budget-descriptor_allocation_fault::remaining;
+      const bool fired=descriptor_allocation_fault::fired;
+      descriptor_allocation_fault::remaining=-1;
+      // Independent oracles run only after accounting/injection has stopped.
+      const bool success=returned&&(operation==0?encoded.ok():decoded.ok());
+      const bool partial=!success&&(operation==0?!encoded.bytes.empty():decoded.record.has_value());
+      const bool canonical=success&&(operation==0?
+          std::string(encoded.bytes.begin(),encoded.bytes.end())==golden:
+          LabelGolden(*decoded.record)==golden);
+      Check(LabelGolden(r)==golden,"label schema allocation attempt mutated input");
+      return Attempt{allocations,fired,success,partial,canonical};
+    };
+    const auto measured=run(std::numeric_limits<long>::max());
+    Check(measured.success&&measured.canonical&&!measured.fired&&!measured.partial,
+          "label schema allocation measurement failed canonical operation");
+    Check(measured.allocations>0&&measured.allocations<2048,"label schema measured allocation bound invalid");
+    if(!measured.success||measured.allocations<=0||measured.allocations>=2048)continue;
+    long injected=0;
+    for(long index=0;index<measured.allocations;++index){
+      const auto fault=run(index);
+      Check(fault.fired&&fault.allocations==index,"label schema measured allocation fault did not fire at exact site");
+      Check(!fault.success&&!fault.partial,"label schema allocation failure succeeded or published partial state");
+      if(fault.fired)++injected;
     }
-    Check(completed&&injected>10,"label schema allocation sites not reached");
-    std::cout<<"label schema allocation operation="<<operation<<" injected="<<injected<<'\n';
+    const auto recovered=run(measured.allocations);
+    Check(!recovered.fired&&recovered.success&&recovered.canonical&&!recovered.partial&&
+          recovered.allocations==measured.allocations,"label schema exact allocation boundary failed recovery");
+    Check(injected==measured.allocations,"label schema allocation fault sweep incomplete");
+    std::cout<<"label schema allocation operation="<<operation<<" measured="<<measured.allocations<<" injected="<<injected<<'\n';
   }
 }
 }
