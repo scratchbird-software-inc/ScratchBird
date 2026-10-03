@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_allocation_map.hpp"
+#include "disk_device.hpp"
 
 namespace scratchbird::storage::database {
 using core::platform::Uuid;
@@ -61,6 +62,27 @@ NativeManagementControlBundleViewRead DecodeNativeManagementControlBundleInto(
   std::span<const std::span<const byte>>,const NativeManagementControlBundleRoot&,
   const Uuid& database,const Uuid& bootstrap,u64 budget,std::span<byte> backing) noexcept;
 
+
+enum class NativeManagementControlReadContext {current,historical_before,historical_result};
+struct NativeManagementControlBundleDeviceRead {
+  NativeManagementControlBundleViewRead bundle;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return bundle.ok();}
+};
+// Complete current or explicitly retained historical observation, not selection
+// or recovery authority. The caller supplies backing and a batch bound to the
+// exact device. Construct that batch before every enclosing source fence and
+// retain it until all such fences release. This function holds the device guard
+// throughout its complete read but does not flush the caller's observations.
+// Retain the actual last I/O status/diagnostic and all transferred bytes even
+// when validation fails. These observations do not authorize physical effects.
+NativeManagementControlBundleDeviceRead ReadNativeManagementControlBundleInto(
+  const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
+  const Uuid& database,const Uuid& bootstrap,u64 budget,NativeManagementControlReadContext,
+  std::span<const byte> retained_page_zero,disk::FileDevice::ReadLatencyBatch&,
+  std::span<byte> backing) noexcept;
 // Complete immutable reconstruction input; not physical allocation, history,
 // selection, kernel authorization or operation completion authority.
 NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(

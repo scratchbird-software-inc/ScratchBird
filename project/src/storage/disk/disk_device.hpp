@@ -201,6 +201,8 @@ class FileDevice {
     ReadLatencyBatch(const ReadLatencyBatch&) = delete;
     ReadLatencyBatch& operator=(const ReadLatencyBatch&) = delete;
     ~ReadLatencyBatch();
+    // Immutable observation-route binding, never storage permission.
+    const FileDevice& device() const noexcept { return device_; }
     IoResult ReadAt(u64 offset, void* buffer, usize bytes);
    private:
     friend class FileDevice;

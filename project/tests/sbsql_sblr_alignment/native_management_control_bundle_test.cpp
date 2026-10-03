@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_bundle.hpp"
+#include "native_management_control_bundle_memory.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_history.hpp"
@@ -23,6 +24,7 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#include <mutex>
 #include <source_location>
 #include <set>
 #include <stdexcept>
@@ -35,6 +37,15 @@ unsigned entropy_fault=0,entropy_calls=0;
 unsigned preallocation_fault=0,preallocation_calls=0;
 int preallocation_fd=-1;off_t preallocation_offset=0,preallocation_bytes=0;
 unsigned preallocation_death=0;
+std::recursive_mutex* memory_probe_mutex=nullptr;
+bool memory_probe_backing_only=false;
+unsigned memory_probes=0,memory_locked_probes=0;
+void ProbeMemoryFence(bool backing=false){
+ if(memory_probe_backing_only&&!backing)return;
+ auto* mutex=memory_probe_mutex;if(!mutex)return;memory_probe_mutex=nullptr;
+ bool available=false;std::thread probe([&]{available=mutex->try_lock();if(available)mutex->unlock();});probe.join();
+ ++memory_probes;if(!available)++memory_locked_probes;memory_probe_mutex=mutex;
+}
 std::atomic<unsigned> preallocation_pause{0};
 off_t growth_extend_to=0;
 std::atomic<unsigned> historical_read_pause{0};
@@ -49,19 +60,20 @@ bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_faul
 int inventory_allocation_route=-1,inventory_allocation_shard=-1,inventory_install_stage=-1,inventory_install_route=-1,inventory_install_shard=-1;bool inventory_read_only=false;bool inventory_publication_mode=false,inventory_publication_cold=false;const unsigned char* replacement_bytes=nullptr;std::size_t replacement_length=0;off_t replacement_offset=0;unsigned replacement_at=0,replacement_seen=0;
 int inventory_resolution_stage=-1,inventory_resolution_route=-1,inventory_resolution_shard=-1;bool inventory_mixed_mode=false,inventory_resolution_mode=false,inventory_resolution_requests=false,inventory_reconstruction_faults=false,trace_io=false;std::array<off_t,256> io_trace{};unsigned io_trace_count=0;const unsigned char* race_bytes=nullptr;std::size_t race_length=0;off_t race_offset=0;unsigned race_seen=0;
 void Trace(off_t value){if(trace_io){if(io_trace_count==io_trace.size())std::abort();io_trace[io_trace_count++]=value;}}}
-void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void* operator new(std::size_t n){ProbeMemoryFence();if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void* operator new(std::size_t n,std::align_val_t alignment){
+ ProbeMemoryFence(true);
  if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
  const auto a=static_cast<std::size_t>(alignment);n=n?n:1;
  if(n>std::numeric_limits<std::size_t>::max()-(a-1))throw std::bad_alloc();
  if(auto* p=std::aligned_alloc(a,(n+a-1)/a*a))return p;throw std::bad_alloc();
 }
 void* operator new[](std::size_t n,std::align_val_t a){return ::operator new(n,a);}
-void operator delete(void* p,std::align_val_t) noexcept{std::free(p);}
-void operator delete[](void* p,std::align_val_t) noexcept{std::free(p);}
-void operator delete(void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
-void operator delete[](void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
+void operator delete(void* p,std::align_val_t) noexcept{ProbeMemoryFence(true);std::free(p);}
+void operator delete[](void* p,std::align_val_t) noexcept{ProbeMemoryFence(true);std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept{ProbeMemoryFence(true);std::free(p);}
+void operator delete[](void* p,std::size_t,std::align_val_t) noexcept{ProbeMemoryFence(true);std::free(p);}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count){++entropy_calls;if(entropy_fault&&!--entropy_fault)return 0;if(repeated_entropy){std::fill_n(out,count,0);if(count)out[count-1]=1;return 1;}return __real_RAND_bytes(out,count);}
 extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
@@ -71,8 +83,8 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
  result.value={{owned_clock_ticks++},{static_cast<std::int64_t>(owned_clock_millis/1000),static_cast<std::uint32_t>((owned_clock_millis%1000)*1000000)}};
  return result;
 }
-void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
-void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
+void operator delete(void* p) noexcept{ProbeMemoryFence();std::free(p);}void operator delete[](void* p) noexcept{ProbeMemoryFence();std::free(p);}
+void operator delete(void* p,std::size_t) noexcept{ProbeMemoryFence();std::free(p);}void operator delete[](void* p,std::size_t) noexcept{ProbeMemoryFence();std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
@@ -377,6 +389,135 @@ void BoundedBundleChecks(const Pages& pages,const db::NativeManagementControlBun
   Check(consumed&&r.error==Error::hash_failure,"every bounded provider failure retains its exact error under heap denial");EmptyView(r);
  }
 }
+
+namespace memory=scratchbird::core::memory;
+struct BundleMemoryFixture {
+ memory::MemoryManager manager;
+ memory::HierarchicalMemoryBudgetLedger ledger{3,5};
+ db::NativeStorageMemoryBinding binding{Id(1),Id(60001),Id(60002),Id(60003)};
+ db::NativeStorageMemory memory;
+ static auto Policy(){auto p=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  p.hard_limit_bytes=p.per_context_limit_bytes=256ULL*1024*1024;return p;}
+ explicit BundleMemoryFixture(u64 bytes):manager(Policy()){
+  namespace m=scratchbird::core::memory;
+  m::ReservationBackedMemoryResourceRequest request;request.memory_manager=&manager;request.reservation_ledger=&ledger;
+  request.consumer_kind=m::ReservationBackedMemoryConsumerKind::background_maintenance;
+  request.category=m::MemoryCategory::page_buffer;request.requested_bytes=bytes;request.memory_class="page_buffer";
+  request.route_label="storage.control-bundle.conformance";request.purpose="complete native control bundle source";
+  request.binary_operation_uuid=binding.operation_uuid.bytes;
+  request.binary_ownership[m::MemoryBinaryScopeKind::database]=binding.database_uuid.bytes;
+  request.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner_uuid.bytes;
+  request.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context_uuid.bytes;
+  request.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},Id(60004).bytes},
+    {m::HierarchicalMemoryScopeKind::database,{},binding.database_uuid.bytes}};
+  request.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+  request.provenance.source_label="actual bundle backing conformance";
+  for(const auto& scope:request.scope_chain){m::HierarchicalMemoryBudget budget;budget.scope=scope;
+   budget.hard_limit_bytes=bytes;budget.provenance=request.provenance;Check(ledger.SetBudget(budget).ok(),"actual parent memory limit");}
+  auto grant=m::AcquireReservationBackedMemoryResource(request);Check(grant.ok(),"actual bundle grant issued");
+  auto adopted=db::AdoptNativeStorageMemory(binding,grant.resource);Check(adopted.ok()&&!grant.resource,"exclusive binary-bound bundle memory adoption");
+  memory=std::move(adopted.memory);
+ }
+ void Empty(){const auto state=manager.Snapshot();Check(!state.current_bytes&&!state.reserved_capacity_bytes&&
+  !state.active_capacity_reservation_count&&!ledger.Snapshot().current_bytes,"all bundle memory charges released");}
+};
+void BundleDeviceMemoryChecks(const d::NativeFilespaceDevice& file,const db::NativeManagementControlBundleRoot& root,
+ const Uuid& bootstrap,u64 allowance,const Pages& input,db::NativeManagementControlReadContext context,
+ const Bytes& historical,const std::filesystem::path& path,bool deep){
+ using C=db::NativeManagementControlReadContext;using E=db::NativeManagementControlBundleError;
+ using M=db::NativeManagementControlBundleMemoryError;
+ const auto expected=context==C::current?db::ReadNativeManagementControlBundleFromOpenDevice(file,root,Id(1),bootstrap,allowance):
+  context==C::historical_before?db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(file,root,Id(1),bootstrap,historical,allowance):
+  db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(file,root,Id(1),bootstrap,historical,allowance);
+ Check(expected.ok(),"complete actual source for governed read");
+ BundleBacking backing(input);const auto capacity=backing.bytes.size();
+ const auto direct=[&](std::span<byte> region){
+  d::FileDevice::ReadLatencyBatch observations(*file.device);
+  allocation_budget=0;const auto r=db::ReadNativeManagementControlBundleInto(file,root,Id(1),bootstrap,allowance,context,historical,observations,region);
+  const bool untouched=allocation_budget==0;allocation_budget=-1;Check(untouched,"actual bundle image metadata and scratch have no process allocation");return r.bundle;
+ };
+ const auto full=direct(backing.bytes);SameView(expected,full,backing.bytes);
+ SameView(expected,direct(std::span(backing.bytes).first(full.backing_bytes_used)),backing.bytes);
+ const auto short_backing=direct(std::span(backing.bytes).first(full.backing_bytes_used-1));
+ Check(short_backing.error==E::resource_exhausted,"one byte short complete read backing refuses");EmptyView(short_backing);
+ {d::FileDevice foreign;d::FileDevice::ReadLatencyBatch observations(foreign);reads=0;io_counting=true;
+  const auto wrong=db::ReadNativeManagementControlBundleInto(file,root,Id(1),bootstrap,allowance,context,historical,observations,backing.bytes);
+  io_counting=false;Check(wrong.bundle.error==E::invalid_request&&!reads&&!wrong.physical_bytes_read,"foreign observation route cannot supply actual reads");EmptyView(wrong.bundle);}
+ BundleMemoryFixture f(capacity);const db::NativeManagementControlBundleMemoryLimits limits{allowance,capacity};
+ const auto call=[&](const db::NativeStorageMemoryBinding& binding){
+  return db::ReadNativeManagementControlBundleWithMemoryFromOpenDevice(file,root,Id(1),bootstrap,limits,f.memory,binding,context,historical);};
+ const auto failed=[&](const auto& r){Check(!r.ok()&&!r.arena,"failed source has no owner or prefix");EmptyView(r.bundle);};
+ std::recursive_mutex* mutex=nullptr;{auto fence=file.device->AcquireOperationGuard();mutex=fence.mutex();}
+ memory_probes=memory_locked_probes=0;if(deep)memory_probe_mutex=mutex;
+ auto result=call(f.binding);memory_probe_mutex=nullptr;Check(result.ok(),"actual shared grant backs complete source read");
+ const auto page_bytes=d::FindCanonicalFilespacePageProfile(file.page_size_profile_uuid)->page_size_bytes;
+ const auto physical_bytes=(root.page_count+1)*page_bytes+(context==C::current?4096:0);
+ Check(result.io_status.ok()&&result.physical_bytes_read==physical_bytes,"complete actual physical read accounting");
+ if(deep)Check(memory_probes&&!memory_locked_probes,"all observed allocation cleanup and telemetry control work occurs outside read fence");
+ const auto first=static_cast<const byte*>(result.bundle.allocation_images.front().data());
+ // The retained image is inside one real charged arena; use its independently
+ // allocated region via the first payload address and all ledger dimensions.
+ Check(first&&f.manager.Snapshot().current_bytes==capacity&&f.ledger.Snapshot().current_bytes==capacity&&
+  f.memory.Snapshot().allocated_bytes==capacity&&result.arena.Snapshot().retained_bytes==capacity,
+  "every actual memory ledger retains complete backing");
+ Check(result.bundle.total_pages==expected.total_pages&&result.bundle.allocation_images.size()==expected.allocation_images.size(),
+  "governed source has complete expected capacity and images");
+ const auto same_images=[&](const auto& a,const auto& b){Check(a.size()==b.size(),"actual grant retains whole image family");
+  for(std::size_t i=0;i<a.size();++i)Check(std::equal(a[i].begin(),a[i].end(),b[i].begin(),b[i].end()),"actual grant retains all original image bytes");};
+ same_images(expected.allocation_images,result.bundle.allocation_images);same_images(expected.inventory_images,result.bundle.inventory_images);
+ same_images(expected.directory_images,result.bundle.directory_images);same_images(expected.growth_images,result.bundle.growth_images);
+ reads=0;io_counting=true;auto exhausted=call(f.binding);io_counting=false;failed(exhausted);
+ Check(exhausted.error==M::memory_allocation_failure&&!reads,"held backing prevents an uncharged second reader");
+ for(unsigned field=0;field<4;++field){auto wrong=f.binding;const std::array<Uuid*,4> values{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+  *values[field]=Id(60009);reads=0;io_counting=true;const auto refused=call(wrong);io_counting=false;failed(refused);
+  Check(refused.error==M::memory_binding_failure&&!reads,"all four binary owner fields checked before I/O");}
+ if(deep){
+  Check(file.device->Close().ok(),"close source while complete backing remains retained");
+  for(std::size_t i=0;i<expected.growth_images.size();++i)Check(std::equal(expected.growth_images[i].begin(),expected.growth_images[i].end(),
+   result.bundle.growth_images[i].begin(),result.bundle.growth_images[i].end()),"closed source cannot invalidate retained growth bytes");
+  Check(file.device->Open(path.string(),d::FileOpenMode::open_existing).ok(),"reopen actual source after retained read");
+ }
+ Check(f.ledger.CleanupOwner(f.binding.owner_uuid.bytes).retained_bytes==capacity,"revocation retains live source backing");
+ reads=0;io_counting=true;auto revoked=call(f.binding);io_counting=false;failed(revoked);
+ Check(revoked.error==M::memory_binding_failure&&!reads,"revoked resource refuses new source I/O");
+ f.memory={};Check(f.manager.Snapshot().current_bytes==capacity,"result owns backing independently of memory workspace");
+ if(deep)memory_probe_mutex=mutex;result={};memory_probe_mutex=nullptr;
+ if(deep)Check(!memory_locked_probes,"final source backing cleanup is outside device guard");f.Empty();
+ if(!deep)return;
+ BundleMemoryFixture valid(capacity);
+ const auto read=[&]{return db::ReadNativeManagementControlBundleWithMemoryFromOpenDevice(file,root,Id(1),bootstrap,
+   limits,valid.memory,valid.binding,context,historical);};
+ reads=0;io_counting=true;{const auto r=read();Check(r.ok(),"actual read failure sweep baseline");}io_counting=false;const auto sites=reads;
+ // Backend error diagnostics have their own provider accounting contract.
+ // Here probe the actual aligned backing lifetime, not those transient strings.
+ memory_probe_backing_only=true;
+ for(unsigned site=1;site<=sites;++site){reads=0;read_fault=site;io_counting=true;memory_probe_mutex=mutex;
+  const auto r=read();memory_probe_mutex=nullptr;io_counting=false;read_fault=0;failed(r);
+  Check(r.bundle_error==E::io_failure&&!valid.manager.Snapshot().current_bytes&&!memory_locked_probes,
+   "every actual read failure releases backing after its fence");
+  const auto completed=site-1;
+  const auto bytes=completed?context==C::current?4096+(completed-1)*u64{page_bytes}:completed*u64{page_bytes}:0;
+  Check(!r.io_status.ok()&&r.physical_bytes_read==bytes&&
+   r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT",
+   "actual read failure preserves backend status diagnostic and completed bytes");}
+#ifdef NATIVE_HISTORICAL_BUNDLE_SIZE_FAULTS
+ historical_stats=0;historical_stat_counting=true;
+ {const auto r=read();Check(r.ok(),"actual extent observation baseline");}
+ historical_stat_counting=false;const auto extent_sites=historical_stats;
+ Check(extent_sites==2,"both real extent observations retained");
+ for(unsigned site=1;site<=extent_sites;++site){historical_stats=0;historical_stat_fault=site;historical_stat_counting=true;
+  const auto r=read();historical_stat_counting=false;historical_stat_fault=0;failed(r);
+  const auto bytes=context==C::current?4096+(site==2?u64{page_bytes}:0):(site==2?physical_bytes:0);
+  Check(r.bundle_error==E::io_failure&&!r.io_status.ok()&&r.physical_bytes_read==bytes&&
+   r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-SIZE-FAILED"&&!valid.manager.Snapshot().current_bytes,
+   "every actual extent failure retains typed diagnostic and prior reads without a payload prefix");}
+#endif
+ memory_probe_backing_only=false;
+ BundleMemoryFixture small(capacity-1);reads=0;io_counting=true;
+ auto refused=db::ReadNativeManagementControlBundleWithMemoryFromOpenDevice(file,root,Id(1),bootstrap,limits,small.memory,small.binding,context,historical);
+ io_counting=false;failed(refused);Check(refused.error==M::memory_allocation_failure&&!reads,"one byte short real grant refuses before reads");
+ small.memory={};small.Empty();valid.memory={};valid.Empty();
+}
 d::NativePageReference Self(const d::NativeCommonPageHeader& h){return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
 Bytes MapOracle(const page::NativeAllocationMap& m) {
   Bytes b(m.header.page_size_bytes, 0); const auto& h = m.header;
@@ -605,6 +746,12 @@ void GrowthBundle(unsigned primary,unsigned secondary,bool reverse,int growing){
  if(!growing){Empty(b.Read());const byte tail=0;Check(f.device.WriteAt(260*f.size-1,&tail,1).ok(),"fixture grown extent");
    Empty(b.Read());Check(f.device.WriteAt(0,b.growth_images[1].data(),b.growth_images[1].size()).ok()&&f.device.Sync().ok(),"fixture complete after metadata");}
  good(b.Read());good(historical());good(historical_result());
+ for(const auto context:{db::NativeManagementControlReadContext::current,db::NativeManagementControlReadContext::historical_before,
+     db::NativeManagementControlReadContext::historical_result}){
+   const Bytes retained=context==db::NativeManagementControlReadContext::current?Bytes{}:
+     context==db::NativeManagementControlReadContext::historical_before?old_primary:growing?old_primary:b.growth_images[1];
+   BundleDeviceMemoryChecks(f.devices.front(),b.root,b.zero.page_uuid,b.Budget(),b.pages,context,retained,f.path,primary==secondary&&!reverse);
+ }
  Empty(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,growing?old_primary:b.growth_images[1],b.Budget()-1));
  {const auto& raw=growing?old_primary:b.growth_images[1];const auto decoded=d::DecodeFilespacePageZero(raw.data(),raw.size());Check(decoded.ok(),"historical result context fixture");
   for(unsigned field=0;field<3;++field){auto wrong=*decoded.record;if(!field)++wrong.page_generation;if(field==1)++wrong.root_set_generation;if(field==2)--wrong.free_pages;
@@ -1560,6 +1707,7 @@ void MixedDirectoryBundle(unsigned primary,unsigned secondary,bool reverse){
  BoundedBundleChecks(b.pages,b.root,Id(1),b.zero.page_uuid,b.Budget());
  const auto original_zero=f.Read(0);
  const auto encoded=b.Encode();Check(encoded.ok()&&encoded.root==b.root&&encoded.pages==b.pages,"independent complete version3 framing bytes and full hashes");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"mixed bundle exact checked allowance");Empty(short_budget);b.Install();b.Good(b.Read());
+ BundleDeviceMemoryChecks(f.devices.front(),b.root,b.zero.page_uuid,b.Budget(),b.pages,db::NativeManagementControlReadContext::current,{},f.path,primary==secondary&&!reverse);
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),b.zero.page_uuid,original_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"mixed bundle actual read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"mixed bundle close before independent process");
@@ -3423,6 +3571,7 @@ void InventoryBundle(unsigned profile){
  InventoryPlan(g,b);
  const auto historical_zero=f.Read(0);
  b.Install();const auto original=f.Read(0,256);reads=writes=syncs=0;io_counting=true;const auto actual=b.Read();io_counting=false;b.Good(actual);Check(!writes&&!syncs&&f.Read(0,256)==original,"inventory bundle actual reading never publishes or changes bytes");
+ BundleDeviceMemoryChecks(f.devices.front(),b.root,g.zero.page_uuid,b.Budget(),b.pages,db::NativeManagementControlReadContext::current,{},f.path,true);
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"version2 read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"version2 close before cold reader");const auto child=fork();Check(child>=0,"version2 independent process fork");if(!child){d::FileDevice owned;if(!owned.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&owned};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.inventory_images==b.inventory&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cold reconstruction retains exact original inventory images");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"version2 parent reopen");
@@ -3449,6 +3598,7 @@ void InventoryBundle(unsigned profile){
 void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBundleChecks(b.pages,b.root,Id(1),g.zero.page_uuid,b.Budget());const auto encoded=b.Encode();Check(encoded.ok()&&*encoded.root==b.root&&encoded.pages==b.pages,"independent bundle bytes and root");b.Good(b.Decode());const auto short_budget=b.Decode(b.Budget()-1);Check(short_budget.error==BE::resource_exhausted,"exact bundle allowance");Empty(short_budget);
  const auto historical_zero=f.Read(0);
  b.Install();b.Good(b.Read());const auto untouched=f.Read(g.after.front().header.page_number);Check(std::all_of(untouched.begin(),untouched.end(),[](byte v){return !v;}),"bundle reconstructs target map not yet installed");
+ BundleDeviceMemoryChecks(f.devices.front(),b.root,g.zero.page_uuid,b.Budget(),b.pages,db::NativeManagementControlReadContext::current,{},f.path,true);
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalPageZeroFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  b.Good(db::ReadNativeManagementControlBundleAtHistoricalResultFromOpenDevice(f.devices.front(),b.root,Id(1),g.zero.page_uuid,historical_zero,b.Budget()));
  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen");b.Good(b.Read());Check(f.device.Close().ok(),"close before process reader");const auto child=fork();Check(child>=0,"fork independent bundle reader");if(!child){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok())_exit(80);const d::NativeFilespaceDevice file{Id(2),g.zero.bootstrap.page_size_profile_uuid,&own};const auto read=db::ReadNativeManagementControlBundleFromOpenDevice(file,b.root,Id(1),g.zero.page_uuid,b.Budget());_exit(read.ok()&&read.allocation_images==g.after_bytes?0:81);}int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"independent process reconstruction");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"parent reopen");
