@@ -286,6 +286,9 @@ struct NativeCatalogRelationImageResult {
   std::vector<NativeCatalogLeafResult> catalogs;
   std::vector<NativeCatalogRowImageBinding> bindings;
   u64 retained_image_bytes = 0;
+  // Fixed provider-owned diagnostic survives discarding a failed read's prefix.
+  std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView>
+      binary_diagnostic;
   bool ok() const noexcept { return error==NativeCatalogRelationError::none; }
 };
 // NATIVE-CATALOG-RELATION-IMAGE-BINDING-001. Native image/row identity join only,

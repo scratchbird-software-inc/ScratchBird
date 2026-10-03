@@ -16,6 +16,7 @@
 
 #include <string>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -147,6 +148,14 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
 // This remains an owning row API, not whole-page allocation-free admission.
 RowDataPageResult ParseRowDataPageBodyWithCanonicalBinaryCells(
     const std::vector<byte>& serialized, u64 page_number,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context);
+// Own the decoded rows, not a duplicate of the containing image. The input
+// remains immutable for the call; returned rows are independent of its lifetime.
+// serialized is intentionally empty on success. These are not grant-backed or
+// allocation-free row containers; framing and diagnostics share the old reader.
+RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 page_number);
+RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(
+    std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context);
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
                                            std::string diagnostic_code,
