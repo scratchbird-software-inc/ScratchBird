@@ -22,6 +22,8 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include "dml/mga_relation_read_view.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
+#include "disk_device.hpp"
+#include "database_format.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -29,6 +31,25 @@ using scratchbird::tests::NativeFixtureIdentity;
 #include <string>
 #include <set>
 #include <utility>
+#include <cerrno>
+#if defined(SB_CATALOG_NATIVE_READ_FAULT)
+#include <unistd.h>
+#include <sys/wait.h>
+namespace {
+thread_local bool fail_catalog_read = false;
+thread_local unsigned failed_catalog_reads = 0;
+const char* catalog_test_executable = nullptr;
+}
+extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
+extern "C" ssize_t __wrap_pread(int fd, void* buffer, size_t size, off_t offset) {
+  if (fail_catalog_read) {
+    ++failed_catalog_reads;
+    errno = EIO;
+    return -1;
+  }
+  return __real_pread(fd, buffer, size, offset);
+}
+#endif
 
 namespace {
 
@@ -381,12 +402,254 @@ void TestRefusals() {
   Cleanup(database.path);
 }
 
+void FinishTransaction(const TestDatabase& database, bool commit) {
+  auto loaded = db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(loaded.ok(), "inventory load for catalog finality failed");
+  auto finished = commit
+      ? mga::CommitLocalTransaction(std::move(loaded.inventory),
+            mga::MakeLocalTransactionId(database.local_transaction_id), 1790000001000)
+      : mga::RollbackLocalTransaction(std::move(loaded.inventory),
+            mga::MakeLocalTransactionId(database.local_transaction_id), 1790000001000);
+  Require(finished.ok(), "catalog transaction finality candidate failed");
+  Require(db::PersistLocalTransactionInventoryToDatabase(database.path.string(),
+              finished.inventory).ok(), "catalog transaction finality publication failed");
+}
+
+void BeginNextTransaction(TestDatabase& database) {
+  auto loaded = db::LoadLocalTransactionInventoryFromDatabase(database.path.string());
+  Require(loaded.ok(), "next catalog transaction inventory unavailable");
+  const auto identity = uuid::GenerateEngineIdentityV7(UuidKind::transaction, 1790000001001);
+  Require(identity.ok(), "next catalog transaction identity unavailable");
+  auto begun = mga::BeginLocalTransaction(std::move(loaded.inventory), identity.value,
+                                         1790000001002);
+  Require(begun.ok(), "next catalog transaction begin failed");
+  Require(db::PersistLocalTransactionInventoryToDatabase(database.path.string(),
+              begun.inventory).ok(), "next catalog transaction publication failed");
+  database.transaction_uuid = identity.value.value;
+  database.local_transaction_id = begun.entry.identity.local_id.value;
+}
+
+void TestLoadClassification() {
+  using Disposition = api::AgentDurableCatalogLoadDisposition;
+  auto database = CreateActiveDatabase();
+  auto context = Context(database);
+  const auto absent = api::LoadAgentDurableCatalogImage(context, true);
+  Require(!absent.ok && absent.load_disposition == Disposition::absent,
+          "real empty catalog was not classified absent");
+  api::AgentDurableCatalogStoreRequest seed;
+  seed.context = context;
+  seed.image = CatalogImage();
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral(
+      "018f0000-0000-7000-8000-00000000ae18"));
+  seed.fsync_or_checkpoint_evidence = true;
+  seed.initialize_only = true;
+  const auto initialized = api::PersistAgentDurableCatalogImage(seed);
+  Require(initialized.ok, "genuine catalog initialization failed: " + initialized.diagnostic.detail);
+  Require(initialized.load_disposition == Disposition::not_attempted,
+          "store success impersonated a load observation");
+  const auto own = api::LoadAgentDurableCatalogImage(context, true);
+  Require(own.ok && own.load_disposition == Disposition::loaded,
+          "own real active catalog image not loaded");
+
+  // Reuse the old absence observation after actual publication. It cannot
+  // authorize replacement, even in the same transaction.
+  const auto duplicate = api::PersistAgentDurableCatalogImage(seed);
+  Require(!duplicate.ok && duplicate.load_disposition == Disposition::loaded,
+          "stale absence allowed a second initialization");
+  Require(api::LoadAgentDurableCatalogImage(context, true).version_uuid == own.version_uuid,
+          "refused initialization changed the catalog version");
+  auto observer = context;
+  observer.local_transaction_id = 0;
+  observer.transaction_uuid = {};
+  const auto invisible = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(!invisible.ok && invisible.load_disposition == Disposition::existing_not_visible,
+          "uncommitted catalog table misclassified as absence");
+  FinishTransaction(database, true);
+  const auto committed = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(committed.ok && committed.load_disposition == Disposition::loaded &&
+              committed.version_uuid == own.version_uuid,
+          "committed catalog did not survive real inventory publication/reload");
+#if defined(SB_CATALOG_NATIVE_READ_FAULT)
+  // Exec a fresh reader so retained metadata/inventory caches cannot bypass
+  // the native fault. The parent keeps the exact committed image for checking.
+  const auto child = fork();
+  Require(child >= 0, "native read-fault reader fork failed");
+  if (child == 0) {
+    execl(catalog_test_executable, catalog_test_executable, "read-fault",
+          database.path.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  int status = 0;
+  Require(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "fresh native read-fault reader failed");
+  const auto after_read = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(after_read.ok && after_read.version_uuid == own.version_uuid,
+          "failed native catalog read changed durable contents");
+#endif
+  Cleanup(database.path);
+}
+
+void TestInvalidImageNotInitialization() {
+  using Disposition = api::AgentDurableCatalogLoadDisposition;
+  auto database = CreateActiveDatabase();
+  auto context = Context(database);
+  api::AgentDurableCatalogStoreRequest seed;
+  seed.context = context;
+  seed.image = CatalogImage();
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral(
+      "018f0000-0000-7000-8000-00000000ae19"));
+  seed.fsync_or_checkpoint_evidence = true;
+  seed.initialize_only = true;
+  Require(api::PersistAgentDurableCatalogImage(seed).ok, "invalid-image test seed failed");
+  auto state = api::LoadMgaRelationStoreState(context);
+  Require(state.ok, "invalid-image test state unavailable");
+  auto view = api::BuildMgaRelationReadView(state.state);
+  const auto table = FindCatalogTable(view);
+  auto row = FindCatalogRootRow(view, table.table_uuid);
+  const auto valid_values = row.values;
+  row.previous_version_uuid = row.version_uuid;
+  row.previous_sequence = row.sequence;
+  row.version_uuid = api::GenerateCrudEngineUuid("row");
+  for (auto& [key, value] : row.values)
+    if (key == "encoded_catalog_image") value = "invalid-real-catalog-image";
+  std::uint64_t sequence = 0;
+  Require(!api::AppendMgaRowVersion(context, row, &sequence).error,
+          "invalid real catalog version append failed");
+  const auto invalid = api::LoadAgentDurableCatalogImage(context, true);
+  Require(!invalid.ok && invalid.load_disposition == Disposition::invalid_image,
+          "invalid image was not distinguished from absence");
+  const auto refused = api::PersistAgentDurableCatalogImage(seed);
+  Require(!refused.ok && refused.load_disposition == Disposition::invalid_image &&
+              refused.diagnostic.code == invalid.diagnostic.code &&
+              refused.diagnostic.detail == invalid.diagnostic.detail,
+          "initialization did not preserve original invalid-image diagnostic");
+  const auto after = api::LoadMgaRelationStoreState(context);
+  Require(after.ok && after.state.max_row_event_sequence == sequence,
+          "refused initialization appended a replacement catalog");
+  for (const std::string fault : {"root", "linkage", "kind", "deleted"}) {
+    row.previous_version_uuid = row.version_uuid;
+    row.previous_sequence = sequence;
+    row.version_uuid = api::GenerateCrudEngineUuid("row");
+    row.values = valid_values;
+    row.deleted = fault == "deleted";
+    for (auto& [key, value] : row.values) {
+      if (fault == "root" && key == "catalog_root_digest") value = "incorrect-root";
+      if (fault == "linkage" && key == "storage_linkage_digest") value = api::CrudStoredValue::SqlNull();
+      if (fault == "kind" && key == "record_kind") value = "unexpected-record";
+    }
+    Require(!api::AppendMgaRowVersion(context, row, &sequence).error,
+            "real malformed catalog append failed: " + fault);
+    const auto expected = fault == "kind" || fault == "deleted"
+        ? Disposition::existing_not_visible : Disposition::invalid_image;
+    const auto observed = api::LoadAgentDurableCatalogImage(context, true);
+    const auto reseed = api::PersistAgentDurableCatalogImage(seed);
+    Require(!observed.ok && observed.load_disposition == expected && !reseed.ok &&
+                reseed.load_disposition == expected &&
+                reseed.diagnostic.detail == observed.diagnostic.detail,
+            "retained catalog failure became initialization: " + fault);
+    const auto retained = api::LoadMgaRelationStoreState(context);
+    Require(retained.ok && retained.state.max_row_event_sequence == sequence,
+            "catalog failure appended a replacement: " + fault);
+  }
+  FinishTransaction(database, false);
+  auto observer = context;
+  observer.local_transaction_id = 0;
+  observer.transaction_uuid = {};
+  const auto rolled_back = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(!rolled_back.ok && rolled_back.load_disposition == Disposition::absent,
+          "durably rolled-back initialization permanently blocked absence");
+  BeginNextTransaction(database);
+  seed.context = Context(database);
+  Require(api::PersistAgentDurableCatalogImage(seed).ok,
+          "real initialization retry after durable rollback failed");
+  Cleanup(database.path);
+}
+
+void TestVisibleTableInvisibleImage() {
+  using Disposition = api::AgentDurableCatalogLoadDisposition;
+  auto database = CreateActiveDatabase();
+  api::AgentDurableCatalogStoreRequest seed;
+  seed.context = Context(database);
+  seed.image = CatalogImage();
+  seed.image.schema_version = 99;
+  seed.evidence_uuid = BinaryFixtureIdentity(scratchbird::tests::FixtureUuidLiteral(
+      "018f0000-0000-7000-8000-00000000ae20"));
+  seed.fsync_or_checkpoint_evidence = true;
+  seed.initialize_only = true;
+  // Real DDL succeeds but image validation fails before row append. Commit
+  // that empty relation to exercise absence independently of table visibility.
+  Require(!api::PersistAgentDurableCatalogImage(seed).ok,
+          "unsupported schema unexpectedly persisted");
+  auto state = api::LoadMgaRelationStoreState(seed.context);
+  Require(state.ok, "empty catalog relation unavailable");
+  const auto table = FindCatalogTable(api::BuildMgaRelationReadView(state.state));
+  Require(!table.table_uuid.is_nil(), "partial publication did not create real table");
+  FinishTransaction(database, true);
+  BeginNextTransaction(database);
+  seed.context = Context(database);
+  const auto empty = api::LoadAgentDurableCatalogImage(seed.context, true);
+  Require(!empty.ok && empty.load_disposition == Disposition::absent,
+          "empty committed catalog relation not classified absent");
+  seed.image = CatalogImage();
+  const auto published = api::PersistAgentDurableCatalogImage(seed);
+  Require(published.ok, "empty committed relation could not be initialized");
+  auto observer = seed.context;
+  observer.local_transaction_id = 0;
+  observer.transaction_uuid = {};
+  const auto invisible = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(!invisible.ok && invisible.load_disposition == Disposition::existing_not_visible,
+          "invisible row in committed table was classified absent");
+  FinishTransaction(database, true);
+  const auto visible = api::LoadAgentDurableCatalogImage(observer, true);
+  Require(visible.ok && visible.version_uuid == published.version_uuid,
+          "invisible row did not become visible after durable commit");
+  Cleanup(database.path);
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("agent_enterprise_durable_catalog_store_gate");
+#if defined(SB_CATALOG_NATIVE_READ_FAULT)
+  catalog_test_executable = argv[0];
+  if (argc == 3 && std::string(argv[1]) == "read-fault") {
+    namespace disk = scratchbird::storage::disk;
+    disk::FileDevice device;
+    Require(device.Open(argv[2], disk::FileOpenMode::open_existing_read_only).ok(),
+            "fresh read-fault database open failed");
+    disk::SerializedDatabaseHeader bytes{};
+    Require(device.ReadAt(0, bytes.data(), bytes.size()).ok(), "fresh reader header read failed");
+    const auto header = disk::ParseDatabaseHeader(bytes);
+    Require(header.ok(), "fresh reader header invalid");
+    device.Close();
+    api::EngineRequestContext context;
+    context.database_path = argv[2];
+    context.database_uuid = header.header.database_uuid;
+    fail_catalog_read = true;
+    const auto result = api::LoadAgentDurableCatalogImage(context, true);
+    fail_catalog_read = false;
+    std::cout << "native_read_faults=" << failed_catalog_reads
+              << " ok=" << result.ok << " disposition=" << static_cast<int>(result.load_disposition)
+              << " code=" << result.diagnostic.code << " detail=" << result.diagnostic.detail << '\n';
+    Require(failed_catalog_reads != 0 && !result.ok && result.load_disposition ==
+                api::AgentDurableCatalogLoadDisposition::source_failure,
+            "native EIO not classified as source failure");
+    return 0;
+  }
+#endif
+  if (argc == 2) {
+    const std::string mode(argv[1]);
+    if (mode == "classification") TestLoadClassification();
+    else if (mode == "invalid") TestInvalidImageNotInitialization();
+    else if (mode == "invisible") TestVisibleTableInvisibleImage();
+    else return 2;
+    return EXIT_SUCCESS;
+  }
   TestPersistLoadRoundTrip();
   TestLoadMigratesAndPersistsOldSchemaImage();
   TestRefusals();
+  TestLoadClassification();
+  TestInvalidImageNotInitialization();
+  TestVisibleTableInvisibleImage();
   return EXIT_SUCCESS;
 }

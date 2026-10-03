@@ -366,8 +366,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   target_link_libraries(server_agent_durable_stop_gate PRIVATE sb_server_core)
   target_link_options(server_agent_durable_stop_gate PRIVATE
     -static-libstdc++
+    -Wl,--wrap=pthread_create
     -Wl,--wrap=pthread_join
     -Wl,--wrap=fsync
+    -Wl,--wrap=_ZN11scratchbird6engine12internal_api31PersistAgentDurableCatalogImageERKNS1_31AgentDurableCatalogStoreRequestE
+    -Wl,--wrap=_ZN11scratchbird6engine12internal_api25EngineRollbackTransactionERKNS1_32EngineRollbackTransactionRequestE
     -Wl,--wrap=_ZN11scratchbird6engine12internal_api22EngineBeginTransactionERKNS1_29EngineBeginTransactionRequestE
     -Wl,--wrap=_ZN11scratchbird6engine12internal_api23EngineCommitTransactionERKNS1_30EngineCommitTransactionRequestE)
   foreach(stop_mode success failure ipc-failure ipc-success
@@ -377,6 +380,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
       COMMAND server_agent_durable_stop_gate ${stop_mode})
     set_tests_properties(server_agent_durable_stop_${stop_mode}_gate PROPERTIES
       TIMEOUT 120 LABELS "agents;concurrency;shutdown;durable_result;linux_proof")
+  endforeach()
+  foreach(catalog_mode catalog-load-failure catalog-load-rollback-failure catalog-load-rollback-no-sink)
+    add_test(NAME server_agent_${catalog_mode}_gate COMMAND server_agent_durable_stop_gate ${catalog_mode})
+    set_tests_properties(server_agent_${catalog_mode}_gate PROPERTIES
+      TIMEOUT 180 LABELS "agents;concurrency;startup;catalog_load;linux_proof")
   endforeach()
 endif()
 
@@ -611,6 +619,11 @@ target_compile_features(agent_enterprise_durable_catalog_store_gate PRIVATE cxx_
 target_link_libraries(agent_enterprise_durable_catalog_store_gate PRIVATE
   sb_engine_internal_api
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_definitions(agent_enterprise_durable_catalog_store_gate PRIVATE
+    SB_CATALOG_NATIVE_READ_FAULT=1)
+  target_link_options(agent_enterprise_durable_catalog_store_gate PRIVATE "-Wl,--wrap=pread")
+endif()
 add_test(NAME agent_enterprise_durable_catalog_store_gate
   COMMAND agent_enterprise_durable_catalog_store_gate)
 set_tests_properties(agent_enterprise_durable_catalog_store_gate PROPERTIES

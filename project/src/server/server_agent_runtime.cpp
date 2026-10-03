@@ -848,8 +848,35 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       }
       return false;
     }
+    const auto fail_seed = [&](const engine_api::EngineApiDiagnostic& primary,
+                               const std::string& message) {
+      engine_api::EngineRollbackTransactionRequest rollback;
+      rollback.context = seed_tx.context;
+      const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+      std::vector<ServerDiagnostic> failures;
+      failures.push_back(RuntimeDiagnostic(primary.code, message, {{"detail", primary.detail}}));
+      if (!rolled_back.ok) {
+        failures.push_back(RuntimeDiagnostic(
+            FirstDiagnosticCode(rolled_back, "SERVER.AGENT_RUNTIME.MGA_ROLLBACK_FAILED"),
+            "The failed catalog seed transaction could not be rolled back.",
+            {{"detail", FirstDiagnosticDetail(rolled_back, "server_agent_transaction_rollback_failed")}}));
+        // Preserve the unresolved cleanup fence even without a diagnostic sink.
+        std::lock_guard<std::mutex> guard(state_mutex_);
+        last_stop_result_.attempted = true;
+        last_stop_result_.durable_cleanup_complete = false;
+        last_stop_result_.diagnostics = failures;
+      }
+      if (diagnostics != nullptr)
+        diagnostics->insert(diagnostics->end(), failures.begin(), failures.end());
+      return false;
+    };
     auto loaded = engine_api::LoadAgentDurableCatalogImage(seed_tx.context, true);
     if (!loaded.ok) {
+      if (loaded.load_disposition !=
+          engine_api::AgentDurableCatalogLoadDisposition::absent) {
+        return fail_seed(loaded.diagnostic,
+            "The server agent runtime durable catalog could not be loaded; no seed was attempted.");
+      }
       engine_api::AgentDurableCatalogStoreRequest seed_request;
       seed_request.context = seed_tx.context;
       seed_request.image = BuildServerAgentRuntimeCatalog(database_uuid_,
@@ -859,17 +886,12 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
           ServerAgentRuntimeUuid(database_uuid_, "catalog_seed", 1750);
       seed_request.production_live_path = true;
       seed_request.fsync_or_checkpoint_evidence = true;
+      seed_request.initialize_only = true;
       const auto seeded =
           engine_api::PersistAgentDurableCatalogImage(seed_request);
       if (!seeded.ok) {
-        RollbackServerAgentTransaction(seed_tx.context);
-        if (diagnostics != nullptr) {
-          diagnostics->push_back(RuntimeDiagnostic(
-              seeded.diagnostic.code,
-              "The server agent runtime durable catalog seed could not be persisted.",
-              {{"detail", seeded.diagnostic.detail}}));
-        }
-        return false;
+        return fail_seed(seeded.diagnostic,
+            "The server agent runtime durable catalog seed could not be persisted.");
       }
     }
     std::string tx_diagnostic;
