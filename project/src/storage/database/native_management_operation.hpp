@@ -5,6 +5,8 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <span>
 #include <vector>
 
 namespace scratchbird::storage::database {
@@ -61,9 +63,43 @@ struct NativeManagementOperation {
   std::vector<NativeManagementStep> steps;
   bool operator==(const NativeManagementOperation&) const=default;
 };
+struct NativeManagementStepView {
+  Uuid uuid,operation_uuid,family_uuid,target_uuid,started_at,completed_at;
+  Uuid evidence_uuid,metric_evidence_uuid,diagnostic_uuid,boundary_uuid;
+  std::array<byte,32> precondition_sha256{},postcondition_sha256{};
+  u32 ordinal=0;
+  std::string_view idempotency_key;
+  NativeManagementStepState state=NativeManagementStepState::pending;
+  NativeManagementMutation mutation=NativeManagementMutation::none;
+  NativeManagementCompensation compensation=NativeManagementCompensation::none;
+  NativeManagementRecovery recovery=NativeManagementRecovery::classify;
+  bool evidence_required=false,metrics_required=false,idempotent=false;
+  bool operator==(const NativeManagementStepView&) const=default;
+};
+struct NativeManagementOperationView {
+  Uuid database_uuid,bootstrap_uuid,uuid,descriptor_uuid,family_uuid,target_type_uuid,target_uuid;
+  Uuid initiator_uuid,request_context_uuid,policy_snapshot_uuid,security_snapshot_uuid,phase_uuid;
+  Uuid boundary_uuid,created_at,updated_at,terminal_at,resource_plan_uuid,lock_plan_uuid;
+  Uuid result_uuid,diagnostic_uuid,evidence_uuid,metric_evidence_uuid,cluster_uuid;
+  std::array<byte,32> normalized_request_sha256{};
+  // V2 exact canonical binary request. The owning descriptor validates its
+  // typed schema and identity bindings; these bytes grant no authority.
+  // Empty retains the V1 hash-only representation, not exact-intent proof.
+  std::span<const byte> normalized_request_bytes;
+  // Catalog, configuration, security, cluster epoch. Present zero != absent.
+  std::array<std::optional<u64>,4> generation_guards{};
+  u64 revision=1;
+  std::string_view idempotency_key;
+  NativeManagementState state=NativeManagementState::created;
+  NativeManagementScope scope=NativeManagementScope::local_node;
+  u16 initiator_kind=0;
+  NativeManagementRestart restart=NativeManagementRestart::resume;
+  bool evidence_required=false,metrics_required=false;
+  std::span<const NativeManagementStepView> steps;
+};
 enum class NativeManagementOperationError {
   none,invalid_header,invalid_identity,invalid_record,invalid_utf8,
-  invalid_integrity,invalid_transition,immutable_field,resource_exhausted,hash_failure
+  invalid_integrity,invalid_transition,immutable_field,resource_exhausted,hash_failure,invalid_workspace
 };
 struct NativeManagementOperationImage {
   NativeManagementOperationError error=NativeManagementOperationError::invalid_record;
@@ -80,4 +116,26 @@ NativeManagementOperationError ValidateNativeManagementOperationEvolution(
   const NativeManagementOperation&,const NativeManagementOperation&) noexcept;
 NativeManagementOperationImage EncodeNativeManagementOperation(const NativeManagementOperation&,u64 maximum_encoded_bytes) noexcept;
 NativeManagementOperationImage DecodeNativeManagementOperation(const std::vector<byte>&,u64 maximum_encoded_bytes) noexcept;
+struct NativeManagementOperationViewImage {
+  NativeManagementOperationError error=NativeManagementOperationError::invalid_record;
+  std::optional<NativeManagementOperationView> record;
+  std::span<const byte> bytes;
+  std::array<byte,32> sha256{};
+  bool ok() const noexcept {return error==NativeManagementOperationError::none&&record.has_value();}
+};
+struct NativeManagementOperationViewWorkspace {
+  std::span<NativeManagementStepView> steps;
+  std::span<Uuid> identities;
+};
+// Identity scratch requires 2*(step_count+3)+1 slots. All backing must be
+// aligned and disjoint from the entire input. Returned text/request views borrow
+// immutable bytes; steps and their backing outlive the view. No failure prefix,
+// no admission/effect authority and no implicit heap fallback.
+NativeManagementOperationViewImage DecodeNativeManagementOperationInto(
+  std::span<const byte>,u64 maximum_encoded_bytes,NativeManagementOperationViewWorkspace) noexcept;
+NativeManagementOperationError ValidateNativeManagementOperationView(
+  const NativeManagementOperationView&,std::span<Uuid> identities) noexcept;
+NativeManagementOperationError ValidateNativeManagementOperationEvolutionView(
+  const NativeManagementOperationView&,const NativeManagementOperationView&,
+  std::span<Uuid> identities) noexcept;
 } // namespace scratchbird::storage::database
