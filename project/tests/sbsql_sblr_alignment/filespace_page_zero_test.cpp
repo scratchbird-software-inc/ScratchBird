@@ -549,7 +549,7 @@ page::NativeBtreePage BtreeExample(unsigned p=0,unsigned type=0x200,bool branch=
 }
 void BtreeSeal(Bytes& b) {std::fill(b.begin()+512,b.begin()+544,0);std::array<byte,32> digest{};
   Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent full native B-tree hash");std::copy(digest.begin(),digest.end(),b.begin()+512);}
-Bytes BtreeOracle(const page::NativeBtreePage& r) {
+template<class Page> Bytes BtreeOracle(const Page& r) {
   auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
   const std::string_view magic="SBBTP001";std::copy(magic.begin(),magic.end(),b.begin()+128);Number(b,136,2,1);Number(b,138,2,512);
   const auto& d=r.dependencies;PutUuid(b,144,d.index_uuid);Number(b,160,8,d.descriptor_generation);Number(b,168,8,d.storage_generation);
@@ -566,16 +566,129 @@ Bytes BtreeOracle(const page::NativeBtreePage& r) {
     PutUuid(b,at+16,c.key.row_uuid);PutUuid(b,at+32,c.key.version_uuid);ref(at+48,c.child);ref(at+96,c.base_page);std::copy(c.key.encoded_key.begin(),c.key.encoded_key.end(),b.begin()+at+144);at+=144+c.key.encoded_key.size();}
   Number(b,140,4,at);BtreeSeal(b);return b;
 }
+struct BorrowedBtreeWorkspace {
+  std::vector<page::NativeBtreeCellView> cells;
+  std::vector<page::NativeBtreeReferenceSlot> references;
+  explicit BorrowedBtreeWorkspace(std::size_t bytes){
+    const auto required=page::NativeBtreePageViewBackingRequirements(bytes);
+    cells.resize(required.cells);references.resize(required.reference_slots);
+  }
+  page::NativeBtreeViewWorkspace get(){return {cells,references};}
+};
+void BtreeBorrowedCheck(const Bytes& image,const page::NativeBtreePageResult& owning) {
+  BorrowedBtreeWorkspace scratch(image.size());allocation_budget=0;
+  const auto view=page::DecodeNativeBtreePageInto(image,scratch.get());
+  const auto remaining=allocation_budget;allocation_budget=-1;
+  Check(remaining==0&&view.error==owning.error&&view.ok()==owning.ok(),
+    "owning and bounded B-tree readers preserve complete admission without C++ allocation");
+  if(!view.ok()){Check(!view.page&&view.bytes.empty(),"borrowed B-tree failure exposes no page prefix");return;}
+  Check(view.bytes.data()==image.data()&&view.bytes.size()==image.size()&&BtreeOracle(*view.page)==image,
+    "every borrowed B-tree field independently reconstructs the exact original bytes");
+  const auto resident=[&](const auto& key){return key.encoded_key.data()>=image.data()&&
+    key.encoded_key.data()+key.encoded_key.size()<=image.data()+image.size();};
+  if(view.page->low_fence)Check(resident(*view.page->low_fence),"low fence borrows exact immutable image");
+  if(view.page->high_fence)Check(resident(*view.page->high_fence),"high fence borrows exact immutable image");
+  for(const auto& cell:view.page->cells)Check(resident(cell.key),"every B-tree key borrows exact immutable image");
+}
+void BtreeBorrowedBounds() {
+  using E=page::NativeBtreeError;
+  for(unsigned profile=0;profile<5;++profile){
+    auto image=BtreeOracle(BtreeExample(profile));const auto original=image;
+    BorrowedBtreeWorkspace scratch(image.size());
+    const auto refuse=[&](page::NativeBtreeViewWorkspace workspace,E error){
+      allocation_budget=0;const auto result=page::DecodeNativeBtreePageInto(image,workspace);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!result.ok()&&!result.page&&result.bytes.empty()&&result.error==error&&remaining==0&&image==original,
+        "short or invalid B-tree workspace preserves immutable input and typed failure without heap fallback");
+    };
+    auto workspace=scratch.get();workspace.cells=workspace.cells.first(2);refuse(workspace,E::resource_exhausted);
+    workspace=scratch.get();workspace.references=workspace.references.first(24);refuse(workspace,E::resource_exhausted);
+    for(std::size_t offset:{std::size_t(0),std::size_t(512),image.size()-sizeof(page::NativeBtreeCellView)}){
+      workspace=scratch.get();workspace.cells={reinterpret_cast<page::NativeBtreeCellView*>(image.data()+offset),1};
+      refuse(workspace,E::invalid_workspace);
+    }
+    for(std::size_t offset:{std::size_t(0),std::size_t(512),image.size()-sizeof(page::NativeBtreeReferenceSlot)}){
+      workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(image.data()+offset),1};
+      refuse(workspace,E::invalid_workspace);
+    }
+    workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(workspace.cells.data()),1};
+    refuse(workspace,E::invalid_workspace);
+    workspace=scratch.get();workspace.cells={reinterpret_cast<page::NativeBtreeCellView*>(
+      reinterpret_cast<byte*>(scratch.cells.data())+1),1};refuse(workspace,E::invalid_workspace);
+    workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(
+      reinterpret_cast<byte*>(scratch.references.data())+1),1};refuse(workspace,E::invalid_workspace);
+    // Maximum density reaches the advertised cell/reference bounds. Each
+    // reference uses a distinct filespace with binary suffixes beyond word one.
+    for(bool branch:{false,true}){
+      auto dense=BtreeExample(profile,0x200,branch);dense.cells.clear();
+      const auto n=page::NativeBtreePageViewBackingRequirements(image.size()).cells;
+      for(std::size_t i=0;i<n;++i){page::NativeBtreeCell cell;cell.key.encoded_key={0};
+        cell.key.row_uuid=Id(60);cell.key.row_uuid.bytes[13]=0xa5;
+        cell.key.row_uuid.bytes[14]=static_cast<byte>(i>>8);cell.key.row_uuid.bytes[15]=static_cast<byte>(i);
+        cell.key.version_uuid=Id(61);auto filespace=cell.key.row_uuid;filespace.bytes[13]=0xb6;
+        disk::NativePageReference ref{filespace,50+i,1,Profile(i%5)};
+        if(branch)cell.child=ref;else cell.base_page=ref;dense.cells.push_back(cell);
+      }
+      const auto packed=BtreeOracle(dense);const auto owning=page::DecodeNativeBtreePage(packed);
+      Check(owning.ok(),"maximal independent B-tree cell and reference population");
+      BtreeBorrowedCheck(packed,owning);
+      dense.cells.push_back(dense.cells.back());dense.cells.back().key.encoded_key={1};
+      if(branch)++dense.cells.back().child->page_number;
+      Check(page::EncodeNativeBtreePage(dense).error==E::resource_exhausted,"first extra B-tree cell cannot fit");
+    }
+    auto collided=BtreeExample(profile,0x200,true);
+    const auto bucket=[](const Uuid& id,u64 number){
+      u64 value=14695981039346656037ULL;
+      for(auto b:id.bytes){value^=b;value*=1099511628211ULL;}
+      for(unsigned i=0;i<8;++i){value^=(number>>(8*i))&255;value*=1099511628211ULL;}
+      return value%25;
+    };
+    const auto target=bucket(collided.first_child->filespace_uuid,0);
+    unsigned selected=0;
+    for(unsigned suffix=0;selected<3&&suffix<65536;++suffix){auto id=Id(170);
+      id.bytes[14]=static_cast<byte>(suffix>>8);id.bytes[15]=static_cast<byte>(suffix);
+      if(bucket(id,0)!=target)continue;
+      collided.cells[selected].child=disk::NativePageReference{id,70+selected,2,Profile(selected%5)};++selected;
+    }
+    Check(selected==3,"construct distinct full UUID reference keys with deliberately colliding scratch buckets");
+    auto collision_image=BtreeOracle(collided);auto admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.ok(),"colliding profile references remain distinct complete native identities");BtreeBorrowedCheck(collision_image,admitted);
+    collided.cells[1].child=collided.first_child;++collided.cells[1].child->page_generation;
+    collision_image=BtreeOracle(collided);admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.error==E::invalid_reference,"changed generation does not hide duplicate physical child");
+    BtreeBorrowedCheck(collision_image,admitted);
+    collided=BtreeExample(profile,0x200,true);collided.cells[1].child->page_size_profile_uuid=Profile((profile+1)%5);
+    collision_image=BtreeOracle(collided);admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.error==E::invalid_reference,"same native filespace cannot acquire a second page profile");
+    BtreeBorrowedCheck(collision_image,admitted);
+    auto large=BtreeExample(profile);large.cells.resize(1);large.cells[0].key.encoded_key.resize(image.size()-640-4-144,0xab);
+    auto packed=BtreeOracle(large);auto large_result=page::DecodeNativeBtreePage(packed);
+    Check(large_result.ok(),"largest complete inline key is admitted in every profile");BtreeBorrowedCheck(packed,large_result);
+    large.cells[0].key.encoded_key.push_back(0);
+    Check(page::EncodeNativeBtreePage(large).error==E::resource_exhausted,"one excess key octet is not silently truncated");
+    auto empty=BtreeExample(profile);empty.cells.clear();packed=BtreeOracle(empty);
+    const auto empty_result=page::DecodeNativeBtreePage(packed);
+    Check(empty_result.ok(),"empty allocated root leaf remains valid in every profile");BtreeBorrowedCheck(packed,empty_result);
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;allocation_budget=0;
+      const auto result=page::DecodeNativeBtreePageInto(image,scratch.get());
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!hash_fault&&remaining==0&&!result.ok()&&!result.page&&result.bytes.empty()&&result.error==E::hash_failure,
+        "every borrowed B-tree provider fault retains exact typed failure without error-string allocation");}
+  }
+}
 void NativeBtreePages() {
+  BtreeBorrowedBounds();
   using E=page::NativeBtreeError;
   const auto empty=[&](const auto& r){Check(!r.ok()&&!r.page&&r.bytes.empty(),"native B-tree refusal returns no image or authority prefix");};
   for(unsigned p=0;p<5;++p)for(unsigned variant=0;variant<4;++variant){const bool branch=variant%2;
     const auto r=BtreeExample(p,variant<2?0x200:variant==2?0x202:0x201,branch);
     const auto bytes=BtreeOracle(r),encoded=page::EncodeNativeBtreePage(r).bytes;
     Check(bytes==encoded,"all profiles and roles independently packed B-tree image");const auto decoded=page::DecodeNativeBtreePage(bytes);
-    Check(decoded.ok()&&BtreeOracle(*decoded.page)==bytes,"decode independent B-tree frame without prototype body");}
+    Check(decoded.ok()&&BtreeOracle(*decoded.page)==bytes,"decode independent B-tree frame without prototype body");
+    BtreeBorrowedCheck(bytes,decoded);}
   const auto good=BtreeExample();const auto bytes=BtreeOracle(good);
-  for(std::size_t at=0;at<bytes.size();++at){auto bad=bytes;bad[at]^=1;empty(page::DecodeNativeBtreePage(bad));}
+  for(std::size_t at=0;at<bytes.size();++at){auto bad=bytes;bad[at]^=1;const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   for(unsigned which=0;which<22;++which){auto r=BtreeExample(0,0x201,true);
     if(which==0)r.dependencies.index_uuid={};if(which==1)r.dependencies.descriptor_generation=0;if(which==2)r.dependencies.storage_generation=0;
     if(which==3)r.dependencies.key_profile_uuid={};if(which==4)r.dependencies.visibility_profile_uuid={};if(which==5)r.dependencies.dependency_map_uuid={};
@@ -584,10 +697,13 @@ void NativeBtreePages() {
     if(which==13)r.first_child.reset();if(which==14)r.cells[1].child=r.first_child;if(which==15)r.cells[1].child->page_size_profile_uuid=Profile(1);
     if(which==16)r.cells[1].child->page_number=r.header.page_number;if(which==17)r.cells[1].key.row_uuid={};if(which==18)r.cells[1].key=r.cells[0].key;
     if(which==19)r.high_fence=r.cells.back().key;if(which==20)r.cells[1].deleted=true;if(which==21)r.cells[1].base_page=r.parent;
-    empty(page::EncodeNativeBtreePage(r));empty(page::DecodeNativeBtreePage(BtreeOracle(r)));}
+    empty(page::EncodeNativeBtreePage(r));const auto bad=BtreeOracle(r);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   for(auto offset:{128u,136u,138u,140u,284u,504u,508u,544u,639u,640u,644u,656u,660u,664u,8191u}){
-    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);empty(page::DecodeNativeBtreePage(bad));}
-  for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);empty(page::DecodeNativeBtreePage(bad));}
+    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
+  for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   {auto r=good;r.cells.clear();Check(page::EncodeNativeBtreePage(r).ok()&&page::DecodeNativeBtreePage(BtreeOracle(r)).ok(),"empty allocated root leaf is representable");}
   {auto r=good;r.cells.resize(1);r.cells[0].key.encoded_key.resize(sizes[0],0);const auto e=page::EncodeNativeBtreePage(r);empty(e);Check(e.error==E::resource_exhausted,"oversized inline key cannot be truncated");}
   // Tie-breaking is binary, including bytes after the first machine word.
