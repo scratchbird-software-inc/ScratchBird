@@ -8,6 +8,18 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_executable(startup_credential_transport_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_credential_transport_gate.cpp")
+  target_compile_features(startup_credential_transport_gate PRIVATE cxx_std_23)
+  target_link_libraries(startup_credential_transport_gate PRIVATE sb_core_memory sb_core_uuid)
+  target_link_options(startup_credential_transport_gate PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=mlock -Wl,--wrap=munlock)
+  add_test(NAME startup_credential_transport_gate COMMAND startup_credential_transport_gate)
+  set_tests_properties(startup_credential_transport_gate PROPERTIES
+    TIMEOUT 60 LABELS "agents;startup;security;protected_memory")
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
   add_executable(checked_mode_latch_gate
