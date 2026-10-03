@@ -13,8 +13,8 @@ namespace scratchbird::core::platform {
 // Native mechanism, not an engine latch descriptor or admission authority.
 // The owner validates allowed modes, order, current execution and
 // policy before entry, retains this object and every grant, and joins all calls
-// before destruction. Only intent release preparation is supplied here;
-// conversion barriers/generations belong to the owning layer. A rank is an already-admitted arbitration rank (smaller
+// before destruction. Intent release and in-place promotion are mechanisms;
+// conversion admission/barriers/generations belong to the owning layer. A rank is an already-admitted arbitration rank (smaller
 // first), not an engine priority mapping. Equal ranks are FIFO; no bypass API.
 class CheckedModeLatch {
  public:
@@ -28,7 +28,8 @@ class CheckedModeLatch {
 
   // Intrusive, nonmoving caller-owned record. Exclusive borrow for Acquire and
   // Release; do not destroy or reuse until the call completes. An active record
-  // cannot be reacquired, converted or silently revoked, even by Close.
+  // cannot be reacquired or silently revoked, even by Close. Conversion uses
+  // only the explicit validated transition methods, never ordinary Acquire.
   class Grant {
    public:
     Grant() = default;
@@ -152,6 +153,20 @@ class CheckedModeLatch {
     if (auto terminal = Terminal(deadline, stop)) return *terminal;
     ReleaseLocked(grant);
     return Result::released;
+  }
+  // Native transition only. The owning layer must retain actual structure
+  // generation and current execution-authority validation through this call.
+  // No caller assertion is accepted as an engine admission receipt here.
+  // The exact existing upgrade excludes all other holders; changing its mode
+  // introduces neither an ownership gap nor another queue registration.
+  Result PromoteUpgradeToExclusive(Grant& grant,
+      std::optional<Clock::time_point> deadline = {}, std::stop_token stop = {},
+      std::optional<OwnerIdentity> owner = {}) {
+    std::lock_guard lock(mutex_);
+    if (!Owned(grant, owner) || grant.mode_ != Mode::upgrade) return Result::invalid;
+    if (auto terminal = Terminal(deadline, stop)) return *terminal;
+    grant.mode_ = Mode::exclusive_write;
+    return Result::acquired;
   }
  private:
   bool Owned(const Grant& grant, const std::optional<OwnerIdentity>& owner) const noexcept {
