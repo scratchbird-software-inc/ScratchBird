@@ -17,7 +17,7 @@ enum class NativeManagementExtentError {
   none,invalid_request,invalid_header,invalid_identity,invalid_extent,
   invalid_integrity,invalid_record,binding_mismatch,resource_exhausted,
   hash_failure,io_failure,bootstrap_failure,encrypted_requires_authority,
-  cluster_requires_authority
+  cluster_requires_authority,invalid_workspace
 };
 struct NativeManagementExtentImage {
   NativeManagementExtentError error=NativeManagementExtentError::invalid_request;
@@ -43,4 +43,26 @@ NativeManagementExtentRead DecodeNativeManagementExtent(const std::vector<std::v
 NativeManagementExtentRead ReadNativeManagementExtentFromOpenDevice(
   const disk::NativeFilespaceDevice&,const NativeManagementExtentRoot&,
   const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept;
+struct NativeManagementExtentViewRead {
+  NativeManagementExtentError error=NativeManagementExtentError::invalid_request;
+  std::optional<NativeManagementOperationView> record;
+  std::span<const disk::NativeCommonPageHeader> page_headers;
+  std::span<const byte> aggregate;
+  bool ok() const noexcept {return error==NativeManagementExtentError::none&&record.has_value();}
+};
+struct NativeManagementExtentViewWorkspace {
+  std::span<byte> aggregate;
+  std::span<disk::NativeCommonPageHeader> page_headers;
+  std::span<NativeManagementStepView> steps;
+  // Reused only after all page identities are verified. Needs at least
+  // max(2*page_count+1,2*step_count+7) slots, compared as full binary UUIDs.
+  std::span<Uuid> identities;
+};
+// Complete immutable extent/aggregate inspection. All input page spans, their
+// descriptor array, root, and caller arrays are disjoint. Aggregate and steps
+// outlive the record; this is not an actual grant or publication/history proof.
+NativeManagementExtentViewRead DecodeNativeManagementExtentInto(
+  std::span<const std::span<const byte>>,const NativeManagementExtentRoot&,
+  const Uuid& database,const Uuid& bootstrap,u64 budget,
+  NativeManagementExtentViewWorkspace) noexcept;
 } // namespace scratchbird::storage::database

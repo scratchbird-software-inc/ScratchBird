@@ -10,6 +10,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_physical_encoding.hpp"
 #include "datatype_storage_identity.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "disk_device.hpp"
 #include "runtime_platform.hpp"
 
@@ -437,8 +438,32 @@ void ExactIdentityCohortsAndLayout() {
               admitted.row.empty_value_distinct_from_sql_null &&
               admitted.row.sql_null_requires_zero_payload &&
               admitted.row.variable_width_storage_without_truncation,
-          "d703 introduction and d704/d705 inheritance preserve exact binary tuple");
+          "d703 introduction and d704/d705 historical inheritance preserve exact binary tuple");
   }
+
+  const auto current = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV6, 6, 6, kDescriptorUuid, 1);
+  Check(current.ok &&
+            SameUuidBytes(current.row.legacy_fields.type_uuid, kTypeUuid) &&
+            SameUuidBytes(current.row.legacy_fields.codec_uuid, kCodecUuid) &&
+            current.row.legacy_fields.codec_id == kCodecId &&
+            current.row.legacy_fields.catalog_generation == 6 &&
+            current.row.legacy_fields.registry_generation == 6 &&
+            SameUuidBytes(current.row.descriptor_policy.uuid,
+                          kPolicyReceipt[0].uuid) &&
+            current.row.descriptor_policy.generation == 1 &&
+            SameUuidBytes(current.row.canonicalization_policy.uuid,
+                          kPolicyReceipt[1].uuid) &&
+            current.row.canonicalization_policy.generation == 1 &&
+            SameUuidBytes(current.row.ordering_policy.uuid,
+                          kPolicyReceipt[2].uuid) &&
+            current.row.ordering_policy.generation == 1 &&
+            SameUuidBytes(current.row.hash_policy.uuid,
+                          kPolicyReceipt[3].uuid) &&
+            current.row.hash_policy.generation == 1 &&
+            current.row.operation_policy.uuid.is_nil() &&
+            current.row.operation_policy.generation == 0,
+        "d706 V3 current authority preserves the exact binary tuple and policies");
 
   Check(!dt::LookupDatatypeTypeCodecIdentityV1(
              dt::kDatatypeCohortV5, 4, 5, kDescriptorUuid, 1).ok &&
@@ -451,7 +476,7 @@ void ExactIdentityCohortsAndLayout() {
   dt::DatatypeStorageIdentityV1 storage;
   const auto layout = dt::LookupDatatypeStorageLayout(dt::CanonicalTypeId::binary);
   Check(dt::LookupDatatypeStorageIdentityV1(
-            dt::kDatatypeCohortV5, 5, 5, kDescriptorUuid, 1, &storage) &&
+            dt::kDatatypeCohortV6, 6, 6, kDescriptorUuid, 1, &storage) &&
             SameUuidBytes(storage.type_uuid, kTypeUuid) &&
             storage.codec.has_value() &&
             SameUuidBytes(storage.codec->codec_uuid, kCodecUuid) &&
@@ -1090,11 +1115,11 @@ void EqualityOrderingHashAndSort() {
 
   struct HashVector { std::string bytes; const char* expected; };
   const std::array hashes{
-      HashVector{"", "a89a0a4c98ac1ef1a9c068eec1b64a00484d4ff4a38b54bb3994ed79faf62a26"},
-      HashVector{std::string{"\0", 1}, "d25fa1dcae244253f3ca8f799144983d96430c3076e72b5bafe2654cac027124"},
-      HashVector{std::string{"\1", 1}, "77f2dd016582165b4370541aa6451d3f54ce06201e9b4db3899a5ca7c903bbf4"},
-      HashVector{std::string{"\xff", 1}, "d4d7d4e736fe7ed3fc381950819f7ea6d68854302fc8bbe9c8c07f5b3426e4cf"},
-      HashVector{"abc", "b11c8f072dfa08ef5cbcd68eaf9d5f6181a93fd5c308f66064d7e6d52f86a462"}};
+      HashVector{"", "a601e7eeea1912c7db50d3195b29678052463a1d240e846109e041798065b22f"},
+      HashVector{std::string{"\0", 1}, "3e09f5ef0a762247d68ffaf39a088c17cbacbaa0938b0dafa72566a24fdc4e15"},
+      HashVector{std::string{"\1", 1}, "598e8cd0c710fb51ff6c4b18558a96fa9447f001005c13076246cbe5b717cd5d"},
+      HashVector{std::string{"\xff", 1}, "0005c7d41ea26ac0739db0e2bd02a9879ff30cfd356d5d14687722e34289a5e7"},
+      HashVector{"abc", "543814cd7ea4172e260595cd6d6bb6c5fe4168575afd83dea271ca1fc905ac7c"}};
   for (const auto& vector : hashes) {
     const auto result = dt::HashDatatypeValue({Present(vector.bytes)});
     Check(result.ok() && result.stable_hash_hex == vector.expected,
@@ -1102,12 +1127,12 @@ void EqualityOrderingHashAndSort() {
   }
   const auto null_hash = dt::HashDatatypeValue({typed_null});
   Check(null_hash.ok() && null_hash.stable_hash_hex ==
-            "99e00fa9f3403fd6db08cb3f838192d16f1150de66ab5e3cff878f8c9ea9c619",
+            "3b0238e2a66cb4ef5e94a9277f10fcc8e669d5d2f8e276b9467d2a82d7bf8839",
         "typed binary NULL hash matches independent state-qualified vector");
 
   const std::string prefix = FromHex(
-      "5342424b45593031019d000000007000800000000000d7050500000000000000"
-      "05000000000000002d01000062697e61b2790000000000000100000000000000"
+      "5342424b45593031019d000000007000800000000000d7060600000000000000"
+      "06000000000000002d01000062697e61b2790000000000000100000000000000"
       "019d000000007000800000000000d7430100000000000000019d000000007000"
       "800000000000d7440100000000000000010000000000000001a0fea58a127466"
       "9adbe25464c65b6a010000000000000001a0fea58a127073a5b732606cd091e6"
@@ -1118,7 +1143,7 @@ void EqualityOrderingHashAndSort() {
       std::pair{std::string{"\0\0", 2}, FromHex("0100ff00ff0000")},
       std::pair{std::string{"\1", 1}, FromHex("01010000")},
       std::pair{std::string{"\xff", 1}, FromHex("01ff0000")}};
-  Check(prefix.size() == 168, "independent d705 binary sort cohort prefix is 168 bytes");
+  Check(prefix.size() == 168, "independent d706 binary sort cohort prefix is 168 bytes");
   for (const auto& vector : sort_vectors) {
     const auto result = dt::MakeDatatypeSortKey({Present(vector.first)});
     Check(result.ok() && result.sort_key == prefix + vector.second,
@@ -1410,7 +1435,7 @@ void FileDevicePersistence() {
   if (frames.size() != carriers.size() + 1) return;
 
   // This is a deliberately test-owned container, not a production wire or
-  // storage envelope. Its fixed header records the complete Core d705 receipt
+  // storage envelope. Its fixed header records the complete Core d706 receipt
   // followed by offsets to production physical-component frames.
   constexpr std::size_t header_bytes = 512;
   constexpr std::size_t codec_id_offset = 128;
@@ -1423,10 +1448,10 @@ void FileDevicePersistence() {
   std::vector<platform::byte> expected(header_bytes, 0);
   const std::array<platform::byte, 8> magic{{'T','E','S','T','B','I','N','1'}};
   std::copy(magic.begin(), magic.end(), expected.begin());
-  std::copy(dt::kDatatypeCohortV5.bytes.begin(),
-            dt::kDatatypeCohortV5.bytes.end(), expected.begin() + 8);
-  platform::StoreLittle64(expected.data() + 24, 5);
-  platform::StoreLittle64(expected.data() + 32, 5);
+  std::copy(dt::kDatatypeCohortV6.bytes.begin(),
+            dt::kDatatypeCohortV6.bytes.end(), expected.begin() + 8);
+  platform::StoreLittle64(expected.data() + 24, 6);
+  platform::StoreLittle64(expected.data() + 32, 6);
   std::copy(kDescriptorUuid.bytes.begin(), kDescriptorUuid.bytes.end(),
             expected.begin() + 40);
   platform::StoreLittle64(expected.data() + 56, 1);
@@ -1495,9 +1520,9 @@ void FileDevicePersistence() {
   };
   bool receipt_exact = read.ok() && actual.size() >= header_bytes &&
       std::equal(magic.begin(), magic.end(), actual.begin()) &&
-      uuid_at(8, dt::kDatatypeCohortV5) &&
-      platform::LoadLittle64(actual.data() + 24) == 5 &&
-      platform::LoadLittle64(actual.data() + 32) == 5 &&
+      uuid_at(8, dt::kDatatypeCohortV6) &&
+      platform::LoadLittle64(actual.data() + 24) == 6 &&
+      platform::LoadLittle64(actual.data() + 32) == 6 &&
       uuid_at(40, kDescriptorUuid) &&
       platform::LoadLittle64(actual.data() + 56) == 1 &&
       uuid_at(64, kTypeUuid) &&
@@ -1519,27 +1544,27 @@ void FileDevicePersistence() {
             kPolicyReceipt[index].generation;
   }
   Check(receipt_exact,
-        "FileDevice reopen recovers the complete exact d705 binary receipt");
+        "FileDevice reopen recovers the complete exact d706 binary receipt");
 
   platform::Uuid recovered_snapshot{};
   platform::Uuid recovered_descriptor{};
   std::copy_n(actual.begin() + 8, 16, recovered_snapshot.bytes.begin());
   std::copy_n(actual.begin() + 40, 16, recovered_descriptor.bytes.begin());
-  const auto admitted = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto admitted = dt::LookupDatatypeTypeCodecIdentityV3(
       recovered_snapshot, platform::LoadLittle64(actual.data() + 24),
       platform::LoadLittle64(actual.data() + 32), recovered_descriptor,
       platform::LoadLittle64(actual.data() + 56));
   Check(receipt_exact && admitted.ok &&
-            SameUuidBytes(admitted.row.type_uuid, kTypeUuid) &&
-            admitted.row.type_generation ==
+            SameUuidBytes(admitted.row.legacy_fields.type_uuid, kTypeUuid) &&
+            admitted.row.legacy_fields.type_generation ==
                 platform::LoadLittle64(actual.data() + 80) &&
-            SameUuidBytes(admitted.row.codec_uuid, kCodecUuid) &&
-            admitted.row.codec_generation ==
+            SameUuidBytes(admitted.row.legacy_fields.codec_uuid, kCodecUuid) &&
+            admitted.row.legacy_fields.codec_generation ==
                 platform::LoadLittle64(actual.data() + 104) &&
-            admitted.row.codec_version ==
+            admitted.row.legacy_fields.codec_version ==
                 platform::LoadLittle32(actual.data() + 112) &&
-            admitted.row.codec_id == kCodecId,
-        "recovered test-owned receipt revalidates against exact compiled d705 row");
+            admitted.row.legacy_fields.codec_id == kCodecId,
+        "recovered test-owned receipt revalidates against exact compiled d706 V3 row");
 
   bool decoded_all = receipt_exact && actual == expected;
   for (std::size_t index = 0; index < frames.size() && decoded_all; ++index) {

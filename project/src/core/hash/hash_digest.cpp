@@ -103,25 +103,21 @@ HashDigestResult ComputeSha256DigestParts(const HashDigestSegment* segments,
   return result;
 }
 
-HashDigestResult ComputeSha256Digest(const byte* payload, std::size_t payload_size) {
-  if ((payload_size != 0 && payload == nullptr) ||
-      payload_size > std::numeric_limits<u64>::max() / 8)
-    return HashError("SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed", "payload_extent_invalid");
-  HashDigestResult result;
-  result.status = HashOkStatus();
-  unsigned int digest_len = 0;
-  if (EVP_Digest(payload,
-                 payload_size,
-                 result.digest.data(),
-                 &digest_len,
-                 EVP_sha256(),
-                 nullptr) != 1 ||
-      digest_len != result.digest.size()) {
-    return HashError("SB-CORE-HASH-SHA256-FAILED",
-                     "core.hash.sha256_failed");
-  }
-  result.digest_bytes = static_cast<u16>(digest_len);
-  return result;
+Sha256DigestNativeResult ComputeSha256DigestNative(const byte* payload,std::size_t payload_size) {
+  if ((payload_size != 0 && payload == nullptr) || payload_size > std::numeric_limits<u64>::max()/8)
+    return {Sha256DigestError::payload_extent_invalid,{}};
+  Sha256DigestNativeResult result;
+  unsigned int digest_len=0;
+  if (EVP_Digest(payload,payload_size,result.digest.data(),&digest_len,EVP_sha256(),nullptr)!=1 ||
+      digest_len!=result.digest.size()) return {Sha256DigestError::provider_failure,{}};
+  result.error=Sha256DigestError::none;return result;
+}
+HashDigestResult ComputeSha256Digest(const byte* payload,std::size_t payload_size) {
+  const auto native=ComputeSha256DigestNative(payload,payload_size);
+  if(!native.ok()) return HashError("SB-CORE-HASH-SHA256-FAILED","core.hash.sha256_failed",
+    native.error==Sha256DigestError::payload_extent_invalid?"payload_extent_invalid":"");
+  HashDigestResult result;result.status=HashOkStatus();result.digest=native.digest;
+  result.digest_bytes=kSha256DigestBytes;return result;
 }
 
 HashDigestResult ComputeSha256Stream(std::istream& input, u64 expected_bytes) {

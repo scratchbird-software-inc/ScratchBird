@@ -39,6 +39,15 @@ struct HashDigestResult {
   }
 };
 
+enum class Sha256DigestError : unsigned char { none, payload_extent_invalid, provider_failure };
+struct Sha256DigestNativeResult {
+  Sha256DigestError error=Sha256DigestError::provider_failure;
+  Digest256 digest{};
+  bool ok() const noexcept {return error==Sha256DigestError::none;}
+};
+// Fixed diagnostics over the same one-shot provider. This is not proof that
+// provider-internal allocation is charged to a caller's memory reservation.
+Sha256DigestNativeResult ComputeSha256DigestNative(const byte*,std::size_t);
 HashDigestResult ComputeSha256Digest(const std::vector<byte>& payload);
 HashDigestResult ComputeSha256Digest(const byte* payload, std::size_t payload_size);
 // Consume exactly expected_bytes from the current stream position, then require

@@ -27,7 +27,7 @@ disk::NativePageReference GetRef(const byte* p){return {GetUuid(p),LoadLittle64(
 void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uuid);StoreLittle64(p+16,r.page_number);StoreLittle64(p+24,r.page_generation);PutUuid(p+32,r.page_size_profile_uuid);}
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
 auto Digest(const byte* b,std::size_t size,std::size_t field,bool clear=true){const std::array<byte,32> zero{};
-  const hash::HashDigestSegment parts[]={{b,field},{clear?zero.data():b+field,32},{b+field+32,size-field-32}};return hash::ComputeSha256DigestParts(parts,3);}
+  const hash::HashDigestSegment parts[]={{b,field},{clear?zero.data():b+field,32},{b+field+32,size-field-32}};return hash::ComputeSha256DigestPartsNative(parts,3);}
 NativeRetentionPageResult Fail(E e){NativeRetentionPageResult r;r.error=e;return r;}
 NativeRetentionChainResult ChainFail(E e){NativeRetentionChainResult r;r.error=e;return r;}
 bool Legal(const NativeRetentionPin& r){return r.kind==NativeRetentionKind::legal_hold||r.access==NativeRetentionAccess::legal_hold;}

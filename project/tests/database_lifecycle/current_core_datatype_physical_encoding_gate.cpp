@@ -8,6 +8,7 @@
 
 #include "datatype_physical_encoding.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -69,6 +70,9 @@ void RoundTrip(const dt::DatatypePhysicalValue& value) {
 
 void TestEveryCanonicalDatatypePhysicalRoundTrip() {
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
+    // base.bit_string is context-sensitive and has no raw generic semantic
+    // path. Its exact V3 receipt/profile adapter is exercised below.
+    if (descriptor.type_id == dt::CanonicalTypeId::bit_string) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     Require(layout.ok(), "MDF-013 missing storage layout");
     RoundTrip(dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -78,6 +82,66 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
     null_value.state = dt::DatatypePhysicalValueState::sql_null;
     RoundTrip(null_value);
   }
+}
+
+void TestBitStringStructuralBoundaryAndRawRefusal() {
+  const std::array<platform::byte, 5> component{{1, 0, 0, 0, 0x80}};
+  const dt::DatatypePhysicalValueView structural{
+      dt::CanonicalTypeId::bit_string,
+      dt::DatatypePhysicalValueState::value,
+      component.data(), component.size()};
+  std::array<platform::byte, 29> frame{};
+  const auto encoded = dt::EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
+      structural, frame.data(), frame.size());
+  Require(encoded.ok() && encoded.bytes_written == frame.size(),
+          "MDF-013 bit structural SBDPV encode failed");
+  const auto decoded = dt::DecodeDatatypePhysicalStructuralValueViewNoAlloc(
+      frame.data(), frame.size());
+  Require(decoded.ok() &&
+              decoded.value.type_id == dt::CanonicalTypeId::bit_string &&
+              decoded.value.state == dt::DatatypePhysicalValueState::value &&
+              decoded.value.payload_data == frame.data() + 24 &&
+              decoded.value.payload_bytes == component.size(),
+          "MDF-013 bit structural SBDPV borrowed decode mismatch");
+
+  const auto raw_encode = dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::bit_string,
+       dt::DatatypePhysicalValueState::value,
+       {component.begin(), component.end()}});
+  const auto raw_decode = dt::DecodeDatatypePhysicalValue(
+      frame.data(), frame.size());
+  Require(!raw_encode.ok() && !raw_decode.ok() &&
+              raw_encode.diagnostic.diagnostic_code ==
+                  "CTB.BIT.SERIALIZATION_PROFILE_MISSING" &&
+              raw_decode.diagnostic.diagnostic_code ==
+                  "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+          "MDF-013 generic raw bit semantic path was not refused");
+  const auto malformed_raw=dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::bit_string,
+       dt::DatatypePhysicalValueState::value,{}});
+  Require(!malformed_raw.ok()&&malformed_raw.diagnostic.diagnostic_code==
+              "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+          "MDF-013 raw bit payload was interpreted before profile refusal");
+  const auto invalid_state=dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::bit_string,
+       dt::DatatypePhysicalValueState::overflow_root,{0x80}});
+  Require(!invalid_state.ok()&&invalid_state.diagnostic.diagnostic_code==
+              "SB-DATATYPE-PHYSICAL-PAYLOAD-REFUSED",
+          "MDF-013 raw bit invalid state precedence mismatch");
+  const auto dirty_null=dt::EncodeDatatypePhysicalValue(
+      {dt::CanonicalTypeId::bit_string,
+       dt::DatatypePhysicalValueState::sql_null,{0x80}});
+  Require(!dirty_null.ok()&&dirty_null.diagnostic.diagnostic_code==
+              "DATATYPE.NULL_STATE.INVALID",
+          "MDF-013 raw bit dirty NULL precedence mismatch");
+
+  auto corrupt = frame;
+  corrupt.back() ^= 1;
+  const auto integrity = dt::DecodeDatatypePhysicalStructuralValueViewNoAlloc(
+      corrupt.data(), corrupt.size());
+  Require(!integrity.ok() && integrity.diagnostic.diagnostic_code ==
+              "SB-DATATYPE-PHYSICAL-CHECKSUM-MISMATCH",
+          "MDF-013 structural bit corruption diagnostic mismatch");
 }
 
 void TestOverflowLocatorOpaqueAndProtectedStates() {
@@ -138,7 +202,9 @@ void TestMalformedPhysicalPayloadsAreRefused() {
 
 void TestRestartPersistenceRoundTrip() {
   std::vector<platform::byte> image;
+  std::size_t expected_count = 0;
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
+    if (descriptor.type_id == dt::CanonicalTypeId::bit_string) continue;
     const auto layout = dt::LookupDatatypeStorageLayout(descriptor.type_id);
     const auto encoded = dt::EncodeDatatypePhysicalValue(
         dt::SampleDatatypePhysicalValueForLayout(layout.layout));
@@ -149,6 +215,7 @@ void TestRestartPersistenceRoundTrip() {
     image.push_back(static_cast<platform::byte>((size >> 16) & 0xffu));
     image.push_back(static_cast<platform::byte>((size >> 24) & 0xffu));
     image.insert(image.end(), encoded.bytes.begin(), encoded.bytes.end());
+    ++expected_count;
   }
 
   const auto path = std::filesystem::temp_directory_path() /
@@ -182,7 +249,7 @@ void TestRestartPersistenceRoundTrip() {
     offset += size;
     ++decoded_count;
   }
-  Require(decoded_count == dt::BuiltinDatatypeDescriptors().size(),
+  Require(decoded_count == expected_count,
           "MDF-013 persisted row count mismatch");
 }
 
@@ -194,6 +261,7 @@ int main() {
   // DEFER-DPE-IN-PAGE-LAYOUT
   // DEFER-DPE-OVERFLOW-LAYOUT
   TestEveryCanonicalDatatypePhysicalRoundTrip();
+  TestBitStringStructuralBoundaryAndRawRefusal();
   TestOverflowLocatorOpaqueAndProtectedStates();
   TestMalformedPhysicalPayloadsAreRefused();
   TestRestartPersistenceRoundTrip();

@@ -37,7 +37,8 @@ struct RowDataCell {
   DatatypeBinaryValue value;
 };
 
-struct RowDataRecord {
+template<class Cells>
+struct BasicRowDataRecord {
   TypedUuid row_uuid;
   // Issued by the physical mutation owner, never derived from the row/sequence.
   scratchbird::core::platform::Uuid version_uuid;
@@ -54,8 +55,14 @@ struct RowDataRecord {
   u64 previous_row_version = 0;
   u64 next_row_version = 0;
   bool deleted = false;
-  std::vector<RowDataCell> cells;
+  Cells cells;
 };
+using RowDataRecord = BasicRowDataRecord<std::vector<RowDataCell>>;
+struct RowDataCellView {
+  u16 column_ordinal = 0;
+  scratchbird::core::datatypes::DatatypeBinaryValueView value;
+};
+using RowDataRecordView = BasicRowDataRecord<std::span<const RowDataCellView>>;
 
 struct RowDataSlot {
   u32 stable_slot_id = 0;
@@ -65,7 +72,8 @@ struct RowDataSlot {
   bool deleted = false;
 };
 
-struct RowDataPageBody {
+template<class Rows, class Slots>
+struct BasicRowDataPageBody {
   TypedUuid relation_uuid;
   u64 segment_id = 0;
   u64 segment_generation = 0;
@@ -75,9 +83,11 @@ struct RowDataPageBody {
   u64 next_page_number = 0;
   u32 free_space_offset = 0;
   u32 free_space_bytes = 0;
-  std::vector<RowDataRecord> rows;
-  std::vector<RowDataSlot> slots;
+  Rows rows;
+  Slots slots;
 };
+using RowDataPageBody = BasicRowDataPageBody<std::vector<RowDataRecord>, std::vector<RowDataSlot>>;
+using RowDataPageView = BasicRowDataPageBody<std::span<const RowDataRecordView>, std::span<const RowDataSlot>>;
 
 struct DenseRowOrdinalScope {
   TypedUuid relation_uuid;
@@ -157,6 +167,42 @@ RowDataPageResult ParseRowDataPageRows(std::span<const byte> serialized, u64 pag
 RowDataPageResult ParseRowDataPageRowsWithCanonicalBinaryCells(
     std::span<const byte> serialized, u64 page_number,
     const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context);
+
+// Caller-owned native arrays and hash-index scratch. No datatype payload is
+// copied: successful cells borrow immutable input bytes. All backing must remain
+// alive and disjoint from input through the returned view's last use. The owner
+// supplies actual admitted memory; this component never grants it.
+struct RowDataPageViewWorkspace {
+  std::span<RowDataRecordView> rows;
+  std::span<RowDataCellView> cells;
+  std::span<RowDataSlot> slots;
+  std::span<u32> version_index;
+  std::span<u32> sequence_index;
+};
+struct RowDataPageViewRequirements {
+  std::size_t rows = 0, cells = 0, index_slots = 0;
+};
+RowDataPageViewRequirements RowDataPageViewBackingRequirements(std::size_t image_bytes) noexcept;
+// Fixed row diagnostics retain literal identities and an optional numeric
+// detail. The owning legacy adapter alone renders that detail as text.
+struct RowDataPageDiagnosticView {
+  std::string_view diagnostic_code, message_key;
+  std::optional<u64> detail;
+  std::string_view source_component;
+};
+enum class RowDataPageViewError { none, row_failure, binary_failure, insufficient_workspace, invalid_workspace };
+struct RowDataPageViewResult {
+  RowDataPageViewError error = RowDataPageViewError::row_failure;
+  Status status;
+  RowDataPageView body;
+  RowDataPageDiagnosticView diagnostic;
+  std::optional<scratchbird::core::datatypes::DatatypeBinaryDiagnosticView> binary_diagnostic;
+  bool ok() const noexcept { return error == RowDataPageViewError::none && status.ok(); }
+};
+RowDataPageViewResult ParseRowDataPageWithCanonicalBinaryCellsInto(
+    std::span<const byte> input, u64 page_number, RowDataPageViewWorkspace workspace,
+    const scratchbird::core::datatypes::DatatypeBinaryDiagnosticContextV1& context) noexcept;
+
 DiagnosticRecord MakeRowDataPageDiagnostic(Status status,
                                            std::string diagnostic_code,
                                            std::string message_key,

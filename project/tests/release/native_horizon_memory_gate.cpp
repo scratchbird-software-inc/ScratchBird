@@ -81,6 +81,12 @@ using Entry=pg::NativeHorizonRecord;
 using Bytes=std::vector<byte>;using E=pg::NativeHorizonError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(unsigned n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;for(unsigned i=0;i<4;++i)id.bytes[15-i]=byte(n>>(8*i));return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -386,9 +392,9 @@ void Codecs(){
   Check(scratch.Decode(Oracle(order)).error==E::invalid_reference,"original per-record error ordering");
   for(unsigned at:{128u,136u,138u,140u,220u,440u,511u,680u,8191u}){
     auto b=good;b[at]^=0x80;Seal(b);Check(!scratch.Decode(b).root,"resealed family record reserved and tail failure");}
-  for(unsigned method=1;method<=4;++method){hashes=0;fault_context=1;fault=method;auto failed=scratch.Decode(good);
+  for(unsigned method=1;method<=4;++method){hashes=0;fault_context=1;fault=method;auto failed=DenyCodecAllocation([&]{return scratch.Decode(good);});
     Check(!fault&&!failed.root&&failed.error==E::hash_failure,"every digest phase failure");}
-  hashes=0;hash_at=1;auto failed=scratch.Decode(good);hash_at=0;
+  hashes=0;hash_at=1;auto failed=DenyCodecAllocation([&]{return scratch.Decode(good);});hash_at=0;
   Check(!failed.root&&failed.error==E::hash_failure,"digest context failure");
   for(unsigned size:{0u,127u,511u,8191u,8193u}){auto b=good;b.resize(size);Check(!scratch.Decode(b).root,"invalid image length");}
   for(unsigned field=0;field<6;++field)for(unsigned at=0;at<16;++at){auto v=Example(0,0,1);auto& r=v.records[0];

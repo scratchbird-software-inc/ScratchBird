@@ -4,6 +4,9 @@
 #include "catalog_page.hpp"
 #include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "native_catalog_leaf_memory.hpp"
+#include "native_btree_tree_memory.hpp"
+#include "metric_observation_queue.hpp"
 #include "catalog_schema_definition.hpp"
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
@@ -73,6 +76,28 @@ unsigned observed_full_digests=0;
 bool count_full_digests=false;
 std::size_t observed_read_bytes=0;
 bool track_reads=false;
+bool deny_heap_on_next_read=false;
+struct FencedHeapProbe {
+  std::recursive_mutex* mutex=nullptr;
+  std::atomic<unsigned> request{0},completed{0};
+  std::atomic<bool> available{false},stop{false};
+  unsigned outside_allocations=0;
+  void Run() noexcept {
+    while(!stop.load()){
+      const auto next=request.load();
+      if(next==completed.load()){std::this_thread::yield();continue;}
+      const bool free=mutex->try_lock();if(free)mutex->unlock();
+      available=free;completed=next;
+    }
+  }
+  bool Outside() noexcept {
+    const auto next=request.fetch_add(1)+1;
+    while(completed.load()!=next)std::this_thread::yield();
+    if(!available.load())return false;
+    ++outside_allocations;return true;
+  }
+};
+thread_local FencedHeapProbe* fenced_heap_probe=nullptr;
 std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tree_read{false};
 unsigned pause_tree_read_number=0;
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
@@ -92,7 +117,8 @@ void ObserveMemoryDeviceLocks(MemoryDeviceLockProbe& probe){
 }
 void* operator new(std::size_t bytes) {
   if(count_allocations) ++observed_allocations;
-  if(allocation_budget==0) { allocation_budget=-1; allocation_failure_reads=reads; throw std::bad_alloc(); }
+  if(allocation_budget==0&&!(fenced_heap_probe&&fenced_heap_probe->Outside())) {
+    allocation_budget=-1; allocation_failure_reads=reads; throw std::bad_alloc(); }
   if(allocation_budget>0) --allocation_budget;
   if(auto* p=std::malloc(bytes?bytes:1)) return p;
   throw std::bad_alloc();
@@ -104,7 +130,8 @@ void operator delete(void* p,std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
 void* operator new(std::size_t bytes,std::align_val_t alignment){
   if(count_allocations)++observed_allocations;
-  if(allocation_budget==0){allocation_budget=-1;allocation_failure_reads=reads;throw std::bad_alloc();}
+  if(allocation_budget==0&&!(fenced_heap_probe&&fenced_heap_probe->Outside())){
+    allocation_budget=-1;allocation_failure_reads=reads;throw std::bad_alloc();}
   if(allocation_budget>0)--allocation_budget;
   ObserveMemoryDeviceLocks(allocation_lock_probe);
   void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(alignment),bytes?bytes:1)==0)return p;
@@ -178,6 +205,7 @@ extern "C" int __wrap_fsync(int fd) {
   return result;
 }
 extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
+  if(deny_heap_on_next_read){deny_heap_on_next_read=false;allocation_budget=0;}
   if(pause_next_tree_read.exchange(false)||(pause_tree_read_number&&track_reads&&reads+1==pause_tree_read_number)) {
     tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
   if(track_reads) { ++reads; observed_read_bytes+=n; }
@@ -522,7 +550,7 @@ page::NativeBtreePage BtreeExample(unsigned p=0,unsigned type=0x200,bool branch=
 }
 void BtreeSeal(Bytes& b) {std::fill(b.begin()+512,b.begin()+544,0);std::array<byte,32> digest{};
   Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent full native B-tree hash");std::copy(digest.begin(),digest.end(),b.begin()+512);}
-Bytes BtreeOracle(const page::NativeBtreePage& r) {
+template<class Page> Bytes BtreeOracle(const Page& r) {
   auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
   const std::string_view magic="SBBTP001";std::copy(magic.begin(),magic.end(),b.begin()+128);Number(b,136,2,1);Number(b,138,2,512);
   const auto& d=r.dependencies;PutUuid(b,144,d.index_uuid);Number(b,160,8,d.descriptor_generation);Number(b,168,8,d.storage_generation);
@@ -539,16 +567,129 @@ Bytes BtreeOracle(const page::NativeBtreePage& r) {
     PutUuid(b,at+16,c.key.row_uuid);PutUuid(b,at+32,c.key.version_uuid);ref(at+48,c.child);ref(at+96,c.base_page);std::copy(c.key.encoded_key.begin(),c.key.encoded_key.end(),b.begin()+at+144);at+=144+c.key.encoded_key.size();}
   Number(b,140,4,at);BtreeSeal(b);return b;
 }
+struct BorrowedBtreeWorkspace {
+  std::vector<page::NativeBtreeCellView> cells;
+  std::vector<page::NativeBtreeReferenceSlot> references;
+  explicit BorrowedBtreeWorkspace(std::size_t bytes){
+    const auto required=page::NativeBtreePageViewBackingRequirements(bytes);
+    cells.resize(required.cells);references.resize(required.reference_slots);
+  }
+  page::NativeBtreeViewWorkspace get(){return {cells,references};}
+};
+void BtreeBorrowedCheck(const Bytes& image,const page::NativeBtreePageResult& owning) {
+  BorrowedBtreeWorkspace scratch(image.size());allocation_budget=0;
+  const auto view=page::DecodeNativeBtreePageInto(image,scratch.get());
+  const auto remaining=allocation_budget;allocation_budget=-1;
+  Check(remaining==0&&view.error==owning.error&&view.ok()==owning.ok(),
+    "owning and bounded B-tree readers preserve complete admission without C++ allocation");
+  if(!view.ok()){Check(!view.page&&view.bytes.empty(),"borrowed B-tree failure exposes no page prefix");return;}
+  Check(view.bytes.data()==image.data()&&view.bytes.size()==image.size()&&BtreeOracle(*view.page)==image,
+    "every borrowed B-tree field independently reconstructs the exact original bytes");
+  const auto resident=[&](const auto& key){return key.encoded_key.data()>=image.data()&&
+    key.encoded_key.data()+key.encoded_key.size()<=image.data()+image.size();};
+  if(view.page->low_fence)Check(resident(*view.page->low_fence),"low fence borrows exact immutable image");
+  if(view.page->high_fence)Check(resident(*view.page->high_fence),"high fence borrows exact immutable image");
+  for(const auto& cell:view.page->cells)Check(resident(cell.key),"every B-tree key borrows exact immutable image");
+}
+void BtreeBorrowedBounds() {
+  using E=page::NativeBtreeError;
+  for(unsigned profile=0;profile<5;++profile){
+    auto image=BtreeOracle(BtreeExample(profile));const auto original=image;
+    BorrowedBtreeWorkspace scratch(image.size());
+    const auto refuse=[&](page::NativeBtreeViewWorkspace workspace,E error){
+      allocation_budget=0;const auto result=page::DecodeNativeBtreePageInto(image,workspace);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!result.ok()&&!result.page&&result.bytes.empty()&&result.error==error&&remaining==0&&image==original,
+        "short or invalid B-tree workspace preserves immutable input and typed failure without heap fallback");
+    };
+    auto workspace=scratch.get();workspace.cells=workspace.cells.first(2);refuse(workspace,E::resource_exhausted);
+    workspace=scratch.get();workspace.references=workspace.references.first(24);refuse(workspace,E::resource_exhausted);
+    for(std::size_t offset:{std::size_t(0),std::size_t(512),image.size()-sizeof(page::NativeBtreeCellView)}){
+      workspace=scratch.get();workspace.cells={reinterpret_cast<page::NativeBtreeCellView*>(image.data()+offset),1};
+      refuse(workspace,E::invalid_workspace);
+    }
+    for(std::size_t offset:{std::size_t(0),std::size_t(512),image.size()-sizeof(page::NativeBtreeReferenceSlot)}){
+      workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(image.data()+offset),1};
+      refuse(workspace,E::invalid_workspace);
+    }
+    workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(workspace.cells.data()),1};
+    refuse(workspace,E::invalid_workspace);
+    workspace=scratch.get();workspace.cells={reinterpret_cast<page::NativeBtreeCellView*>(
+      reinterpret_cast<byte*>(scratch.cells.data())+1),1};refuse(workspace,E::invalid_workspace);
+    workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(
+      reinterpret_cast<byte*>(scratch.references.data())+1),1};refuse(workspace,E::invalid_workspace);
+    // Maximum density reaches the advertised cell/reference bounds. Each
+    // reference uses a distinct filespace with binary suffixes beyond word one.
+    for(bool branch:{false,true}){
+      auto dense=BtreeExample(profile,0x200,branch);dense.cells.clear();
+      const auto n=page::NativeBtreePageViewBackingRequirements(image.size()).cells;
+      for(std::size_t i=0;i<n;++i){page::NativeBtreeCell cell;cell.key.encoded_key={0};
+        cell.key.row_uuid=Id(60);cell.key.row_uuid.bytes[13]=0xa5;
+        cell.key.row_uuid.bytes[14]=static_cast<byte>(i>>8);cell.key.row_uuid.bytes[15]=static_cast<byte>(i);
+        cell.key.version_uuid=Id(61);auto filespace=cell.key.row_uuid;filespace.bytes[13]=0xb6;
+        disk::NativePageReference ref{filespace,50+i,1,Profile(i%5)};
+        if(branch)cell.child=ref;else cell.base_page=ref;dense.cells.push_back(cell);
+      }
+      const auto packed=BtreeOracle(dense);const auto owning=page::DecodeNativeBtreePage(packed);
+      Check(owning.ok(),"maximal independent B-tree cell and reference population");
+      BtreeBorrowedCheck(packed,owning);
+      dense.cells.push_back(dense.cells.back());dense.cells.back().key.encoded_key={1};
+      if(branch)++dense.cells.back().child->page_number;
+      Check(page::EncodeNativeBtreePage(dense).error==E::resource_exhausted,"first extra B-tree cell cannot fit");
+    }
+    auto collided=BtreeExample(profile,0x200,true);
+    const auto bucket=[](const Uuid& id,u64 number){
+      u64 value=14695981039346656037ULL;
+      for(auto b:id.bytes){value^=b;value*=1099511628211ULL;}
+      for(unsigned i=0;i<8;++i){value^=(number>>(8*i))&255;value*=1099511628211ULL;}
+      return value%25;
+    };
+    const auto target=bucket(collided.first_child->filespace_uuid,0);
+    unsigned selected=0;
+    for(unsigned suffix=0;selected<3&&suffix<65536;++suffix){auto id=Id(170);
+      id.bytes[14]=static_cast<byte>(suffix>>8);id.bytes[15]=static_cast<byte>(suffix);
+      if(bucket(id,0)!=target)continue;
+      collided.cells[selected].child=disk::NativePageReference{id,70+selected,2,Profile(selected%5)};++selected;
+    }
+    Check(selected==3,"construct distinct full UUID reference keys with deliberately colliding scratch buckets");
+    auto collision_image=BtreeOracle(collided);auto admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.ok(),"colliding profile references remain distinct complete native identities");BtreeBorrowedCheck(collision_image,admitted);
+    collided.cells[1].child=collided.first_child;++collided.cells[1].child->page_generation;
+    collision_image=BtreeOracle(collided);admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.error==E::invalid_reference,"changed generation does not hide duplicate physical child");
+    BtreeBorrowedCheck(collision_image,admitted);
+    collided=BtreeExample(profile,0x200,true);collided.cells[1].child->page_size_profile_uuid=Profile((profile+1)%5);
+    collision_image=BtreeOracle(collided);admitted=page::DecodeNativeBtreePage(collision_image);
+    Check(admitted.error==E::invalid_reference,"same native filespace cannot acquire a second page profile");
+    BtreeBorrowedCheck(collision_image,admitted);
+    auto large=BtreeExample(profile);large.cells.resize(1);large.cells[0].key.encoded_key.resize(image.size()-640-4-144,0xab);
+    auto packed=BtreeOracle(large);auto large_result=page::DecodeNativeBtreePage(packed);
+    Check(large_result.ok(),"largest complete inline key is admitted in every profile");BtreeBorrowedCheck(packed,large_result);
+    large.cells[0].key.encoded_key.push_back(0);
+    Check(page::EncodeNativeBtreePage(large).error==E::resource_exhausted,"one excess key octet is not silently truncated");
+    auto empty=BtreeExample(profile);empty.cells.clear();packed=BtreeOracle(empty);
+    const auto empty_result=page::DecodeNativeBtreePage(packed);
+    Check(empty_result.ok(),"empty allocated root leaf remains valid in every profile");BtreeBorrowedCheck(packed,empty_result);
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;allocation_budget=0;
+      const auto result=page::DecodeNativeBtreePageInto(image,scratch.get());
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!hash_fault&&remaining==0&&!result.ok()&&!result.page&&result.bytes.empty()&&result.error==E::hash_failure,
+        "every borrowed B-tree provider fault retains exact typed failure without error-string allocation");}
+  }
+}
 void NativeBtreePages() {
+  BtreeBorrowedBounds();
   using E=page::NativeBtreeError;
   const auto empty=[&](const auto& r){Check(!r.ok()&&!r.page&&r.bytes.empty(),"native B-tree refusal returns no image or authority prefix");};
   for(unsigned p=0;p<5;++p)for(unsigned variant=0;variant<4;++variant){const bool branch=variant%2;
     const auto r=BtreeExample(p,variant<2?0x200:variant==2?0x202:0x201,branch);
     const auto bytes=BtreeOracle(r),encoded=page::EncodeNativeBtreePage(r).bytes;
     Check(bytes==encoded,"all profiles and roles independently packed B-tree image");const auto decoded=page::DecodeNativeBtreePage(bytes);
-    Check(decoded.ok()&&BtreeOracle(*decoded.page)==bytes,"decode independent B-tree frame without prototype body");}
+    Check(decoded.ok()&&BtreeOracle(*decoded.page)==bytes,"decode independent B-tree frame without prototype body");
+    BtreeBorrowedCheck(bytes,decoded);}
   const auto good=BtreeExample();const auto bytes=BtreeOracle(good);
-  for(std::size_t at=0;at<bytes.size();++at){auto bad=bytes;bad[at]^=1;empty(page::DecodeNativeBtreePage(bad));}
+  for(std::size_t at=0;at<bytes.size();++at){auto bad=bytes;bad[at]^=1;const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   for(unsigned which=0;which<22;++which){auto r=BtreeExample(0,0x201,true);
     if(which==0)r.dependencies.index_uuid={};if(which==1)r.dependencies.descriptor_generation=0;if(which==2)r.dependencies.storage_generation=0;
     if(which==3)r.dependencies.key_profile_uuid={};if(which==4)r.dependencies.visibility_profile_uuid={};if(which==5)r.dependencies.dependency_map_uuid={};
@@ -557,10 +698,13 @@ void NativeBtreePages() {
     if(which==13)r.first_child.reset();if(which==14)r.cells[1].child=r.first_child;if(which==15)r.cells[1].child->page_size_profile_uuid=Profile(1);
     if(which==16)r.cells[1].child->page_number=r.header.page_number;if(which==17)r.cells[1].key.row_uuid={};if(which==18)r.cells[1].key=r.cells[0].key;
     if(which==19)r.high_fence=r.cells.back().key;if(which==20)r.cells[1].deleted=true;if(which==21)r.cells[1].base_page=r.parent;
-    empty(page::EncodeNativeBtreePage(r));empty(page::DecodeNativeBtreePage(BtreeOracle(r)));}
+    empty(page::EncodeNativeBtreePage(r));const auto bad=BtreeOracle(r);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   for(auto offset:{128u,136u,138u,140u,284u,504u,508u,544u,639u,640u,644u,656u,660u,664u,8191u}){
-    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);empty(page::DecodeNativeBtreePage(bad));}
-  for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);empty(page::DecodeNativeBtreePage(bad));}
+    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
+  for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(result);BtreeBorrowedCheck(bad,result);}
   {auto r=good;r.cells.clear();Check(page::EncodeNativeBtreePage(r).ok()&&page::DecodeNativeBtreePage(BtreeOracle(r)).ok(),"empty allocated root leaf is representable");}
   {auto r=good;r.cells.resize(1);r.cells[0].key.encoded_key.resize(sizes[0],0);const auto e=page::EncodeNativeBtreePage(r);empty(e);Check(e.error==E::resource_exhausted,"oversized inline key cannot be truncated");}
   // Tie-breaking is binary, including bytes after the first machine word.
@@ -643,6 +787,8 @@ std::vector<page::NativeBtreePage> BtreeDeepTreeExample(unsigned p) {
     nodes[pair.first].high_fence=boundary;nodes[pair.second].low_fence=boundary;}
   return nodes;
 }
+void GovernedBtreeParity(const std::vector<disk::NativeFilespaceDevice>&,
+  const disk::NativePageReference&,const page::NativeBtreeDependencies&,u64,const page::NativeBtreeTreeResult&);
 void NativeBtreeTrees() {
   using E=page::NativeBtreeError;
   const auto empty=[&](const auto& r){Check(!r.ok()&&r.pages.empty()&&r.leaves.empty()&&r.retained_image_bytes==0,"native tree failure exposes no images leaf order or counters");};
@@ -665,6 +811,7 @@ void NativeBtreeTrees() {
     persist();auto result=read(budget);Check(result.ok()&&result.pages.size()==7&&result.leaves==std::vector<std::size_t>{2,3,5,6}
       &&result.retained_image_bytes==budget,"complete cross-profile two-level navigation tree and exact retained budget");
     for(unsigned i=0;i<4;++i)Check(result.pages[result.leaves[i]].bytes==BtreeOracle(original[3+i]),"verified leaf order uses actual independently packed images");
+    GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);
     result=read(budget-1);empty(result);Check(result.error==E::resource_exhausted,"late subtree one-byte-short budget returns no valid prefix");
     result=read(0);empty(result);Check(result.error==E::invalid_reference,"zero navigation allowance refused");
     auto reversed=devices;std::reverse(reversed.begin(),reversed.end());
@@ -696,7 +843,8 @@ void NativeBtreeTrees() {
         if(fault==12||fault==13){auto& key=*nodes[4].low_fence;if(fault==12)--key.row_uuid.bytes[15];else --key.version_uuid.bytes[15];
           nodes[3].high_fence=key;expected=E::tree_fence_mismatch;}
         for(const auto& n:nodes)Check(page::DecodeNativeBtreePage(BtreeOracle(n)).ok(),"negative tree still has individually valid native images");
-        persist();result=read(budget);empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));}
+        persist();result=read(budget);empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));
+        GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);}
       nodes=original;persist();
       auto duplicate=devices;duplicate.push_back(devices[0]);result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),duplicate,root,original[0].dependencies,budget);empty(result);Check(result.error==E::invalid_filespace,"duplicate retained filespace refused");
       duplicate=devices;duplicate[0].device=&first;result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),duplicate,root,original[0].dependencies,budget);empty(result);Check(result.error==E::invalid_filespace,"aliased retained device refused");
@@ -716,13 +864,16 @@ void NativeBtreeTrees() {
       // allocation-map verifier obligation, not fabricated tree members.
       nodes[0].tree_level=0;nodes[0].first_child.reset();nodes[0].cells.clear();persist();result=read(sizes[p]);
       Check(result.ok()&&result.pages.size()==1&&result.leaves==std::vector<std::size_t>{0}&&result.retained_image_bytes==sizes[p],"actual empty allocated root tree");
+      GovernedBtreeParity(devices,root,original[0].dependencies,sizes[p],result);
       nodes=BtreeDeepTreeExample(p);persist();const auto deep_root=reference(nodes[0]);const u64 deep_budget=2*budget+sizes[p];
       const auto deep_read=[&]{return page::ReadNativeBtreeTreeFromOpenDevices(Id(1),devices,deep_root,original[0].dependencies,deep_budget);};
       result=deep_read();Check(result.ok()&&result.pages.size()==15&&result.leaves==std::vector<std::size_t>{3,4,6,7,10,11,13,14}
         &&result.retained_image_bytes==deep_budget,"three-level actual tree includes branch siblings across different parents");
+      GovernedBtreeParity(devices,deep_root,original[0].dependencies,deep_budget,result);
       const auto right=nodes[3].right;nodes[3].right=reference(nodes[10]);
       Check(page::DecodeNativeBtreePage(BtreeOracle(nodes[3])).ok(),"cross-parent branch sibling fault is locally valid");persist();result=deep_read();empty(result);
-      Check(result.error==E::tree_sibling_mismatch,"branch sibling reciprocity checked across parent boundaries");nodes[3].right=right;persist();
+      Check(result.error==E::tree_sibling_mismatch,"branch sibling reciprocity checked across parent boundaries");
+      GovernedBtreeParity(devices,deep_root,original[0].dependencies,deep_budget,result);nodes[3].right=right;persist();
     }
     Exclusive(path1);Exclusive(path2);Exclusive(path3);Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close tree owners before fresh executable");
     const auto child=::fork();Check(child>=0,"fork independent native tree reader");
@@ -1256,11 +1407,252 @@ bool SameBinaryDiagnostic(const scratchbird::core::datatypes::DatatypeBinaryDiag
   return true;
 }
 
+struct BorrowedRowWorkspace {
+  std::vector<page::RowDataRecordView> rows;
+  std::vector<page::RowDataCellView> cells;
+  std::vector<page::RowDataSlot> slots;
+  std::vector<platform::u32> versions,sequences;
+  explicit BorrowedRowWorkspace(std::size_t bytes) {
+    const auto size=page::RowDataPageViewBackingRequirements(bytes);
+    rows.resize(size.rows);cells.resize(size.cells);slots.resize(size.rows);
+    versions.resize(size.index_slots);sequences.resize(size.index_slots);
+  }
+  page::RowDataPageViewWorkspace get() { return {rows,cells,slots,versions,sequences}; }
+};
+struct LeafMemoryFixture {
+  scratchbird::core::memory::MemoryManager manager;
+  scratchbird::core::memory::HierarchicalMemoryBudgetLedger ledger{3,5};
+  db::NativeStorageMemoryBinding binding{Id(1),Id(220),Id(221),Id(222)};
+  db::NativeStorageMemory memory;
+  static auto Policy(u64 bytes){auto p=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+    p.hard_limit_bytes=p.per_context_limit_bytes=4*bytes;p.soft_limit_bytes=0;return p;}
+  explicit LeafMemoryFixture(u64 bytes):manager(Policy(bytes)){
+    namespace mem=scratchbird::core::memory;
+    mem::ReservationBackedMemoryResourceRequest r;r.memory_manager=&manager;r.reservation_ledger=&ledger;
+    r.consumer_kind=mem::ReservationBackedMemoryConsumerKind::background_maintenance;
+    r.category=mem::MemoryCategory::page_buffer;r.requested_bytes=bytes;r.memory_class="page_buffer";
+    r.route_label="storage leaf conformance";r.purpose="actual image and decoded metadata";
+    r.binary_operation_uuid=binding.operation_uuid.bytes;
+    r.binary_ownership[mem::MemoryBinaryScopeKind::database]=binding.database_uuid.bytes;
+    r.binary_ownership[mem::MemoryBinaryScopeKind::owner]=binding.owner_uuid.bytes;
+    r.binary_ownership[mem::MemoryBinaryScopeKind::context]=binding.context_uuid.bytes;
+    r.scope_chain={{mem::HierarchicalMemoryScopeKind::process,{},Id(223).bytes},
+      {mem::HierarchicalMemoryScopeKind::database,{},binding.database_uuid.bytes}};
+    r.provenance.source=mem::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+    r.provenance.source_label="actual storage memory conformance";
+    for(const auto& scope:r.scope_chain){mem::HierarchicalMemoryBudget b;b.scope=scope;b.hard_limit_bytes=bytes;b.provenance=r.provenance;
+      Check(ledger.SetBudget(b).ok(),"real leaf parent budget");}
+    auto grant=mem::AcquireReservationBackedMemoryResource(r);Check(grant.ok(),"real leaf memory grant");
+    auto adopted=db::AdoptNativeStorageMemory(binding,grant.resource);
+    Check(adopted.ok()&&!grant.resource,"exclusive binary-bound leaf grant adoption");memory=std::move(adopted.memory);
+  }
+  void Empty(){const auto s=manager.Snapshot();Check(!s.current_bytes&&!s.reserved_capacity_bytes&&
+    !s.active_capacity_reservation_count&&!ledger.Snapshot().current_bytes,"leaf backing and grant completely released");}
+};
+void GovernedBtreeParity(const std::vector<disk::NativeFilespaceDevice>& files,
+    const disk::NativePageReference& root,const page::NativeBtreeDependencies& dependencies,
+    u64 bytes,const page::NativeBtreeTreeResult& expected) {
+  const db::NativeBtreeTreeMemoryLimits limits{31,static_cast<std::size_t>(bytes)};
+  const auto amount=db::NativeBtreeTreeWorkspaceBytes(files,limits);LeafMemoryFixture grant(amount);
+  auto result=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),files,root,dependencies,limits,grant.memory,grant.binding);
+  Check(result.ok()==expected.ok()&&result.tree_error==expected.error,"grant-backed and owning complete-tree classification parity");
+  if(expected.ok()){
+    Check(result.pages.size()==expected.pages.size()&&result.retained_image_bytes==expected.retained_image_bytes&&
+      std::equal(result.leaves.begin(),result.leaves.end(),expected.leaves.begin(),expected.leaves.end()),"identical complete retained topology and leaf order");
+    for(std::size_t i=0;i<result.pages.size();++i)Check(BtreeOracle(*result.pages[i].page)==expected.pages[i].bytes,
+      "grant-backed complete decoded tree independently reconstructs owning wire bytes");
+  }else Check(!result.arena&&result.pages.empty()&&result.leaves.empty()&&!result.retained_image_bytes,
+      "invalid later tree publishes no grant-backed prefix");
+  result={};grant.memory={};grant.Empty();
+}
+void NativeBtreeTreeMemory() {
+  using E=db::NativeBtreeTreeMemoryError;using T=page::NativeBtreeError;
+  const auto empty=[](const auto& r){Check(!r.ok()&&!r.arena&&r.pages.empty()&&r.leaves.empty()&&!r.retained_image_bytes,
+    "failed governed tree returns no retained image or topology prefix");};
+  for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q){const auto s=(p+2)%5;
+    Fixture fixture;disk::FileDevice first,second,base;
+    const auto path1=(fixture.root/"memory-tree-first").string(),path2=(fixture.root/"memory-tree-second").string(),path3=(fixture.root/"memory-tree-base").string();
+    auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
+    for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
+    const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
+      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()&&
+        device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare actual governed tree filespace");};
+    prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
+    auto nodes=BtreeTreeExample(p);
+    for(auto& n:nodes){if(n.header.filespace_uuid==Id(7)){n.header.page_size_bytes=sizes[q];n.header.page_size_profile_uuid=Profile(q);}
+      const auto reprofile=[&](auto& r){if(r&&r->filespace_uuid==Id(7))r->page_size_profile_uuid=Profile(q);};
+      reprofile(n.parent);reprofile(n.left);reprofile(n.right);reprofile(n.first_child);
+      for(auto& c:n.cells){reprofile(c.child);reprofile(c.base_page);}}
+    const auto persist=[&]{for(const auto& n:nodes){const auto bytes=BtreeOracle(n);auto& device=n.header.filespace_uuid==Id(2)?first:second;
+      Check(device.WriteAt(n.header.page_number*n.header.page_size_bytes,bytes.data(),bytes.size()).ok(),"persist independent governed tree image");}
+      Check(first.Sync().ok()&&second.Sync().ok()&&base.Sync().ok(),"sync actual governed tree");};persist();
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const auto& h=nodes[0].header;const disk::NativePageReference root{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
+    const db::NativeBtreeTreeMemoryLimits limits{7,static_cast<std::size_t>(4*sizes[p]+3*sizes[q])};
+    const auto amount=db::NativeBtreeTreeWorkspaceBytes(devices,limits);Check(amount>limits.maximum_retained_image_bytes,"whole-tree grant covers images and all decoded traversal backing");
+    LeafMemoryFixture grant(amount);
+    const auto read=[&]{return db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,grant.memory,grant.binding);};
+    const auto oracle=[&](const auto& r){
+      const std::array<std::size_t,7> preorder{0,1,3,4,2,5,6};const std::array<std::size_t,4> leaves{2,3,5,6};
+      Check(r.ok()&&r.pages.size()==7&&r.retained_image_bytes==limits.maximum_retained_image_bytes&&
+        std::equal(r.leaves.begin(),r.leaves.end(),leaves.begin(),leaves.end()),"exact mixed-profile governed tree and leaf order");
+      for(std::size_t i=0;i<7;++i){const auto bytes=BtreeOracle(nodes[preorder[i]]);
+        Check(BtreeOracle(*r.pages[i].page)==bytes&&std::equal(r.pages[i].bytes.begin(),r.pages[i].bytes.end(),bytes.begin(),bytes.end()),
+          "complete granted tree matches independent images including every key and native reference");}
+      Check(grant.manager.Snapshot().current_bytes==amount&&grant.memory.Snapshot().allocated_bytes==amount,"all retained tree backing remains actually charged");};
+    reads=0;track_reads=true;auto result=read();track_reads=false;const auto read_count=reads;oracle(result);
+    Check(read_count==13,"six bootstrap/pagezero reads plus seven tree pages");result={};
+    auto held=first.AcquireOperationGuard();auto* mutex=held.mutex();held.unlock();
+    FencedHeapProbe heap_probe;heap_probe.mutex=mutex;std::thread observer([&]{heap_probe.Run();});
+    fenced_heap_probe=&heap_probe;deny_heap_on_next_read=true;result=read();const auto remaining=allocation_budget;
+    allocation_budget=-1;fenced_heap_probe=nullptr;heap_probe.stop=true;observer.join();
+    Check(!deny_heap_on_next_read&&remaining==0&&heap_probe.outside_allocations>0,"complete tree has no C++ allocation under cohort fences");oracle(result);result={};
+    for(auto short_limit:{db::NativeBtreeTreeMemoryLimits{6,limits.maximum_retained_image_bytes},
+        db::NativeBtreeTreeMemoryLimits{7,limits.maximum_retained_image_bytes-1}}){
+      auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,short_limit,grant.memory,grant.binding);
+      empty(refused);Check(refused.error==E::resource_exhausted&&!grant.manager.Snapshot().current_bytes,"exact page and byte ceilings refuse without a prefix");}
+    for(unsigned fault=1;fault<=read_count;++fault){reads=0;track_reads=true;read_fault=fault;auto refused=read();track_reads=false;
+      empty(refused);Check(!read_fault&&refused.tree_error==T::io_failure&&!grant.manager.Snapshot().current_bytes,"every actual governed tree read failure releases backing");}
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;auto refused=read();empty(refused);
+      Check(!hash_fault&&refused.tree_error==T::hash_failure&&!grant.manager.Snapshot().current_bytes,"every digest provider failure remains typed and releases backing");}
+    if(p==0&&q==0){
+      for(unsigned field=0;field<4;++field){auto wrong=grant.binding;
+        std::array<platform::Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*ids[field]=Id(230);
+        reads=0;track_reads=true;auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,grant.memory,wrong);track_reads=false;
+        empty(refused);Check(refused.error==E::memory_binding_failure&&!reads,"all four binary grant identities required before I/O");}
+      for(unsigned variant=0;variant<3;++variant){auto wrong=devices;if(variant==0)wrong.push_back(wrong[0]);
+        if(variant==1)wrong[0].device=&first;if(variant==2)wrong[1].filespace_uuid=Uuid{};
+        LeafMemoryFixture extra(db::NativeBtreeTreeWorkspaceBytes(wrong,limits));reads=0;track_reads=true;
+        auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),wrong,root,nodes[0].dependencies,limits,extra.memory,extra.binding);track_reads=false;
+        empty(refused);Check(refused.tree_error==T::invalid_filespace&&!reads,"duplicate identities aliased handles and nil filespaces refused before I/O");}
+      const auto original=Oracle(z2);
+      for(unsigned flag:{1u,2u}){auto bad=z2;bad.bootstrap.flags=flag;
+        if(flag==1)bad.bootstrap.encryption_profile_uuid=Id(4);const auto bytes=Oracle(bad);
+        Check(disk::DecodeFilespacePageZero(bytes.data(),bytes.size()).ok(),"authority requirement fixture is a valid page zero");
+        Check(second.WriteAt(0,bytes.data(),bytes.size()).ok(),"persist actual encrypted or cluster filespace requirement");
+        auto refused=read();empty(refused);Check(refused.tree_error==(flag==1?T::encrypted_requires_crypto_authority:T::cluster_requires_authority),"actual filespace flags cannot be bypassed by valid page bytes");}
+      Check(second.WriteAt(0,original.data(),original.size()).ok(),"restore actual local plaintext filespace");
+      for(unsigned flag:{1u,2u,4u,8u}){auto bad=nodes.back();bad.header.flags=flag;const auto bytes=BtreeOracle(bad);
+        Check(second.WriteAt(bad.header.page_number*sizes[q],bytes.data(),bytes.size()).ok(),"persist header authority requirements");
+        auto refused=read();empty(refused);Check(refused.tree_error==(flag==1?T::encrypted_requires_crypto_authority:flag==2?T::cluster_requires_authority:T::header_policy_requires_authority),"complete tree respects actual page authority requirements");}persist();
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());LeafMemoryFixture other(amount);
+      std::atomic<bool> success=true;std::thread a([&]{for(unsigned i=0;i<3;++i)if(!read().ok())success=false;});
+      std::thread b([&]{for(unsigned i=0;i<3;++i)if(!db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),reversed,root,nodes[0].dependencies,limits,other.memory,other.binding).ok())success=false;});
+      a.join();b.join();Check(success,"governed trees with opposite caller order use the same cohort lock order");
+      const auto mutex_of=[](auto& d){auto lock=d.AcquireOperationGuard();return lock.mutex();};
+      const std::array mutexes{mutex_of(first),mutex_of(second),mutex_of(base)};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done=false;db::NativeBtreeTreeMemoryResult paused;
+      std::thread reader([&]{paused=read();done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+      bool all_held=tree_read_paused.load();for(auto* m:mutexes)if(m->try_lock()){all_held=false;m->unlock();}
+      resume_tree_read=true;reader.join();pause_next_tree_read=false;Check(all_held,"all filespace fences precede first governed read");oracle(paused);paused={};
+      auto warm=read();Check(warm.ok(),"warm actual whole-tree allocator");warm={};
+      observed_allocations=0;count_allocations=true;warm=read();count_allocations=false;
+      const auto allocation_count=observed_allocations;Check(warm.ok(),"measure complete whole-tree allocations");warm={};
+      for(unsigned long fault=0;fault<=allocation_count;++fault){LeafMemoryFixture isolated(amount);
+        const auto attempt=[&]{return db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,isolated.memory,isolated.binding);};
+        auto primed=attempt();Check(primed.ok(),"warm independent fault grant");primed={};
+        observed_allocations=0;count_allocations=true;primed=attempt();count_allocations=false;
+        Check(primed.ok()&&observed_allocations==allocation_count,"identical warmed tree allocation sequence");primed={};
+        const auto losses=first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations();
+        const auto truncation=isolated.manager.Snapshot().telemetry_truncation_count;
+        allocation_budget=fault;auto injected=attempt();const auto budget=allocation_budget;allocation_budget=-1;
+        Check(fault==allocation_count?budget==0:budget==-1,"each measured tree allocation fault consumed");
+        if(!injected.ok()){empty(injected);Check(!isolated.manager.Snapshot().current_bytes,"failed tree allocation releases complete backing");}
+        else {Check(injected.pages.size()==7&&injected.retained_image_bytes==limits.maximum_retained_image_bytes&&
+            isolated.manager.Snapshot().current_bytes==amount,"optional observation failure retains fully charged complete tree");
+          for(std::size_t i=0;i<7;++i){const std::array<std::size_t,7> order{0,1,3,4,2,5,6};
+            Check(BtreeOracle(*injected.pages[i].page)==BtreeOracle(nodes[order[i]]),"successful fault path retains exact independently reconstructed tree");}
+          if(fault<allocation_count)Check(isolated.manager.Snapshot().telemetry_truncation_count>truncation||
+            first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations()>losses,
+            "only explicit optional telemetry loss may keep a tree successful after allocation failure");}
+        injected={};isolated.memory={};isolated.Empty();
+      }
+      Check(!db::NativeBtreeTreeWorkspaceBytes(devices,{std::numeric_limits<std::size_t>::max(),8192})&&
+        !db::NativeBtreeTreeWorkspaceBytes(devices,{7,std::numeric_limits<std::size_t>::max()}),"overflowing memory limits never wrap into a small reservation");
+    }
+    LeafMemoryFixture short_grant(amount-1);reads=0;track_reads=true;
+    auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,short_grant.memory,short_grant.binding);track_reads=false;
+    empty(refused);Check(refused.error==E::memory_allocation_failure&&!reads&&!short_grant.manager.Snapshot().current_bytes,"one-byte-short actual grant refuses before device access");
+    result=read();oracle(result);const auto revoked=grant.ledger.CleanupOwner(grant.binding.owner_uuid.bytes);
+    Check(revoked.retained_bytes==amount,"revocation retains all live tree backing");empty(read());
+    Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close actual devices with immutable tree still retained");oracle(result);grant.memory={};
+    allocation_budget=0;result={};const auto release_budget=allocation_budget;allocation_budget=-1;
+    Check(release_budget==0,"last whole-tree owner releases actual backing without heap allocation");grant.Empty();
+    Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok()&&base.Open(path3,disk::FileOpenMode::open_existing_read_only).ok(),"fresh read-only tree devices");
+    LeafMemoryFixture reopened(amount);auto fresh=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,reopened.memory,reopened.binding);
+    Check(fresh.ok()&&fresh.pages.size()==7&&fresh.retained_image_bytes==limits.maximum_retained_image_bytes,"new grant and reopened files reproduce complete tree");
+  }
+}
+bool SameBorrowedRowBody(const page::RowDataPageView& a,const page::RowDataPageBody& b) {
+  const auto same_typed=[](const auto& x,const auto& y){return x.kind==y.kind&&x.value==y.value;};
+  if(!same_typed(a.relation_uuid,b.relation_uuid)||a.segment_id!=b.segment_id||
+     a.segment_generation!=b.segment_generation||a.page_number!=b.page_number||
+     a.page_generation!=b.page_generation||a.compaction_generation!=b.compaction_generation||
+     a.next_page_number!=b.next_page_number||a.free_space_offset!=b.free_space_offset||
+     a.free_space_bytes!=b.free_space_bytes||a.rows.size()!=b.rows.size()||a.slots.size()!=b.slots.size())return false;
+  for(std::size_t i=0;i<a.rows.size();++i){const auto& x=a.rows[i];const auto& y=b.rows[i];
+    if(!same_typed(x.row_uuid,y.row_uuid)||!same_typed(x.transaction_uuid,y.transaction_uuid)||
+       x.version_uuid!=y.version_uuid||x.previous_version_uuid!=y.previous_version_uuid||
+       x.next_version_uuid!=y.next_version_uuid||x.local_transaction_id!=y.local_transaction_id||
+       x.internal_row_ordinal!=y.internal_row_ordinal||x.stable_slot_id!=y.stable_slot_id||
+       x.row_version!=y.row_version||x.storage_generation!=y.storage_generation||
+       x.previous_row_version!=y.previous_row_version||x.next_row_version!=y.next_row_version||
+       x.deleted!=y.deleted||x.cells.size()!=y.cells.size())return false;
+    for(std::size_t j=0;j<x.cells.size();++j){const auto& c=x.cells[j];const auto& d=y.cells[j];
+      if(c.column_ordinal!=d.column_ordinal||c.value.type_id!=d.value.type_id||
+         c.value.is_null!=d.value.is_null||c.value.payload_is_toast_reference!=d.value.payload_is_toast_reference||
+         c.value.payload_bytes!=d.value.payload.size())return false;
+      if(c.value.payload_bytes&&!std::equal(d.value.payload.begin(),d.value.payload.end(),c.value.payload_data))return false;
+    }
+  }
+  for(std::size_t i=0;i<a.slots.size();++i){const auto& x=a.slots[i];const auto& y=b.slots[i];
+    if(x.stable_slot_id!=y.stable_slot_id||x.row_offset!=y.row_offset||x.row_bytes!=y.row_bytes||
+       x.row_checksum!=y.row_checksum||x.deleted!=y.deleted)return false;
+  }
+  return true;
+}
+
 void CatalogBinaryCells() {
   namespace dt=scratchbird::core::datatypes;
   constexpr dt::DatatypeBinaryDiagnosticContextV1 context{
     {{0x2d,0x01,0,0,0x62,0x69,0x7e,0x61,0xb2,0x79,0,0,0,0,0,0}},1};
   using K=dt::DatatypeBinaryDiagnosticArgumentKind;
+  for(unsigned p=0;p<5;++p)for(bool empty_payload:{false,true}){
+    auto leaf=LeafExample(p);auto row=leaf.body.rows.front();leaf.body.rows.clear();leaf.body.slots.clear();
+    if(empty_payload)row.cells[0].value.payload.clear();
+    const auto count=(sizes[p]-256)/(216+row.cells[0].value.payload.size());
+    Check(count>1,"dense profile has multiple real binary row frames");
+    for(unsigned i=0;i<count;++i){row.row_version=i+1;row.stable_slot_id=i+1;
+      row.previous_row_version=i;row.previous_version_uuid=i?leaf.body.rows.back().version_uuid:Uuid{};
+      row.next_row_version=0;row.next_version_uuid={};row.version_uuid=Id(0);
+      // Reverse version UUID order forces metadata sorting to preserve the
+      // original row ordinal; row sequence order and lineage stay increasing.
+      row.version_uuid.bytes[13]=0xab;row.version_uuid.bytes[14]=(count-i)>>8;
+      row.version_uuid.bytes[15]=(count-i)&255;leaf.body.rows.push_back(row);
+    }
+    const auto image=LeafOracle(leaf);const std::span<const byte> body{image.data()+128,image.size()-160};
+    const auto expected=page::ParseRowDataPageRowsWithCanonicalBinaryCells(body,leaf.header.page_number,context);
+    Check(expected.ok()&&expected.body.rows.size()==count,"independent maximally dense row frame");
+    BorrowedRowWorkspace scratch(body.size());allocation_budget=0;
+    const auto view=page::ParseRowDataPageWithCanonicalBinaryCellsInto(body,leaf.header.page_number,scratch.get(),context);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&view.ok()&&SameBorrowedRowBody(view.body,expected.body),
+      "maximal per-profile rows and lineage retain every field without heap");
+    if(!empty_payload){std::vector<db::NativeCatalogLeafRecordView> metadata(scratch.rows.size());
+      allocation_budget=0;const auto decoded=db::DecodeNativeCatalogLeafInto(image,scratch.get(),metadata);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&decoded.ok()&&decoded.page->metadata.size()==count,
+        "maximally dense metadata leaf admits without hidden allocation");
+      for(unsigned i=0;i<count;++i)Check(decoded.page->metadata[i].row_index==count-i-1&&
+        decoded.page->metadata[i].version_uuid==leaf.body.rows[count-i-1].version_uuid,
+        "dense sorted metadata preserves exact binary identity and physical row ordinal");
+    }
+    row.row_version=count+1;row.stable_slot_id=count+1;row.previous_row_version=count;
+    row.previous_version_uuid=leaf.body.rows.back().version_uuid;row.version_uuid.bytes[13]=0xac;
+    leaf.body.rows.push_back(row);const auto overflow=page::BuildRowDataPageBody(leaf.body,sizes[p]-32);
+    Check(!overflow.ok()&&overflow.diagnostic.diagnostic_code=="SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
+      "one additional complete row cannot cross the profile capacity boundary");
+  }
   // Independent oracle alters/reseals the containing row, slot, body and page.
   // No production encode/checksum routine constructs these malformed frames.
   const auto reseal=[](Bytes& bytes,std::size_t row,std::size_t cell,unsigned index){
@@ -1311,6 +1703,22 @@ void CatalogBinaryCells() {
           span_parsed.serialized.empty()&&span_parsed.binary_diagnostic&&
           SameBinaryDiagnostic(*span_parsed.binary_diagnostic,provider.diagnostic),
           "input span row reader preserves full binary refusal without partial output");
+BorrowedRowWorkspace scratch(body.size());
+      allocation_budget=0;
+      const auto borrowed=page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+          body,leaf.header.page_number,scratch.get(),context);
+      const auto unused_budget=allocation_budget;allocation_budget=-1;
+      Check(unused_budget==0&&!borrowed.ok()&&borrowed.body.rows.empty()&&borrowed.body.slots.empty()&&
+          borrowed.binary_diagnostic&&SameBinaryDiagnostic(*borrowed.binary_diagnostic,provider.diagnostic),
+          "caller-backed row refuses malformed binary with full diagnostic and no heap allocation");
+      std::vector<db::NativeCatalogLeafRecordView> metadata(scratch.rows.size());
+      allocation_budget=0;
+      const auto leaf_view=db::DecodeNativeCatalogLeafInto(bytes,scratch.get(),metadata);
+      const auto remaining_leaf=allocation_budget;allocation_budget=-1;
+      Check(remaining_leaf==0&&!leaf_view.ok()&&!leaf_view.page&&leaf_view.binary_diagnostic&&
+          SameBinaryDiagnostic(*leaf_view.binary_diagnostic,provider.diagnostic),
+          "caller-backed leaf retains complete native binary failure without C++ allocation");
+
       observed_allocations=0;count_allocations=true;
       auto result=db::DecodeNativeCatalogLeaf(bytes);
       count_allocations=false;const auto allocations=observed_allocations;
@@ -1373,6 +1781,42 @@ void CatalogBinaryCells() {
         "rows-only canonical admission removes exactly one full body allocation");
     Check(page::BuildRowDataPageBody(rows.body,catalog.header.page_size_bytes-32).serialized==input,
         "rows-only admission preserves all canonical fields and cell bytes");
+BorrowedRowWorkspace scratch(input.size());
+    allocation_budget=0;
+    const auto borrowed=page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+        input,catalog.header.page_number,scratch.get(),context);
+    const auto unused_budget=allocation_budget;allocation_budget=-1;
+    Check(unused_budget==0&&borrowed.ok()&&SameBorrowedRowBody(borrowed.body,rows.body),
+        "caller-backed row preserves every native field and payload without allocation");
+    for(const auto& row:borrowed.body.rows)for(const auto& cell:row.cells)
+      Check(cell.value.payload_data>=input.data()&&
+          cell.value.payload_data+cell.value.payload_bytes<=input.data()+input.size(),
+          "borrowed payload points into retained image, not an uncharged copy");
+    for(unsigned shortage=0;shortage<5;++shortage){
+      auto short_space=scratch.get();
+      if(shortage==0)short_space.rows=short_space.rows.first(1);
+      if(shortage==1)short_space.cells=short_space.cells.first(1);
+      if(shortage==2)short_space.slots=short_space.slots.first(1);
+      if(shortage==3)short_space.version_index={};
+      if(shortage==4)short_space.sequence_index={};
+      allocation_budget=0;
+      const auto refused=page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+          input,catalog.header.page_number,short_space,context);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&!refused.ok()&&refused.error==page::RowDataPageViewError::insufficient_workspace&&
+          refused.body.rows.empty()&&refused.body.slots.empty()&&!refused.binary_diagnostic,
+          "every insufficient backing dimension refuses without prefix or invented datatype diagnostic");
+    }
+    auto aliased=scratch.get();aliased.sequence_index=aliased.version_index;
+    const auto saved_input=input;
+    allocation_budget=0;
+    const auto overlap=page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+        input,catalog.header.page_number,aliased,context);
+    allocation_budget=-1;
+    Check(!overlap.ok()&&overlap.error==page::RowDataPageViewError::invalid_workspace&&
+        overlap.status.code==platform::StatusCode::memory_invalid_request&&overlap.body.rows.empty()&&input==saved_input,
+        "overlapping identity scratch rejected before input mutation");
+
     std::fill(input.begin(),input.end(),0);input.clear();input.shrink_to_fit();
     Check(page::BuildRowDataPageBody(rows.body,catalog.header.page_size_bytes-32).serialized==copied.serialized,
         "rows-only output owns final values independently of destroyed input");
@@ -1395,10 +1839,60 @@ void CatalogBinaryCells() {
       if(offset<32||offset>=40){Number(bad,32,8,0);Number(bad,32,8,BodyFnv(bad.data(),bad.size()));}
       const auto a=page::ParseRowDataPageBodyWithCanonicalBinaryCells(bad,catalog.header.page_number,context);
       const auto b=page::ParseRowDataPageRowsWithCanonicalBinaryCells(bad,catalog.header.page_number,context);
+      allocation_budget=0;
+      const auto v=page::ParseRowDataPageWithCanonicalBinaryCellsInto(
+          bad,catalog.header.page_number,scratch.get(),context);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&a.ok()==v.ok()&&a.status.code==v.status.code&&a.status.severity==v.status.severity&&
+          a.status.subsystem==v.status.subsystem&&a.diagnostic.diagnostic_code==v.diagnostic.diagnostic_code&&
+          a.diagnostic.message_key==v.diagnostic.message_key&&
+          a.diagnostic.source_component==v.diagnostic.source_component,
+          "same parser gives exact fixed row refusal under complete heap denial");
+      if(a.ok())Check(SameBorrowedRowBody(v.body,a.body),"borrowed successful header mutation retains all fields");
+      else {
+        Check(v.body.rows.empty()&&v.body.slots.empty(),"borrowed malformed framing exposes no prefix");
+        if(v.diagnostic.detail)Check(a.diagnostic.arguments.size()==1&&
+            a.diagnostic.arguments[0].key=="detail"&&
+            std::holds_alternative<std::string>(a.diagnostic.arguments[0].value)&&
+            std::get<std::string>(a.diagnostic.arguments[0].value)==std::to_string(*v.diagnostic.detail),
+            "fixed native numeric detail matches legacy boundary rendering");
+      }
+
       Check(a.ok()==b.ok()&&same_error(a,b),"span and owning row framing retain exact diagnostics");
       if(!b.ok())Check(b.body.rows.empty()&&b.body.slots.empty()&&b.serialized.empty(),
           "malformed span row publishes no prefix");
     }
+    for(unsigned variation=0;variation<9;++variation){
+      auto shape=catalog;auto& first=shape.body.rows[0];auto& last=shape.body.rows[1];
+      if(variation==0)last.version_uuid=first.version_uuid;
+      if(variation==1)last.row_uuid=first.row_uuid;
+      if(variation>=2&&variation<=5){
+        last.row_version=2;last.previous_row_version=1;last.previous_version_uuid=first.version_uuid;
+        if(variation!=2)last.row_uuid=first.row_uuid;
+        if(variation==4)last.previous_version_uuid=Id(239);
+        if(variation==5){first.next_row_version=3;first.next_version_uuid=Id(239);}
+      }
+      if(variation==6){last.version_uuid=Id(172);last.row_uuid.value=Id(162);}
+      if(variation==7)for(auto& row:shape.body.rows)row.cells.clear();
+      if(variation==8)shape.body.rows.clear();
+      const auto wire=LeafOracle(shape);const std::span<const byte> source{wire.data()+128,wire.size()-160};
+      const auto owning=page::ParseRowDataPageRowsWithCanonicalBinaryCells(source,shape.header.page_number,context);
+      auto space=scratch.get();
+      // Two slots deliberately fill both native identity indexes; collisions
+      // must compare complete UUID/sequence identities, never treat hashes as IDs.
+      if(variation==6){space.version_index=space.version_index.first(2);space.sequence_index=space.sequence_index.first(2);}
+      allocation_budget=0;
+      const auto fixed=page::ParseRowDataPageWithCanonicalBinaryCellsInto(source,shape.header.page_number,space,context);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      const bool expected=variation==3||variation>=5;
+      Check(remaining==0&&owning.ok()==expected&&fixed.ok()==expected,
+          "exact duplicate lineage collision empty-row and empty-page contracts");
+      if(expected)Check(SameBorrowedRowBody(fixed.body,owning.body),"complete bounded row shape parity");
+      else Check(fixed.body.rows.empty()&&fixed.body.slots.empty()&&
+          owning.diagnostic.message_key==fixed.diagnostic.message_key,
+          "bounded identity or lineage refusal preserves exact classification without prefix");
+    }
+
     for(unsigned kind=0;kind<2;++kind){
       auto general=catalog;
       auto& cell=general.body.rows[0].cells[0].value;
@@ -1446,12 +1940,35 @@ void CatalogLeaves() {
     Check(e.ok()&&e.bytes==expected&&e.metadata.size()==2,"all profiles exact independent catalog leaf bytes");
     const auto d=db::DecodeNativeCatalogLeaf(expected);
     Check(d.ok()&&LeafOracle(*d.page)==expected&&d.metadata.size()==2,"independent canonical leaf decode");
+    BorrowedRowWorkspace scratch(expected.size()-160);
+    std::vector<db::NativeCatalogLeafRecordView> metadata(scratch.rows.size());
+    allocation_budget=0;const auto v=db::DecodeNativeCatalogLeafInto(expected,scratch.get(),metadata);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&v.ok()&&SameBorrowedRowBody(v.page->body,d.page->body)&&v.page->metadata.size()==2,
+        "complete caller-backed leaf rows and metadata admitted without C++ allocation");
+    for(const auto& record:v.page->metadata){const auto encoded=catalog::EncodeCatalogMetadataVersion(
+        catalog::MaterializeCatalogMetadataVersion(record.metadata));
+      Check(encoded.ok()&&encoded.bytes==d.page->body.rows[record.row_index].cells[0].value.payload,
+          "every borrowed metadata field matches independently persisted cell");}
+    for(unsigned fault=0;fault<3;++fault){auto backing=std::span(metadata);
+      if(fault==0)backing=backing.first(1);
+      if(fault==1)backing={reinterpret_cast<db::NativeCatalogLeafRecordView*>(
+        const_cast<byte*>(expected.data())),1};
+      if(fault==2)backing={reinterpret_cast<db::NativeCatalogLeafRecordView*>(scratch.rows.data()),1};
+      allocation_budget=0;const auto invalid=db::DecodeNativeCatalogLeafInto(expected,scratch.get(),backing);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&!invalid.ok()&&!invalid.page&&
+        invalid.error==(fault?Error::invalid_workspace:Error::resource_exhausted)&&
+        expected==LeafOracle(leaf),"short or overlapping metadata backing refuses without heap or input modification");
+    }
     for(const auto& row:leaf.body.rows) Check(d.metadata.at(row.version_uuid).record.header.row_uuid.value==row.row_uuid.value,
       "metadata keyed by actual native version UUID");
     leaf.body.rows.clear(); const auto empty=db::EncodeNativeCatalogLeaf(leaf);
     Check(empty.ok()&&empty.bytes==LeafOracle(leaf)&&empty.metadata.empty(),"empty allocated leaf, not absent table success");
   }
   const auto leaf=LeafExample(); const auto good=LeafOracle(leaf);
+  BorrowedRowWorkspace leaf_scratch(good.size()-160);
+  std::vector<db::NativeCatalogLeafRecordView> leaf_metadata(leaf_scratch.rows.size());
   for(platform::u64 generation:{platform::u64{0},leaf.body.page_generation+1,
       std::numeric_limits<platform::u64>::max()}) {
     auto bad=leaf;bad.body.rows.back().storage_generation=generation;
@@ -1462,6 +1979,9 @@ void CatalogLeaves() {
   for(std::size_t at=0;at<good.size();++at) {
     auto b=good; b[at]^=1; const auto r=db::DecodeNativeCatalogLeaf(b);
     Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty(),"every leaf byte corruption fails without prefix");
+    allocation_budget=0;const auto v=db::DecodeNativeCatalogLeafInto(b,leaf_scratch.get(),leaf_metadata);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&!v.ok()&&!v.page&&v.error==r.error,"every borrowed leaf byte corruption preserves exact failure without heap");
   }
   for(std::size_t size:{0u,127u,8191u,8193u}) {auto b=good;b.resize(size);LeafReject(db::DecodeNativeCatalogLeaf(b),Error::invalid_header);}
   for(unsigned mode=0;mode<9;++mode) {
@@ -1478,10 +1998,19 @@ void CatalogLeaves() {
     const auto expected=mode==0?Error::invalid_header:mode<5?Error::invalid_body:Error::invalid_metadata;
     LeafReject(db::EncodeNativeCatalogLeaf(bad),expected);
     LeafReject(db::DecodeNativeCatalogLeaf(LeafOracle(bad)),expected);
+    const auto bytes=LeafOracle(bad);allocation_budget=0;
+    const auto borrowed=db::DecodeNativeCatalogLeafInto(bytes,leaf_scratch.get(),leaf_metadata);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&!borrowed.ok()&&!borrowed.page&&borrowed.error==expected,
+        "borrowed leaf retains every metadata binding refusal without C++ heap");
   }
   {auto bad=leaf;++bad.body.page_number;LeafReject(db::EncodeNativeCatalogLeaf(bad),Error::invalid_body);}
   {auto b=good; b[b.size()-33]=1; Number(b,160,8,0); Number(b,160,8,BodyFnv(b.data()+128,b.size()-160)); LeafSeal(b);
-    LeafReject(db::DecodeNativeCatalogLeaf(b),Error::invalid_body);}
+    LeafReject(db::DecodeNativeCatalogLeaf(b),Error::invalid_body);
+    allocation_budget=0;const auto borrowed=db::DecodeNativeCatalogLeafInto(b,leaf_scratch.get(),leaf_metadata);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&!borrowed.ok()&&!borrowed.page&&borrowed.error==Error::invalid_body,
+      "recomputed checksums do not admit noncanonical unused tail through borrowed leaf");}
   for(unsigned i=0;i<2;++i) {
     allocation_budget=0; const auto r=i?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
     allocation_budget=-1; LeafReject(r,Error::resource_exhausted);
@@ -1489,6 +2018,11 @@ void CatalogLeaves() {
   for(unsigned fault=1;fault<=5;++fault) {
     hash_fault=fault; const auto r=db::DecodeNativeCatalogLeaf(good);
     LeafReject(r,Error::hash_failure); Check(!hash_fault,"leaf digest provider fault consumed");
+    hash_fault=fault;allocation_budget=0;
+    const auto borrowed=db::DecodeNativeCatalogLeafInto(good,leaf_scratch.get(),leaf_metadata);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(remaining==0&&!hash_fault&&!borrowed.ok()&&!borrowed.page&&borrowed.error==Error::hash_failure,
+        "borrowed leaf hash-provider refusal needs no diagnostic allocation");
   }
   for(unsigned mode=0;mode<2;++mode) {
     observed_segmented_contexts=0;count_segmented_contexts=true;
@@ -1513,7 +2047,127 @@ void CatalogLeaves() {
     Check(succeeded,"every leaf allocation position through complete page");
   }
 }
+void BorrowedLeafHashFaults() {
+  const auto bytes=LeafOracle(LeafExample());BorrowedRowWorkspace scratch(bytes.size()-160);
+  std::vector<db::NativeCatalogLeafRecordView> records(scratch.rows.size());
+  observed_segmented_contexts=0;count_segmented_contexts=true;
+  const auto baseline=db::DecodeNativeCatalogLeafInto(bytes,scratch.get(),records);
+  count_segmented_contexts=false;const auto contexts=observed_segmented_contexts;
+  Check(baseline.ok()&&contexts>1,"measure borrowed leaf and nested metadata provider contexts");
+  for(unsigned context=0;context<contexts;++context)for(unsigned fault=1;fault<=5;++fault){
+    segmented_context_skip=context;hash_fault=fault;allocation_budget=0;
+    const auto failed=db::DecodeNativeCatalogLeafInto(bytes,scratch.get(),records);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    const bool reached=segmented_context_skip==0;segmented_context_skip=0;
+    Check(remaining==0&&reached&&!hash_fault&&!failed.ok()&&!failed.page&&
+      failed.error==db::NativeCatalogLeafError::hash_failure,"every borrowed nested hash failure is exact and heap-free");
+  }
+}
+void CatalogLeafWorkspaceAliasing() {
+  for(unsigned profile=0;profile<5;++profile){
+    auto bytes=LeafOracle(LeafExample(profile));const auto original=bytes;
+    BorrowedRowWorkspace scratch(bytes.size()-160);
+    std::vector<db::NativeCatalogLeafRecordView> records(scratch.rows.size());
+    for(unsigned region=0;region<8;++region){auto workspace=scratch.get();
+      auto* target=bytes.data()+(region<5?0:bytes.size()-32);
+      switch(region){
+        case 0:workspace.rows={reinterpret_cast<page::RowDataRecordView*>(target),1};break;
+        case 1:workspace.cells={reinterpret_cast<page::RowDataCellView*>(target),2};break;
+        case 2:case 5:workspace.slots={reinterpret_cast<decltype(workspace.slots)::element_type*>(target),1};break;
+        case 3:case 6:workspace.version_index={reinterpret_cast<scratchbird::core::platform::u32*>(target),4};break;
+        case 4:case 7:workspace.sequence_index={reinterpret_cast<scratchbird::core::platform::u32*>(target),4};break;
+      }
+      allocation_budget=0;const auto result=db::DecodeNativeCatalogLeafInto(bytes,workspace,records);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!result.ok()&&!result.page&&result.error==db::NativeCatalogLeafError::invalid_workspace&&
+        remaining==0&&bytes==original,"every scratch region excludes complete header and checksum image before writes");
+    }
+  }
+}
+void BufferedReadTelemetry() {
+  namespace m=scratchbird::core::metrics;
+  auto& registry=m::DefaultMetricRegistry();
+  Check(registry.Descriptors().empty(),"storage fixture must not manufacture metric activation");
+  auto made=m::MetricObservationQueue::Create({Id(1),Id(3),{}},{128,4*1024*1024});
+  Check(made.ok(),"allocate actual local metric queue");
+  std::shared_ptr<m::MetricObservationQueue> queue=std::move(made.queue);
+  Check(registry.BindObservationQueue(queue).ok,"retain actual local metric queue");
+  std::array<m::MetricDescriptor,2> definitions;
+  std::array<m::MetricSeriesIdentity,3> series;
+  const std::array<m::MetricLabelSet,3> labels{{
+    {{"component","storage.disk"},{"operation","read_at"},{"result","ok"},{"device_class","file"}},
+    {{"component","storage.filespace"},{"database_uuid",Id(1)},{"filespace_uuid",Id(2)},
+      {"node_uuid",Id(3)},{"filespace_role","primary_system"},{"device_class","first_device_class_long_label"}},
+    {{"component","storage.filespace"},{"database_uuid",Id(1)},{"filespace_uuid",Id(7)},
+      {"node_uuid",Id(3)},{"filespace_role","secondary_data"},{"device_class","second_device_class_long_label"}}
+  }};
+  for(unsigned i=0;i<2;++i){auto& d=definitions[i];
+    d.family=i?"sb_filespace_device_read_latency_microseconds":"sb_storage_device_read_latency_microseconds";
+    d.namespace_path="sys.metrics.storage";d.producer_owner="storage_disk";
+    d.type=m::MetricType::histogram;d.unit=m::MetricUnit::microseconds;
+    d.value_type=m::MetricScalarType::float64;d.histogram_buckets={1.,1000.,1000000.};
+    d.readiness=m::MetricReadiness::implemented;d.metric_uuid=Id(220+i);d.descriptor_generation=1;
+    d.label_schema_uuid=Id(230+i);d.label_schema_generation=1;
+    d.retention_policy_uuid=Id(235);d.retention_policy_generation=1;
+    d.visibility_policy_uuid=Id(236);d.visibility_policy_generation=1;
+    for(const auto& label:labels[i])d.labels.push_back({label.key,true,false,
+      std::holds_alternative<Uuid>(label.value)?m::MetricLabelType::system_uuid:m::MetricLabelType::text});
+    Check(registry.RegisterDescriptor(d).ok,"register explicitly bound histogram fixture");
+  }
+  m::MetricRetentionPolicy policy;policy.policy_uuid=Id(235);policy.generation=1;policy.policy_name="component capture policy";
+  for(unsigned i=0;i<3;++i){const auto& d=definitions[i?1:0];m::MetricHistoryBinding binding;
+    static_cast<m::MetricDescriptorBinding&>(binding)=d;binding.database_uuid=Id(1);binding.node_uuid=Id(3);
+    auto value=m::MakeMetricSeriesIdentity(d,labels[i],policy,binding,Id(240+i),1);
+    Check(value.ok()&&registry.RegisterSeries(*value.record,policy).ok,"register exact raw16 sample series");series[i]=std::move(*value.record);
+  }
+  Fixture fixture;disk::FileDevice device;const auto path=(fixture.root/"buffered-telemetry").string();const byte expected=42;
+  Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,&expected,1).ok(),"real telemetry read fixture");
+  device.SetMetricContext(Id(1),Id(2),Id(3),"primary_system","first_device_class_long_label");
+  const auto before_rejected=device.rejected_io_latency_observations();
+  {
+    disk::FileDevice::ReadLatencyBatch batch(device);auto fence=device.AcquireOperationGuard();byte actual=0;
+    Check(batch.ReadAt(0,&actual,1).ok()&&actual==expected,"first retained context physical read");
+    device.SetMetricContext(Id(1),Id(7),Id(3),"secondary_data","second_device_class_long_label");
+    Check(batch.ReadAt(0,&actual,1).ok()&&actual==expected,"replacement context physical read");
+    Check(queue->Stats().admitted==0&&registry.SnapshotCurrent().empty(),"capture is not registry admission");
+    Check(device.Close().ok(),"close before buffered observation publication");
+  }
+  Check(device.rejected_io_latency_observations()==before_rejected&&queue->Stats().admitted==4,
+    "captured observations retain both scopes after context replacement and device close");
+  const auto drain=[&](std::array<unsigned,3> expected_samples){std::array<unsigned,3> samples{};
+    while(queue->Stats().queued){auto held=queue->TryAcquire();Check(held.ok(),"acquire actual encoded histogram sample");
+      const auto found=std::find_if(series.begin(),series.end(),[&](const auto& value){return value.series_uuid==held.lease.observation->series_uuid;});
+      Check(found!=series.end(),"publication has an exact prebound series identity");
+      const unsigned ordinal=static_cast<unsigned>(found-series.begin());
+      const auto decoded=m::DecodeMetricRawSample(definitions[ordinal?1:0],*found,held.lease.observation->bytes);
+      Check(decoded.ok()&&decoded.record->database_uuid==Id(1)&&decoded.record->node_uuid==Id(3)&&
+        decoded.record->series_uuid==found->series_uuid&&decoded.record->value.count>0,
+        "real queue bytes retain native metric scope and histogram observation");
+      Check(queue->TryRemove(held.lease)==m::MetricQueueError::none,"retire component observation without durability claim");++samples[ordinal];
+    }Check(samples==expected_samples,"exact per-series buffered telemetry sample counts");};
+  drain({2,1,1});
+  Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen physical telemetry source");
+  const auto admitted=queue->Stats().admitted;
+  {disk::FileDevice::ReadLatencyBatch batch(device);auto fence=device.AcquireOperationGuard();byte actual=0;
+    for(unsigned i=0;i<17;++i){allocation_budget=0;const auto io=batch.ReadAt(0,&actual,1);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&io.ok()&&actual==expected,"bounded capture and overflow perform no heap allocation");}
+    Check(queue->Stats().admitted==admitted&&device.rejected_io_latency_observations()==before_rejected+1,
+      "overflow is counted without fabricating publication or losing physical read success");}
+  drain({16,0,16});
+  const auto failed=device.failed_io_latency_observations();
+  {disk::FileDevice::ReadLatencyBatch batch(device);{auto fence=device.AcquireOperationGuard();byte actual=0;
+      Check(batch.ReadAt(0,&actual,1).ok()&&actual==expected,"actual bytes precede failed telemetry publication");}
+    allocation_budget=0;}
+  const auto consumed=allocation_budget;allocation_budget=-1;
+  Check(consumed==-1&&device.failed_io_latency_observations()==failed+1&&!queue->Stats().queued,
+    "publication allocation loss is explicit and does not invent a sample");
+  Check(device.Close().ok(),"close telemetry fixture");
+}
+
 void CatalogLeafFiles() {
+  BorrowedLeafHashFaults();
+  CatalogLeafWorkspaceAliasing();
   using Error=db::NativeCatalogLeafError; Fixture fixture;
   for(unsigned p=0;p<5;++p) {
     auto leaf=LeafExample(p); const auto image=LeafOracle(leaf); auto z=Example(p,p==0?5:1);
@@ -1524,6 +2178,106 @@ void CatalogLeafFiles() {
       &&device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"actual canonical leaf persisted");
     auto r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
     Check(r.ok()&&r.bytes==image&&r.metadata.size()==2,"read actual bound leaf in primary/secondary filespace");
+    {
+      const auto amount=db::NativeCatalogLeafWorkspaceBytes(Profile(p));LeafMemoryFixture grant(amount);
+      using ME=db::NativeCatalogLeafMemoryError;
+      const auto read=[&]{return db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),ref,grant.memory,grant.binding);};
+      const auto no_page=[](const auto& value,std::source_location at=std::source_location::current()){
+        Check(!value.ok()&&!value.arena&&value.image.empty()&&!value.leaf.page,
+          "grant-backed leaf refusal retains no usable image or metadata prefix error="+
+          std::to_string(static_cast<unsigned>(value.error)),at);};
+      auto guard=device.AcquireOperationGuard();auto* mutex=guard.mutex();guard.unlock();
+      allocation_lock_probe={{mutex,mutex},true,false};
+      reads=stage_writes=stage_syncs=0;track_reads=true;auto owned=read();track_reads=false;
+      Check(owned.ok()&&SameBorrowedRowBody(owned.leaf.page->body,r.page->body)&&
+          std::equal(owned.image.begin(),owned.image.end(),image.begin(),image.end())&&
+          grant.manager.Snapshot().current_bytes==amount&&grant.memory.Snapshot().allocated_bytes==amount&&
+          allocation_lock_probe.available&&!stage_writes&&!stage_syncs,
+          "actual leaf image and every decoded allocation charged before device fence without durable effects");
+      const auto read_count=reads;Check(read_count==3,"actual bootstrap pagezero and leaf reads");
+      owned={};Check(!grant.manager.Snapshot().current_bytes,"retiring leaf returns physical backing");
+      FencedHeapProbe heap_probe;heap_probe.mutex=mutex;
+      std::thread heap_observer([&]{heap_probe.Run();});
+      // Negative control: this observer really refuses allocations while the
+      // other thread's device fence is held, even if telemetry swallows failure.
+      const auto prior_loss=device.failed_io_latency_observations();
+      bool denied=false,legacy_ok=false;byte probe_byte=0;
+      {auto held=device.AcquireOperationGuard();fenced_heap_probe=&heap_probe;allocation_budget=0;
+        const auto legacy=device.ReadAt(0,&probe_byte,1);denied=allocation_budget==-1;legacy_ok=legacy.ok();
+        allocation_budget=-1;fenced_heap_probe=nullptr;}
+      const bool negative_control=denied&&legacy_ok&&device.failed_io_latency_observations()==prior_loss+1;
+      fenced_heap_probe=&heap_probe;deny_heap_on_next_read=true;owned=read();
+      const auto fenced_budget=allocation_budget;allocation_budget=-1;fenced_heap_probe=nullptr;
+      heap_probe.stop=true;heap_observer.join();
+      Check(negative_control,"heap-fence negative control catches legacy telemetry allocation under actual lock");
+      Check(!deny_heap_on_next_read&&fenced_budget==0&&heap_probe.outside_allocations>0&&owned.ok()&&
+          SameBorrowedRowBody(owned.leaf.page->body,r.page->body)&&grant.manager.Snapshot().current_bytes==amount,
+          "no C++ heap allocation under device fence; complete borrowed result and synchronous post-unlock telemetry");owned={};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;
+      std::atomic<bool> done=false;db::NativeCatalogLeafMemoryResult concurrent;
+      std::thread reader([&]{concurrent=read();done=true;});
+      while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+      bool held=tree_read_paused.load();if(mutex->try_lock()){held=false;mutex->unlock();}
+      resume_tree_read=true;reader.join();pause_next_tree_read=false;
+      Check(held&&concurrent.ok(),"actual retained device fence covers grant-backed leaf I/O");concurrent={};
+      for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;
+        deallocation_lock_probe={{mutex,mutex},true,false};auto refused=read();track_reads=false;
+        no_page(refused);Check(!read_fault&&refused.error==ME::io_failure&&deallocation_lock_probe.available&&
+            !grant.manager.Snapshot().current_bytes,"every real read failure releases charged backing after device unlock");}
+      for(unsigned field=0;field<4;++field){auto wrong=grant.binding;
+        std::array<platform::Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*ids[field]=Id(229);
+        reads=0;track_reads=true;auto refused=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),ref,grant.memory,wrong);track_reads=false;
+        no_page(refused);Check(refused.error==ME::memory_binding_failure&&!reads&&!grant.manager.Snapshot().current_bytes,
+            "each binary grant ownership dimension checked before effects");}
+      for(unsigned role:{0u,7u}){auto wrong=ref;wrong.role=role;reads=0;track_reads=true;
+        const auto invalid=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),wrong,grant.memory,grant.binding);
+        track_reads=false;no_page(invalid);Check(invalid.error==ME::invalid_request&&!reads&&
+          !grant.manager.Snapshot().current_bytes,"catalog root role refused before admission and I/O");}
+      observed_allocations=0;count_allocations=true;owned=read();count_allocations=false;
+      const auto allocations=observed_allocations;Check(owned.ok(),"measure actual grant-backed leaf allocations");owned={};
+      for(unsigned long n=0;n<=allocations;++n){
+        // Prior failed allocations can enqueue best-effort telemetry. Start
+        // every fault at the same fresh warmed allocator state, so n targets
+        // the measured operation rather than a previous failure's reporting.
+        LeafMemoryFixture isolated(amount);
+        const auto attempt=[&]{return db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(
+            device,Id(1),ref,isolated.memory,isolated.binding);};
+        auto primed=attempt();Check(primed.ok(),"warm isolated actual grant before fault");primed={};
+        observed_allocations=0;count_allocations=true;primed=attempt();count_allocations=false;
+        const auto exact_count=observed_allocations;Check(primed.ok()&&exact_count==allocations,
+            "fresh isolated allocation sequence matches measured leaf operation");primed={};
+        const auto before_telemetry=isolated.manager.Snapshot().telemetry_truncation_count;
+        const auto before_io_telemetry=device.failed_io_latency_observations();
+        allocation_budget=n;auto injected=attempt();const auto remaining=allocation_budget;allocation_budget=-1;
+        Check(n==exact_count?remaining==0:remaining==-1,"every measured allocation fault is actually reached");
+        if(!injected.ok()){no_page(injected);Check(n<exact_count&&!isolated.manager.Snapshot().current_bytes,
+            "failed allocation releases actual leaf bytes");}
+        else {
+          Check(SameBorrowedRowBody(injected.leaf.page->body,r.page->body)&&
+              std::equal(injected.image.begin(),injected.image.end(),image.begin(),image.end())&&
+              isolated.manager.Snapshot().current_bytes==amount&&isolated.memory.Snapshot().allocated_bytes==amount,
+              "successful allocation or optional telemetry failure retains complete correct charged leaf");
+          if(n<exact_count)Check(isolated.manager.Snapshot().telemetry_truncation_count>before_telemetry||
+              device.failed_io_latency_observations()>before_io_telemetry,
+              "only explicitly recorded optional telemetry failure may preserve complete success");
+        }
+        injected={};isolated.memory={};isolated.Empty();
+      }
+      owned=read();Check(owned.ok(),"retain actual leaf before revocation");
+      const auto revoked=grant.ledger.CleanupOwner(grant.binding.owner_uuid.bytes);
+      Check(revoked.retained_bytes==amount,"revocation retains live leaf's full charge");
+      no_page(read());grant.memory={};Check(grant.manager.Snapshot().current_bytes==amount,
+          "leaf owner outlives original grant handle");
+      Check(device.Close().ok(),"close physical file while immutable leaf remains owned");
+      Check(SameBorrowedRowBody(owned.leaf.page->body,r.page->body),"retained leaf remains valid after device close");
+      allocation_budget=0;owned={};const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0,"final leaf backing cleanup needs no allocation");grant.Empty();
+      Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen leaf for existing storage regressions");
+      LeafMemoryFixture short_grant(amount-1);reads=0;track_reads=true;
+      const auto short_read=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),ref,short_grant.memory,short_grant.binding);track_reads=false;
+      no_page(short_read);Check(short_read.error==ME::memory_allocation_failure&&!reads&&!short_grant.manager.Snapshot().current_bytes,
+          "one-byte-short actual grant refuses before device access");short_grant.memory={};short_grant.Empty();
+    }
     {
       auto invalid=LeafExample(p);invalid.body.rows.back().cells[0].value.is_null=true;
       invalid.body.rows.back().cells[0].value.payload.clear();const auto damaged=LeafOracle(invalid);
@@ -1572,6 +2326,7 @@ void CatalogLeafFiles() {
     if(pid==0) {const auto profile=std::to_string(p);::execl("/proc/self/exe","pagezero_test","--leaf-probe",path.c_str(),profile.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process validates exact leaf bytes and metadata");
   }
+  BufferedReadTelemetry();
 }
 }  // namespace
 namespace mga=scratchbird::transaction::mga;
@@ -4866,6 +5621,15 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
     const auto& name_payload=name_image.metadata.at(name_row.version_uuid).record.payload;
     const auto materialized=catalog::DecodeCatalogNameEnvelope(Bytes(name_payload.begin(),name_payload.end()),resident);
     Check(materialized.ok()&&std::get<catalog::CatalogNameEntry>(materialized.record->payload).raw_name_text=="actual staged name","typed name envelope bound to actual newly staged residency");
+    {
+      const auto bytes=actual(target,21,sizes[profile]);BorrowedRowWorkspace scratch(bytes.size()-160);
+      std::vector<db::NativeCatalogLeafRecordView> records(scratch.rows.size());
+      allocation_budget=0;const auto borrowed=db::DecodeNativeCatalogLeafInto(bytes,scratch.get(),records);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(remaining==0&&borrowed.ok()&&borrowed.page->metadata.size()==1&&borrowed.page->metadata[0].name&&
+          std::get<catalog::CatalogNameEntryView>(*borrowed.page->metadata[0].name).raw_name_text=="actual staged name",
+          "real newly staged resident name admits borrowed metadata and family binding without C++ allocation");
+    }
     request=create;
     if(p==0&&role==1){
       reset();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
@@ -6614,6 +7378,9 @@ int main(int argc,char** argv) {
       {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected[0].dependencies,(deep?2:1)*(4*sizes[p]+3*sizes[q])+(deep?sizes[p]:0));
     const std::vector<std::size_t> leaf_order=deep?std::vector<std::size_t>{3,4,6,7,10,11,13,14}:std::vector<std::size_t>{2,3,5,6};
     if(!result.ok()||result.pages.size()!=expected.size()||result.leaves!=leaf_order)return 3;
+    GovernedBtreeParity({{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},
+      {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected[0].dependencies,
+      (deep?2:1)*(4*sizes[p]+3*sizes[q])+(deep?sizes[p]:0),result);
     for(unsigned i=0;i<leaf_order.size();++i){const auto target=deep?(i<4?4+i:7+i):3+i;
       if(result.pages[result.leaves[i]].bytes!=BtreeOracle(expected[target]))return 4;}return 0;
   }
@@ -6679,8 +7446,11 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
+  if(argc==2&&std::string_view(argv[1])=="--native-btree-memory-only"){
+    try{NativeBtreeTreeMemory();NativeBtreeTrees();std::cout<<"PASS governed_tree_checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc!=1){std::cerr<<"FAIL unknown test mode or invalid argument count\n";return 2;}
-  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTreeMemory(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

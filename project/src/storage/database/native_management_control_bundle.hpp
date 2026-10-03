@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_allocation_map.hpp"
+#include "disk_device.hpp"
 
 namespace scratchbird::storage::database {
 using core::platform::Uuid;
@@ -21,7 +22,7 @@ enum class NativeManagementControlBundleError {
   none,invalid_request,invalid_identity,invalid_extent,invalid_header,
   invalid_allocation,invalid_integrity,binding_mismatch,resource_exhausted,
   hash_failure,io_failure,bootstrap_failure,encrypted_requires_authority,
-  cluster_requires_authority,physical_extent_changed
+  cluster_requires_authority,physical_extent_changed,invalid_workspace
 };
 struct NativeManagementControlBundleImage {
   NativeManagementControlBundleError error=NativeManagementControlBundleError::invalid_request;
@@ -40,6 +41,48 @@ struct NativeManagementControlBundleRead {
   std::vector<std::vector<byte>> growth_images;
   bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&!allocation_images.empty()&&!page_headers.empty()&&total_pages;}
 };
+
+struct NativeManagementControlBundleViewRead {
+  NativeManagementControlBundleError error=NativeManagementControlBundleError::invalid_request;
+  std::span<const std::span<const byte>> allocation_images;
+  std::span<const disk::NativeCommonPageHeader> page_headers;
+  u64 total_pages=0;
+  std::span<const std::span<const byte>> inventory_images,directory_images,growth_images;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&!allocation_images.empty()&&!page_headers.empty()&&total_pages;}
+};
+// Complete shared validation of every bundle/image family. The supplied buffer
+// owns all retained payload/descriptors/headers and all temporary decoded values,
+// uniqueness containers and inventory validation scratch. No heap fallback.
+// Backing must outlive the result and must not overlap any complete input region,
+// its descriptor array or identities/root. Failure exposes no usable prefix;
+// backing contents are unspecified. Used bytes include alignment and temporary
+// allocations, not a memory grant or recovery/publication authorization.
+NativeManagementControlBundleViewRead DecodeNativeManagementControlBundleInto(
+  std::span<const std::span<const byte>>,const NativeManagementControlBundleRoot&,
+  const Uuid& database,const Uuid& bootstrap,u64 budget,std::span<byte> backing) noexcept;
+
+
+enum class NativeManagementControlReadContext {current,historical_before,historical_result};
+struct NativeManagementControlBundleDeviceRead {
+  NativeManagementControlBundleViewRead bundle;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return bundle.ok();}
+};
+// Complete current or explicitly retained historical observation, not selection
+// or recovery authority. The caller supplies backing and a batch bound to the
+// exact device. Construct that batch before every enclosing source fence and
+// retain it until all such fences release. This function holds the device guard
+// throughout its complete read but does not flush the caller's observations.
+// Retain the actual last I/O status/diagnostic and all transferred bytes even
+// when validation fails. These observations do not authorize physical effects.
+NativeManagementControlBundleDeviceRead ReadNativeManagementControlBundleInto(
+  const disk::NativeFilespaceDevice&,const NativeManagementControlBundleRoot&,
+  const Uuid& database,const Uuid& bootstrap,u64 budget,NativeManagementControlReadContext,
+  std::span<const byte> retained_page_zero,disk::FileDevice::ReadLatencyBatch&,
+  std::span<byte> backing) noexcept;
 // Complete immutable reconstruction input; not physical allocation, history,
 // selection, kernel authorization or operation completion authority.
 NativeManagementControlBundleError ValidateNativeManagementControlBundleRoot(

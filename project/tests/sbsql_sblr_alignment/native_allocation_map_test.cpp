@@ -138,6 +138,12 @@ void Check(bool pass, const char* message, std::source_location where = std::sou
   ++checks;
   if (!pass) { std::cerr << where.line() << ": " << message << '\n'; throw std::runtime_error("native allocation conformance failed"); }
 }
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=allocation_budget;allocation_budget=0;
+  auto result=call();const bool unchanged=allocation_budget==0;allocation_budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(byte n) { return Uuid{{1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,n}}; }
 void Num(Bytes& b, std::size_t at, unsigned size, u64 n) {
   for (unsigned i = 0; i < size; ++i) b[at+i] = static_cast<byte>(n >> (8*i));
@@ -359,8 +365,14 @@ void BorrowedCodecs() {
     Check(alias.error==E::invalid_range&&!alias.map&&bytes==Oracle(expected),"overlapping input/state buffer rejected before writing");
     alias=p::DecodeNativeAllocationMapInto(bytes,{reinterpret_cast<S*>(records.data()),1},records);
     Check(alias.error==E::invalid_range&&!alias.map,"overlapping metadata regions rejected before writing");
-    fail_hash=true;auto hash_failure=p::DecodeNativeAllocationMapInto(bytes,states,records);
+    fail_hash=true;auto hash_failure=DenyCodecAllocation([&]{return p::DecodeNativeAllocationMapInto(bytes,states,records);});
     Check(!fail_hash&&hash_failure.error==E::hash_failure&&!hash_failure.map,"borrowed decoder preserves actual hash failure");
+#ifdef SB_NATIVE_ALLOCATION_MEMORY_TESTS
+    for(unsigned mode=2;mode<=5;++mode){method_fault=mode;
+      const auto failed=DenyCodecAllocation([&]{return p::DecodeNativeAllocationMapInto(bytes,states,records);});
+      Check(!method_fault&&!failed.map&&failed.error==E::hash_failure,"all provider phases and short digest fail without diagnostic allocation");
+    }
+#endif
     for(std::size_t at:{128u,136u,138u,140u,304u,308u,383u}){
       auto bad=bytes;bad[at]^=0x80;Seal(bad);
       const auto owned=p::DecodeNativeAllocationMap(bad);

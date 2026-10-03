@@ -83,6 +83,12 @@ using Entry=mga::TransactionInventoryEntry;
 using Bytes=std::vector<byte>;using E=pg::NativeInventoryError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(unsigned n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;for(unsigned i=0;i<4;++i)id.bytes[15-i]=byte(n>>(8*i));return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -286,6 +292,218 @@ void MemoryTests(){
   }
 }
 
+
+void CompleteInventoryEvolution(){
+  // First operation in main: no warmed transition vector or fixture machinery.
+  pg::NativeTransactionInventoryView empty;
+  const auto cold=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryEvolutionView(empty,empty,{},{},{});});
+  Check(cold.ok(),"cold complete evolution and transition closure use no heap");
+  const auto transitions=DenyCodecAllocation([]{return mga::BuiltinTransactionStateTransitionView();});
+  const auto& owning=mga::BuiltinTransactionStateTransitions();
+  Check(transitions.size()==23&&owning.size()==transitions.size(),"complete canonical transition inventory");
+  std::array<std::array<bool,14>,14> paths{};
+  for(unsigned i=0;i<14;++i)paths[i][i]=true;
+  const std::array edges{std::pair{0u,1u},std::pair{1u,2u},std::pair{1u,13u},std::pair{1u,7u},
+   std::pair{13u,5u},std::pair{13u,7u},std::pair{2u,3u},std::pair{3u,4u},std::pair{4u,5u},
+   std::pair{5u,6u},std::pair{2u,7u},std::pair{3u,7u},std::pair{4u,7u},std::pair{7u,8u},
+   std::pair{4u,9u},std::pair{5u,9u},std::pair{9u,10u},std::pair{10u,6u},std::pair{10u,8u},
+   std::pair{10u,11u},std::pair{6u,12u},std::pair{8u,12u},std::pair{11u,12u}};
+  for(usize i=0;i<edges.size();++i){const auto [from,to]=edges[i];paths[from][to]=true;
+   const auto& a=transitions[i];const auto& b=owning[i];
+   Check(unsigned(a.from)==from&&unsigned(a.to)==to&&a.from==b.from&&a.to==b.to&&
+    a.transition_class==b.transition_class&&a.recovery_only==b.recovery_only&&
+    std::string_view(a.stable_name)==b.stable_name,"one canonical transition source preserves legacy metadata");}
+  for(unsigned k=0;k<14;++k)for(unsigned i=0;i<14;++i)for(unsigned j=0;j<14;++j)
+   paths[i][j]=paths[i][j]||(paths[i][k]&&paths[k][j]);
+  const auto compare=[&](mga::LocalTransactionInventory& b,mga::LocalTransactionInventory& a,const char* oracle=nullptr){
+   const std::string_view expected=mga::ValidateLocalTransactionInventoryEvolution(b,a);
+   pg::NativeTransactionInventoryView before{b.next_local_transaction_id,b.next_commit_sequence,b.entries};
+   pg::NativeTransactionInventoryView after{a.next_local_transaction_id,a.next_commit_sequence,a.entries};
+   const auto n=std::max(b.entries.size(),a.entries.size());
+   std::vector<usize> indices(n),uuids(b.entries.size());Bytes markers(n);
+   const auto bbytes=std::as_bytes(std::span(b.entries)),abytes=std::as_bytes(std::span(a.entries));
+   const std::vector<std::byte> saved_before(bbytes.begin(),bbytes.end()),saved_after(abytes.begin(),abytes.end());
+   const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryEvolutionView(before,after,indices,uuids,markers);});
+   Check(result.ok()==expected.empty()&&std::string_view(result.detail)==expected,"full evolution first-error parity");
+   if(oracle)Check(expected==oracle,"independent successor behavior and exact error vector");
+   Check(std::equal(saved_before.begin(),saved_before.end(),bbytes.begin())&&
+    std::equal(saved_after.begin(),saved_after.end(),abytes.begin()),"neither full inventory record array is changed");
+   return result.error;
+  };
+  const auto terminal=[](unsigned state){return state==6||state==8||state==11;};
+  for(unsigned from=1;from<=13;++from)for(unsigned to=1;to<=13;++to)
+   for(unsigned old_origin:{6u,8u,11u})for(unsigned new_origin:{6u,8u,11u}){
+    if((from!=12&&old_origin!=6)||(to!=12&&new_origin!=6))continue;
+    auto b=Example(0,0,1,from).inventory,a=Example(0,0,1,to).inventory;
+    const auto old=from==12?old_origin:from,now=to==12?new_origin:to;
+    auto& x=b.entries[0];auto& y=a.entries[0];
+    x.archived_from_state=mga::TransactionState(from==12?old_origin:0);
+    y.archived_from_state=mga::TransactionState(to==12?new_origin:0);
+    b.next_commit_sequence=10;a.next_commit_sequence=20;
+    x.commit_sequence=old==6?5:0;y.commit_sequence=now==6?(old==6?5:10):0;
+    x.final_unix_epoch_millis=terminal(old)?500:0;y.final_unix_epoch_millis=terminal(now)?500:0;
+    const char* expected=terminal(old)&&old!=now?"transaction_finality_changed":
+     (!paths[from][to]||(to==12&&from!=12&&!paths[from][now]))?"transaction_state_regressed":"";
+    compare(b,a,expected);
+   }
+  const std::array reasons{"counter_regression","counter_regression","local_number_reused","transaction_uuid_reused",
+   "commit_sequence_reused","transaction_identity_changed","transaction_identity_changed","transaction_begin_changed",
+   "transaction_begin_changed","transaction_begin_changed","transaction_begin_changed","transaction_evidence_regressed",
+   "transaction_evidence_regressed","transaction_finality_changed","transaction_finality_changed","transaction_state_regressed",
+   "commit_sequence_reused","unresolved_transaction_removed","unresolved_transaction_removed","transaction_finality_changed"};
+  for(unsigned fault=0;fault<reasons.size();++fault){auto b=Example(0,0,8,2).inventory,a=b;
+   switch(fault){
+    case 0:b.next_local_transaction_id+=100;break;
+    case 1:b.next_commit_sequence+=100;break;
+    case 2:b.entries.erase(b.entries.begin()+1);break;
+    case 3:a.entries[0].identity.local_id.value=b.next_local_transaction_id;a.next_local_transaction_id++;break;
+    case 4:a.entries[0].identity.local_id.value=b.next_local_transaction_id;a.next_local_transaction_id++;
+     a.entries[0].identity.transaction_uuid.value=Id(50000);a.entries[0].state=mga::TransactionState::committed;
+     a.entries[0].commit_sequence=b.next_commit_sequence-1;break;
+    case 5:a.entries[0].identity.transaction_uuid.value=Id(50000);break;
+    case 6:a.entries[0].identity.scope=mga::TransactionScope::cluster_global;break;
+    case 7:a.entries[0].begin_unix_epoch_millis++;break;
+    case 8:a.entries[0].begin_visible_through_local_transaction_id++;break;
+    case 9:a.entries[0].begin_visible_through_commit_sequence++;break;
+    case 10:a.entries[0].stable_snapshot=!a.entries[0].stable_snapshot;break;
+    case 11:b.entries[0].evidence_record_required=true;a.entries[0].evidence_record_required=false;break;
+    case 12:b.entries[0].evidence_record_written=true;a.entries[0].evidence_record_written=false;break;
+    case 13:b.entries[0].state=a.entries[0].state=mga::TransactionState::committed;
+     b.entries[0].commit_sequence=a.entries[0].commit_sequence=1;a.entries[0].final_unix_epoch_millis++;break;
+    case 14:b.entries[0].state=mga::TransactionState::committed;b.entries[0].commit_sequence=1;
+     a.entries[0].state=mga::TransactionState::rolled_back;break;
+    case 15:b.entries[0].state=mga::TransactionState::prepared;break;
+    case 16:a.entries[0].state=mga::TransactionState::committed;a.entries[0].commit_sequence=1;break;
+    case 17:a.entries.erase(a.entries.begin());break;
+    case 18:b.entries[0].state=mga::TransactionState::failed_terminal;a.entries.erase(a.entries.begin());break;
+    case 19:b.entries[0].state=a.entries[0].state=mga::TransactionState::committed;
+     b.entries[0].commit_sequence=1;a.entries[0].commit_sequence=2;break;
+   }
+   compare(b,a,reasons[fault]);
+  }
+  for(unsigned n:{0u,1u,8u,2048u}){auto b=Example(0,0,n,6).inventory,a=b;
+   std::reverse(a.entries.begin(),a.entries.end());compare(b,a,"");
+   a.entries.clear();compare(b,a,"");
+   a=b;auto e=Example(0,0,1,6).inventory.entries.front();e.identity.local_id.value=b.next_local_transaction_id;
+   e.identity.transaction_uuid.value=Id(50000);e.commit_sequence=b.next_commit_sequence;a.entries.push_back(e);
+   ++a.next_local_transaction_id;++a.next_commit_sequence;compare(b,a,"");
+  }
+  {auto b=Example(0,0,8,6).inventory;
+   b.next_local_transaction_id=b.next_commit_sequence=std::numeric_limits<u64>::max();auto a=b;
+   compare(b,a,"");a.next_local_transaction_id=0;compare(b,a,"next_transaction_invalid");
+   a=b;a.next_commit_sequence=0;compare(b,a,"next_commit_sequence_invalid");
+   a=b;a.entries[0].identity.transaction_uuid.value={};compare(b,a,"invalid_transaction_identity");
+   b.next_local_transaction_id=0;compare(b,a,"next_transaction_invalid");
+  }
+  auto b=Example(0,0,8,6).inventory,a=b;
+  pg::NativeTransactionInventoryView before{b.next_local_transaction_id,b.next_commit_sequence,b.entries};
+  pg::NativeTransactionInventoryView after{a.next_local_transaction_id,a.next_commit_sequence,a.entries};
+  std::array<usize,8> indices{},uuids{};std::array<byte,8> markers{};
+  const auto call=[&](auto local,auto ids,auto bits){return DenyCodecAllocation([&]{
+   return pg::ValidateNativeTransactionInventoryEvolutionView(before,after,local,ids,bits);});};
+  Check(call(std::span(indices),std::span(uuids),std::span(markers)).ok(),"exact evolution workspace");
+  for(unsigned short_field=0;short_field<3;++short_field)
+   Check(call(std::span(indices).first(short_field==0?7:8),std::span(uuids).first(short_field==1?7:8),
+    std::span(markers).first(short_field==2?7:8)).error==E::resource_exhausted,"each short evolution workspace refuses");
+  const auto before_bytes=std::as_bytes(std::span(b.entries)),after_bytes=std::as_bytes(std::span(a.entries));
+  const std::vector<std::byte> saved_before(before_bytes.begin(),before_bytes.end()),saved_after(after_bytes.begin(),after_bytes.end());
+  for(unsigned alias=0;alias<7;++alias){std::span<usize> local=indices,ids=uuids;std::span<byte> bits=markers;
+   switch(alias){
+    case 0:local={reinterpret_cast<usize*>(b.entries.data()),8};break;
+    case 1:ids={reinterpret_cast<usize*>(a.entries.data()),8};break;
+    case 2:bits={reinterpret_cast<byte*>(&before),8};break;
+    case 3:bits={reinterpret_cast<byte*>(&after),8};break;
+    case 4:ids=local;break;
+    case 5:bits={reinterpret_cast<byte*>(local.data()),8};break;
+    case 6:bits={reinterpret_cast<byte*>(ids.data()),8};break;
+   }
+   Check(call(local,ids,bits).error==E::invalid_backing,"both input descriptors and scratch aliases rejected before writes");
+   Check(std::equal(saved_before.begin(),saved_before.end(),before_bytes.begin())&&
+    std::equal(saved_after.begin(),saved_after.end(),after_bytes.begin()),"evolution aliases cannot alter retained records");
+  }
+  alignas(Entry) std::array<byte,sizeof(Entry)*9> raw{};
+  auto misaligned=std::span<usize>{reinterpret_cast<usize*>(raw.data()+1),8};
+  Check(call(misaligned,std::span(uuids),std::span(markers)).error==E::invalid_backing&&
+   call(std::span(indices),misaligned,std::span(markers)).error==E::invalid_backing,"both misaligned index arrays rejected");
+  before.entries={reinterpret_cast<Entry*>(raw.data()+1),8};
+  Check(call(std::span(indices),std::span(uuids),std::span(markers)).error==E::invalid_backing,"misaligned source entries rejected");
+  before.entries=b.entries;after.entries={reinterpret_cast<Entry*>(raw.data()+1),8};
+  Check(call(std::span(indices),std::span(uuids),std::span(markers)).error==E::invalid_backing,"misaligned successor entries rejected");
+  after=before;
+  Check(call(std::span(indices),std::span(uuids),std::span(markers)).ok(),"read-only predecessor and successor may share backing");
+}
+
+void CompleteInventoryValidation(){
+  const auto compare=[&](mga::LocalTransactionInventory& inventory){
+    const std::string_view expected=mga::ValidateLocalTransactionInventoryStructure(inventory);
+    const pg::NativeTransactionInventoryView view{inventory.next_local_transaction_id,inventory.next_commit_sequence,inventory.entries};
+    std::vector<usize> indices(inventory.entries.size());Bytes markers(inventory.entries.size());
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,indices,markers);});
+    Check(result.ok()==expected.empty()&&std::string_view(result.detail)==expected,"complete structural first-error parity");
+    return result.error;
+  };
+  for(unsigned count:{0u,1u,8u,2048u})for(unsigned state=1;state<=13;++state)for(unsigned flags=0;flags<16;++flags){
+    auto value=Example(0,0,count,state,flags).inventory;
+    Check(compare(value)==E::none,"complete multi-page-sized inventory state scope and flag combinations");
+    std::reverse(value.entries.begin(),value.entries.end());
+    Check(compare(value)==E::none,"structure validation does not invent page-chain ordering authority");
+  }
+  for(unsigned first=0;first<8;++first)for(unsigned second=0;second<8;++second)if(first!=second){
+    for(unsigned field=0;field<3;++field){auto value=Example(0,0,8,6).inventory;
+      if(field==0)value.entries[second].identity.local_id=value.entries[first].identity.local_id;
+      if(field==1)value.entries[second].identity.transaction_uuid=value.entries[first].identity.transaction_uuid;
+      if(field==2)value.entries[second].commit_sequence=value.entries[first].commit_sequence;
+      Check(compare(value)==E::invalid_inventory,"duplicates across original record positions");
+    }
+  }
+  for(unsigned fault=0;fault<13;++fault){auto value=Example(0,0,8,6).inventory;auto& e=value.entries[0];
+    switch(fault){
+      case 0:value.next_local_transaction_id=0;break;
+      case 1:value.next_commit_sequence=0;break;
+      case 2:e.begin_visible_through_commit_sequence=value.next_commit_sequence;break;
+      case 3:e.state=mga::TransactionState::archived;e.archived_from_state=mga::TransactionState::none;break;
+      case 4:e.archived_from_state=mga::TransactionState::committed;break;
+      case 5:e.commit_sequence=0;break;
+      case 6:e.state=mga::TransactionState::active;break;
+      case 7:e.identity.transaction_uuid.value={};break;
+      case 8:e.identity.scope=mga::TransactionScope(99);break;
+      case 9:e.identity.local_id.value=value.next_local_transaction_id;break;
+      case 10:e.state=mga::TransactionState::none;e.commit_sequence=0;break;
+      case 11:e.commit_sequence=value.next_commit_sequence;break;
+      case 12:e.begin_visible_through_commit_sequence=e.commit_sequence;break;
+    }
+    value.entries[2].identity.transaction_uuid=value.entries[1].identity.transaction_uuid;
+    Check(compare(value)==E::invalid_inventory,"earlier structural error wins over later duplicate");
+  }
+  auto value=Example(0,0,8,6).inventory;
+  pg::NativeTransactionInventoryView view{value.next_local_transaction_id,value.next_commit_sequence,value.entries};
+  std::vector<usize> indices(8);Bytes markers(8);
+  for(bool short_indices:{false,true}){
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,
+      std::span(indices).first(short_indices?7:8),std::span(markers).first(short_indices?8:7));});
+    Check(result.error==E::resource_exhausted&&std::string_view(result.detail)=="insufficient_backing","exact one-short structural scratch");
+  }
+  const auto saved_bytes=std::as_bytes(std::span(value.entries));
+  const std::vector<std::byte> saved(saved_bytes.begin(),saved_bytes.end());
+  for(unsigned field=0;field<4;++field){
+    auto ids=std::span(indices);auto bits=std::span(markers);
+    if(field==0)ids={reinterpret_cast<usize*>(value.entries.data()),8};
+    if(field==1)bits={reinterpret_cast<byte*>(value.entries.data()),8};
+    if(field==2)bits={reinterpret_cast<byte*>(indices.data()),8};
+    if(field==3)bits={reinterpret_cast<byte*>(&view),8};
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,ids,bits);});
+    Check(result.error==E::invalid_backing,"record scratch and descriptor alias refused before writes");
+    Check(std::equal(saved.begin(),saved.end(),std::as_bytes(std::span(value.entries)).begin()),"structural validation never changes input entries");
+  }
+  alignas(Entry) std::array<byte,sizeof(Entry)*9> raw{};
+  auto bad=view;bad.entries={reinterpret_cast<Entry*>(raw.data()+1),8};
+  Check(DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(bad,indices,markers);}).error==E::invalid_backing,"misaligned entry backing refused");
+  const auto image=Oracle(Example());
+  const auto result=DenyCodecAllocation([&]{return pg::DecodeNativeTransactionInventoryPageInto(image,bad.entries,indices,markers);});
+  Check(!result.page&&result.error==E::invalid_backing,"decoder refuses misaligned entries before any write");
+  auto misaligned=std::span<usize>(reinterpret_cast<usize*>(raw.data()+1),8);
+  Check(DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,misaligned,markers);}).error==E::invalid_backing,"misaligned index scratch refused");
+}
 void Codecs(){
   for(unsigned profile=0;profile<5;++profile){const usize maximum=(d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384)/72;
     Scratch scratch(maximum);
@@ -362,8 +580,8 @@ void Codecs(){
   multi.inventory.entries[1].stable_snapshot=multi.inventory.entries[2].stable_snapshot=true;
   multi.inventory.entries[1].begin_visible_through_commit_sequence=2;multi.inventory.entries[2].begin_visible_through_commit_sequence=1;
   auto multiple=scratch.Decode(Oracle(multi));Check(multiple.ok()&&Horizons(multiple.page->inventory)==std::array<u64,3>{2,2,1},"minimum of multiple stable begin boundaries retains earlier writer");
-  for(unsigned phase=1;phase<=1;++phase){hashes=0;hash_at=phase;auto fail=scratch.Decode(good);hash_at=0;Check(!fail.page&&fail.error==E::hash_failure,"actual digest context failure");}
-  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto fail=scratch.Decode(good);Check(!fault&&!fail.page&&fail.error==E::hash_failure,"each digest provider phase fails closed");}
+  for(unsigned phase=1;phase<=1;++phase){hashes=0;hash_at=phase;auto fail=DenyCodecAllocation([&]{return scratch.Decode(good);});hash_at=0;Check(!fail.page&&fail.error==E::hash_failure,"actual digest context failure");}
+  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto fail=DenyCodecAllocation([&]{return scratch.Decode(good);});Check(!fault&&!fail.page&&fail.error==E::hash_failure,"each digest provider phase fails closed");}
   for(unsigned size:{0u,127u,383u,8191u,8193u}){auto b=good;b.resize(size);Check(!scratch.Decode(b).page,"invalid image lengths refuse");}
   mga::LocalTransactionHorizonRequest request;request.inventory=stable.inventory;request.active_snapshot_horizons={mga::LocalTransactionId{0}};
   auto invalid=mga::ComputeLocalTransactionHorizons(request);Check(!invalid.ok()&&!invalid.horizons.valid&&invalid.diagnostic.message_key=="transaction.horizon.invalid_snapshot_horizon","shared projection preserves invalid snapshot vector");
@@ -371,5 +589,5 @@ void Codecs(){
   Check(!future.ok()&&!future.horizons.valid&&future.diagnostic.message_key=="transaction.horizon.future_snapshot_horizon","shared projection preserves future snapshot vector");
 }
 }
-int main(){try{Codecs();MemoryTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
+int main(){try{CompleteInventoryEvolution();CompleteInventoryValidation();Codecs();MemoryTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(...){budget=-1;std::cerr<<"FAIL checks="<<checks<<'\n';return 1;}}

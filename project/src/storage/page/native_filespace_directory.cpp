@@ -27,7 +27,7 @@ bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFi
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
 auto Digest(std::span<const byte> b,bool clear){const std::array<byte,32> zero{};
   const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
-  return hash::ComputeSha256DigestParts(parts,3);}
+  return hash::ComputeSha256DigestPartsNative(parts,3);}
 NativeFilespaceDirectoryResult Fail(E e){NativeFilespaceDirectoryResult r;r.error=e;return r;}
 NativeFilespaceDirectoryChainResult ChainFail(E e){NativeFilespaceDirectoryChainResult r;r.error=e;return r;}
 bool SameBootstrap(const disk::FilespaceBootstrap& a,const disk::FilespaceBootstrap& b){

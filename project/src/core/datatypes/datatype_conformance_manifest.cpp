@@ -8,6 +8,7 @@
 
 #include "datatype_conformance_manifest.hpp"
 
+#include <algorithm>
 #include <set>
 #include <utility>
 
@@ -64,6 +65,18 @@ void AddFailure(DatatypeConformanceManifestResult* result,
     result->diagnostic = diagnostic;
   }
   result->diagnostics.push_back(std::move(diagnostic));
+}
+
+void AddOwnedFailure(DatatypeConformanceManifestResult* result,
+                     const DiagnosticRecord& diagnostic) {
+  result->status = diagnostic.status;
+  if (result->status.ok()) {
+    result->status = ManifestErrorStatus();
+  }
+  if (result->diagnostics.empty()) {
+    result->diagnostic = diagnostic;
+  }
+  result->diagnostics.push_back(diagnostic);
 }
 
 TypedUuid ExampleDescriptorUuid(CanonicalTypeId type_id) {
@@ -165,7 +178,9 @@ const char* DatatypeConformanceExampleSourceName(
   return "unknown";
 }
 
-DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest() {
+DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
+    const BitStringAuthorityReceiptV1& bit_string_receipt,
+    bool bit_string_null_allowed) {
   DatatypeConformanceManifestResult result;
   result.status = ManifestOkStatus();
   result.manifest.manifest_key = kCurrentCoreDatatypeConformanceManifestKey;
@@ -174,6 +189,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest() {
   result.manifest.parser_authority_allowed = false;
 
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
+    if (descriptor.type_id == CanonicalTypeId::bit_string) {
+      continue;
+    }
     DatatypeConformanceExample example;
     example.type_id = descriptor.type_id;
     example.stable_name = descriptor.stable_name;
@@ -203,6 +221,43 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest() {
     result.manifest.examples.push_back(std::move(example));
   }
 
+  const auto current_v3 = CurrentDatatypeTypeCodecIdentityRowsV3();
+  const auto bit_identity = std::find_if(
+      current_v3.begin(), current_v3.end(),
+      [](const DatatypeTypeCodecIdentityRowV3& row) {
+        return IsExactCanonicalBitStringTypeCodecIdentityV3(row);
+      });
+  if (bit_identity == current_v3.end()) {
+    AddFailure(&result,
+               "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+               "datatype.conformance.bit_string_v3_identity_missing");
+    return result;
+  }
+
+  BitStringProfileRequestV1 request;
+  request.receipt = bit_string_receipt;
+  request.identity = *bit_identity;
+  request.kind = BitStringSurfaceProfileKindV1::unqualified;
+  request.length_bits = kBitStringMaximumLogicalBitsV1;
+  const auto profile = BuildBitStringDescriptorProfileV1(request);
+  if (!profile.ok()) {
+    AddOwnedFailure(&result, profile.diagnostic);
+    return result;
+  }
+
+  BitStringConformanceExampleV1 bit_example;
+  bit_example.receipt = request.receipt;
+  bit_example.identity = *bit_identity;
+  bit_example.profile = profile.profile;
+  bit_example.null_allowed = bit_string_null_allowed;
+  bit_example.state = BitStringValueStateV1::present;
+  bit_example.canonical_component = {0, 0, 0, 0};
+  bit_example.source = DatatypeConformanceExampleSource::current_core_registry;
+  bit_example.evidence_path =
+      "project/src/core/datatypes/datatype_bit_string.cpp";
+  bit_example.source_marker = "BASE-BIT-STRING-CONFORMANCE-V1";
+  result.manifest.bit_string_examples.push_back(std::move(bit_example));
+
   return result;
 }
 
@@ -228,7 +283,9 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
 
   std::set<CanonicalTypeId> required;
   for (const DatatypeDescriptor& descriptor : BuiltinDatatypeDescriptors()) {
-    required.insert(descriptor.type_id);
+    if (descriptor.type_id != CanonicalTypeId::bit_string) {
+      required.insert(descriptor.type_id);
+    }
   }
 
   std::set<CanonicalTypeId> seen;
@@ -310,6 +367,77 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     }
 
     ++result.executed_examples;
+  }
+
+  if (manifest.bit_string_examples.size() != 1) {
+    AddFailure(&result,
+               "SB-DATATYPE-CONFORMANCE-MANIFEST-ROW-MISSING",
+               "datatype.conformance.bit_string_v3_example_count",
+               std::to_string(manifest.bit_string_examples.size()));
+  }
+  for (const BitStringConformanceExampleV1& example :
+       manifest.bit_string_examples) {
+    if (example.source !=
+        DatatypeConformanceExampleSource::current_core_registry) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-DOCS-ONLY-EXAMPLE-REFUSED",
+                 "datatype.conformance.bit_string_docs_only_refused",
+                 DatatypeConformanceExampleSourceName(example.source));
+      continue;
+    }
+    if (EvidencePathForbidden(example.evidence_path)) {
+      AddFailure(&result,
+                 "SB-DATATYPE-CONFORMANCE-EVIDENCE-PATH-REFUSED",
+                 "datatype.conformance.bit_string_evidence_path_refused",
+                 example.evidence_path);
+      continue;
+    }
+    if (!IsExactCanonicalBitStringTypeCodecIdentityV3(example.identity)) {
+      AddFailure(&result,
+                 "CTB.BIT.DESCRIPTOR_INVALID",
+                 "datatype.conformance.bit_string_identity_refused");
+      continue;
+    }
+    const auto profile = ValidateBitStringDescriptorProfileV1(example.profile);
+    if (!profile.ok()) {
+      AddOwnedFailure(&result, profile.diagnostic);
+      continue;
+    }
+    if (example.receipt.statement_receipt_uuid !=
+            example.profile.receipt.statement_receipt_uuid ||
+        example.receipt.catalog_snapshot_uuid !=
+            example.profile.receipt.catalog_snapshot_uuid ||
+        example.receipt.catalog_generation !=
+            example.profile.receipt.catalog_generation ||
+        example.receipt.registry_generation !=
+            example.profile.receipt.registry_generation) {
+      AddFailure(&result,
+                 "CTB.BIT.DESCRIPTOR_INVALID",
+                 "datatype.conformance.bit_string_receipt_refused");
+      continue;
+    }
+    const auto decoded = DecodeCanonicalBitStringComponentNoAllocV1(
+        example.profile, example.state, example.null_allowed,
+        example.canonical_component);
+    if (!decoded.ok()) {
+      AddOwnedFailure(
+          &result,
+          MakeBitStringDiagnosticV1(
+              decoded.status,
+              std::string(decoded.diagnostic.diagnostic_code),
+              "datatype.conformance.bit_string_component_refused",
+              std::string(decoded.diagnostic.detail)));
+      continue;
+    }
+    if (decoded.value.profile != &example.profile ||
+        decoded.value.state != example.state) {
+      AddFailure(&result,
+                 "CTB.BIT.CANONICAL_ENCODING_INVALID",
+                 "datatype.conformance.bit_string_component_refused");
+      continue;
+    }
+    ++result.executed_examples;
+    ++result.executed_bit_string_examples;
   }
 
   for (const CanonicalTypeId type_id : required) {

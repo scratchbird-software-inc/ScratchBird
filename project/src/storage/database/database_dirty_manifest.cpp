@@ -628,19 +628,19 @@ template<class Root> Error Validate(const Root& r) {
     ||(!(r.flags&4)&&r.cluster_quorum_transaction_id))return Error::invalid_roots;
   return Error::none;
 }
-hash::HashDigestResult RootDigest(std::span<const byte> b,std::size_t used) {
+hash::Sha256PartsResult RootDigest(std::span<const byte> b,std::size_t used) {
   if(LoadLittle16(b.data()+family+8)==2){
     const hash::HashDigestSegment parts[]={{operation_domain.data(),operation_domain.size()},
       {b.data()+family+32,96},{b.data()+family+280,16},{b.data()+entries,used-entries}};
-    return hash::ComputeSha256DigestParts(parts,4);
+    return hash::ComputeSha256DigestPartsNative(parts,4);
   }
   const hash::HashDigestSegment parts[]={{domain.data(),domain.size()},{b.data()+family+32,96},{b.data()+entries,used-entries}};
-  return hash::ComputeSha256DigestParts(parts,3);
+  return hash::ComputeSha256DigestPartsNative(parts,3);
 }
-hash::HashDigestResult FullDigest(std::span<const byte> b) {
+hash::Sha256PartsResult FullDigest(std::span<const byte> b) {
   const std::array<byte,32> zero{};
   const hash::HashDigestSegment parts[]={{b.data(),digest_at},{zero.data(),zero.size()},{b.data()+digest_at+32,b.size()-digest_at-32}};
-  return hash::ComputeSha256DigestParts(parts,3);
+  return hash::ComputeSha256DigestPartsNative(parts,3);
 }
 struct LockedFilespaces {
   Error error=Error::invalid_filespace;

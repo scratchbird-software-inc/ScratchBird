@@ -64,11 +64,41 @@ struct DatatypeBinaryAllocationFreeViewResult {
   Status status;
   DatatypeBinaryDiagnosticView diagnostic;
   DatatypeBinaryValueView value;
+  std::size_t bytes_written = 0;
   bool ok() const noexcept {
     return abi_version == 1 && diagnostic.abi_version == 1 && status.ok() &&
            diagnostic.status.ok() && diagnostic.diagnostic_code.empty();
   }
 };
+
+// Frozen SBDVAL01 payload-integrity identity.  This historical algorithm uses
+// the stated seed (not the standard FNV-1a-64 offset basis), then XORs and
+// multiplies once per octet modulo 2^64.
+inline constexpr u64 kDatatypeBinaryPayloadChecksumV1Seed =
+    1469598103934665603ull;
+inline constexpr u64 kDatatypeBinaryPayloadChecksumV1Prime =
+    1099511628211ull;
+
+u64 ComputeDatatypeBinaryPayloadChecksumV1(const byte* payload,
+                                           std::size_t payload_bytes) noexcept;
+
+// These functions expose the unchanged SBDVAL01 structural envelope to a
+// containing, profile-aware datatype adapter.  They validate/write only the
+// structural fields, extent, state and frozen checksum.  Success does not
+// grant datatype identity, descriptor receipt, profile authority, canonical
+// payload validity, or permission to publish the borrowed value.
+DatatypeBinaryAllocationFreeViewResult
+ValidateDatatypeBinaryStructuralValueViewNoAlloc(
+    const DatatypeBinaryValueView& value) noexcept;
+
+DatatypeBinaryAllocationFreeViewResult
+EncodeDatatypeBinaryStructuralValueIntoNoAlloc(
+    const DatatypeBinaryValueView& value, byte* destination,
+    std::size_t destination_bytes) noexcept;
+
+DatatypeBinaryAllocationFreeViewResult
+DecodeDatatypeBinaryStructuralValueViewNoAlloc(
+    const byte* encoded, std::size_t encoded_bytes) noexcept;
 
 // Reporting context supplied only after the containing owner has validated the
 // expected descriptor. The decoder copies this identity into diagnostics; it

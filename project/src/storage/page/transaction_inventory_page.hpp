@@ -60,6 +60,26 @@ enum class NativeInventoryError {
   binding_mismatch, io_failure, encrypted_requires_crypto_authority, chain_mismatch,
   invalid_backing
 };
+struct NativeInventoryViewValidation {
+  NativeInventoryError error=NativeInventoryError::invalid_inventory;
+  const char* detail="";
+  bool ok() const noexcept{return error==NativeInventoryError::none;}
+};
+// Common structural validation of a complete retained inventory, not page-chain
+// ordering, evolution, transaction outcome or selection authority. Scratch may
+// be reused after return; records are never sorted or mutated.
+NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
+    const NativeTransactionInventoryView&,std::span<std::size_t> uniqueness_indices,
+    std::span<byte> duplicate_markers) noexcept;
+// Complete successor consistency for retained inventories, not transaction,
+// retention, recovery or publication authority. Indices/markers need max(before,
+// after) slots; UUID indices need before.size() slots. Reuses only caller scratch
+// and never changes either record array. Read-only inputs may share storage;
+// writable scratch must be aligned and disjoint from both inputs/descriptors.
+NativeInventoryViewValidation ValidateNativeTransactionInventoryEvolutionView(
+    const NativeTransactionInventoryView& before,const NativeTransactionInventoryView& after,
+    std::span<std::size_t> indices,std::span<std::size_t> prior_uuid_indices,
+    std::span<byte> markers) noexcept;
 struct NativeTransactionInventoryPageResult {
   NativeInventoryError error = NativeInventoryError::invalid_family;
   std::optional<NativeTransactionInventoryPage> page;

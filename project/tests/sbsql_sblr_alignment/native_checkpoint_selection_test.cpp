@@ -54,6 +54,12 @@ namespace {
 namespace db=scratchbird::storage::database;namespace d=scratchbird::storage::disk;using namespace scratchbird::core::platform;
 using Bytes=std::vector<byte>;using E=db::NativeCheckpointSelectionError;unsigned checks=0;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){++checks;if(!ok)throw std::runtime_error(std::string(why)+" line="+std::to_string(at.line()));}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=allocation_budget;allocation_budget=0;
+  auto result=call();const bool unchanged=allocation_budget==0;allocation_budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(byte n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=n;return id;}
 void Num(Bytes& b,std::size_t at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=static_cast<byte>(v>>(8*i));}
 void Put(Bytes& b,std::size_t at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -267,7 +273,7 @@ void Test(){
   allocations=0;counting=true;const auto measured=db::ClassifyNativeCheckpointSelectionPair(first,second);counting=false;Check(measured.ok(),"measure successful pair");const auto count=allocations;
   Check(count==0,"pair classification must not allocate hidden copies of caller-owned page images");
   for(unsigned long n=0;n<=count;++n){allocation_budget=n;const auto pair=db::ClassifyNativeCheckpointSelectionPair(first,second);allocation_budget=-1;if(!pair.ok())Empty(pair);if(n==count)Check(pair.ok(),"allocation sweep terminal success");}
-  for(unsigned mode=1;mode<=5;++mode){hash_fault=mode;const auto pair=db::ClassifyNativeCheckpointSelectionPair(first,second);Check(!hash_fault,"multipart failure consumed");Empty(pair);Check(pair.error==E::hash_failure,"provider failure is not classified as damaged durable data");}
+  for(unsigned mode=1;mode<=5;++mode){hash_fault=mode;const auto pair=DenyCodecAllocation([&]{return db::ClassifyNativeCheckpointSelectionPair(first,second);});Check(!hash_fault,"multipart failure consumed");Empty(pair);Check(pair.error==E::hash_failure,"provider failure is not classified as damaged durable data");}
   allocation_budget=0;const auto owned_refusal=db::DecodeNativeCheckpointSelection(first);allocation_budget=-1;
   Empty(owned_refusal);Check(owned_refusal.error==E::resource_exhausted,"owning compatibility decoder still reports image copy allocation failure");
   std::cout<<"pair allocations="<<count<<" checks="<<checks<<" image_only=true\n";

@@ -74,6 +74,12 @@ using namespace scratchbird::core::platform;
 using Bytes=std::vector<byte>;using E=db::NativeCheckpointError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(byte n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=n;return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -287,10 +293,10 @@ void Codecs(){
     if(n==3)bad.roots.front().sha256={};
     if(n==4)bad.roots.front().object_uuid={};
     const auto r=db::DecodeNativeCheckpointRootInto(Oracle(bad),roots);Check(!r.root&&r.error==E::invalid_roots,"fully resealed invalid root semantics refused");}
-  for(unsigned which=1;which<=2;++which){hashes=0;hash_at=which;const auto r=db::DecodeNativeCheckpointRootInto(good,roots);hash_at=0;
+  for(unsigned which=1;which<=2;++which){hashes=0;hash_at=which;const auto r=DenyCodecAllocation([&]{return db::DecodeNativeCheckpointRootInto(good,roots);});hash_at=0;
     Check(!r.root&&r.error==E::hash_failure&&hashes==which,"both real digest contexts fail independently");}
   for(unsigned context=1;context<=2;++context)for(unsigned n=1;n<=4;++n){hashes=0;fault_context=context;fault=n;
-    const auto r=db::DecodeNativeCheckpointRootInto(good,roots);Check(!fault&&!r.root&&r.error==E::hash_failure,"both full-page and root-set provider failures remain typed");}
+    const auto r=DenyCodecAllocation([&]{return db::DecodeNativeCheckpointRootInto(good,roots);});Check(!fault&&!r.root&&r.error==E::hash_failure,"both full-page and root-set provider failures remain typed");}
   for(unsigned size:{0u,127u,511u,8191u,8193u}){auto bad=good;bad.resize(size);const auto r=db::DecodeNativeCheckpointRootInto(bad,roots);Check(!r.root&&r.error==E::invalid_header,"invalid image lengths refuse");}
   value.checkpoint_generation=2;value.predecessor=d::NativePageReference{Id(4),7,9,d::kCanonicalFilespacePageProfiles[4].uuid};value.predecessor_sha256.fill(0x91);
   const auto linked=Oracle(value);const auto r=db::DecodeNativeCheckpointRootInto(linked,roots);Check(r.ok()&&Oracle(*r.root)==linked,"full predecessor linkage preserved without granting authority");

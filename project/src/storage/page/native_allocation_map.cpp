@@ -42,7 +42,7 @@ auto Digest(std::span<const byte> bytes, bool zero_seal) {
   const hash::HashDigestSegment parts[] = {
       {bytes.data(), seal}, {zero_seal ? zero.data() : bytes.data() + seal, 32},
       {bytes.data() + seal + 32, bytes.size() - seal - 32}};
-  return hash::ComputeSha256DigestParts(parts, 3);
+  return hash::ComputeSha256DigestPartsNative(parts, 3);
 }
 std::size_t RecordsAt(std::size_t count) { return (start + (count + 1) / 2 + 7) & ~std::size_t(7); }
 bool CreatorIdentityValid(const Uuid& transaction, const Uuid& operation) {

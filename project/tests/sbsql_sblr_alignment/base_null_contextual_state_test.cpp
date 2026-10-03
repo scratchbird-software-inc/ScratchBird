@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_binary.hpp"
+#include "datatype_bit_string.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_layout.hpp"
@@ -245,6 +246,19 @@ void ContextualBindingPreservesTargetType() {
       const auto bound = dt::CastDatatypeValue(bind);
       const std::string label = std::string(descriptor.stable_name) + "/" +
                                 dt::DatatypeCastContextName(context);
+      if (descriptor.type_id == dt::CanonicalTypeId::bit_string) {
+        CheckRejectedAs(bound, "CTB.BIT.DESCRIPTOR_INVALID",
+                        "generic contextual bit-string NULL without V3 profile");
+        dt::DatatypeCastRequest identity;
+        identity.value = TypedNull(descriptor.type_id, target_descriptor);
+        identity.target_type_id = descriptor.type_id;
+        identity.context = context;
+        identity.target_descriptor = target_descriptor;
+        CheckRejectedAs(dt::CastDatatypeValue(identity),
+                        "CTB.BIT.DESCRIPTOR_INVALID",
+                        "generic typed bit-string NULL identity without V3 profile");
+        continue;
+      }
       Check(bound.ok(), "contextual NULL did not bind in " + label);
       Check(bound.value.type_id == descriptor.type_id,
             "contextual NULL lost target descriptor in " + label);
@@ -387,7 +401,9 @@ void ContextualBindingPreservesTargetType() {
       cast_to_null.explicit_cast = context == dt::DatatypeCastContext::explicit_cast;
       cast_to_null.reference_compatibility_profile = true;
       CheckRejectedAs(dt::CastDatatypeValue(cast_to_null),
-                      "DATATYPE.CAST_FORBIDDEN",
+                      descriptor.type_id == dt::CanonicalTypeId::bit_string
+                          ? "CTB.BIT.DESCRIPTOR_INVALID"
+                          : "DATATYPE.CAST_FORBIDDEN",
                       std::string("concrete typed NULL cast to null_type from ") +
                           descriptor.stable_name + "/" +
                           dt::DatatypeCastContextName(context));
@@ -832,6 +848,17 @@ void DurableCodecsRequireConcreteTypes() {
     binary_null.type_id = descriptor.type_id;
     binary_null.is_null = true;
     const auto encoded = dt::EncodeDatatypeBinaryValue(binary_null);
+    if (descriptor.type_id == dt::CanonicalTypeId::bit_string) {
+      CheckRejectedAs(encoded, "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+                      "generic bit-string NULL binary encode without V3 profile");
+      dt::DatatypePhysicalValue physical_null;
+      physical_null.type_id = descriptor.type_id;
+      physical_null.state = dt::DatatypePhysicalValueState::sql_null;
+      CheckRejectedAs(dt::EncodeDatatypePhysicalValue(physical_null),
+                      "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+                      "generic bit-string NULL physical encode without V3 profile");
+      continue;
+    }
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
     Check(encoded.encoded.size() == dt::kDatatypeBinaryEnvelopeHeaderBytes,
           "typed NULL binary envelope contains payload bytes for " + label);
@@ -915,6 +942,13 @@ void SerializationRetainsConcreteType() {
     typed_null.value = TypedNull(descriptor.type_id, execution_descriptor);
     const auto serialized = dt::SerializeDatatypeValue(typed_null);
     const std::string label = descriptor.stable_name;
+    if (descriptor.type_id == dt::CanonicalTypeId::bit_string) {
+      CheckRejectedAs(serialized, "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+                      "generic bit-string NULL serialization without V3 profile");
+      Check(serialized.serialized_value.empty(),
+            "generic bit-string NULL serialization published output");
+      continue;
+    }
     if (descriptor.type_id == dt::CanonicalTypeId::uuid) {
       CheckRejectedAs(serialized, "SB_DATATYPE_SERIALIZATION_REJECTED",
                       "typed UUID NULL serialization without codec policy");
@@ -1966,6 +2000,40 @@ void PhysicalCodecPersistsThroughFileDevice(const fs::path& executable) {
   }
 }
 
+void BitStringNullRequiresExactV3Profile() {
+  const auto descriptor = platform::Uuid{{
+      0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+  Check(identity.ok, "lookup bit-string V3 identity for typed NULL");
+  dt::BitStringAuthorityReceiptV1 receipt{
+      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV6, 6, 6};
+  const auto profile = dt::BuildBitStringDescriptorProfileV1(
+      {receipt, identity.row,
+       dt::BitStringSurfaceProfileKindV1::unqualified,
+       dt::kBitStringMaximumLogicalBitsV1});
+  Check(profile.ok(), "build exact bit-string profile for typed NULL");
+  dt::BitStringValueViewV1 typed_null{
+      &profile.profile, dt::BitStringValueStateV1::sql_null, 0, {},
+      dt::BitStringOwnershipV1::borrowed};
+  Check(dt::ValidateBitStringValueViewV1(typed_null, true).ok(),
+        "exact-profile typed bit-string NULL was refused");
+  Check(!dt::ValidateBitStringValueViewV1(typed_null, false).ok(),
+        "nonnullable bit-string NULL was admitted");
+  std::array<platform::byte, 1> dirty{0};
+  typed_null.packed_msb0 = dirty;
+  const auto invalid = dt::ValidateBitStringValueViewV1(typed_null, true);
+  Check(!invalid.ok() && invalid.diagnostic.diagnostic_code ==
+                             "DATATYPE.NULL_STATE.INVALID",
+        "payload-bearing bit-string NULL lost null-state precedence");
+
+  dt::DatatypeOperationValue raw_null{dt::CanonicalTypeId::bit_string, {}, true};
+  const auto raw = dt::SerializeDatatypeValue({raw_null});
+  Check(!raw.ok() && raw.diagnostic.diagnostic_code ==
+                         "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+        "generic SBDV1 admitted typed bit-string NULL without V3 profile");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1980,6 +2048,7 @@ int main(int argc, char** argv) {
   SerializationRetainsConcreteType();
   PhysicalMalformedRecordsAreRefused();
   PhysicalCodecPersistsThroughFileDevice(fs::absolute(argv[0]));
+  BitStringNullRequiresExactV3Profile();
   std::cout << "base NULL contextual-state checks=" << checks
             << " failures=" << failures << '\n';
   return failures == 0 ? 0 : 1;

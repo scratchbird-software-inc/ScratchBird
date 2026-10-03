@@ -30,7 +30,7 @@ struct NativePublicationPlan {
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,
   invalid_integrity, invalid_checkpoint, binding_mismatch, hash_failure, resource_exhausted,
-  cluster_requires_authority
+  cluster_requires_authority, invalid_workspace
 };
 struct NativePublicationPlanImage {
   NativePublicationPlanError error=NativePublicationPlanError::invalid_family;
@@ -40,6 +40,16 @@ struct NativePublicationPlanImage {
   std::vector<byte> bytes;
   bool ok() const noexcept{return error==NativePublicationPlanError::none&&plan.has_value();}
 };
+struct NativePublicationPlanViewImage {
+  NativePublicationPlanError error=NativePublicationPlanError::invalid_family;
+  std::optional<NativePublicationPlan> plan;
+  std::array<byte,32> sha256{};
+  std::span<const byte> bytes;
+  bool ok() const noexcept{return error==NativePublicationPlanError::none&&plan.has_value();}
+};
+// Complete fixed-field decode borrowing immutable image bytes. This gives no
+// selected-history, storage-policy, publication or memory-grant authority.
+NativePublicationPlanViewImage DecodeNativePublicationPlanView(std::span<const byte>) noexcept;
 struct NativePublicationGraphDigest {
   NativePublicationPlanError error=NativePublicationPlanError::invalid_checkpoint;
   std::array<byte,32> sha256{};
@@ -48,6 +58,11 @@ struct NativePublicationGraphDigest {
 NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPlan&) noexcept;
 NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>&) noexcept;
 NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigest(const std::vector<byte>& checkpoint) noexcept;
+// Complete checkpoint decode and projection with caller-backed roots. Fixed
+// digest-provider errors never require owning diagnostics. No valid digest on
+// failure; input and aligned root workspace remain disjoint.
+NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigestInto(
+    std::span<const byte> checkpoint,std::span<NativeCheckpointRootReference> roots) noexcept;
 // Structural preflight against a real retained reservation only. Does not
 // authenticate, allocate, write, publish a graph or complete an operation.
 NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicationPlan&,
@@ -57,4 +72,10 @@ NativePublicationPlanError BindNativePublicationPlanToManagementExtent(const Nat
 // Complete canonical record digest plus provenance binding, not authorization.
 NativePublicationPlanError BindNativePublicationPlanToManagementRecord(const NativePublicationPlan&,
     const NativeManagementOperation&) noexcept;
+// Fresh complete canonical aggregate decode and full stored-byte commitment,
+// not a caller-asserted record/digest pair. Workspace must also be disjoint from
+// the plan. No history selection, actual memory grant or execution authority.
+NativePublicationPlanError BindNativePublicationPlanToManagementRecordInto(
+    const NativePublicationPlan&,std::span<const byte> aggregate,
+    NativeManagementOperationViewWorkspace) noexcept;
 } // namespace scratchbird::storage::database
