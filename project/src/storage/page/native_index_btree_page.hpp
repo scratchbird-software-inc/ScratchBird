@@ -77,6 +77,30 @@ struct NativeBtreePageResult {
 };
 int CompareNativeBtreeKeys(const NativeBtreeKey&,const NativeBtreeKey&) noexcept;
 int CompareNativeBtreeKeys(const NativeBtreeKeyView&,const NativeBtreeKeyView&) noexcept;
+bool NativeBtreeDependenciesValid(const NativeBtreeDependencies&) noexcept;
+namespace detail {
+// Shared whole-tree step: decoded page validity alone cannot establish these
+// inherited ranges, parent bindings or cross-parent sibling relationships.
+template<class Page> NativeBtreeError ValidateNativeBtreeTraversalStep(
+    const Page& page,const Page* parent,u16 level,
+    const std::optional<typename Page::Key>& low,
+    const std::optional<typename Page::Key>& high,const Page* prior) noexcept {
+  using E=NativeBtreeError;
+  const auto self=[](const Page& p){const auto& h=p.header;
+    return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};};
+  if(parent){
+    if(page.parent!=std::optional{self(*parent)})return E::tree_reference_mismatch;
+    if(page.tree_level!=level)return E::tree_level_mismatch;
+  }
+  if(page.low_fence!=low||page.high_fence!=high)return E::tree_fence_mismatch;
+  if(!prior){if(page.left)return E::tree_sibling_mismatch;}
+  else {
+    if(prior->right!=std::optional{self(page)}||page.left!=std::optional{self(*prior)})return E::tree_sibling_mismatch;
+    if(!page.low_fence||!prior->high_fence||page.low_fence!=prior->high_fence)return E::tree_fence_mismatch;
+  }
+  return E::none;
+}
+} // namespace detail
 NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage&) noexcept;
 NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>&) noexcept;
 // Empty filespace UUID marks unused scratch; page zero keys profile agreement.

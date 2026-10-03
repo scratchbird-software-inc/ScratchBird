@@ -103,6 +103,7 @@ int CompareNativeBtreeKeys(const NativeBtreeKey& a,const NativeBtreeKey& b) noex
   return CompareKeys(a,b);
 }
 int CompareNativeBtreeKeys(const NativeBtreeKeyView& a,const NativeBtreeKeyView& b) noexcept {return CompareKeys(a,b);}
+bool NativeBtreeDependenciesValid(const NativeBtreeDependencies& d) noexcept {return ValidDependencies(d);}
 NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t bytes) noexcept {
   if(bytes<start||bytes>std::numeric_limits<u32>::max())return {};
   const auto cells=(bytes-start)/149;
@@ -285,15 +286,11 @@ NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(const Uuid& db,
       auto loaded=ReadNativeBtreePageFromOpenDevice(*ordered[fs].device,db,next.ref,type,dependencies);
       if(!loaded.ok())return fail(loaded.error);const auto& page=*loaded.page;
       if(!page_ids.insert(page.header.page_uuid).second)return fail(E::tree_reference_mismatch);
-      if(next.parent){
-        if(page.parent!=std::optional{Self(*result.pages[*next.parent].page)})return fail(E::tree_reference_mismatch);
-        if(page.tree_level!=next.level)return fail(E::tree_level_mismatch);}
-      if(page.low_fence!=next.low||page.high_fence!=next.high)return fail(E::tree_fence_mismatch);
       const auto previous=last_by_level.find(page.tree_level);
-      if(previous==last_by_level.end()){if(page.left)return fail(E::tree_sibling_mismatch);}
-      else {const auto& prior=*result.pages[previous->second].page;
-        if(prior.right!=std::optional{next.ref}||page.left!=std::optional{Self(prior)})return fail(E::tree_sibling_mismatch);
-        if(!page.low_fence||!prior.high_fence||page.low_fence!=prior.high_fence)return fail(E::tree_fence_mismatch);}
+      const auto topology=detail::ValidateNativeBtreeTraversalStep(page,
+        next.parent?&*result.pages[*next.parent].page:nullptr,next.level,next.low,next.high,
+        previous==last_by_level.end()?nullptr:&*result.pages[previous->second].page);
+      if(topology!=E::none)return fail(topology);
       for(const auto& cell:page.cells)if(cell.base_page&&filespace(*cell.base_page)==ordered.size())return fail(E::invalid_filespace);
       const auto index=result.pages.size();last_by_level[page.tree_level]=index;
       result.retained_image_bytes+=loaded.bytes.size();result.pages.push_back(std::move(loaded));

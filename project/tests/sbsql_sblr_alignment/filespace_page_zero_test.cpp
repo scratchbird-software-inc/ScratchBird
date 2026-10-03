@@ -5,6 +5,7 @@
 #include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_catalog_leaf_memory.hpp"
+#include "native_btree_tree_memory.hpp"
 #include "metric_observation_queue.hpp"
 #include "catalog_schema_definition.hpp"
 #include "catalog_metric_retention_policy.hpp"
@@ -786,6 +787,8 @@ std::vector<page::NativeBtreePage> BtreeDeepTreeExample(unsigned p) {
     nodes[pair.first].high_fence=boundary;nodes[pair.second].low_fence=boundary;}
   return nodes;
 }
+void GovernedBtreeParity(const std::vector<disk::NativeFilespaceDevice>&,
+  const disk::NativePageReference&,const page::NativeBtreeDependencies&,u64,const page::NativeBtreeTreeResult&);
 void NativeBtreeTrees() {
   using E=page::NativeBtreeError;
   const auto empty=[&](const auto& r){Check(!r.ok()&&r.pages.empty()&&r.leaves.empty()&&r.retained_image_bytes==0,"native tree failure exposes no images leaf order or counters");};
@@ -808,6 +811,7 @@ void NativeBtreeTrees() {
     persist();auto result=read(budget);Check(result.ok()&&result.pages.size()==7&&result.leaves==std::vector<std::size_t>{2,3,5,6}
       &&result.retained_image_bytes==budget,"complete cross-profile two-level navigation tree and exact retained budget");
     for(unsigned i=0;i<4;++i)Check(result.pages[result.leaves[i]].bytes==BtreeOracle(original[3+i]),"verified leaf order uses actual independently packed images");
+    GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);
     result=read(budget-1);empty(result);Check(result.error==E::resource_exhausted,"late subtree one-byte-short budget returns no valid prefix");
     result=read(0);empty(result);Check(result.error==E::invalid_reference,"zero navigation allowance refused");
     auto reversed=devices;std::reverse(reversed.begin(),reversed.end());
@@ -839,7 +843,8 @@ void NativeBtreeTrees() {
         if(fault==12||fault==13){auto& key=*nodes[4].low_fence;if(fault==12)--key.row_uuid.bytes[15];else --key.version_uuid.bytes[15];
           nodes[3].high_fence=key;expected=E::tree_fence_mismatch;}
         for(const auto& n:nodes)Check(page::DecodeNativeBtreePage(BtreeOracle(n)).ok(),"negative tree still has individually valid native images");
-        persist();result=read(budget);empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));}
+        persist();result=read(budget);empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));
+        GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);}
       nodes=original;persist();
       auto duplicate=devices;duplicate.push_back(devices[0]);result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),duplicate,root,original[0].dependencies,budget);empty(result);Check(result.error==E::invalid_filespace,"duplicate retained filespace refused");
       duplicate=devices;duplicate[0].device=&first;result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),duplicate,root,original[0].dependencies,budget);empty(result);Check(result.error==E::invalid_filespace,"aliased retained device refused");
@@ -859,13 +864,16 @@ void NativeBtreeTrees() {
       // allocation-map verifier obligation, not fabricated tree members.
       nodes[0].tree_level=0;nodes[0].first_child.reset();nodes[0].cells.clear();persist();result=read(sizes[p]);
       Check(result.ok()&&result.pages.size()==1&&result.leaves==std::vector<std::size_t>{0}&&result.retained_image_bytes==sizes[p],"actual empty allocated root tree");
+      GovernedBtreeParity(devices,root,original[0].dependencies,sizes[p],result);
       nodes=BtreeDeepTreeExample(p);persist();const auto deep_root=reference(nodes[0]);const u64 deep_budget=2*budget+sizes[p];
       const auto deep_read=[&]{return page::ReadNativeBtreeTreeFromOpenDevices(Id(1),devices,deep_root,original[0].dependencies,deep_budget);};
       result=deep_read();Check(result.ok()&&result.pages.size()==15&&result.leaves==std::vector<std::size_t>{3,4,6,7,10,11,13,14}
         &&result.retained_image_bytes==deep_budget,"three-level actual tree includes branch siblings across different parents");
+      GovernedBtreeParity(devices,deep_root,original[0].dependencies,deep_budget,result);
       const auto right=nodes[3].right;nodes[3].right=reference(nodes[10]);
       Check(page::DecodeNativeBtreePage(BtreeOracle(nodes[3])).ok(),"cross-parent branch sibling fault is locally valid");persist();result=deep_read();empty(result);
-      Check(result.error==E::tree_sibling_mismatch,"branch sibling reciprocity checked across parent boundaries");nodes[3].right=right;persist();
+      Check(result.error==E::tree_sibling_mismatch,"branch sibling reciprocity checked across parent boundaries");
+      GovernedBtreeParity(devices,deep_root,original[0].dependencies,deep_budget,result);nodes[3].right=right;persist();
     }
     Exclusive(path1);Exclusive(path2);Exclusive(path3);Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close tree owners before fresh executable");
     const auto child=::fork();Check(child>=0,"fork independent native tree reader");
@@ -1441,6 +1449,140 @@ struct LeafMemoryFixture {
   void Empty(){const auto s=manager.Snapshot();Check(!s.current_bytes&&!s.reserved_capacity_bytes&&
     !s.active_capacity_reservation_count&&!ledger.Snapshot().current_bytes,"leaf backing and grant completely released");}
 };
+void GovernedBtreeParity(const std::vector<disk::NativeFilespaceDevice>& files,
+    const disk::NativePageReference& root,const page::NativeBtreeDependencies& dependencies,
+    u64 bytes,const page::NativeBtreeTreeResult& expected) {
+  const db::NativeBtreeTreeMemoryLimits limits{31,static_cast<std::size_t>(bytes)};
+  const auto amount=db::NativeBtreeTreeWorkspaceBytes(files,limits);LeafMemoryFixture grant(amount);
+  auto result=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),files,root,dependencies,limits,grant.memory,grant.binding);
+  Check(result.ok()==expected.ok()&&result.tree_error==expected.error,"grant-backed and owning complete-tree classification parity");
+  if(expected.ok()){
+    Check(result.pages.size()==expected.pages.size()&&result.retained_image_bytes==expected.retained_image_bytes&&
+      std::equal(result.leaves.begin(),result.leaves.end(),expected.leaves.begin(),expected.leaves.end()),"identical complete retained topology and leaf order");
+    for(std::size_t i=0;i<result.pages.size();++i)Check(BtreeOracle(*result.pages[i].page)==expected.pages[i].bytes,
+      "grant-backed complete decoded tree independently reconstructs owning wire bytes");
+  }else Check(!result.arena&&result.pages.empty()&&result.leaves.empty()&&!result.retained_image_bytes,
+      "invalid later tree publishes no grant-backed prefix");
+  result={};grant.memory={};grant.Empty();
+}
+void NativeBtreeTreeMemory() {
+  using E=db::NativeBtreeTreeMemoryError;using T=page::NativeBtreeError;
+  const auto empty=[](const auto& r){Check(!r.ok()&&!r.arena&&r.pages.empty()&&r.leaves.empty()&&!r.retained_image_bytes,
+    "failed governed tree returns no retained image or topology prefix");};
+  for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q){const auto s=(p+2)%5;
+    Fixture fixture;disk::FileDevice first,second,base;
+    const auto path1=(fixture.root/"memory-tree-first").string(),path2=(fixture.root/"memory-tree-second").string(),path3=(fixture.root/"memory-tree-base").string();
+    auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
+    for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
+    const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
+      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()&&
+        device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare actual governed tree filespace");};
+    prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
+    auto nodes=BtreeTreeExample(p);
+    for(auto& n:nodes){if(n.header.filespace_uuid==Id(7)){n.header.page_size_bytes=sizes[q];n.header.page_size_profile_uuid=Profile(q);}
+      const auto reprofile=[&](auto& r){if(r&&r->filespace_uuid==Id(7))r->page_size_profile_uuid=Profile(q);};
+      reprofile(n.parent);reprofile(n.left);reprofile(n.right);reprofile(n.first_child);
+      for(auto& c:n.cells){reprofile(c.child);reprofile(c.base_page);}}
+    const auto persist=[&]{for(const auto& n:nodes){const auto bytes=BtreeOracle(n);auto& device=n.header.filespace_uuid==Id(2)?first:second;
+      Check(device.WriteAt(n.header.page_number*n.header.page_size_bytes,bytes.data(),bytes.size()).ok(),"persist independent governed tree image");}
+      Check(first.Sync().ok()&&second.Sync().ok()&&base.Sync().ok(),"sync actual governed tree");};persist();
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const auto& h=nodes[0].header;const disk::NativePageReference root{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
+    const db::NativeBtreeTreeMemoryLimits limits{7,static_cast<std::size_t>(4*sizes[p]+3*sizes[q])};
+    const auto amount=db::NativeBtreeTreeWorkspaceBytes(devices,limits);Check(amount>limits.maximum_retained_image_bytes,"whole-tree grant covers images and all decoded traversal backing");
+    LeafMemoryFixture grant(amount);
+    const auto read=[&]{return db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,grant.memory,grant.binding);};
+    const auto oracle=[&](const auto& r){
+      const std::array<std::size_t,7> preorder{0,1,3,4,2,5,6};const std::array<std::size_t,4> leaves{2,3,5,6};
+      Check(r.ok()&&r.pages.size()==7&&r.retained_image_bytes==limits.maximum_retained_image_bytes&&
+        std::equal(r.leaves.begin(),r.leaves.end(),leaves.begin(),leaves.end()),"exact mixed-profile governed tree and leaf order");
+      for(std::size_t i=0;i<7;++i){const auto bytes=BtreeOracle(nodes[preorder[i]]);
+        Check(BtreeOracle(*r.pages[i].page)==bytes&&std::equal(r.pages[i].bytes.begin(),r.pages[i].bytes.end(),bytes.begin(),bytes.end()),
+          "complete granted tree matches independent images including every key and native reference");}
+      Check(grant.manager.Snapshot().current_bytes==amount&&grant.memory.Snapshot().allocated_bytes==amount,"all retained tree backing remains actually charged");};
+    reads=0;track_reads=true;auto result=read();track_reads=false;const auto read_count=reads;oracle(result);
+    Check(read_count==13,"six bootstrap/pagezero reads plus seven tree pages");result={};
+    auto held=first.AcquireOperationGuard();auto* mutex=held.mutex();held.unlock();
+    FencedHeapProbe heap_probe;heap_probe.mutex=mutex;std::thread observer([&]{heap_probe.Run();});
+    fenced_heap_probe=&heap_probe;deny_heap_on_next_read=true;result=read();const auto remaining=allocation_budget;
+    allocation_budget=-1;fenced_heap_probe=nullptr;heap_probe.stop=true;observer.join();
+    Check(!deny_heap_on_next_read&&remaining==0&&heap_probe.outside_allocations>0,"complete tree has no C++ allocation under cohort fences");oracle(result);result={};
+    for(auto short_limit:{db::NativeBtreeTreeMemoryLimits{6,limits.maximum_retained_image_bytes},
+        db::NativeBtreeTreeMemoryLimits{7,limits.maximum_retained_image_bytes-1}}){
+      auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,short_limit,grant.memory,grant.binding);
+      empty(refused);Check(refused.error==E::resource_exhausted&&!grant.manager.Snapshot().current_bytes,"exact page and byte ceilings refuse without a prefix");}
+    for(unsigned fault=1;fault<=read_count;++fault){reads=0;track_reads=true;read_fault=fault;auto refused=read();track_reads=false;
+      empty(refused);Check(!read_fault&&refused.tree_error==T::io_failure&&!grant.manager.Snapshot().current_bytes,"every actual governed tree read failure releases backing");}
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;auto refused=read();empty(refused);
+      Check(!hash_fault&&refused.tree_error==T::hash_failure&&!grant.manager.Snapshot().current_bytes,"every digest provider failure remains typed and releases backing");}
+    if(p==0&&q==0){
+      for(unsigned field=0;field<4;++field){auto wrong=grant.binding;
+        std::array<platform::Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};*ids[field]=Id(230);
+        reads=0;track_reads=true;auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,grant.memory,wrong);track_reads=false;
+        empty(refused);Check(refused.error==E::memory_binding_failure&&!reads,"all four binary grant identities required before I/O");}
+      for(unsigned variant=0;variant<3;++variant){auto wrong=devices;if(variant==0)wrong.push_back(wrong[0]);
+        if(variant==1)wrong[0].device=&first;if(variant==2)wrong[1].filespace_uuid=Uuid{};
+        LeafMemoryFixture extra(db::NativeBtreeTreeWorkspaceBytes(wrong,limits));reads=0;track_reads=true;
+        auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),wrong,root,nodes[0].dependencies,limits,extra.memory,extra.binding);track_reads=false;
+        empty(refused);Check(refused.tree_error==T::invalid_filespace&&!reads,"duplicate identities aliased handles and nil filespaces refused before I/O");}
+      const auto original=Oracle(z2);
+      for(unsigned flag:{1u,2u}){auto bad=z2;bad.bootstrap.flags=flag;
+        if(flag==1)bad.bootstrap.encryption_profile_uuid=Id(4);const auto bytes=Oracle(bad);
+        Check(disk::DecodeFilespacePageZero(bytes.data(),bytes.size()).ok(),"authority requirement fixture is a valid page zero");
+        Check(second.WriteAt(0,bytes.data(),bytes.size()).ok(),"persist actual encrypted or cluster filespace requirement");
+        auto refused=read();empty(refused);Check(refused.tree_error==(flag==1?T::encrypted_requires_crypto_authority:T::cluster_requires_authority),"actual filespace flags cannot be bypassed by valid page bytes");}
+      Check(second.WriteAt(0,original.data(),original.size()).ok(),"restore actual local plaintext filespace");
+      for(unsigned flag:{1u,2u,4u,8u}){auto bad=nodes.back();bad.header.flags=flag;const auto bytes=BtreeOracle(bad);
+        Check(second.WriteAt(bad.header.page_number*sizes[q],bytes.data(),bytes.size()).ok(),"persist header authority requirements");
+        auto refused=read();empty(refused);Check(refused.tree_error==(flag==1?T::encrypted_requires_crypto_authority:flag==2?T::cluster_requires_authority:T::header_policy_requires_authority),"complete tree respects actual page authority requirements");}persist();
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());LeafMemoryFixture other(amount);
+      std::atomic<bool> success=true;std::thread a([&]{for(unsigned i=0;i<3;++i)if(!read().ok())success=false;});
+      std::thread b([&]{for(unsigned i=0;i<3;++i)if(!db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),reversed,root,nodes[0].dependencies,limits,other.memory,other.binding).ok())success=false;});
+      a.join();b.join();Check(success,"governed trees with opposite caller order use the same cohort lock order");
+      const auto mutex_of=[](auto& d){auto lock=d.AcquireOperationGuard();return lock.mutex();};
+      const std::array mutexes{mutex_of(first),mutex_of(second),mutex_of(base)};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done=false;db::NativeBtreeTreeMemoryResult paused;
+      std::thread reader([&]{paused=read();done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+      bool all_held=tree_read_paused.load();for(auto* m:mutexes)if(m->try_lock()){all_held=false;m->unlock();}
+      resume_tree_read=true;reader.join();pause_next_tree_read=false;Check(all_held,"all filespace fences precede first governed read");oracle(paused);paused={};
+      auto warm=read();Check(warm.ok(),"warm actual whole-tree allocator");warm={};
+      observed_allocations=0;count_allocations=true;warm=read();count_allocations=false;
+      const auto allocation_count=observed_allocations;Check(warm.ok(),"measure complete whole-tree allocations");warm={};
+      for(unsigned long fault=0;fault<=allocation_count;++fault){LeafMemoryFixture isolated(amount);
+        const auto attempt=[&]{return db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,isolated.memory,isolated.binding);};
+        auto primed=attempt();Check(primed.ok(),"warm independent fault grant");primed={};
+        observed_allocations=0;count_allocations=true;primed=attempt();count_allocations=false;
+        Check(primed.ok()&&observed_allocations==allocation_count,"identical warmed tree allocation sequence");primed={};
+        const auto losses=first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations();
+        const auto truncation=isolated.manager.Snapshot().telemetry_truncation_count;
+        allocation_budget=fault;auto injected=attempt();const auto budget=allocation_budget;allocation_budget=-1;
+        Check(fault==allocation_count?budget==0:budget==-1,"each measured tree allocation fault consumed");
+        if(!injected.ok()){empty(injected);Check(!isolated.manager.Snapshot().current_bytes,"failed tree allocation releases complete backing");}
+        else {Check(injected.pages.size()==7&&injected.retained_image_bytes==limits.maximum_retained_image_bytes&&
+            isolated.manager.Snapshot().current_bytes==amount,"optional observation failure retains fully charged complete tree");
+          for(std::size_t i=0;i<7;++i){const std::array<std::size_t,7> order{0,1,3,4,2,5,6};
+            Check(BtreeOracle(*injected.pages[i].page)==BtreeOracle(nodes[order[i]]),"successful fault path retains exact independently reconstructed tree");}
+          if(fault<allocation_count)Check(isolated.manager.Snapshot().telemetry_truncation_count>truncation||
+            first.failed_io_latency_observations()+second.failed_io_latency_observations()+base.failed_io_latency_observations()>losses,
+            "only explicit optional telemetry loss may keep a tree successful after allocation failure");}
+        injected={};isolated.memory={};isolated.Empty();
+      }
+      Check(!db::NativeBtreeTreeWorkspaceBytes(devices,{std::numeric_limits<std::size_t>::max(),8192})&&
+        !db::NativeBtreeTreeWorkspaceBytes(devices,{7,std::numeric_limits<std::size_t>::max()}),"overflowing memory limits never wrap into a small reservation");
+    }
+    LeafMemoryFixture short_grant(amount-1);reads=0;track_reads=true;
+    auto refused=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,short_grant.memory,short_grant.binding);track_reads=false;
+    empty(refused);Check(refused.error==E::memory_allocation_failure&&!reads&&!short_grant.manager.Snapshot().current_bytes,"one-byte-short actual grant refuses before device access");
+    result=read();oracle(result);const auto revoked=grant.ledger.CleanupOwner(grant.binding.owner_uuid.bytes);
+    Check(revoked.retained_bytes==amount,"revocation retains all live tree backing");empty(read());
+    Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close actual devices with immutable tree still retained");oracle(result);grant.memory={};
+    allocation_budget=0;result={};const auto release_budget=allocation_budget;allocation_budget=-1;
+    Check(release_budget==0,"last whole-tree owner releases actual backing without heap allocation");grant.Empty();
+    Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok()&&base.Open(path3,disk::FileOpenMode::open_existing_read_only).ok(),"fresh read-only tree devices");
+    LeafMemoryFixture reopened(amount);auto fresh=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,reopened.memory,reopened.binding);
+    Check(fresh.ok()&&fresh.pages.size()==7&&fresh.retained_image_bytes==limits.maximum_retained_image_bytes,"new grant and reopened files reproduce complete tree");
+  }
+}
 bool SameBorrowedRowBody(const page::RowDataPageView& a,const page::RowDataPageBody& b) {
   const auto same_typed=[](const auto& x,const auto& y){return x.kind==y.kind&&x.value==y.value;};
   if(!same_typed(a.relation_uuid,b.relation_uuid)||a.segment_id!=b.segment_id||
@@ -7236,6 +7378,9 @@ int main(int argc,char** argv) {
       {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected[0].dependencies,(deep?2:1)*(4*sizes[p]+3*sizes[q])+(deep?sizes[p]:0));
     const std::vector<std::size_t> leaf_order=deep?std::vector<std::size_t>{3,4,6,7,10,11,13,14}:std::vector<std::size_t>{2,3,5,6};
     if(!result.ok()||result.pages.size()!=expected.size()||result.leaves!=leaf_order)return 3;
+    GovernedBtreeParity({{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},
+      {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected[0].dependencies,
+      (deep?2:1)*(4*sizes[p]+3*sizes[q])+(deep?sizes[p]:0),result);
     for(unsigned i=0;i<leaf_order.size();++i){const auto target=deep?(i<4?4+i:7+i):3+i;
       if(result.pages[result.leaves[i]].bytes!=BtreeOracle(expected[target]))return 4;}return 0;
   }
@@ -7301,8 +7446,11 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
+  if(argc==2&&std::string_view(argv[1])=="--native-btree-memory-only"){
+    try{NativeBtreeTreeMemory();NativeBtreeTrees();std::cout<<"PASS governed_tree_checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc!=1){std::cerr<<"FAIL unknown test mode or invalid argument count\n";return 2;}
-  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTreeMemory(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
