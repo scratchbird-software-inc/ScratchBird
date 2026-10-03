@@ -83,6 +83,12 @@ using Entry=mga::TransactionInventoryEntry;
 using Bytes=std::vector<byte>;using E=pg::NativeInventoryError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(unsigned n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;for(unsigned i=0;i<4;++i)id.bytes[15-i]=byte(n>>(8*i));return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -286,6 +292,77 @@ void MemoryTests(){
   }
 }
 
+void CompleteInventoryValidation(){
+  const auto compare=[&](mga::LocalTransactionInventory& inventory){
+    const std::string_view expected=mga::ValidateLocalTransactionInventoryStructure(inventory);
+    const pg::NativeTransactionInventoryView view{inventory.next_local_transaction_id,inventory.next_commit_sequence,inventory.entries};
+    std::vector<usize> indices(inventory.entries.size());Bytes markers(inventory.entries.size());
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,indices,markers);});
+    Check(result.ok()==expected.empty()&&std::string_view(result.detail)==expected,"complete structural first-error parity");
+    return result.error;
+  };
+  for(unsigned count:{0u,1u,8u,2048u})for(unsigned state=1;state<=13;++state)for(unsigned flags=0;flags<16;++flags){
+    auto value=Example(0,0,count,state,flags).inventory;
+    Check(compare(value)==E::none,"complete multi-page-sized inventory state scope and flag combinations");
+    std::reverse(value.entries.begin(),value.entries.end());
+    Check(compare(value)==E::none,"structure validation does not invent page-chain ordering authority");
+  }
+  for(unsigned first=0;first<8;++first)for(unsigned second=0;second<8;++second)if(first!=second){
+    for(unsigned field=0;field<3;++field){auto value=Example(0,0,8,6).inventory;
+      if(field==0)value.entries[second].identity.local_id=value.entries[first].identity.local_id;
+      if(field==1)value.entries[second].identity.transaction_uuid=value.entries[first].identity.transaction_uuid;
+      if(field==2)value.entries[second].commit_sequence=value.entries[first].commit_sequence;
+      Check(compare(value)==E::invalid_inventory,"duplicates across original record positions");
+    }
+  }
+  for(unsigned fault=0;fault<13;++fault){auto value=Example(0,0,8,6).inventory;auto& e=value.entries[0];
+    switch(fault){
+      case 0:value.next_local_transaction_id=0;break;
+      case 1:value.next_commit_sequence=0;break;
+      case 2:e.begin_visible_through_commit_sequence=value.next_commit_sequence;break;
+      case 3:e.state=mga::TransactionState::archived;e.archived_from_state=mga::TransactionState::none;break;
+      case 4:e.archived_from_state=mga::TransactionState::committed;break;
+      case 5:e.commit_sequence=0;break;
+      case 6:e.state=mga::TransactionState::active;break;
+      case 7:e.identity.transaction_uuid.value={};break;
+      case 8:e.identity.scope=mga::TransactionScope(99);break;
+      case 9:e.identity.local_id.value=value.next_local_transaction_id;break;
+      case 10:e.state=mga::TransactionState::none;e.commit_sequence=0;break;
+      case 11:e.commit_sequence=value.next_commit_sequence;break;
+      case 12:e.begin_visible_through_commit_sequence=e.commit_sequence;break;
+    }
+    value.entries[2].identity.transaction_uuid=value.entries[1].identity.transaction_uuid;
+    Check(compare(value)==E::invalid_inventory,"earlier structural error wins over later duplicate");
+  }
+  auto value=Example(0,0,8,6).inventory;
+  pg::NativeTransactionInventoryView view{value.next_local_transaction_id,value.next_commit_sequence,value.entries};
+  std::vector<usize> indices(8);Bytes markers(8);
+  for(bool short_indices:{false,true}){
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,
+      std::span(indices).first(short_indices?7:8),std::span(markers).first(short_indices?8:7));});
+    Check(result.error==E::resource_exhausted&&std::string_view(result.detail)=="insufficient_backing","exact one-short structural scratch");
+  }
+  const auto saved_bytes=std::as_bytes(std::span(value.entries));
+  const std::vector<std::byte> saved(saved_bytes.begin(),saved_bytes.end());
+  for(unsigned field=0;field<4;++field){
+    auto ids=std::span(indices);auto bits=std::span(markers);
+    if(field==0)ids={reinterpret_cast<usize*>(value.entries.data()),8};
+    if(field==1)bits={reinterpret_cast<byte*>(value.entries.data()),8};
+    if(field==2)bits={reinterpret_cast<byte*>(indices.data()),8};
+    if(field==3)bits={reinterpret_cast<byte*>(&view),8};
+    const auto result=DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,ids,bits);});
+    Check(result.error==E::invalid_backing,"record scratch and descriptor alias refused before writes");
+    Check(std::equal(saved.begin(),saved.end(),std::as_bytes(std::span(value.entries)).begin()),"structural validation never changes input entries");
+  }
+  alignas(Entry) std::array<byte,sizeof(Entry)*9> raw{};
+  auto bad=view;bad.entries={reinterpret_cast<Entry*>(raw.data()+1),8};
+  Check(DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(bad,indices,markers);}).error==E::invalid_backing,"misaligned entry backing refused");
+  const auto image=Oracle(Example());
+  const auto result=DenyCodecAllocation([&]{return pg::DecodeNativeTransactionInventoryPageInto(image,bad.entries,indices,markers);});
+  Check(!result.page&&result.error==E::invalid_backing,"decoder refuses misaligned entries before any write");
+  auto misaligned=std::span<usize>(reinterpret_cast<usize*>(raw.data()+1),8);
+  Check(DenyCodecAllocation([&]{return pg::ValidateNativeTransactionInventoryView(view,misaligned,markers);}).error==E::invalid_backing,"misaligned index scratch refused");
+}
 void Codecs(){
   for(unsigned profile=0;profile<5;++profile){const usize maximum=(d::kCanonicalFilespacePageProfiles[profile].page_size_bytes-384)/72;
     Scratch scratch(maximum);
@@ -362,8 +439,8 @@ void Codecs(){
   multi.inventory.entries[1].stable_snapshot=multi.inventory.entries[2].stable_snapshot=true;
   multi.inventory.entries[1].begin_visible_through_commit_sequence=2;multi.inventory.entries[2].begin_visible_through_commit_sequence=1;
   auto multiple=scratch.Decode(Oracle(multi));Check(multiple.ok()&&Horizons(multiple.page->inventory)==std::array<u64,3>{2,2,1},"minimum of multiple stable begin boundaries retains earlier writer");
-  for(unsigned phase=1;phase<=1;++phase){hashes=0;hash_at=phase;auto fail=scratch.Decode(good);hash_at=0;Check(!fail.page&&fail.error==E::hash_failure,"actual digest context failure");}
-  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto fail=scratch.Decode(good);Check(!fault&&!fail.page&&fail.error==E::hash_failure,"each digest provider phase fails closed");}
+  for(unsigned phase=1;phase<=1;++phase){hashes=0;hash_at=phase;auto fail=DenyCodecAllocation([&]{return scratch.Decode(good);});hash_at=0;Check(!fail.page&&fail.error==E::hash_failure,"actual digest context failure");}
+  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto fail=DenyCodecAllocation([&]{return scratch.Decode(good);});Check(!fault&&!fail.page&&fail.error==E::hash_failure,"each digest provider phase fails closed");}
   for(unsigned size:{0u,127u,383u,8191u,8193u}){auto b=good;b.resize(size);Check(!scratch.Decode(b).page,"invalid image lengths refuse");}
   mga::LocalTransactionHorizonRequest request;request.inventory=stable.inventory;request.active_snapshot_horizons={mga::LocalTransactionId{0}};
   auto invalid=mga::ComputeLocalTransactionHorizons(request);Check(!invalid.ok()&&!invalid.horizons.valid&&invalid.diagnostic.message_key=="transaction.horizon.invalid_snapshot_horizon","shared projection preserves invalid snapshot vector");
@@ -371,5 +448,5 @@ void Codecs(){
   Check(!future.ok()&&!future.horizons.valid&&future.diagnostic.message_key=="transaction.horizon.future_snapshot_horizon","shared projection preserves future snapshot vector");
 }
 }
-int main(){try{Codecs();MemoryTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
+int main(){try{CompleteInventoryValidation();Codecs();MemoryTests();std::cout<<"PASS governed inventory checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(...){budget=-1;std::cerr<<"FAIL checks="<<checks<<'\n';return 1;}}

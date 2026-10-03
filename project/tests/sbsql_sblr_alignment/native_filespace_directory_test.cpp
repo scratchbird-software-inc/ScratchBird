@@ -98,6 +98,12 @@ using Bytes=std::vector<byte>;using E=p::NativeDirectoryError;
 std::size_t checks=0;
 void Check(bool good,const char* message,std::source_location at=std::source_location::current()){
   ++checks;if(!good)throw std::runtime_error(std::string(message)+" line="+std::to_string(at.line()));}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=allocation_budget;allocation_budget=0;
+  auto result=call();const bool unchanged=allocation_budget==0;allocation_budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(byte n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=n;return id;}
 void Num(Bytes& b,std::size_t at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=static_cast<byte>(v>>(i*8));}
 void Put(Bytes& b,std::size_t at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -199,8 +205,14 @@ void BorrowedCodecs(){
     for(unsigned at:{128u,136u,138u,140u,208u,383u}){auto bad=bytes;bad[at]^=0x80;Seal(bad);
       const auto owned=p::DecodeNativeFilespaceDirectory(bad);const auto borrowed=p::DecodeNativeFilespaceDirectoryInto(bad,records,scratch);
       Check(!borrowed.directory&&borrowed.error==owned.error,"resealed family corruption retains shared refusal classification");}
-    hash_calls=0;fail_hash=1;const auto hash_failure=p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch);fail_hash=0;
+    hash_calls=0;fail_hash=1;const auto hash_failure=DenyCodecAllocation([&]{return p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch);});fail_hash=0;
     Check(!hash_failure.directory&&hash_failure.error==E::hash_failure,"real directory digest failure preserved");
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+    for(unsigned mode=2;mode<=5;++mode){method_fault=mode;
+      const auto failed=DenyCodecAllocation([&]{return p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch);});
+      Check(!method_fault&&!failed.directory&&failed.error==E::hash_failure,"all provider phases and short digest fail without diagnostic allocation");
+    }
+#endif
     Check(p::DecodeNativeFilespaceDirectoryInto(bytes,records,scratch).ok(),"valid retry restores complete decoded fields");
     std::fill(bytes.begin(),bytes.end(),0);std::fill(scratch.begin(),scratch.end(),Uuid{});
     Check(Oracle(*result.directory)==Oracle(value),"decoded records retain neither encoded image nor scratch lifetime");

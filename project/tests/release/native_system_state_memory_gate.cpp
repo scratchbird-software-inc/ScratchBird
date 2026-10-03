@@ -79,6 +79,12 @@ using namespace scratchbird::core::platform;
 using Bytes=std::vector<byte>;using E=db::NativeSystemStateError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(unsigned n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;for(unsigned i=0;i<4;++i)id.bytes[15-i]=byte(n>>(8*i));return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -331,8 +337,8 @@ void Codecs(){
   Bytes unaligned(1);unaligned.insert(unaligned.end(),good.begin(),good.end());
   Check(db::DecodeNativeSystemStateValue(std::span<const byte>(unaligned).subspan(1)).ok(),"unaligned immutable image");
   for(unsigned size:{0u,127u,511u,8191u,8193u}){auto b=good;b.resize(size);Check(!db::DecodeNativeSystemStateValue(b).state,"invalid image length");}
-  hashes=0;hash_at=1;auto context=db::DecodeNativeSystemStateValue(good);hash_at=0;Check(!context.state&&context.error==E::hash_failure,"context failure");
-  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto r=db::DecodeNativeSystemStateValue(good);
+  hashes=0;hash_at=1;auto context=DenyCodecAllocation([&]{return db::DecodeNativeSystemStateValue(good);});hash_at=0;Check(!context.state&&context.error==E::hash_failure,"context failure");
+  for(unsigned n=1;n<=4;++n){hashes=0;fault_context=1;fault=n;auto r=DenyCodecAllocation([&]{return db::DecodeNativeSystemStateValue(good);});
     Check(!fault&&!r.state&&r.error==E::hash_failure,"each digest phase failure");}
 }
 }

@@ -81,6 +81,12 @@ using Entry=pg::NativeRetentionPin;
 using Bytes=std::vector<byte>;using E=pg::NativeRetentionError;
 void Check(bool ok,const char* why,std::source_location at=std::source_location::current()){
   ++checks;if(!ok){std::cerr<<at.line()<<": "<<why<<'\n';throw why;}}
+template<class F> auto DenyCodecAllocation(F&& call){
+  const auto saved=budget;budget=0;
+  auto result=call();const bool unchanged=budget==0;budget=saved;
+  Check(unchanged,"native codec provider refusal must not allocate diagnostic text");
+  return result;
+}
 Uuid Id(unsigned n){Uuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;for(unsigned i=0;i<4;++i)id.bytes[15-i]=byte(n>>(8*i));return id;}
 void Num(Bytes& b,usize at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=byte(v>>(8*i));}
 void Put(Bytes& b,usize at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -358,9 +364,9 @@ void Codecs(){
   Check(!failed_hash.page&&failed_hash.error==E::invalid_integrity,"per-record hash independently checked despite valid whole-page hash");
   auto reserved=good;reserved[384+144]=1;RecordSeal(reserved,384);Seal(reserved);
   Check(!scratch.Decode(reserved).page,"record reserved bytes checked after both valid hashes");
-  for(unsigned phase=1;phase<=3;++phase){hashes=0;hash_at=phase;auto r=scratch.Decode(good);hash_at=0;
+  for(unsigned phase=1;phase<=3;++phase){hashes=0;hash_at=phase;auto r=DenyCodecAllocation([&]{return scratch.Decode(good);});hash_at=0;
     Check(!r.page&&r.error==E::hash_failure,"every page and record hash context failure");
-    for(unsigned method=1;method<=4;++method){hashes=0;fault_context=phase;fault=method;auto failed=scratch.Decode(good);
+    for(unsigned method=1;method<=4;++method){hashes=0;fault_context=phase;fault=method;auto failed=DenyCodecAllocation([&]{return scratch.Decode(good);});
       Check(!fault&&!failed.page&&failed.error==E::hash_failure,"every phase of every page and record digest");}}
   for(unsigned size:{0u,127u,383u,8191u,8193u}){auto b=good;b.resize(size);Check(!scratch.Decode(b).page,"invalid image length");}
   for(unsigned field=0;field<4;++field)for(unsigned at=0;at<16;++at){auto v=Example(0,0,1);

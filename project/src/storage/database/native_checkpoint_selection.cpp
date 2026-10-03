@@ -25,7 +25,7 @@ bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFi
     disk::CheckFileDeviceExtent(r.page_number*p->page_size_bytes,p->page_size_bytes).ok();}
 NativeCheckpointSelectionImage Fail(E e){NativeCheckpointSelectionImage r;r.error=e;return r;}
 auto Digest(std::span<const byte> b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),seal},{zero.data(),32},{b.data()+seal+32,b.size()-seal-32}};
-  return core::hash::ComputeSha256DigestParts(parts,3);}
+  return core::hash::ComputeSha256DigestPartsNative(parts,3);}
 E Validate(const NativeCheckpointSelection& s){
   const auto& h=s.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x30e||h.flags)return E::invalid_header;

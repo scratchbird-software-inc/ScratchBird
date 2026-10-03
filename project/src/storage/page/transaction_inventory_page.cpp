@@ -525,11 +525,11 @@ const char* ValidateBorrowed(const NativeTransactionInventoryView& inventory,
       [&](const auto& e){return !(markers[&e-rows.data()]&2);},
       [&](const auto& e){return !(markers[&e-rows.data()]&4);});
 }
-core_hash::HashDigestResult Digest(std::span<const byte> bytes) {
+core_hash::Sha256PartsResult Digest(std::span<const byte> bytes) {
   const std::array<byte,32> zero{};
   const core_hash::HashDigestSegment parts[]={{bytes.data(),digest_at},{zero.data(),zero.size()},
       {bytes.data()+digest_at+32,bytes.size()-digest_at-32}};
-  return core_hash::ComputeSha256DigestParts(parts,3);
+  return core_hash::ComputeSha256DigestPartsNative(parts,3);
 }
 } // namespace native_inventory
 
@@ -635,11 +635,29 @@ NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const 
   catch(const std::bad_alloc&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
   catch(const std::length_error&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
 }
+NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
+    const NativeTransactionInventoryView& inventory,std::span<std::size_t> indices,
+    std::span<byte> markers) noexcept {
+  using E=NativeInventoryError;
+  const std::span<const byte> object{reinterpret_cast<const byte*>(&inventory),sizeof(inventory)};
+  if(reinterpret_cast<std::uintptr_t>(inventory.entries.data())%alignof(TransactionInventoryEntry)||
+     reinterpret_cast<std::uintptr_t>(indices.data())%alignof(std::size_t)||
+     !disk::detail::DisjointNativeDecodeRegions(object,indices,markers)||
+     !disk::detail::DisjointNativeDecodeRegions(inventory.entries,indices,markers))
+    return {E::invalid_backing,"invalid_backing"};
+  if(indices.size()<inventory.entries.size()||markers.size()<inventory.entries.size())
+    return {E::resource_exhausted,"insufficient_backing"};
+  const auto* why=native_inventory::ValidateBorrowed(inventory,indices,markers);
+  return {*why?E::invalid_inventory:E::none,why};
+}
 NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInto(
     std::span<const byte> bytes,std::span<TransactionInventoryEntry> entries,
     std::span<std::size_t> indices,std::span<byte> markers) noexcept {
   using E=NativeInventoryError;
-  if(!detail::DisjointNativeDecodeRegions(bytes,entries,indices,markers))return {E::invalid_backing,std::nullopt};
+  if(reinterpret_cast<std::uintptr_t>(entries.data())%alignof(TransactionInventoryEntry)||
+     reinterpret_cast<std::uintptr_t>(indices.data())%alignof(std::size_t)||
+     !disk::detail::DisjointNativeDecodeRegions(bytes,entries,indices,markers))
+    return {E::invalid_backing,std::nullopt};
   NativeTransactionInventoryPageView page;
   page.inventory.entries=entries.first(std::min({entries.size(),indices.size(),markers.size()}));
   const auto error=DecodeInventoryValues(bytes,page,[&](const auto& inventory){return native_inventory::ValidateBorrowed(inventory,indices,markers);});

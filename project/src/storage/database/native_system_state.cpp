@@ -25,7 +25,7 @@ bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFi
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
 NativeSystemStateResult Fail(E e){NativeSystemStateResult r;r.error=e;return r;}
 auto Digest(std::span<const byte> b,bool clear=true){const std::array<byte,32> zero{};const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
-  return hash::ComputeSha256DigestParts(parts,3);}
+  return hash::ComputeSha256DigestPartsNative(parts,3);}
 E Validate(const NativeSystemState& s){const auto& h=s.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=8||h.flags)return E::invalid_header;
   if(!V7(s.object_uuid)||!V7(s.creator_transaction_uuid)||!V7(s.transition_operation_uuid))return E::invalid_identity;
