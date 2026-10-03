@@ -142,6 +142,41 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
 
+// Complete actual checkpoint/inventory inspection using caller-owned backing.
+// All bytes and native metadata are retained in backing, never a publication
+// CAS base, serving grant or unchecked caller-constructed outcome assertion.
+struct NativeCheckpointRootDeviceRead {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  std::optional<NativeCheckpointRootView> root;
+  std::span<const core::platform::byte> bytes;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&root.has_value();}
+};
+struct NativeCheckpointInventoryView {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  page::NativeInventoryError inventory_error=page::NativeInventoryError::none;
+  std::optional<NativeCheckpointRootView> checkpoint;
+  std::array<core::platform::byte,32> checkpoint_sha256{};
+  page::NativeTransactionInventoryView inventory;
+  std::span<const NativeInventoryPageBinding> inventory_pages;
+  u64 inventory_generation=0,retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint.has_value();}
+};
+struct NativeCheckpointInventoryDeviceRead {
+  NativeCheckpointInventoryView inventory;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return inventory.ok();}
+};
+NativeCheckpointInventoryDeviceRead VerifyNativeCheckpointInventoryInto(
+  const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
+  const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes,
+  std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
+
 struct NativeCheckpointCatalogResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;
   scratchbird::storage::page::NativeCatalogRootError catalog_error =

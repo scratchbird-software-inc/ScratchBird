@@ -3,6 +3,7 @@
 #include "native_management_control_bundle.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_management_control_authority_memory.hpp"
+#include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_history.hpp"
@@ -790,6 +791,7 @@ void ResolutionPlanCodec(){
  }
 }
 #include "native_management_control_authority_memory_checks.hpp"
+#include "native_checkpoint_inventory_memory_checks.hpp"
 void Sequences(){
  for(unsigned profile=0;profile<5;++profile){
   Fixture f(profile);f.budget*=4;
@@ -833,7 +835,11 @@ void Sequences(){
   const auto reconstructed=db::ResumeNativeManagementControlGraphOnLease(*resumed.lease,f.budget);Check(reconstructed.ok(),"cold reconstruction with original selector sequence");resumed.lease.reset();
   const auto stored=db::DecodeNativePublicationPlan(f.Read(g.plan.header.page_number));Check(stored.ok()&&stored.bytes==g.plan_bytes&&stored.plan->base_selection_generation==1&&f.Read(g.plan.target_checkpoint.page_number)==g.target_bytes,"cold reconstruction neither rewrites counter nor mints identities");
   Check(GraphRead(f,Anchor(g)).ok()&&Read(f).ok()&&Read(f).publications.empty()&&!Inventory(f,g).ok(),"reconstructed graph does not grant selected status");
+  const d::FilespaceRootReference inventory_root{9,0x300,g.plan.target_checkpoint.filespace_uuid,g.plan.target_checkpoint.page_number,
+   g.plan.target_checkpoint.page_generation,g.plan.target_checkpoint.page_size_profile_uuid,g.plan.target_checkpoint_object_uuid};
+  checkpoint_inventory_memory::Checks(f.devices,inventory_root,Inventory(f,g),f.budget);
   SelectFixture(f,g);Good(f,g,1);
+  checkpoint_inventory_memory::Checks(f.devices,inventory_root,Inventory(f,g),f.budget,true);
   const auto complete=Read(f);control_authority_memory::Checks(f.devices,complete,f.budget,control_authority_memory::C::selected,nullptr,nullptr,profile==0);
 
   const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);

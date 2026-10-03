@@ -12,6 +12,7 @@
 #include "catalog_storage_action_policy.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
+#include "native_checkpoint_inventory_memory.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_owned_checkpoint_source.hpp"
@@ -75,6 +76,7 @@ const scratchbird::core::platform::TypedUuid* revoke_on_stage_sync=nullptr;
 unsigned observed_full_digests=0;
 bool count_full_digests=false;
 std::size_t observed_read_bytes=0;
+std::uint64_t checkpoint_transferred_bytes=0;
 bool track_reads=false;
 bool deny_heap_on_next_read=false;
 struct FencedHeapProbe {
@@ -220,6 +222,7 @@ extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
     }
   }
   const auto result=__real_pread(fd,b,n,offset);
+  if(track_reads&&result>0)checkpoint_transferred_bytes+=static_cast<std::uint64_t>(result);
   if(stage_corrupt_read&&reads==stage_corrupt_read&&result>0){stage_corrupt_read=0;static_cast<unsigned char*>(b)[0]^=1;}
   return result;
 }
@@ -2683,6 +2686,103 @@ void CanonicalCheckpoints() {
     for(unsigned fault=1;fault<=4;++fault){hash_fault=fault;const auto result=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(r);Check(hash_fault==0&&result.error==E::hash_failure,"checkpoint hashing failure");CheckpointReject(result);}
   }
 }
+#include "native_checkpoint_inventory_memory_checks.hpp"
+
+void CheckpointInventoryMemoryFaults(const std::vector<disk::NativeFilespaceDevice>& files,
+ const disk::FilespaceRootReference& root,const db::NativeCheckpointInventoryResult& expected,u64 allowance) {
+ namespace c=checkpoint_inventory_memory;using E=db::NativeCheckpointError;
+ const auto capacity=static_cast<std::size_t>(expected.retained_image_bytes*4+1024*1024);
+ c::Grant grant(capacity);const db::NativeCheckpointInventoryMemoryLimits limits{allowance,capacity};
+ const auto call=[&]{return db::VerifyNativeCheckpointInventoryWithMemoryFromOpenDevices(Id(1),files,root,limits,grant.memory,grant.binding);};
+ const auto failed=[&](const auto& r){Check(!r.ok()&&!r.arena,"failed source holds no backing owner");c::Empty(r.inventory);};
+ const auto released=[&]{Check(!grant.manager.Snapshot().current_bytes&&!grant.memory.Snapshot().allocated_bytes&&
+  grant.memory.Snapshot().allocation_count==grant.memory.Snapshot().release_count,"all failed or retired source payloads released");};
+ std::array<std::recursive_mutex*,2> mutexes{};
+ for(std::size_t i=0;i<files.size();++i){auto fence=files[i].device->AcquireOperationGuard();mutexes[i]=fence.mutex();}
+ if(files.size()==1)mutexes[1]=mutexes[0];
+ allocation_lock_probe={mutexes,true,false};
+ reads=stage_writes=stage_syncs=0;checkpoint_transferred_bytes=0;track_reads=true;
+ observed_segmented_contexts=0;count_segmented_contexts=true;
+ auto full=call();count_segmented_contexts=false;track_reads=false;
+ const auto read_count=reads,hash_count=observed_segmented_contexts;
+ Check(full.ok()&&full.physical_bytes_read==checkpoint_transferred_bytes&&read_count&&hash_count&&
+  !stage_writes&&!stage_syncs&&allocation_lock_probe.available,"full physical source receipt with pre-fence backing and no writes");
+ c::Same(expected,full.inventory);full={};released();
+ for(unsigned site=1;site<=read_count;++site){
+  reads=0;checkpoint_transferred_bytes=0;read_fault=site;track_reads=true;
+  deallocation_lock_probe={mutexes,true,false};const auto r=call();track_reads=false;
+  failed(r);Check(!read_fault&&r.checkpoint_error==E::io_failure&&!r.io_status.ok()&&
+   r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT"&&r.physical_bytes_read==checkpoint_transferred_bytes&&
+   deallocation_lock_probe.available,"every physical read failure retains exact bytes diagnostic and post-fence cleanup");released();
+ }
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned site=0;site<hash_count;++site){
+  segmented_context_skip=site;hash_fault=mode;const auto r=call();const bool consumed=!hash_fault;
+  hash_fault=0;segmented_context_skip=0;failed(r);
+  Check(consumed&&r.checkpoint_error==E::hash_failure,"every provider context and phase retains native hash failure");released();
+ }
+ for(auto* mutex:mutexes){
+  FencedHeapProbe probe;probe.mutex=mutex;std::thread observer([&]{probe.Run();});
+  fenced_heap_probe=&probe;deny_heap_on_next_read=true;auto r=call();const auto untouched=allocation_budget;
+  allocation_budget=-1;fenced_heap_probe=nullptr;probe.stop=true;observer.join();
+  Check(r.ok()&&untouched==0,"no uncharged allocation while any source fence is held");r={};released();
+ }
+ for(const auto& file:files){
+  const auto path=file.device->path();const bool readonly=file.device->read_only();
+  tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;
+  db::NativeCheckpointInventoryMemoryResult retained;
+  std::thread reader([&]{retained=call();});
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while(!tree_read_paused&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+  const bool entered=tree_read_paused;std::atomic<bool> started=false,returned=false;bool blocked=false;
+  std::thread release([&]{while(!started)std::this_thread::yield();std::this_thread::sleep_for(std::chrono::milliseconds(30));
+   blocked=!returned;resume_tree_read=true;});
+  started=true;const auto closed=file.device->Close();returned=true;release.join();reader.join();pause_next_tree_read=false;
+  Check(entered&&blocked&&closed.ok()&&retained.ok(),"opening-thread Close waits for full actual source cohort");
+  c::Same(expected,retained.inventory);
+  Check(file.device->Open(path,readonly?disk::FileOpenMode::open_existing_read_only:disk::FileOpenMode::open_existing).ok(),"reopen exact source after concurrent Close");
+  retained={};released();
+ }
+ grant.memory={};grant.Empty();c::Grant short_grant(capacity-1);
+ reads=0;track_reads=true;const auto denied=db::VerifyNativeCheckpointInventoryWithMemoryFromOpenDevices(
+  Id(1),files,root,limits,short_grant.memory,short_grant.binding);track_reads=false;
+ failed(denied);Check(!reads&&denied.error==db::NativeCheckpointInventoryMemoryError::memory_allocation_failure,
+  "one byte short actual grant refuses before I/O");short_grant.memory={};short_grant.Empty();
+}
+void CanonicalCheckpointInventoryMemoryPairs() {
+ for(unsigned p=0;p<5;++p)for(unsigned q=0;q<5;++q){
+  Fixture fixture;disk::FileDevice primary,secondary;
+  auto z1=Example(p),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);
+  for(auto& ref:z2.roots)ref.filespace_uuid=Id(7);
+  const auto a=(fixture.root/"checkpoint").string(),b=(fixture.root/"inventory").string();
+  Check(primary.Open(a,disk::FileOpenMode::create_new).ok()&&secondary.Open(b,disk::FileOpenMode::create_new).ok(),"open actual mixed-profile inventory sources");
+  const auto initialize=[&](disk::FileDevice& file,const auto& z){const auto bytes=Oracle(z);const byte pad=0;
+   Check(file.WriteAt(0,bytes.data(),bytes.size()).ok()&&file.WriteAt(z.total_pages*z.bootstrap.page_size_bytes-1,&pad,1).ok(),"persist exact source pagezero and extent");};
+  initialize(primary,z1);initialize(secondary,z2);
+  auto inventory=InventoryExample(q);inventory.header.filespace_uuid=Id(7);
+  inventory.inventory.next_local_transaction_id=18;inventory.inventory.next_commit_sequence=2;
+  auto& creator=inventory.inventory.entries.front();creator.identity.local_id=mga::MakeLocalTransactionId(17);
+  creator.identity.transaction_uuid.value=Id(98);creator.state=mga::TransactionState::committed;creator.commit_sequence=1;
+  const auto image=InventoryOracle(inventory,18,18,18);auto checkpoint=CheckpointExample(p);
+  checkpoint.roots.front().page=InventoryRef(inventory);checkpoint.roots.front().object_uuid=inventory.object_uuid;
+  Check(SHA256(image.data(),image.size(),checkpoint.roots.front().sha256.data())!=nullptr,"independent actual inventory digest");
+  const auto bytes=CheckpointOracle(checkpoint);
+  Check(primary.WriteAt(19*sizes[p],bytes.data(),bytes.size()).ok()&&secondary.WriteAt(14*sizes[q],image.data(),image.size()).ok()&&
+   primary.Sync().ok()&&secondary.Sync().ok(),"durable independent mixed-profile checkpoint and inventory");
+  const std::vector<disk::NativeFilespaceDevice> files{{Id(7),Profile(q),&secondary},{Id(2),Profile(p),&primary}};
+  const auto budget=u64{sizes[p]}+sizes[q];
+  auto expected=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),files,z1.roots[8],budget);
+  Check(expected.ok()&&expected.inventory_generation==19&&expected.retained_image_bytes==budget&&
+   expected.inventory.entries.size()==1&&expected.inventory.entries[0].identity.transaction_uuid.value==Id(98)&&
+   expected.inventory_pages[0].header.filespace_uuid==Id(7),"independent expected complete mixed-profile source result");
+  checkpoint_inventory_memory::Checks(files,z1.roots[8],expected,budget,true);
+  if(p==q)CheckpointInventoryMemoryFaults(files,z1.roots[8],expected,budget);
+  Check(primary.Close().ok()&&secondary.Close().ok()&&primary.Open(a,disk::FileOpenMode::open_existing_read_only).ok()&&
+   secondary.Open(b,disk::FileOpenMode::open_existing_read_only).ok(),"both source files survive actual close/read-only reopen");
+  const auto reopened=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),files,z1.roots[8],budget);
+  Check(reopened.ok()&&reopened.checkpoint_sha256==expected.checkpoint_sha256,"unchanged persisted complete source across reopen");
+ }
+}
+
 void CanonicalCheckpointFiles() {
   using E=db::NativeCheckpointError;Fixture fixture;
   for(unsigned profile=0;profile<5;++profile) for(unsigned owner=0;owner<2;++owner) {
@@ -2730,7 +2830,11 @@ void CanonicalCheckpointInventoryPair() {
     return root;
   };
   const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(0),&device}};
-  const auto read=[&](u64 budget=16384){return db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,z.roots[8],budget);};
+  const auto read=[&](u64 budget=16384){
+    const bool compare_memory=!track_reads&&!count_allocations&&allocation_budget<0&&!hash_fault&&!read_fault;
+    auto r=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,z.roots[8],budget);
+    if(compare_memory)checkpoint_inventory_memory::Checks(devices,z.roots[8],r,budget);
+    return r;};
   const auto empty=[&](const auto& r){Check(!r.ok()&&!r.checkpoint&&r.inventory.entries.empty()&&!r.inventory.publication_base
     &&r.inventory_generation==0&&r.retained_image_bytes==0&&std::all_of(r.checkpoint_sha256.begin(),r.checkpoint_sha256.end(),[](byte b){return b==0;}),"failed checkpoint inventory pair returns no authority prefix");};
   persist(inventory,checkpoint,18);auto result=read();
@@ -7449,8 +7553,12 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string_view(argv[1])=="--native-btree-memory-only"){
     try{NativeBtreeTreeMemory();NativeBtreeTrees();std::cout<<"PASS governed_tree_checks="<<checks<<'\n';return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-inventory-memory-only"){
+    try{CanonicalCheckpointInventoryMemoryPairs();CanonicalCheckpointInventoryPair();std::cout<<"PASS checkpoint_inventory_memory_checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
+  }
   if(argc!=1){std::cerr<<"FAIL unknown test mode or invalid argument count\n";return 2;}
-  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTreeMemory(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CanonicalCheckpointInventoryMemoryPairs(); CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTreeMemory(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

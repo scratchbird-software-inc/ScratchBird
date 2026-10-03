@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_dirty_manifest.hpp"
+#include "native_checkpoint_inventory_backing.hpp"
+#include "native_metadata_decode_scratch.hpp"
+#include "native_inventory_chain_backing.hpp"
+#include "native_management_control_authority_backing.hpp"
 #include "native_decoded_storage_ranges.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_management_control_authority.hpp"
@@ -768,104 +772,185 @@ NativeCheckpointRootViewResult DecodeNativeCheckpointRootInto(
    catch(...){return {Error::invalid_family,{}};}
 }
 
-NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
-    scratchbird::storage::disk::FileDevice& device,const scratchbird::core::platform::Uuid& database_uuid,
-    const scratchbird::storage::disk::FilespaceRootReference& ref) noexcept {
-  using namespace native_checkpoint;
-  try {
-    const disk::NativePageReference target{ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid};
-    if(!V7(database_uuid)||!V7(ref.object_uuid)||ref.kind!=9||ref.page_type!=0x300||!RefValid(target))return Fail(Error::invalid_reference);
-    const auto guard=device.AcquireOperationGuard();
-    const disk::FilespaceBootstrapBinding binding{database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
-    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device,&binding);
-    if(!zero.ok()){
-      if(zero.error==disk::FilespacePageZeroError::resource_exhausted)return Fail(Error::resource_exhausted);
-      if(zero.error==disk::FilespacePageZeroError::hash_provider_failure)return Fail(Error::hash_failure);
-      if(zero.error==disk::FilespacePageZeroError::io_failure)return Fail(Error::io_failure);
-      return Fail(Error::invalid_filespace);}
-    const auto& z=*zero.record;
-    if(z.bootstrap.filespace_role>4||ref.page_number>=z.total_pages)return Fail(Error::invalid_filespace);
-    if(z.bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return Fail(Error::encrypted_requires_crypto_authority);
-    std::vector<byte> b(z.bootstrap.page_size_bytes);const auto io=device.ReadAt(ref.page_number*z.bootstrap.page_size_bytes,b.data(),b.size());
-    if(!io.ok()||io.bytes_transferred!=b.size())return Fail(Error::io_failure);
-    const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);if(!common.ok())return Fail(Error::invalid_header);
-    if(common.header->flags&1u)return Fail(Error::encrypted_requires_crypto_authority);
-    auto result=DecodeNativeCheckpointRoot(b);if(!result.ok())return result;const auto& r=*result.root;
-    if(r.header.database_uuid!=database_uuid||Self(r)!=target||r.object_uuid!=ref.object_uuid)return Fail(Error::binding_mismatch);
-    if(r.predecessor&&r.predecessor->filespace_uuid==ref.filespace_uuid&&r.predecessor->page_number>=z.total_pages)return Fail(Error::invalid_reference);
-    for(const auto& root:r.roots)if(root.page.filespace_uuid==ref.filespace_uuid&&root.page.page_number>=z.total_pages)return Fail(Error::invalid_reference);
-    return result;
-  }catch(const std::bad_alloc&){return Fail(Error::resource_exhausted);}
-   catch(const std::length_error&){return Fail(Error::resource_exhausted);}
-   catch(...){return Fail(Error::io_failure);}
+namespace {
+using CheckpointImage=std::span<const core::platform::byte>;
+using CheckpointBatch=disk::FileDevice::ReadLatencyBatch;
+template<class Receipt,class Nested> void MergeCheckpointIo(Receipt& out,Nested& nested){
+  if(nested.physical_bytes_read>std::numeric_limits<u64>::max()-out.physical_bytes_read)throw NativeCheckpointError::resource_exhausted;
+  out.physical_bytes_read+=nested.physical_bytes_read;
+  out.io_status=nested.io_status;out.io_diagnostic=std::move(nested.io_diagnostic);
 }
-
-NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
-    const scratchbird::core::platform::Uuid& database_uuid,
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
-    u64 maximum_retained_image_bytes) noexcept {
+NativeCheckpointRoot OwnCheckpoint(const NativeCheckpointRootView& v){
+  NativeCheckpointRoot out;
+  out.header=v.header;out.object_uuid=v.object_uuid;out.checkpoint_generation=v.checkpoint_generation;
+  out.root_set_generation=v.root_set_generation;out.selected_local_transaction_id=v.selected_local_transaction_id;
+  out.stable_local_transaction_id=v.stable_local_transaction_id;out.local_durable_transaction_id=v.local_durable_transaction_id;
+  out.cluster_quorum_transaction_id=v.cluster_quorum_transaction_id;out.timeline_uuid=v.timeline_uuid;
+  out.creator_transaction_uuid=v.creator_transaction_uuid;out.creator_local_transaction_id=v.creator_local_transaction_id;
+  out.flags=v.flags;out.predecessor=v.predecessor;out.predecessor_sha256=v.predecessor_sha256;
+  out.completed=v.completed;out.creator_operation_uuid=v.creator_operation_uuid;out.roots.assign(v.roots.begin(),v.roots.end());return out;
+}
+}
+NativeCheckpointRootDeviceRead detail::ReadNativeCheckpointRootBacked(
+    disk::FileDevice& device,const core::platform::Uuid& database_uuid,const disk::FilespaceRootReference& ref,
+    CheckpointBatch& observation,std::pmr::memory_resource& resource) noexcept {
+  using namespace native_checkpoint;NativeCheckpointRootDeviceRead out;
+  const auto fail=[&](Error e){out.error=e;out.root.reset();out.bytes={};return std::move(out);};
+  try{
+    const disk::NativePageReference target{ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid};
+    if(!V7(database_uuid)||!V7(ref.object_uuid)||ref.kind!=9||ref.page_type!=0x300||!RefValid(target)||&observation.device()!=&device)return fail(Error::invalid_reference);
+    detail::NativeMetadataScratch scratch{&resource};const auto guard=device.AcquireOperationGuard();
+    const disk::FilespaceBootstrapBinding binding{database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
+    const auto read=[&](u64 offset,void* bytes,std::size_t n){auto io=observation.ReadAt(offset,bytes,n);
+      out.io_status=io.status;out.io_diagnostic=std::move(io.diagnostic);
+      if(io.bytes_transferred>std::numeric_limits<u64>::max()-out.physical_bytes_read)throw Error::resource_exhausted;
+      out.physical_bytes_read+=io.bytes_transferred;return io;};
+    const auto size=[&]{auto io=device.Size();out.io_status=io.status;out.io_diagnostic=std::move(io.diagnostic);return io;};
+    CheckpointImage observed;const auto zero=detail::ReadNativeMetadataPageZero(binding,scratch,read,size,observed);
+    if(!zero.ok()){
+      if(zero.error==disk::FilespacePageZeroError::resource_exhausted)return fail(Error::resource_exhausted);
+      if(zero.error==disk::FilespacePageZeroError::hash_provider_failure)return fail(Error::hash_failure);
+      if(zero.error==disk::FilespacePageZeroError::io_failure)return fail(Error::io_failure);
+      return fail(Error::invalid_filespace);}
+    const auto& z=*zero.record;
+    if(z.bootstrap.filespace_role>4||ref.page_number>=z.total_pages)return fail(Error::invalid_filespace);
+    if(z.bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return fail(Error::encrypted_requires_crypto_authority);
+    auto b=scratch.Array<byte>(z.bootstrap.page_size_bytes);const auto io=read(ref.page_number*u64{z.bootstrap.page_size_bytes},b.data(),b.size());
+    if(!io.ok()||io.bytes_transferred!=b.size())return fail(Error::io_failure);
+    const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);if(!common.ok())return fail(Error::invalid_header);
+    if(common.header->flags&1u)return fail(Error::encrypted_requires_crypto_authority);
+    auto result=scratch.Checkpoint(b);if(!result.ok())return fail(result.error);const auto& r=*result.root;
+    if(r.header.database_uuid!=database_uuid||Self(r)!=target||r.object_uuid!=ref.object_uuid)return fail(Error::binding_mismatch);
+    if(r.predecessor&&r.predecessor->filespace_uuid==ref.filespace_uuid&&r.predecessor->page_number>=z.total_pages)return fail(Error::invalid_reference);
+    for(const auto& root:r.roots)if(root.page.filespace_uuid==ref.filespace_uuid&&root.page.page_number>=z.total_pages)return fail(Error::invalid_reference);
+    out.error=Error::none;out.root=r;out.bytes=b;return out;
+  }catch(Error error){return fail(error);}catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
+}
+NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
+    disk::FileDevice& device,const core::platform::Uuid& database,const disk::FilespaceRootReference& ref) noexcept{
   using namespace native_checkpoint;
-  const auto fail=[](Error error){NativeCheckpointInventoryResult r;r.error=error;return r;};
-  try {
-    if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
-    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
-    const auto& ordered=locked.ordered;
-    const auto fs=std::lower_bound(ordered.begin(),ordered.end(),checkpoint.filespace_uuid,
-      [](const auto& a,const auto& id){return a.filespace_uuid.bytes<id.bytes;});
+  try{
+    detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);
+    NativeCheckpointRootDeviceRead read;{CheckpointBatch batch(device);read=detail::ReadNativeCheckpointRootBacked(device,database,ref,batch,resource);}
+    if(!read.ok())return Fail(read.error);
+    return {Error::none,OwnCheckpoint(*read.root),{read.bytes.begin(),read.bytes.end()}};
+  }catch(const std::bad_alloc&){return Fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return Fail(Error::resource_exhausted);}catch(...){return Fail(Error::io_failure);}
+}
+NativeCheckpointInventoryDeviceRead detail::VerifyNativeCheckpointInventoryBacked(
+    const core::platform::Uuid& database_uuid,std::span<const disk::NativeFilespaceDevice> devices,
+    const disk::FilespaceRootReference& checkpoint,u64 maximum_retained_image_bytes,
+    std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource) noexcept {
+  using namespace native_checkpoint;namespace mga=transaction::mga;
+  NativeCheckpointInventoryDeviceRead out;
+  const auto fail=[&](Error e,page::NativeInventoryError nested=page::NativeInventoryError::none){
+    out.inventory={};out.inventory.error=e;out.inventory.inventory_error=nested;return std::move(out);};
+  try{
+    if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes||observations.size()!=devices.size())return fail(Error::invalid_reference);
+    detail::NativeMetadataScratch scratch{&resource};std::pmr::vector<disk::NativeFilespaceDevice> ordered(devices.begin(),devices.end(),&resource);
+    std::pmr::vector<CheckpointBatch*> batches(&resource);batches.reserve(ordered.size());
+    std::pmr::vector<std::unique_lock<std::recursive_mutex>> guards(&resource);guards.reserve(ordered.size());
+    for(std::size_t i=0;i<devices.size();++i)if(!devices[i].device||!observations[i]||&observations[i]->device()!=devices[i].device)return fail(Error::invalid_filespace);
+    std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    for(std::size_t i=0;i<ordered.size();++i){const auto& fs=ordered[i];
+      if(!V7(fs.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)||!fs.device||(i&&fs.filespace_uuid==ordered[i-1].filespace_uuid))return fail(Error::invalid_filespace);
+      for(std::size_t j=0;j<i;++j)if(fs.device==ordered[j].device)return fail(Error::invalid_filespace);
+      const auto at=std::find_if(devices.begin(),devices.end(),[&](const auto& file){return file.device==fs.device;});
+      batches.push_back(observations[at-devices.begin()]);}
+    for(const auto& file:ordered)guards.push_back(file.device->AcquireOperationGuard());
+    const auto fs=std::lower_bound(ordered.begin(),ordered.end(),checkpoint.filespace_uuid,[](const auto& a,const auto& id){return a.filespace_uuid<id;});
     if(fs==ordered.end()||fs->filespace_uuid!=checkpoint.filespace_uuid||fs->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
     const auto* profile=disk::FindCanonicalFilespacePageProfile(checkpoint.page_size_profile_uuid);
     if(!profile||profile->page_size_bytes>=maximum_retained_image_bytes)return fail(Error::resource_exhausted);
-    auto loaded=ReadNativeCheckpointRootFromOpenDevice(*fs->device,database_uuid,checkpoint);
-    if(!loaded.ok())return fail(loaded.error);
+    auto loaded=detail::ReadNativeCheckpointRootBacked(*fs->device,database_uuid,checkpoint,*batches[fs-ordered.begin()],resource);
+    MergeCheckpointIo(out,loaded);if(!loaded.ok())return fail(loaded.error);
     if(!loaded.root->completed)return fail(Error::incomplete);
     const auto& target=loaded.root->roots.front();
     const disk::FilespaceRootReference inventory_ref{4,target.page_type,target.page.filespace_uuid,
       target.page.page_number,target.page.page_generation,target.page.page_size_profile_uuid,target.object_uuid};
-    auto chain=scratchbird::storage::page::ReadNativeTransactionInventoryChainFromOpenDevices(
-      database_uuid,ordered,inventory_ref,maximum_retained_image_bytes-loaded.bytes.size());
-    if(!chain.ok()){
-      using I=scratchbird::storage::page::NativeInventoryError;
-      const auto error=chain.error==I::resource_exhausted?Error::resource_exhausted:
-        chain.error==I::hash_failure?Error::hash_failure:
-        chain.error==I::io_failure?Error::io_failure:
-        chain.error==I::encrypted_requires_crypto_authority?Error::encrypted_requires_crypto_authority:
-        Error::inventory_failure;
-      auto result=fail(error);result.inventory_error=chain.error;return result;
-    }
-    const auto digest=hash::ComputeSha256Digest(chain.pages.front().bytes);
+    auto read=page::detail::ReadNativeInventoryChainBacked(database_uuid,ordered,inventory_ref,
+      maximum_retained_image_bytes-loaded.bytes.size(),page::NativeInventoryChainReadContext::current,nullptr,{},batches,resource);
+    MergeCheckpointIo(out,read);const auto& chain=read.chain;
+    if(!chain.ok()){using I=page::NativeInventoryError;const auto error=chain.error==I::resource_exhausted?Error::resource_exhausted:
+      chain.error==I::hash_failure?Error::hash_failure:chain.error==I::io_failure?Error::io_failure:
+      chain.error==I::encrypted_requires_crypto_authority?Error::encrypted_requires_crypto_authority:Error::inventory_failure;
+      return fail(error,chain.error);}
+    const auto head=chain.pages.front().image;const auto digest=hash::ComputeSha256DigestNative(head.data(),head.size());
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target.sha256)return fail(Error::invalid_integrity);
     const auto& root=*loaded.root;
-    if(chain.inventory.next_local_transaction_id<=root.selected_local_transaction_id
-      ||chain.inventory.next_local_transaction_id-1!=root.selected_local_transaction_id)return fail(Error::inventory_mismatch);
-    const auto checkpoint_digest=hash::ComputeSha256Digest(loaded.bytes);
+    if(chain.inventory.next_local_transaction_id<=root.selected_local_transaction_id||
+      chain.inventory.next_local_transaction_id-1!=root.selected_local_transaction_id)return fail(Error::inventory_mismatch);
+    const auto checkpoint_digest=hash::ComputeSha256DigestNative(loaded.bytes.data(),loaded.bytes.size());
     if(!checkpoint_digest.ok())return fail(Error::hash_failure);
     u64 operation_work=0;
     if(root.creator_operation_uuid.is_nil()){
-      const auto creator=scratchbird::transaction::mga::LookupLocalTransaction(chain.inventory,
-        scratchbird::transaction::mga::MakeLocalTransactionId(root.creator_local_transaction_id));
-      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid
-        ||(!(root.flags&4)&&creator.entry.identity.scope!=scratchbird::transaction::mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
-      if(!scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::creator_not_committed);
+      const auto id=mga::MakeLocalTransactionId(root.creator_local_transaction_id);
+      const auto creator=std::find_if(chain.inventory.entries.begin(),chain.inventory.entries.end(),[&](const auto& entry){return entry.identity.local_id.value==id.value;});
+      if(!id.valid()||creator==chain.inventory.entries.end()||creator->identity.transaction_uuid.value!=root.creator_transaction_uuid||
+        (!(root.flags&4)&&creator->identity.scope!=mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
+      if(!mga::HasCommittedInventoryOutcome(*creator))return fail(Error::creator_not_committed);
     }else{
-      const auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(database_uuid,ordered,
-        root.header.filespace_uuid,maximum_retained_image_bytes-loaded.bytes.size()-chain.retained_image_bytes);
-      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return fail(proof.error==P::hash_failure?Error::hash_failure:proof.error==P::resource_exhausted?Error::resource_exhausted:proof.error==P::io_failure?Error::io_failure:proof.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:proof.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::creator_not_committed);}
-      if(!MatchesNativeManagementPublishedCheckpoint(proof,root,checkpoint_digest.digest))return fail(Error::creator_not_committed);
-      operation_work=proof.verified_image_bytes;
+      auto proof=detail::ReadNativeManagementControlAuthorityBacked(database_uuid,ordered,root.header.filespace_uuid,
+        maximum_retained_image_bytes-loaded.bytes.size()-chain.retained_image_bytes,
+        NativeManagementHistoryReadContext::selected,nullptr,{},batches,resource);MergeCheckpointIo(out,proof);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return fail(proof.authority.error==P::hash_failure?Error::hash_failure:
+        proof.authority.error==P::resource_exhausted?Error::resource_exhausted:proof.authority.error==P::io_failure?Error::io_failure:
+        proof.authority.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:
+        proof.authority.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::creator_not_committed);}
+      if(!MatchesNativeManagementPublishedCheckpoint(proof.authority,root,checkpoint_digest.digest))return fail(Error::creator_not_committed);
+      operation_work=proof.authority.verified_image_bytes;
     }
-    NativeCheckpointInventoryResult result;result.error=Error::none;
-    result.checkpoint_sha256=checkpoint_digest.digest;
-    result.inventory_generation=chain.pages.front().page->inventory_generation;
+    NativeCheckpointInventoryView result;result.error=Error::none;result.checkpoint_sha256=checkpoint_digest.digest;
+    result.inventory_generation=chain.pages.front().page.inventory_generation;
     result.retained_image_bytes=loaded.bytes.size()+chain.retained_image_bytes+operation_work;
-    result.inventory_pages.reserve(chain.pages.size());
-    for(const auto& image:chain.pages)
-      result.inventory_pages.push_back({image.page->header,image.page->object_uuid});
-    result.checkpoint=std::move(loaded.root);result.inventory=std::move(chain.inventory);return result;
+    auto identities=scratch.Array<NativeInventoryPageBinding>(chain.pages.size());
+    for(std::size_t n=0;n<chain.pages.size();++n)identities[n]={chain.pages[n].page.header,chain.pages[n].page.object_uuid};
+    result.inventory_pages=identities;result.checkpoint=root;result.inventory=chain.inventory;out.inventory=result;return out;
+  }catch(Error error){return fail(error);}catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
+}
+NativeCheckpointInventoryDeviceRead VerifyNativeCheckpointInventoryInto(
+    const core::platform::Uuid& database,std::span<const disk::NativeFilespaceDevice> files,
+    const disk::FilespaceRootReference& root,u64 budget,std::span<CheckpointBatch* const> observations,
+    std::span<core::platform::byte> backing) noexcept {
+  NativeCheckpointInventoryDeviceRead out;
+  const auto disjoint=[&](auto v){return disk::detail::DisjointNativeDecodeRegions(backing,v);};
+  bool valid=disjoint(std::span{&database,1})&&disjoint(files)&&disjoint(std::span{&root,1})&&disjoint(observations);
+  for(const auto& file:files)valid=valid&&(!file.device||disjoint(std::span{file.device,1}));
+  for(const auto* observation:observations)valid=valid&&(!observation||disjoint(std::span{observation,1}));
+  if(!valid){out.inventory.error=NativeCheckpointError::invalid_backing;return out;}
+  detail::NativeMetadataMemory resource(backing);
+  out=detail::VerifyNativeCheckpointInventoryBacked(database,files,root,budget,observations,resource);
+  if(out.ok())out.inventory.backing_bytes_used=resource.used();return out;
+}
+NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
+    const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& files,
+    const disk::FilespaceRootReference& root,u64 budget) noexcept{
+  using namespace native_checkpoint;
+  const auto fail=[](Error error){NativeCheckpointInventoryResult r;r.error=error;return r;};
+  try{
+    detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);detail::NativeMetadataScratch scratch{&resource};
+    auto pointers=scratch.Array<CheckpointBatch*>(files.size());
+    if(files.size()>std::numeric_limits<std::size_t>::max()/sizeof(CheckpointBatch))throw std::bad_alloc();
+    auto* batches=static_cast<CheckpointBatch*>(resource.allocate(files.size()*sizeof(CheckpointBatch),alignof(CheckpointBatch)));
+    NativeCheckpointInventoryDeviceRead read;
+    {
+      struct Cleanup{CheckpointBatch* batches;std::size_t count=0;~Cleanup(){while(count)std::destroy_at(batches+--count);}} cleanup{batches};
+      for(std::size_t n=0;n<files.size();++n){if(!files[n].device)return fail(Error::invalid_filespace);
+        pointers[n]=std::construct_at(batches+n,*files[n].device);++cleanup.count;}
+      read=detail::VerifyNativeCheckpointInventoryBacked(database,files,root,budget,pointers,resource);
+    }
+    const auto& v=read.inventory;
+    if(!read.ok()){auto r=fail(v.error);r.inventory_error=v.inventory_error;return r;}
+    NativeCheckpointInventoryResult result;result.error=Error::none;result.checkpoint=OwnCheckpoint(*v.checkpoint);
+    result.checkpoint_sha256=v.checkpoint_sha256;result.inventory.next_local_transaction_id=v.inventory.next_local_transaction_id;
+    result.inventory.next_commit_sequence=v.inventory.next_commit_sequence;result.inventory.entries.assign(v.inventory.entries.begin(),v.inventory.entries.end());
+    result.inventory_pages.assign(v.inventory_pages.begin(),v.inventory_pages.end());result.inventory_generation=v.inventory_generation;
+    result.retained_image_bytes=v.retained_image_bytes;return result;
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
-   catch(const std::length_error&){return fail(Error::resource_exhausted);}
-   catch(...){return fail(Error::io_failure);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
 }
 
 NativeCheckpointCatalogResult VerifyNativeCheckpointCatalogRootsFromOpenDevices(
