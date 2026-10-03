@@ -3,15 +3,28 @@
 #pragma once
 #include "security/runtime_principal_observation.hpp"
 #include "security/durable_authorization_projection.hpp"
+#include "security/authentication_api.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "memory.hpp"
 #include "../support/durable_authorization_fixture.hpp"
 
 // Included after the inventory fixture's Check/NewId helpers. These checks
-// exercise real principal publication and observation, not authentication or
-// a startup admission/recovery receipt.
+// exercise real principal publication, observation and authentication identity,
+// not a startup admission/recovery receipt or a selected-provider fence.
 namespace runtime_principal_checks {
 using O = api::RuntimePrincipalObservationOutcome;
+
+inline api::EngineAuthenticateRequest AuthenticationRequest(
+    const api::RuntimePrincipalObservationRequest& source) {
+  api::EngineAuthenticateRequest request;
+  request.context.database_path = source.database_path;
+  request.context.database_uuid = source.database_uuid;
+  request.provider_family = "local_password";
+  request.principal_claim = "runtime_service";
+  request.credential_evidence = "DBLC013G-fixture-password";
+  request.durable_principal_uuid = source.principal_uuid;
+  return request;
+}
 
 inline api::EngineRequestContext Begin(api::EngineRequestContext context) {
   const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(context.database_path);
@@ -60,6 +73,15 @@ inline int ColdMain(const char* path) {
       "runtime_principal_cold_read");
   if (!configured.ok() || !configured.fixture_mode) return 4;
   const auto read = api::InspectRuntimePrincipal(request);
+  const auto authentication = api::EngineAuthenticate(AuthenticationRequest(request));
+  if (expect_active != 0) {
+    if (!authentication.ok || !authentication.authenticated ||
+        !authentication.durable_security_state ||
+        authentication.connection_security_context.effective_user_uuid != request.principal_uuid)
+      return 6;
+  } else if (authentication.ok || authentication.authenticated || authentication.durable_security_state) {
+    return 7;
+  }
   if (expect_active == 0) return read.outcome == O::no_active_principal &&
       !read.observation && !read.source_diagnostic ? 0 : 5;
   if (read.outcome != O::observed || !read.observation ||
@@ -187,6 +209,63 @@ inline void ProjectionChecks(const api::EngineRequestContext& admin,
   Check(selected(project()).empty(), "committed revoke removes projected grant");
 }
 
+inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationRequest& source) {
+  auto request = AuthenticationRequest(source);
+  const auto accepted = api::EngineAuthenticate(request);
+  Check(accepted.ok && accepted.authenticated && accepted.durable_security_state &&
+        accepted.connection_security_context.effective_user_uuid == source.principal_uuid,
+        "real service password authenticates exact binary principal");
+  request.durable_principal_uuid = NewId(platform::UuidKind::principal).value;
+  const auto mismatched = api::EngineAuthenticate(request);
+  Check(!mismatched.ok && !mismatched.authenticated && !mismatched.durable_security_state &&
+        mismatched.diagnostics.size() == 1 &&
+        mismatched.diagnostics.front().detail == "durable_principal_identity_mismatch",
+        "raw password must not overwrite a different binary principal candidate");
+  request.durable_principal_uuid = {};
+  const auto by_name = api::EngineAuthenticate(request);
+  Check(by_name.ok && by_name.authenticated &&
+        by_name.connection_security_context.effective_user_uuid == source.principal_uuid,
+        "absent candidate still resolves the actual durable identity");
+  for (int candidate = 0; candidate < 3; ++candidate) {
+    for (const auto* option : {"durable_principal_uuid:text", "durable_principal_uuid:"}) {
+      request = AuthenticationRequest(source);
+      if (candidate == 1) request.durable_principal_uuid = {};
+      if (candidate == 2) request.durable_principal_uuid = NewId(platform::UuidKind::principal).value;
+      request.option_envelopes.emplace_back(option);
+      const auto refused = api::EngineAuthenticate(request);
+      Check(!refused.ok && !refused.authenticated && !refused.durable_security_state &&
+            refused.diagnostics.size() == 1 &&
+            refused.diagnostics.front().detail == "binary_principal_identity_required",
+            "text or empty identity option cannot become name-only authentication");
+    }
+  }
+  request = AuthenticationRequest(source);
+  request.credential_evidence = "scheme=local_password_v1;principal=runtime_service;principal_uuid=text";
+  const auto text_evidence = api::EngineAuthenticate(request);
+  Check(!text_evidence.ok && !text_evidence.authenticated &&
+        text_evidence.diagnostics.size() == 1 &&
+        text_evidence.diagnostics.front().detail == "binary_principal_identity_required",
+        "text credential identity is rejected rather than treated as absent");
+  for (int invalid = 0; invalid < 2; ++invalid) {
+    request = AuthenticationRequest(source);
+    if (invalid == 0) request.durable_principal_uuid.bytes[6] &= 0x0f;
+    else request.durable_principal_uuid.bytes[8] &= 0x3f;
+    const auto refused = api::EngineAuthenticate(request);
+    Check(!refused.ok && !refused.authenticated && !refused.durable_security_state &&
+          refused.diagnostics.size() == 1 &&
+          refused.diagnostics.front().detail == "binary_principal_identity_required",
+          "malformed binary identity never falls back to name resolution");
+  }
+  for (bool with_candidate : {false, true}) {
+    request = AuthenticationRequest(source);
+    if (!with_candidate) request.durable_principal_uuid = {};
+    request.credential_evidence = "incorrect-fixture-password";
+    const auto refused = api::EngineAuthenticate(request);
+    Check(!refused.ok && !refused.authenticated && !refused.durable_security_state,
+          "identity validation cannot replace actual credential verification");
+  }
+}
+
 inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   const auto path = root / ("principal-" + std::to_string(page_size) + ".sbdb");
   db::DatabaseCreateConfig create;
@@ -217,11 +296,15 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
 
   api::RuntimePrincipalObservationRequest request{path.string(), create.database_uuid.value,
       NewId(platform::UuidKind::principal).value};
+  request.principal_uuid.bytes[9] = 0;
+  request.principal_uuid.bytes[10] = '\n';
+  request.principal_uuid.bytes[11] = 255;
   Check(api::InspectRuntimePrincipal(request).outcome == O::no_active_principal, "absent is not a service grant");
   auto transaction = Begin(admin);
   api::EngineSecurityCreatePrincipalRequest provision;
   provision.context = transaction; provision.principal_uuid = request.principal_uuid;
   provision.principal_name = "runtime_service"; provision.principal_kind = "service";
+  provision.credential_fingerprint = create.bootstrap_credential_fingerprint;
   const auto provisioned = api::EngineSecurityCreatePrincipal(provision);
   if (!provisioned.ok) for (const auto& d : provisioned.diagnostics) std::cerr << d.code << ':' << d.detail << '\n';
   Check(provisioned.ok && provisioned.principal_created, "actual service principal create");
@@ -240,6 +323,7 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   ColdRead(request, original);
   Check(bytes() == committed_bytes, "active warm and cold observation writes no bytes");
   ProjectionChecks(admin, request);
+  AuthenticationIdentityChecks(request);
   auto invalid = request;
   invalid.database_uuid = NewId(platform::UuidKind::database).value;
   auto refused = api::InspectRuntimePrincipal(invalid);
@@ -263,15 +347,23 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(api::EngineSecurityAlterPrincipal(alter).ok, "actual service disable");
   const auto uncommitted = api::InspectRuntimePrincipal(request);
   Check(uncommitted.observation && uncommitted.observation->lifecycle_state == "active", "uncommitted disable hidden");
+  Check(api::EngineAuthenticate(AuthenticationRequest(request)).authenticated,
+        "uncommitted disable does not replace committed authentication state");
   Finish(transaction, false);
   const auto rolled_back = api::InspectRuntimePrincipal(request);
   Check(rolled_back.observation && rolled_back.observation->lifecycle_state == "active", "rollback preserves active state");
+  Check(api::EngineAuthenticate(AuthenticationRequest(request)).authenticated,
+        "rolled back disable preserves actual password authentication");
   transaction = Begin(admin); alter.context = transaction;
   Check(api::EngineSecurityAlterPrincipal(alter).ok, "actual repeated disable");
   Finish(transaction, true);
   const auto disabled = api::InspectRuntimePrincipal(request);
   Check(disabled.outcome == O::no_active_principal && !disabled.observation && !disabled.source_diagnostic,
         "committed disable removes active principal without cached authority");
+  const auto disabled_authentication = api::EngineAuthenticate(AuthenticationRequest(request));
+  Check(!disabled_authentication.ok && !disabled_authentication.authenticated &&
+        !disabled_authentication.durable_security_state,
+        "committed disable revokes fresh authentication without cached success");
   ColdRead(request, original, false);
   const auto before = bytes();
   Check(api::InspectRuntimePrincipal(request).outcome == O::no_active_principal, "repeat disabled read");
