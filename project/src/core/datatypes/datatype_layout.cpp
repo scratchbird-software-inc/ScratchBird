@@ -113,6 +113,7 @@ const char* DatatypeBinaryEncodingName(DatatypeBinaryEncoding encoding) {
     case DatatypeBinaryEncoding::locator_envelope: return "locator_envelope";
     case DatatypeBinaryEncoding::opaque_extension_binary: return "opaque_extension_binary";
     case DatatypeBinaryEncoding::result_set_descriptor: return "result_set_descriptor";
+    case DatatypeBinaryEncoding::u32le_bit_count_msb0_packed: return "u32le_bit_count_msb0_packed";
     case DatatypeBinaryEncoding::unknown: return "unknown";
   }
   return "unknown";
@@ -144,7 +145,10 @@ const std::vector<DatatypeStorageLayout>& BuiltinDatatypeStorageLayouts() {
       Layout(CanonicalTypeId::mac_address, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::network_address_binary, 8, 8, true, false, false, false, false, true),
       Layout(CanonicalTypeId::character, DatatypeStorageClass::inline_variable, DatatypeBinaryEncoding::utf8_or_descriptor_charset_bytes, 0, 1, true, true, true, false, true),
       Layout(CanonicalTypeId::binary, DatatypeStorageClass::inline_variable, DatatypeBinaryEncoding::opaque_bytes, 0, 1, true, false, false, false, true),
-      Layout(CanonicalTypeId::bit_string, DatatypeStorageClass::descriptor_payload, DatatypeBinaryEncoding::bit_packed_bytes, 0, 1, true, false, false, false, true),
+      Layout(CanonicalTypeId::bit_string, DatatypeStorageClass::descriptor_payload,
+             DatatypeBinaryEncoding::u32le_bit_count_msb0_packed, 0, 1, true,
+             false, false, false, true, false,
+             "u32LE logical bit count followed by MSB-first packed bits; unused low tail bits are zero"),
       Layout(CanonicalTypeId::date, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::days_since_unix_epoch_i32, 4, 4, false, false, false, false, false, true),
       Layout(CanonicalTypeId::time, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::nanoseconds_since_midnight_u64, 8, 8, false, false, false, true, false, true),
       Layout(CanonicalTypeId::timestamp, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::timestamp_utc_tuple, 16, 8, false, false, false, true, false, true),

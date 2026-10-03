@@ -59,7 +59,9 @@ enum class DatatypeBinaryEncoding : u16 {
   locator_envelope,
   opaque_extension_binary,
   result_set_descriptor,
-  unknown
+  unknown,
+  // Appended to preserve every previously published enum value.
+  u32le_bit_count_msb0_packed
 };
 
 struct DatatypeStorageLayout {

@@ -262,3 +262,7 @@ LookupBuiltinOperatorTypeCodecIdentityV1(
     u64 right_type_generation);
 
 }  // namespace scratchbird::core::datatypes
+
+// The current policy-bearing identity API depends on the legacy row above and
+// is included here so existing catalog consumers have one public entry point.
+#include "datatype_type_codec_identity_v3.hpp"

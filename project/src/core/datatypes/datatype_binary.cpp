@@ -70,7 +70,6 @@ inline constexpr u32 kDescriptorOffsetDigestHigh64 = 40;
 inline constexpr u32 kDatatypeDescriptorEnvelopeDigestBytes = 32;
 inline constexpr u32 kDatatypeDescriptorEnvelopeHeaderBytes = 64;
 inline constexpr u16 kDatatypeDescriptorEnvelopeLayoutVersion = 2;
-inline constexpr u64 kFnvOffsetBasis64 = 1469598103934665603ull;
 inline constexpr u64 kFnvPrime64 = 1099511628211ull;
 
 namespace BinaryFlag {
@@ -302,12 +301,39 @@ bool IsValidFixedPayloadSize(const DatatypeStorageLayout& layout, u32 payload_si
 }
 
 u64 PayloadChecksum(const byte* bytes, std::size_t size) noexcept {
-  u64 hash = kFnvOffsetBasis64;
+  u64 hash = kDatatypeBinaryPayloadChecksumV1Seed;
   for (std::size_t i = 0; i < size; ++i) {
     hash ^= static_cast<u64>(bytes[i]);
-    hash *= kFnvPrime64;
+    hash *= kDatatypeBinaryPayloadChecksumV1Prime;
   }
   return hash;
+}
+
+DatatypeBinaryAllocationFreeViewResult BinaryStructuralValidation(
+    const DatatypeBinaryValueView& value) noexcept {
+  if (value.is_null) {
+    if (value.payload_bytes != 0 || value.payload_is_toast_reference) {
+      auto result = BinaryNoAllocError("DATATYPE.NULL_STATE.INVALID",
+                                       "datatype.null_state_invalid");
+      AddBinaryNoAllocTextArgument(&result, "boundary",
+                                   kBinaryComponentBoundary);
+      AddBinaryNoAllocUnsignedArgument(&result, "payload_length",
+                                       value.payload_bytes);
+      AddBinaryNoAllocTextArgument(&result, "reason",
+                                   "null_payload_or_reference_state");
+      return result;
+    }
+    DatatypeBinaryValueView clean = value;
+    clean.payload_data = nullptr;
+    return BinaryNoAllocOk(clean);
+  }
+  if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
+      value.payload_bytes > std::numeric_limits<u32>::max() ||
+      value.payload_bytes > std::numeric_limits<std::size_t>::max() -
+                                kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(0, "borrowed_payload_bounds_invalid");
+  }
+  return BinaryNoAllocOk(value);
 }
 
 void WriteBinaryValueHeader(const DatatypeBinaryValueView& value, u64 checksum,
@@ -538,6 +564,106 @@ DatatypeDescriptorEnvelopeResult ValidateDescriptorEnvelope(
 }
 
 }  // namespace
+
+u64 ComputeDatatypeBinaryPayloadChecksumV1(
+    const byte* payload, std::size_t payload_bytes) noexcept {
+  if (payload == nullptr && payload_bytes != 0) {
+    return 0;
+  }
+  return PayloadChecksum(payload, payload_bytes);
+}
+
+DatatypeBinaryAllocationFreeViewResult
+ValidateDatatypeBinaryStructuralValueViewNoAlloc(
+    const DatatypeBinaryValueView& value) noexcept {
+  return BinaryStructuralValidation(value);
+}
+
+DatatypeBinaryAllocationFreeViewResult
+EncodeDatatypeBinaryStructuralValueIntoNoAlloc(
+    const DatatypeBinaryValueView& value, byte* destination,
+    std::size_t destination_bytes) noexcept {
+  auto result = BinaryStructuralValidation(value);
+  if (!result.ok()) return result;
+  if (destination == nullptr ||
+      destination_bytes < kDatatypeBinaryEnvelopeHeaderBytes ||
+      value.payload_bytes >
+          destination_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
+    result = BinaryNoAllocError("RESOURCE.BUDGET_EXCEEDED",
+                                "datatype.binary.destination_capacity_insufficient");
+    result.status = {StatusCode::memory_limit_exceeded, Severity::error,
+                     Subsystem::datatypes};
+    result.diagnostic.status = result.status;
+    return result;
+  }
+  WriteValidatedBinaryValue(result.value, destination);
+  result.bytes_written =
+      kDatatypeBinaryEnvelopeHeaderBytes + result.value.payload_bytes;
+  return result;
+}
+
+DatatypeBinaryAllocationFreeViewResult
+DecodeDatatypeBinaryStructuralValueViewNoAlloc(
+    const byte* encoded, std::size_t encoded_bytes) noexcept {
+  if (encoded == nullptr ||
+      encoded_bytes < kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(encoded_bytes,
+                                   "source_null_or_truncated_header");
+  }
+  if (encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes >
+      std::numeric_limits<u32>::max()) {
+    return BinaryNoAllocFrameError(0, "source_extent_unrepresentable");
+  }
+  if (std::memcmp(encoded + kOffsetMagic, kDatatypeBinaryMagic,
+                  sizeof(kDatatypeBinaryMagic)) != 0) {
+    return BinaryNoAllocFrameError(kOffsetMagic, "bad_magic");
+  }
+  const u16 header_bytes = LoadLittle16(encoded + kOffsetHeaderBytes);
+  const u32 payload_bytes = LoadLittle32(encoded + kOffsetPayloadBytes);
+  if (header_bytes != kDatatypeBinaryEnvelopeHeaderBytes ||
+      payload_bytes != encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
+    return BinaryNoAllocFrameError(
+        header_bytes != kDatatypeBinaryEnvelopeHeaderBytes
+            ? kOffsetHeaderBytes
+            : kOffsetPayloadBytes,
+        header_bytes != kDatatypeBinaryEnvelopeHeaderBytes
+            ? "bad_header_size"
+            : "payload_extent_mismatch_or_trailing");
+  }
+
+  DatatypeBinaryValueView value;
+  value.type_id =
+      static_cast<CanonicalTypeId>(LoadLittle32(encoded + kOffsetTypeId));
+  const u16 flags = LoadLittle16(encoded + kOffsetFlags);
+  value.is_null = (flags & BinaryFlag::is_null) != 0;
+  value.payload_is_toast_reference =
+      (flags & BinaryFlag::payload_is_toast_reference) != 0;
+  value.payload_data = value.is_null
+                           ? nullptr
+                           : encoded + kDatatypeBinaryEnvelopeHeaderBytes;
+  value.payload_bytes = payload_bytes;
+
+  const u64 expected_checksum =
+      LoadLittle64(encoded + kOffsetPayloadChecksum);
+  std::array<byte, kDatatypeBinaryEnvelopeHeaderBytes> canonical_header{};
+  WriteBinaryValueHeader(value, expected_checksum, canonical_header.data());
+  if (std::memcmp(canonical_header.data(), encoded,
+                  canonical_header.size()) != 0) {
+    std::size_t mismatch_offset = 0;
+    while (mismatch_offset < canonical_header.size() &&
+           canonical_header[mismatch_offset] == encoded[mismatch_offset]) {
+      ++mismatch_offset;
+    }
+    return BinaryNoAllocFrameError(
+        mismatch_offset, "unknown_flags_or_reserved_nonzero");
+  }
+  if (expected_checksum !=
+      PayloadChecksum(encoded + kDatatypeBinaryEnvelopeHeaderBytes,
+                      payload_bytes)) {
+    return BinaryNoAllocIntegrityError("payload_checksum_mismatch");
+  }
+  return BinaryStructuralValidation(value);
+}
 
 u64 ComputeDatatypeBinaryChecksum(const std::vector<byte>& bytes) {
   return PayloadChecksum(bytes.data(), bytes.size());
@@ -903,9 +1029,24 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
                          "datatype.binary.null_has_payload",
                          CanonicalTypeName(value.type_id));
     }
+    if (value.type_id == CanonicalTypeId::bit_string) {
+      return BinaryViewError(
+          "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+          "datatype.bit_string.serialization_profile_missing");
+    }
     DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
     return result;
+  }
+
+  // Canonical type 302 is context-sensitive.  Its enum and component bytes do
+  // not establish the V3 receipt or 432-byte profile, so this generic semantic
+  // entry point must refuse after the common argument/state gates.  The
+  // profile-aware adapter uses only the structural helpers above.
+  if (value.type_id == CanonicalTypeId::bit_string) {
+    return BinaryViewError(
+        "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+        "datatype.bit_string.serialization_profile_missing");
   }
 
   // The storage descriptor/TOAST locator is not the canonical decimal VALUE.

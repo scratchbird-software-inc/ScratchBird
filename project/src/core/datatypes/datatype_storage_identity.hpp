@@ -24,23 +24,41 @@ inline bool LookupDatatypeStorageIdentityV1(
     const platform::Uuid& descriptor, u64 descriptor_generation,
     DatatypeStorageIdentityV1* output) {
   if (!output) return false;
-  const auto codec = LookupDatatypeTypeCodecIdentityV1(
+  const auto codec = LookupDatatypeTypeCodecIdentityV3(
       snapshot, catalog_generation, registry_generation, descriptor, descriptor_generation);
   DatatypeStorageIdentityV1 selected;
   if (codec.ok) {
-    if (codec.row.canonical_binary_type_code == static_cast<u32>(CanonicalTypeId::unknown))
+    const auto& legacy = codec.row.legacy_fields;
+    if (legacy.canonical_binary_type_code == static_cast<u32>(CanonicalTypeId::unknown))
       return false;
-    selected = {codec.row.descriptor_uuid, codec.row.descriptor_generation,
-                codec.row.type_uuid, static_cast<CanonicalTypeId>(codec.row.canonical_binary_type_code), codec.row};
+    selected = {legacy.descriptor_uuid, legacy.descriptor_generation,
+                legacy.type_uuid,
+                static_cast<CanonicalTypeId>(legacy.canonical_binary_type_code),
+                ProjectDatatypeTypeCodecIdentityV3ToV1(codec.row)};
   } else {
-    const auto registry = CurrentDatatypeTypeCodecIdentityRowsV1();
+    const auto registry = CurrentDatatypeTypeCodecIdentityRowsV3();
     // A codec admitted in this or an earlier cohort never downgrades to
     // storage-only admission. A successor must not retroactively change V4's
     // decimal storage identity or pretend it had a canonical value codec.
-    if (std::any_of(registry.begin(), registry.end(), [&](const auto& row) {
-          return row.descriptor_uuid == descriptor && row.catalog_generation <= catalog_generation;
-        }) || !((snapshot == kDatatypeCohortV4 && catalog_generation == 4 && registry_generation == 4) ||
-                (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5)))
+    const bool codec_admitted_at_or_before =
+        std::any_of(registry.begin(), registry.end(), [&](const auto& row) {
+          return row.legacy_fields.descriptor_uuid == descriptor &&
+                 row.legacy_fields.catalog_generation <= catalog_generation;
+        });
+    const bool codec_admitted_in_later_cohort =
+        std::any_of(registry.begin(), registry.end(), [&](const auto& row) {
+          return row.legacy_fields.descriptor_uuid == descriptor &&
+                 row.legacy_fields.catalog_generation > catalog_generation;
+        });
+    const platform::Uuid decimal_float_storage_only_predecessor{{
+        0xa1,0x00,0x00,0x00,0x10,0x65,0x73,0x69,
+        0xad,0x61,0x6c,0x5f,0x66,0x6c,0x6f,0x61}};
+    if (codec_admitted_at_or_before ||
+        (codec_admitted_in_later_cohort &&
+         descriptor != decimal_float_storage_only_predecessor) ||
+        !((snapshot == kDatatypeCohortV4 && catalog_generation == 4 && registry_generation == 4) ||
+                (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5) ||
+                (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6)))
       return false;
     static const auto catalog = LoadCurrentCoreDatatypeCatalogManifest();
     if (!catalog.ok()) return false;
@@ -54,7 +72,7 @@ inline bool LookupDatatypeStorageIdentityV1(
         row->type_id == CanonicalTypeId::unknown)
       return false;
     selected = {row->descriptor_uuid.value, row->descriptor_epoch,
-                row->descriptor_uuid.value, row->type_id};
+                row->descriptor_uuid.value, row->type_id, std::nullopt};
   }
   *output = selected;
   return true;

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "datatype_bit_string.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_exchange.hpp"
 #include "datatype_layout.hpp"
@@ -38,10 +39,27 @@ struct DatatypeConformanceExample {
   std::string source_marker;
 };
 
+// Bit strings cannot use the legacy SBDTV001 descriptor example above: that
+// carrier has no V3 policy identities, live receipt, or profile material.
+// Their conformance evidence therefore remains a separate exact carrier.
+struct BitStringConformanceExampleV1 {
+  BitStringAuthorityReceiptV1 receipt;
+  DatatypeTypeCodecIdentityRowV3 identity;
+  BitStringDescriptorProfileV1 profile;
+  bool null_allowed = false;
+  BitStringValueStateV1 state = BitStringValueStateV1::present;
+  std::vector<byte> canonical_component;
+  DatatypeConformanceExampleSource source =
+      DatatypeConformanceExampleSource::unknown;
+  std::string evidence_path;
+  std::string source_marker;
+};
+
 struct DatatypeConformanceManifest {
   std::string manifest_key;
   std::string inventory_source_path;
   std::vector<DatatypeConformanceExample> examples;
+  std::vector<BitStringConformanceExampleV1> bit_string_examples;
   bool parser_authority_allowed = false;
 };
 
@@ -51,6 +69,7 @@ struct DatatypeConformanceManifestResult {
   DiagnosticRecord diagnostic;
   std::vector<DiagnosticRecord> diagnostics;
   std::size_t executed_examples = 0;
+  std::size_t executed_bit_string_examples = 0;
 
   bool ok() const {
     return status.ok() && diagnostics.empty();
@@ -60,7 +79,9 @@ struct DatatypeConformanceManifestResult {
 const char* DatatypeConformanceExampleSourceName(
     DatatypeConformanceExampleSource source);
 
-DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest();
+DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
+    const BitStringAuthorityReceiptV1& bit_string_receipt,
+    bool bit_string_null_allowed);
 
 DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     const DatatypeConformanceManifest& manifest);

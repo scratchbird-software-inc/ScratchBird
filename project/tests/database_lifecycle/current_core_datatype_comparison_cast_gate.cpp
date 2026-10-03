@@ -799,6 +799,80 @@ void TestExplicitDisplayBoundaryRendering() {
           "MDF-014 unknown display boundary did not fail closed");
 }
 
+void TestBitStringRequiresSpecializedV3Carrier() {
+  dt::DatatypeOperationValue raw{
+      dt::CanonicalTypeId::bit_string,
+      std::string(1, static_cast<char>(0x80)), false};
+  dt::DatatypeCastRequest cast;
+  cast.value = raw;
+  cast.target_type_id = dt::CanonicalTypeId::character;
+  cast.context = dt::DatatypeCastContext::explicit_cast;
+  const auto cast_result = dt::CastDatatypeValue(cast);
+  Require(!cast_result.ok() &&
+              cast_result.diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::bit_string,
+                                       dt::CanonicalTypeId::bit_string) ==
+                  dt::DatatypeCastCategory::forbidden,
+          "raw bit-string cast/catch-all bypassed V3 profile authority");
+  Require(!dt::CompareDatatypeValues({raw, raw}).ok() &&
+              !dt::MakeDatatypeSortKey({raw}).ok() &&
+              !dt::HashDatatypeValue({raw}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({raw}).ok(),
+          "raw bit-string generic operation bypassed specialized carrier");
+  const auto serialized = dt::SerializeDatatypeValue({raw});
+  Require(!serialized.ok() &&
+              serialized.diagnostic.diagnostic_code ==
+                  "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+          "raw bit-string SBDV1 serialization was admitted");
+  auto dirty_null = raw;
+  dirty_null.is_null = true;
+  dirty_null.descriptor = Descriptor(dt::CanonicalTypeId::bit_string);
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "DATATYPE.NULL_STATE.INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::MakeDatatypeSortKey({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::HashDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::SerializeDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::RenderDatatypeValueForDisplay({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "valid raw bit descriptor did not preserve dirty-NULL precedence");
+  ++dirty_null.descriptor.descriptor_epoch;
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::MakeDatatypeSortKey({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::HashDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::SerializeDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID" &&
+              dt::RenderDatatypeValueForDisplay({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "CTB.BIT.DESCRIPTOR_INVALID",
+          "invalid raw bit descriptor did not precede dirty-NULL state");
+}
+
 void TestBinaryUuidOperations() {
   const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff", 16);
   const auto value = UuidValue(bytes);
@@ -1408,6 +1482,7 @@ int main(int argc, char** argv) {
   TestNonScalarOperatorCastProof();
   TestStableHashAndDeserializationRefusals();
   TestExplicitDisplayBoundaryRendering();
+  TestBitStringRequiresSpecializedV3Carrier();
   std::cout << "current_core_datatype_comparison_cast_gate=passed\n";
   return EXIT_SUCCESS;
 }
