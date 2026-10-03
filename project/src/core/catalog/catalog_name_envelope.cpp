@@ -47,12 +47,13 @@ bool SameBinding(const CatalogNameVersionBinding& a,const CatalogNameVersionBind
       a.creating_transaction_number == b.creating_transaction_number &&
       a.catalog_generation == b.catalog_generation;
 }
-bool PayloadMatches(const CatalogNameEnvelope& record) {
+template<class Envelope> bool PayloadMatches(const Envelope& record) {
+  using Payload = decltype(record.payload);
   const auto& b = record.binding;
-  if (const auto* v = std::get_if<CatalogNameVector>(&record.payload))
+  if (const auto* v = std::get_if<std::variant_alternative_t<0,Payload>>(&record.payload))
     return SameIdentity(b.catalog_object_uuid,v->name_vector_uuid) &&
         b.catalog_generation == v->catalog_generation_id;
-  if (const auto* e = std::get_if<CatalogNameEntry>(&record.payload))
+  if (const auto* e = std::get_if<std::variant_alternative_t<1,Payload>>(&record.payload))
     return SameIdentity(b.catalog_object_uuid,e->name_entry_uuid) &&
         b.catalog_generation == e->catalog_generation_id &&
         (b.version_sequence != 1 || SameIdentity(b.creating_transaction_uuid,e->created_transaction_uuid));
@@ -61,12 +62,12 @@ bool PayloadMatches(const CatalogNameEnvelope& record) {
 void Put(std::vector<byte>& out,std::size_t offset,u64 value,unsigned width) {
   for (unsigned i=0;i<width;++i) out[offset+i] = static_cast<byte>(value >> (i*8));
 }
-u64 Get(const std::vector<byte>& in,std::size_t offset,unsigned width) {
+u64 Get(std::span<const byte> in,std::size_t offset,unsigned width) {
   u64 value = 0;
   for (unsigned i=0;i<width;++i) value |= static_cast<u64>(in[offset+i]) << (i*8);
   return value;
 }
-CatalogNameVersionBinding ReadBinding(const std::vector<byte>& bytes) {
+CatalogNameVersionBinding ReadBinding(std::span<const byte> bytes) {
   CatalogNameVersionBinding b;
   for (const auto& field : kIdentityFields) {
     auto& id = b.*field.member;
@@ -163,8 +164,8 @@ CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvel
   std::copy(payload.bytes.begin(),payload.bytes.end(),bytes.begin()+kHeaderBytes);
   return result;
 }
-CatalogNameEnvelopeDecodeResult DecodeCatalogNameEnvelope(
-    const std::vector<byte>& bytes,const CatalogNameVersionBinding& expected) {
+CatalogNameEnvelopeViewResult DecodeCatalogNameEnvelopeView(
+    std::span<const byte> bytes,const CatalogNameVersionBinding& expected) {
   const auto expected_error=Validate(expected);
   if (expected_error!=Error::none) return {expected_error,{}};
   if (bytes.size()>kMaxBytes) return {Error::size_limit,{}};
@@ -177,22 +178,35 @@ CatalogNameEnvelopeDecodeResult DecodeCatalogNameEnvelope(
     return {Error::invalid_header,{}};
   const auto schema_id=Get(bytes,16,4);
   if (schema_id!=327681 && schema_id!=327682) return {Error::invalid_payload,{}};
-  CatalogNameEnvelope record;
+  CatalogNameEnvelopeView record;
   record.binding=ReadBinding(bytes);
   const auto binding_error=Validate(record.binding);
   if (binding_error!=Error::none) return {binding_error,{}};
   if (!SameBinding(record.binding,expected)) return {Error::binding_mismatch,{}};
-  const std::vector<byte> payload(bytes.begin()+kHeaderBytes,bytes.end());
+  const auto payload=bytes.subspan(kHeaderBytes);
   if (schema_id==327681) {
-    auto decoded=DecodeCatalogNameVector(payload);
+    auto decoded=DecodeCatalogNameVectorView(payload);
     if (!decoded.ok()) return {Error::invalid_payload,{}};
     record.payload=std::move(*decoded.record);
   } else {
-    auto decoded=DecodeCatalogNameEntry(payload);
+    auto decoded=DecodeCatalogNameEntryView(payload);
     if (!decoded.ok()) return {Error::invalid_payload,{}};
     record.payload=std::move(*decoded.record);
   }
   if (!PayloadMatches(record)) return {Error::binding_mismatch,{}};
   return {Error::none,std::move(record)};
+}
+CatalogNameEnvelope MaterializeCatalogNameEnvelope(const CatalogNameEnvelopeView& record) {
+  return {record.binding, std::visit([](const auto& payload) -> CatalogNamePayload {
+    if constexpr(std::is_same_v<std::decay_t<decltype(payload)>,CatalogNameVectorView>)
+      return MaterializeCatalogNameVector(payload);
+    else return MaterializeCatalogNameEntry(payload);
+  },record.payload)};
+}
+CatalogNameEnvelopeDecodeResult DecodeCatalogNameEnvelope(
+    const std::vector<byte>& bytes,const CatalogNameVersionBinding& expected) {
+  const auto decoded=DecodeCatalogNameEnvelopeView(bytes,expected);
+  if(!decoded.ok())return {decoded.error,{}};
+  return {Error::none,MaterializeCatalogNameEnvelope(*decoded.record)};
 }
 }  // namespace scratchbird::core::catalog

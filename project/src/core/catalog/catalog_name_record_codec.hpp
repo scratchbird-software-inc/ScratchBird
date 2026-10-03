@@ -3,6 +3,7 @@
 #pragma once
 #include "catalog_value_codec.hpp"
 #include <optional>
+#include <string_view>
 
 namespace scratchbird::core::catalog {
 // CATALOG_NAME_RECORD_SCHEMAS_V1: two payloads of localized_name, not two
@@ -61,6 +62,56 @@ struct CatalogNameEntry {
   u64 name_resolution_epoch = 0;
   CatalogNameLifecycle lifecycle_state = CatalogNameLifecycle::creating;
 };
+// Structural views only: immutable input and its actual memory grant must
+// outlive every view/copy. Native identities/scalars are inline; presentation
+// text and profile-derived opaque keys never become engine identity authority.
+struct CatalogNameVectorView {
+  TypedUuid name_vector_uuid;
+  TypedUuid object_uuid;
+  std::string_view object_class;
+  std::optional<TypedUuid> owning_schema_uuid;
+  std::string_view default_language_tag;
+  TypedUuid default_name_entry_uuid;
+  TypedUuid name_collision_policy_uuid;
+  u64 catalog_generation_id = 0;
+  TypedUuid security_policy_uuid;
+  CatalogNameLifecycle lifecycle_state = CatalogNameLifecycle::creating;
+};
+struct CatalogNameEntryView {
+  TypedUuid name_entry_uuid;
+  TypedUuid name_vector_uuid;
+  TypedUuid object_uuid;
+  std::string_view object_class;
+  TypedUuid scope_uuid;
+  std::optional<TypedUuid> parent_object_uuid;
+  std::optional<TypedUuid> parent_schema_uuid;
+  std::string_view language_tag;
+  CatalogNameClass name_class = CatalogNameClass::primary;
+  std::string_view donor_id;
+  TypedUuid dialect_profile_uuid;
+  TypedUuid identifier_profile_uuid;
+  std::optional<TypedUuid> case_fold_profile_uuid;
+  std::optional<TypedUuid> quoted_identifier_profile_uuid;
+  std::string_view raw_name_text;
+  std::string_view display_name;
+  bool was_quoted = false;
+  CatalogNameQuoteStyle quote_style = CatalogNameQuoteStyle::none;
+  bool requires_exact_match = false;
+  std::span<const byte> normalized_lookup_key;
+  std::span<const byte> exact_lookup_key;
+  std::span<const byte> full_path_lookup_key;
+  u64 path_component_count = 0;
+  bool search_path_eligible = false;
+  bool default_for_language = false;
+  bool default_for_object = false;
+  u64 catalog_generation_id = 0;
+  TypedUuid created_transaction_uuid;
+  std::optional<TypedUuid> dropped_transaction_uuid;
+  TypedUuid security_policy_uuid;
+  u64 resource_epoch = 0;
+  u64 name_resolution_epoch = 0;
+  CatalogNameLifecycle lifecycle_state = CatalogNameLifecycle::creating;
+};
 template <typename Record> struct CatalogNameRecordDecodeResult {
   CatalogValueError error = CatalogValueError::none;
   std::optional<Record> record;
@@ -68,6 +119,10 @@ template <typename Record> struct CatalogNameRecordDecodeResult {
 };
 const CatalogValueSchema& CatalogNameVectorSchema();
 const CatalogValueSchema& CatalogNameEntrySchema();
+CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView(std::span<const byte> bytes);
+CatalogNameRecordDecodeResult<CatalogNameEntryView> DecodeCatalogNameEntryView(std::span<const byte> bytes);
+CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& record);
+CatalogNameEntry MaterializeCatalogNameEntry(const CatalogNameEntryView& record);
 CatalogValueEncodeResult EncodeCatalogNameVector(const CatalogNameVector& record);
 CatalogValueEncodeResult EncodeCatalogNameEntry(const CatalogNameEntry& record);
 CatalogNameRecordDecodeResult<CatalogNameVector> DecodeCatalogNameVector(const std::vector<byte>& bytes);

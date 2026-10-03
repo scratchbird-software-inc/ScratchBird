@@ -672,6 +672,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(native_catalog_current_value_memory_gate native_catalog_current_value_memory_gate.cpp)
   add_executable(native_catalog_typed_record_memory_gate native_catalog_typed_record_memory_gate.cpp)
   add_executable(native_catalog_metadata_memory_gate native_catalog_metadata_memory_gate.cpp)
+  add_executable(native_catalog_name_memory_gate native_catalog_name_memory_gate.cpp)
+  add_executable(native_catalog_name_envelope_memory_gate native_catalog_name_envelope_memory_gate.cpp)
+  target_compile_features(native_catalog_name_envelope_memory_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_catalog_name_envelope_memory_gate PRIVATE sb_core_catalog sb_storage_page)
+  add_test(NAME native_catalog_name_envelope_memory_gate COMMAND native_catalog_name_envelope_memory_gate)
+  set_tests_properties(native_catalog_name_envelope_memory_gate PROPERTIES
+    TIMEOUT 180 LABELS "storage;memory;binary_uuid;catalog;not_runtime_acceptance")
+  target_compile_features(native_catalog_name_memory_gate PRIVATE cxx_std_23)
+  target_link_libraries(native_catalog_name_memory_gate PRIVATE sb_core_catalog)
+  add_test(NAME native_catalog_name_memory_gate COMMAND native_catalog_name_memory_gate)
+  set_tests_properties(native_catalog_name_memory_gate PROPERTIES
+    TIMEOUT 180 LABELS "storage;memory;binary_uuid;catalog;not_runtime_acceptance")
   target_compile_features(native_catalog_metadata_memory_gate PRIVATE cxx_std_23)
   target_link_libraries(native_catalog_metadata_memory_gate PRIVATE sb_core_catalog)
   target_link_options(native_catalog_metadata_memory_gate PRIVATE

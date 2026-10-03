@@ -127,8 +127,26 @@ std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields) {
 }
 c::CatalogValueEncodeResult Encode(const c::CatalogNameVector& r){return c::EncodeCatalogNameVector(r);}
 c::CatalogValueEncodeResult Encode(const c::CatalogNameEntry& r){return c::EncodeCatalogNameEntry(r);}
-auto Decode(const c::CatalogNameVector&,const std::vector<byte>& b){return c::DecodeCatalogNameVector(b);}
-auto Decode(const c::CatalogNameEntry&,const std::vector<byte>& b){return c::DecodeCatalogNameEntry(b);}
+#ifndef SB_NATIVE_NAME_MEMORY_TESTS
+template<class F> auto WithoutNameHeap(F action){return action();}
+#endif
+auto DecodeView(const c::CatalogNameVector&,std::span<const byte> b){
+  return WithoutNameHeap([&]{return c::DecodeCatalogNameVectorView(b);});
+}
+auto DecodeView(const c::CatalogNameEntry&,std::span<const byte> b){
+  return WithoutNameHeap([&]{return c::DecodeCatalogNameEntryView(b);});
+}
+auto Materialize(const c::CatalogNameVectorView& v){return c::MaterializeCatalogNameVector(v);}
+auto Materialize(const c::CatalogNameEntryView& v){return c::MaterializeCatalogNameEntry(v);}
+template<class Record,class Result> auto CheckedDecode(const Record& r,const std::vector<byte>& b,Result owning){
+  const auto borrowed=DecodeView(r,b);
+  Check(borrowed.error==owning.error && borrowed.ok()==owning.ok(),"borrowed/owning exact error parity");
+  if(borrowed.ok())Check(Fields(Materialize(*borrowed.record))==Fields(*owning.record),"borrowed complete field parity");
+  else Check(!borrowed.record,"no partial borrowed record");
+  return owning;
+}
+auto Decode(const c::CatalogNameVector& r,const std::vector<byte>& b){return CheckedDecode(r,b,c::DecodeCatalogNameVector(b));}
+auto Decode(const c::CatalogNameEntry& r,const std::vector<byte>& b){return CheckedDecode(r,b,c::DecodeCatalogNameEntry(b));}
 u32 SchemaId(const c::CatalogNameVector&){return 327681;}
 u32 SchemaId(const c::CatalogNameEntry&){return 327682;}
 template<class Result>void Refused(const Result& r) {
