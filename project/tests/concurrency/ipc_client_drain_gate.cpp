@@ -18,11 +18,13 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <fcntl.h>
 namespace srv = scratchbird::server;
 namespace core = scratchbird::core;
 using namespace std::chrono_literals;
 std::binary_semaphore ready{0}, consumed{0}, done{0};
 std::atomic<int> first_fd{-1};
+std::atomic<int> listening_fd{-1};
 std::atomic<bool> observe_read{true}, first_joined{false};
 bool launch_failure = false;
 bool allocation_failure = false;
@@ -31,6 +33,12 @@ thread_local bool fail_allocation = false;
 thread_local unsigned accepted_count = 0;
 thread_local bool client_launch = false;
 pthread_t first_thread{};
+extern "C" int __real_listen(int, int);
+extern "C" int __wrap_listen(int fd, int backlog) {
+  const int rc = __real_listen(fd, backlog);
+  if (!rc) listening_fd = fd;
+  return rc;
+}
 extern "C" int __real_accept(int, sockaddr*, socklen_t*);
 extern "C" int __wrap_accept(int fd, sockaddr* address, socklen_t* length) {
   const int accepted = __real_accept(fd, address, length);
@@ -88,9 +96,10 @@ int main(int argc, char** argv) {
   launch_failure = mode == "launch-failure";
   allocation_failure = mode == "allocation-failure";
   cohort_allocation_failure = mode == "cohort-allocation-failure";
-  const bool callback_failure = mode == "callback-failure";
+  const bool ready_failure = mode == "ready-failure" || mode == "ready-stop-failure";
+  const bool callback_failure = mode == "callback-failure" || mode == "ready-stop-failure";
   const bool complete_frame = mode == "complete-frame";
-  const bool expected_exception = launch_failure || allocation_failure || callback_failure || cohort_allocation_failure;
+  const bool expected_exception = launch_failure || allocation_failure || callback_failure || cohort_allocation_failure || ready_failure;
   std::string name = (std::filesystem::temp_directory_path()/"sb-client-drain-XXXXXX").string();
   if (!::mkdtemp(name.data())) return 2;
   const std::filesystem::path root(name);
@@ -121,18 +130,49 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(config.control_dir);
     srv::ServerLifecycleArtifacts artifacts; artifacts.server_uuid = server_id.value.value; artifacts.generation = 1;
     srv::ResetParserServerStopRequest();
-    srv::ParserServerIpcLifecycleCallbacks callbacks; callbacks.on_ready = [] { ready.release(); };
-    callbacks.on_stopping = [&] { if (callback_failure) throw std::runtime_error("stop callback fault"); };
+    bool stopping_called = false;
+    srv::ParserServerIpcLifecycleCallbacks callbacks;
+    callbacks.on_ready = [&] {
+      ready.release();
+      if (ready_failure) throw std::runtime_error("ready callback fault");
+    };
+    callbacks.on_stopping = [&] {
+      stopping_called = true;
+      if (callback_failure) throw std::runtime_error("stop callback fault");
+    };
     bool exception = false; int exit = -1;
     std::thread endpoint([&] {
       try { exit = srv::RunParserServerIpcEndpoint(config, artifacts, engine, callbacks).exit_code; }
       catch (const std::system_error& error) { exception = error.code().value() == EAGAIN; }
       catch (const std::bad_alloc&) { exception = allocation_failure || cohort_allocation_failure; }
-      catch (const std::runtime_error& error) { exception = callback_failure && std::string_view(error.what()) == "stop callback fault"; }
+      catch (const std::runtime_error& error) {
+        exception = ready_failure ? std::string_view(error.what()) == "ready callback fault"
+                                  : callback_failure && std::string_view(error.what()) == "stop callback fault";
+      }
       catch (...) { exception = false; }
       done.release();
     });
     if (!ready.try_acquire_for(10s)) std::abort();
+    if (ready_failure) {
+      if (!done.try_acquire_for(5s)) std::abort();
+      endpoint.join();
+      const int fd = listening_fd.load();
+      errno = 0;
+      const bool closed = fd >= 0 && ::fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+      std::ifstream file(config.lifecycle_state_file);
+      const std::string state{std::istreambuf_iterator<char>(file), {}};
+      const bool removed = !std::filesystem::exists(config.sbps_endpoint);
+      const bool failed = state.find("state=failed") != std::string::npos;
+      std::cout << "listener_closed=" << closed << " endpoint_removed=" << removed
+                << " stopping_called=" << stopping_called << " failed_state=" << failed
+                << " retained_primary=" << exception << '\n';
+      // No client was ever accepted. Readiness failure still owns the listener
+      // and agent cohort; a later stop callback must not replace the first fault.
+      Require(exception && closed && removed && stopping_called && failed && first_fd < 0,
+              "readiness failure cleanup");
+      std::filesystem::remove_all(root);
+      return 0;
+    }
     int peer = Connect(config.sbps_endpoint);
     std::vector<std::uint8_t> input{0x53};
     if (complete_frame) {

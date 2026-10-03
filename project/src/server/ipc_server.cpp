@@ -4812,10 +4812,6 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     StopManagedServerListeners(&listener_orchestrator, "force");
     return result;
   }
-  WriteServingState(config, artifacts, daemon_lifecycle);
-  if (!ParserServerStopRequested() && callbacks.on_ready) {
-    callbacks.on_ready();
-  }
   ServerMaintenanceCoordinator maintenance_coordinator = BuildMaintenanceCoordinator(config, artifacts);
   ServerObservabilityState observability =
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
@@ -4830,6 +4826,13 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   };
 
   try {
+  // Readiness publication is part of this owned cohort's lifetime. A callback
+  // failure must stop agents and listeners even before the first client exists;
+  // the common cleanup path retains this first fault if stopping also fails.
+  WriteServingState(config, artifacts, daemon_lifecycle);
+  if (!ParserServerStopRequested() && callbacks.on_ready) {
+    callbacks.on_ready();
+  }
   while (!ParserServerStopRequested()) {
 #ifdef _WIN32
     fd_set read_set;
