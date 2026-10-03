@@ -16,9 +16,9 @@ using R = L::Result;
 using namespace std::chrono_literals;
 namespace {
 std::atomic<unsigned> checks{0};
-void Check(bool ok) {
+void Check(bool ok, const char* message = "check failed") {
   ++checks;
-  if (!ok) { std::fprintf(stderr, "check failed (%u)\n", checks.load()); std::abort(); }
+  if (!ok) { std::fprintf(stderr, "%s (%u)\n", message, checks.load()); std::abort(); }
 }
 // Independent literal Core matrix, not derived from implementation masks.
 constexpr std::string_view matrix[]{
@@ -45,6 +45,89 @@ int AfterWake(int result, pthread_mutex_t* mutex) {
 void Empty(L& latch) {
   const auto state = latch.Observe();
   Check(state.holders == 0 && state.waiters == 0 && state.calls == 0);
+}
+void UpgradePromotion() {
+  L::OwnerIdentity owner{}; owner[6]=0x70; owner[8]=0x80; owner[15]=1;
+  auto wrong=owner; wrong[15]=2;
+  for (unsigned mode=0;mode<11;++mode) for (unsigned state=0;state<8;++state) {
+    L latch(1,2); L::Grant grant;
+    Check(latch.TryAcquire(grant,Mode(mode),{},{},owner)==R::acquired);
+    std::stop_source stop;
+    if (state&1) latch.Close();
+    if (state&2) stop.request_stop();
+    const auto deadline=state&4 ? L::Clock::now() : L::Clock::now()+3s;
+    const auto result=latch.PromoteUpgradeToExclusive(grant,deadline,stop.get_token(),owner);
+    const auto expected=Mode(mode)!=M::upgrade ? R::invalid :
+        state&1 ? R::closed : state&2 ? R::cancelled : state&4 ? R::timed_out : R::acquired;
+    Check(result==expected,"promotion validates mode and terminal precedence");
+    const auto snapshot=latch.Observe();
+    Check(snapshot.holders==1 && snapshot.waiters==0 && snapshot.calls==0,
+          "promotion never releases or registers another waiter");
+    if (Mode(mode)==M::upgrade) {
+      if (!state) {
+        Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==R::invalid,
+              "successful promotion changes the actual native held mode");
+        latch.Close(); stop.request_stop();
+      } else {
+        Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==(state&1?R::closed:R::acquired),
+              "refused promotion retains the original upgrade mode");
+      }
+    }
+    Check(!latch.Release(grant,wrong),"promotion preserves exact binary owner");
+    Check(latch.Release(grant,owner),"promotion retains original release path after terminals");
+    Empty(latch);
+  }
+  {
+    L latch(1,2),other(1,2); L::Grant grant,empty;
+    Check(latch.PromoteUpgradeToExclusive(empty)==R::invalid);
+    Check(latch.TryAcquire(grant,M::upgrade,{},{},owner)==R::acquired);
+    Check(other.PromoteUpgradeToExclusive(grant,{},{},owner)==R::invalid);
+    Check(latch.PromoteUpgradeToExclusive(grant,{},{},wrong)==R::invalid);
+    Check(latch.PromoteUpgradeToExclusive(grant)==R::invalid);
+    std::thread foreign([&] {
+      Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==R::invalid,
+            "foreign execution cannot promote a borrowed upgrade record");
+    });
+    foreign.join();
+    fail_wait=true;
+    Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==R::acquired,
+          "promotion performs no native wait");
+    fail_wait=false;
+    std::thread contender([&] {
+      for (unsigned mode=0;mode<11;++mode) {
+        L::Grant refused;
+        Check(latch.TryAcquire(refused,Mode(mode))==R::exhausted,
+              "promoted holder still occupies the admitted holder capacity");
+      }
+    });
+    contender.join();
+    Check(latch.Release(grant,owner)); Empty(latch); Empty(other);
+  }
+  {
+    L latch(2,2); L::Grant grant;
+    Check(latch.TryAcquire(grant,M::upgrade,{},{},owner)==R::acquired);
+    std::binary_semaphore entered_first{0},entered_second{0};
+    std::atomic<unsigned> order{0};
+    std::thread first([&] {
+      L::Grant held; parked=&entered_first;
+      Check(latch.Acquire(held,M::exclusive_write,9,L::Clock::now()+5s)==R::acquired);
+      Check(order.fetch_add(1)==1,"promotion preserves admitted rank order");
+      Check(latch.Release(held));
+    });
+    Check(entered_first.try_acquire_for(2s));
+    std::thread second([&] {
+      L::Grant held; parked=&entered_second;
+      Check(latch.Acquire(held,M::shared_read,0,L::Clock::now()+5s)==R::acquired);
+      Check(order.fetch_add(1)==0,"promotion does not rearrange queued contenders");
+      Check(latch.Release(held));
+    });
+    Check(entered_second.try_acquire_for(2s));
+    Check(latch.PromoteUpgradeToExclusive(grant,{},{},owner)==R::acquired);
+    const auto snapshot=latch.Observe();
+    Check(snapshot.holders==1 && snapshot.waiters==2 && snapshot.calls==2 && order==0,
+          "queued contenders remain blocked through in-place promotion");
+    Check(latch.Release(grant,owner)); first.join(); second.join(); Empty(latch);
+  }
 }
 void Matrix() {
   L::OwnerIdentity shared_task{}; shared_task[0]=42;
@@ -366,6 +449,7 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* cond, pthread_mutex
   return fail_wait ? EINVAL : AfterWake(__real_pthread_cond_timedwait(cond, mutex, time), mutex);
 }
 int main() {
+  UpgradePromotion();
   Matrix(); Terminal(); Recursion(); Queues(); ParkedOutcomes(); Boundaries(); BatchAndHeadRemoval(); WakeSelection();
   std::printf("PASS checked mode latch: %u checks\n", checks.load());
 }
