@@ -10,6 +10,7 @@
 
 #include "datatype_bit_string.hpp"
 #include "datatype_date.hpp"
+#include "datatype_time.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_exchange.hpp"
 #include "datatype_layout.hpp"
@@ -57,7 +58,7 @@ struct BitStringConformanceExampleV1 {
 };
 
 // Date likewise cannot use SBDTV001: the legacy descriptor cannot carry the
-// d707 receipt, policy identities, or the complete 584-byte profile handle.
+// d708 receipt, policy identities, or the complete 584-byte profile handle.
 struct DateConformanceExampleV1 {
   DateAuthorityReceiptV1 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
@@ -71,12 +72,28 @@ struct DateConformanceExampleV1 {
   std::string source_marker;
 };
 
+// Time requires its exact d708 receipt and complete V3 profile. The legacy
+// SBDTV001 descriptor carrier cannot establish either one.
+struct TimeConformanceExampleV3 {
+  TimeAuthorityReceiptV3 receipt;
+  DatatypeTypeCodecIdentityRowV3 identity;
+  TimeValidatedProfileHandleV3 profile;
+  bool null_allowed = false;
+  TimeValueStateV3 state = TimeValueStateV3::value;
+  std::vector<byte> canonical_component;
+  DatatypeConformanceExampleSource source =
+      DatatypeConformanceExampleSource::unknown;
+  std::string evidence_path;
+  std::string source_marker;
+};
+
 struct DatatypeConformanceManifest {
   std::string manifest_key;
   std::string inventory_source_path;
   std::vector<DatatypeConformanceExample> examples;
   std::vector<BitStringConformanceExampleV1> bit_string_examples;
   std::vector<DateConformanceExampleV1> date_examples;
+  std::vector<TimeConformanceExampleV3> time_examples;
   bool parser_authority_allowed = false;
 };
 
@@ -88,6 +105,7 @@ struct DatatypeConformanceManifestResult {
   std::size_t executed_examples = 0;
   std::size_t executed_bit_string_examples = 0;
   std::size_t executed_date_examples = 0;
+  std::size_t executed_time_examples = 0;
 
   bool ok() const {
     return status.ok() && diagnostics.empty();
@@ -101,7 +119,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const BitStringAuthorityReceiptV1& bit_string_receipt,
     bool bit_string_null_allowed,
     const DateAuthorityReceiptV1& date_receipt,
-    bool date_null_allowed);
+    bool date_null_allowed,
+    const TimeAuthorityReceiptV3& time_receipt,
+    bool time_null_allowed);
 
 DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     const DatatypeConformanceManifest& manifest);

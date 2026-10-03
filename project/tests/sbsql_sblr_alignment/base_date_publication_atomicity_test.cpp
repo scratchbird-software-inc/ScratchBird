@@ -14,8 +14,8 @@
 namespace { namespace dt=scratchbird::core::datatypes; namespace p=scratchbird::core::platform; unsigned checks=0;
 [[noreturn]] void Fail(std::string_view s){std::cerr<<"FAIL: "<<s<<'\n';std::exit(1);}void Check(bool v,std::string_view s){++checks;if(!v)Fail(s);}
 std::string_view Detail(const dt::DateDiagnosticFactV1& diagnostic){return diagnostic.detail;}
-p::Uuid D707(){return {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x07}};}
-std::shared_ptr<dt::DateValidatedProfileHandleV1> Profile(){auto r=dt::BuildCurrentDateValidatedProfileHandleV1(D707());Check(r.ok(),"profile");return std::make_shared<dt::DateValidatedProfileHandleV1>(std::move(r.profile));}
+p::Uuid D708(){return {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x08}};}
+std::shared_ptr<dt::DateValidatedProfileHandleV1> Profile(){auto r=dt::BuildCurrentDateValidatedProfileHandleV1(D708());Check(r.ok(),"profile");return std::make_shared<dt::DateValidatedProfileHandleV1>(std::move(r.profile));}
 struct Cancel{unsigned calls=0,at=0;}; bool Stop(void* p) noexcept {auto& x=*static_cast<Cancel*>(p);return ++x.calls==x.at;}
 dt::DateExecutionControlV1 Control(Cancel& c,uint64_t budget=~uint64_t{0}){return {budget,Stop,&c};}
 struct PinProbe{unsigned calls=0,at=0;std::weak_ptr<const dt::DateValidatedProfileHandleV1> profile;long baseline=0;long observed=0;};
