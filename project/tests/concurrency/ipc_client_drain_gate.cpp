@@ -19,24 +19,50 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <exception>
 namespace srv = scratchbird::server;
 namespace core = scratchbird::core;
 using namespace std::chrono_literals;
 std::binary_semaphore ready{0}, consumed{0}, done{0};
+std::binary_semaphore failure_claimed{0}, release_failure_capture{0}, joining_selected_writer{0};
 std::atomic<int> first_fd{-1};
 std::atomic<int> listening_fd{-1};
+std::atomic<int> attempted_bind_fd{-1};
+std::atomic<unsigned> created_threads{0};
+std::atomic<unsigned> failure_record_lock_faults{0};
 std::atomic<bool> observe_read{true}, first_joined{false};
 bool launch_failure = false;
 bool allocation_failure = false;
 bool cohort_allocation_failure = false;
+bool endpoint_allocation_failure = false;
+bool bind_failure = false;
+bool delayed_failure_publication = false;
+int competing_fd = -1;
 thread_local bool fail_allocation = false;
 thread_local unsigned accepted_count = 0;
 thread_local bool client_launch = false;
+thread_local bool fail_record_mutex = false;
+thread_local bool delay_failure_capture = false;
 pthread_t first_thread{};
 extern "C" int __real_listen(int, int);
+extern "C" int __real_bind(int, const sockaddr*, socklen_t);
+extern "C" int __wrap_bind(int fd, const sockaddr* address, socklen_t length) {
+  attempted_bind_fd = fd;
+  if (bind_failure) {
+    // Deterministic competing ownership after the endpoint's preflight lookup.
+    // The caller's bind itself fails in the real kernel, not via a fake result.
+    competing_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (competing_fd < 0 || __real_bind(competing_fd, address, length) != 0 ||
+        __real_listen(competing_fd, 1) != 0) std::abort();
+  }
+  return __real_bind(fd, address, length);
+}
 extern "C" int __wrap_listen(int fd, int backlog) {
   const int rc = __real_listen(fd, backlog);
-  if (!rc) listening_fd = fd;
+  if (!rc) {
+    listening_fd = fd;
+    if (endpoint_allocation_failure) fail_allocation = true;
+  }
   return rc;
 }
 extern "C" int __real_accept(int, sockaddr*, socklen_t*);
@@ -54,14 +80,30 @@ extern "C" int __wrap_pthread_create(pthread_t* id, const pthread_attr_t* attr, 
   const bool client = std::exchange(client_launch, false);
   if (client && accepted_count == 2 && launch_failure) return EAGAIN;
   const int rc = __real_pthread_create(id, attr, call, data);
+  if (!rc) ++created_threads;
   if (client && accepted_count == 1 && !rc) first_thread = *id;
   return rc;
 }
 extern "C" int __real_pthread_join(pthread_t, void**);
 extern "C" int __wrap_pthread_join(pthread_t id, void** result) {
+  // Fault window is the reporting boundary before cohort join, not later agent
+  // cleanup. A failure sink with no native mutex reaches join without a fault.
+  fail_record_mutex = false;
+  if (delayed_failure_publication && accepted_count && ::pthread_equal(id, first_thread))
+    joining_selected_writer.release();
   const int rc = __real_pthread_join(id, result);
   if (accepted_count && !rc && ::pthread_equal(id, first_thread)) first_joined = true;
   return rc;
+}
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (std::exchange(fail_record_mutex, false)) {
+    ++failure_record_lock_faults;
+    constexpr char message[] = "injected pre-join failure-record mutex error\n";
+    (void)::write(STDERR_FILENO, message, sizeof(message)-1);
+    return EAGAIN;
+  }
+  return __real_pthread_mutex_lock(mutex);
 }
 extern "C" ssize_t __real_recv(int, void*, size_t, int);
 extern "C" ssize_t __wrap_recv(int fd, void* data, size_t size, int flags) {
@@ -75,8 +117,23 @@ extern "C" ssize_t __wrap_recv(int fd, void* data, size_t size, int flags) {
 extern "C" void* RealNew(std::size_t) asm("__real__Znwm");
 extern "C" void* WrapNew(std::size_t size) asm("__wrap__Znwm");
 extern "C" void* WrapNew(std::size_t size) {
-  if (std::exchange(fail_allocation, false)) throw std::bad_alloc();
+  if (std::exchange(fail_allocation, false)) {
+    delay_failure_capture = delayed_failure_publication;
+    throw std::bad_alloc();
+  }
   return RealNew(size);
+}
+extern "C" std::exception_ptr RealCurrentException() noexcept asm("__real__ZSt17current_exceptionv");
+extern "C" std::exception_ptr WrapCurrentException() noexcept asm("__wrap__ZSt17current_exceptionv");
+extern "C" std::exception_ptr WrapCurrentException() noexcept {
+  if (std::exchange(delay_failure_capture, false)) {
+    // The actual endpoint has selected its one writer, but exception_ptr has
+    // not yet been assigned. Keep that real catch alive until the parent has
+    // reported a second fault and entered the selected client's native join.
+    failure_claimed.release();
+    release_failure_capture.acquire();
+  }
+  return RealCurrentException();
 }
 void Require(bool value, const char* label) {
   if (!value) throw std::runtime_error(label);
@@ -94,12 +151,16 @@ int main(int argc, char** argv) {
   if (argc != 2) return 2;
   const std::string mode = argv[1];
   launch_failure = mode == "launch-failure";
-  allocation_failure = mode == "allocation-failure";
+  delayed_failure_publication = mode == "delayed-failure-publication";
+  allocation_failure = mode == "allocation-failure" || delayed_failure_publication;
   cohort_allocation_failure = mode == "cohort-allocation-failure";
+  endpoint_allocation_failure = mode == "endpoint-allocation-failure";
+  bind_failure = mode == "bind-failure";
   const bool ready_failure = mode == "ready-failure" || mode == "ready-stop-failure";
-  const bool callback_failure = mode == "callback-failure" || mode == "ready-stop-failure";
+  const bool record_lock_failure = mode == "failure-record-lock-failure";
+  const bool callback_failure = mode == "callback-failure" || mode == "ready-stop-failure" || record_lock_failure || delayed_failure_publication;
   const bool complete_frame = mode == "complete-frame";
-  const bool expected_exception = launch_failure || allocation_failure || callback_failure || cohort_allocation_failure || ready_failure;
+  const bool expected_exception = launch_failure || allocation_failure || callback_failure || cohort_allocation_failure || ready_failure || endpoint_allocation_failure;
   std::string name = (std::filesystem::temp_directory_path()/"sb-client-drain-XXXXXX").string();
   if (!::mkdtemp(name.data())) return 2;
   const std::filesystem::path root(name);
@@ -138,20 +199,59 @@ int main(int argc, char** argv) {
     };
     callbacks.on_stopping = [&] {
       stopping_called = true;
+      fail_record_mutex = record_lock_failure;
       if (callback_failure) throw std::runtime_error("stop callback fault");
     };
-    bool exception = false; int exit = -1;
+    bool exception = false, bind_diagnostic = false; int exit = -1;
+    const auto threads_before_endpoint = created_threads.load();
     std::thread endpoint([&] {
-      try { exit = srv::RunParserServerIpcEndpoint(config, artifacts, engine, callbacks).exit_code; }
-      catch (const std::system_error& error) { exception = error.code().value() == EAGAIN; }
-      catch (const std::bad_alloc&) { exception = allocation_failure || cohort_allocation_failure; }
+      try {
+        const auto result = srv::RunParserServerIpcEndpoint(config, artifacts, engine, callbacks);
+        exit = result.exit_code;
+        for (const auto& diagnostic : result.diagnostics)
+          if (diagnostic.code == "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED") bind_diagnostic = true;
+      }
+      catch (const std::system_error& error) { exception = launch_failure && error.code().value() == EAGAIN; }
+      catch (const std::bad_alloc&) { exception = allocation_failure || cohort_allocation_failure || endpoint_allocation_failure; }
       catch (const std::runtime_error& error) {
-        exception = ready_failure ? std::string_view(error.what()) == "ready callback fault"
-                                  : callback_failure && std::string_view(error.what()) == "stop callback fault";
+        exception = !delayed_failure_publication &&
+            (ready_failure ? std::string_view(error.what()) == "ready callback fault"
+                           : callback_failure && std::string_view(error.what()) == "stop callback fault");
       }
       catch (...) { exception = false; }
       done.release();
     });
+    if (endpoint_allocation_failure || bind_failure) {
+      if (!done.try_acquire_for(5s)) std::abort();
+      endpoint.join();
+      const int fd = attempted_bind_fd.load();
+      errno = 0;
+      const bool closed = fd >= 0 && ::fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+      const bool removed = !std::filesystem::exists(config.sbps_endpoint);
+      const bool no_cohort = created_threads == threads_before_endpoint + 1;
+      const bool not_ready = !ready.try_acquire();
+      if (bind_failure) {
+        const bool foreign_live = competing_fd >= 0 && ::fcntl(competing_fd, F_GETFD) >= 0 && !removed;
+        Require(foreign_live, "failed bind preserves competing socket and path");
+        const int peer = Connect(config.sbps_endpoint);
+        ::close(peer);
+        ::close(competing_fd);
+        competing_fd = -1;
+        std::cout << "listener_closed=" << closed << " foreign_endpoint_live=" << foreign_live
+                  << " bind_diagnostic=" << bind_diagnostic << " no_cohort=" << no_cohort << '\n';
+        Require(!exception && exit == 2 && bind_diagnostic && closed && no_cohort && not_ready &&
+                    !stopping_called && first_fd < 0, "actual bind failure cleanup");
+        std::filesystem::remove_all(root);
+        return 0;
+      }
+      std::cout << "listener_closed=" << closed << " endpoint_removed=" << removed
+                << " no_cohort=" << no_cohort << " not_ready=" << not_ready
+                << " retained_allocation_failure=" << exception << '\n';
+      Require(exception && closed && removed && no_cohort && not_ready && !stopping_called && first_fd < 0,
+              "pre-cohort endpoint allocation cleanup");
+      std::filesystem::remove_all(root);
+      return 0;
+    }
     if (!ready.try_acquire_for(10s)) std::abort();
     if (ready_failure) {
       if (!done.try_acquire_for(5s)) std::abort();
@@ -215,7 +315,15 @@ int main(int argc, char** argv) {
       }
     }
     int second = -1;
-    if (launch_failure || cohort_allocation_failure) second = Connect(config.sbps_endpoint);
+    bool delayed_join_observed = false;
+    if (delayed_failure_publication) {
+      if (!failure_claimed.try_acquire_for(5s)) std::abort();
+      srv::RequestParserServerStop();
+      if (!joining_selected_writer.try_acquire_for(5s)) std::abort();
+      delayed_join_observed = true;
+      release_failure_capture.release();
+    }
+    else if (launch_failure || cohort_allocation_failure) second = Connect(config.sbps_endpoint);
     else if (!allocation_failure) srv::RequestParserServerStop();
     const bool bounded = done.try_acquire_for(5s);
     std::uint8_t byte{};
@@ -234,9 +342,12 @@ int main(int argc, char** argv) {
     std::ifstream file(config.lifecycle_state_file);
     const std::string state{std::istreambuf_iterator<char>(file), {}};
     const bool passed = bounded && first_joined && response_received && socket_closed && rejected_closed && exception == expected_exception &&
+        (!record_lock_failure || failure_record_lock_faults == 0) &&
+        (!delayed_failure_publication || delayed_join_observed) &&
         (expected_exception ? state.find("state=failed") != std::string::npos : exit == 0);
     std::cout << "bounded=" << bounded << " actual_join=" << first_joined
               << " retained_exception=" << exception << " exit=" << exit
+              << " delayed_writer_joined=" << delayed_join_observed
               << " peer_read=" << closed_read << " peer_errno=" << closed_error << '\n';
     if (!passed) { std::cerr << "FAIL actual client cohort drain; fixture=" << root << '\n'; return 1; }
     std::filesystem::remove_all(root);

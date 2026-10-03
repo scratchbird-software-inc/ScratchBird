@@ -18,9 +18,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_executable(ipc_client_drain_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/ipc_client_drain_gate.cpp")
   target_compile_features(ipc_client_drain_gate PRIVATE cxx_std_23)
   target_link_libraries(ipc_client_drain_gate PRIVATE sb_server_core)
-  target_link_options(ipc_client_drain_gate PRIVATE -static-libstdc++ -Wl,--wrap=accept -Wl,--wrap=recv -Wl,--wrap=listen
-    -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=_Znwm)
-  foreach(mode partial-header partial-payload complete-frame launch-failure cohort-allocation-failure allocation-failure callback-failure ready-failure ready-stop-failure)
+  target_link_options(ipc_client_drain_gate PRIVATE -static-libstdc++ -Wl,--wrap=accept -Wl,--wrap=recv -Wl,--wrap=listen -Wl,--wrap=bind
+    -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=_Znwm -Wl,--wrap=_ZSt17current_exceptionv)
+  foreach(mode partial-header partial-payload complete-frame launch-failure cohort-allocation-failure allocation-failure callback-failure ready-failure ready-stop-failure endpoint-allocation-failure bind-failure failure-record-lock-failure delayed-failure-publication)
     add_test(NAME ipc_client_drain_${mode} COMMAND ipc_client_drain_gate ${mode})
     set_tests_properties(ipc_client_drain_${mode} PROPERTIES TIMEOUT 45 LABELS "concurrency;ipc;shutdown")
   endforeach()

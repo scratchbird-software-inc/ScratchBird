@@ -51,6 +51,7 @@
 #include <csignal>
 #include <ctime>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -77,6 +78,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <afunix.h>
+#include <io.h>
 #else
 #include <poll.h>
 #include <sys/socket.h>
@@ -219,12 +221,6 @@ bool IpcSocketInterrupted() {
   return ::WSAGetLastError() == WSAEINTR;
 }
 
-void CloseIpcSocket(IpcSocketHandle fd) {
-  if (fd != kInvalidIpcSocket) {
-    ::closesocket(fd);
-  }
-}
-
 #else
 using IpcSocketHandle = int;
 constexpr IpcSocketHandle kInvalidIpcSocket = -1;
@@ -235,12 +231,6 @@ std::string LastIpcSocketErrorString() {
 
 bool IpcSocketInterrupted() {
   return errno == EINTR;
-}
-
-void CloseIpcSocket(IpcSocketHandle fd) {
-  if (fd >= 0) {
-    ::close(fd);
-  }
 }
 
 #endif
@@ -257,6 +247,34 @@ void RemoveEndpointPath(const std::string& endpoint) {
   std::error_code ec;
   std::filesystem::remove(endpoint, ec);
 }
+
+// The path string outlives this owner. Binding is recorded only after success:
+// a failed bind must never unlink someone else's endpoint. Native cleanup does
+// not allocate, so a pre-cohort bad_alloc cannot strand the listening socket.
+// Path removal is best effort, as on the existing explicit cleanup paths; this
+// guard is resource ownership, not a durable shutdown or recovery receipt.
+class OwnedListeningEndpoint {
+ public:
+  OwnedListeningEndpoint(IpcSocketHandle fd, const std::string& path) noexcept
+      : socket_(fd), path_(path) {}
+  OwnedListeningEndpoint(const OwnedListeningEndpoint&) = delete;
+  OwnedListeningEndpoint& operator=(const OwnedListeningEndpoint&) = delete;
+  ~OwnedListeningEndpoint() { Reset(); }
+  void Bound() noexcept { bound_ = true; }
+  void Reset() noexcept {
+    socket_.Reset();
+    if (!std::exchange(bound_, false)) return;
+#ifdef _WIN32
+    ::_unlink(path_.c_str());
+#else
+    ::unlink(path_.c_str());
+#endif
+  }
+ private:
+  ipc_detail::OwnedSocket socket_;
+  const std::string& path_;
+  bool bound_ = false;
+};
 
 void ReleaseIdleConnectionHeap(const ServerBootstrapConfig& config,
                                ServerObservabilityState* observability) {
@@ -4726,6 +4744,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
 #endif
 
   const IpcSocketHandle server_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  OwnedListeningEndpoint server_endpoint(server_fd, endpoint);
   if (server_fd == kInvalidIpcSocket) {
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
@@ -4738,7 +4757,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   sockaddr_un addr {};
   addr.sun_family = AF_UNIX;
   if (endpoint.size() >= sizeof(addr.sun_path)) {
-    CloseIpcSocket(server_fd);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_NAME_INVALID",
@@ -4748,7 +4767,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   }
   std::strncpy(addr.sun_path, endpoint.c_str(), sizeof(addr.sun_path) - 1);
   if (::bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    CloseIpcSocket(server_fd);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED",
@@ -4756,12 +4775,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         {{"endpoint", endpoint}, {"error", LastIpcSocketErrorString()}}));
     return result;
   }
+  server_endpoint.Bound();
 #ifndef _WIN32
   ::chmod(endpoint.c_str(), 0600);
 #endif
   if (::listen(server_fd, 16) != 0) {
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     result.exit_code = 2;
     result.diagnostics.push_back(EndpointDiagnostic(
         "PARSER_SERVER_IPC.ENDPOINT_LISTEN_FAILED",
@@ -4770,8 +4789,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     return result;
   }
   if (!WriteEndpointDescriptor(config, engine_state, artifacts, &result.diagnostics)) {
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     result.exit_code = 2;
     return result;
   }
@@ -4786,8 +4804,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
   };
   if (!agent_runtime.Start(config, engine_state, &result.diagnostics)) {
     result.exit_code = 2;
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     return result;
   }
   ParserEventNotificationRouter event_router;
@@ -4797,8 +4814,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.exit_code = 2;
     result.diagnostics = listener_start.diagnostics;
     stop_agents();
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     return result;
   }
   const auto daemon_lifecycle =
@@ -4807,8 +4823,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
     result.exit_code = 2;
     result.diagnostics = daemon_lifecycle.diagnostics;
     stop_agents();
-    CloseIpcSocket(server_fd);
-    RemoveEndpointPath(endpoint);
+    server_endpoint.Reset();
     StopManagedServerListeners(&listener_orchestrator, "force");
     return result;
   }
@@ -4817,11 +4832,17 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
       InitializeServerObservability(config, artifacts, engine_state, parser_registry, listener_orchestrator);
   FairClientDispatchGate client_dispatch_gate;
   std::vector<std::thread> client_threads;
-  std::mutex client_failure_mutex;
+  std::atomic_flag client_failure_selected{};
   std::exception_ptr client_failure;
-  const auto record_client_failure = [&] {
-    std::lock_guard lock(client_failure_mutex);
-    if (!client_failure) client_failure = std::current_exception();
+  const auto record_client_failure = [&]() noexcept {
+    // One writer claims the retained failure without a fallible native lock.
+    // This flag is arbitration, not publication of exception_ptr: no caller
+    // reads the pointer until EVERY client has joined below. Thread completion
+    // supplies the happens-before edge even if another reporter requests stop
+    // before the selected writer has assigned its exception. No spin or retry.
+    if (!client_failure_selected.test_and_set(std::memory_order_relaxed)) {
+      client_failure = std::current_exception();
+    }
     RequestParserServerStop();
   };
 
@@ -5001,8 +5022,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
       client_thread.join();
     }
   }
-  CloseIpcSocket(server_fd);
-  RemoveEndpointPath(endpoint);
+  server_endpoint.Reset();
   const bool agents_stopped = stop_agents();
   const auto listener_stop = StopManagedServerListeners(&listener_orchestrator, "graceful");
   if (!listener_stop.diagnostics.empty()) {
