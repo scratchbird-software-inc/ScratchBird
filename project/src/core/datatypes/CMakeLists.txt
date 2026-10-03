@@ -9,6 +9,8 @@
 add_library(sb_core_datatypes
   datatype_advanced_family.cpp
   datatype_binary.cpp
+  datatype_bit_string.cpp
+  datatype_bit_string_projection.cpp
   datatype_catalog_manifest.cpp
   datatype_conformance_manifest.cpp
   datatype_descriptor.cpp
@@ -19,6 +21,7 @@ add_library(sb_core_datatypes
   datatype_operations.cpp
   datatype_physical_encoding.cpp
   datatype_temporal_wire.cpp
+  datatype_type_codec_identity_v3.cpp
   datatype_wire_metadata.cpp
   reference_compatibility_metadata.cpp
 )

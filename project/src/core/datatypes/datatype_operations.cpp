@@ -9,6 +9,7 @@
 #include "datatype_operations.hpp"
 #include "canonical_utf8.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 #include "../hash/hash_digest_parts.hpp"
 
@@ -417,7 +418,7 @@ inline constexpr std::size_t kCanonicalBinaryMaximumBytes =
 
 constexpr scratchbird::core::platform::Uuid kCurrentBinarySnapshotUuid{{
     0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
-    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x05}};
+    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x06}};
 constexpr scratchbird::core::platform::Uuid kBinaryDescriptorUuid{{
     0x2d, 0x01, 0x00, 0x00, 0x62, 0x69, 0x7e, 0x61,
     0xb2, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
@@ -427,46 +428,71 @@ constexpr scratchbird::core::platform::Uuid kBinaryTypeUuid{{
 constexpr scratchbird::core::platform::Uuid kBinaryCodecUuid{{
     0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
     0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x44}};
+constexpr scratchbird::core::platform::Uuid kBinaryDescriptorPolicyUuid{{
+    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x7d, 0xa5,
+    0x9d, 0x9d, 0x83, 0x9b, 0xc8, 0x1b, 0x09, 0xca}};
+constexpr scratchbird::core::platform::Uuid kBinaryCanonicalizationPolicyUuid{{
+    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x74, 0x66,
+    0x9a, 0xdb, 0xe2, 0x54, 0x64, 0xc6, 0x5b, 0x6a}};
+constexpr scratchbird::core::platform::Uuid kBinaryOrderingPolicyUuid{{
+    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x70, 0x73,
+    0xa5, 0xb7, 0x32, 0x60, 0x6c, 0xd0, 0x91, 0xe6}};
+constexpr scratchbird::core::platform::Uuid kBinaryHashPolicyUuid{{
+    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x73, 0x7b,
+    0xa4, 0x82, 0xe6, 0x96, 0xfe, 0x71, 0x41, 0xf8}};
 
-const DatatypeTypeCodecIdentityRowV1* CurrentBinaryIdentityRow() noexcept {
-  const DatatypeTypeCodecIdentityRowV1* match = nullptr;
-  for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV1()) {
-    if (row.catalog_snapshot_uuid == kCurrentBinarySnapshotUuid &&
-        row.catalog_generation == 5 && row.registry_generation == 5 &&
-        row.descriptor_uuid == kBinaryDescriptorUuid &&
-        row.descriptor_generation == 1 && row.type_generation == 1 &&
-        row.type_uuid == kBinaryTypeUuid && row.codec_uuid == kBinaryCodecUuid &&
-        row.codec_version == 1 && row.codec_generation == 1 &&
-        row.canonical_binary_type_code ==
-            static_cast<u32>(CanonicalTypeId::binary) &&
-        row.codec_id == "datatype.binary.octets.v1" &&
-        row.canonical_value_bytes == 0 && row.null_supported &&
-        row.canonical_value_variable_width &&
-        row.canonical_value_exact_zero_is_width_marker &&
-        row.canonical_value_minimum_bytes == 0 &&
-        row.canonical_value_maximum_bytes == kCanonicalBinaryMaximumBytes &&
-        row.canonical_value_exact_bytes == 0 &&
-        row.canonical_byte_order == "byte_sequence" &&
-        row.canonical_representation ==
-            "exact_octets_without_text_conversion" &&
-        row.canonical_charset.empty() && !row.shortest_form_utf8_required &&
-        !row.implicit_normalization_allowed &&
-        !row.descriptor_bound_collation_required &&
-        row.empty_value_distinct_from_sql_null &&
-        row.sql_null_requires_zero_payload &&
-        row.variable_width_storage_without_truncation) {
-      // An exact receipt must resolve uniquely. A duplicate is ambiguity, not
-      // an opportunity to select the first row by iteration order.
-      if (match != nullptr) return nullptr;
-      match = &row;
-    }
+DatatypeTypeCodecIdentityLookupV3 CurrentBinaryIdentityRow() noexcept {
+  auto result = LookupDatatypeTypeCodecIdentityV3(
+      kCurrentBinarySnapshotUuid, 6, 6, kBinaryDescriptorUuid, 1);
+  if (!result.ok) return result;
+
+  const auto& row = result.row.legacy_fields;
+  const auto policy_absent = [](const DatatypePolicyIdentityV1& policy) {
+    return policy.uuid.is_nil() && policy.generation == 0;
+  };
+  if (row.catalog_snapshot_uuid != kCurrentBinarySnapshotUuid ||
+      row.catalog_generation != 6 || row.registry_generation != 6 ||
+      row.descriptor_uuid != kBinaryDescriptorUuid ||
+      row.descriptor_generation != 1 || row.type_generation != 1 ||
+      row.type_uuid != kBinaryTypeUuid || row.codec_uuid != kBinaryCodecUuid ||
+      row.codec_version != 1 || row.codec_generation != 1 ||
+      row.canonical_binary_type_code !=
+          static_cast<u32>(CanonicalTypeId::binary) ||
+      row.codec_id != "datatype.binary.octets.v1" ||
+      row.canonical_value_bytes != 0 || !row.null_supported ||
+      !row.canonical_value_variable_width ||
+      !row.canonical_value_exact_zero_is_width_marker ||
+      row.canonical_value_minimum_bytes != 0 ||
+      row.canonical_value_maximum_bytes != kCanonicalBinaryMaximumBytes ||
+      row.canonical_value_exact_bytes != 0 ||
+      row.canonical_byte_order != "byte_sequence" ||
+      row.canonical_representation !=
+          "exact_octets_without_text_conversion" ||
+      !row.canonical_charset.empty() || row.shortest_form_utf8_required ||
+      row.implicit_normalization_allowed ||
+      row.descriptor_bound_collation_required ||
+      !row.empty_value_distinct_from_sql_null ||
+      !row.sql_null_requires_zero_payload ||
+      !row.variable_width_storage_without_truncation ||
+      result.row.descriptor_policy.uuid != kBinaryDescriptorPolicyUuid ||
+      result.row.descriptor_policy.generation != 1 ||
+      result.row.canonicalization_policy.uuid !=
+          kBinaryCanonicalizationPolicyUuid ||
+      result.row.canonicalization_policy.generation != 1 ||
+      result.row.ordering_policy.uuid != kBinaryOrderingPolicyUuid ||
+      result.row.ordering_policy.generation != 1 ||
+      result.row.hash_policy.uuid != kBinaryHashPolicyUuid ||
+      result.row.hash_policy.generation != 1 ||
+      !policy_absent(result.row.operation_policy)) {
+    result.ok = false;
+    result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
   }
-  return match;
+  return result;
 }
 
 bool BinaryDescriptorExactlyCurrent(
     const ExecutionTypeDescriptor& descriptor) {
-  return CurrentBinaryIdentityRow() != nullptr &&
+  return CurrentBinaryIdentityRow().ok &&
       ExecutionDescriptorExactlyMatchesCurrentBuiltinIgnoringNullability(
           descriptor, CanonicalTypeId::binary);
 }
@@ -500,19 +526,10 @@ void AppendUuidBytes(std::string* bytes,
                 value.bytes.size());
 }
 
-constexpr scratchbird::core::platform::Uuid kBinaryCanonicalizationPolicyUuid{{
-    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x74, 0x66,
-    0x9a, 0xdb, 0xe2, 0x54, 0x64, 0xc6, 0x5b, 0x6a}};
-constexpr scratchbird::core::platform::Uuid kBinaryOrderingPolicyUuid{{
-    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x70, 0x73,
-    0xa5, 0xb7, 0x32, 0x60, 0x6c, 0xd0, 0x91, 0xe6}};
-constexpr scratchbird::core::platform::Uuid kBinaryHashPolicyUuid{{
-    0x01, 0xa0, 0xfe, 0xa5, 0x8a, 0x12, 0x73, 0x7b,
-    0xa4, 0x82, 0xe6, 0x96, 0xfe, 0x71, 0x41, 0xf8}};
-
 bool BuildBinaryCohortPrefix(std::string* prefix, bool include_hash_policy) {
-  const auto* row = CurrentBinaryIdentityRow();
-  if (row == nullptr || prefix == nullptr) return false;
+  const auto lookup = CurrentBinaryIdentityRow();
+  if (!lookup.ok || prefix == nullptr) return false;
+  const auto& row = lookup.row.legacy_fields;
   prefix->clear();
   prefix->reserve(include_hash_policy ? 190u : 168u);
   if (include_hash_policy) {
@@ -520,17 +537,17 @@ bool BuildBinaryCohortPrefix(std::string* prefix, bool include_hash_policy) {
   } else {
     prefix->append("SBBKEY01");
   }
-  AppendUuidBytes(prefix, row->catalog_snapshot_uuid);
-  AppendLittleU64(prefix, row->catalog_generation);
-  AppendLittleU64(prefix, row->registry_generation);
-  AppendUuidBytes(prefix, row->descriptor_uuid);
-  AppendLittleU64(prefix, row->descriptor_generation);
-  AppendUuidBytes(prefix, row->type_uuid);
-  AppendLittleU64(prefix, row->type_generation);
-  AppendUuidBytes(prefix, row->codec_uuid);
-  AppendLittleU32(prefix, row->codec_version);
+  AppendUuidBytes(prefix, row.catalog_snapshot_uuid);
+  AppendLittleU64(prefix, row.catalog_generation);
+  AppendLittleU64(prefix, row.registry_generation);
+  AppendUuidBytes(prefix, row.descriptor_uuid);
+  AppendLittleU64(prefix, row.descriptor_generation);
+  AppendUuidBytes(prefix, row.type_uuid);
+  AppendLittleU64(prefix, row.type_generation);
+  AppendUuidBytes(prefix, row.codec_uuid);
+  AppendLittleU32(prefix, row.codec_version);
   AppendLittleU32(prefix, 0);
-  AppendLittleU64(prefix, row->codec_generation);
+  AppendLittleU64(prefix, row.codec_generation);
   AppendUuidBytes(prefix, kBinaryCanonicalizationPolicyUuid);
   AppendLittleU64(prefix, 1);
   AppendUuidBytes(prefix, include_hash_policy ? kBinaryHashPolicyUuid
@@ -860,6 +877,20 @@ const char* CanonicalOperationValueDiagnosticCode(
     return "DATATYPE.DESCRIPTOR.INVALID";
   }
   return owning_operation_code;
+}
+
+const char* GenericBitStringStructuralDiagnosticCode(
+    const DatatypeOperationValue& value) {
+  if (value.type_id != CanonicalTypeId::bit_string) return nullptr;
+  if (ExecutionDescriptorPresent(value.descriptor) &&
+      !ExecutionDescriptorValidForType(value.descriptor, value.type_id))
+    return "CTB.BIT.DESCRIPTOR_INVALID";
+  if (value.is_null && !value.encoded_value.empty())
+    return "DATATYPE.NULL_STATE.INVALID";
+  if (value.is_null && ExecutionDescriptorPresent(value.descriptor) &&
+      !value.descriptor.nullable_allowed)
+    return "DATATYPE.NULL_NOT_ADMITTED";
+  return nullptr;
 }
 
 std::string LowerAscii(std::string value) {
@@ -2951,6 +2982,13 @@ const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering) {
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
                                           bool reference_compatibility_profile) {
+  // base.bit_string requires its authenticated V3 receipt and complete
+  // descriptor profile. This legacy enum-only classifier cannot admit even an
+  // apparent identity pair; callers must use CastBitStringValueV1.
+  if (source_type_id == CanonicalTypeId::bit_string ||
+      target_type_id == CanonicalTypeId::bit_string) {
+    return DatatypeCastCategory::forbidden;
+  }
   if (target_type_id == CanonicalTypeId::null_type ||
       target_type_id == CanonicalTypeId::unknown) {
     return DatatypeCastCategory::forbidden;
@@ -3082,6 +3120,23 @@ DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
 }
 
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
+  if (request.value.type_id == CanonicalTypeId::bit_string ||
+      request.target_type_id == CanonicalTypeId::bit_string) {
+    if (const char* code =
+            GenericBitStringStructuralDiagnosticCode(request.value))
+      return CastFailure("bit_string_generic_structural_refusal",
+                         DatatypeCastCategory::forbidden, code);
+    if (request.target_type_id == CanonicalTypeId::bit_string &&
+        ExecutionDescriptorPresent(request.target_descriptor) &&
+        !ExecutionDescriptorValidForType(request.target_descriptor,
+                                         CanonicalTypeId::bit_string))
+      return CastFailure("bit_string_target_descriptor_invalid",
+                         DatatypeCastCategory::forbidden,
+                         "CTB.BIT.DESCRIPTOR_INVALID");
+    return CastFailure("bit_string_v3_profile_required",
+                       DatatypeCastCategory::forbidden,
+                       "CTB.BIT.DESCRIPTOR_INVALID");
+  }
   const bool source_is_contextual_null =
       request.value.type_id == CanonicalTypeId::null_type;
   if (source_is_contextual_null &&
@@ -5284,6 +5339,25 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.left.type_id == CanonicalTypeId::bit_string ||
+      request.right.type_id == CanonicalTypeId::bit_string) {
+    const char* bit_code =
+        GenericBitStringStructuralDiagnosticCode(request.left);
+    if (bit_code == nullptr)
+      bit_code = GenericBitStringStructuralDiagnosticCode(request.right);
+    if (bit_code != nullptr) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, bit_code, "datatype.comparison.rejected",
+          "bit_string_generic_structural_refusal");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.DESCRIPTOR_INVALID",
+        "datatype.comparison.rejected", "bit_string_v3_profile_required");
+    return result;
+  }
   const bool binary_incident = IsBinary(request.left.type_id) ||
       IsBinary(request.right.type_id);
   if (binary_incident) {
@@ -6329,6 +6403,21 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::bit_string) {
+    if (const char* code =
+            GenericBitStringStructuralDiagnosticCode(request.value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, code, "datatype.sort_key.rejected",
+          "bit_string_generic_structural_refusal");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.DESCRIPTOR_INVALID",
+        "datatype.sort_key.rejected", "bit_string_v3_profile_required");
+    return result;
+  }
   if (IsBinary(request.value.type_id)) {
     if (!BinaryDescriptorExactlyCurrent(request.value.descriptor)) {
       result.status = ErrorStatus();
@@ -6707,6 +6796,21 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   DatatypeHashResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::bit_string) {
+    if (const char* code =
+            GenericBitStringStructuralDiagnosticCode(request.value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, code, "datatype.hash.rejected",
+          "bit_string_generic_structural_refusal");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.DESCRIPTOR_INVALID",
+        "datatype.hash.rejected", "bit_string_v3_profile_required");
+    return result;
+  }
   if (IsBinary(request.value.type_id)) {
     if (!BinaryDescriptorExactlyCurrent(request.value.descriptor)) {
       result.status = ErrorStatus();
@@ -6808,6 +6912,21 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.value.type_id == CanonicalTypeId::bit_string) {
+    if (const char* code =
+            GenericBitStringStructuralDiagnosticCode(request.value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, code, "datatype.serialization.rejected",
+          "bit_string_generic_structural_refusal");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+        "datatype.serialization.rejected", "bit_string_composed_adapter_required");
+    return result;
+  }
   if (IsBinary(request.value.type_id) &&
       !BinaryDescriptorExactlyCurrent(request.value.descriptor)) {
     result.status = ErrorStatus();
@@ -6999,6 +7118,14 @@ static DatatypeDeserializationResult DeserializeDatatypeValueUnchecked(
   DatatypeDeserializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.expected_type_id == CanonicalTypeId::bit_string ||
+      StartsWith(request.serialized_value, "SBDV1;type=bit_string;")) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
+        "datatype.deserialization.rejected", "bit_string_composed_adapter_required");
+    return result;
+  }
   if (request.expected_type_id == CanonicalTypeId::binary &&
       !BinaryDescriptorExactlyCurrent(request.expected_descriptor)) {
     result.status = ErrorStatus();
@@ -7451,6 +7578,21 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
   result.diagnostic =
       MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   result.explicit_display_boundary = true;
+  if (request.value.type_id == CanonicalTypeId::bit_string) {
+    if (const char* code =
+            GenericBitStringStructuralDiagnosticCode(request.value)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status, code, "datatype.display_render.rejected",
+          "bit_string_generic_structural_refusal");
+      return result;
+    }
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status, "CTB.BIT.DESCRIPTOR_INVALID",
+        "datatype.display_render.rejected", "bit_string_v3_profile_required");
+    return result;
+  }
   if (IsBinary(request.value.type_id) &&
       !BinaryDescriptorExactlyCurrent(request.value.descriptor)) {
     result.status = ErrorStatus();

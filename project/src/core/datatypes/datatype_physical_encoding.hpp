@@ -9,6 +9,7 @@
 #pragma once
 
 #include "datatype_layout.hpp"
+#include "datatype_binary_view.hpp"
 
 #include <vector>
 
@@ -37,6 +38,25 @@ struct DatatypePhysicalValue {
   std::vector<byte> payload;
 };
 
+struct DatatypePhysicalValueView {
+  CanonicalTypeId type_id = CanonicalTypeId::unknown;
+  DatatypePhysicalValueState state = DatatypePhysicalValueState::unknown;
+  const byte* payload_data = nullptr;
+  std::size_t payload_bytes = 0;
+};
+
+struct DatatypePhysicalAllocationFreeViewResult {
+  u16 abi_version = 1;
+  Status status;
+  DatatypeBinaryDiagnosticView diagnostic;
+  DatatypePhysicalValueView value;
+  std::size_t bytes_written = 0;
+  bool ok() const noexcept {
+    return abi_version == 1 && diagnostic.abi_version == 1 && status.ok() &&
+           diagnostic.status.ok() && diagnostic.diagnostic_code.empty();
+  }
+};
+
 struct DatatypePhysicalEncodingResult {
   Status status;
   std::vector<byte> bytes;
@@ -56,5 +76,19 @@ DatatypePhysicalEncodingResult EncodeDatatypePhysicalValue(
 DatatypePhysicalEncodingResult DecodeDatatypePhysicalValue(
     const byte* data,
     u64 size);
+
+// Structural-only SBDPV001 access for a containing profile-aware adapter.
+// These allocation-free functions confer no descriptor receipt, datatype
+// profile, canonical payload, page, overflow, or MGA authority.
+DatatypePhysicalAllocationFreeViewResult
+ValidateDatatypePhysicalStructuralValueViewNoAlloc(
+    const DatatypePhysicalValueView& value) noexcept;
+DatatypePhysicalAllocationFreeViewResult
+EncodeDatatypePhysicalStructuralValueIntoNoAlloc(
+    const DatatypePhysicalValueView& value, byte* destination,
+    std::size_t destination_bytes) noexcept;
+DatatypePhysicalAllocationFreeViewResult
+DecodeDatatypePhysicalStructuralValueViewNoAlloc(
+    const byte* data, std::size_t size) noexcept;
 
 }  // namespace scratchbird::core::datatypes

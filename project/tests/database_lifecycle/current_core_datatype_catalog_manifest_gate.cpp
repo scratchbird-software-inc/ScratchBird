@@ -526,6 +526,79 @@ void TestDecimal128SuccessorCohort() {
           "decimal128 NULL state lost");
 }
 
+void TestBitStringV6IdentityAndLayout() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto descriptor =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
+  const auto type =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82a");
+  const auto codec =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
+
+  const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
+  Require(rows.size() == 127, "V3 registry row count is not 127");
+  std::array<std::size_t, 6> counts{};
+  for (const auto& row : rows) {
+    Require(row.legacy_fields.catalog_generation >= 1 &&
+                row.legacy_fields.catalog_generation <= 6 &&
+                row.legacy_fields.catalog_generation ==
+                    row.legacy_fields.registry_generation,
+            "V3 registry contains a mixed cohort tuple");
+    ++counts[row.legacy_fields.catalog_generation - 1];
+  }
+  Require(counts == std::array<std::size_t, 6>{6, 12, 13, 31, 32, 33},
+          "V3 predecessor/V6 cohort counts drifted");
+
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+  Require(identity.ok &&
+              dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row) &&
+              identity.row.legacy_fields.type_uuid == type &&
+              identity.row.legacy_fields.codec_uuid == codec,
+          "exact V6 bit-string identity is absent or incomplete");
+  Require(!dt::LookupDatatypeTypeCodecIdentityV1(
+               dt::kDatatypeCohortV6, 6, 6, descriptor, 1).ok,
+          "legacy V1 lookup synthesized the policy-bearing bit row");
+  auto altered = identity.row;
+  altered.operation_policy.generation = 2;
+  Require(!dt::IsExactCanonicalBitStringTypeCodecIdentityV3(altered),
+          "altered V6 bit-string policy tuple was admitted");
+
+  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "catalog manifest failed with V6 bit-string admission");
+  const auto catalog_row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeId::bit_string);
+  Require(catalog_row.ok() &&
+              catalog_row.manifest.descriptor_rows.size() == 1 &&
+              catalog_row.manifest.descriptor_rows.front().descriptor_uuid.value ==
+                  descriptor,
+          "catalog manifest did not retain exact d829 bit descriptor identity");
+
+  const auto layout =
+      dt::LookupDatatypeStorageLayout(dt::CanonicalTypeId::bit_string);
+  Require(layout.ok() &&
+              layout.layout.encoding ==
+                  dt::DatatypeBinaryEncoding::u32le_bit_count_msb0_packed &&
+              std::string_view(dt::DatatypeBinaryEncodingName(
+                  layout.layout.encoding)) == "u32le_bit_count_msb0_packed",
+          "bit-string layout is not exact u32LE-count plus MSB0 packing");
+
+  dt::DatatypeStorageIdentityV1 storage;
+  Require(dt::LookupDatatypeStorageIdentityV1(
+              dt::kDatatypeCohortV6, 6, 6, descriptor, 1, &storage) &&
+              storage.type_uuid == type &&
+              storage.type_id == dt::CanonicalTypeId::bit_string &&
+              storage.codec && storage.codec->codec_uuid == codec,
+          "storage lookup did not consume exact current V3 bit identity");
+  for (unsigned generation = 1; generation <= 5; ++generation) {
+    auto snapshot = dt::kDatatypeCohortV6;
+    snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
+    Require(!dt::LookupDatatypeStorageIdentityV1(
+                 snapshot, generation, generation, descriptor, 1, &storage),
+            "storage lookup admitted bit string under a predecessor cohort");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -540,6 +613,7 @@ int main() {
   TestFailClosedCatalogValidation();
   TestInt32ExactDescriptorTypeCodecIdentity();
   TestTextExactDescriptorTypeCodecIdentity();
+  TestBitStringV6IdentityAndLayout();
   std::cout << "current_core_datatype_catalog_manifest_gate=passed\n";
   return EXIT_SUCCESS;
 }
