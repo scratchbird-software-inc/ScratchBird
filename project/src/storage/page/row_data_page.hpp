@@ -122,6 +122,11 @@ struct RowDataPageResult {
   bool ok() const {
     return status.ok();
   }
+  bool resource_failure() const noexcept {
+    using Code = scratchbird::core::platform::StatusCode;
+    return status.code == Code::memory_allocation_failed ||
+           status.code == Code::memory_limit_exceeded;
+  }
 };
 
 u64 ComputeRowDataPageChecksum(const std::vector<byte>& body);

@@ -1351,6 +1351,28 @@ void CatalogBinaryCells() {
     Check(generic_text.ok()&&generic_text.body.rows[index].cells[0].value.payload==Bytes({'4','2'}),
           "canonical catalog policy does not remove general character row support");
   }
+  // Exercise the owning provider's typed allocation failure in ordinary binary
+  // row pages as well as catalog pages. It need not escape as bad_alloc: every
+  // containing admission must retain resource classification, never corruption.
+  for(unsigned profile=0;profile<5;++profile){
+    auto fixture=LeafExample(profile);fixture.header.page_type=0x0100;
+    const page::NativeRowDataPage row{fixture.header,fixture.body};
+    const auto expected=LeafOracle(fixture);
+    for(unsigned mode=0;mode<2;++mode){
+      observed_allocations=0;count_allocations=true;
+      const auto baseline=mode?page::DecodeNativeRowDataPage(expected):page::EncodeNativeRowDataPage(row);
+      count_allocations=false;const auto count=observed_allocations;
+      Check(baseline.ok()&&baseline.bytes==expected,"independent ordinary binary row image");
+      for(unsigned long budget=0;budget<=count;++budget){
+        allocation_budget=budget;
+        const auto result=mode?page::DecodeNativeRowDataPage(expected):page::EncodeNativeRowDataPage(row);
+        allocation_budget=-1;
+        if(budget<count)Check(result.error==page::NativeRowDataError::resource_exhausted&&
+            !result.page&&result.bytes.empty(),"every binary row allocation failure remains a resource failure");
+        else Check(result.ok()&&result.bytes==expected,"uninjected binary row terminal success");
+      }
+    }
+  }
   // Streaming checksum matches the old logical-zero algorithm at every short
   // extent, including a partial checksum field, under complete heap denial.
   for(unsigned n=0;n<300;++n){Bytes input(n);for(unsigned i=0;i<n;++i)input[i]=(i*37+19)&255;

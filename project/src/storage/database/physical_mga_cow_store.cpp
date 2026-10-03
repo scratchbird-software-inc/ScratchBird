@@ -1885,7 +1885,8 @@ NativeCatalogLeafResult EncodeNativeCatalogLeaf(const NativeCatalogLeafPage& pag
     if (!header.ok() || page.header.page_type!=6) return LeafFailure(LeafError::invalid_header);
     if (!ValidLeafBinding(page.header,page.body)) return LeafFailure(LeafError::invalid_body);
     auto body=BuildRowDataPageBody(page.body,page.header.page_size_bytes-32);
-    if (!body.ok()) return LeafFailure(LeafError::invalid_body);
+    if (!body.ok()) return LeafFailure(body.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,page.header.database_uuid},
         {UuidKind::filespace,page.header.filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
@@ -1920,11 +1921,15 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
       refused.binary_diagnostic=body.binary_diagnostic;
       return refused;
     }
-    if (!body.ok() || !ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
+    if (!body.ok()) return LeafFailure(body.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
+    if (!ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
     // The generic row reader also supports other owners. The catalog family
     // requires the exact canonical body, including its zero unused region.
     const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
-    if (!canonical.ok() || canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
+    if (!canonical.ok()) return LeafFailure(canonical.resource_failure()
+        ?LeafError::resource_exhausted:LeafError::invalid_body);
+    if (canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,header.header->database_uuid},
         {UuidKind::filespace,header.header->filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
