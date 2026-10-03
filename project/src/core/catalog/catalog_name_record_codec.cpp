@@ -196,6 +196,77 @@ const CatalogValueSchema& CatalogNameEntrySchema() {
   }();
   return schema;
 }
+namespace {
+// At most 33 fields. Only scalars need stack backing; variable-length fields
+// borrow the caller's immutable record. Never construct a value block merely
+// to validate its schema or metadata binding.
+struct NativeNameFields {
+  std::array<CatalogValueFieldView, 33> fields{};
+  std::array<std::array<byte, 16>, 33> scalars{};
+  std::size_t count = 0;
+  template<class Value> void Add(u16 id, const Value& value) {
+    if constexpr (std::is_same_v<Value, std::optional<TypedUuid>>) {
+      if (value) Add(id, *value);
+    } else {
+      auto& field = fields[count];
+      auto& scalar = scalars[count++];
+      field.id = id;
+      if constexpr (std::is_same_v<Value, TypedUuid>) {
+        field.type = Type::engine_identity;
+        field.identity_kind = value.kind;
+        scalar = value.value.bytes;
+        field.bytes = scalar;
+      } else if constexpr (std::is_same_v<Value, bool>) {
+        field.type = Type::boolean;
+        scalar[0] = value ? 1 : 0;
+        field.bytes = {scalar.data(), 1};
+      } else if constexpr (std::is_enum_v<Value> || std::is_same_v<Value, u64>) {
+        field.type = Type::unsigned_integer;
+        platform::StoreLittle64(scalar.data(), static_cast<u64>(value));
+        field.bytes = {scalar.data(), 8};
+      } else if constexpr (std::is_same_v<Value, std::string_view>) {
+        field.type = Type::utf8_text;
+        field.bytes = {reinterpret_cast<const byte*>(value.data()), value.size()};
+      } else {
+        static_assert(std::is_same_v<Value, std::span<const byte>>);
+        field.type = Type::opaque_bytes;
+        field.bytes = value;
+      }
+    }
+  }
+};
+}  // namespace
+CatalogValueError ValidateCatalogNameVector(const CatalogNameVectorView& record) {
+  if (!ValidVector(record)) return Error::invalid_value;
+  NativeNameFields fields;
+  VisitVector(record, [&](u16 id, const auto& value) { fields.Add(id, value); });
+  return ValidateCatalogValueFields(CatalogNameVectorSchemaView(),
+      {fields.fields.data(), fields.count});
+}
+CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record) {
+  if (!ValidEntry(record)) return Error::invalid_value;
+  NativeNameFields fields;
+  VisitEntry(record, [&](u16 id, const auto& value) { fields.Add(id, value); });
+  return ValidateCatalogValueFields(CatalogNameEntrySchemaView(),
+      {fields.fields.data(), fields.count});
+}
+CatalogNameVectorView BorrowCatalogNameVector(const CatalogNameVector& r) {
+  return {r.name_vector_uuid, r.object_uuid, r.object_class, r.owning_schema_uuid,
+      r.default_language_tag, r.default_name_entry_uuid, r.name_collision_policy_uuid,
+      r.catalog_generation_id, r.security_policy_uuid, r.lifecycle_state};
+}
+CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& r) {
+  return {r.name_entry_uuid, r.name_vector_uuid, r.object_uuid, r.object_class,
+      r.scope_uuid, r.parent_object_uuid, r.parent_schema_uuid, r.language_tag,
+      r.name_class, r.donor_id, r.dialect_profile_uuid, r.identifier_profile_uuid,
+      r.case_fold_profile_uuid, r.quoted_identifier_profile_uuid, r.raw_name_text,
+      r.display_name, r.was_quoted, r.quote_style, r.requires_exact_match,
+      r.normalized_lookup_key, r.exact_lookup_key, r.full_path_lookup_key,
+      r.path_component_count, r.search_path_eligible, r.default_for_language,
+      r.default_for_object, r.catalog_generation_id, r.created_transaction_uuid,
+      r.dropped_transaction_uuid, r.security_policy_uuid, r.resource_epoch,
+      r.name_resolution_epoch, r.lifecycle_state};
+}
 CatalogValueEncodeResult EncodeCatalogNameVector(const CatalogNameVector& record) {
   if (!ValidVector(record)) return {Error::invalid_value, {}};
   std::vector<CatalogValueField> fields;

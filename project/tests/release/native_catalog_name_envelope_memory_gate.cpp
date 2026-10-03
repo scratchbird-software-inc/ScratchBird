@@ -113,12 +113,120 @@ void ExactEnvelopeBounds(bool entry){
         "maximum envelope preserves exact admitted bytes");
   }
 }
+c::CatalogMetadataVersion NameMetadata(const c::CatalogNamePayload& payload){
+  c::CatalogMetadataVersion m;
+  m.record.header.kind=c::CatalogRecordKind::localized_name;
+  m.definition_version=1;
+  std::visit([&](const auto& r){
+    m.name_vector_uuid=r.name_vector_uuid;
+    m.security_policy_uuid=r.security_policy_uuid;
+    m.catalog_generation=r.catalog_generation_id;
+    if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>){
+      m.object_subtype="name_vector";m.record.header.object_uuid=r.name_vector_uuid;
+      m.record.header.parent_uuid=r.object_uuid;m.default_name_uuid=r.default_name_entry_uuid;
+      m.owning_schema_uuid=r.owning_schema_uuid.value_or(TypedUuid{});
+    }else{
+      m.object_subtype="name_entry";m.record.header.object_uuid=r.name_entry_uuid;
+      m.record.header.parent_uuid=r.name_vector_uuid;m.default_name_uuid=r.name_entry_uuid;
+      m.owning_schema_uuid=r.parent_schema_uuid.value_or(TypedUuid{});
+      m.retired_transaction_uuid=r.dropped_transaction_uuid.value_or(TypedUuid{});
+      m.creator_transaction_uuid=r.created_transaction_uuid;m.resource_epoch=r.resource_epoch;
+    }
+  },payload);
+  return m;
+}
+void MetadataAdmission(bool entry){
+  auto payload=Fixture(entry).payload;
+  if(entry){
+    auto& r=std::get<c::CatalogNameEntry>(payload);
+    r.parent_schema_uuid=Id(UuidKind::schema,7);
+    r.dropped_transaction_uuid=Id(UuidKind::transaction,29);
+  }
+  const auto metadata=NameMetadata(payload);
+  const auto matches=[&](const auto& p,const auto& m,bool expected){
+    Check(WithoutEnvelopeHeap([&]{return c::CatalogNamePayloadMatchesMetadata(p,m);})==expected,
+        "owning name metadata admission without encoding or heap");
+    Check(WithoutEnvelopeHeap([&]{return c::CatalogNamePayloadMatchesMetadata(
+        c::BorrowCatalogNamePayload(p),c::BorrowCatalogMetadataVersion(m));})==expected,
+        "borrowed name metadata admission exact parity");
+  };
+  matches(payload,metadata,true);
+  auto m=metadata;m.record.header.kind=c::CatalogRecordKind::sql_object;matches(payload,m,false);
+  m=metadata;m.object_subtype="unknown";matches(payload,m,false);
+  for(auto member:{&c::CatalogMetadataVersion::name_vector_uuid,&c::CatalogMetadataVersion::default_name_uuid,
+      &c::CatalogMetadataVersion::owning_schema_uuid,&c::CatalogMetadataVersion::security_policy_uuid}){
+    m=metadata;(m.*member).value.bytes[15]^=0x80;matches(payload,m,false);
+    m=metadata;(m.*member).kind=UuidKind::unknown;matches(payload,m,false);
+  }
+  for(bool parent:{false,true}){
+    m=metadata;(parent?m.record.header.parent_uuid:m.record.header.object_uuid).value.bytes[15]^=0x80;
+    matches(payload,m,false);
+  }
+  m=metadata;++m.catalog_generation;matches(payload,m,false);
+  m=metadata;m.record.header.deleted=true;matches(payload,m,false);
+  auto dropped=payload;
+  std::visit([](auto& r){r.lifecycle_state=c::CatalogNameLifecycle::dropped;},dropped);
+  matches(dropped,m,true);
+  auto invalid=payload;std::visit([](auto& r){r.object_class=std::string(1,char(0x80));},invalid);
+  matches(invalid,metadata,false);
+  invalid=payload;std::visit([](auto& r){r.object_class.assign(131041,'x');},invalid);
+  matches(invalid,metadata,false);
+  invalid=payload;
+  std::visit([](auto& r){
+    r.object_class.assign(70000,'x');
+    if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>)
+      r.default_language_tag.assign(70000,'y');
+    else r.display_name.assign(70000,'y');
+  },invalid);
+  matches(invalid,metadata,false); // Individually valid fields exceed total block.
+  auto absent=payload;
+  std::visit([](auto& r){
+    if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>)r.owning_schema_uuid.reset();
+    else {r.parent_schema_uuid.reset();r.dropped_transaction_uuid.reset();}
+  },absent);
+  matches(absent,NameMetadata(absent),true);
+  auto dirty_absent=NameMetadata(absent);dirty_absent.owning_schema_uuid.kind=UuidKind::schema;
+  matches(absent,dirty_absent,false);
+  if(entry){
+    m=metadata;++m.resource_epoch;matches(payload,m,false);
+    m=metadata;m.retired_transaction_uuid.value.bytes[15]^=0x80;matches(payload,m,false);
+    m=metadata;m.creator_transaction_uuid.value.bytes[15]^=0x80;matches(payload,m,false);
+    m.definition_version=2;matches(payload,m,true); // Successor writer differs from origin.
+  }
+  const auto preserves=[&](const auto& before,const auto& after,bool expected){
+    Check(WithoutEnvelopeHeap([&]{return c::CatalogNamePayloadPreservesIdentity(before,after);})==expected,
+        "owning native name origin continuity without heap");
+    Check(WithoutEnvelopeHeap([&]{return c::CatalogNamePayloadPreservesIdentity(
+        c::BorrowCatalogNamePayload(before),c::BorrowCatalogNamePayload(after));})==expected,
+        "borrowed native name origin continuity exact parity");
+  };
+  preserves(payload,payload,true);preserves(payload,Fixture(!entry).payload,false);
+  for(unsigned change=0;change<5;++change){
+    auto next=payload;
+    std::visit([&](auto& r){
+      switch(change){
+        case 0:r.name_vector_uuid.value.bytes[15]^=0x80;break;
+        case 1:r.object_uuid.value.bytes[15]^=0x80;break;
+        case 2:r.object_class="other";break;
+        case 3:
+          if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameEntry>)r.created_transaction_uuid.value.bytes[15]^=0x80;
+          else r.object_uuid.kind=UuidKind::unknown;
+          break;
+        case 4:
+          if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameEntry>)--r.name_resolution_epoch;
+          else r.name_vector_uuid.kind=UuidKind::unknown;
+          break;
+      }
+    },next);
+    preserves(payload,next,false);
+  }
+}
 int main(){
   const auto literal=Golden();const auto binding=Fixture().binding;
   Check(WithoutEnvelopeHeap([&]{return c::DecodeCatalogNameEnvelopeView(literal,binding);}).ok(),
       "first-use literal envelope has no heap allocation");
   NameEnvelopeRegressionMain();
-  for(bool entry:{false,true}){OwningEnvelopeFaults(entry);ExactEnvelopeBounds(entry);}
+  for(bool entry:{false,true}){OwningEnvelopeFaults(entry);ExactEnvelopeBounds(entry);MetadataAdmission(entry);}
   std::cout<<"name envelope memory checks="<<checks<<" failures="<<failures<<'\n';
   return failures?1:0;
 }
