@@ -10690,7 +10690,7 @@ target_link_libraries(sbsql_sblr_alignment_base_interval_profile_value PRIVATE s
 add_test(NAME sbsql_sblr_alignment_base_interval_profile_value
   COMMAND sbsql_sblr_alignment_base_interval_profile_value)
 set_tests_properties(sbsql_sblr_alignment_base_interval_profile_value PROPERTIES
-  LABELS "datatype;base_interval;d710;profile;canonical_le16;mixed_interval;not_runtime_acceptance"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;profile;canonical_le16;mixed_interval;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_interval_operations_casts
@@ -10700,7 +10700,7 @@ target_link_libraries(sbsql_sblr_alignment_base_interval_operations_casts PRIVAT
 add_test(NAME sbsql_sblr_alignment_base_interval_operations_casts
   COMMAND sbsql_sblr_alignment_base_interval_operations_casts)
 set_tests_properties(sbsql_sblr_alignment_base_interval_operations_casts PROPERTIES
-  LABELS "datatype;base_interval;d710;casts;equality;hash;no_order;not_runtime_acceptance"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;casts;equality;hash;no_order;not_runtime_acceptance"
   TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_base_interval_intrinsics
@@ -10710,17 +10710,18 @@ target_link_libraries(sbsql_sblr_alignment_base_interval_intrinsics PRIVATE sb_c
 add_test(NAME sbsql_sblr_alignment_base_interval_intrinsics
   COMMAND sbsql_sblr_alignment_base_interval_intrinsics)
 set_tests_properties(sbsql_sblr_alignment_base_interval_intrinsics PROPERTIES
-  LABELS "datatype;base_interval;d710;intrinsics;component_arithmetic;no_carry;not_runtime_acceptance"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;intrinsics;component_arithmetic;no_carry;not_runtime_acceptance"
   TIMEOUT 240)
 
 add_executable(sbsql_sblr_alignment_base_interval_component_persistence
   base_interval_component_persistence_test.cpp)
 target_compile_features(sbsql_sblr_alignment_base_interval_component_persistence PRIVATE cxx_std_23)
-target_link_libraries(sbsql_sblr_alignment_base_interval_component_persistence PRIVATE sb_core_datatypes)
+target_link_libraries(sbsql_sblr_alignment_base_interval_component_persistence PRIVATE
+  sb_core_datatypes sb_storage_disk)
 add_test(NAME sbsql_sblr_alignment_base_interval_component_persistence
   COMMAND sbsql_sblr_alignment_base_interval_component_persistence)
 set_tests_properties(sbsql_sblr_alignment_base_interval_component_persistence PROPERTIES
-  LABELS "datatype;base_interval;d710;component_persistence;sbdval;sbdpv;backup;not_page_mga"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;storage_component;component_persistence;sbdval;sbdpv;backup;not_page_mga"
   TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_base_interval_projection_observability
@@ -10730,7 +10731,7 @@ target_link_libraries(sbsql_sblr_alignment_base_interval_projection_observabilit
 add_test(NAME sbsql_sblr_alignment_base_interval_projection_observability
   COMMAND sbsql_sblr_alignment_base_interval_projection_observability)
 set_tests_properties(sbsql_sblr_alignment_base_interval_projection_observability PROPERTIES
-  LABELS "datatype;base_interval;d710;equality_projection;statistics;protection;metrics;not_runtime_acceptance"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;equality_projection;statistics;protection;metrics;not_runtime_acceptance"
   TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_base_interval_publication_atomicity
@@ -10740,7 +10741,7 @@ target_link_libraries(sbsql_sblr_alignment_base_interval_publication_atomicity P
 add_test(NAME sbsql_sblr_alignment_base_interval_publication_atomicity
   COMMAND sbsql_sblr_alignment_base_interval_publication_atomicity)
 set_tests_properties(sbsql_sblr_alignment_base_interval_publication_atomicity PROPERTIES
-  LABELS "datatype;base_interval;d710;wire_refusal;resource;cancellation;atomicity;not_runtime_acceptance"
+  LABELS "datatype;base_interval;d710;sbsql_sblr_alignment;wire_refusal;resource;cancellation;atomicity;not_runtime_acceptance"
   TIMEOUT 300)
 
 add_executable(sbsql_sblr_alignment_base_character_canonical_value

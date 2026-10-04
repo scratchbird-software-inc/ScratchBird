@@ -1174,6 +1174,26 @@ void TestIntervalRequiresSpecializedD710Carrier() {
                   dt::DatatypeCastCategory::forbidden,
           "legacy carrier admitted an interval cast path");
 
+  // Exercise the generic carrier in the opposite direction as an actual
+  // request.  An interval target requires the specialized receipt-bearing
+  // d710 API, so the generic dispatcher must refuse before interpreting the
+  // non-interval payload and must publish no partial target value.
+  dt::DatatypeCastRequest incoming;
+  incoming.value = Value(dt::CanonicalTypeId::character,
+                         "poison-present-payload-must-not-be-decoded");
+  incoming.value.descriptor = Descriptor(dt::CanonicalTypeId::character);
+  incoming.target_type_id = dt::CanonicalTypeId::interval;
+  incoming.target_descriptor = descriptor;
+  incoming.context = dt::DatatypeCastContext::explicit_cast;
+  const auto incoming_result = dt::CastDatatypeValue(incoming);
+  Require(!incoming_result.ok() &&
+              incoming_result.category == dt::DatatypeCastCategory::forbidden &&
+              incoming_result.diagnostic.diagnostic_code ==
+                  "CTI.INTERVAL.DESCRIPTOR_INVALID" &&
+              incoming_result.value.type_id == dt::CanonicalTypeId::unknown &&
+              incoming_result.value.encoded_value.empty(),
+          "generic non-interval source admitted an interval target cast");
+
   const auto comparison = dt::CompareDatatypeValues({present, present});
   const auto sort_key = dt::MakeDatatypeSortKey({present});
   const auto hash = dt::HashDatatypeValue({present});
