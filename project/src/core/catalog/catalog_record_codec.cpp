@@ -14,6 +14,8 @@
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "catalog_scheduler_policy.hpp"
+#include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
 #include "catalog_metric_descriptor.hpp"
 #include "catalog_metric_label_schema.hpp"
@@ -178,6 +180,18 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogMetricVisibilityPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.metric_visibility.invalid",
                       "visibility_binary_payload_or_header_invalid");
+  if (IsCatalogSchedulerPolicyPayload(record.payload) &&
+      !CatalogSchedulerPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.scheduler_runtime.invalid",
+                      "scheduler_runtime_binary_payload_or_header_invalid");
+  if (IsCatalogSchedulerQueueProfilePayload(record.payload) &&
+      !CatalogSchedulerQueueProfileMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.scheduler_queues.invalid",
+                      "scheduler_queues_binary_payload_or_header_invalid");
+  if (IsCatalogSchedulerFairnessProfilePayload(record.payload) &&
+      !CatalogSchedulerFairnessProfileMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.scheduler_fairness.invalid",
+                      "scheduler_fairness_binary_payload_or_header_invalid");
   if (record.payload.size() > kMaxBinaryRecordBytes - kBinaryHeaderBytes) {
     return RecordViewError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                       "catalog.record_codec.fields_missing", "binary_record_size_limit");
@@ -383,6 +397,18 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   if (value.record.header.kind == CatalogRecordKind::schema &&
       !CatalogSchemaDefinitionMatchesMetadata(value))
     return MetadataViewError("schema_definition_binding_invalid");
+  if ((value.object_subtype == "scheduler_runtime" ||
+       IsCatalogSchedulerPolicyPayload(value.record.payload)) &&
+      !CatalogSchedulerPolicyMatchesMetadata(value))
+    return MetadataViewError("scheduler_runtime_definition_binding_invalid");
+  if ((value.object_subtype == "scheduler_queues" ||
+       IsCatalogSchedulerQueueProfilePayload(value.record.payload)) &&
+      !CatalogSchedulerQueueProfileMatchesMetadata(value))
+    return MetadataViewError("scheduler_queues_definition_binding_invalid");
+  if ((value.object_subtype == "scheduler_fairness" ||
+       IsCatalogSchedulerFairnessProfilePayload(value.record.payload)) &&
+      !CatalogSchedulerFairnessProfileMatchesMetadata(value))
+    return MetadataViewError("scheduler_fairness_definition_binding_invalid");
   if ((IsSuppliedIdentity(value.retired_transaction_uuid) &&
        ((value.status != CatalogObjectStatus::retired && value.status != CatalogObjectStatus::quarantined) ||
         value.retired_transaction_uuid.value != value.creator_transaction_uuid.value)) ||
@@ -565,6 +591,9 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   return CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
+      CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&
+      CatalogSchedulerQueueProfilePreservesOrigin(previous,successor) &&
+      CatalogSchedulerFairnessProfilePreservesOrigin(previous,successor) &&
       CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
       CatalogStorageActionPolicyPreservesOrigin(previous,successor) &&
       CatalogStorageActionAttachmentPreservesOrigin(previous,successor) &&
