@@ -225,5 +225,93 @@ void Casts(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p
             "SBLR.OPERAND_INVALID",
         "delta carrier refusal precedes timestamp profile and state");
 }
+
+void PropertyAndMutationFuzz(
+    const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& profile) {
+  p::u64 state = 0xd709'01a1'04ec'8e3cULL;
+  const auto next = [&state]() {
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    return state;
+  };
+  dt::TimestampOwnedValueV3 previous{
+      profile, dt::TimestampValueStateV3::value, 0, 0};
+  for (unsigned iteration = 0; iteration != 2048; ++iteration) {
+    const p::u32 day_bits = static_cast<p::u32>(next());
+    std::int32_t day = 0;
+    std::memcpy(&day, &day_bits, sizeof(day));
+    const p::u64 nanoseconds = next() % 86'400'000'000'000ULL;
+    dt::TimestampOwnedValueV3 value{
+        profile, dt::TimestampValueStateV3::value, day, nanoseconds};
+
+    const auto component = dt::EncodeCanonicalTimestampComponentV3(value);
+    const auto decoded = dt::DecodeCanonicalTimestampComponentNoAllocV3(
+        *profile, dt::TimestampValueStateV3::value, true, component.bytes);
+    Check(component.ok() && component.bytes.size() == 16 && decoded.ok() &&
+              decoded.value.civil_day == day &&
+              decoded.value.nanoseconds_since_midnight == nanoseconds,
+          "property fuzz canonical component roundtrip");
+    const auto reencoded = dt::EncodeCanonicalTimestampComponentV3(
+        {profile, decoded.value.state, decoded.value.civil_day,
+         decoded.value.nanoseconds_since_midnight});
+    Check(reencoded.ok() && reencoded.bytes == component.bytes,
+          "property fuzz canonical component byte stability");
+
+    const auto ascending = dt::MakeTimestampSortKeyV3(
+        value, dt::TimestampSortDirectionV3::ascending,
+        dt::TimestampNullModeV3::nulls_last);
+    const auto descending = dt::MakeTimestampSortKeyV3(
+        value, dt::TimestampSortDirectionV3::descending,
+        dt::TimestampNullModeV3::nulls_last);
+    const auto ascending_decoded = dt::DecodeTimestampSortKeyNoAllocV3(
+        *profile, ascending.bytes);
+    const auto descending_decoded = dt::DecodeTimestampSortKeyNoAllocV3(
+        *profile, descending.bytes);
+    Check(ascending.ok() && descending.ok() && ascending_decoded.ok() &&
+              descending_decoded.ok() &&
+              ascending_decoded.value.civil_day == day &&
+              ascending_decoded.value.nanoseconds_since_midnight == nanoseconds &&
+              descending_decoded.value.civil_day == day &&
+              descending_decoded.value.nanoseconds_since_midnight == nanoseconds,
+          "property fuzz ordered-key bidirectional roundtrip");
+
+    const auto forward = dt::CompareTimestampValuesV3(previous.view(), value.view());
+    const auto reverse = dt::CompareTimestampValuesV3(value.view(), previous.view());
+    const auto expected = previous.civil_day < day ||
+                                  (previous.civil_day == day &&
+                                   previous.nanoseconds_since_midnight < nanoseconds)
+                              ? dt::TimestampComparisonFactV3::less
+                              : previous.civil_day == day &&
+                                        previous.nanoseconds_since_midnight == nanoseconds
+                                    ? dt::TimestampComparisonFactV3::equal
+                                    : dt::TimestampComparisonFactV3::greater;
+    const auto reverse_expected = expected == dt::TimestampComparisonFactV3::less
+                                      ? dt::TimestampComparisonFactV3::greater
+                                      : expected == dt::TimestampComparisonFactV3::greater
+                                            ? dt::TimestampComparisonFactV3::less
+                                            : dt::TimestampComparisonFactV3::equal;
+    Check(forward.ok() && reverse.ok() && forward.fact == expected &&
+              reverse.fact == reverse_expected,
+          "property fuzz comparison antisymmetry");
+    const auto hash_once = dt::HashTimestampValueV3(value);
+    const auto hash_twice = dt::HashTimestampValueV3(value);
+    Check(hash_once.ok() && hash_twice.ok() && hash_once.bytes == hash_twice.bytes,
+          "property fuzz hash determinism");
+
+    const auto envelope = dt::EncodeTimestampSbdvalComposedV3(value, true);
+    Check(envelope.ok() && envelope.bytes.size() == 48,
+          "mutation fuzz envelope baseline");
+    auto corrupt = envelope.bytes;
+    const std::size_t payload_offset = 32 + (next() % 16);
+    corrupt[payload_offset] ^= static_cast<p::byte>(1u << (next() % 8));
+    const auto refused = dt::DecodeTimestampSbdvalComposedNoAllocV3(
+        *profile, true, corrupt);
+    Check(!refused.ok() && refused.diagnostic.diagnostic_code ==
+                               "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "mutation fuzz checksum-protected payload refuses");
+    previous = std::move(value);
+  }
+}
 }  // namespace
-int main(){auto p0=Profile();HashAndCompare(p0);OrderedKeys(p0);Casts(p0);std::cout<<"PASS base.timestamp V3 operations/casts checks="<<checks<<" hashes=21 keys=84 decisions=663\n";}
+int main(){auto p0=Profile();HashAndCompare(p0);OrderedKeys(p0);Casts(p0);PropertyAndMutationFuzz(p0);std::cout<<"PASS base.timestamp V3 operations/casts checks="<<checks<<" hashes=21 keys=84 decisions=663 property_fuzz_iterations=2048\n";}
