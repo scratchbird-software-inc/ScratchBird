@@ -354,6 +354,7 @@ dt::TimeCastRequestV3 identity;
 identity.one_based_policy_row=53;identity.context=dt::DatatypeCastContext::explicit_cast;
 identity.time_source=&time;identity.time_target=&p0;identity.time_target_descriptor=&td;
 Check(dt::CastTimeValueV3(identity).ok(),"identity exact target descriptor");
+identity.control={~p::u64{0},Stop,nullptr};auto identity_cancelled=dt::CastTimeValueV3(identity);Check(!identity_cancelled.ok()&&identity_cancelled.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&!identity_cancelled.produced_time&&!identity_cancelled.time_value.profile,"identity cancellation before publication");identity.control={};
 identity.time_target_descriptor=nullptr;Check(dt::CastTimeValueV3(identity).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","identity requires target descriptor");identity.time_target_descriptor=&td;
 auto nonnullable_time=td;nonnullable_time.nullable_allowed=false;identity.time_target_descriptor=&nonnullable_time;
 Check(dt::CastTimeValueV3(identity).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","target descriptor nullability matches request");identity.target_null_allowed=false;Check(dt::CastTimeValueV3(identity).ok(),"PRESENT time target accepts exact nonnullable descriptor");identity.target_null_allowed=true;identity.time_target_descriptor=&td;
@@ -364,12 +365,15 @@ Check(dt::CastTimeValueV3(identity).diagnostic.diagnostic_code=="CTI.TEMPORAL.DE
 identity.time_source=&time;identity.time_target=&p0;
 out=dt::TimeCastRequestV3{};out.one_based_policy_row=50;out.context=dt::DatatypeCastContext::explicit_cast;out.time_source=&time;out.scalar_target=dt::CanonicalTypeId::character;out.scalar_target_identity=ci;out.scalar_target_descriptor=nonnull;out.target_null_allowed=false;
 Check(dt::CastTimeValueV3(out).ok(),"PRESENT time casts to nonnullable character target");out.control.maximum_allocation_bytes=9;Check(dt::CastTimeValueV3(out).diagnostic.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED","character owning allocation budget");
-nullv.encoded_value="dirty";
 dt::TimeCastRequestV3 n;
 n.one_based_policy_row=1;
 n.scalar_source=&nullv;
 n.time_target=&p0;
 n.time_target_descriptor=&td;
+n.control={~p::u64{0},Stop,nullptr};auto contextual_cancelled=dt::CastTimeValueV3(n);Check(!contextual_cancelled.ok()&&contextual_cancelled.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&!contextual_cancelled.produced_time&&!contextual_cancelled.time_value.profile,"contextual NULL cancellation before publication");n.control={};
+n.target_null_allowed=false;auto contextual_not_admitted=dt::CastTimeValueV3(n);Check(!contextual_not_admitted.ok()&&contextual_not_admitted.diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID"&&!contextual_not_admitted.produced_time,"contextual NULL requires target descriptor nullability to match request");n.time_target_descriptor=&td;n.target_null_allowed=true;
+auto nonnullable_null_target=td;nonnullable_null_target.nullable_allowed=false;n.time_target_descriptor=&nonnullable_null_target;n.target_null_allowed=false;auto contextual_null_refused=dt::CastTimeValueV3(n);Check(!contextual_null_refused.ok()&&contextual_null_refused.diagnostic.diagnostic_code=="DATATYPE.NULL_NOT_ADMITTED"&&!contextual_null_refused.produced_time,"contextual NULL refused by nonnullable target");n.time_target_descriptor=&td;n.target_null_allowed=true;
+nullv.encoded_value="dirty";
 Check(dt::CastTimeValueV3(n).diagnostic.diagnostic_code=="DATATYPE.NULL_STATE.INVALID","dirty contextual NULL");
 n.time_target=&invalid_target;Check(dt::CastTimeValueV3(n).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","contextual target authority precedes dirty NULL");
 }

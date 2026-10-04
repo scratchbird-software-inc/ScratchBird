@@ -1,19 +1,45 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "datatype_time_projection.hpp"
+#include "hash_digest_parts.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace {
+std::atomic<long long> g_new_budget{-1};
+std::atomic<unsigned long long> g_new_calls{0};
+}
+
+void* operator new(std::size_t bytes) {
+  g_new_calls.fetch_add(1,std::memory_order_relaxed);
+  auto budget=g_new_budget.load(std::memory_order_relaxed);
+  while(budget>=0){
+    if(budget==0)throw std::bad_alloc();
+    if(g_new_budget.compare_exchange_weak(
+           budget,budget-1,std::memory_order_relaxed))break;
+  }
+  if(void* result=std::malloc(bytes==0?1:bytes))return result;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t bytes){return ::operator new(bytes);}
+void operator delete(void* pointer) noexcept{std::free(pointer);}
+void operator delete[](void* pointer) noexcept{std::free(pointer);}
+void operator delete(void* pointer,std::size_t) noexcept{std::free(pointer);}
+void operator delete[](void* pointer,std::size_t) noexcept{std::free(pointer);}
 
 namespace dt = scratchbird::core::datatypes;
 namespace platform = scratchbird::core::platform;
@@ -57,6 +83,21 @@ bool CancelAfter(void* context) noexcept {
   auto& state = *static_cast<CancelAfterContext*>(context);
   return state.calls++ >= state.admitted_calls;
 }
+struct ScrubProbe {
+  std::array<platform::u64,
+      static_cast<std::size_t>(dt::TimeScrubClassV3::count)> calls{};
+  std::array<platform::u64,
+      static_cast<std::size_t>(dt::TimeScrubClassV3::count)> bytes{};
+  bool all_zero = true;
+};
+void ObserveScrub(void* context,dt::TimeScrubClassV3 scrub_class,
+                  const platform::byte* bytes,platform::u64 extent) noexcept {
+  auto& probe=*static_cast<ScrubProbe*>(context);
+  const auto index=static_cast<std::size_t>(scrub_class);
+  if(index>=probe.calls.size()){probe.all_zero=false;return;}
+  ++probe.calls[index];probe.bytes[index]+=extent;
+  for(platform::u64 i=0;i<extent;++i)if(bytes[i]!=0){probe.all_zero=false;break;}
+}
 platform::u32 LoadLittle32(const platform::byte* p) noexcept {
   return platform::u32{p[0]} | (platform::u32{p[1]} << 8) |
          (platform::u32{p[2]} << 16) | (platform::u32{p[3]} << 24);
@@ -69,6 +110,22 @@ platform::u64 LoadLittle64(const platform::byte* p) noexcept {
 bool ZeroBytes(std::span<const platform::byte> bytes) noexcept {
   return std::all_of(bytes.begin(), bytes.end(),
                      [](platform::byte value) { return value == 0; });
+}
+void RehashRecord(std::string_view domain,std::vector<platform::byte>* record,
+                  std::size_t digest_offset) {
+  Require(record!=nullptr&&digest_offset+32<=record->size(),
+          "test record rehash bounds");
+  constexpr std::array<platform::byte,32> zero{};
+  const scratchbird::core::hash::HashDigestSegment segments[]{{
+      reinterpret_cast<const platform::byte*>(domain.data()),domain.size()},
+      {record->data(),digest_offset},{zero.data(),zero.size()},
+      {record->data()+digest_offset+zero.size(),
+       record->size()-digest_offset-zero.size()}};
+  const auto digest=scratchbird::core::hash::ComputeSha256DigestPartsNative(
+      segments,std::size(segments));
+  Require(digest.ok(),"test record rehash");
+  std::memcpy(record->data()+digest_offset,digest.digest.data(),
+              digest.digest.size());
 }
 std::string HexUuid(const platform::Uuid& uuid) {
   static constexpr char digits[] = "0123456789abcdef";
@@ -159,7 +216,8 @@ void TestIndexRegistryAndPredicates() {
     const auto row = dt::ResolveTimeIndexFamilyV3(family);
     Require(row.family == family, "index family identity");
     Require(row.compatibility_generation == 1, "index generation");
-    Require(row.compatibility_uuid == TimeAllocatedUuid(0x48 + i),
+    Require(row.compatibility_uuid == TimeAllocatedUuid(
+                static_cast<platform::byte>(0x48 + i)),
             "exact index UUID allocation");
     Require(row.disposition == dispositions[i], "index disposition");
     Require(row.projection == projections[i], "index projection");
@@ -957,6 +1015,528 @@ void TestStatisticsAndBackup(
   }
 }
 
+void TestProjectionHashMemoryAndScrubs(
+    const std::shared_ptr<const dt::TimeValidatedProfileHandleV3>& profile) {
+  const auto index=[](dt::TimeScrubClassV3 value){
+    return static_cast<std::size_t>(value);
+  };
+  const auto require_record_scrubs=[&](
+      const ScrubProbe& probe,platform::u64 record_hashes,
+      platform::u64 record_blocks,platform::u64 profile_validations,
+      dt::TimeScrubClassV3 staging,platform::u64 staging_bytes,
+      platform::u64 prior_calls,platform::u64 owned_bytes,
+      const char* message){
+    const auto hashes=record_hashes+2*profile_validations;
+    const auto blocks=record_blocks+16*profile_validations;
+    Require(probe.all_zero,message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::sha_state)]==hashes&&
+                probe.bytes[index(dt::TimeScrubClassV3::sha_state)]==hashes*32,
+            message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::sha_schedule)]==blocks&&
+                probe.bytes[index(dt::TimeScrubClassV3::sha_schedule)]==blocks*256,
+            message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::sha_tail)]==hashes&&
+                probe.bytes[index(dt::TimeScrubClassV3::sha_tail)]==hashes*128,
+            message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::hash_digest)]==record_hashes&&
+                probe.bytes[index(dt::TimeScrubClassV3::hash_digest)]==record_hashes*32,
+            message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::profile_material)]==profile_validations&&
+                probe.bytes[index(dt::TimeScrubClassV3::profile_material)]==profile_validations*592&&
+                probe.calls[index(dt::TimeScrubClassV3::comparison_material)]==profile_validations&&
+                probe.bytes[index(dt::TimeScrubClassV3::comparison_material)]==profile_validations*352&&
+                probe.calls[index(dt::TimeScrubClassV3::profile_digest)]==profile_validations&&
+                probe.calls[index(dt::TimeScrubClassV3::comparison_digest)]==profile_validations,
+            message);
+    Require(probe.calls[index(staging)]==1&&
+                probe.bytes[index(staging)]==staging_bytes,message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::statistics_prior_hash)]==
+                prior_calls&&
+                probe.bytes[index(dt::TimeScrubClassV3::statistics_prior_hash)]==
+                    prior_calls*32,
+            message);
+    Require(probe.calls[index(dt::TimeScrubClassV3::projection_owned_buffer)]==
+                (owned_bytes?1:0)&&
+                probe.bytes[index(dt::TimeScrubClassV3::projection_owned_buffer)]==
+                    owned_bytes,
+            message);
+  };
+
+  const auto value=Value(profile,45'296'100'000'000ull);
+  dt::TimeIndexProjectionRequestV3 hash_request;
+  hash_request.compatibility=dt::LookupTimeIndexCompatibilityIdentityV3(
+      dt::TimeIndexFamilyV3::hash);
+  hash_request.mode=dt::TimeProjectionModeV3::equality_hash;
+  hash_request.value=&value;
+  ScrubProbe hash_probe;
+  hash_request.control.observe_scrubbed=&ObserveScrub;
+  hash_request.control.scrub_observer_context=&hash_probe;
+  const auto hash=dt::ProjectTimeIndexValueV3(hash_request);
+  Require(hash.ok()&&hash.bytes.size()==32&&hash_probe.all_zero,
+          "projection stack hash success");
+  Require(hash_probe.calls[index(dt::TimeScrubClassV3::sha_state)]==3&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::sha_schedule)]==18&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::sha_tail)]==3&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::hash_preimage)]==1&&
+              hash_probe.bytes[index(dt::TimeScrubClassV3::hash_preimage)]==109&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::hash_digest)]==1&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::profile_material)]==1&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::comparison_material)]==1&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::profile_digest)]==1&&
+              hash_probe.calls[index(dt::TimeScrubClassV3::comparison_digest)]==1,
+          "projection exact stack hash scrub contract");
+  ScrubProbe hash_cancel_probe;
+  CancelAfterContext hash_cancel{0,1};
+  hash_request.control.cancelled=&CancelAfter;
+  hash_request.control.cancellation_context=&hash_cancel;
+  hash_request.control.scrub_observer_context=&hash_cancel_probe;
+  const auto hash_cancelled=dt::ProjectTimeIndexValueV3(hash_request);
+  Require(!hash_cancelled.ok()&&hash_cancelled.bytes.empty()&&
+              hash_cancelled.diagnostic.diagnostic_code=="PROCESS.CANCELLED"&&
+              hash_cancel_probe.all_zero&&
+              hash_cancel_probe.calls[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==1&&
+              hash_cancel_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==32,
+          "projection final cancellation scrubs exact result stage");
+  hash_request.control={};
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto heap_limited_hash=dt::ProjectTimeIndexValueV3(hash_request);
+  g_new_budget.store(-1,std::memory_order_relaxed);
+  Require(heap_limited_hash.ok()&&heap_limited_hash.bytes==hash.bytes&&
+              g_new_calls.load(std::memory_order_relaxed)==1,
+          "projection hash uses only result allocation");
+
+  ScrubProbe covering_probe;
+  dt::TimeExecutionControlV3 covering_control;
+  covering_control.observe_scrubbed=&ObserveScrub;
+  covering_control.scrub_observer_context=&covering_probe;
+  const auto covering=dt::EncodeTimeCoveringValueV3(value,covering_control);
+  Require(covering.ok(),"covering exact decode reencode scrub");
+  require_record_scrubs(covering_probe,0,0,2,
+      dt::TimeScrubClassV3::covering_decode_reencode,9,0,0,
+      "covering exact decode reencode scrub");
+  ScrubProbe covering_decode_probe;
+  covering_control.scrub_observer_context=&covering_decode_probe;
+  Require(dt::DecodeTimeCoveringValueNoAllocV3(
+              *profile,false,covering.bytes,covering_control).ok(),
+          "covering decoder scrub observable");
+  require_record_scrubs(covering_decode_probe,0,0,1,
+      dt::TimeScrubClassV3::covering_decode_reencode,9,0,0,
+      "covering decoder scrub observable");
+  ScrubProbe covering_decode_cancel_probe;
+  CancelAfterContext covering_decode_cancel{0,0};
+  covering_control.cancelled=&CancelAfter;
+  covering_control.cancellation_context=&covering_decode_cancel;
+  covering_control.scrub_observer_context=&covering_decode_cancel_probe;
+  const auto covering_decode_cancelled=dt::DecodeTimeCoveringValueNoAllocV3(
+      *profile,false,covering.bytes,covering_control);
+  Require(!covering_decode_cancelled.ok()&&
+              covering_decode_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED",
+          "covering decoder final cancellation");
+  require_record_scrubs(covering_decode_cancel_probe,0,0,1,
+      dt::TimeScrubClassV3::covering_decode_reencode,9,0,0,
+      "covering decoder cancellation exact scrubs");
+  ScrubProbe covering_cancel_probe;
+  CancelAfterContext covering_cancel{0,1};
+  covering_control.cancelled=&CancelAfter;
+  covering_control.cancellation_context=&covering_cancel;
+  covering_control.scrub_observer_context=&covering_cancel_probe;
+  const auto covering_cancelled=
+      dt::EncodeTimeCoveringValueV3(value,covering_control);
+  Require(!covering_cancelled.ok()&&covering_cancelled.bytes.empty()&&
+              covering_cancel_probe.all_zero&&
+              covering_cancel_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==9,
+          "covering final cancellation scrubs owned stage");
+
+  ScrubProbe range_cancel_probe;
+  CancelAfterContext range_cancel{0,1};
+  dt::TimeExecutionControlV3 range_control;
+  range_control.cancelled=&CancelAfter;
+  range_control.cancellation_context=&range_cancel;
+  range_control.observe_scrubbed=&ObserveScrub;
+  range_control.scrub_observer_context=&range_cancel_probe;
+  const auto range_cancelled=
+      dt::EncodeTimeRangePairV3(value,value,range_control);
+  Require(!range_cancelled.ok()&&range_cancelled.bytes.empty()&&
+              range_cancel_probe.all_zero&&
+              range_cancel_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==216,
+          "range final cancellation scrubs owned stage");
+  Require(range_cancel_probe.calls[index(dt::TimeScrubClassV3::sha_state)]==8&&
+              range_cancel_probe.calls[index(dt::TimeScrubClassV3::sha_schedule)]==64&&
+              range_cancel_probe.calls[index(dt::TimeScrubClassV3::profile_material)]==4&&
+              range_cancel_probe.calls[index(dt::TimeScrubClassV3::ordered_key_decode_reencode)]==2,
+          "range encoder observes all profile and nested-key scrubs");
+  const auto range_bytes=dt::EncodeTimeRangePairV3(value,value);
+  Require(range_bytes.ok(),"range decoder cancellation fixture");
+  ScrubProbe range_decode_cancel_probe;
+  CancelAfterContext range_decode_cancel{0,0};
+  dt::TimeExecutionControlV3 range_decode_control;
+  range_decode_control.cancelled=&CancelAfter;
+  range_decode_control.cancellation_context=&range_decode_cancel;
+  range_decode_control.observe_scrubbed=&ObserveScrub;
+  range_decode_control.scrub_observer_context=&range_decode_cancel_probe;
+  const auto range_decode_cancelled=dt::DecodeTimeRangePairNoAllocV3(
+      *profile,range_bytes.bytes,range_decode_control);
+  Require(!range_decode_cancelled.ok()&&
+              range_decode_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED"&&range_decode_cancel_probe.all_zero&&
+              range_decode_cancel_probe.calls[index(
+                  dt::TimeScrubClassV3::ordered_key_decode_reencode)]==2&&
+              range_decode_cancel_probe.calls[index(
+                  dt::TimeScrubClassV3::profile_material)]==2&&
+              range_decode_cancel_probe.calls[index(
+                  dt::TimeScrubClassV3::sha_state)]==4,
+          "range decoder validates both keys before final cancellation");
+  auto range_bad_upper=range_bytes.bytes;
+  range_bad_upper[108]^=1;
+  dt::TimeExecutionControlV3 always_cancel_control;
+  always_cancel_control.cancelled=&AlwaysCancel;
+  const auto range_invalid_before_cancel=dt::DecodeTimeRangePairNoAllocV3(
+      *profile,range_bad_upper,always_cancel_control);
+  Require(!range_invalid_before_cancel.ok()&&
+              range_invalid_before_cancel.diagnostic.diagnostic_code==
+                  "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "range upper validation precedes final cancellation");
+
+  dt::TimeZoneMapRequestV3 zone;
+  zone.profile=profile;zone.null_count=1;
+  ScrubProbe zone_probe;
+  zone.control.observe_scrubbed=&ObserveScrub;
+  zone.control.scrub_observer_context=&zone_probe;
+  const auto zone_bytes=dt::EncodeTimeZoneMapV3(zone);
+  Require(zone_bytes.ok(),"zone stack hash encode");
+  require_record_scrubs(zone_probe,3,9,2,
+      dt::TimeScrubClassV3::zone_map_decode_reencode,312,0,0,
+      "zone encode exact scrubs");
+  ScrubProbe zone_decode_probe;
+  dt::TimeExecutionControlV3 zone_decode_control;
+  zone_decode_control.observe_scrubbed=&ObserveScrub;
+  zone_decode_control.scrub_observer_context=&zone_decode_probe;
+  Require(dt::DecodeTimeZoneMapNoAllocV3(
+              *profile,zone_bytes.bytes,zone_decode_control).ok(),
+          "zone stack hash decode");
+  require_record_scrubs(zone_decode_probe,2,6,1,
+      dt::TimeScrubClassV3::zone_map_decode_reencode,312,0,0,
+      "zone decode exact scrubs");
+  ScrubProbe zone_decode_cancel_probe;
+  CancelAfterContext zone_decode_cancel{0,0};
+  zone_decode_control.cancelled=&CancelAfter;
+  zone_decode_control.cancellation_context=&zone_decode_cancel;
+  zone_decode_control.scrub_observer_context=&zone_decode_cancel_probe;
+  const auto zone_decode_cancelled=dt::DecodeTimeZoneMapNoAllocV3(
+      *profile,zone_bytes.bytes,zone_decode_control);
+  Require(!zone_decode_cancelled.ok()&&
+              zone_decode_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED",
+          "zone decoder final cancellation");
+  require_record_scrubs(zone_decode_cancel_probe,2,6,1,
+      dt::TimeScrubClassV3::zone_map_decode_reencode,312,0,0,
+      "zone decoder cancellation exact scrubs");
+  ScrubProbe zone_cancel_probe;
+  CancelAfterContext zone_cancel{0,1};
+  zone.control.cancelled=&CancelAfter;
+  zone.control.cancellation_context=&zone_cancel;
+  zone.control.scrub_observer_context=&zone_cancel_probe;
+  const auto zone_cancelled=dt::EncodeTimeZoneMapV3(zone);
+  Require(!zone_cancelled.ok()&&zone_cancelled.bytes.empty()&&
+              zone_cancelled.diagnostic.diagnostic_code=="PROCESS.CANCELLED",
+          "zone final cancellation");
+  require_record_scrubs(zone_cancel_probe,3,9,2,
+      dt::TimeScrubClassV3::zone_map_decode_reencode,312,0,96,
+      "zone cancellation exact scrubs");
+  zone.control={};
+  auto populated_zone=zone;
+  populated_zone.null_count=0;
+  populated_zone.value_count=1;
+  populated_zone.minimum=&value;
+  populated_zone.maximum=&value;
+  const auto populated_zone_bytes=dt::EncodeTimeZoneMapV3(populated_zone);
+  Require(populated_zone_bytes.ok(),"populated zone precedence fixture");
+  auto zone_bad_upper=populated_zone_bytes.bytes;
+  zone_bad_upper[204]^=1;
+  RehashRecord("ScratchBird.BaseTime.ZoneMap.V1",&zone_bad_upper,64);
+  const auto zone_invalid_before_cancel=dt::DecodeTimeZoneMapNoAllocV3(
+      *profile,zone_bad_upper,always_cancel_control);
+  Require(!zone_invalid_before_cancel.ok()&&
+              zone_invalid_before_cancel.diagnostic.diagnostic_code==
+                  "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "zone upper-key validation precedes final cancellation");
+
+  auto evidence=std::make_shared<dt::TimeStatisticsProviderEvidenceHandleV3>();
+  evidence->provider_evidence_uuid=Instance(71);
+  dt::TimeStatisticsProjectionV3 statistics;
+  statistics.profile=profile;statistics.provider_evidence=evidence;
+  statistics.statistics_uuid=Instance(72);
+  statistics.source_object_uuid=Instance(73,false);
+  statistics.schema_epoch=1;statistics.collection_epoch=1;
+  statistics.security_epoch=1;
+  ScrubProbe statistics_probe;
+  dt::TimeExecutionControlV3 statistics_control;
+  statistics_control.observe_scrubbed=&ObserveScrub;
+  statistics_control.scrub_observer_context=&statistics_probe;
+  const auto statistics_bytes=
+      dt::EncodeTimeStatisticsProjectionV3(statistics,statistics_control);
+  Require(statistics_bytes.ok(),"statistics stack hash encode");
+  require_record_scrubs(statistics_probe,3,30,1,
+      dt::TimeScrubClassV3::statistics_decode_reencode,4624,2,0,
+      "statistics encode exact scrubs");
+  ScrubProbe statistics_decode_probe;
+  statistics_control.scrub_observer_context=&statistics_decode_probe;
+  Require(dt::DecodeTimeStatisticsProjectionV3(
+              profile,statistics_bytes.bytes,statistics_control).ok(),
+          "statistics stack hash decode");
+  require_record_scrubs(statistics_decode_probe,2,20,1,
+      dt::TimeScrubClassV3::statistics_decode_reencode,4624,1,0,
+      "statistics decode exact scrubs");
+  ScrubProbe statistics_cancel_probe;
+  CancelAfterContext statistics_cancel{0,2};
+  statistics_control.cancelled=&CancelAfter;
+  statistics_control.cancellation_context=&statistics_cancel;
+  statistics_control.scrub_observer_context=&statistics_cancel_probe;
+  const auto statistics_cancelled=
+      dt::EncodeTimeStatisticsProjectionV3(statistics,statistics_control);
+  Require(!statistics_cancelled.ok()&&statistics_cancelled.bytes.empty()&&
+              statistics_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED",
+          "statistics final cancellation");
+  require_record_scrubs(statistics_cancel_probe,3,30,1,
+      dt::TimeScrubClassV3::statistics_decode_reencode,4624,2,528,
+      "statistics cancellation exact scrubs");
+
+  const auto histogram=std::array<dt::TimeStatisticsHistogramRecordV3,1>{
+      dt::TimeStatisticsHistogramRecordV3{42,1}};
+  auto populated=statistics;
+  populated.row_count=1;populated.value_count=1;
+  populated.minimum_maximum_present=true;
+  populated.minimum_nanoseconds=42;populated.maximum_nanoseconds=42;
+  populated.histogram=histogram;
+  const auto populated_bytes=dt::EncodeTimeStatisticsProjectionV3(populated);
+  Require(populated_bytes.ok(),"populated statistics scrub fixture");
+  ScrubProbe decoded_owned_probe;
+  CancelAfterContext decoded_cancel{0,1};
+  dt::TimeExecutionControlV3 decoded_control;
+  decoded_control.cancelled=&CancelAfter;
+  decoded_control.cancellation_context=&decoded_cancel;
+  decoded_control.observe_scrubbed=&ObserveScrub;
+  decoded_control.scrub_observer_context=&decoded_owned_probe;
+  const auto decoded_cancelled=dt::DecodeTimeStatisticsProjectionV3(
+      profile,populated_bytes.bytes,decoded_control);
+  Require(!decoded_cancelled.ok()&&
+              decoded_cancelled.statistics.histogram.empty()&&
+              decoded_owned_probe.all_zero&&
+              decoded_owned_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==
+                  sizeof(dt::TimeStatisticsHistogramRecordV3),
+          "statistics decoded owned stage scrub");
+  dt::TimeStatisticsMcvRecordV3 mcv_record;
+  mcv_record.value_hash[31]=1;mcv_record.frequency=1;
+  auto populated_mcv=populated;
+  populated_mcv.mcv=std::span<const dt::TimeStatisticsMcvRecordV3>(
+      &mcv_record,1);
+  const auto populated_mcv_bytes=
+      dt::EncodeTimeStatisticsProjectionV3(populated_mcv);
+  Require(populated_mcv_bytes.ok(),"populated MCV scrub fixture");
+  ScrubProbe decoded_mcv_probe;
+  CancelAfterContext decoded_mcv_cancel{0,2};
+  decoded_control.cancellation_context=&decoded_mcv_cancel;
+  decoded_control.scrub_observer_context=&decoded_mcv_probe;
+  const auto decoded_mcv_cancelled=dt::DecodeTimeStatisticsProjectionV3(
+      profile,populated_mcv_bytes.bytes,decoded_control);
+  Require(!decoded_mcv_cancelled.ok()&&
+              decoded_mcv_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED"&&
+              decoded_mcv_cancelled.statistics.histogram.empty()&&
+              decoded_mcv_cancelled.statistics.mcv.empty()&&
+              decoded_mcv_probe.all_zero&&
+              decoded_mcv_probe.calls[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==2&&
+              decoded_mcv_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==
+                  sizeof(dt::TimeStatisticsHistogramRecordV3)+
+                  sizeof(dt::TimeStatisticsMcvRecordV3),
+          "statistics decoded histogram and MCV owned stages scrub");
+  dt::TimeStatisticsReceivingFactsV3 stale_receiving{
+      true,true,2,statistics.collection_epoch,statistics.security_epoch,
+      evidence->provider_evidence_uuid};
+  ScrubProbe admission_refusal_probe;
+  dt::TimeExecutionControlV3 admission_refusal_control;
+  admission_refusal_control.observe_scrubbed=&ObserveScrub;
+  admission_refusal_control.scrub_observer_context=&admission_refusal_probe;
+  const auto admission_refusal=dt::AdmitTimeStatisticsReadV3(
+      profile,populated_mcv_bytes.bytes,stale_receiving,
+      admission_refusal_control);
+  Require(!admission_refusal.ok()&&
+              admission_refusal.disposition==
+                  dt::TimeStatisticsReadAdmissionDispositionV3::
+                      schema_epoch_mismatch&&
+              admission_refusal.statistics.histogram.empty()&&
+              admission_refusal.statistics.mcv.empty()&&
+              admission_refusal_probe.all_zero&&
+              admission_refusal_probe.calls[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==2&&
+              admission_refusal_probe.bytes[index(
+                  dt::TimeScrubClassV3::projection_owned_buffer)]==
+                  sizeof(dt::TimeStatisticsHistogramRecordV3)+
+                  sizeof(dt::TimeStatisticsMcvRecordV3),
+          "statistics admission refusal scrubs decoded owned stages");
+
+  ScrubProbe backup_probe;
+  dt::TimeExecutionControlV3 backup_control;
+  backup_control.observe_scrubbed=&ObserveScrub;
+  backup_control.scrub_observer_context=&backup_probe;
+  const auto backup=dt::EncodeTimeBackupTupleV3(value,backup_control);
+  Require(backup.ok(),"backup stack hash encode");
+  require_record_scrubs(backup_probe,3,18,3,
+      dt::TimeScrubClassV3::backup_decode_reencode,304,0,0,
+      "backup encode exact scrubs");
+  ScrubProbe backup_decode_probe;
+  backup_control.scrub_observer_context=&backup_decode_probe;
+  Require(dt::DecodeTimeBackupTupleNoAllocV3(
+              *profile,false,backup.bytes,backup_control).ok(),
+          "backup stack hash decode");
+  require_record_scrubs(backup_decode_probe,2,12,2,
+      dt::TimeScrubClassV3::backup_decode_reencode,304,0,0,
+      "backup decode exact scrubs");
+  ScrubProbe backup_decode_cancel_probe;
+  CancelAfterContext backup_decode_cancel{0,0};
+  backup_control.cancelled=&CancelAfter;
+  backup_control.cancellation_context=&backup_decode_cancel;
+  backup_control.scrub_observer_context=&backup_decode_cancel_probe;
+  const auto backup_decode_cancelled=dt::DecodeTimeBackupTupleNoAllocV3(
+      *profile,false,backup.bytes,backup_control);
+  Require(!backup_decode_cancelled.ok()&&
+              backup_decode_cancelled.diagnostic.diagnostic_code==
+                  "PROCESS.CANCELLED",
+          "backup decoder final cancellation");
+  require_record_scrubs(backup_decode_cancel_probe,2,12,2,
+      dt::TimeScrubClassV3::backup_decode_reencode,304,0,0,
+      "backup decoder cancellation exact scrubs");
+  ScrubProbe backup_cancel_probe;
+  CancelAfterContext backup_cancel{0,1};
+  backup_control.cancelled=&CancelAfter;
+  backup_control.cancellation_context=&backup_cancel;
+  backup_control.scrub_observer_context=&backup_cancel_probe;
+  const auto backup_cancelled=
+      dt::EncodeTimeBackupTupleV3(value,backup_control);
+  Require(!backup_cancelled.ok()&&backup_cancelled.bytes.empty(),
+          "backup final cancellation");
+  require_record_scrubs(backup_cancel_probe,3,18,3,
+      dt::TimeScrubClassV3::backup_decode_reencode,304,0,304,
+      "backup cancellation exact scrubs");
+  auto backup_bad_component=backup.bytes;
+  backup_bad_component.back()^=0x80;
+  RehashRecord("ScratchBird.BaseTime.BackupTuple.V1",
+               &backup_bad_component,264);
+  const auto backup_invalid_before_cancel=dt::DecodeTimeBackupTupleNoAllocV3(
+      *profile,false,backup_bad_component,always_cancel_control);
+  Require(!backup_invalid_before_cancel.ok()&&
+              backup_invalid_before_cancel.diagnostic.diagnostic_code==
+                  "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "backup component validation precedes final cancellation");
+
+  const auto require_one_result_allocation=[](const auto& result,
+                                               const char* message){
+    g_new_budget.store(-1,std::memory_order_relaxed);
+    Require(result.ok()&&g_new_calls.load(std::memory_order_relaxed)==1,
+            message);
+  };
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto covering_one_allocation=dt::EncodeTimeCoveringValueV3(value);
+  require_one_result_allocation(covering_one_allocation,
+      "covering encoder uses only result allocation");
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto range_one_allocation=dt::EncodeTimeRangePairV3(value,value);
+  require_one_result_allocation(range_one_allocation,
+      "range encoder uses only result allocation");
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto zone_one_allocation=dt::EncodeTimeZoneMapV3(zone);
+  require_one_result_allocation(zone_one_allocation,
+      "zone encoder uses only result allocation");
+  statistics_control={};
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto statistics_one_allocation=
+      dt::EncodeTimeStatisticsProjectionV3(statistics,statistics_control);
+  require_one_result_allocation(statistics_one_allocation,
+      "statistics encoder uses only result allocation");
+  backup_control={};
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(1,std::memory_order_relaxed);
+  const auto backup_one_allocation=
+      dt::EncodeTimeBackupTupleV3(value,backup_control);
+  require_one_result_allocation(backup_one_allocation,
+      "backup encoder uses only result allocation");
+
+  const auto sort_bytes=dt::MakeTimeSortKeyV3(
+      value,dt::TimeSortDirectionV3::ascending,
+      dt::TimeNullModeV3::nulls_last);
+  Require(sort_bytes.ok(),"sort decoder heap-denial fixture");
+  std::array<dt::TimeStatisticsHistogramRecordV3,64> maximum_histogram{};
+  std::array<dt::TimeStatisticsMcvRecordV3,64> maximum_mcv{};
+  for(unsigned i=0;i!=64;++i){
+    maximum_histogram[i]={i,i+1};
+    maximum_mcv[i].value_hash[31]=static_cast<platform::byte>(i);
+    maximum_mcv[i].frequency=1;
+  }
+  auto maximum_statistics=statistics;
+  maximum_statistics.row_count=64;
+  maximum_statistics.value_count=64;
+  maximum_statistics.minimum_maximum_present=true;
+  maximum_statistics.maximum_nanoseconds=63;
+  maximum_statistics.histogram=maximum_histogram;
+  maximum_statistics.mcv=maximum_mcv;
+  const auto maximum_statistics_bytes=
+      dt::EncodeTimeStatisticsProjectionV3(maximum_statistics);
+  Require(maximum_statistics_bytes.ok()&&
+              maximum_statistics_bytes.bytes.size()==
+                  dt::kTimeStatisticsMaximumBytesV3,
+          "maximum statistics heap-denial fixture");
+  const auto maximum_statistics_decoded=dt::DecodeTimeStatisticsProjectionV3(
+      profile,maximum_statistics_bytes.bytes);
+  Require(maximum_statistics_decoded.ok()&&
+              maximum_statistics_decoded.statistics.histogram.size()==64&&
+              maximum_statistics_decoded.statistics.mcv.size()==64,
+          "maximum statistics direct decode");
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(0,std::memory_order_relaxed);
+  const auto maximum_statistics_no_heap=
+      dt::DecodeTimeStatisticsProjectionV3(
+          profile,maximum_statistics_bytes.bytes);
+  g_new_budget.store(-1,std::memory_order_relaxed);
+  Require(!maximum_statistics_no_heap.ok()&&
+              maximum_statistics_no_heap.diagnostic.diagnostic_code==
+                  "RESOURCE.BUDGET_EXCEEDED"&&
+              g_new_calls.load(std::memory_order_relaxed)==1,
+          "maximum statistics validation completes before owned allocation");
+  g_new_calls.store(0,std::memory_order_relaxed);
+  g_new_budget.store(0,std::memory_order_relaxed);
+  const auto zone_no_heap=
+      dt::DecodeTimeZoneMapNoAllocV3(*profile,zone_bytes.bytes);
+  const auto covering_no_heap=dt::DecodeTimeCoveringValueNoAllocV3(
+      *profile,false,covering.bytes);
+  const auto range_no_heap=dt::DecodeTimeRangePairNoAllocV3(
+      *profile,range_bytes.bytes);
+  const auto sort_no_heap=dt::DecodeTimeSortKeyNoAllocV3(
+      *profile,sort_bytes.bytes);
+  const auto statistics_no_heap=
+      dt::DecodeTimeStatisticsProjectionV3(profile,statistics_bytes.bytes);
+  const auto backup_no_heap=
+      dt::DecodeTimeBackupTupleNoAllocV3(*profile,false,backup.bytes);
+  g_new_budget.store(-1,std::memory_order_relaxed);
+  Require(zone_no_heap.ok()&&covering_no_heap.ok()&&range_no_heap.ok()&&
+              sort_no_heap.ok()&&statistics_no_heap.ok()&&backup_no_heap.ok()&&
+              g_new_calls.load(std::memory_order_relaxed)==0,
+          "projection decoders survive complete heap denial");
+}
+
 void TestOwnerAndObservabilityRegistries() {
   const std::array<std::string_view, 10> protection_dispositions{{
       "admitted_datatype_component", "forbidden", "forbidden",
@@ -1410,7 +1990,8 @@ void TestOwnerAndObservabilityRegistries() {
   for (unsigned i = 0; i != metrics.size(); ++i) {
     const auto& row = metrics[i];
     Require(static_cast<unsigned>(row.type) == i, "metric enum order");
-    Require(row.evidence_type_uuid == TimeAllocatedUuid(0x5b + i),
+    Require(row.evidence_type_uuid == TimeAllocatedUuid(
+                static_cast<platform::byte>(0x5b + i)),
             "exact metric evidence UUID allocation");
     Require(row.generation == 1 && row.metric_name_metadata == names[i] &&
                 row.evidence_producer == producers[i],
@@ -1418,7 +1999,8 @@ void TestOwnerAndObservabilityRegistries() {
     Require(row.evidence_record == records[i], "exact metric evidence record");
     Require(row.manager_consumer == "metrics_registry_manager",
             "metric consumer");
-    Require(row.source_event_uuid == TimeAllocatedUuid(0x72 + i) &&
+    Require(row.source_event_uuid == TimeAllocatedUuid(
+                static_cast<platform::byte>(0x72 + i)) &&
                 source_events.insert(row.source_event_uuid.bytes).second,
             "exact metric source-event identity");
     const auto exact_cardinality =
@@ -1842,7 +2424,8 @@ void TestOwnerAndObservabilityRegistries() {
 
   for (unsigned i = 0; i != metrics.size(); ++i) {
     const dt::TimeMetricEvidenceIdempotencyFactV3 first{
-        7, 1, TimeAllocatedUuid(0x72 + i), metrics[i].evidence_type_uuid};
+        7, 1, TimeAllocatedUuid(static_cast<platform::byte>(0x72 + i)),
+        metrics[i].evidence_type_uuid};
     const dt::TimeMetricEvidenceIdempotencyFactV3 duplicate{
         7, 2, first.source_event_uuid, first.evidence_type_uuid};
     const auto refusal =
@@ -1906,6 +2489,7 @@ int main() {
     const auto profile = Profile();
     TestProjectionCodecs(profile);
     TestStatisticsAndBackup(profile);
+    TestProjectionHashMemoryAndScrubs(profile);
     TestOwnerAndObservabilityRegistries();
     std::cout << "base_time_projection_observability_test: PASS\n";
     return 0;

@@ -40,10 +40,6 @@ inline constexpr platform::Uuid kType = U(
 inline constexpr platform::Uuid kCodec = U(
     {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd8,0x1f});
 
-inline constexpr DatatypePolicyIdentityV3 kDescriptorPolicy{U(
-    {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x34}),1};
-inline constexpr DatatypePolicyIdentityV3 kCanonicalPolicy{U(
-    {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x35}),1};
 inline constexpr DatatypePolicyIdentityV3 kOrderingPolicy{U(
     {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x36}),1};
 inline constexpr DatatypePolicyIdentityV3 kHashPolicy{U(
@@ -52,8 +48,6 @@ inline constexpr DatatypePolicyIdentityV3 kRenderPolicy{U(
     {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x38}),1};
 inline constexpr DatatypePolicyIdentityV3 kCastPolicy{U(
     {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x39}),1};
-inline constexpr DatatypePolicyIdentityV3 kOperationPolicy{U(
-    {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x3a}),1};
 inline constexpr DatatypePolicyIdentityV3 kCivilDayPolicy{U(
     {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x3b}),1};
 inline constexpr DatatypePolicyIdentityV3 kStorageEpochPolicy{U(
@@ -233,16 +227,18 @@ class ScopedVectorClear final {
       void* observer_context=nullptr) noexcept
       : value_(value),scrub_class_(scrub_class),observer_(observer),observer_context_(observer_context) {}
   ~ScopedVectorClear() {
-    if(value_!=nullptr&&!value_->empty()){
+    if(active_&&value_!=nullptr&&!value_->empty()){
       const auto extent=value_->size()*sizeof(T);SecureClear(value_->data(),extent);
       if(observer_)observer_(observer_context_,scrub_class_,reinterpret_cast<const byte*>(value_->data()),extent);
     }
   }
+  void Disarm() noexcept { active_=false; }
  private:
   std::vector<T>* value_;
   TimeScrubClassV3 scrub_class_;
   void (*observer_)(void*,TimeScrubClassV3,const byte*,u64) noexcept;
   void* observer_context_;
+  bool active_=true;
 };
 
 bool RangesOverlap(const void* a, std::size_t a_size,
@@ -439,17 +435,20 @@ struct ParsedTime {
 };
 
 bool Digit(char value) noexcept { return value >= '0' && value <= '9'; }
+unsigned DigitValue(char value) noexcept {
+  return static_cast<unsigned>(value - '0');
+}
 
 ParsedTime ParseStrict(std::string_view text) noexcept {
   if (text.size() < 8 || text[2] != ':' || text[5] != ':' ||
       !Digit(text[0]) || !Digit(text[1]) || !Digit(text[3]) ||
       !Digit(text[4]) || !Digit(text[6]) || !Digit(text[7]))
     return {false, 0, "CTI.TEMPORAL.INVALID_LITERAL", "shape"};
-  const unsigned hour = (text[0]-'0')*10u + (text[1]-'0');
+  const unsigned hour = DigitValue(text[0])*10u + DigitValue(text[1]);
   if (hour > 23) return {false,0,"CTI.TEMPORAL.INVALID_LITERAL","hour"};
-  const unsigned minute = (text[3]-'0')*10u + (text[4]-'0');
+  const unsigned minute = DigitValue(text[3])*10u + DigitValue(text[4]);
   if (minute > 59) return {false,0,"CTI.TEMPORAL.INVALID_LITERAL","minute"};
-  const unsigned second = (text[6]-'0')*10u + (text[7]-'0');
+  const unsigned second = DigitValue(text[6])*10u + DigitValue(text[7]);
   if (second == 60)
     return {false,0,"CTI.TEMPORAL.LEAP_SECOND_REFUSED","second"};
   if (second > 59) return {false,0,"CTI.TEMPORAL.INVALID_LITERAL","second"};
@@ -692,8 +691,11 @@ TimeBytesResultV3 EncodeCanonicalTimeComponentV3(
   if(Cancelled(control)) return Failure<TimeBytesResultV3>("PROCESS.CANCELLED","before_allocation");
   auto r=Success<TimeBytesResultV3>();
   try { r.bytes.resize(required); } catch(...) { return Failure<TimeBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","component_allocation",ResourceStatus()); }
+  ScopedVectorClear clear_result(&r.bytes,TimeScrubClassV3::component_owned_buffer,
+      control.observe_scrubbed,control.scrub_observer_context);
   if(required) StoreLittle64(r.bytes.data(),value.nanoseconds_since_midnight);
-  if(Cancelled(control)) { if(!r.bytes.empty()) SecureClear(r.bytes.data(),r.bytes.size()); return Failure<TimeBytesResultV3>("PROCESS.CANCELLED","before_publication"); }
+  if(Cancelled(control)) return Failure<TimeBytesResultV3>("PROCESS.CANCELLED","before_publication");
+  clear_result.Disarm();
   return r;
 }
 
@@ -749,7 +751,9 @@ TimeCivilResultV3 DecomposeTimeCivilV3(const TimeValueViewV3& value,bool null_al
   r.civil.minute=static_cast<u8>(remainder/60'000'000'000ull);remainder%=60'000'000'000ull;
   r.civil.second=static_cast<u8>(remainder/1'000'000'000ull);
   r.civil.nanosecond=static_cast<u32>(remainder%1'000'000'000ull);
-  if(Cancelled(control))return Failure<TimeCivilResultV3>("PROCESS.CANCELLED","before_publication");return r;
+  if(Cancelled(control))
+    return Failure<TimeCivilResultV3>("PROCESS.CANCELLED","before_publication");
+  return r;
 }
 
 TimeValueResultV3 ParseCanonicalTimeV3(
@@ -908,7 +912,9 @@ TimeScalarResultV3 ExtractPart(const TimeValueViewV3& value,u64 divisor,u64 modu
   if(value.state==TimeValueStateV3::sql_null){if(Cancelled(control))return Failure<TimeScalarResultV3>("PROCESS.CANCELLED","before_publication");r.is_null=true;return r;}
   r.unsigned_value=(value.nanoseconds_since_midnight/divisor)%modulo;
   r.signed_value=static_cast<std::int64_t>(r.unsigned_value);
-  if(Cancelled(control))return Failure<TimeScalarResultV3>("PROCESS.CANCELLED","before_publication");return r;
+  if(Cancelled(control))
+    return Failure<TimeScalarResultV3>("PROCESS.CANCELLED","before_publication");
+  return r;
 }
 }  // namespace
 
@@ -1038,7 +1044,9 @@ TimeNoAllocWriteResultV3 HashTimeValueIntoNoAllocV3(const TimeOwnedValueV3& owne
   preimage[96]=owned.state==TimeValueStateV3::sql_null?0:1;StoreLittle32(preimage.data()+97,owned.state==TimeValueStateV3::sql_null?0:8);
   std::size_t extent=101;if(owned.state==TimeValueStateV3::value){StoreLittle64(preimage.data()+101,owned.nanoseconds_since_midnight);extent=109;}
   if(!Digest(std::span<const byte>(preimage.data(),extent),&digest,&control))return Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_provider",ResourceStatus());
-  if(Cancelled(control))return Failure<TimeNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,digest.data(),32);
+  if(Cancelled(control))
+    return Failure<TimeNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");
+  std::memcpy(output,digest.data(),32);
   auto r=Success<TimeNoAllocWriteResultV3>();r.bytes_required=32;r.bytes_written=32;return r;
 }
 
@@ -1070,7 +1078,9 @@ TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
   staged[96]=direction==TimeSortDirectionV3::descending?1:0;staged[97]=null_mode==TimeNullModeV3::nulls_last?1:0;
   staged[98]=value.state==TimeValueStateV3::value?1:(null_mode==TimeNullModeV3::nulls_first?0:2);staged[99]=value.state==TimeValueStateV3::value?8:0;
   if(value.state==TimeValueStateV3::value){for(unsigned i=0;i<8;++i)staged[100+i]=static_cast<byte>(value.nanoseconds_since_midnight>>(56-8*i));if(direction==TimeSortDirectionV3::descending)for(unsigned i=100;i<108;++i)staged[i]=static_cast<byte>(~staged[i]);}
-  if(Cancelled(control))return Failure<TimeNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");std::memcpy(output,staged.data(),extent);
+  if(Cancelled(control))
+    return Failure<TimeNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");
+  std::memcpy(output,staged.data(),extent);
   auto r=Success<TimeNoAllocWriteResultV3>();r.bytes_required=extent;r.bytes_written=extent;r.containing_null=value.state==TimeValueStateV3::sql_null;return r;
 }
 
@@ -1126,7 +1136,9 @@ TimeCastResultV3 CastTimeValueV3(const TimeCastRequestV3& request) noexcept {
     const auto source_range=ValidateTimePresentRange(request.time_source->view());
     if(!source_range.ok())return Failure<TimeCastResultV3>(source_range.diagnostic.diagnostic_code,source_range.diagnostic.detail,source_range.status);
     if(request.time_source->state==TimeValueStateV3::value&&request.control.maximum_allocation_bytes<8){auto r=Failure<TimeCastResultV3>("RESOURCE.BUDGET_EXCEEDED","identity_grant",ResourceStatus());r.bytes_required=8;return r;}
-    if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::identity;r.produced_time=true;r.time_value={*request.time_target,request.time_source->state,request.time_source->nanoseconds_since_midnight};return r;
+    if(Cancelled(request.control))
+      return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");
+    auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::identity;r.produced_time=true;r.time_value={*request.time_target,request.time_source->state,request.time_source->nanoseconds_since_midnight};return r;
   }
   if(disposition==TimeCastPolicyDispositionV3::contextual_null){
     if(request.time_target==nullptr||!*request.time_target||
@@ -1134,7 +1146,10 @@ TimeCastResultV3 CastTimeValueV3(const TimeCastRequestV3& request) noexcept {
        !TimeDescriptor(request.time_target_descriptor,(*request.time_target)->identity,request.target_null_allowed))
       return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","target_profile");
     if(request.scalar_source==nullptr||request.scalar_source->type_id!=CanonicalTypeId::null_type||!request.scalar_source->is_null||!request.scalar_source->encoded_value.empty())return Failure<TimeCastResultV3>("DATATYPE.NULL_STATE.INVALID","contextual_null");
-    if(!request.target_null_allowed)return Failure<TimeCastResultV3>("DATATYPE.NULL_NOT_ADMITTED","target_null");if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::identity;r.produced_time=true;r.time_value={*request.time_target,TimeValueStateV3::sql_null,0};return r;
+    if(!request.target_null_allowed)
+      return Failure<TimeCastResultV3>("DATATYPE.NULL_NOT_ADMITTED","target_null");
+    if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");
+    auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::identity;r.produced_time=true;r.time_value={*request.time_target,TimeValueStateV3::sql_null,0};return r;
   }
   if(disposition==TimeCastPolicyDispositionV3::explicit_character_to_time){
     if(request.scalar_source==nullptr||request.scalar_source->type_id!=CanonicalTypeId::character||!CharacterIdentity(request.scalar_source_identity)||!CharacterDescriptor(&request.scalar_source->descriptor,request.scalar_source_identity))return Failure<TimeCastResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","character_source_authority");
@@ -1158,7 +1173,9 @@ TimeCastResultV3 CastTimeValueV3(const TimeCastRequestV3& request) noexcept {
         RangesOverlap(request.character_output,extent,&request,sizeof(request))||
         RangesOverlap(request.character_output,extent,&request.control,sizeof(request.control))||
         OutputOverlapsProfile(request.character_output,extent,*request.time_source->profile)))return Failure<TimeCastResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","character_overlap");
-    if(Cancelled(request.control))return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::lossless_explicit;r.used_character_output_buffer=request.use_character_output_buffer;r.bytes_required=extent;r.bytes_written=extent;
+    if(Cancelled(request.control))
+      return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");
+    auto r=Success<TimeCastResultV3>();r.category=DatatypeCastCategory::lossless_explicit;r.used_character_output_buffer=request.use_character_output_buffer;r.bytes_required=extent;r.bytes_written=extent;
     if(request.use_character_output_buffer){if(extent)std::memcpy(request.character_output,rendered.data(),extent);}else{try{r.scalar_value.type_id=CanonicalTypeId::character;r.scalar_value.is_null=request.time_source->state==TimeValueStateV3::sql_null;r.scalar_value.descriptor=request.scalar_target_descriptor;r.scalar_value.encoded_value.assign(rendered.data(),extent);}catch(...){if(!r.scalar_value.encoded_value.empty())SecureClear(r.scalar_value.encoded_value.data(),r.scalar_value.encoded_value.size());return Failure<TimeCastResultV3>("RESOURCE.BUDGET_EXCEEDED","character_allocation",ResourceStatus());}if(Cancelled(request.control)){if(!r.scalar_value.encoded_value.empty())SecureClear(r.scalar_value.encoded_value.data(),r.scalar_value.encoded_value.size());return Failure<TimeCastResultV3>("PROCESS.CANCELLED","before_publication");}}
     return r;
   }
@@ -1191,7 +1208,11 @@ TimeBatchExtentsResultV3 MaterializeTimeBatchIntoV3(
   if(Cancelled(control))return Failure<TimeBatchExtentsResultV3>("PROCESS.CANCELLED","batch_before_allocation");
   std::vector<u64> staged_values;std::vector<byte> staged_bitmap;ScopedVectorClear clear_values(&staged_values,TimeScrubClassV3::batch_values_staging,control.observe_scrubbed,control.scrub_observer_context);ScopedVectorClear clear_bitmap(&staged_bitmap,TimeScrubClassV3::batch_bitmap_staging,control.observe_scrubbed,control.scrub_observer_context);try{staged_values.assign(values.begin(),values.end());staged_bitmap.assign(bitmap.begin(),bitmap.end());}catch(...){return Failure<TimeBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED","batch_allocation",ResourceStatus());}
   if(Cancelled(control)){if(!staged_values.empty())SecureClear(staged_values.data(),staged_values.size()*8);if(!staged_bitmap.empty())SecureClear(staged_bitmap.data(),staged_bitmap.size());return Failure<TimeBatchExtentsResultV3>("PROCESS.CANCELLED","batch_before_publication");}
-  if(extents.values_bytes)std::memcpy(output_values,staged_values.data(),extents.values_bytes);if(extents.bitmap_bytes)std::memcpy(output_bitmap,staged_bitmap.data(),extents.bitmap_bytes);return extents;
+  if(extents.values_bytes)
+    std::memcpy(output_values,staged_values.data(),extents.values_bytes);
+  if(extents.bitmap_bytes)
+    std::memcpy(output_bitmap,staged_bitmap.data(),extents.bitmap_bytes);
+  return extents;
 }
 
 TimeBatchResultV3 MaterializeTimeBatchV3(

@@ -131,12 +131,16 @@ enum class TimeScrubClassV3 : u8 {
   sha_state, sha_schedule, sha_tail,
   profile_material, comparison_material, profile_digest, comparison_digest,
   component_decode_reencode, component_encode_staging,
+  component_owned_buffer,
   render_staging, render_owned_buffer,
   hash_preimage, hash_digest, hash_owned_buffer,
   ordered_key_staging, ordered_key_owned_buffer, ordered_key_decode_reencode,
   character_render_staging, batch_values_staging, batch_bitmap_staging,
   sbdval_reencode, sbdval_component_staging,
   sbdpv_reencode, sbdpv_component_staging,
+  covering_decode_reencode, zone_map_decode_reencode,
+  statistics_decode_reencode, statistics_prior_hash,
+  backup_decode_reencode, projection_owned_buffer,
   count,
 };
 

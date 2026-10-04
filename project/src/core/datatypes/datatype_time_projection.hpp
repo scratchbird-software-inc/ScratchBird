@@ -182,7 +182,8 @@ TimeBytesResultV3 EncodeTimeCoveringValueV3(
     const TimeExecutionControlV3& control = {}) noexcept;
 TimeCoveringValueViewResultV3 DecodeTimeCoveringValueNoAllocV3(
     const TimeValidatedProfileHandleV3& profile_handle, bool null_allowed,
-    std::span<const byte> encoded) noexcept;
+    std::span<const byte> encoded,
+    const TimeExecutionControlV3& control = {}) noexcept;
 
 struct TimeRangePairViewV3 {
   u64 lower_nanoseconds = 0;
@@ -201,7 +202,8 @@ TimeBytesResultV3 EncodeTimeRangePairV3(
     const TimeExecutionControlV3& control = {}) noexcept;
 TimeRangePairViewResultV3 DecodeTimeRangePairNoAllocV3(
     const TimeValidatedProfileHandleV3& profile_handle,
-    std::span<const byte> encoded) noexcept;
+    std::span<const byte> encoded,
+    const TimeExecutionControlV3& control = {}) noexcept;
 
 struct TimeZoneMapRequestV3 {
   std::shared_ptr<const TimeValidatedProfileHandleV3> profile;
@@ -231,7 +233,8 @@ TimeBytesResultV3 EncodeTimeZoneMapV3(
     const TimeZoneMapRequestV3& request) noexcept;
 TimeZoneMapViewResultV3 DecodeTimeZoneMapNoAllocV3(
     const TimeValidatedProfileHandleV3& profile_handle,
-    std::span<const byte> encoded) noexcept;
+    std::span<const byte> encoded,
+    const TimeExecutionControlV3& control = {}) noexcept;
 
 struct TimeStatisticsHistogramRecordV3 {
   u64 inclusive_upper_nanoseconds = 0;
@@ -380,7 +383,8 @@ TimeBytesResultV3 EncodeTimeBackupTupleV3(
     const TimeExecutionControlV3& control = {}) noexcept;
 TimeBackupTupleViewResultV3 DecodeTimeBackupTupleNoAllocV3(
     const TimeValidatedProfileHandleV3& profile_handle, bool null_allowed,
-    std::span<const byte> encoded) noexcept;
+    std::span<const byte> encoded,
+    const TimeExecutionControlV3& control = {}) noexcept;
 
 enum class TimeProtectionCellV3 : std::uint8_t {
   canonical_plain, inner_compression, inner_encryption, outer_compression,

@@ -3,8 +3,6 @@
 
 #include "datatype_time_projection.hpp"
 
-#include "hash_digest_parts.hpp"
-
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -125,35 +123,163 @@ bool ModeAllowed(TimeIndexFamilyV3 family, TimeProjectionModeV3 mode) noexcept {
   }
 }
 
+void SecureClearBytes(void* pointer, std::size_t bytes) noexcept {
+  auto* output = static_cast<volatile byte*>(pointer);
+  while (bytes != 0) { *output++ = 0; --bytes; }
+}
+
+class ScopedSecureClear final {
+ public:
+  ScopedSecureClear(void* pointer, std::size_t bytes,
+                    TimeScrubClassV3 scrub_class = TimeScrubClassV3::count,
+                    const TimeExecutionControlV3* control = nullptr) noexcept
+      : pointer_(pointer), bytes_(bytes), scrub_class_(scrub_class),
+        observer_(control == nullptr ? nullptr : control->observe_scrubbed),
+        observer_context_(control == nullptr ? nullptr
+                                             : control->scrub_observer_context) {}
+  ScopedSecureClear(const ScopedSecureClear&) = delete;
+  ScopedSecureClear& operator=(const ScopedSecureClear&) = delete;
+  ~ScopedSecureClear() {
+    SecureClearBytes(pointer_, bytes_);
+    if (observer_ != nullptr && scrub_class_ != TimeScrubClassV3::count)
+      observer_(observer_context_, scrub_class_,
+                static_cast<const byte*>(pointer_), bytes_);
+  }
+ private:
+  void* pointer_;
+  std::size_t bytes_;
+  TimeScrubClassV3 scrub_class_;
+  void (*observer_)(void*, TimeScrubClassV3, const byte*, u64) noexcept;
+  void* observer_context_;
+};
+
 template <std::size_t N>
 class ArrayClearGuard {
  public:
-  explicit ArrayClearGuard(std::array<byte, N>* value) noexcept : value_(value) {}
+  explicit ArrayClearGuard(
+      std::array<byte, N>* value,
+      TimeScrubClassV3 scrub_class = TimeScrubClassV3::count,
+      const TimeExecutionControlV3* control = nullptr) noexcept
+      : value_(value), scrub_class_(scrub_class), control_(control) {}
   ~ArrayClearGuard() {
-    volatile byte* p = value_ ? value_->data() : nullptr;
-    for (std::size_t i = 0; p && i < N; ++i) p[i] = 0;
+    if (value_ == nullptr) return;
+    SecureClearBytes(value_->data(), value_->size());
+    if (control_ != nullptr && control_->observe_scrubbed != nullptr &&
+        scrub_class_ != TimeScrubClassV3::count)
+      control_->observe_scrubbed(control_->scrub_observer_context,
+                                 scrub_class_, value_->data(), value_->size());
   }
  private:
   std::array<byte, N>* value_;
+  TimeScrubClassV3 scrub_class_;
+  const TimeExecutionControlV3* control_;
 };
 
+struct HashSegment {
+  const byte* data = nullptr;
+  std::size_t size = 0;
+};
+
+bool Sha256Stack(std::span<const HashSegment> segments,
+                 std::array<byte,32>* out,
+                 const TimeExecutionControlV3* control) noexcept {
+  if (out == nullptr) return false;
+  std::array<u32,8> state{{0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
+                           0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u}};
+  ScopedSecureClear clear_state(state.data(),state.size()*sizeof(u32),
+                                TimeScrubClassV3::sha_state,control);
+  std::array<byte,128> tail{};
+  ScopedSecureClear clear_tail(tail.data(),tail.size(),
+                               TimeScrubClassV3::sha_tail,control);
+  constexpr std::array<u32,64> constants{{
+      0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+      0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+      0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+      0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+      0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+      0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+      0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+      0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u}};
+  const auto rotate=[](u32 value,unsigned bits) noexcept {
+    return static_cast<u32>((value>>bits)|(value<<(32-bits)));
+  };
+  const auto transform=[&](const byte* block) noexcept {
+    std::array<u32,64> words{};
+    ScopedSecureClear clear_words(words.data(),words.size()*sizeof(u32),
+                                  TimeScrubClassV3::sha_schedule,control);
+    for(unsigned i=0;i<16;++i)
+      words[i]=(static_cast<u32>(block[i*4])<<24)|
+          (static_cast<u32>(block[i*4+1])<<16)|
+          (static_cast<u32>(block[i*4+2])<<8)|block[i*4+3];
+    for(unsigned i=16;i<64;++i){
+      const u32 s0=rotate(words[i-15],7)^rotate(words[i-15],18)^(words[i-15]>>3);
+      const u32 s1=rotate(words[i-2],17)^rotate(words[i-2],19)^(words[i-2]>>10);
+      words[i]=words[i-16]+s0+words[i-7]+s1;
+    }
+    u32 a=state[0],b=state[1],c=state[2],d=state[3];
+    u32 e=state[4],f=state[5],g=state[6],h=state[7];
+    for(unsigned i=0;i<64;++i){
+      const u32 s1=rotate(e,6)^rotate(e,11)^rotate(e,25);
+      const u32 choose=(e&f)^((~e)&g);
+      const u32 first=h+s1+choose+constants[i]+words[i];
+      const u32 s0=rotate(a,2)^rotate(a,13)^rotate(a,22);
+      const u32 majority=(a&b)^(a&c)^(b&c);
+      const u32 second=s0+majority;
+      h=g;g=f;f=e;e=d+first;d=c;c=b;b=a;a=first+second;
+    }
+    state[0]+=a;state[1]+=b;state[2]+=c;state[3]+=d;
+    state[4]+=e;state[5]+=f;state[6]+=g;state[7]+=h;
+  };
+  u64 total=0;
+  std::size_t buffered=0;
+  for(const auto& segment:segments){
+    if(segment.size!=0&&segment.data==nullptr)return false;
+    constexpr u64 kMaximumSha256InputBytes=
+        std::numeric_limits<u64>::max()/8;
+    if(segment.size>kMaximumSha256InputBytes-total)return false;
+    total+=static_cast<u64>(segment.size);
+    const byte* input=segment.data;
+    std::size_t remaining=segment.size;
+    if(buffered!=0){
+      const std::size_t take=std::min<std::size_t>(64-buffered,remaining);
+      if(take!=0){std::memcpy(tail.data()+buffered,input,take);input+=take;}
+      buffered+=take;remaining-=take;
+      if(buffered==64){transform(tail.data());SecureClearBytes(tail.data(),64);buffered=0;}
+    }
+    while(remaining>=64){transform(input);input+=64;remaining-=64;}
+    if(remaining!=0){std::memcpy(tail.data(),input,remaining);buffered=remaining;}
+  }
+  tail[buffered]=0x80;
+  const std::size_t padded=buffered<56?64:128;
+  const u64 bits=total*8;
+  for(unsigned i=0;i<8;++i)tail[padded-1-i]=static_cast<byte>(bits>>(i*8));
+  transform(tail.data());
+  if(padded==128)transform(tail.data()+64);
+  for(unsigned i=0;i<8;++i){
+    (*out)[i*4]=static_cast<byte>(state[i]>>24);
+    (*out)[i*4+1]=static_cast<byte>(state[i]>>16);
+    (*out)[i*4+2]=static_cast<byte>(state[i]>>8);
+    (*out)[i*4+3]=static_cast<byte>(state[i]);
+  }
+  return true;
+}
+
 bool HashRecord(std::string_view domain, std::span<const byte> record,
-                std::size_t zero_offset, std::array<byte,32>* out) noexcept {
+                std::size_t zero_offset, std::array<byte,32>* out,
+                const TimeExecutionControlV3* control = nullptr) noexcept {
   if (!out || zero_offset+32>record.size()) return false;
-  const hash::HashDigestSegment parts[]{
+  const HashSegment parts[]{
     {reinterpret_cast<const byte*>(domain.data()),domain.size()},
     {record.data(),zero_offset},{kZero32,32},
     {record.data()+zero_offset+32,record.size()-zero_offset-32}};
-  auto h=hash::ComputeSha256DigestPartsNative(parts,4);
-  ArrayClearGuard<32> clear_digest(&h.digest);
-  if (!h.ok()) return false;
-  *out=h.digest;
-  return true;
+  return Sha256Stack(parts,out,control);
 }
 bool HashEquals(std::string_view domain,std::span<const byte> record,
-                std::size_t offset) noexcept {
-  std::array<byte,32> h{}; ArrayClearGuard<32> clear(&h);
-  return HashRecord(domain,record,offset,&h) &&
+                std::size_t offset,
+                const TimeExecutionControlV3* control = nullptr) noexcept {
+  std::array<byte,32> h{};
+  ArrayClearGuard<32> clear(&h,TimeScrubClassV3::hash_digest,control);
+  return HashRecord(domain,record,offset,&h,control) &&
       std::memcmp(h.data(),record.data()+offset,32)==0;
 }
 
@@ -178,8 +304,14 @@ bool CommonIdentityEquals(const byte* p,
       LoadUuid(p+80)==i.codec_uuid && LoadLittle32(p+96)==i.codec_version &&
       LoadLittle32(p+100)==0 && LoadLittle64(p+104)==i.codec_generation;
 }
-bool ValidProfile(const TimeValidatedProfileHandleV3& h) noexcept {
-  return ValidateTimeProfileHandleV3(h).ok();
+bool ValidProfile(
+    const TimeValidatedProfileHandleV3& h,
+    const TimeExecutionControlV3* control = nullptr) noexcept {
+  if(control==nullptr)return ValidateTimeProfileHandleV3(h).ok();
+  auto scrub_control=*control;
+  scrub_control.cancelled=nullptr;
+  scrub_control.cancellation_context=nullptr;
+  return ValidateTimeProfileHandleV3(h,scrub_control).ok();
 }
 bool SameProfile(const TimeValidatedProfileHandleV3& a,
                  const TimeValidatedProfileHandleV3& b) noexcept {
@@ -191,33 +323,22 @@ bool SameProfile(const TimeValidatedProfileHandleV3& a,
 
 class VectorClearGuard {
  public:
-  explicit VectorClearGuard(std::vector<byte>* value) noexcept : value_(value) {}
+  explicit VectorClearGuard(
+      std::vector<byte>* value,
+      const TimeExecutionControlV3* control = nullptr) noexcept
+      : value_(value), control_(control) {}
   ~VectorClearGuard() {
-    if (active_ && value_) {
-      volatile byte* p = value_->empty() ? nullptr : value_->data();
-      for (std::size_t i = 0; p && i < value_->size(); ++i) p[i] = 0;
-      value_->clear();
-    }
-  }
-  void Disarm() noexcept { active_ = false; }
- private:
-  std::vector<byte>* value_;
-  bool active_ = true;
-};
-
-template <typename T>
-class TypedVectorClearGuard {
- public:
-  explicit TypedVectorClearGuard(std::vector<T>* value) noexcept : value_(value) {}
-  ~TypedVectorClearGuard() {
     if (!active_ || value_ == nullptr || value_->empty()) return;
-    volatile byte* p = reinterpret_cast<volatile byte*>(value_->data());
-    for (std::size_t i = 0; i < value_->size() * sizeof(T); ++i) p[i] = 0;
+    SecureClearBytes(value_->data(),value_->size());
+    if(control_!=nullptr&&control_->observe_scrubbed!=nullptr)
+      control_->observe_scrubbed(control_->scrub_observer_context,
+          TimeScrubClassV3::projection_owned_buffer,value_->data(),value_->size());
     value_->clear();
   }
   void Disarm() noexcept { active_ = false; }
  private:
-  std::vector<T>* value_;
+  std::vector<byte>* value_;
+  const TimeExecutionControlV3* control_;
   bool active_ = true;
 };
 
@@ -237,18 +358,28 @@ class PlainObjectClearGuard {
 
 class DecodedStatisticsClearGuard {
  public:
-  explicit DecodedStatisticsClearGuard(TimeDecodedStatisticsV3* value) noexcept
-      : value_(value) {}
+  explicit DecodedStatisticsClearGuard(
+      TimeDecodedStatisticsV3* value,
+      const TimeExecutionControlV3* control = nullptr) noexcept
+      : value_(value), control_(control) {}
   ~DecodedStatisticsClearGuard(){
     if(!active_||!value_)return;
     if(!value_->histogram.empty()){
-      volatile byte* p=reinterpret_cast<volatile byte*>(value_->histogram.data());
-      for(std::size_t i=0;i<value_->histogram.size()*sizeof(TimeStatisticsHistogramRecordV3);++i)p[i]=0;
+      const auto extent=value_->histogram.size()*sizeof(TimeStatisticsHistogramRecordV3);
+      SecureClearBytes(value_->histogram.data(),extent);
+      if(control_!=nullptr&&control_->observe_scrubbed!=nullptr)
+        control_->observe_scrubbed(control_->scrub_observer_context,
+            TimeScrubClassV3::projection_owned_buffer,
+            reinterpret_cast<const byte*>(value_->histogram.data()),extent);
       value_->histogram.clear();
     }
     if(!value_->mcv.empty()){
-      volatile byte* p=reinterpret_cast<volatile byte*>(value_->mcv.data());
-      for(std::size_t i=0;i<value_->mcv.size()*sizeof(TimeStatisticsMcvRecordV3);++i)p[i]=0;
+      const auto extent=value_->mcv.size()*sizeof(TimeStatisticsMcvRecordV3);
+      SecureClearBytes(value_->mcv.data(),extent);
+      if(control_!=nullptr&&control_->observe_scrubbed!=nullptr)
+        control_->observe_scrubbed(control_->scrub_observer_context,
+            TimeScrubClassV3::projection_owned_buffer,
+            reinterpret_cast<const byte*>(value_->mcv.data()),extent);
       value_->mcv.clear();
     }
     ClearPlainObject(&value_->statistics_uuid);ClearPlainObject(&value_->source_object_uuid);
@@ -260,6 +391,7 @@ class DecodedStatisticsClearGuard {
   void Disarm() noexcept{active_=false;}
  private:
   TimeDecodedStatisticsV3* value_;
+  const TimeExecutionControlV3* control_;
   bool active_=true;
 };
 
@@ -295,20 +427,52 @@ void EncodeSortKeyRaw(const TimeValueViewV3& value,
   }
 }
 
-TimeDiagnosticFactV3 ValidateProjectionValueMetadata(
-    const TimeOwnedValueV3& value,bool null_allowed,
-    const TimeValidatedProfileHandleV3* expected_profile=nullptr) noexcept {
-  if(!value.profile||!ValidProfile(*value.profile)||
-     (expected_profile&&!SameProfile(*value.profile,*expected_profile)))
-    return {Error(),"CTI.TEMPORAL.DESCRIPTOR_INVALID","projection_profile"};
+bool EncodeHashRaw(const TimeValueViewV3& value,
+                   std::array<byte,32>* output,
+                   const TimeExecutionControlV3* control = nullptr) noexcept {
+  if(output==nullptr||value.profile==nullptr)return false;
+  std::array<byte,109> preimage{};
+  ArrayClearGuard<109> clear_preimage(
+      &preimage,TimeScrubClassV3::hash_preimage,control);
+  std::memcpy(preimage.data(),"SBTIMH01",8);
+  StoreUuid(preimage.data()+8,value.profile->receipt.catalog_snapshot_uuid);
+  StoreLittle64(preimage.data()+24,value.profile->receipt.catalog_generation);
+  StoreLittle64(preimage.data()+32,value.profile->receipt.registry_generation);
+  std::memcpy(preimage.data()+40,value.profile->comparison_fingerprint.data(),32);
+  StoreUuid(preimage.data()+72,value.profile->identity.hash_policy.uuid);
+  StoreLittle64(preimage.data()+88,value.profile->identity.hash_policy.generation);
+  preimage[96]=value.state==TimeValueStateV3::sql_null?0:1;
+  StoreLittle32(preimage.data()+97,value.state==TimeValueStateV3::sql_null?0:8);
+  std::size_t extent=101;
+  if(value.state==TimeValueStateV3::value){
+    StoreLittle64(preimage.data()+101,value.nanoseconds_since_midnight);
+    extent=109;
+  }
+  const HashSegment segment{preimage.data(),extent};
+  return Sha256Stack(std::span<const HashSegment>(&segment,1),output,control);
+}
+
+TimeDiagnosticFactV3 ValidateProjectionValueState(
+    const TimeOwnedValueV3& value,bool null_allowed) noexcept {
   if(value.state!=TimeValueStateV3::value&&
      value.state!=TimeValueStateV3::sql_null)
     return {Error(),"DATATYPE.NULL_STATE.INVALID","projection_state"};
   if(value.state==TimeValueStateV3::sql_null){
     if(value.nanoseconds_since_midnight!=0)return {Error(),"DATATYPE.NULL_STATE.INVALID","projection_dirty_null"};
     if(!null_allowed)return {Error(),"DATATYPE.NULL_NOT_ADMITTED","projection_null_not_admitted"};
+  }else if(value.nanoseconds_since_midnight>kTimeMaximumNanosecondsV3){
+    return {Error(),"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","projection_range"};
   }
   return {Ok(),{}, {}};
+}
+TimeDiagnosticFactV3 ValidateProjectionValueMetadata(
+    const TimeOwnedValueV3& value,bool null_allowed,
+    const TimeValidatedProfileHandleV3* expected_profile=nullptr,
+    const TimeExecutionControlV3* control=nullptr) noexcept {
+  if(!value.profile||!ValidProfile(*value.profile,control)||
+     (expected_profile&&!SameProfile(*value.profile,*expected_profile)))
+    return {Error(),"CTI.TEMPORAL.DESCRIPTOR_INVALID","projection_profile"};
+  return ValidateProjectionValueState(value,null_allowed);
 }
 } // namespace
 
@@ -478,25 +642,27 @@ TimeIndexCandidateFactsV3 ClassifyTimeIndexCandidateV3(
 
 TimeBytesResultV3 EncodeTimeCoveringValueV3(const TimeOwnedValueV3& value,
                                              const TimeExecutionControlV3& c) noexcept {
-  auto v=ValidateTimeValueViewV3(value.view(),true); if(!v.ok()) return FailBytes(v.diagnostic.diagnostic_code,v.diagnostic.detail);
+  const auto v=ValidateProjectionValueMetadata(value,true,nullptr,&c);
+  if(!v.status.ok())return FailBytes(v.diagnostic_code,v.detail);
   const u64 n=value.state==TimeValueStateV3::sql_null?1:9;
   auto profile_pin=value.profile;
   if(n>c.maximum_allocation_bytes) return FailBytes("RESOURCE.BUDGET_EXCEEDED","covering_allocation");
   if(Cancelled(c)) return FailBytes("PROCESS.CANCELLED","covering_cancelled");
-  TimeBytesResultV3 r; VectorClearGuard clear(&r.bytes);
+  TimeBytesResultV3 r; VectorClearGuard clear(&r.bytes,&c);
   if(!Reserve(&r.bytes,n)) return FailBytes("RESOURCE.BUDGET_EXCEEDED","covering_allocation");
   r.bytes[0]=value.state==TimeValueStateV3::sql_null?0:2;
   if(n==9) StoreLittle64(r.bytes.data()+1,value.nanoseconds_since_midnight);
-  if(!DecodeTimeCoveringValueNoAllocV3(*value.profile,true,r.bytes).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");
+  auto self_check_control=c;self_check_control.cancelled=nullptr;self_check_control.cancellation_context=nullptr;
+  if(!DecodeTimeCoveringValueNoAllocV3(*value.profile,true,r.bytes,self_check_control).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");
   if(Cancelled(c)) return FailBytes("PROCESS.CANCELLED","covering_prepublication");
   r.status=Ok();clear.Disarm();return r;
 }
 
 TimeCoveringValueViewResultV3 DecodeTimeCoveringValueNoAllocV3(
     const TimeValidatedProfileHandleV3& h,bool null_allowed,
-    std::span<const byte> e) noexcept {
+    std::span<const byte> e,const TimeExecutionControlV3& control) noexcept {
   if(e.empty()) return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","minimum_extent");
-  if(!ValidProfile(h)) return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
+  if(!ValidProfile(h,&control)) return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
   TimeValueStateV3 state=TimeValueStateV3::value;u64 value=0;
   PlainObjectClearGuard<TimeValueStateV3> clear_state(&state);
   PlainObjectClearGuard<u64> clear_value(&value);
@@ -507,55 +673,65 @@ TimeCoveringValueViewResultV3 DecodeTimeCoveringValueNoAllocV3(
     state=TimeValueStateV3::value;value=LoadLittle64(e.data()+1);
     if(value>kTimeMaximumNanosecondsV3) return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","value_range");
   } else return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","tag");
-  std::array<byte,9> canonical{};ArrayClearGuard<9> clear_canonical(&canonical);
+  std::array<byte,9> canonical{};ArrayClearGuard<9> clear_canonical(
+      &canonical,TimeScrubClassV3::covering_decode_reencode,&control);
   canonical[0]=state==TimeValueStateV3::sql_null?0:2;
   const std::size_t canonical_extent=state==TimeValueStateV3::sql_null?1:9;
   if(canonical_extent==9)StoreLittle64(canonical.data()+1,value);
   if(e.size()!=canonical_extent||std::memcmp(e.data(),canonical.data(),canonical_extent))
     return FailView<TimeCoveringValueViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_reencode");
+  if(Cancelled(control))
+    return FailView<TimeCoveringValueViewResultV3>("PROCESS.CANCELLED","before_publication");
   TimeCoveringValueViewResultV3 r;r.value={&h,state,value};r.status=Ok();return r;
 }
 
 TimeBytesResultV3 EncodeTimeRangePairV3(const TimeOwnedValueV3& lower,
                                         const TimeOwnedValueV3& upper,
                                         const TimeExecutionControlV3& c) noexcept {
-  auto l=ValidateTimeValueViewV3(lower.view(),false); if(!l.ok()) return FailBytes(l.diagnostic.diagnostic_code,l.diagnostic.detail);
-  auto u=ValidateTimeValueViewV3(upper.view(),false); if(!u.ok()) return FailBytes(u.diagnostic.diagnostic_code,u.diagnostic.detail);
+  const auto l=ValidateProjectionValueMetadata(lower,false,nullptr,&c);
+  if(!l.status.ok())return FailBytes(l.diagnostic_code,l.detail);
+  const auto u=ValidateProjectionValueMetadata(upper,false,lower.profile.get(),&c);
+  if(!u.status.ok())return FailBytes(u.diagnostic_code,u.detail);
   if(!SameProfile(*lower.profile,*upper.profile) || lower.nanoseconds_since_midnight>upper.nanoseconds_since_midnight) return FailBytes("CTI.TEMPORAL.INDEX_KEY_REFUSED","range_order_or_profile");
   auto profile_pin=lower.profile;
   if(216>c.maximum_allocation_bytes) return FailBytes("RESOURCE.BUDGET_EXCEEDED","range_allocation");
   if(Cancelled(c)) return FailBytes("PROCESS.CANCELLED","range_cancelled");
-  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes);
+  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes,&c);
   if(!Reserve(&r.bytes,216)) return FailBytes("RESOURCE.BUDGET_EXCEEDED","range_allocation");
   EncodeSortKeyRaw(lower.view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,r.bytes.data());
   EncodeSortKeyRaw(upper.view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,r.bytes.data()+108);
-  if(!DecodeTimeRangePairNoAllocV3(*lower.profile,r.bytes).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","range_self_check");
+  auto self_check_control=c;self_check_control.cancelled=nullptr;self_check_control.cancellation_context=nullptr;
+  if(!DecodeTimeRangePairNoAllocV3(*lower.profile,r.bytes,self_check_control).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","range_self_check");
   if(Cancelled(c)) return FailBytes("PROCESS.CANCELLED","range_prepublication");
   r.status=Ok();clear.Disarm();return r;
 }
 
 TimeRangePairViewResultV3 DecodeTimeRangePairNoAllocV3(
-    const TimeValidatedProfileHandleV3& h,std::span<const byte> e) noexcept {
+    const TimeValidatedProfileHandleV3& h,std::span<const byte> e,
+    const TimeExecutionControlV3& control) noexcept {
   if(e.size()!=216) return FailView<TimeRangePairViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","extent");
-  auto l=DecodeTimeSortKeyNoAllocV3(h,e.first(108)); if(!l.ok()) return FailView<TimeRangePairViewResultV3>(l.diagnostic.diagnostic_code,l.diagnostic.detail);
-  auto u=DecodeTimeSortKeyNoAllocV3(h,e.subspan(108)); if(!u.ok()) return FailView<TimeRangePairViewResultV3>(u.diagnostic.diagnostic_code,u.diagnostic.detail);
+  auto nested_control=control;nested_control.cancelled=nullptr;nested_control.cancellation_context=nullptr;
+  auto l=DecodeTimeSortKeyNoAllocV3(h,e.first(108),nested_control); if(!l.ok()) return FailView<TimeRangePairViewResultV3>(l.diagnostic.diagnostic_code,l.diagnostic.detail);
+  auto u=DecodeTimeSortKeyNoAllocV3(h,e.subspan(108),nested_control); if(!u.ok()) return FailView<TimeRangePairViewResultV3>(u.diagnostic.diagnostic_code,u.diagnostic.detail);
   if(l.value.state!=TimeValueStateV3::value||u.value.state!=TimeValueStateV3::value||l.value.direction!=TimeSortDirectionV3::ascending||u.value.direction!=TimeSortDirectionV3::ascending||l.value.null_mode!=TimeNullModeV3::nulls_last||u.value.null_mode!=TimeNullModeV3::nulls_last||l.value.nanoseconds_since_midnight>u.value.nanoseconds_since_midnight)
     return FailView<TimeRangePairViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","range_invariant");
+  if(Cancelled(control))
+    return FailView<TimeRangePairViewResultV3>("PROCESS.CANCELLED","before_publication");
   TimeRangePairViewResultV3 r;r.value={l.value.nanoseconds_since_midnight,u.value.nanoseconds_since_midnight,e.first(108),e.subspan(108)};r.status=Ok();return r;
 }
 
 static TimeBytesResultV3 EncodeTimeZoneMapImpl(
     const TimeZoneMapRequestV3& q,u64 provider_max_key_bytes,
     const TimeExecutionControlV3& control,bool acquire_profile_pin) noexcept {
-  if(!q.profile||!ValidProfile(*q.profile)) return FailBytes("CTI.TEMPORAL.DESCRIPTOR_INVALID","zone_profile");
+  if(!q.profile||!ValidProfile(*q.profile,&control)) return FailBytes("CTI.TEMPORAL.DESCRIPTOR_INVALID","zone_profile");
   if(q.value_count>std::numeric_limits<u64>::max()-q.null_count) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_count_overflow");
   const bool has=q.value_count!=0;
   if(has && (!q.minimum||!q.maximum)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_extrema_missing");
   if(!has && (q.minimum||q.maximum)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_extrema_for_empty");
   if(has) {
-    const auto lo=ValidateProjectionValueMetadata(*q.minimum,false,q.profile.get());
+    const auto lo=ValidateProjectionValueMetadata(*q.minimum,false,q.profile.get(),&control);
     if(!lo.status.ok())return FailBytes(lo.diagnostic_code,lo.detail);
-    const auto hi=ValidateProjectionValueMetadata(*q.maximum,false,q.profile.get());
+    const auto hi=ValidateProjectionValueMetadata(*q.maximum,false,q.profile.get(),&control);
     if(!hi.status.ok())return FailBytes(hi.diagnostic_code,hi.detail);
   }
   const u64 n=has?312:96;
@@ -566,7 +742,7 @@ static TimeBytesResultV3 EncodeTimeZoneMapImpl(
   if(Cancelled(control)) return FailBytes("PROCESS.CANCELLED","zone_cancelled");
   if(has&&q.minimum->nanoseconds_since_midnight>q.maximum->nanoseconds_since_midnight)
     return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_extrema_order");
-  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes);
+  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes,&control);
   if(!Reserve(&r.bytes,n)) return FailBytes("RESOURCE.BUDGET_EXCEEDED","zone_allocation");
   std::memcpy(r.bytes.data(),kZoneMagic,8);StoreLittle16(r.bytes.data()+8,1);StoreLittle16(r.bytes.data()+10,96);StoreLittle32(r.bytes.data()+12,static_cast<u32>(n));
   StoreLittle32(r.bytes.data()+16,has?5u:4u);StoreLittle64(r.bytes.data()+24,q.null_count);StoreLittle64(r.bytes.data()+32,q.value_count);
@@ -576,9 +752,12 @@ static TimeBytesResultV3 EncodeTimeZoneMapImpl(
     EncodeSortKeyRaw(q.minimum->view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,r.bytes.data()+96);
     EncodeSortKeyRaw(q.maximum->view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,r.bytes.data()+204);
   }
-  std::array<byte,32> digest{};ArrayClearGuard<32> clear_digest(&digest);if(!HashRecord(kZoneDomain,r.bytes,64,&digest)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_hash_provider");
+  std::array<byte,32> digest{};ArrayClearGuard<32> clear_digest(
+      &digest,TimeScrubClassV3::hash_digest,&control);
+  if(!HashRecord(kZoneDomain,r.bytes,64,&digest,&control)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_hash_provider");
   std::memcpy(r.bytes.data()+64,digest.data(),32);
-  if(!DecodeTimeZoneMapNoAllocV3(*q.profile,r.bytes).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_self_check");
+  auto self_check_control=control;self_check_control.cancelled=nullptr;self_check_control.cancellation_context=nullptr;
+  if(!DecodeTimeZoneMapNoAllocV3(*q.profile,r.bytes,self_check_control).ok()) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_self_check");
   if(Cancelled(control)) return FailBytes("PROCESS.CANCELLED","zone_prepublication");
   r.status=Ok();clear.Disarm();return r;
 }
@@ -588,14 +767,15 @@ TimeBytesResultV3 EncodeTimeZoneMapV3(const TimeZoneMapRequestV3& q) noexcept {
 }
 
 TimeZoneMapViewResultV3 DecodeTimeZoneMapNoAllocV3(
-    const TimeValidatedProfileHandleV3& h,std::span<const byte> e) noexcept {
+    const TimeValidatedProfileHandleV3& h,std::span<const byte> e,
+    const TimeExecutionControlV3& control) noexcept {
   if((e.size()!=96&&e.size()!=312)||std::memcmp(e.data(),kZoneMagic,8)||LoadLittle16(e.data()+8)!=1||LoadLittle16(e.data()+10)!=96||LoadLittle32(e.data()+12)!=e.size()||LoadLittle32(e.data()+20)!=0)
     return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_structure");
   const u32 flags=LoadLittle32(e.data()+16);
   if((flags&~u32{5})!=0)
     return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_reserved_flags");
-  if(!HashEquals(kZoneDomain,e,64)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_hash");
-  if(!ValidProfile(h)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
+  if(!HashEquals(kZoneDomain,e,64,&control)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_hash");
+  if(!ValidProfile(h,&control)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
   const u64 nc=LoadLittle64(e.data()+24),vc=LoadLittle64(e.data()+32);
   if(vc>std::numeric_limits<u64>::max()-nc||flags!=(vc?5u:4u)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_counts_flags");
   u64 minimum_nanoseconds=0,maximum_nanoseconds=0;PlainObjectClearGuard<u64> clear_minimum(&minimum_nanoseconds);PlainObjectClearGuard<u64> clear_maximum(&maximum_nanoseconds);std::span<const byte> minimum_key,maximum_key;
@@ -603,7 +783,8 @@ TimeZoneMapViewResultV3 DecodeTimeZoneMapNoAllocV3(
     if(e.size()!=96||LoadLittle64(e.data()+40)||LoadLittle64(e.data()+48)||LoadLittle32(e.data()+56)||LoadLittle32(e.data()+60)) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_empty");
   } else {
     if(e.size()!=312||LoadLittle32(e.data()+56)!=108||LoadLittle32(e.data()+60)!=108) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_offsets");
-    auto lo=DecodeTimeSortKeyNoAllocV3(h,e.subspan(96,108));auto hi=DecodeTimeSortKeyNoAllocV3(h,e.subspan(204,108));
+    auto nested_control=control;nested_control.cancelled=nullptr;nested_control.cancellation_context=nullptr;
+    auto lo=DecodeTimeSortKeyNoAllocV3(h,e.subspan(96,108),nested_control);auto hi=DecodeTimeSortKeyNoAllocV3(h,e.subspan(204,108),nested_control);
     if(!lo.ok())return FailView<TimeZoneMapViewResultV3>(lo.diagnostic.diagnostic_code,lo.diagnostic.detail);
     if(!hi.ok())return FailView<TimeZoneMapViewResultV3>(hi.diagnostic.diagnostic_code,hi.diagnostic.detail);
     if(lo.value.state!=TimeValueStateV3::value||hi.value.state!=TimeValueStateV3::value||lo.value.direction!=TimeSortDirectionV3::ascending||hi.value.direction!=TimeSortDirectionV3::ascending||lo.value.null_mode!=TimeNullModeV3::nulls_last||hi.value.null_mode!=TimeNullModeV3::nulls_last)
@@ -612,7 +793,8 @@ TimeZoneMapViewResultV3 DecodeTimeZoneMapNoAllocV3(
     if(ld!=lo.value.nanoseconds_since_midnight||ud!=hi.value.nanoseconds_since_midnight||ld>ud) return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_extrema");
     minimum_nanoseconds=ld;maximum_nanoseconds=ud;minimum_key=e.subspan(96,108);maximum_key=e.subspan(204,108);
   }
-  std::array<byte,312> canonical{};ArrayClearGuard<312> clear_canonical(&canonical);
+  std::array<byte,312> canonical{};ArrayClearGuard<312> clear_canonical(
+      &canonical,TimeScrubClassV3::zone_map_decode_reencode,&control);
   std::memcpy(canonical.data(),kZoneMagic,8);StoreLittle16(canonical.data()+8,1);
   StoreLittle16(canonical.data()+10,96);StoreLittle32(canonical.data()+12,static_cast<u32>(e.size()));
   StoreLittle32(canonical.data()+16,vc?5u:4u);StoreLittle64(canonical.data()+24,nc);StoreLittle64(canonical.data()+32,vc);
@@ -623,12 +805,15 @@ TimeZoneMapViewResultV3 DecodeTimeZoneMapNoAllocV3(
     EncodeSortKeyRaw({&h,TimeValueStateV3::value,minimum_nanoseconds},TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,canonical.data()+96);
     EncodeSortKeyRaw({&h,TimeValueStateV3::value,maximum_nanoseconds},TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,canonical.data()+204);
   }
-  std::array<byte,32> canonical_hash{};ArrayClearGuard<32> clear_hash(&canonical_hash);
-  if(!HashRecord(kZoneDomain,std::span<const byte>(canonical.data(),e.size()),64,&canonical_hash))
+  std::array<byte,32> canonical_hash{};ArrayClearGuard<32> clear_hash(
+      &canonical_hash,TimeScrubClassV3::hash_digest,&control);
+  if(!HashRecord(kZoneDomain,std::span<const byte>(canonical.data(),e.size()),64,&canonical_hash,&control))
     return FailView<TimeZoneMapViewResultV3>("RESOURCE.BUDGET_EXCEEDED","zone_reencode_hash");
   std::memcpy(canonical.data()+64,canonical_hash.data(),32);
   if(std::memcmp(e.data(),canonical.data(),e.size()))
     return FailView<TimeZoneMapViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_reencode");
+  if(Cancelled(control))
+    return FailView<TimeZoneMapViewResultV3>("PROCESS.CANCELLED","before_publication");
   TimeZoneMapViewResultV3 r;r.value={&h,nc,vc,minimum_nanoseconds,maximum_nanoseconds,minimum_key,maximum_key};r.status=Ok();return r;
 }
 
@@ -669,8 +854,8 @@ bool EncodeStatisticsRaw(const TimeStatisticsProjectionV3& p,
                     (p.value_count ? 4u : 0u) |
                     (p.mcv.empty() ? 0u : 32u);
   StoreLittle32(b + 16, flags);
-  StoreLittle32(b + 20, p.histogram.size());
-  StoreLittle32(b + 24, p.mcv.size());
+  StoreLittle32(b + 20, static_cast<u32>(p.histogram.size()));
+  StoreLittle32(b + 24, static_cast<u32>(p.mcv.size()));
   PutStatisticsIdentity(b + 32, profile);
   // Bytes 264..279 are reserved zero by the SBTIMS01 authority.
   StoreUuid(b + 280, p.statistics_uuid);
@@ -717,15 +902,17 @@ bool EncodeStatisticsRaw(const TimeStatisticsProjectionV3& p,
     off += 48;
   }
   std::array<byte, 32> digest{};
-  ArrayClearGuard<32> clear_digest(&digest);
-  if (!HashRecord(kStatisticsDomain, *bytes, 424, &digest)) return false;
+  ArrayClearGuard<32> clear_digest(
+      &digest,TimeScrubClassV3::hash_digest,control);
+  if (!HashRecord(kStatisticsDomain, *bytes, 424, &digest,control)) return false;
   std::memcpy(b + 424, digest.data(), 32);
   return true;
 }
 
 bool ValidateStatisticsRecordNoAlloc(
     const TimeValidatedProfileHandleV3& profile,
-    std::span<const byte> e) noexcept {
+    std::span<const byte> e,
+    const TimeExecutionControlV3* control = nullptr) noexcept {
   if (e.size() < kTimeStatisticsHeaderBytesV3 ||
       e.size() > kTimeStatisticsMaximumBytesV3 ||
       std::memcmp(e.data(), kStatisticsMagic, 8) ||
@@ -736,7 +923,7 @@ bool ValidateStatisticsRecordNoAlloc(
   const u32 hc = LoadLittle32(e.data() + 20), mc = LoadLittle32(e.data() + 24);
   const u64 expected = kTimeStatisticsHeaderBytesV3 + 16ull * hc + 48ull * mc;
   if (hc > 64 || mc > 64 || expected != e.size() ||
-      !HashEquals(kStatisticsDomain, e, 424) ||
+      !HashEquals(kStatisticsDomain, e, 424,control) ||
       !StatisticsIdentityEquals(e.data() + 32, profile) ||
       std::any_of(e.begin() + 264, e.begin() + 280,
                   [](byte value) { return value != 0; }) ||
@@ -774,6 +961,37 @@ bool ValidateStatisticsRecordNoAlloc(
   if (flags != want || e[376] != (value_count ? 1 : 0) ||
       e[377] != (value_count ? 1 : 0) || e[378] != 0 || e[379] != 1)
     return false;
+  std::array<byte,kTimeStatisticsMaximumBytesV3> canonical{};
+  ArrayClearGuard<kTimeStatisticsMaximumBytesV3> clear_canonical(
+      &canonical,TimeScrubClassV3::statistics_decode_reencode,control);
+  std::memcpy(canonical.data(),kStatisticsMagic,8);
+  StoreLittle16(canonical.data()+8,1);
+  StoreLittle16(canonical.data()+10,kTimeStatisticsHeaderBytesV3);
+  StoreLittle32(canonical.data()+12,static_cast<u32>(expected));
+  StoreLittle32(canonical.data()+16,flags);
+  StoreLittle32(canonical.data()+20,hc);
+  StoreLittle32(canonical.data()+24,mc);
+  PutStatisticsIdentity(canonical.data()+32,profile);
+  StoreUuid(canonical.data()+280,statistics_uuid);
+  StoreUuid(canonical.data()+296,source_uuid);
+  StoreLittle64(canonical.data()+312,schema_epoch);
+  StoreLittle64(canonical.data()+320,collection_epoch);
+  StoreLittle64(canonical.data()+328,security_epoch);
+  StoreLittle64(canonical.data()+336,row_count);
+  StoreLittle64(canonical.data()+344,null_count);
+  StoreLittle64(canonical.data()+352,value_count);
+  canonical[376]=value_count?1:0;
+  canonical[377]=value_count?1:0;
+  canonical[379]=1;
+  if(value_count){
+    StoreLittle64(canonical.data()+384,minimum);
+    StoreLittle64(canonical.data()+392,maximum);
+  }
+  StoreLittle64(canonical.data()+400,0x8000000000000000ULL);
+  StoreUuid(canonical.data()+408,provider_uuid);
+  std::memcpy(canonical.data()+456,profile.profile_fingerprint.data(),32);
+  StoreUuid(canonical.data()+488,kPrivacyUuid);
+  StoreLittle64(canonical.data()+504,1);
   std::size_t off = kTimeStatisticsHeaderBytesV3;
   u64 prior_bound = 0, prior_count = 0;
   bool first = true;
@@ -783,10 +1001,14 @@ bool ValidateStatisticsRecordNoAlloc(
     if (bound < minimum || bound > maximum || (!first && bound <= prior_bound) ||
         cumulative < prior_count || cumulative > value_count) return false;
     prior_bound = bound; prior_count = cumulative; first = false;
+    StoreLittle64(canonical.data()+off,bound);
+    StoreLittle64(canonical.data()+off+8,cumulative);
   }
   if (hc && (prior_bound != maximum || prior_count != value_count)) return false;
   u64 prior_frequency = std::numeric_limits<u64>::max();
   std::array<byte, 32> prior_hash{};
+  ArrayClearGuard<32> clear_prior_hash(
+      &prior_hash,TimeScrubClassV3::statistics_prior_hash,control);
   first = true;
   u64 frequency_sum = 0;
   for (u32 i = 0; i < mc; ++i, off += 48) {
@@ -800,8 +1022,20 @@ bool ValidateStatisticsRecordNoAlloc(
         frequency > std::numeric_limits<u64>::max() - frequency_sum) return false;
     frequency_sum += frequency; prior_frequency = frequency;
     std::memcpy(prior_hash.data(), hash, 32); first = false;
+    std::memcpy(canonical.data()+off,hash,32);
+    StoreLittle64(canonical.data()+off+32,frequency);
+    StoreLittle32(canonical.data()+off+40,i+1);
+    StoreLittle32(canonical.data()+off+44,1);
   }
-  return frequency_sum <= value_count;
+  if(frequency_sum>value_count)return false;
+  std::array<byte,32> digest{};
+  ArrayClearGuard<32> clear_digest(
+      &digest,TimeScrubClassV3::hash_digest,control);
+  if(!HashRecord(kStatisticsDomain,
+       std::span<const byte>(canonical.data(),static_cast<std::size_t>(expected)),
+       424,&digest,control))return false;
+  std::memcpy(canonical.data()+424,digest.data(),32);
+  return std::memcmp(e.data(),canonical.data(),static_cast<std::size_t>(expected))==0;
 }
 
 }  // namespace
@@ -814,7 +1048,7 @@ static TimeStatisticsDecodeResultV3 DecodeTimeStatisticsProjectionImpl(
 
 TimeBytesResultV3 EncodeTimeStatisticsProjectionV3(
     const TimeStatisticsProjectionV3& p, const TimeExecutionControlV3& c) noexcept {
-  if (!p.profile || !ValidProfile(*p.profile)) return FailBytes("CTI.TEMPORAL.DESCRIPTOR_INVALID", "statistics_profile");
+  if (!p.profile || !ValidProfile(*p.profile,&c)) return FailBytes("CTI.TEMPORAL.DESCRIPTOR_INVALID", "statistics_profile");
   if (!p.provider_evidence || !IsV7(p.provider_evidence->provider_evidence_uuid)) return FailBytes("CTI.TEMPORAL.DESCRIPTOR_INVALID", "statistics_provider_evidence");
   const auto provider_uuid = p.provider_evidence->provider_evidence_uuid;
   if (p.histogram.size() > 64 || p.mcv.size() > 64) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "statistics_count");
@@ -834,7 +1068,11 @@ TimeBytesResultV3 EncodeTimeStatisticsProjectionV3(
     prior_bound = x.inclusive_upper_nanoseconds; prior_count = x.cumulative_count; first = false;
   }
   if (!p.histogram.empty() && (prior_bound != p.maximum_nanoseconds || prior_count != p.value_count)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "histogram_total");
-  u64 sum = 0, prior_frequency = std::numeric_limits<u64>::max(); std::array<byte,32> prior_hash{}; first = true;
+  u64 sum = 0, prior_frequency = std::numeric_limits<u64>::max();
+  std::array<byte,32> prior_hash{};
+  ArrayClearGuard<32> clear_prior_hash(
+      &prior_hash,TimeScrubClassV3::statistics_prior_hash,&c);
+  first = true;
   for (const auto& x : p.mcv) {
     if (!x.frequency || x.frequency > prior_frequency || (!first && x.frequency == prior_frequency && !std::lexicographical_compare(prior_hash.begin(), prior_hash.end(), x.value_hash.begin(), x.value_hash.end())) || x.frequency > std::numeric_limits<u64>::max() - sum)
       return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "mcv");
@@ -845,10 +1083,10 @@ TimeBytesResultV3 EncodeTimeStatisticsProjectionV3(
   if (n > c.maximum_allocation_bytes) return FailBytes("RESOURCE.BUDGET_EXCEEDED", "statistics_allocation");
   if (Cancelled(c)) return FailBytes("PROCESS.CANCELLED", "statistics_cancelled");
   auto profile_pin = p.profile; auto evidence_pin = p.provider_evidence;
-  TimeBytesResultV3 r; VectorClearGuard clear(&r.bytes); bool cancelled_between_groups = false;
+  TimeBytesResultV3 r; VectorClearGuard clear(&r.bytes,&c); bool cancelled_between_groups = false;
   if (!EncodeStatisticsRaw(p, *profile_pin, provider_uuid, &r.bytes, &c, &cancelled_between_groups))
     return cancelled_between_groups ? FailBytes("PROCESS.CANCELLED", "statistics_between_histogram_and_mcv") : FailBytes("RESOURCE.BUDGET_EXCEEDED", "statistics_allocation");
-  if (!ValidateStatisticsRecordNoAlloc(*profile_pin, r.bytes)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "statistics_self_check");
+  if (!ValidateStatisticsRecordNoAlloc(*profile_pin, r.bytes,&c)) return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "statistics_self_check");
   if (Cancelled(c)) return FailBytes("PROCESS.CANCELLED", "statistics_prepublication");
   r.status = Ok(); clear.Disarm(); return r;
 }
@@ -857,13 +1095,13 @@ static TimeStatisticsDecodeResultV3 DecodeTimeStatisticsProjectionImpl(
     const std::shared_ptr<const TimeValidatedProfileHandleV3>& profile,
     std::span<const byte> e, const TimeExecutionControlV3& c,
     bool retain_profile) noexcept {
-  if (!profile || !ValidProfile(*profile)) return FailView<TimeStatisticsDecodeResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID", "profile");
-  if (!ValidateStatisticsRecordNoAlloc(*profile, e)) return FailView<TimeStatisticsDecodeResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "statistics_record");
+  if (!profile || !ValidProfile(*profile,&c)) return FailView<TimeStatisticsDecodeResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID", "profile");
+  if (!ValidateStatisticsRecordNoAlloc(*profile, e,&c)) return FailView<TimeStatisticsDecodeResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID", "statistics_record");
   const u32 hc = LoadLittle32(e.data() + 20), mc = LoadLittle32(e.data() + 24);
   if (e.size() > c.maximum_allocation_bytes) return FailView<TimeStatisticsDecodeResultV3>("RESOURCE.BUDGET_EXCEEDED", "statistics_allocation");
   if (Cancelled(c)) return FailView<TimeStatisticsDecodeResultV3>("PROCESS.CANCELLED");
   std::shared_ptr<const TimeValidatedProfileHandleV3> profile_pin; if (retain_profile) profile_pin = profile;
-  TimeStatisticsDecodeResultV3 r; auto& s = r.statistics; DecodedStatisticsClearGuard clear(&s);
+  TimeStatisticsDecodeResultV3 r; auto& s = r.statistics; DecodedStatisticsClearGuard clear(&s,&c);
   s.statistics_uuid = LoadUuid(e.data() + 280);
   s.source_object_uuid = LoadUuid(e.data() + 296);
   s.provider_evidence_uuid = LoadUuid(e.data() + 408);
@@ -956,10 +1194,13 @@ TimeStatisticsReadAdmissionResultV3 AdmitTimeStatisticsReadV3(
     result.diagnostic = decoded.diagnostic;
     return result;
   }
+  DecodedStatisticsClearGuard decoded_refusal_clear(
+      &decoded.statistics,&control);
   switch (ResolveTimeStatisticsReceivingFactsV3(decoded.statistics, current)) {
     case TimeStatisticsReceivingDispositionV3::admitted:
       result.disposition = D::admitted;
       result.statistics = std::move(decoded.statistics);
+      decoded_refusal_clear.Disarm();
       return result;
     case TimeStatisticsReceivingDispositionV3::schema_epoch_mismatch:
       result.disposition = D::schema_epoch_mismatch;
@@ -1004,48 +1245,62 @@ bool BackupIdentityEquals(const byte* p,const TimeValidatedProfileHandleV3& h) n
 
 TimeBytesResultV3 EncodeTimeBackupTupleV3(const TimeOwnedValueV3& v,
                                           const TimeExecutionControlV3& c) noexcept {
-  auto chk=ValidateTimeValueViewV3(v.view(),true);if(!chk.ok())return FailBytes(chk.diagnostic.diagnostic_code,chk.diagnostic.detail);const u64 n=v.state==TimeValueStateV3::sql_null?296:304;
+  const auto chk=ValidateProjectionValueMetadata(v,true,nullptr,&c);if(!chk.status.ok())return FailBytes(chk.diagnostic_code,chk.detail);const u64 n=v.state==TimeValueStateV3::sql_null?296:304;
   auto profile_pin=v.profile;
   if(n>c.maximum_allocation_bytes)return FailBytes("RESOURCE.BUDGET_EXCEEDED","backup_allocation");
   if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","backup_cancelled");
-  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes);
+  TimeBytesResultV3 r;VectorClearGuard clear(&r.bytes,&c);
   if(!Reserve(&r.bytes,n))return FailBytes("RESOURCE.BUDGET_EXCEEDED","backup_allocation");
-  std::memcpy(r.bytes.data(),kBackupMagic,8);StoreLittle16(r.bytes.data()+8,1);StoreLittle16(r.bytes.data()+10,296);StoreLittle32(r.bytes.data()+12,n);PutBackupIdentity(r.bytes.data()+16,*v.profile);
+  std::memcpy(r.bytes.data(),kBackupMagic,8);StoreLittle16(r.bytes.data()+8,1);StoreLittle16(r.bytes.data()+10,296);StoreLittle32(r.bytes.data()+12,static_cast<u32>(n));PutBackupIdentity(r.bytes.data()+16,*v.profile);
   r.bytes[256]=v.state==TimeValueStateV3::sql_null?0:1;r.bytes[257]=v.state==TimeValueStateV3::sql_null?0:8;if(n==304)StoreLittle64(r.bytes.data()+296,v.nanoseconds_since_midnight);
-  std::array<byte,32>d{};ArrayClearGuard<32> clear_digest(&d);if(!HashRecord(kBackupDomain,r.bytes,264,&d))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_hash_provider");std::memcpy(r.bytes.data()+264,d.data(),32);
-  if(!DecodeTimeBackupTupleNoAllocV3(*v.profile,true,r.bytes).ok())return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_self_check");
+  std::array<byte,32>d{};ArrayClearGuard<32> clear_digest(
+      &d,TimeScrubClassV3::hash_digest,&c);
+  if(!HashRecord(kBackupDomain,r.bytes,264,&d,&c))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_hash_provider");
+  std::memcpy(r.bytes.data()+264,d.data(),32);
+  auto self_check_control=c;self_check_control.cancelled=nullptr;self_check_control.cancellation_context=nullptr;
+  if(!DecodeTimeBackupTupleNoAllocV3(*v.profile,true,r.bytes,self_check_control).ok())return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_self_check");
   if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","backup_prepublication");
   r.status=Ok();clear.Disarm();return r;
 }
 
 TimeBackupTupleViewResultV3 DecodeTimeBackupTupleNoAllocV3(
-    const TimeValidatedProfileHandleV3& h,bool null_allowed,std::span<const byte> e) noexcept {
+    const TimeValidatedProfileHandleV3& h,bool null_allowed,
+    std::span<const byte> e,const TimeExecutionControlV3& control) noexcept {
   if((e.size()!=296&&e.size()!=304)||std::memcmp(e.data(),kBackupMagic,8)||LoadLittle16(e.data()+8)!=1||LoadLittle16(e.data()+10)!=296||LoadLittle32(e.data()+12)!=e.size()||LoadLittle32(e.data()+116)||e[258]||std::any_of(e.begin()+259,e.begin()+264,[](byte b){return b!=0;}))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_structure");
-  if(!HashEquals(kBackupDomain,e,264))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_hash");
-  if(!ValidProfile(h))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
+  if(!HashEquals(kBackupDomain,e,264,&control))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_hash");
+  if(!ValidProfile(h,&control))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","profile");
   if(!BackupIdentityEquals(e.data()+16,h))return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","backup_identity");
   TimeValueStateV3 state=TimeValueStateV3::value;u64 value=0;PlainObjectClearGuard<TimeValueStateV3> clear_state(&state);PlainObjectClearGuard<u64> clear_value(&value);
   if(e[256]==0){if(e[257]!=0||e.size()!=296)return FailView<TimeBackupTupleViewResultV3>("DATATYPE.NULL_STATE.INVALID","backup_null_pair");if(!null_allowed)return FailView<TimeBackupTupleViewResultV3>("DATATYPE.NULL_NOT_ADMITTED");state=TimeValueStateV3::sql_null;}
   else if(e[256]==1){if(e[257]!=8||e.size()!=304)return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_value_pair");state=TimeValueStateV3::value;value=LoadLittle64(e.data()+296);if(value>kTimeMaximumNanosecondsV3)return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_range");}
   else return FailView<TimeBackupTupleViewResultV3>("DATATYPE.NULL_STATE.INVALID","backup_state");
   const auto component=state==TimeValueStateV3::sql_null?std::span<const byte>{}:e.subspan(296,8);
+  auto nested_control=control;nested_control.cancelled=nullptr;nested_control.cancellation_context=nullptr;
   const auto decoded_component=DecodeCanonicalTimeComponentNoAllocV3(
-      h,state,null_allowed,component);
-  if(!decoded_component.ok()||decoded_component.value.state!=state||
+      h,state,null_allowed,component,nested_control);
+  if(!decoded_component.ok())
+    return FailView<TimeBackupTupleViewResultV3>(
+        decoded_component.diagnostic.diagnostic_code,
+        decoded_component.diagnostic.detail);
+  if(decoded_component.value.state!=state||
      decoded_component.value.nanoseconds_since_midnight!=value)
     return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_component_decode");
-  std::array<byte,304> canonical{};ArrayClearGuard<304> clear_canonical(&canonical);
+  std::array<byte,304> canonical{};ArrayClearGuard<304> clear_canonical(
+      &canonical,TimeScrubClassV3::backup_decode_reencode,&control);
   std::memcpy(canonical.data(),kBackupMagic,8);StoreLittle16(canonical.data()+8,1);
   StoreLittle16(canonical.data()+10,296);StoreLittle32(canonical.data()+12,static_cast<u32>(e.size()));
   PutBackupIdentity(canonical.data()+16,h);canonical[256]=state==TimeValueStateV3::sql_null?0:1;
   canonical[257]=state==TimeValueStateV3::sql_null?0:8;
   if(e.size()==304)StoreLittle64(canonical.data()+296,value);
-  std::array<byte,32> canonical_hash{};ArrayClearGuard<32> clear_hash(&canonical_hash);
-  if(!HashRecord(kBackupDomain,std::span<const byte>(canonical.data(),e.size()),264,&canonical_hash))
+  std::array<byte,32> canonical_hash{};ArrayClearGuard<32> clear_hash(
+      &canonical_hash,TimeScrubClassV3::hash_digest,&control);
+  if(!HashRecord(kBackupDomain,std::span<const byte>(canonical.data(),e.size()),264,&canonical_hash,&control))
     return FailView<TimeBackupTupleViewResultV3>("RESOURCE.BUDGET_EXCEEDED","backup_reencode_hash");
   std::memcpy(canonical.data()+264,canonical_hash.data(),32);
   if(std::memcmp(e.data(),canonical.data(),e.size()))
     return FailView<TimeBackupTupleViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","backup_reencode");
+  if(Cancelled(control))
+    return FailView<TimeBackupTupleViewResultV3>("PROCESS.CANCELLED","before_publication");
   TimeBackupTupleViewResultV3 r;r.tuple={&h,state,value};r.status=Ok();return r;
 }
 
@@ -1054,8 +1309,8 @@ TimeIndexProjectionResultV3 ProjectTimeIndexValueV3(
   TimeIndexResolutionV3 resolution;
   resolution.family=q.compatibility.family;
   if(!q.value||!q.value->profile)return FailIndex(resolution,"CTI.TEMPORAL.DESCRIPTOR_INVALID","value_or_profile_missing");
-  auto profile_checked=ValidateTimeProfileHandleV3(*q.value->profile);
-  if(!profile_checked.ok())return FailIndex(resolution,"CTI.TEMPORAL.DESCRIPTOR_INVALID","profile_invalid");
+  if(!ValidProfile(*q.value->profile,&q.control))
+    return FailIndex(resolution,"CTI.TEMPORAL.DESCRIPTOR_INVALID","profile_invalid");
   const auto requested_admission =
       AdmitTimeIndexCompatibilityV3(q.compatibility);
   if (!requested_admission.admitted)
@@ -1092,11 +1347,11 @@ TimeIndexProjectionResultV3 ProjectTimeIndexValueV3(
       default:return FailIndex(resolution,"CTI.TEMPORAL.INDEX_KEY_REFUSED","temporary_mode");
     }
   }
-  const auto checked=ValidateProjectionValueMetadata(*q.value,true);
+  const auto checked=ValidateProjectionValueState(*q.value,true);
   if(!checked.status.ok())return FailIndex(resolution,checked.diagnostic_code,checked.detail);
   if(resolution.projection==TimeProjectionKindV3::range_pair){
     if(!q.upper_value)return FailIndex(resolution,"CTI.TEMPORAL.INDEX_KEY_REFUSED","upper_missing");
-    const auto upper=ValidateProjectionValueMetadata(*q.upper_value,false,q.value->profile.get());
+    const auto upper=ValidateProjectionValueMetadata(*q.upper_value,false,q.value->profile.get(),&q.control);
     if(!upper.status.ok())return FailIndex(resolution,upper.diagnostic_code,upper.detail);
     if(q.value->state!=TimeValueStateV3::value)
       return FailIndex(resolution,"DATATYPE.NULL_NOT_ADMITTED","range_lower_null");
@@ -1112,9 +1367,9 @@ TimeIndexProjectionResultV3 ProjectTimeIndexValueV3(
     if(q.zone_map->value_count){
       if(!q.zone_map->minimum||!q.zone_map->maximum)
         return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","zone_extrema_missing");
-      const auto lo=ValidateProjectionValueMetadata(*q.zone_map->minimum,false,q.zone_map->profile.get());
+      const auto lo=ValidateProjectionValueMetadata(*q.zone_map->minimum,false,q.zone_map->profile.get(),&q.control);
       if(!lo.status.ok())return FailIndex(resolution,lo.diagnostic_code,lo.detail);
-      const auto hi=ValidateProjectionValueMetadata(*q.zone_map->maximum,false,q.zone_map->profile.get());
+      const auto hi=ValidateProjectionValueMetadata(*q.zone_map->maximum,false,q.zone_map->profile.get(),&q.control);
       if(!hi.status.ok())return FailIndex(resolution,hi.diagnostic_code,hi.detail);
     }
   }
@@ -1134,38 +1389,38 @@ TimeIndexProjectionResultV3 ProjectTimeIndexValueV3(
   if(provider_limit<need)return FailIndex(resolution,"CTI.TEMPORAL.INDEX_KEY_REFUSED","provider_budget");
   if(q.control.maximum_allocation_bytes<need)return FailIndex(resolution,"RESOURCE.BUDGET_EXCEEDED","allocation_grant");
   if(Cancelled(q.control))return FailIndex(resolution,"PROCESS.CANCELLED","before_allocation");
-  TimeBytesResultV3 b;VectorClearGuard clear_bytes(&b.bytes);
+  TimeBytesResultV3 b;VectorClearGuard clear_bytes(&b.bytes,&q.control);
   if(resolution.projection==TimeProjectionKindV3::zone_map){
     TimeExecutionControlV3 inner=q.control;inner.cancelled=nullptr;inner.cancellation_context=nullptr;
     b=EncodeTimeZoneMapImpl(*q.zone_map,provider_limit,inner,false);
   }else{
     if(!Reserve(&b.bytes,need))return FailIndex(resolution,"RESOURCE.BUDGET_EXCEEDED","allocation");
+    auto self_check_control=q.control;self_check_control.cancelled=nullptr;self_check_control.cancellation_context=nullptr;
     switch(resolution.projection){
       case TimeProjectionKindV3::equality_hash:{
-        TimeExecutionControlV3 inner{32, nullptr, nullptr};
-        const auto written = HashTimeValueIntoNoAllocV3(
-            *q.value, b.bytes.data(), b.bytes.size(), inner);
-        if(!written.ok())return FailIndex(resolution,
-            written.diagnostic.diagnostic_code,written.diagnostic.detail);
-        break;}
+        std::array<byte,32> hash{};ArrayClearGuard<32> clear_hash(
+            &hash,TimeScrubClassV3::hash_digest,&q.control);
+        if(!EncodeHashRaw(q.value->view(),&hash,&q.control))
+          return FailIndex(resolution,"RESOURCE.BUDGET_EXCEEDED","hash_provider");
+        std::memcpy(b.bytes.data(),hash.data(),32);break;}
       case TimeProjectionKindV3::sort_key:{
         TimeSortDirectionV3 d=TimeSortDirectionV3::ascending;TimeNullModeV3 n=TimeNullModeV3::nulls_last;
         if(q.mode==TimeProjectionModeV3::ascending_nulls_first)n=TimeNullModeV3::nulls_first;
         else if(q.mode==TimeProjectionModeV3::descending_nulls_first){d=TimeSortDirectionV3::descending;n=TimeNullModeV3::nulls_first;}
         else if(q.mode==TimeProjectionModeV3::descending_nulls_last)d=TimeSortDirectionV3::descending;
         EncodeSortKeyRaw(q.value->view(),d,n,b.bytes.data());
-        if(!DecodeTimeSortKeyNoAllocV3(*q.value->profile,b.bytes).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","sort_key_self_check");
+        if(!DecodeTimeSortKeyNoAllocV3(*q.value->profile,b.bytes,self_check_control).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","sort_key_self_check");
         break;}
       case TimeProjectionKindV3::covering_value:
         b.bytes[0]=q.value->state==TimeValueStateV3::sql_null?0:2;
         if(need==9)StoreLittle64(b.bytes.data()+1,q.value->nanoseconds_since_midnight);
-        if(!DecodeTimeCoveringValueNoAllocV3(*q.value->profile,true,b.bytes).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");
+        if(!DecodeTimeCoveringValueNoAllocV3(*q.value->profile,true,b.bytes,self_check_control).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");
         break;
       case TimeProjectionKindV3::range_pair:
         if(q.value->nanoseconds_since_midnight>q.upper_value->nanoseconds_since_midnight)return FailIndex(resolution,"CTI.TEMPORAL.INDEX_KEY_REFUSED","range_order");
         EncodeSortKeyRaw(q.value->view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,b.bytes.data());
         EncodeSortKeyRaw(q.upper_value->view(),TimeSortDirectionV3::ascending,TimeNullModeV3::nulls_last,b.bytes.data()+108);
-        if(!DecodeTimeRangePairNoAllocV3(*q.value->profile,b.bytes).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","range_self_check");
+        if(!DecodeTimeRangePairNoAllocV3(*q.value->profile,b.bytes,self_check_control).ok())return FailIndex(resolution,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","range_self_check");
         break;
       default:break;
     }
