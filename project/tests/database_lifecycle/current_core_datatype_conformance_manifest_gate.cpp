@@ -44,36 +44,36 @@ dt::BitStringAuthorityReceiptV3 BitStringReceipt() {
   receipt.statement_receipt_uuid.bytes = {
       0x01, 0xa0, 0xff, 0x27, 0x45, 0x62, 0x7a, 0x11,
       0x8b, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::DateAuthorityReceiptV3 DateReceipt() {
   dt::DateAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::TimeAuthorityReceiptV3 TimeReceipt() {
   dt::TimeAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
 dt::TimestampAuthorityReceiptV3 TimestampReceipt() {
   dt::TimestampAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
-  receipt.catalog_generation = 9;
-  receipt.registry_generation = 9;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
   return receipt;
 }
 
@@ -137,26 +137,26 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(bit.canonical_component.size() == 4,
           "MDF-015 bit-string example must use canonical empty PRESENT bytes");
   Require(loaded.manifest.date_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d709 date example");
+          "MDF-015 must carry exactly one separate d710 date example");
   const auto& date = loaded.manifest.date_examples.front();
   Require(dt::IsExactCanonicalDateTypeCodecIdentityV3(date.identity),
-          "MDF-015 date example must carry the exact d709 identity");
+          "MDF-015 date example must carry the exact d710 identity");
   Require(date.canonical_component == std::vector<scratchbird::core::platform::byte>(4, 0),
           "MDF-015 date example must use the exact epoch LE4 component");
   Require(loaded.manifest.time_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d709 time example");
+          "MDF-015 must carry exactly one separate d710 time example");
   const auto& time = loaded.manifest.time_examples.front();
   Require(dt::IsExactCanonicalTimeTypeCodecIdentityV3(time.identity),
-          "MDF-015 time example must carry the exact d709 identity");
+          "MDF-015 time example must carry the exact d710 identity");
   Require(time.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(8, 0),
           "MDF-015 time example must use the exact midnight LE8 component");
   Require(loaded.manifest.timestamp_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d709 timestamp example");
+          "MDF-015 must carry exactly one separate d710 timestamp example");
   const auto& timestamp = loaded.manifest.timestamp_examples.front();
   Require(dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
               timestamp.identity),
-          "MDF-015 timestamp example must carry the exact d709 identity");
+          "MDF-015 timestamp example must carry the exact d710 identity");
   Require(timestamp.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(16, 0),
           "MDF-015 timestamp example must use the exact epoch LE16 component");
@@ -169,11 +169,11 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(executed.executed_bit_string_examples == 1,
           "MDF-015 did not execute the exact V3 bit-string example");
   Require(executed.executed_date_examples == 1,
-          "MDF-015 did not execute the exact d709 date example");
+          "MDF-015 did not execute the exact d710 date example");
   Require(executed.executed_time_examples == 1,
-          "MDF-015 did not execute the exact d709 time example");
+          "MDF-015 did not execute the exact d710 time example");
   Require(executed.executed_timestamp_examples == 1,
-          "MDF-015 did not execute the exact d709 timestamp example");
+          "MDF-015 did not execute the exact d710 timestamp example");
 }
 
 void TestLegacyTimestampEvidenceIsRefused() {

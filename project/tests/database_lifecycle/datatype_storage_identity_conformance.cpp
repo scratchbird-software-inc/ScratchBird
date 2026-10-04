@@ -91,7 +91,7 @@ int main() try {
   require(dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV3,3,3,int64_descriptor,1,&out));
   require(out.type_uuid==int64_type && out.type_id==dt::CanonicalTypeId::int64);
   require(!dt::LookupDatatypeStorageIdentityV1(dt::kDatatypeCohortV3,3,3,blob_descriptor,1,&out));
-  // D704-D708 remain exact historical date storage identities. D709 is the
+  // D704-D709 remain exact historical date storage identities. D710 is the
   // current policy-bearing V3 receipt for semantic publication.
   dt::DatatypeStorageIdentityV3 out_v3;
   for (unsigned generation = 4; generation <= 8; ++generation) {
@@ -105,14 +105,14 @@ int main() try {
             out_v3.codec->legacy_fields.codec_uuid == date_codec);
   }
   require(dt::LookupDatatypeStorageIdentityV3(
-      dt::kDatatypeCohortV9,9,9,date_descriptor,1,&out_v3));
+      dt::kDatatypeCohortV10,10,10,date_descriptor,1,&out_v3));
   require(out_v3.descriptor_uuid == date_descriptor &&
           out_v3.type_uuid == date_type &&
           out_v3.type_id == dt::CanonicalTypeId::date && out_v3.codec &&
           out_v3.codec->legacy_fields.codec_uuid == date_codec &&
           dt::IsExactCanonicalDateTypeCodecIdentityV3(*out_v3.codec));
   require(!dt::LookupDatatypeStorageIdentityV1(
-      dt::kDatatypeCohortV9,9,9,date_descriptor,1,&out));
+      dt::kDatatypeCohortV10,10,10,date_descriptor,1,&out));
 
   // Measure the lookup copy, then fail the first allocation in the following
   // V3-to-V1 projection. The storage output must remain entirely unchanged.
@@ -146,7 +146,7 @@ int main() try {
           out.type_id == dt::CanonicalTypeId::date && out.codec &&
           out.codec->codec_uuid == date_codec);
   const auto current_date = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9,9,9,date_descriptor,1);
+      dt::kDatatypeCohortV10,10,10,date_descriptor,1);
   require(current_date.ok &&
           dt::IsExactCanonicalDateTypeCodecIdentityV3(current_date.row));
   const auto historical_date = dt::LookupDatatypeTypeCodecIdentityV3(
@@ -154,14 +154,14 @@ int main() try {
   require(historical_date.ok &&
           !dt::IsExactCanonicalDateTypeCodecIdentityV3(historical_date.row));
   require(dt::LookupDatatypeStorageIdentityV3(
-      dt::kDatatypeCohortV9,9,9,time_descriptor,1,&out_v3));
+      dt::kDatatypeCohortV10,10,10,time_descriptor,1,&out_v3));
   require(out_v3.descriptor_uuid == time_descriptor &&
           out_v3.type_uuid == time_type &&
           out_v3.type_id == dt::CanonicalTypeId::time && out_v3.codec &&
           out_v3.codec->legacy_fields.codec_uuid == time_codec &&
           dt::IsExactCanonicalTimeTypeCodecIdentityV3(*out_v3.codec));
   const auto current_time = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9,9,9,time_descriptor,1);
+      dt::kDatatypeCohortV10,10,10,time_descriptor,1);
   require(current_time.ok &&
           dt::IsExactCanonicalTimeTypeCodecIdentityV3(current_time.row));
   const auto historical_time = dt::LookupDatatypeTypeCodecIdentityV3(
@@ -169,7 +169,7 @@ int main() try {
   require(historical_time.ok &&
           !dt::IsExactCanonicalTimeTypeCodecIdentityV3(historical_time.row));
   const auto current_timestamp = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9,9,9,timestamp_descriptor,1);
+      dt::kDatatypeCohortV10,10,10,timestamp_descriptor,1);
   require(current_timestamp.ok &&
           dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
               current_timestamp.row) &&
@@ -200,7 +200,7 @@ int main() try {
               p::Uuid{{0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0e}} &&
           current_timestamp.row.operation_policy.generation == 1);
   require(dt::LookupDatatypeStorageIdentityV3(
-      dt::kDatatypeCohortV9,9,9,timestamp_descriptor,1,&out_v3));
+      dt::kDatatypeCohortV10,10,10,timestamp_descriptor,1,&out_v3));
   require(out_v3.descriptor_uuid == timestamp_descriptor &&
           out_v3.descriptor_generation == 1 &&
           out_v3.type_uuid == timestamp_type &&
@@ -208,7 +208,7 @@ int main() try {
           out_v3.codec->legacy_fields.codec_uuid == current_timestamp_codec &&
           dt::IsExactCanonicalTimestampTypeCodecIdentityV3(*out_v3.codec));
   require(!dt::LookupDatatypeStorageIdentityV1(
-      dt::kDatatypeCohortV9,9,9,timestamp_descriptor,1,&out));
+      dt::kDatatypeCohortV10,10,10,timestamp_descriptor,1,&out));
 
   for (unsigned generation = 4; generation <= 8; ++generation) {
     auto snapshot = dt::kDatatypeCohortV8;
@@ -234,12 +234,12 @@ int main() try {
 
   const auto current_timestamp_storage = out_v3;
   for (const auto& receipt :
-       {std::pair{dt::kDatatypeCohortV9, std::pair{8ULL,9ULL}},
-        std::pair{dt::kDatatypeCohortV9, std::pair{9ULL,8ULL}},
-        std::pair{dt::kDatatypeCohortV8, std::pair{9ULL,9ULL}},
-        std::pair{dt::kDatatypeCohortV8, std::pair{8ULL,9ULL}},
-        std::pair{dt::kDatatypeCohortV8, std::pair{9ULL,8ULL}},
-        std::pair{dt::kDatatypeCohortV9, std::pair{8ULL,8ULL}}}) {
+       {std::pair{dt::kDatatypeCohortV10, std::pair{9ULL,10ULL}},
+        std::pair{dt::kDatatypeCohortV10, std::pair{10ULL,9ULL}},
+        std::pair{dt::kDatatypeCohortV9, std::pair{10ULL,10ULL}},
+        std::pair{dt::kDatatypeCohortV9, std::pair{9ULL,10ULL}},
+        std::pair{dt::kDatatypeCohortV9, std::pair{10ULL,9ULL}},
+        std::pair{dt::kDatatypeCohortV10, std::pair{9ULL,9ULL}}}) {
     require(!dt::LookupDatatypeStorageIdentityV3(
         receipt.first,receipt.second.first,receipt.second.second,
         timestamp_descriptor,1,&out_v3));
@@ -262,15 +262,15 @@ int main() try {
   require(!dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
       relabelled_historical));
   relabelled_historical.legacy_fields.catalog_snapshot_uuid =
-      dt::kDatatypeCohortV9;
-  relabelled_historical.legacy_fields.catalog_generation = 9;
-  relabelled_historical.legacy_fields.registry_generation = 9;
+      dt::kDatatypeCohortV10;
+  relabelled_historical.legacy_fields.catalog_generation = 10;
+  relabelled_historical.legacy_fields.registry_generation = 10;
   require(!dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
       relabelled_historical));
   // Storage-only manifest identities remain available under the current
   // admitted receipt without acquiring a fabricated value codec.
   require(dt::LookupDatatypeStorageIdentityV3(
-      dt::kDatatypeCohortV9,9,9,blob_descriptor,1,&out_v3));
+      dt::kDatatypeCohortV10,10,10,blob_descriptor,1,&out_v3));
   require(out_v3.type_uuid == blob_descriptor && !out_v3.codec);
   std::cout << "datatype_storage_identity_conformance=passed rejected=" << rejected+1 << '\n';
   return 0;

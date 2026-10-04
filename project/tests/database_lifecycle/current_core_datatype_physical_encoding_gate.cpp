@@ -93,7 +93,7 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
 
 std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
   const auto result =
-      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV10);
   Require(result.ok(), "MDF-013 current date profile did not resolve");
   return std::make_shared<const dt::DateValidatedProfileHandleV3>(
       result.profile);
@@ -101,7 +101,7 @@ std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
 
 std::shared_ptr<const dt::TimeValidatedProfileHandleV3> TimeProfile() {
   const auto result =
-      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV10);
   Require(result.ok(), "MDF-013 current time profile did not resolve");
   return std::make_shared<const dt::TimeValidatedProfileHandleV3>(
       result.profile);
@@ -109,7 +109,7 @@ std::shared_ptr<const dt::TimeValidatedProfileHandleV3> TimeProfile() {
 
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> TimestampProfile() {
   const auto result =
-      dt::BuildCurrentTimestampValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+      dt::BuildCurrentTimestampValidatedProfileHandleV3(dt::kDatatypeCohortV10);
   Require(result.ok(), "MDF-013 current timestamp profile did not resolve");
   return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
       result.profile);

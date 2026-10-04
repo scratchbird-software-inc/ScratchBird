@@ -527,7 +527,7 @@ void TestDecimal128SuccessorCohort() {
           "decimal128 NULL state lost");
 }
 
-void TestCurrentD709IdentitiesAndLayout() {
+void TestCurrentD710IdentitiesAndLayout() {
   using scratchbird::tests::FixtureUuidLiteral;
   const auto descriptor =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
@@ -537,37 +537,37 @@ void TestCurrentD709IdentitiesAndLayout() {
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
 
   const auto rows = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
-  Require(rows.size() == 226, "V3 registry row count is not 226");
-  std::array<std::size_t, 9> counts{};
+  Require(rows.size() == 259, "V3 registry row count is not 259");
+  std::array<std::size_t, 10> counts{};
   for (const auto& row : rows) {
     Require(row.legacy_fields.catalog_generation >= 1 &&
-                row.legacy_fields.catalog_generation <= 9 &&
+                row.legacy_fields.catalog_generation <= 10 &&
                 row.legacy_fields.catalog_generation ==
                     row.legacy_fields.registry_generation,
             "V3 registry contains a mixed cohort tuple");
     ++counts[row.legacy_fields.catalog_generation - 1];
   }
   Require(counts ==
-              std::array<std::size_t, 9>{6, 12, 13, 31, 32, 33, 33, 33, 33},
-          "V3 predecessor/D709 cohort counts drifted");
+              std::array<std::size_t, 10>{6, 12, 13, 31, 32, 33, 33, 33, 33, 33},
+          "V3 predecessor/D710 cohort counts drifted");
 
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
   Require(identity.ok &&
               dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row) &&
               identity.row.legacy_fields.type_uuid == type &&
               identity.row.legacy_fields.codec_uuid == codec,
-          "exact D709 bit-string identity is absent or incomplete");
+          "exact D710 bit-string identity is absent or incomplete");
   Require(!dt::LookupDatatypeTypeCodecIdentityV1(
-               dt::kDatatypeCohortV9, 9, 9, descriptor, 1).ok,
+               dt::kDatatypeCohortV10, 10, 10, descriptor, 1).ok,
           "legacy V1 lookup synthesized the policy-bearing bit row");
   auto altered = identity.row;
   altered.operation_policy.generation = 2;
   Require(!dt::IsExactCanonicalBitStringTypeCodecIdentityV3(altered),
-          "altered D709 bit-string policy tuple was admitted");
+          "altered D710 bit-string policy tuple was admitted");
 
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  Require(manifest.ok(), "catalog manifest failed with D709 admission");
+  Require(manifest.ok(), "catalog manifest failed with D710 admission");
   const auto catalog_row = dt::LookupDatatypeCatalogRow(
       manifest.manifest, dt::CanonicalTypeId::bit_string);
   Require(catalog_row.ok() &&
@@ -587,7 +587,7 @@ void TestCurrentD709IdentitiesAndLayout() {
 
   dt::DatatypeStorageIdentityV3 storage;
   Require(dt::LookupDatatypeStorageIdentityV3(
-              dt::kDatatypeCohortV9, 9, 9, descriptor, 1, &storage) &&
+              dt::kDatatypeCohortV10, 10, 10, descriptor, 1, &storage) &&
               storage.type_uuid == type &&
               storage.type_id == dt::CanonicalTypeId::bit_string &&
               storage.codec && storage.codec->legacy_fields.codec_uuid == codec,
@@ -610,7 +610,7 @@ void TestCurrentD709IdentitiesAndLayout() {
   const auto binary_descriptor =
       FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
   const auto binary = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, binary_descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, binary_descriptor, 1);
   Require(binary.ok &&
               dt::IsExactCanonicalBinaryTypeCodecIdentityV3(binary.row),
           "exact current binary identity is absent");
@@ -622,7 +622,7 @@ void TestCurrentD709IdentitiesAndLayout() {
   const auto date_codec =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d");
   const auto date = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, date_descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, date_descriptor, 1);
   Require(date.ok && dt::IsExactCanonicalDateTypeCodecIdentityV3(date.row) &&
               date.row.legacy_fields.type_uuid == date_type &&
               date.row.legacy_fields.codec_uuid == date_codec,
@@ -645,7 +645,7 @@ void TestCurrentD709IdentitiesAndLayout() {
               date_layout.layout.requires_descriptor,
           "date LE4 layout lost its exact-profile requirement");
   Require(dt::LookupDatatypeStorageIdentityV3(
-              dt::kDatatypeCohortV9, 9, 9, date_descriptor, 1, &storage) &&
+              dt::kDatatypeCohortV10, 10, 10, date_descriptor, 1, &storage) &&
               storage.type_uuid == date_type && storage.codec &&
               storage.codec->legacy_fields.codec_uuid == date_codec,
           "storage lookup lost exact current date identity");
@@ -667,7 +667,7 @@ void TestCurrentD709IdentitiesAndLayout() {
   const auto time_codec =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81f");
   const auto time = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, time_descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, time_descriptor, 1);
   Require(time.ok && dt::IsExactCanonicalTimeTypeCodecIdentityV3(time.row) &&
               time.row.legacy_fields.type_uuid == time_type &&
               time.row.legacy_fields.codec_uuid == time_codec &&
@@ -681,9 +681,9 @@ void TestCurrentD709IdentitiesAndLayout() {
                   FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff37") &&
               time.row.operation_policy.uuid ==
                   FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff3a"),
-          "exact D709 time identity or policy anchors are absent");
+          "exact D710 time identity or policy anchors are absent");
   Require(dt::LookupDatatypeStorageIdentityV3(
-              dt::kDatatypeCohortV9, 9, 9, time_descriptor, 1, &storage) &&
+              dt::kDatatypeCohortV10, 10, 10, time_descriptor, 1, &storage) &&
               storage.type_uuid == time_type &&
               storage.type_id == dt::CanonicalTypeId::time && storage.codec &&
               storage.codec->legacy_fields.codec_uuid == time_codec,
@@ -704,14 +704,14 @@ void TestCurrentD709IdentitiesAndLayout() {
   const auto current_timestamp_codec =
       FixtureUuidLiteral("01a104f5-fb16-7500-93e8-4a99c86d1130");
   const auto timestamp = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, timestamp_descriptor, 1);
   Require(
       timestamp.ok &&
           dt::IsExactCanonicalTimestampTypeCodecIdentityV3(timestamp.row) &&
           timestamp.row.legacy_fields.catalog_snapshot_uuid ==
-              dt::kDatatypeCohortV9 &&
-          timestamp.row.legacy_fields.catalog_generation == 9 &&
-          timestamp.row.legacy_fields.registry_generation == 9 &&
+              dt::kDatatypeCohortV10 &&
+          timestamp.row.legacy_fields.catalog_generation == 10 &&
+          timestamp.row.legacy_fields.registry_generation == 10 &&
           timestamp.row.legacy_fields.descriptor_uuid == timestamp_descriptor &&
           timestamp.row.legacy_fields.descriptor_generation == 1 &&
           timestamp.row.legacy_fields.type_uuid == timestamp_type &&
@@ -732,7 +732,7 @@ void TestCurrentD709IdentitiesAndLayout() {
               static_cast<std::uint32_t>(dt::CanonicalTypeId::timestamp) &&
           timestamp.row.legacy_fields.null_supported &&
           timestamp.row.legacy_fields.sql_null_requires_zero_payload,
-      "exact D709 local-civil timestamp identity is absent or incomplete");
+      "exact D710 local-civil timestamp identity is absent or incomplete");
   Require(
       timestamp.row.descriptor_policy.uuid ==
               FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0a") &&
@@ -749,7 +749,7 @@ void TestCurrentD709IdentitiesAndLayout() {
           timestamp.row.operation_policy.uuid ==
               FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0e") &&
           timestamp.row.operation_policy.generation == 1,
-      "D709 timestamp policy anchors drifted");
+      "D710 timestamp policy anchors drifted");
 
   const auto timestamp_catalog_row = dt::LookupDatatypeCatalogRow(
       manifest.manifest, dt::CanonicalTypeId::timestamp);
@@ -777,7 +777,7 @@ void TestCurrentD709IdentitiesAndLayout() {
           timestamp_layout.layout.fixed_sort_key,
       "timestamp layout is not descriptor-bound local-civil LE16");
   Require(dt::LookupDatatypeStorageIdentityV3(
-              dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1,
+              dt::kDatatypeCohortV10, 10, 10, timestamp_descriptor, 1,
               &storage) &&
               storage.descriptor_uuid == timestamp_descriptor &&
               storage.descriptor_generation == 1 &&
@@ -789,8 +789,8 @@ void TestCurrentD709IdentitiesAndLayout() {
               dt::IsExactCanonicalTimestampTypeCodecIdentityV3(*storage.codec),
           "storage lookup lost exact current timestamp V3 authority");
   Require(!dt::LookupDatatypeTypeCodecIdentityV1(
-               dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1).ok,
-          "current D709 timestamp was projected through the lossy V1 lookup");
+               dt::kDatatypeCohortV10, 10, 10, timestamp_descriptor, 1).ok,
+          "current D710 timestamp was projected through the lossy V1 lookup");
 
   for (unsigned generation = 4; generation <= 8; ++generation) {
     auto historical_snapshot = dt::kDatatypeCohortV8;
@@ -819,12 +819,12 @@ void TestCurrentD709IdentitiesAndLayout() {
        std::array<std::pair<scratchbird::core::platform::Uuid,
                             std::array<std::uint64_t, 2>>,
                   6>{{
-           {dt::kDatatypeCohortV9, {8, 9}},
-           {dt::kDatatypeCohortV9, {9, 8}},
-           {dt::kDatatypeCohortV8, {9, 9}},
-           {dt::kDatatypeCohortV8, {8, 9}},
-           {dt::kDatatypeCohortV8, {9, 8}},
-           {dt::kDatatypeCohortV9, {8, 8}},
+           {dt::kDatatypeCohortV10, {9, 10}},
+           {dt::kDatatypeCohortV10, {10, 9}},
+           {dt::kDatatypeCohortV9, {10, 10}},
+           {dt::kDatatypeCohortV9, {9, 10}},
+           {dt::kDatatypeCohortV9, {10, 9}},
+           {dt::kDatatypeCohortV10, {9, 9}},
        }}) {
     Require(!dt::LookupDatatypeTypeCodecIdentityV3(
                  crossed.first, crossed.second[0], crossed.second[1],
@@ -832,7 +832,7 @@ void TestCurrentD709IdentitiesAndLayout() {
                 !dt::LookupDatatypeStorageIdentityV3(
                     crossed.first, crossed.second[0], crossed.second[1],
                     timestamp_descriptor, 1, &storage),
-            "crossed D708/D709 timestamp receipt was admitted");
+            "crossed D709/D710 timestamp receipt was admitted");
   }
 
   auto relabelled_historical =
@@ -845,9 +845,9 @@ void TestCurrentD709IdentitiesAndLayout() {
               relabelled_historical),
           "relabelled historical d821 timestamp was admitted as current");
   relabelled_historical.legacy_fields.catalog_snapshot_uuid =
-      dt::kDatatypeCohortV9;
-  relabelled_historical.legacy_fields.catalog_generation = 9;
-  relabelled_historical.legacy_fields.registry_generation = 9;
+      dt::kDatatypeCohortV10;
+  relabelled_historical.legacy_fields.catalog_generation = 10;
+  relabelled_historical.legacy_fields.registry_generation = 10;
   Require(!dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
               relabelled_historical),
           "receipt-only historical timestamp rebind was admitted as current");
@@ -867,7 +867,7 @@ int main() {
   TestFailClosedCatalogValidation();
   TestInt32ExactDescriptorTypeCodecIdentity();
   TestTextExactDescriptorTypeCodecIdentity();
-  TestCurrentD709IdentitiesAndLayout();
+  TestCurrentD710IdentitiesAndLayout();
   std::cout << "current_core_datatype_catalog_manifest_gate=passed\n";
   return EXIT_SUCCESS;
 }
