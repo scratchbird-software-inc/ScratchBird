@@ -32,7 +32,7 @@ constexpr platform::Uuid U(std::array<byte, 16> bytes) noexcept {
 }
 
 inline constexpr platform::Uuid kSnapshot = U(
-    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x09});
+    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x10});
 inline constexpr platform::Uuid kDescriptor = U(
     {0x91,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00});
 inline constexpr platform::Uuid kType = U(
@@ -72,11 +72,11 @@ inline constexpr DatatypePolicyIdentityV3 kMetricPolicy{U(
     {0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x47}),1};
 
 inline constexpr std::array<byte, 32> kProfileFingerprint{{
-    0x4a,0x2e,0xa2,0x0d,0xe8,0x6e,0xb0,0xf7,0xf7,0x0f,0xbf,0x1c,0x27,0xb3,0x48,0x89,
-    0x5b,0xc6,0x88,0xfd,0xb5,0xa9,0x9a,0x83,0xa4,0xf3,0x69,0x81,0x18,0x15,0x9c,0xeb}};
+    0x98,0x6d,0xff,0x7c,0x60,0xb8,0xf3,0xeb,0x6f,0x70,0x1c,0xe8,0xc7,0xb7,0xf0,0x99,
+    0x7f,0x94,0xa1,0x8d,0x3a,0x0a,0x9b,0xcb,0x73,0x6c,0x11,0xf3,0x5e,0x47,0x6f,0x48}};
 inline constexpr std::array<byte, 32> kComparisonFingerprint{{
-    0x05,0x93,0xb3,0x0b,0x56,0x1b,0xba,0x05,0x2b,0x36,0xe4,0xa0,0xc6,0x54,0x45,0xa7,
-    0xa6,0xb8,0x88,0x33,0x1d,0xf4,0xcc,0x23,0xe1,0x25,0xd6,0x3f,0xed,0x1c,0x79,0xa9}};
+    0x75,0xde,0xab,0xa7,0x96,0xda,0x7e,0x20,0x08,0x60,0x02,0x37,0xa5,0xeb,0xfb,0x0d,
+    0xd8,0xa7,0x6f,0x2b,0x62,0xea,0x66,0x4b,0x66,0x87,0x6b,0xa4,0x7f,0x05,0xb3,0xd6}};
 
 Status OkStatus() noexcept { return {StatusCode::ok, Severity::info, Subsystem::datatypes}; }
 Status ErrorStatus() noexcept { return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes}; }
@@ -168,8 +168,8 @@ const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(CanonicalTypeId type) n
   const DatatypeTypeCodecIdentityRowV3* found = nullptr;
   for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
     const auto& legacy = row.legacy_fields;
-    if (legacy.catalog_snapshot_uuid != kSnapshot || legacy.catalog_generation != 9 ||
-        legacy.registry_generation != 9 || legacy.canonical_binary_type_code != code)
+    if (legacy.catalog_snapshot_uuid != kSnapshot || legacy.catalog_generation != 10 ||
+        legacy.registry_generation != 10 || legacy.canonical_binary_type_code != code)
       continue;
     if (found != nullptr) return nullptr;
     found = &row;
@@ -192,7 +192,7 @@ bool ExactTimeIdentity(const DatatypeTypeCodecIdentityRowV3& identity) noexcept 
 bool ExactReceipt(const TimeAuthorityReceiptV3& receipt) noexcept {
   return receipt.statement_receipt_uuid == kSnapshot &&
       receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 9 && receipt.registry_generation == 9;
+      receipt.catalog_generation == 10 && receipt.registry_generation == 10;
 }
 
 bool Cancelled(const TimeExecutionControlV3& control) noexcept {
@@ -377,8 +377,8 @@ bool ProfileValidNoAlloc(const TimeValidatedProfileHandleV3& profile,
                          const TimeExecutionControlV3* control=nullptr) noexcept {
   if (!ExactReceipt(profile.receipt) || !ExactTimeIdentity(profile.identity) ||
       profile.identity.legacy_fields.catalog_snapshot_uuid != profile.receipt.catalog_snapshot_uuid ||
-      profile.identity.legacy_fields.catalog_generation != 9 ||
-      profile.identity.legacy_fields.registry_generation != 9 ||
+      profile.identity.legacy_fields.catalog_generation != 10 ||
+      profile.identity.legacy_fields.registry_generation != 10 ||
       !Same(profile.render_policy, kRenderPolicy) || !Same(profile.cast_policy, kCastPolicy) ||
       !Same(profile.civil_day_policy, kCivilDayPolicy) ||
       !Same(profile.storage_epoch_policy, kStorageEpochPolicy) ||
@@ -561,9 +561,9 @@ TimeProfileResultV3 BuildCurrentTimeValidatedProfileHandleV3(
   const auto* identity = CurrentIdentityFor(CanonicalTypeId::time);
   if (identity == nullptr)
     return Failure<TimeProfileResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                                        "d709_time_identity_missing");
+                                        "d710_time_identity_missing");
   return BuildTimeValidatedProfileHandleV3(
-      {statement_receipt_uuid,kSnapshot,9,9}, *identity);
+      {statement_receipt_uuid,kSnapshot,10,10}, *identity);
 }
 
 TimeProfileResultV3 BuildTimeValidatedProfileHandleV3(
@@ -1039,7 +1039,7 @@ TimeNoAllocWriteResultV3 HashTimeValueIntoNoAllocV3(const TimeOwnedValueV3& owne
   std::array<byte,32> digest{};ScopedClear clear_digest(digest.data(),digest.size(),TimeScrubClassV3::hash_digest,control.observe_scrubbed,control.scrub_observer_context);
   if(output!=nullptr && (RangesOverlap(output,32,&owned,sizeof(owned))||RangesOverlap(output,32,&control,sizeof(control))||OutputOverlapsProfile(output,32,*owned.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_overlap");
   if(capacity<32 || control.maximum_allocation_bytes<32 || output==nullptr){auto r=Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_capacity",ResourceStatus());r.bytes_required=32;return r;}
-  std::memcpy(preimage.data(),"SBTIMH01",8);PutUuid(preimage.data()+8,kSnapshot);StoreLittle64(preimage.data()+24,9);StoreLittle64(preimage.data()+32,9);
+  std::memcpy(preimage.data(),"SBTIMH01",8);PutUuid(preimage.data()+8,kSnapshot);StoreLittle64(preimage.data()+24,10);StoreLittle64(preimage.data()+32,10);
   std::memcpy(preimage.data()+40,owned.profile->comparison_fingerprint.data(),32);PutPolicy(preimage.data()+72,kHashPolicy);
   preimage[96]=owned.state==TimeValueStateV3::sql_null?0:1;StoreLittle32(preimage.data()+97,owned.state==TimeValueStateV3::sql_null?0:8);
   std::size_t extent=101;if(owned.state==TimeValueStateV3::value){StoreLittle64(preimage.data()+101,owned.nanoseconds_since_midnight);extent=109;}
@@ -1073,7 +1073,7 @@ TimeNoAllocWriteResultV3 MakeTimeSortKeyIntoNoAllocV3(
   std::array<byte,108> staged{};ScopedClear clear_staged(staged.data(),staged.size(),TimeScrubClassV3::ordered_key_staging,control.observe_scrubbed,control.scrub_observer_context);
   if(output!=nullptr&&(RangesOverlap(output,extent,&value,sizeof(value))||RangesOverlap(output,extent,&control,sizeof(control))||OutputOverlapsProfile(output,extent,*value.profile)))return Failure<TimeNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_overlap");
   if(capacity<extent||control.maximum_allocation_bytes<extent||output==nullptr){auto r=Failure<TimeNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","key_capacity",ResourceStatus());r.bytes_required=extent;return r;}
-  std::memcpy(staged.data(),"SBTIMK01",8);PutUuid(staged.data()+8,kSnapshot);StoreLittle64(staged.data()+24,9);StoreLittle64(staged.data()+32,9);
+  std::memcpy(staged.data(),"SBTIMK01",8);PutUuid(staged.data()+8,kSnapshot);StoreLittle64(staged.data()+24,10);StoreLittle64(staged.data()+32,10);
   std::memcpy(staged.data()+40,value.profile->comparison_fingerprint.data(),32);PutPolicy(staged.data()+72,kOrderingPolicy);
   staged[96]=direction==TimeSortDirectionV3::descending?1:0;staged[97]=null_mode==TimeNullModeV3::nulls_last?1:0;
   staged[98]=value.state==TimeValueStateV3::value?1:(null_mode==TimeNullModeV3::nulls_first?0:2);staged[99]=value.state==TimeValueStateV3::value?8:0;
@@ -1096,14 +1096,14 @@ TimeSortKeyViewResultV3 DecodeTimeSortKeyNoAllocV3(
     const TimeValidatedProfileHandleV3& profile,std::span<const byte> encoded,
     const TimeExecutionControlV3& control) noexcept {
   if((encoded.size()!=100&&encoded.size()!=108)||std::memcmp(encoded.data(),"SBTIMK01",8)!=0)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_extent_or_magic");
-  if(!ProfileValidNoAlloc(profile,&control)||std::memcmp(encoded.data()+8,kSnapshot.bytes.data(),16)!=0||LoadLittle64(encoded.data()+24)!=9||LoadLittle64(encoded.data()+32)!=9||std::memcmp(encoded.data()+40,profile.comparison_fingerprint.data(),32)!=0||std::memcmp(encoded.data()+72,kOrderingPolicy.uuid.bytes.data(),16)!=0||LoadLittle64(encoded.data()+88)!=1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","key_authority");
+  if(!ProfileValidNoAlloc(profile,&control)||std::memcmp(encoded.data()+8,kSnapshot.bytes.data(),16)!=0||LoadLittle64(encoded.data()+24)!=10||LoadLittle64(encoded.data()+32)!=10||std::memcmp(encoded.data()+40,profile.comparison_fingerprint.data(),32)!=0||std::memcmp(encoded.data()+72,kOrderingPolicy.uuid.bytes.data(),16)!=0||LoadLittle64(encoded.data()+88)!=1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.DESCRIPTOR_INVALID","key_authority");
   if(encoded[96]>1||encoded[97]>1)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.INDEX_KEY_REFUSED","key_mode");
   const auto direction=static_cast<TimeSortDirectionV3>(encoded[96]);const auto mode=static_cast<TimeNullModeV3>(encoded[97]);
   TimeValueStateV3 state=TimeValueStateV3::sql_null;u64 value=0;
   if(encoded.size()==100){if(encoded[98]!=(mode==TimeNullModeV3::nulls_first?0:2)||encoded[99]!=0)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_null_rank");}
   else{if(encoded[98]!=1||encoded[99]!=8)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_value_rank");for(unsigned i=0;i<8;++i){byte x=encoded[100+i];if(direction==TimeSortDirectionV3::descending)x=static_cast<byte>(~x);value=(value<<8)|x;}if(value>kTimeMaximumNanosecondsV3)return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_range");state=TimeValueStateV3::value;}
   TimeOwnedValueV3 owned{std::shared_ptr<const TimeValidatedProfileHandleV3>{},state,value};
-  std::array<byte,108> check{};ScopedClear clear_check(check.data(),check.size(),TimeScrubClassV3::ordered_key_decode_reencode,control.observe_scrubbed,control.scrub_observer_context);std::memcpy(check.data(),"SBTIMK01",8);PutUuid(check.data()+8,kSnapshot);StoreLittle64(check.data()+24,9);StoreLittle64(check.data()+32,9);std::memcpy(check.data()+40,profile.comparison_fingerprint.data(),32);PutPolicy(check.data()+72,kOrderingPolicy);check[96]=encoded[96];check[97]=encoded[97];check[98]=state==TimeValueStateV3::value?1:(mode==TimeNullModeV3::nulls_first?0:2);check[99]=state==TimeValueStateV3::value?8:0;if(state==TimeValueStateV3::value){for(unsigned i=0;i<8;++i)check[100+i]=static_cast<byte>(value>>(56-8*i));if(direction==TimeSortDirectionV3::descending)for(unsigned i=100;i<108;++i)check[i]=static_cast<byte>(~check[i]);}
+  std::array<byte,108> check{};ScopedClear clear_check(check.data(),check.size(),TimeScrubClassV3::ordered_key_decode_reencode,control.observe_scrubbed,control.scrub_observer_context);std::memcpy(check.data(),"SBTIMK01",8);PutUuid(check.data()+8,kSnapshot);StoreLittle64(check.data()+24,10);StoreLittle64(check.data()+32,10);std::memcpy(check.data()+40,profile.comparison_fingerprint.data(),32);PutPolicy(check.data()+72,kOrderingPolicy);check[96]=encoded[96];check[97]=encoded[97];check[98]=state==TimeValueStateV3::value?1:(mode==TimeNullModeV3::nulls_first?0:2);check[99]=state==TimeValueStateV3::value?8:0;if(state==TimeValueStateV3::value){for(unsigned i=0;i<8;++i)check[100+i]=static_cast<byte>(value>>(56-8*i));if(direction==TimeSortDirectionV3::descending)for(unsigned i=100;i<108;++i)check[i]=static_cast<byte>(~check[i]);}
   if(control.force_reencode_mismatch_for_conformance)check[0]^=1;
   if(!std::equal(check.begin(),check.begin()+static_cast<std::ptrdiff_t>(encoded.size()),encoded.begin()))return Failure<TimeSortKeyViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","key_reencode");
   if(Cancelled(control))return Failure<TimeSortKeyViewResultV3>("PROCESS.CANCELLED","before_publication");

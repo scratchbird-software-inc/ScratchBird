@@ -59,7 +59,7 @@ struct BitStringConformanceExampleV3 {
 };
 
 // Date likewise cannot use SBDTV001: the legacy descriptor cannot carry the
-// d709 receipt, policy identities, or the complete 584-byte profile handle.
+// d710 receipt, policy identities, or the complete 584-byte profile handle.
 struct DateConformanceExampleV3 {
   DateAuthorityReceiptV3 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
@@ -73,7 +73,7 @@ struct DateConformanceExampleV3 {
   std::string source_marker;
 };
 
-// Time requires its exact d709 receipt and complete V3 profile. The legacy
+// Time requires its exact d710 receipt and complete V3 profile. The legacy
 // SBDTV001 descriptor carrier cannot establish either one.
 struct TimeConformanceExampleV3 {
   TimeAuthorityReceiptV3 receipt;
@@ -88,7 +88,7 @@ struct TimeConformanceExampleV3 {
   std::string source_marker;
 };
 
-// Timestamp requires its exact d709 receipt and complete V3 profile. The
+// Timestamp requires its exact d710 receipt and complete V3 profile. The
 // generic SBDTV001 descriptor carrier cannot establish either one.
 struct TimestampConformanceExampleV3 {
   TimestampAuthorityReceiptV3 receipt;

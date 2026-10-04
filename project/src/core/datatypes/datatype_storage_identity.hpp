@@ -64,7 +64,8 @@ inline bool LookupDatatypeStorageIdentityV3(
           (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6) ||
           (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7) ||
           (snapshot == kDatatypeCohortV8 && catalog_generation == 8 && registry_generation == 8) ||
-          (snapshot == kDatatypeCohortV9 && catalog_generation == 9 && registry_generation == 9)))
+          (snapshot == kDatatypeCohortV9 && catalog_generation == 9 && registry_generation == 9) ||
+          (snapshot == kDatatypeCohortV10 && catalog_generation == 10 && registry_generation == 10)))
       return false;
     static const auto catalog = LoadCurrentCoreDatatypeCatalogManifest();
     if (!catalog.ok()) return false;
@@ -100,7 +101,7 @@ inline bool LookupDatatypeStorageIdentityV1(
     const platform::Uuid& descriptor, u64 descriptor_generation,
     DatatypeStorageIdentityV1* output) {
   if (!output) return false;
-  // V1 is a historical projection only. Current d709 policy authority must
+  // V1 is a historical projection only. Current d710 policy authority must
   // never be silently discarded through this compatibility carrier.
   if (snapshot == kDatatypeCohortV9 || catalog_generation >= 9 ||
       registry_generation >= 9)

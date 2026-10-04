@@ -1081,7 +1081,7 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
         "datatype.bit_string.serialization_profile_missing");
   }
   // Canonical type 400 has a structural LE4 component, but those bytes and
-  // the enum do not establish the exact d709 receipt or 584-byte profile.
+  // the enum do not establish the exact d710 receipt or 584-byte profile.
   // Date semantic publication is available only through datatype_date.
   if (value.type_id == CanonicalTypeId::date) {
     if (value.payload_is_toast_reference || value.payload_bytes != 4) {
@@ -1094,7 +1094,7 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
         "datatype.date.serialization_profile_missing");
   }
   // Canonical type 401 has an unsigned LE8 component, but the bytes and enum
-  // do not establish the exact d709 receipt or complete time profile.
+  // do not establish the exact d710 receipt or complete time profile.
   if (value.type_id == CanonicalTypeId::time) {
     if (value.payload_is_toast_reference || value.payload_bytes != 8 ||
         LoadLittle64(value.payload_data) > 86'399'999'999'999ull) {
@@ -1107,7 +1107,7 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
         "datatype.time.serialization_profile_missing");
   }
   // Canonical type 402 has a structural LE16 component, but neither those
-  // bytes nor the enum establish the exact d709 receipt and complete
+  // bytes nor the enum establish the exact d710 receipt and complete
   // local-civil timestamp profile. Semantic publication is available only
   // through datatype_timestamp's profile-aware composed adapter.
   if (value.type_id == CanonicalTypeId::timestamp) {
