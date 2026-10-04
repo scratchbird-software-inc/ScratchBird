@@ -652,7 +652,7 @@ IntervalValueResultV3 RefuseIntervalIntrinsicOperationV3(const IntervalValueView
  auto d=ClassifyIntervalIntrinsicOperationV3(o);
  if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("intrinsic_result_grant");
  if(Cancelled(c))return Failure<IntervalValueResultV3>("PROCESS.CANCELLED","intrinsic_before_refusal");
- if(d==IntervalIntrinsicDispositionV3::admitted)return Failure<IntervalValueResultV3>("CTI.TEMPORAL.OPERATION_REFUSED","admitted_intrinsic_requires_implementation_entrypoint");
+ if(d==IntervalIntrinsicDispositionV3::admitted)return Failure<IntervalValueResultV3>("SBLR.OPERAND_INVALID","admitted_intrinsic_requires_implementation_entrypoint");
  if(d==IntervalIntrinsicDispositionV3::unknown||o==IntervalIntrinsicOperationV3::apply_to_temporal)return Failure<IntervalValueResultV3>("CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",d==IntervalIntrinsicDispositionV3::unknown?"unknown_intrinsic":"later_operator_owner");
  return Failure<IntervalValueResultV3>("CTI.TEMPORAL.ORDERING_REFUSED","no_natural_order");}
 
