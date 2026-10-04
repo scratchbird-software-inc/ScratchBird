@@ -306,7 +306,9 @@ enum class IntervalIntrinsicOperationV3 : u8 {
 };
 enum class IntervalIntrinsicDispositionV3 : u8 { admitted = 0, registered_refused = 1, unknown = 2 };
 IntervalIntrinsicDispositionV3 ClassifyIntervalIntrinsicOperationV3(IntervalIntrinsicOperationV3) noexcept;
-IntervalValueResultV3 RefuseIntervalIntrinsicOperationV3(const IntervalValueViewV3&, IntervalIntrinsicOperationV3) noexcept;
+IntervalValueResultV3 RefuseIntervalIntrinsicOperationV3(
+    const IntervalValueViewV3&, IntervalIntrinsicOperationV3,
+    const IntervalExecutionControlV3& = {}) noexcept;
 
 enum class IntervalCastPolicyDispositionV3 : u8 {
   contextual_null, identity, explicit_character_to_interval,

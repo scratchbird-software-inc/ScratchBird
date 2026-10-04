@@ -69,6 +69,11 @@ template<class T> class VectorClear final { public: VectorClear(std::vector<T>*v
  SecureClear(v_->data(),n);
  if(c_.observe_scrubbed)c_.observe_scrubbed(c_.scrub_observer_context,k_,reinterpret_cast<const byte*>(v_->data()),n);}} void Disarm(){v_=nullptr;} private:std::vector<T>*v_;IntervalScrubClassV3 k_;
  const IntervalExecutionControlV3&c_;};
+class StringClear final { public: StringClear(std::string*v,IntervalScrubClassV3 k,const IntervalExecutionControlV3&c):v_(v),k_(k),c_(c){} ~StringClear(){if(v_&&!v_->empty()){auto n=v_->size();
+ SecureClear(v_->data(),n);
+ if(c_.observe_scrubbed)c_.observe_scrubbed(c_.scrub_observer_context,k_,reinterpret_cast<const byte*>(v_->data()),n);}} void Disarm(){v_=nullptr;} private:std::string*v_;IntervalScrubClassV3 k_;
+ const IntervalExecutionControlV3&c_;};
+class ProfileBuildClear final { public: explicit ProfileBuildClear(IntervalValidatedProfileHandleV3*p) noexcept:p_(p){} ~ProfileBuildClear(){if(p_){SecureClear(p_->profile_material.data(),p_->profile_material.size());SecureClear(p_->equality_material.data(),p_->equality_material.size());SecureClear(p_->profile_fingerprint.data(),p_->profile_fingerprint.size());SecureClear(p_->equality_fingerprint.data(),p_->equality_fingerprint.size());}} void Disarm() noexcept{p_=nullptr;} private:IntervalValidatedProfileHandleV3*p_;};
 
 bool Same(const DatatypePolicyIdentityV3&a,const DatatypePolicyIdentityV3&b) noexcept{return a.uuid==b.uuid&&a.generation==b.generation;}
 bool SameLegacy(const DatatypeTypeCodecIdentityRowV1&a,const DatatypeTypeCodecIdentityRowV1&b) noexcept {
@@ -171,6 +176,9 @@ bool OutputOverlapsProfile(const void* output, std::size_t extent,
       RangesOverlap(output, extent, profile.equality_fingerprint.data(),
                     profile.equality_fingerprint.size());
 }
+bool ExactOrDisjoint(const void*a,std::size_t an,const void*b,std::size_t bn) noexcept {
+ return !RangesOverlap(a,an,b,bn)||(a==b&&an==bn);
+}
 
 struct Parsed { bool ok=false; std::string_view code,detail; std::int64_t value=0; const char* end=nullptr; };
 Parsed ParseSigned(const char*b,const char*e,std::int64_t min,std::int64_t max,std::string_view field) noexcept {
@@ -208,6 +216,21 @@ template<class R> R FromFailure(const IntervalDiagnosticFactV3&d,Status s) noexc
  r.status=s;
  r.diagnostic=d;
  return r;}
+template<class R> R ResultGrantFailure(std::string_view detail) noexcept {
+ return Failure<R>("RESOURCE.BUDGET_EXCEEDED",detail,ResourceStatus());
+}
+IntervalViewResultV3 ValidateStateAndNull(const IntervalValueViewV3&v,bool null_allowed) noexcept {
+ if(!ValidState(v.state))return Failure<IntervalViewResultV3>("DATATYPE.NULL_STATE.INVALID","state_invalid");
+ if(v.state==IntervalValueStateV3::sql_null){
+  if(!CleanNull(v))return Failure<IntervalViewResultV3>("DATATYPE.NULL_STATE.INVALID","dirty_null");
+  if(!null_allowed)return Failure<IntervalViewResultV3>("DATATYPE.NULL_NOT_ADMITTED","slot_nonnullable");
+ }
+ auto r=Success<IntervalViewResultV3>();r.value=v;return r;
+}
+IntervalViewResultV3 ValidateValue(const IntervalValueViewV3&v,bool null_allowed,const IntervalExecutionControlV3* control) noexcept {
+ if(!v.profile||!ProfileValid(*v.profile,control))return Failure<IntervalViewResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","profile_missing_or_invalid");
+ return ValidateStateAndNull(v,null_allowed);
+}
 IntervalValueResultV3 Publish(std::shared_ptr<const IntervalValidatedProfileHandleV3>p,IntervalValueStateV3 s,std::int32_t m,std::int32_t d,std::int64_t n,const IntervalExecutionControlV3&c) noexcept {if(Cancelled(c))return Failure<IntervalValueResultV3>("PROCESS.CANCELLED","before_publication");
  auto r=Success<IntervalValueResultV3>();
  r.value={std::move(p),s,m,d,n};
@@ -224,22 +247,21 @@ IntervalProfileResultV3 BuildCurrentIntervalValidatedProfileHandleV3(const platf
 }
 IntervalProfileResultV3 BuildIntervalValidatedProfileHandleV3(const IntervalAuthorityReceiptV3&r,const DatatypeTypeCodecIdentityRowV3&i) noexcept {
  if(!ExactReceipt(r)||!IsExactCanonicalIntervalTypeCodecIdentityV3(i))return Failure<IntervalProfileResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","receipt_or_identity_invalid");
- try{auto out=Success<IntervalProfileResultV3>();auto&p=out.profile;p.receipt=r;p.identity=i;p.render_policy=kRenderPolicy;p.cast_policy=kCastPolicy;p.subtype_policy=kSubtypePolicy;p.precision_policy=kPrecisionPolicy;p.normalization_policy=kNormalizationPolicy;p.temporal_application_boundary_policy=kTemporalBoundaryPolicy;p.storage_epoch_policy=kStorageEpochPolicy;p.index_policy=kIndexPolicy;p.statistics_policy=kStatisticsPolicy;p.backup_transport_policy=kBackupPolicy;p.protection_policy=kProtectionPolicy;p.component_adapter_policy=kComponentPolicy;p.diagnostic_policy=kDiagnosticPolicy;p.metric_policy=kMetricPolicy;p.profile_material=ProfileMaterial(p);p.equality_material=EqualityMaterial(p);
+ try{auto out=Success<IntervalProfileResultV3>();auto&p=out.profile;ProfileBuildClear clear(&p);p.receipt=r;p.identity=i;p.render_policy=kRenderPolicy;p.cast_policy=kCastPolicy;p.subtype_policy=kSubtypePolicy;p.precision_policy=kPrecisionPolicy;p.normalization_policy=kNormalizationPolicy;p.temporal_application_boundary_policy=kTemporalBoundaryPolicy;p.storage_epoch_policy=kStorageEpochPolicy;p.index_policy=kIndexPolicy;p.statistics_policy=kStatisticsPolicy;p.backup_transport_policy=kBackupPolicy;p.protection_policy=kProtectionPolicy;p.component_adapter_policy=kComponentPolicy;p.diagnostic_policy=kDiagnosticPolicy;p.metric_policy=kMetricPolicy;
+ auto pm=ProfileMaterial(p);Clear cpm(pm.data(),pm.size(),IntervalScrubClassV3::profile_material);p.profile_material=pm;
+ auto em=EqualityMaterial(p);Clear cem(em.data(),em.size(),IntervalScrubClassV3::equality_material);p.equality_material=em;
  if(!Digest(p.profile_material,&p.profile_fingerprint)||!Digest(p.equality_material,&p.equality_fingerprint)||!ProfileValid(p))return Failure<IntervalProfileResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","profile_material_invalid");
+ clear.Disarm();
  return out;}
  catch(...){return Failure<IntervalProfileResultV3>("RESOURCE.BUDGET_EXCEEDED","profile_allocation",ResourceStatus());}
 }
 IntervalValidationResultV3 ValidateIntervalProfileHandleV3(const IntervalValidatedProfileHandleV3&p,const IntervalExecutionControlV3&c) noexcept{if(!ProfileValid(p,&c))return Failure<IntervalValidationResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","profile_invalid");
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValidationResultV3>("validate_result_grant");
  if(Cancelled(c))return Failure<IntervalValidationResultV3>("PROCESS.CANCELLED","before_publication");
  return Success<IntervalValidationResultV3>();}
 
 IntervalViewResultV3 ValidateIntervalValueViewV3(const IntervalValueViewV3&v,bool null_allowed) noexcept {
- if(!v.profile||!ProfileValid(*v.profile))return Failure<IntervalViewResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","profile_missing_or_invalid");
- if(!ValidState(v.state))return Failure<IntervalViewResultV3>("DATATYPE.NULL_STATE.INVALID","state_invalid");
- if(v.state==IntervalValueStateV3::sql_null){if(!CleanNull(v))return Failure<IntervalViewResultV3>("DATATYPE.NULL_STATE.INVALID","dirty_null");
- if(!null_allowed)return Failure<IntervalViewResultV3>("DATATYPE.NULL_NOT_ADMITTED","slot_nonnullable");}auto r=Success<IntervalViewResultV3>();
- r.value=v;
- return r;
+ return ValidateValue(v,null_allowed,nullptr);
 }
 IntervalViewResultV3 AdmitIntervalOperandV3(const IntervalOperandV3&o,bool null_allowed) noexcept {
  if(!o.profile||!ProfileValid(*o.profile))return Failure<IntervalViewResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","operand_profile_invalid");
@@ -274,18 +296,20 @@ IntervalViewResultV3 DecodeCanonicalIntervalComponentNoAllocV3(const IntervalVal
  std::array<byte,16>x{};Clear cx(x.data(),16,IntervalScrubClassV3::component_decode_reencode,&c);StoreComponent(x.data(),m,d,n);
  if(c.force_reencode_mismatch_for_conformance)x[0]^=1;
  if(!std::equal(x.begin(),x.end(),b.begin()))return Failure<IntervalViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","component_reencode");
+ if(b.size()>c.maximum_allocation_bytes)return ResultGrantFailure<IntervalViewResultV3>("component_decode_budget");
  if(Cancelled(c))return Failure<IntervalViewResultV3>("PROCESS.CANCELLED","before_publication");
  auto r=Success<IntervalViewResultV3>();
  r.value={&p,s,m,d,n};
  return r;
 }
 IntervalNoAllocWriteResultV3 EncodeCanonicalIntervalComponentIntoNoAllocV3(const IntervalOwnedValueV3&o,byte*out,u64 cap,const IntervalExecutionControlV3&c) noexcept {
- auto v=ValidateIntervalValueViewV3(o.view(),true);
+ const auto profile_pin=o.profile;const IntervalValueViewV3 view{profile_pin.get(),o.state,o.months,o.civil_days,o.fixed_nanoseconds};
+ auto v=ValidateValue(view,true,&c);
  if(!v.ok())return FromFailure<IntervalNoAllocWriteResultV3>(v.diagnostic,v.status);
  auto r=Success<IntervalNoAllocWriteResultV3>();
  r.containing_null=o.state==IntervalValueStateV3::sql_null;
  r.bytes_required=r.containing_null?0:16;
- if(out&&(RangesOverlap(out,r.bytes_required,&o,sizeof(o))||RangesOverlap(out,r.bytes_required,&c,sizeof(c))||OutputOverlapsProfile(out,r.bytes_required,*o.profile)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","component_output_alias");
+ if(out&&(RangesOverlap(out,r.bytes_required,&o,sizeof(o))||RangesOverlap(out,r.bytes_required,&c,sizeof(c))||OutputOverlapsProfile(out,r.bytes_required,*profile_pin)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","component_output_alias");
  if(r.bytes_required>cap||r.bytes_required>c.maximum_allocation_bytes||(r.bytes_required&&!out)){auto f=Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","component_capacity",ResourceStatus());f.bytes_required=r.bytes_required;
  return f;}std::array<byte,16>x{};Clear cx(x.data(),16,IntervalScrubClassV3::component_encode_staging,&c);
  if(r.bytes_required)StoreComponent(x.data(),o.months,o.civil_days,o.fixed_nanoseconds);
@@ -294,7 +318,7 @@ IntervalNoAllocWriteResultV3 EncodeCanonicalIntervalComponentIntoNoAllocV3(const
  r.bytes_written=r.bytes_required;
  return r;
 }
-IntervalBytesResultV3 EncodeCanonicalIntervalComponentV3(const IntervalOwnedValueV3&o,const IntervalExecutionControlV3&c) noexcept {auto v=ValidateIntervalValueViewV3(o.view(),true);
+IntervalBytesResultV3 EncodeCanonicalIntervalComponentV3(const IntervalOwnedValueV3&o,const IntervalExecutionControlV3&c) noexcept {const auto profile_pin=o.profile;IntervalOwnedValueV3 stable{profile_pin,o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(stable.view(),true,&c);
  if(!v.ok())return FromFailure<IntervalBytesResultV3>(v.diagnostic,v.status);
  u64 n=o.state==IntervalValueStateV3::value?16:0;
  if(n>c.maximum_allocation_bytes)return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","component_capacity",ResourceStatus());
@@ -302,18 +326,19 @@ IntervalBytesResultV3 EncodeCanonicalIntervalComponentV3(const IntervalOwnedValu
  auto r=Success<IntervalBytesResultV3>();
  VectorClear<byte>cl(&r.bytes,IntervalScrubClassV3::component_owned_buffer,c);
  try{r.bytes.resize(n);}
- catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","component_allocation",ResourceStatus());}auto w=EncodeCanonicalIntervalComponentIntoNoAllocV3(o,r.bytes.data(),r.bytes.size(),c);
+ catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","component_allocation",ResourceStatus());}auto w=EncodeCanonicalIntervalComponentIntoNoAllocV3(stable,r.bytes.data(),r.bytes.size(),c);
  if(!w.ok())return FromFailure<IntervalBytesResultV3>(w.diagnostic,w.status);
  cl.Disarm();
  return r;}
 
 IntervalValueResultV3 ConstructIntervalV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>&p,std::int64_t m,std::int64_t d,std::int64_t n,bool null_allowed,const IntervalExecutionControlV3&c) noexcept{(void)null_allowed;
- if(!p||!ProfileValid(*p,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","construct_profile_invalid");
+ const auto profile_pin=p;if(!profile_pin||!ProfileValid(*profile_pin,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","construct_profile_invalid");
  if(m<std::numeric_limits<std::int32_t>::min()||m>std::numeric_limits<std::int32_t>::max())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","months");
  if(d<std::numeric_limits<std::int32_t>::min()||d>std::numeric_limits<std::int32_t>::max())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","civil_days");
- return Publish(p,IntervalValueStateV3::value,static_cast<std::int32_t>(m),static_cast<std::int32_t>(d),n,c);}
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("construct_result_grant");
+ return Publish(profile_pin,IntervalValueStateV3::value,static_cast<std::int32_t>(m),static_cast<std::int32_t>(d),n,c);}
 IntervalValueResultV3 ConstructIntervalV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>&p,const IntervalNullableI32FactV3&m,const IntervalNullableI32FactV3&d,const IntervalNullableI64FactV3&n,bool null_allowed,const IntervalExecutionControlV3&c) noexcept {
- if(!p||!ProfileValid(*p,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","construct_profile_invalid");
+ const auto profile_pin=p;if(!profile_pin||!ProfileValid(*profile_pin,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","construct_profile_invalid");
  if(!ValidState(m.state)||!ValidState(d.state)||!ValidState(n.state))return Failure<IntervalValueResultV3>("DATATYPE.NULL_STATE.INVALID","construct_state_invalid");
  if(m.carrier==IntervalI32CarrierKindV3::below_i32||m.carrier==IntervalI32CarrierKindV3::above_i32)return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","months");
  if(d.carrier==IntervalI32CarrierKindV3::below_i32||d.carrier==IntervalI32CarrierKindV3::above_i32)return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","civil_days");
@@ -321,11 +346,13 @@ IntervalValueResultV3 ConstructIntervalV3(const std::shared_ptr<const IntervalVa
  if(m.carrier!=IntervalI32CarrierKindV3::signed_i32||d.carrier!=IntervalI32CarrierKindV3::signed_i32||n.carrier!=IntervalI64CarrierKindV3::signed_i64)return Failure<IntervalValueResultV3>("SBLR.OPERAND_INVALID","construct_carrier_invalid");
  if((m.state==IntervalValueStateV3::sql_null&&m.value)||(d.state==IntervalValueStateV3::sql_null&&d.value)||(n.state==IntervalValueStateV3::sql_null&&n.value))return Failure<IntervalValueResultV3>("DATATYPE.NULL_STATE.INVALID","construct_dirty_null");
  if(m.state==IntervalValueStateV3::sql_null||d.state==IntervalValueStateV3::sql_null||n.state==IntervalValueStateV3::sql_null){if(!null_allowed)return Failure<IntervalValueResultV3>("DATATYPE.NULL_NOT_ADMITTED","construct_nonnullable");
- return Publish(p,IntervalValueStateV3::sql_null,0,0,0,c);}
- return ConstructIntervalV3(p,m.value,d.value,n.value,null_allowed,c);
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("construct_result_grant");
+ return Publish(profile_pin,IntervalValueStateV3::sql_null,0,0,0,c);}
+ return ConstructIntervalV3(profile_pin,m.value,d.value,n.value,null_allowed,c);
 }
-IntervalComponentResultV3 DecomposeIntervalV3(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{auto q=ValidateIntervalValueViewV3(v,a);
+IntervalComponentResultV3 DecomposeIntervalV3(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{auto q=ValidateValue(v,a,&c);
  if(!q.ok())return FromFailure<IntervalComponentResultV3>(q.diagnostic,q.status);
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalComponentResultV3>("decompose_result_grant");
  if(Cancelled(c))return Failure<IntervalComponentResultV3>("PROCESS.CANCELLED","before_publication");
  auto r=Success<IntervalComponentResultV3>();
  r.is_null=v.state==IntervalValueStateV3::sql_null;
@@ -334,7 +361,7 @@ IntervalComponentResultV3 DecomposeIntervalV3(const IntervalValueViewV3&v,bool a
 
 IntervalValueResultV3 ParseCanonicalIntervalV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>&p,std::string_view t,bool null_allowed,const IntervalExecutionControlV3&c) noexcept {
  (void)null_allowed;
- if(!p||!ProfileValid(*p,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","parse_profile_invalid");
+ const auto profile_pin=p;if(!profile_pin||!ProfileValid(*profile_pin,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","parse_profile_invalid");
  if(t.size()>63)return Failure<IntervalValueResultV3>("CTB.TEXT.LENGTH_EXCEEDED","input_extent");
  constexpr std::string_view pre="SBINTERVAL1:M=";
  if(!t.starts_with(pre))return Failure<IntervalValueResultV3>("CTI.TEMPORAL.INVALID_LITERAL","prefix");
@@ -348,21 +375,21 @@ IntervalValueResultV3 ParseCanonicalIntervalV3(const std::shared_ptr<const Inter
  auto n=ParseSigned(d.end+4,e,std::numeric_limits<std::int64_t>::min(),std::numeric_limits<std::int64_t>::max(),"nanoseconds_syntax");
  if(!n.ok)return Failure<IntervalValueResultV3>(n.code,n.code=="CTI.TEMPORAL.RANGE_EXCEEDED"?"nanoseconds_range":"nanoseconds_syntax");
  if(n.end!=e)return Failure<IntervalValueResultV3>("CTI.TEMPORAL.INVALID_LITERAL","trailing_bytes");
- return ConstructIntervalV3(p,m.value,d.value,n.value,true,c);
+ return ConstructIntervalV3(profile_pin,m.value,d.value,n.value,true,c);
 }
 IntervalValueResultV3 ParseCanonicalIntervalOperandV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>&p,const IntervalTextOperandV3&o,bool null_allowed,const IntervalExecutionControlV3&c) noexcept {
- if(!p||!ProfileValid(*p,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","parse_profile_invalid");
+ const auto profile_pin=p;if(!profile_pin||!ProfileValid(*profile_pin,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","parse_profile_invalid");
  if(!ExactPeer(o.identity,CanonicalTypeId::character)||!o.descriptor||!DescriptorBinds(*o.descriptor,*o.identity,CanonicalTypeId::character))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","text_operand_authority_invalid");
  if(!ValidState(o.state))return Failure<IntervalValueResultV3>("DATATYPE.NULL_STATE.INVALID","text_operand_state_invalid");
  if(o.state==IntervalValueStateV3::sql_null){if(o.carrier!=IntervalTextCarrierKindV3::utf8_bytes||o.extent||!o.bytes.empty())return Failure<IntervalValueResultV3>("DATATYPE.NULL_STATE.INVALID","text_operand_dirty_null");
  if(!null_allowed||!o.descriptor->nullable_allowed)return Failure<IntervalValueResultV3>("DATATYPE.NULL_NOT_ADMITTED","parse_nonnullable");
- return Publish(p,IntervalValueStateV3::sql_null,0,0,0,c);}if(o.carrier!=IntervalTextCarrierKindV3::utf8_bytes)return Failure<IntervalValueResultV3>("SBLR.OPERAND_INVALID","text_operand_carrier");
+ return Publish(profile_pin,IntervalValueStateV3::sql_null,0,0,0,c);}if(o.carrier!=IntervalTextCarrierKindV3::utf8_bytes)return Failure<IntervalValueResultV3>("SBLR.OPERAND_INVALID","text_operand_carrier");
  if(o.extent!=o.bytes.size())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","text_operand_extent");
  if(o.descriptor->length&&o.extent>o.descriptor->length)return Failure<IntervalValueResultV3>("CTB.TEXT.LENGTH_EXCEEDED","text_operand_extent_limit");
- return ParseCanonicalIntervalV3(p,o.bytes,null_allowed,c);
+ return ParseCanonicalIntervalV3(profile_pin,o.bytes,null_allowed,c);
 }
 IntervalNoAllocWriteResultV3 RenderCanonicalIntervalIntoNoAllocV3(const IntervalOwnedValueV3&o,char*out,u64 cap,const IntervalExecutionControlV3&c) noexcept {
- auto v=ValidateIntervalValueViewV3(o.view(),true);
+ const auto profile_pin=o.profile;const IntervalValueViewV3 view{profile_pin.get(),o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(view,true,&c);
  if(!v.ok())return FromFailure<IntervalNoAllocWriteResultV3>(v.diagnostic,v.status);
  std::array<char,64>x{};Clear cx(x.data(),x.size(),IntervalScrubClassV3::render_staging,&c);char*p=x.data(),*e=x.data()+x.size();
  if(o.state==IntervalValueStateV3::value){constexpr char a[]="SBINTERVAL1:M=";
@@ -372,7 +399,7 @@ IntervalNoAllocWriteResultV3 RenderCanonicalIntervalIntoNoAllocV3(const Interval
  if(!(p=AppendInt(p,e,o.civil_days)))return Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","render_internal");
  std::memcpy(p,";NS=",4);p+=4;
  if(!(p=AppendInt(p,e,o.fixed_nanoseconds)))return Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","render_internal");}u64 need=static_cast<u64>(p-x.data());
- if(out&&(RangesOverlap(out,need,&o,sizeof(o))||RangesOverlap(out,need,&c,sizeof(c))||OutputOverlapsProfile(out,need,*o.profile)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","render_output_alias");
+ if(out&&(RangesOverlap(out,need,&o,sizeof(o))||RangesOverlap(out,need,&c,sizeof(c))||OutputOverlapsProfile(out,need,*profile_pin)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","render_output_alias");
  if(need>cap||(need&&!out)){auto f=Failure<IntervalNoAllocWriteResultV3>("CTB.TEXT.LENGTH_EXCEEDED","render_capacity");f.bytes_required=need;
  return f;}if(need>c.maximum_allocation_bytes){auto f=Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","render_resource",ResourceStatus());f.bytes_required=need;
  return f;}if(Cancelled(c))return Failure<IntervalNoAllocWriteResultV3>("PROCESS.CANCELLED","before_publication");
@@ -383,42 +410,48 @@ IntervalNoAllocWriteResultV3 RenderCanonicalIntervalIntoNoAllocV3(const Interval
  r.bytes_written=need;
  return r;
 }
-IntervalTextResultV3 RenderCanonicalIntervalV3(const IntervalOwnedValueV3&o,const IntervalExecutionControlV3&c) noexcept {auto v=ValidateIntervalValueViewV3(o.view(),true);
+IntervalTextResultV3 RenderCanonicalIntervalV3(const IntervalOwnedValueV3&o,const IntervalExecutionControlV3&c) noexcept {const auto profile_pin=o.profile;IntervalOwnedValueV3 stable{profile_pin,o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(stable.view(),true,&c);
  if(!v.ok())return FromFailure<IntervalTextResultV3>(v.diagnostic,v.status);
  std::array<char,63>x{};Clear cx(x.data(),x.size(),IntervalScrubClassV3::render_owned_buffer,&c);
- auto w=RenderCanonicalIntervalIntoNoAllocV3(o,x.data(),x.size(),c);
+ auto w=RenderCanonicalIntervalIntoNoAllocV3(stable,x.data(),x.size(),c);
  if(!w.ok())return FromFailure<IntervalTextResultV3>(w.diagnostic,w.status);
  auto r=Success<IntervalTextResultV3>();
+ StringClear result_clear(&r.text,IntervalScrubClassV3::render_owned_buffer,c);
  r.containing_null=w.containing_null;
  try{r.text.assign(x.data(),x.data()+w.bytes_written);}
- catch(...){return Failure<IntervalTextResultV3>("RESOURCE.BUDGET_EXCEEDED","render_allocation",ResourceStatus());}if(Cancelled(c)){if(!r.text.empty())SecureClear(r.text.data(),r.text.size());
- return Failure<IntervalTextResultV3>("PROCESS.CANCELLED","before_publication");}
+ catch(...){return Failure<IntervalTextResultV3>("RESOURCE.BUDGET_EXCEEDED","render_allocation",ResourceStatus());}if(Cancelled(c))return Failure<IntervalTextResultV3>("PROCESS.CANCELLED","before_publication");
+ result_clear.Disarm();
  return r;}
 
-IntervalValueResultV3 CanonicalizeIntervalIdentityV3(const IntervalOwnedValueV3&o,bool a,const IntervalExecutionControlV3&c) noexcept{auto v=ValidateIntervalValueViewV3(o.view(),a);
+IntervalValueResultV3 CanonicalizeIntervalIdentityV3(const IntervalOwnedValueV3&o,bool a,const IntervalExecutionControlV3&c) noexcept{const auto profile_pin=o.profile;const IntervalValueViewV3 view{profile_pin.get(),o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(view,a,&c);
  if(!v.ok())return FromFailure<IntervalValueResultV3>(v.diagnostic,v.status);
- return Publish(o.profile,o.state,o.months,o.civil_days,o.fixed_nanoseconds,c);}
-IntervalValueResultV3 NegateIntervalCheckedV3(const IntervalOwnedValueV3&o,bool a,const IntervalExecutionControlV3&c) noexcept{auto v=ValidateIntervalValueViewV3(o.view(),a);
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("canonicalize_result_grant");
+ return Publish(profile_pin,o.state,o.months,o.civil_days,o.fixed_nanoseconds,c);}
+IntervalValueResultV3 NegateIntervalCheckedV3(const IntervalOwnedValueV3&o,bool a,const IntervalExecutionControlV3&c) noexcept{const auto profile_pin=o.profile;const IntervalValueViewV3 view{profile_pin.get(),o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(view,a,&c);
  if(!v.ok())return FromFailure<IntervalValueResultV3>(v.diagnostic,v.status);
- if(o.state==IntervalValueStateV3::sql_null)return Publish(o.profile,o.state,0,0,0,c);
+ if(o.state==IntervalValueStateV3::sql_null){if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("negate_result_grant");return Publish(profile_pin,o.state,0,0,0,c);}
  if(o.months==std::numeric_limits<std::int32_t>::min())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","months");
  if(o.civil_days==std::numeric_limits<std::int32_t>::min())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","civil_days");
  if(o.fixed_nanoseconds==std::numeric_limits<std::int64_t>::min())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","fixed_nanoseconds");
- return Publish(o.profile,o.state,-o.months,-o.civil_days,-o.fixed_nanoseconds,c);}
-template<bool Sub> IntervalValueResultV3 Binary(const IntervalOwnedValueV3&a,const IntervalOwnedValueV3&b,bool na,const IntervalExecutionControlV3&c) noexcept {auto l=ValidateIntervalValueViewV3(a.view(),na);
- if(!l.ok())return FromFailure<IntervalValueResultV3>(l.diagnostic,l.status);
- auto r=ValidateIntervalValueViewV3(b.view(),na);
- if(!r.ok())return FromFailure<IntervalValueResultV3>(r.diagnostic,r.status);
- if(a.profile->equality_fingerprint!=b.profile->equality_fingerprint)return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","equality_cohort_mismatch");
- if(a.state==IntervalValueStateV3::sql_null||b.state==IntervalValueStateV3::sql_null)return Publish(a.profile,IntervalValueStateV3::sql_null,0,0,0,c);
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("negate_result_grant");
+ return Publish(profile_pin,o.state,-o.months,-o.civil_days,-o.fixed_nanoseconds,c);}
+template<bool Sub> IntervalValueResultV3 Binary(const IntervalOwnedValueV3&a,const IntervalOwnedValueV3&b,bool na,const IntervalExecutionControlV3&c) noexcept {
+ const auto left_profile=a.profile,right_profile=b.profile;
+ if(!left_profile||!ProfileValid(*left_profile,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","left_profile_invalid");
+ if(!right_profile||!ProfileValid(*right_profile,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","right_profile_invalid");
+ if(left_profile->equality_fingerprint!=right_profile->equality_fingerprint)return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","equality_cohort_mismatch");
+ auto l=ValidateStateAndNull({left_profile.get(),a.state,a.months,a.civil_days,a.fixed_nanoseconds},na);if(!l.ok())return FromFailure<IntervalValueResultV3>(l.diagnostic,l.status);
+ auto r=ValidateStateAndNull({right_profile.get(),b.state,b.months,b.civil_days,b.fixed_nanoseconds},na);if(!r.ok())return FromFailure<IntervalValueResultV3>(r.diagnostic,r.status);
+ if(a.state==IntervalValueStateV3::sql_null||b.state==IntervalValueStateV3::sql_null){if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>(Sub?"subtract_result_grant":"add_result_grant");return Publish(left_profile,IntervalValueStateV3::sql_null,0,0,0,c);}
  std::int64_t m=Sub?std::int64_t(a.months)-b.months:std::int64_t(a.months)+b.months,d=Sub?std::int64_t(a.civil_days)-b.civil_days:std::int64_t(a.civil_days)+b.civil_days;__int128 n=Sub?__int128(a.fixed_nanoseconds)-b.fixed_nanoseconds:__int128(a.fixed_nanoseconds)+b.fixed_nanoseconds;
  if(m<std::numeric_limits<std::int32_t>::min()||m>std::numeric_limits<std::int32_t>::max())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","months");
  if(d<std::numeric_limits<std::int32_t>::min()||d>std::numeric_limits<std::int32_t>::max())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","civil_days");
  if(n<std::numeric_limits<std::int64_t>::min()||n>std::numeric_limits<std::int64_t>::max())return Failure<IntervalValueResultV3>("CTI.TEMPORAL.RANGE_EXCEEDED","fixed_nanoseconds");
- return Publish(a.profile,IntervalValueStateV3::value,static_cast<std::int32_t>(m),static_cast<std::int32_t>(d),static_cast<std::int64_t>(n),c);}
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>(Sub?"subtract_result_grant":"add_result_grant");
+ return Publish(left_profile,IntervalValueStateV3::value,static_cast<std::int32_t>(m),static_cast<std::int32_t>(d),static_cast<std::int64_t>(n),c);}
 IntervalValueResultV3 AddIntervalCheckedV3(const IntervalOwnedValueV3&a,const IntervalOwnedValueV3&b,bool n,const IntervalExecutionControlV3&c) noexcept{return Binary<false>(a,b,n,c);}IntervalValueResultV3 SubtractIntervalCheckedV3(const IntervalOwnedValueV3&a,const IntervalOwnedValueV3&b,bool n,const IntervalExecutionControlV3&c) noexcept{return Binary<true>(a,b,n,c);}
 
-template<IntervalScalarKindV3 K> IntervalScalarResultV3 Extract(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{auto q=ValidateIntervalValueViewV3(v,a);
+template<IntervalScalarKindV3 K> IntervalScalarResultV3 Extract(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{auto q=ValidateValue(v,a,&c);
  if(!q.ok())return FromFailure<IntervalScalarResultV3>(q.diagnostic,q.status);
  if(Cancelled(c))return Failure<IntervalScalarResultV3>("PROCESS.CANCELLED","before_publication");
  auto r=Success<IntervalScalarResultV3>();
@@ -428,11 +461,13 @@ template<IntervalScalarKindV3 K> IntervalScalarResultV3 Extract(const IntervalVa
  return r;}
 IntervalScalarResultV3 ExtractIntervalMonthsV3(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{return Extract<IntervalScalarKindV3::months_i32>(v,a,c);}IntervalScalarResultV3 ExtractIntervalCivilDaysV3(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{return Extract<IntervalScalarKindV3::civil_days_i32>(v,a,c);}IntervalScalarResultV3 ExtractIntervalFixedNanosecondsV3(const IntervalValueViewV3&v,bool a,const IntervalExecutionControlV3&c) noexcept{return Extract<IntervalScalarKindV3::fixed_nanoseconds_i64>(v,a,c);}
 
-IntervalEqualityResultV3 EqualIntervalValuesV3(const IntervalValueViewV3&a,const IntervalValueViewV3&b,const IntervalExecutionControlV3&c) noexcept {auto l=ValidateIntervalValueViewV3(a,true);
- if(!l.ok())return FromFailure<IntervalEqualityResultV3>(l.diagnostic,l.status);
- auto r=ValidateIntervalValueViewV3(b,true);
- if(!r.ok())return FromFailure<IntervalEqualityResultV3>(r.diagnostic,r.status);
+IntervalEqualityResultV3 EqualIntervalValuesV3(const IntervalValueViewV3&a,const IntervalValueViewV3&b,const IntervalExecutionControlV3&c) noexcept {
+ if(!a.profile||!ProfileValid(*a.profile,&c))return Failure<IntervalEqualityResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","left_profile_invalid");
+ if(!b.profile||!ProfileValid(*b.profile,&c))return Failure<IntervalEqualityResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","right_profile_invalid");
  if(a.profile->equality_fingerprint!=b.profile->equality_fingerprint)return Failure<IntervalEqualityResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","equality_cohort_mismatch");
+ auto l=ValidateStateAndNull(a,true);if(!l.ok())return FromFailure<IntervalEqualityResultV3>(l.diagnostic,l.status);
+ auto r=ValidateStateAndNull(b,true);if(!r.ok())return FromFailure<IntervalEqualityResultV3>(r.diagnostic,r.status);
+ if(c.maximum_allocation_bytes==0)return ResultGrantFailure<IntervalEqualityResultV3>("comparison_result_grant");
  if(Cancelled(c))return Failure<IntervalEqualityResultV3>("PROCESS.CANCELLED","before_publication");
  auto x=Success<IntervalEqualityResultV3>();
  if(a.state==IntervalValueStateV3::sql_null||b.state==IntervalValueStateV3::sql_null){x.fact=IntervalEqualityFactV3::unordered_null;x.grouping_equivalent=x.null_equivalent=a.state==b.state;}else{x.fact=(a.months==b.months&&a.civil_days==b.civil_days&&a.fixed_nanoseconds==b.fixed_nanoseconds)?IntervalEqualityFactV3::equal:IntervalEqualityFactV3::not_equal;x.grouping_equivalent=x.fact==IntervalEqualityFactV3::equal;}
@@ -442,12 +477,12 @@ IntervalEqualityResultV3 DistinctIntervalValuesV3(const IntervalValueViewV3&a,co
  if(r.fact==IntervalEqualityFactV3::equal)r.fact=IntervalEqualityFactV3::not_equal;else if(r.fact==IntervalEqualityFactV3::not_equal)r.fact=IntervalEqualityFactV3::equal;
  return r;}
 
-IntervalNoAllocWriteResultV3 HashIntervalValueIntoNoAllocV3(const IntervalOwnedValueV3&o,byte*out,u64 cap,const IntervalExecutionControlV3&c) noexcept {auto v=ValidateIntervalValueViewV3(o.view(),true);
+IntervalNoAllocWriteResultV3 HashIntervalValueIntoNoAllocV3(const IntervalOwnedValueV3&o,byte*out,u64 cap,const IntervalExecutionControlV3&c) noexcept {const auto profile_pin=o.profile;const IntervalValueViewV3 view{profile_pin.get(),o.state,o.months,o.civil_days,o.fixed_nanoseconds};auto v=ValidateValue(view,true,&c);
  if(!v.ok())return FromFailure<IntervalNoAllocWriteResultV3>(v.diagnostic,v.status);
- if(out&&(RangesOverlap(out,32,&o,sizeof(o))||RangesOverlap(out,32,&c,sizeof(c))||OutputOverlapsProfile(out,32,*o.profile)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_output_alias");
+ if(out&&(RangesOverlap(out,32,&o,sizeof(o))||RangesOverlap(out,32,&c,sizeof(c))||OutputOverlapsProfile(out,32,*profile_pin)))return Failure<IntervalNoAllocWriteResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","hash_output_alias");
  if(!out||cap<32||c.maximum_allocation_bytes<32){auto f=Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_capacity",ResourceStatus());f.bytes_required=32;
  return f;}std::array<byte,133>p{};Clear cp(p.data(),p.size(),IntervalScrubClassV3::hash_preimage,&c);
- std::memcpy(p.data(),"SBINTH01",8);PutUuid(p.data()+8,o.profile->receipt.catalog_snapshot_uuid);StoreLittle64(p.data()+24,o.profile->receipt.catalog_generation);StoreLittle64(p.data()+32,o.profile->receipt.registry_generation);PutUuid(p.data()+40,o.profile->identity.legacy_fields.descriptor_uuid);StoreLittle64(p.data()+56,o.profile->identity.legacy_fields.descriptor_generation);PutUuid(p.data()+64,o.profile->identity.legacy_fields.type_uuid);StoreLittle64(p.data()+80,o.profile->identity.legacy_fields.type_generation);PutPolicy(p.data()+88,o.profile->identity.hash_policy);p[112]=o.state==IntervalValueStateV3::value?1:0;StoreLittle32(p.data()+113,o.state==IntervalValueStateV3::value?16:0);
+ std::memcpy(p.data(),"SBINTH01",8);PutUuid(p.data()+8,profile_pin->receipt.catalog_snapshot_uuid);StoreLittle64(p.data()+24,profile_pin->receipt.catalog_generation);StoreLittle64(p.data()+32,profile_pin->receipt.registry_generation);PutUuid(p.data()+40,profile_pin->identity.legacy_fields.descriptor_uuid);StoreLittle64(p.data()+56,profile_pin->identity.legacy_fields.descriptor_generation);PutUuid(p.data()+64,profile_pin->identity.legacy_fields.type_uuid);StoreLittle64(p.data()+80,profile_pin->identity.legacy_fields.type_generation);PutPolicy(p.data()+88,profile_pin->identity.hash_policy);p[112]=o.state==IntervalValueStateV3::value?1:0;StoreLittle32(p.data()+113,o.state==IntervalValueStateV3::value?16:0);
  std::size_t n=117;
  if(o.state==IntervalValueStateV3::value){StoreComponent(p.data()+117,o.months,o.civil_days,o.fixed_nanoseconds);n=133;}std::array<byte,32>d{};Clear cd(d.data(),32,IntervalScrubClassV3::hash_digest,&c);
  if(!Digest(std::span<const byte>(p.data(),n),&d,&c))return Failure<IntervalNoAllocWriteResultV3>("RESOURCE.BUDGET_EXCEEDED","hash_provider",ResourceStatus());
@@ -490,28 +525,20 @@ IntervalBatchExtentsResultV3 ComputeIntervalBatchExtentsV3(u64 n,u64 limit) noex
  return r;
 }
 IntervalBatchExtentsResultV3 MaterializeIntervalBatchIntoV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>&profile,std::span<const std::int32_t>m,std::span<const std::int32_t>d,std::span<const std::int64_t>n,std::span<const byte>bitmap,std::int32_t*om,u64 omb,std::int32_t*od,u64 odb,std::int64_t*on,u64 onb,byte*ob,u64 obb,const IntervalExecutionControlV3&c) noexcept {
- auto valid=ValidateIntervalBatchViewV3({profile.get(),m,d,n,bitmap});
+ const auto profile_pin=profile;auto valid=ValidateIntervalBatchViewV3({profile_pin.get(),m,d,n,bitmap});
  if(!valid.ok())return FromFailure<IntervalBatchExtentsResultV3>(valid.diagnostic,valid.status);
  auto e=ComputeIntervalBatchExtentsV3(m.size(),c.maximum_allocation_bytes);
  if(!e.ok())return e;
- auto overlap=[&](const void*out,u64 sz){return RangesOverlap(out,sz,m.data(),m.size_bytes())||RangesOverlap(out,sz,d.data(),d.size_bytes())||RangesOverlap(out,sz,n.data(),n.size_bytes())||RangesOverlap(out,sz,bitmap.data(),bitmap.size());};
+ if(!ExactOrDisjoint(m.data(),m.size_bytes(),d.data(),d.size_bytes())||!ExactOrDisjoint(m.data(),m.size_bytes(),n.data(),n.size_bytes())||!ExactOrDisjoint(m.data(),m.size_bytes(),bitmap.data(),bitmap.size())||!ExactOrDisjoint(d.data(),d.size_bytes(),n.data(),n.size_bytes())||!ExactOrDisjoint(d.data(),d.size_bytes(),bitmap.data(),bitmap.size())||!ExactOrDisjoint(n.data(),n.size_bytes(),bitmap.data(),bitmap.size()))return Failure<IntervalBatchExtentsResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","batch_source_overlap");
+ auto overlap=[&](const void*out,u64 sz){return RangesOverlap(out,sz,m.data(),m.size_bytes())||RangesOverlap(out,sz,d.data(),d.size_bytes())||RangesOverlap(out,sz,n.data(),n.size_bytes())||RangesOverlap(out,sz,bitmap.data(),bitmap.size())||RangesOverlap(out,sz,&profile,sizeof(profile))||RangesOverlap(out,sz,&c,sizeof(c))||OutputOverlapsProfile(out,sz,*profile_pin);};
  if(overlap(om,e.months_bytes)||overlap(od,e.civil_days_bytes)||overlap(on,e.fixed_nanoseconds_bytes)||overlap(ob,e.bitmap_bytes)||RangesOverlap(om,e.months_bytes,od,e.civil_days_bytes)||RangesOverlap(om,e.months_bytes,on,e.fixed_nanoseconds_bytes)||RangesOverlap(om,e.months_bytes,ob,e.bitmap_bytes)||RangesOverlap(od,e.civil_days_bytes,on,e.fixed_nanoseconds_bytes)||RangesOverlap(od,e.civil_days_bytes,ob,e.bitmap_bytes)||RangesOverlap(on,e.fixed_nanoseconds_bytes,ob,e.bitmap_bytes))return Failure<IntervalBatchExtentsResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","batch_overlap");
  if((e.months_bytes&&(!om||omb<e.months_bytes||reinterpret_cast<std::uintptr_t>(om)%alignof(std::int32_t)))||(e.civil_days_bytes&&(!od||odb<e.civil_days_bytes||reinterpret_cast<std::uintptr_t>(od)%alignof(std::int32_t)))||(e.fixed_nanoseconds_bytes&&(!on||onb<e.fixed_nanoseconds_bytes||reinterpret_cast<std::uintptr_t>(on)%alignof(std::int64_t)))||(e.bitmap_bytes&&(!ob||obb<e.bitmap_bytes))){auto f=Failure<IntervalBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED","batch_destination",ResourceStatus());f=e;f.status=ResourceStatus();f.diagnostic.status=f.status;f.diagnostic.diagnostic_code="RESOURCE.BUDGET_EXCEEDED";f.diagnostic.detail="batch_destination";
- return f;}if(Cancelled(c))return Failure<IntervalBatchExtentsResultV3>("PROCESS.CANCELLED","batch_before_allocation");
- std::vector<std::int32_t>sm,sd;
- std::vector<std::int64_t>sn;
- std::vector<byte>sb;
- VectorClear<std::int32_t>cm(&sm,IntervalScrubClassV3::batch_month_staging,c),cd(&sd,IntervalScrubClassV3::batch_day_staging,c);
- VectorClear<std::int64_t>cn(&sn,IntervalScrubClassV3::batch_nanosecond_staging,c);
- VectorClear<byte>cb(&sb,IntervalScrubClassV3::batch_bitmap_staging,c);
- try{sm.assign(m.begin(),m.end());sd.assign(d.begin(),d.end());sn.assign(n.begin(),n.end());sb.assign(bitmap.begin(),bitmap.end());}
- catch(...){return Failure<IntervalBatchExtentsResultV3>("RESOURCE.BUDGET_EXCEEDED","batch_allocation",ResourceStatus());}
- for(std::size_t i=0;i<m.size();i+=4096)if(Cancelled(c))return Failure<IntervalBatchExtentsResultV3>("PROCESS.CANCELLED",i?"batch_row4096":"batch_row0");
+ return f;}if(Cancelled(c))return Failure<IntervalBatchExtentsResultV3>("PROCESS.CANCELLED","batch_before_output_validation");
  if(Cancelled(c))return Failure<IntervalBatchExtentsResultV3>("PROCESS.CANCELLED","batch_before_publication");
- if(e.months_bytes)std::memcpy(om,sm.data(),e.months_bytes);
- if(e.civil_days_bytes)std::memcpy(od,sd.data(),e.civil_days_bytes);
- if(e.fixed_nanoseconds_bytes)std::memcpy(on,sn.data(),e.fixed_nanoseconds_bytes);
- if(e.bitmap_bytes)std::memcpy(ob,sb.data(),e.bitmap_bytes);
+ if(e.months_bytes)std::memcpy(om,m.data(),e.months_bytes);
+ if(e.civil_days_bytes)std::memcpy(od,d.data(),e.civil_days_bytes);
+ if(e.fixed_nanoseconds_bytes)std::memcpy(on,n.data(),e.fixed_nanoseconds_bytes);
+ if(e.bitmap_bytes)std::memcpy(ob,bitmap.data(),e.bitmap_bytes);
  return e;
 }
 IntervalBatchResultV3 MaterializeIntervalBatchV3(std::shared_ptr<const IntervalValidatedProfileHandleV3>profile,std::span<const std::int32_t>m,std::span<const std::int32_t>d,std::span<const std::int64_t>n,std::span<const byte>b,const IntervalExecutionControlV3&c) noexcept {
@@ -524,9 +551,15 @@ IntervalBatchResultV3 MaterializeIntervalBatchV3(std::shared_ptr<const IntervalV
  VectorClear<std::int32_t>cm(&s.months,IntervalScrubClassV3::batch_month_staging,c),cd(&s.civil_days,IntervalScrubClassV3::batch_day_staging,c);
  VectorClear<std::int64_t>cn(&s.fixed_nanoseconds,IntervalScrubClassV3::batch_nanosecond_staging,c);
  VectorClear<byte>cb(&s.null_bitmap_lsb0,IntervalScrubClassV3::batch_bitmap_staging,c);
- try{s.months.assign(m.begin(),m.end());s.civil_days.assign(d.begin(),d.end());s.fixed_nanoseconds.assign(n.begin(),n.end());s.null_bitmap_lsb0.assign(b.begin(),b.end());}
+ try{s.months.assign(m.begin(),m.end());
+ if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED","batch_after_months_allocation");
+ s.civil_days.assign(d.begin(),d.end());
+ if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED","batch_after_days_allocation");
+ s.fixed_nanoseconds.assign(n.begin(),n.end());
+ if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED","batch_after_nanoseconds_allocation");
+ s.null_bitmap_lsb0.assign(b.begin(),b.end());
+ if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED","batch_after_bitmap_allocation");}
  catch(...){return Failure<IntervalBatchResultV3>("RESOURCE.BUDGET_EXCEEDED","batch_allocation",ResourceStatus());}
- for(std::size_t i=0;i<m.size();i+=4096)if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED",i?"batch_row4096":"batch_row0");
  if(Cancelled(c))return Failure<IntervalBatchResultV3>("PROCESS.CANCELLED","batch_before_publication");
  auto r=Success<IntervalBatchResultV3>();
  r.batch=std::move(s);cm.Disarm();cd.Disarm();cn.Disarm();cb.Disarm();
@@ -546,24 +579,27 @@ IntervalViewResultV3 DecodeIntervalSbdvalComposedNoAllocV3(const IntervalValidat
  auto w=EncodeDatatypeBinaryStructuralValueIntoNoAlloc(f.value,x.data(),e.size());
  if(c.force_reencode_mismatch_for_conformance)x[0]^=1;
  if(!w.ok()||w.bytes_written!=e.size()||!std::equal(x.begin(),x.begin()+e.size(),e.begin()))return Failure<IntervalViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","sbdval_reencode");
+ if(e.size()>c.maximum_allocation_bytes)return ResultGrantFailure<IntervalViewResultV3>("sbdval_decode_budget");
  if(Cancelled(c))return Failure<IntervalViewResultV3>("PROCESS.CANCELLED","sbdval_before_publication");
  return v;
 }
 IntervalBytesResultV3 EncodeIntervalSbdvalComposedV3(const IntervalOwnedValueV3&o,bool na,const IntervalExecutionControlV3&c) noexcept {
- auto v=ValidateIntervalValueViewV3(o.view(),na);
+ const auto profile_pin=o.profile;IntervalOwnedValueV3 stable{profile_pin,o.state,o.months,o.civil_days,o.fixed_nanoseconds};
+ auto v=ValidateValue(stable.view(),na,&c);
  if(!v.ok())return FromFailure<IntervalBytesResultV3>(v.diagnostic,v.status);
- u64 payload=o.state==IntervalValueStateV3::value?16:0,total=32+payload;
+ u64 payload=stable.state==IntervalValueStateV3::value?16:0,total=32+payload;
  if(total>c.maximum_allocation_bytes)return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdval_capacity",ResourceStatus());
  if(Cancelled(c))return Failure<IntervalBytesResultV3>("PROCESS.CANCELLED","before_allocation");
  std::array<byte,16>component{};Clear cc(component.data(),16,IntervalScrubClassV3::sbdval_component_staging,&c);
- if(payload)StoreComponent(component.data(),o.months,o.civil_days,o.fixed_nanoseconds);
+ if(payload)StoreComponent(component.data(),stable.months,stable.civil_days,stable.fixed_nanoseconds);
  auto r=Success<IntervalBytesResultV3>();
  VectorClear<byte>cr(&r.bytes,IntervalScrubClassV3::sbdval_owned_buffer,c);
  try{r.bytes.resize(total);}
- catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdval_allocation",ResourceStatus());}DatatypeBinaryValueView f{CanonicalTypeId::interval,o.state==IntervalValueStateV3::sql_null,false,payload?component.data():nullptr,static_cast<std::size_t>(payload)};
+ catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdval_allocation",ResourceStatus());}DatatypeBinaryValueView f{CanonicalTypeId::interval,stable.state==IntervalValueStateV3::sql_null,false,payload?component.data():nullptr,static_cast<std::size_t>(payload)};
  auto w=EncodeDatatypeBinaryStructuralValueIntoNoAlloc(f,r.bytes.data(),r.bytes.size());
  if(!w.ok())return Failure<IntervalBytesResultV3>(w.diagnostic.diagnostic_code,"sbdval_encode",w.status);
- auto check=DecodeIntervalSbdvalComposedNoAllocV3(*o.profile,na,r.bytes,{});
+ auto self_control=c;self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;
+ auto check=DecodeIntervalSbdvalComposedNoAllocV3(*profile_pin,na,r.bytes,self_control);
  if(!check.ok())return FromFailure<IntervalBytesResultV3>(check.diagnostic,check.status);
  if(Cancelled(c))return Failure<IntervalBytesResultV3>("PROCESS.CANCELLED","before_publication");
  cr.Disarm();
@@ -582,24 +618,27 @@ IntervalViewResultV3 DecodeIntervalSbdpvComposedNoAllocV3(const IntervalValidate
  auto w=EncodeDatatypePhysicalStructuralValueIntoNoAlloc(f.value,x.data(),e.size());
  if(c.force_reencode_mismatch_for_conformance)x[0]^=1;
  if(!w.ok()||w.bytes_written!=e.size()||!std::equal(x.begin(),x.begin()+e.size(),e.begin()))return Failure<IntervalViewResultV3>("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","sbdpv_reencode");
+ if(e.size()>c.maximum_allocation_bytes)return ResultGrantFailure<IntervalViewResultV3>("sbdpv_decode_budget");
  if(Cancelled(c))return Failure<IntervalViewResultV3>("PROCESS.CANCELLED","sbdpv_before_publication");
  return v;
 }
 IntervalBytesResultV3 EncodeIntervalSbdpvComposedV3(const IntervalOwnedValueV3&o,bool na,const IntervalExecutionControlV3&c) noexcept {
- auto v=ValidateIntervalValueViewV3(o.view(),na);
+ const auto profile_pin=o.profile;IntervalOwnedValueV3 stable{profile_pin,o.state,o.months,o.civil_days,o.fixed_nanoseconds};
+ auto v=ValidateValue(stable.view(),na,&c);
  if(!v.ok())return FromFailure<IntervalBytesResultV3>(v.diagnostic,v.status);
- u64 payload=o.state==IntervalValueStateV3::value?16:0,total=24+payload;
+ u64 payload=stable.state==IntervalValueStateV3::value?16:0,total=24+payload;
  if(total>c.maximum_allocation_bytes)return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdpv_capacity",ResourceStatus());
  if(Cancelled(c))return Failure<IntervalBytesResultV3>("PROCESS.CANCELLED","before_allocation");
  std::array<byte,16>component{};Clear cc(component.data(),16,IntervalScrubClassV3::sbdpv_component_staging,&c);
- if(payload)StoreComponent(component.data(),o.months,o.civil_days,o.fixed_nanoseconds);
+ if(payload)StoreComponent(component.data(),stable.months,stable.civil_days,stable.fixed_nanoseconds);
  auto r=Success<IntervalBytesResultV3>();
  VectorClear<byte>cr(&r.bytes,IntervalScrubClassV3::sbdpv_owned_buffer,c);
  try{r.bytes.resize(total);}
- catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdpv_allocation",ResourceStatus());}DatatypePhysicalValueView f{CanonicalTypeId::interval,o.state==IntervalValueStateV3::sql_null?DatatypePhysicalValueState::sql_null:DatatypePhysicalValueState::value,payload?component.data():nullptr,static_cast<std::size_t>(payload)};
+ catch(...){return Failure<IntervalBytesResultV3>("RESOURCE.BUDGET_EXCEEDED","sbdpv_allocation",ResourceStatus());}DatatypePhysicalValueView f{CanonicalTypeId::interval,stable.state==IntervalValueStateV3::sql_null?DatatypePhysicalValueState::sql_null:DatatypePhysicalValueState::value,payload?component.data():nullptr,static_cast<std::size_t>(payload)};
  auto w=EncodeDatatypePhysicalStructuralValueIntoNoAlloc(f,r.bytes.data(),r.bytes.size());
  if(!w.ok())return Failure<IntervalBytesResultV3>(w.diagnostic.diagnostic_code,"sbdpv_encode",w.status);
- auto check=DecodeIntervalSbdpvComposedNoAllocV3(*o.profile,na,r.bytes,{});
+ auto self_control=c;self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;
+ auto check=DecodeIntervalSbdpvComposedNoAllocV3(*profile_pin,na,r.bytes,self_control);
  if(!check.ok())return FromFailure<IntervalBytesResultV3>(check.diagnostic,check.status);
  if(Cancelled(c))return Failure<IntervalBytesResultV3>("PROCESS.CANCELLED","before_publication");
  cr.Disarm();
@@ -608,9 +647,11 @@ IntervalBytesResultV3 EncodeIntervalSbdpvComposedV3(const IntervalOwnedValueV3&o
 
 IntervalIntrinsicDispositionV3 ClassifyIntervalIntrinsicOperationV3(IntervalIntrinsicOperationV3 o) noexcept{auto v=static_cast<unsigned>(o);
  return v<=6?IntervalIntrinsicDispositionV3::admitted:v<=12?IntervalIntrinsicDispositionV3::registered_refused:IntervalIntrinsicDispositionV3::unknown;}
-IntervalValueResultV3 RefuseIntervalIntrinsicOperationV3(const IntervalValueViewV3&v,IntervalIntrinsicOperationV3 o) noexcept{if(!v.profile||!ProfileValid(*v.profile))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","intrinsic_profile");
- if(!ValidState(v.state))return Failure<IntervalValueResultV3>("DATATYPE.NULL_STATE.INVALID","intrinsic_state");
+IntervalValueResultV3 RefuseIntervalIntrinsicOperationV3(const IntervalValueViewV3&v,IntervalIntrinsicOperationV3 o,const IntervalExecutionControlV3&c) noexcept{if(!v.profile||!ProfileValid(*v.profile,&c))return Failure<IntervalValueResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","intrinsic_profile");
+ auto state=ValidateStateAndNull(v,true);if(!state.ok())return FromFailure<IntervalValueResultV3>(state.diagnostic,state.status);
  auto d=ClassifyIntervalIntrinsicOperationV3(o);
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)return ResultGrantFailure<IntervalValueResultV3>("intrinsic_result_grant");
+ if(Cancelled(c))return Failure<IntervalValueResultV3>("PROCESS.CANCELLED","intrinsic_before_refusal");
  if(d==IntervalIntrinsicDispositionV3::admitted)return Failure<IntervalValueResultV3>("CTI.TEMPORAL.OPERATION_REFUSED","admitted_intrinsic_requires_implementation_entrypoint");
  if(d==IntervalIntrinsicDispositionV3::unknown||o==IntervalIntrinsicOperationV3::apply_to_temporal)return Failure<IntervalValueResultV3>("CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",d==IntervalIntrinsicDispositionV3::unknown?"unknown_intrinsic":"later_operator_owner");
  return Failure<IntervalValueResultV3>("CTI.TEMPORAL.ORDERING_REFUSED","no_natural_order");}
@@ -622,14 +663,39 @@ IntervalCastPolicyDispositionV3 ClassifyIntervalCastPolicyRowV3(u32 row,Datatype
  if(row==13&&c==DatatypeCastContext::explicit_cast)return IntervalCastPolicyDispositionV3::explicit_interval_to_character;
  return IntervalCastPolicyDispositionV3::forbidden;}
 IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept {
- const auto disposition = ClassifyIntervalCastPolicyRowV3(
-     r.one_based_policy_row, r.context);
- if (disposition == IntervalCastPolicyDispositionV3::forbidden)
-   return Failure<IntervalCastResultV3>("DATATYPE.CAST_FORBIDDEN",
-                                        "closed_cast_matrix");
  auto fail=[](std::string_view code,std::string_view detail) {
    return Failure<IntervalCastResultV3>(code,detail);
  };
+ const auto disposition = ClassifyIntervalCastPolicyRowV3(
+     r.one_based_policy_row, r.context);
+ if (disposition == IntervalCastPolicyDispositionV3::forbidden) {
+   const auto owned_profile=r.interval_source?r.interval_source->profile:nullptr;
+   const auto dynamic_profile=r.dynamic_interval_source?r.dynamic_interval_source->profile:nullptr;
+   if(r.interval_source&&(!owned_profile||!ProfileValid(*owned_profile,&r.control)))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_interval_source_invalid");
+   if(r.dynamic_interval_source){
+     if(!dynamic_profile||!ProfileValid(*dynamic_profile,&r.control))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_dynamic_profile_invalid");
+   }
+   if(r.interval_target){
+     if(!*r.interval_target||!ProfileValid(**r.interval_target,&r.control))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_interval_target_invalid");
+     if(r.interval_target_descriptor&&!DescriptorBinds(*r.interval_target_descriptor,(**r.interval_target).identity,CanonicalTypeId::interval))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_interval_target_descriptor_invalid");
+   }else if(r.interval_target_descriptor)return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_interval_target_profile_missing");
+   if(r.scalar_source){
+     if(r.scalar_source->type_id==CanonicalTypeId::null_type){if(r.scalar_source_identity)return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_null_source_identity_invalid");}
+     else if(!ExactPeer(r.scalar_source_identity,r.scalar_source->type_id)||!DescriptorBinds(r.scalar_source->descriptor,*r.scalar_source_identity,r.scalar_source->type_id))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_scalar_source_invalid");
+   }else if(r.scalar_source_identity)return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_scalar_source_missing");
+   if(r.scalar_target_identity){
+     if(r.scalar_target==CanonicalTypeId::unknown||!ExactPeer(r.scalar_target_identity,r.scalar_target)||!DescriptorBinds(r.scalar_target_descriptor,*r.scalar_target_identity,r.scalar_target))return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","forbidden_scalar_target_invalid");
+   }
+   if(r.interval_source){auto state=ValidateStateAndNull({owned_profile.get(),r.interval_source->state,r.interval_source->months,r.interval_source->civil_days,r.interval_source->fixed_nanoseconds},true);if(!state.ok())return FromFailure<IntervalCastResultV3>(state.diagnostic,state.status);}
+   if(r.dynamic_interval_source){
+     const auto&o=*r.dynamic_interval_source;
+     if(!ValidState(o.state))return fail("DATATYPE.NULL_STATE.INVALID","forbidden_dynamic_state_invalid");
+     if(o.state==IntervalValueStateV3::sql_null&&(o.months_carrier!=IntervalI32CarrierKindV3::signed_i32||o.civil_days_carrier!=IntervalI32CarrierKindV3::signed_i32||o.fixed_nanoseconds_carrier!=IntervalI64CarrierKindV3::signed_i64||o.months||o.civil_days||o.fixed_nanoseconds))return fail("DATATYPE.NULL_STATE.INVALID","forbidden_dynamic_dirty_null");
+   }
+   if(r.scalar_source&&r.scalar_source->is_null&&!r.scalar_source->encoded_value.empty())return fail("DATATYPE.NULL_STATE.INVALID","forbidden_scalar_dirty_null");
+   return Failure<IntervalCastResultV3>("DATATYPE.CAST_FORBIDDEN",
+                                        "closed_cast_matrix");
+ }
  if(disposition==IntervalCastPolicyDispositionV3::contextual_null){
    if(r.interval_source||r.dynamic_interval_source||!r.scalar_source||
       r.scalar_source_identity||!r.interval_target||!(*r.interval_target)||
@@ -660,11 +726,11 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
       r.scalar_target!=CanonicalTypeId::unknown||r.scalar_target_identity||
       r.use_character_output_buffer||r.character_output||r.character_output_capacity)
      return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","identity_cast_shape_invalid");
-   const auto& source_profile=owned?r.interval_source->profile:r.dynamic_interval_source->profile;
+   const auto source_profile=owned?r.interval_source->profile:r.dynamic_interval_source->profile;
    if(!source_profile||!ProfileValid(*source_profile)||!ProfileValid(**r.interval_target)||
       source_profile->equality_fingerprint!=(**r.interval_target).equality_fingerprint)
      return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","identity_cohort_mismatch");
-   const auto source=owned?ValidateIntervalValueViewV3(r.interval_source->view(),true):
+   const auto source=owned?ValidateValue({source_profile.get(),r.interval_source->state,r.interval_source->months,r.interval_source->civil_days,r.interval_source->fixed_nanoseconds},true,&r.control):
        AdmitIntervalOperandV3(*r.dynamic_interval_source,true);
    if(!source.ok())return FromFailure<IntervalCastResultV3>(source.diagnostic,source.status);
    if(source.value.state==IntervalValueStateV3::sql_null&&!r.target_null_allowed)
@@ -716,13 +782,13 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
     !r.scalar_target_identity||
     (!r.use_character_output_buffer&&(r.character_output||r.character_output_capacity)))
    return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","outgoing_cast_shape_invalid");
- const auto& source_profile=owned?r.interval_source->profile:r.dynamic_interval_source->profile;
+ const auto source_profile=owned?r.interval_source->profile:r.dynamic_interval_source->profile;
  if(!source_profile||!ProfileValid(*source_profile)||
     !ExactPeer(r.scalar_target_identity,CanonicalTypeId::character)||
     !DescriptorBinds(r.scalar_target_descriptor,*r.scalar_target_identity,
                      CanonicalTypeId::character))
    return fail("CTI.INTERVAL.DESCRIPTOR_INVALID","character_target_authority_invalid");
- const auto source=owned?ValidateIntervalValueViewV3(r.interval_source->view(),true):
+ const auto source=owned?ValidateValue({source_profile.get(),r.interval_source->state,r.interval_source->months,r.interval_source->civil_days,r.interval_source->fixed_nanoseconds},true,&r.control):
      AdmitIntervalOperandV3(*r.dynamic_interval_source,true);
  if(!source.ok())return FromFailure<IntervalCastResultV3>(source.diagnostic,source.status);
  if(source.value.state==IntervalValueStateV3::sql_null&&
@@ -732,7 +798,8 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
                              source.value.civil_days,source.value.fixed_nanoseconds};
  std::array<char,63> staged{};Clear clear(staged.data(),staged.size(),
       IntervalScrubClassV3::render_staging,&r.control);
- auto rendered=RenderCanonicalIntervalIntoNoAllocV3(stable,staged.data(),staged.size(),{});
+ auto render_control=r.control;render_control.maximum_allocation_bytes=~u64{0};render_control.cancelled=nullptr;render_control.cancellation_context=nullptr;render_control.force_reencode_mismatch_for_conformance=false;
+ auto rendered=RenderCanonicalIntervalIntoNoAllocV3(stable,staged.data(),staged.size(),render_control);
  if(!rendered.ok())return FromFailure<IntervalCastResultV3>(rendered.diagnostic,rendered.status);
  const auto extent=rendered.bytes_written;
  if(r.scalar_target_descriptor.length&&extent>r.scalar_target_descriptor.length){
@@ -757,9 +824,13 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
                            sizeof(*r.interval_source)))||
      (dynamic&&RangesOverlap(r.character_output,extent,r.dynamic_interval_source,
                              sizeof(*r.dynamic_interval_source)))||
+     RangesOverlap(r.character_output,extent,r.scalar_target_identity,
+                   sizeof(*r.scalar_target_identity))||
      OutputOverlapsProfile(r.character_output,extent,*source_profile)))
    return fail("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","character_output_alias");
  IntervalCastResultV3 out=Success<IntervalCastResultV3>();
+ StringClear output_clear(&out.scalar_value.encoded_value,
+                          IntervalScrubClassV3::render_owned_buffer,r.control);
  out.category=DatatypeCastCategory::lossless_explicit;out.scalar_value.type_id=CanonicalTypeId::character;
  out.scalar_value.is_null=source.value.state==IntervalValueStateV3::sql_null;
  out.scalar_value.descriptor=r.scalar_target_descriptor;out.bytes_required=extent;
@@ -772,6 +843,7 @@ IntervalCastResultV3 CastIntervalValueV3(const IntervalCastRequestV3&r) noexcept
  if(r.use_character_output_buffer&&extent)std::memcpy(r.character_output,staged.data(),extent);
  out.used_character_output_buffer=r.use_character_output_buffer;
  out.bytes_written=r.use_character_output_buffer?extent:0;
+ output_clear.Disarm();
  return out;
 }
 
