@@ -219,7 +219,9 @@ IntervalAliasAuditResultV3 AuditIntervalRequiredAliasResolutionV3(const Interval
 IntervalProfileResultV3 BuildCurrentIntervalValidatedProfileHandleV3(const platform::Uuid&) noexcept;
 IntervalProfileResultV3 BuildIntervalValidatedProfileHandleV3(const IntervalAuthorityReceiptV3&, const DatatypeTypeCodecIdentityRowV3&) noexcept;
 IntervalValidationResultV3 ValidateIntervalProfileHandleV3(const IntervalValidatedProfileHandleV3&, const IntervalExecutionControlV3& = {}) noexcept;
-IntervalViewResultV3 ValidateIntervalValueViewV3(const IntervalValueViewV3&, bool null_allowed = true) noexcept;
+IntervalViewResultV3 ValidateIntervalValueViewV3(
+    const IntervalValueViewV3&, bool null_allowed = true,
+    const IntervalExecutionControlV3& = {}) noexcept;
 IntervalViewResultV3 AdmitIntervalOperandV3(const IntervalOperandV3&, bool null_allowed = true) noexcept;
 IntervalViewResultV3 DecodeCanonicalIntervalComponentNoAllocV3(const IntervalValidatedProfileHandleV3&, IntervalValueStateV3, bool, std::span<const byte>, const IntervalExecutionControlV3& = {}) noexcept;
 IntervalBytesResultV3 EncodeCanonicalIntervalComponentV3(const IntervalOwnedValueV3&, const IntervalExecutionControlV3& = {}) noexcept;

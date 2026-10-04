@@ -260,8 +260,16 @@ IntervalValidationResultV3 ValidateIntervalProfileHandleV3(const IntervalValidat
  if(Cancelled(c))return Failure<IntervalValidationResultV3>("PROCESS.CANCELLED","before_publication");
  return Success<IntervalValidationResultV3>();}
 
-IntervalViewResultV3 ValidateIntervalValueViewV3(const IntervalValueViewV3&v,bool null_allowed) noexcept {
- return ValidateValue(v,null_allowed,nullptr);
+IntervalViewResultV3 ValidateIntervalValueViewV3(
+    const IntervalValueViewV3&v,bool null_allowed,
+    const IntervalExecutionControlV3&c) noexcept {
+ auto validated=ValidateValue(v,null_allowed,&c);
+ if(!validated.ok())return validated;
+ if(c.maximum_allocation_bytes<kIntervalComponentBytesV3)
+  return ResultGrantFailure<IntervalViewResultV3>("validate_result_grant");
+ if(Cancelled(c))
+  return Failure<IntervalViewResultV3>("PROCESS.CANCELLED","before_publication");
+ return validated;
 }
 IntervalViewResultV3 AdmitIntervalOperandV3(const IntervalOperandV3&o,bool null_allowed) noexcept {
  if(!o.profile||!ProfileValid(*o.profile))return Failure<IntervalViewResultV3>("CTI.INTERVAL.DESCRIPTOR_INVALID","operand_profile_invalid");
