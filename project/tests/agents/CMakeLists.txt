@@ -8,6 +8,18 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+add_executable(catalog_scheduler_policy_gate catalog_scheduler_policy_gate.cpp)
+target_compile_features(catalog_scheduler_policy_gate PRIVATE cxx_std_23)
+target_link_libraries(catalog_scheduler_policy_gate PRIVATE sb_core_catalog)
+add_test(NAME catalog_scheduler_policy_gate COMMAND catalog_scheduler_policy_gate)
+set_tests_properties(catalog_scheduler_policy_gate PROPERTIES TIMEOUT 30 LABELS "catalog;scheduler;binary_uuid;definition_codec")
+foreach(family IN ITEMS family queue fairness)
+  add_test(NAME catalog_scheduler_${family}_registration_gate
+    COMMAND catalog_scheduler_policy_gate --require-${family}-registration)
+  set_tests_properties(catalog_scheduler_${family}_registration_gate PROPERTIES
+    TIMEOUT 30 LABELS "catalog;scheduler;binary_uuid;shared_codec")
+endforeach()
+
 add_executable(runtime_task_queue_claim_gate "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_task_queue_claim_gate.cpp")
 target_compile_features(runtime_task_queue_claim_gate PRIVATE cxx_std_20)
 target_include_directories(runtime_task_queue_claim_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
