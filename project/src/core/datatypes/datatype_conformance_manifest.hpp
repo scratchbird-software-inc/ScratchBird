@@ -59,12 +59,12 @@ struct BitStringConformanceExampleV1 {
 
 // Date likewise cannot use SBDTV001: the legacy descriptor cannot carry the
 // d708 receipt, policy identities, or the complete 584-byte profile handle.
-struct DateConformanceExampleV1 {
-  DateAuthorityReceiptV1 receipt;
+struct DateConformanceExampleV3 {
+  DateAuthorityReceiptV3 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
-  DateValidatedProfileHandleV1 profile;
+  DateValidatedProfileHandleV3 profile;
   bool null_allowed = false;
-  DateValueStateV1 state = DateValueStateV1::value;
+  DateValueStateV3 state = DateValueStateV3::value;
   std::vector<byte> canonical_component;
   DatatypeConformanceExampleSource source =
       DatatypeConformanceExampleSource::unknown;
@@ -92,7 +92,7 @@ struct DatatypeConformanceManifest {
   std::string inventory_source_path;
   std::vector<DatatypeConformanceExample> examples;
   std::vector<BitStringConformanceExampleV1> bit_string_examples;
-  std::vector<DateConformanceExampleV1> date_examples;
+  std::vector<DateConformanceExampleV3> date_examples;
   std::vector<TimeConformanceExampleV3> time_examples;
   bool parser_authority_allowed = false;
 };
@@ -118,7 +118,7 @@ const char* DatatypeConformanceExampleSourceName(
 DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const BitStringAuthorityReceiptV1& bit_string_receipt,
     bool bit_string_null_allowed,
-    const DateAuthorityReceiptV1& date_receipt,
+    const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,
     const TimeAuthorityReceiptV3& time_receipt,
     bool time_null_allowed);

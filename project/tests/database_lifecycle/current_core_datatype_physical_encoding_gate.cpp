@@ -88,11 +88,11 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
   }
 }
 
-std::shared_ptr<const dt::DateValidatedProfileHandleV1> DateProfile() {
+std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
   const auto result =
-      dt::BuildCurrentDateValidatedProfileHandleV1(dt::kDatatypeCohortV8);
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV8);
   Require(result.ok(), "MDF-013 current date profile did not resolve");
-  return std::make_shared<const dt::DateValidatedProfileHandleV1>(
+  return std::make_shared<const dt::DateValidatedProfileHandleV3>(
       result.profile);
 }
 
@@ -128,17 +128,17 @@ void TestDateStructuralBoundaryAndComposedAuthority() {
           "MDF-013 raw date SBDPV semantic path was not refused");
 
   const auto profile = DateProfile();
-  const dt::DateOwnedValueV1 value{
-      profile, dt::DateValueStateV1::value, 0};
+  const dt::DateOwnedValueV3 value{
+      profile, dt::DateValueStateV3::value, 0};
   const auto composed =
-      dt::EncodeDateSbdpvComposedV1(value, false);
+      dt::EncodeDateSbdpvComposedV3(value, false);
   Require(composed.ok() && composed.bytes ==
               std::vector<platform::byte>(frame.begin(), frame.end()),
           "MDF-013 composed date SBDPV bytes differ from structural envelope");
-  const auto decoded = dt::DecodeDateSbdpvComposedNoAllocV1(
+  const auto decoded = dt::DecodeDateSbdpvComposedNoAllocV3(
       *profile, false, composed.bytes);
   Require(decoded.ok() && decoded.value.profile == profile.get() &&
-              decoded.value.state == dt::DateValueStateV1::value &&
+              decoded.value.state == dt::DateValueStateV3::value &&
               decoded.value.day == 0,
           "MDF-013 composed date SBDPV did not preserve typed epoch");
 

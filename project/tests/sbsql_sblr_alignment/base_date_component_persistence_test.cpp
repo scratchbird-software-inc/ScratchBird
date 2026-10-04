@@ -48,8 +48,8 @@ platform::Uuid StatementReceipt() {
   return value;
 }
 
-dt::DateValidatedProfileHandleV1 Profile() {
-  auto result = dt::BuildCurrentDateValidatedProfileHandleV1(StatementReceipt());
+dt::DateValidatedProfileHandleV3 Profile() {
+  auto result = dt::BuildCurrentDateValidatedProfileHandleV3(StatementReceipt());
   Require(result.ok(), "current date profile");
   return result.profile;
 }
@@ -73,46 +73,46 @@ std::vector<platform::byte> Hex(std::string_view text) {
 }
 
 struct ComponentVector {
-  dt::DateValueStateV1 state;
+  dt::DateValueStateV3 state;
   std::int32_t day;
   std::string_view sbdval;
   std::string_view sbdpv;
 };
 
 constexpr std::array<ComponentVector, 4> kComponentVectors{{
-    {dt::DateValueStateV1::value, 0,
+    {dt::DateValueStateV3::value, 0,
      "53424456414c3031900100000000200004000000000000003331a286a046543100000000",
      "5342445056303031900100000100000004000000eac93b7d00000000"},
-    {dt::DateValueStateV1::value, std::numeric_limits<std::int32_t>::min(),
+    {dt::DateValueStateV3::value, std::numeric_limits<std::int32_t>::min(),
      "53424456414c303190010000000020000400000000000000b357a186a0c6533100000080",
      "53424450563030319001000001000000040000006a003bfd00000080"},
-    {dt::DateValueStateV1::value, std::numeric_limits<std::int32_t>::max(),
+    {dt::DateValueStateV3::value, std::numeric_limits<std::int32_t>::max(),
      "53424456414c3031900100000000200004000000000000000f2d562864985844ffffff7f",
      "534244505630303190010000010000000400000006a24d95ffffff7f"},
-    {dt::DateValueStateV1::sql_null, 0,
+    {dt::DateValueStateV3::sql_null, 0,
      "53424456414c30319001000001002000000000000000000083039d73b00f6514",
      "5342445056303031900100000000000000000000dda0e66d"},
 }};
 
 struct OraclePositiveVector {
   std::string_view name;
-  dt::DateValueStateV1 state;
+  dt::DateValueStateV3 state;
   std::int32_t day;
   std::string_view frame_hex;
   std::string_view record_hex;
 };
 
 constexpr std::array<OraclePositiveVector, 4> kOraclePositiveVectors{{
-    {"epoch", dt::DateValueStateV1::value, 0,
+    {"epoch", dt::DateValueStateV3::value, 0,
      "53424456414c3031900100000000200004000000000000003331a286a046543100000000",
      "534244544f5230310100c80000000000019d000000007000800000000000d70808000000000000000800000000000000900100006461746580000000000000000100000000000000019d000000007000800000000000d81c0100000000000000019d000000007000800000000000d81d01000000000000000100000000000000dd7d309f895a6b5b96850a5388e27296db731f24b7b203413067c1272c445a0524000000000000002c2ed92d923c1e360caeaec8384ee1f1f9f1b8b7d3818f8b50c75ed903333f4453424456414c3031900100000000200004000000000000003331a286a046543100000000"},
-    {"maximum", dt::DateValueStateV1::value, 2147483647,
+    {"maximum", dt::DateValueStateV3::value, 2147483647,
      "53424456414c3031900100000000200004000000000000000f2d562864985844ffffff7f",
      "534244544f5230310100c80000000000019d000000007000800000000000d70808000000000000000800000000000000900100006461746580000000000000000100000000000000019d000000007000800000000000d81c0100000000000000019d000000007000800000000000d81d01000000000000000100000000000000dd7d309f895a6b5b96850a5388e27296db731f24b7b203413067c1272c445a05240000000000000006a4c7f4a7abd06e67c819d7232a87b680bfad11ba7b4c7050bea393c0244b9e53424456414c3031900100000000200004000000000000000f2d562864985844ffffff7f"},
-    {"minimum", dt::DateValueStateV1::value, -2147483648,
+    {"minimum", dt::DateValueStateV3::value, -2147483648,
      "53424456414c303190010000000020000400000000000000b357a186a0c6533100000080",
      "534244544f5230310100c80000000000019d000000007000800000000000d70808000000000000000800000000000000900100006461746580000000000000000100000000000000019d000000007000800000000000d81c0100000000000000019d000000007000800000000000d81d01000000000000000100000000000000dd7d309f895a6b5b96850a5388e27296db731f24b7b203413067c1272c445a05240000000000000064c4c07f9502b92667c563f716dd7ae53debc0b32c1ee7b6ac55b36147c0d5fc53424456414c303190010000000020000400000000000000b357a186a0c6533100000080"},
-    {"sql_null", dt::DateValueStateV1::sql_null, 0,
+    {"sql_null", dt::DateValueStateV3::sql_null, 0,
      "53424456414c30319001000001002000000000000000000083039d73b00f6514",
      "534244544f5230310100c80001000000019d000000007000800000000000d70808000000000000000800000000000000900100006461746580000000000000000100000000000000019d000000007000800000000000d81c0100000000000000019d000000007000800000000000d81d01000000000000000100000000000000dd7d309f895a6b5b96850a5388e27296db731f24b7b203413067c1272c445a052000000000000000c08fb5d5b2827e9df6b3102a3499b8157d114736e2e03bd10f14faa57014dad853424456414c30319001000001002000000000000000000083039d73b00f6514"},
 }};
@@ -303,8 +303,8 @@ bool ExactUuid(const platform::byte* input, const platform::Uuid& value) {
 }
 
 std::vector<platform::byte> EncodeOracleRecord(
-    const dt::DateValidatedProfileHandleV1& profile,
-    dt::DateValueStateV1 state,
+    const dt::DateValidatedProfileHandleV3& profile,
+    dt::DateValueStateV3 state,
     std::span<const platform::byte> frame) {
   Require(frame.size() <= kOracleMaximumFrameBytes,
           "SBDTOR01 frame exceeds bounded test layout");
@@ -343,7 +343,7 @@ struct OracleDecodeResult {
   std::uint8_t passed_gate_mask = 0;
   OutcomeScope scope = OutcomeScope::harness_only;
   std::string_view public_diagnostic_code;
-  dt::DateValueStateV1 state = dt::DateValueStateV1::value;
+  dt::DateValueStateV3 state = dt::DateValueStateV3::value;
   std::int32_t day = 0;
   std::vector<platform::byte> reencoded;
 };
@@ -368,7 +368,7 @@ OracleDecodeResult NestedFailure(std::string_view diagnostic_code,
 }
 
 OracleDecodeResult DecodeOracleRecord(
-    const std::shared_ptr<const dt::DateValidatedProfileHandleV1>& profile,
+    const std::shared_ptr<const dt::DateValidatedProfileHandleV3>& profile,
     bool null_allowed,
     std::span<const platform::byte> encoded) {
   // T01: the outer harness validates its own bounded structure only. It does
@@ -398,7 +398,7 @@ OracleDecodeResult DecodeOracleRecord(
   // T03: validate the complete supplied profile handle, then the exact receipt,
   // descriptor, type, codec, generations, and full-profile fingerprint stored
   // by the harness. Names and aliases are intentionally absent.
-  if (!dt::ValidateDateProfileHandleV1(*profile).ok() ||
+  if (!dt::ValidateDateProfileHandleV3(*profile).ok() ||
       !ExactUuid(encoded.data() + 16,
                  profile->receipt.catalog_snapshot_uuid) ||
       platform::LoadLittle64(encoded.data() + 32) !=
@@ -427,17 +427,17 @@ OracleDecodeResult DecodeOracleRecord(
   // T04: outer state is a harness fact, not a public datatype state result.
   if (encoded[12] > 1) return HarnessFailure("T04", 0x07);
   const auto outer_state = encoded[12] == 0
-      ? dt::DateValueStateV1::value : dt::DateValueStateV1::sql_null;
+      ? dt::DateValueStateV3::value : dt::DateValueStateV3::sql_null;
 
   // T05: only the nested production SBDVAL01 decoder may publish a datatype
   // diagnostic. The frame is passed unchanged with exact profile/nullability.
   const auto decoded =
-      dt::DecodeDateSbdvalComposedNoAllocV1(*profile, null_allowed, frame);
+      dt::DecodeDateSbdvalComposedNoAllocV3(*profile, null_allowed, frame);
   if (!decoded.ok())
     return NestedFailure(decoded.diagnostic.diagnostic_code, 0x0f);
-  const dt::DateOwnedValueV1 inner_value{profile, decoded.value.state,
+  const dt::DateOwnedValueV3 inner_value{profile, decoded.value.state,
                                               decoded.value.day};
-  const auto inner_reencoded = dt::EncodeDateSbdvalComposedV1(
+  const auto inner_reencoded = dt::EncodeDateSbdvalComposedV3(
       inner_value, null_allowed);
   if (!inner_reencoded.ok() || inner_reencoded.bytes !=
           std::vector<platform::byte>(frame.begin(), frame.end())) {
@@ -562,28 +562,28 @@ std::vector<platform::byte> FileDeviceCloseReopen(
   return restored;
 }
 
-void TestComponentFrames(const std::shared_ptr<const dt::DateValidatedProfileHandleV1>& profile) {
+void TestComponentFrames(const std::shared_ptr<const dt::DateValidatedProfileHandleV3>& profile) {
   std::vector<platform::byte> image;
   for (const auto& vector : kComponentVectors) {
-    const dt::DateOwnedValueV1 value{profile, vector.state, vector.day};
+    const dt::DateOwnedValueV3 value{profile, vector.state, vector.day};
     const auto expected_sbdval = Hex(vector.sbdval);
     const auto expected_sbdpv = Hex(vector.sbdpv);
 
-    const auto sbdval = dt::EncodeDateSbdvalComposedV1(value, true);
+    const auto sbdval = dt::EncodeDateSbdvalComposedV3(value, true);
     Require(sbdval.ok() && sbdval.bytes == expected_sbdval,
             "sealed SBDVAL01 vector");
     const auto decoded_sbdval =
-        dt::DecodeDateSbdvalComposedNoAllocV1(*profile, true, sbdval.bytes);
+        dt::DecodeDateSbdvalComposedNoAllocV3(*profile, true, sbdval.bytes);
     Require(decoded_sbdval.ok() &&
                 decoded_sbdval.value.state == vector.state &&
                 decoded_sbdval.value.day == vector.day,
             "SBDVAL01 composed round trip");
 
-    const auto sbdpv = dt::EncodeDateSbdpvComposedV1(value, true);
+    const auto sbdpv = dt::EncodeDateSbdpvComposedV3(value, true);
     Require(sbdpv.ok() && sbdpv.bytes == expected_sbdpv,
             "sealed SBDPV001 vector");
     const auto decoded_sbdpv =
-        dt::DecodeDateSbdpvComposedNoAllocV1(*profile, true, sbdpv.bytes);
+        dt::DecodeDateSbdpvComposedNoAllocV3(*profile, true, sbdpv.bytes);
     Require(decoded_sbdpv.ok() &&
                 decoded_sbdpv.value.state == vector.state &&
                 decoded_sbdpv.value.day == vector.day,
@@ -619,14 +619,14 @@ void TestRawProfileRefusals() {
           "raw date SBDPV profile refusal");
 }
 
-void TestOraclePositives(const std::shared_ptr<const dt::DateValidatedProfileHandleV1>& profile) {
+void TestOraclePositives(const std::shared_ptr<const dt::DateValidatedProfileHandleV3>& profile) {
   std::vector<platform::byte> image;
   for (std::size_t index = 0; index < kOraclePositiveVectors.size(); ++index) {
     const auto& vector = kOraclePositiveVectors[index];
     Require(vector.name == kOraclePositiveNames[index],
             "SBDTOR01 exact positive roster");
-    const dt::DateOwnedValueV1 value{profile, vector.state, vector.day};
-    const auto production_frame = dt::EncodeDateSbdvalComposedV1(value, true);
+    const dt::DateOwnedValueV3 value{profile, vector.state, vector.day};
+    const auto production_frame = dt::EncodeDateSbdvalComposedV3(value, true);
     const auto expected_frame = Hex(vector.frame_hex);
     Require(production_frame.ok() && production_frame.bytes == expected_frame,
             "SBDTOR01 must wrap unchanged production SBDVAL01 bytes");
@@ -670,7 +670,7 @@ void TestOraclePositives(const std::shared_ptr<const dt::DateValidatedProfileHan
           "SBDTOR01 restored exact four-record roster");
 }
 
-void TestOracleMutations(const std::shared_ptr<const dt::DateValidatedProfileHandleV1>& profile) {
+void TestOracleMutations(const std::shared_ptr<const dt::DateValidatedProfileHandleV3>& profile) {
   std::size_t harness_only = 0;
   std::size_t nested_public = 0;
   for (std::size_t index = 0; index < kOracleMutations.size(); ++index) {
@@ -709,7 +709,7 @@ void TestOracleMutations(const std::shared_ptr<const dt::DateValidatedProfileHan
 }  // namespace
 
 int main() {
-  const auto profile = std::make_shared<const dt::DateValidatedProfileHandleV1>(Profile());
+  const auto profile = std::make_shared<const dt::DateValidatedProfileHandleV3>(Profile());
   TestComponentFrames(profile);
   TestRawProfileRefusals();
   TestOraclePositives(profile);

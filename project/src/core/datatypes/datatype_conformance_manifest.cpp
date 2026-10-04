@@ -181,7 +181,7 @@ const char* DatatypeConformanceExampleSourceName(
 DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const BitStringAuthorityReceiptV1& bit_string_receipt,
     bool bit_string_null_allowed,
-    const DateAuthorityReceiptV1& date_receipt,
+    const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,
     const TimeAuthorityReceiptV3& time_receipt,
     bool time_null_allowed) {
@@ -276,23 +276,23 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     return result;
   }
   const auto date_profile =
-      BuildDateValidatedProfileHandleV1(date_receipt, *date_identity);
+      BuildDateValidatedProfileHandleV3(date_receipt, *date_identity);
   if (!date_profile.ok()) {
     AddOwnedFailure(
         &result,
-        MakeDateDiagnosticV1(
+        MakeDateDiagnosticV3(
             date_profile.status,
             std::string(date_profile.diagnostic.diagnostic_code),
             "datatype.conformance.date_profile_build_refused",
             std::string(date_profile.diagnostic.detail)));
     return result;
   }
-  DateConformanceExampleV1 date_example;
+  DateConformanceExampleV3 date_example;
   date_example.receipt = date_receipt;
   date_example.identity = *date_identity;
   date_example.profile = date_profile.profile;
   date_example.null_allowed = date_null_allowed;
-  date_example.state = DateValueStateV1::value;
+  date_example.state = DateValueStateV3::value;
   date_example.canonical_component = {0, 0, 0, 0};
   date_example.source = DatatypeConformanceExampleSource::current_core_registry;
   date_example.evidence_path =
@@ -526,7 +526,7 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                "datatype.conformance.date_v3_example_count",
                std::to_string(manifest.date_examples.size()));
   }
-  for (const DateConformanceExampleV1& example : manifest.date_examples) {
+  for (const DateConformanceExampleV3& example : manifest.date_examples) {
     if (example.source !=
         DatatypeConformanceExampleSource::current_core_registry) {
       AddFailure(&result,
@@ -548,11 +548,11 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  "datatype.conformance.date_identity_refused");
       continue;
     }
-    const auto profile = ValidateDateProfileHandleV1(example.profile);
+    const auto profile = ValidateDateProfileHandleV3(example.profile);
     if (!profile.ok()) {
       AddOwnedFailure(
           &result,
-          MakeDateDiagnosticV1(
+          MakeDateDiagnosticV3(
               profile.status,
               std::string(profile.diagnostic.diagnostic_code),
               "datatype.conformance.date_profile_validation_refused",
@@ -572,13 +572,13 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  "datatype.conformance.date_receipt_refused");
       continue;
     }
-    const auto decoded = DecodeCanonicalDateComponentNoAllocV1(
+    const auto decoded = DecodeCanonicalDateComponentNoAllocV3(
         example.profile, example.state, example.null_allowed,
         example.canonical_component);
     if (!decoded.ok()) {
       AddOwnedFailure(
           &result,
-          MakeDateDiagnosticV1(
+          MakeDateDiagnosticV3(
               decoded.status,
               std::string(decoded.diagnostic.diagnostic_code),
               "datatype.conformance.date_component_refused",

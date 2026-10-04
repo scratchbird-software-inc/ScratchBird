@@ -50,8 +50,8 @@ dt::BitStringAuthorityReceiptV1 BitStringReceipt() {
   return receipt;
 }
 
-dt::DateAuthorityReceiptV1 DateReceipt() {
-  dt::DateAuthorityReceiptV1 receipt;
+dt::DateAuthorityReceiptV3 DateReceipt() {
+  dt::DateAuthorityReceiptV3 receipt;
   receipt.statement_receipt_uuid = dt::kDatatypeCohortV8;
   receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV8;
   receipt.catalog_generation = 8;
@@ -234,7 +234,7 @@ void TestLegacyDateEvidenceIsRefused() {
   loaded = LoadManifest();
   auto& dirty_null = loaded.manifest.date_examples[0];
   dirty_null.null_allowed = true;
-  dirty_null.state = dt::DateValueStateV1::sql_null;
+  dirty_null.state = dt::DateValueStateV3::sql_null;
   const auto invalid_null =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
   Require(!invalid_null.ok(), "MDF-015 accepted date SQL NULL with bytes");
