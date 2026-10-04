@@ -83,6 +83,11 @@ scratchbird::engine::ExecutionTypeDescriptor Descriptor(dt::CanonicalTypeId type
 template <typename Result> bool Diagnostic(const Result& result, std::string_view expected) {
   return result.diagnostic.diagnostic_code == expected;
 }
+struct CancelState { unsigned calls = 0, cancel_at = 0; };
+bool CancelAt(void* context) noexcept {
+  auto& state = *static_cast<CancelState*>(context);
+  return ++state.calls == state.cancel_at;
+}
 
 struct RouteExpected { unsigned axis; p::Uuid diagnostic; unsigned type; p::Uuid metric; std::string_view name; std::uint16_t operations; std::uint8_t sources; std::uint8_t states; unsigned reason; };
 const std::array<RouteExpected, 37> kRoutes{{
@@ -710,13 +715,30 @@ void DiagnosticRouteExecution() {
       const auto actual = dt::ValidateIntervalDiagnosticEmissionV3({
         {static_cast<dt::IntervalDiagnosticAxisV3>(axis), kRoutes[route].diagnostic}, codes[route], diagnostic_uuid,
         std::span<const dt::IntervalDiagnosticParameterV3>(parameters.data(), count), in_range});
-      Check(static_cast<unsigned>(actual.disposition) == disposition[mutation], "555 diagnostic route disposition");
+      const unsigned expected_disposition = mutation == 3 && schema.count == 5 ? 8 : disposition[mutation];
+      Check(static_cast<unsigned>(actual.disposition) == expected_disposition, "555 diagnostic route disposition");
+      if (expected_disposition == 8) Check(Diagnostic(actual, "RESOURCE.BUDGET_EXCEEDED"), "diagnostic capacity diagnostic");
       Check(actual.diagnostic_emission_admitted == (mutation == 0) &&
             actual.diagnostic_parameter_publication_admitted == (mutation == 0), "diagnostic publication atomicity");
       Check(actual.parameters_validated == (mutation == 0 ? schema.count : 0), "diagnostic validated parameter count");
     }
   }
   Check(five_parameter_wire_cases == 5, "five wire five-parameter routes");
+  const auto& wire_schema = schemas[10];
+  std::array<dt::IntervalDiagnosticParameterV3, 5> parameters{};
+  for (unsigned index = 0; index < parameters.size(); ++index) {
+    parameters[index].name = wire_schema.names[index]; parameters[index].kind = wire_schema.kinds[index];
+    parameters[index].unsigned_value = 1; parameters[index].uuid_value = Id(static_cast<p::byte>(index + 1));
+    parameters[index].token_value = "validation_failure";
+  }
+  CancelState cancellation{0,1}; dt::IntervalExecutionControlV3 control;
+  control.cancelled = CancelAt; control.cancellation_context = &cancellation;
+  const auto cancelled = dt::ValidateIntervalDiagnosticEmissionV3({
+      {static_cast<dt::IntervalDiagnosticAxisV3>(10), kRoutes[20].diagnostic}, codes[20], kRoutes[20].diagnostic,
+      parameters, true, control});
+  Check(static_cast<unsigned>(cancelled.disposition) == 9 && Diagnostic(cancelled, "PROCESS.CANCELLED") &&
+        !cancelled.diagnostic_emission_admitted && !cancelled.diagnostic_parameter_publication_admitted &&
+        cancelled.parameters_validated == 0, "diagnostic final cancellation atomicity");
 }
 
 void MetricProductionAndValidation(const dt::IntervalValidatedProfileHandleV3& good) {
@@ -782,6 +804,33 @@ void MetricProductionAndValidation(const dt::IntervalValidatedProfileHandleV3& g
           actual.metric_outcome_unchanged, "validation publication facts");
     if (!expected.update) Check(actual.idempotency.source_event_uuid.is_nil(), "validation refusal publishes no idempotency fact");
   }
+  dt::IntervalMetricEvidenceProductionRequestV3 request;
+  request.selected_final_diagnostic = {static_cast<dt::IntervalDiagnosticAxisV3>(kProduction[0].axis), kProduction[0].diagnostic};
+  request.source_event_uuid = kProduction[0].event; request.database_uuid = kProduction[0].database;
+  request.node_uuid = kProduction[0].node; request.process_epoch = kProduction[0].epoch;
+  request.event_sequence = kProduction[0].sequence; request.monotonic_timestamp_ns = kProduction[0].timestamp;
+  request.operation = static_cast<dt::IntervalMetricOperationV3>(kProduction[0].operation);
+  request.source_family = static_cast<dt::IntervalMetricSourceFamilyV3>(kProduction[0].source);
+  request.state = static_cast<dt::IntervalMetricStateV3>(kProduction[0].state);
+  const auto produced = dt::ProduceIntervalMetricEvidenceV3(good, request);
+  Check(produced.ok(), "metric resource evidence source");
+  const std::array<dt::IntervalMetricEvidenceV3, 2> evidence{{produced.evidence, produced.evidence}};
+  auto resource = dt::ValidateIntervalMetricEvidenceV3(good, request.selected_final_diagnostic,
+      std::span<const dt::IntervalMetricEvidenceV3>(evidence.data(), 1), {request.process_epoch, 0}, {});
+  Check(resource.ok() && resource.receiving_owner_update_admitted, "metric exact single evidence");
+  resource = dt::ValidateIntervalMetricEvidenceV3(good, request.selected_final_diagnostic, evidence,
+      {request.process_epoch, 0}, {});
+  Check(!resource.ok() && Diagnostic(resource, "RESOURCE.BUDGET_EXCEEDED") &&
+        !resource.receiving_owner_update_admitted && resource.idempotency.source_event_uuid.is_nil(),
+        "metric second evidence resource refusal atomicity");
+  CancelState cancellation{0,1}; dt::IntervalExecutionControlV3 control;
+  control.cancelled = CancelAt; control.cancellation_context = &cancellation;
+  resource = dt::ValidateIntervalMetricEvidenceV3(good, request.selected_final_diagnostic,
+      std::span<const dt::IntervalMetricEvidenceV3>(evidence.data(), 1), {request.process_epoch, 0}, control);
+  Check(!resource.ok() && Diagnostic(resource, "PROCESS.CANCELLED") &&
+        !resource.receiving_owner_update_admitted && resource.idempotency.source_event_uuid.is_nil() &&
+        resource.datatype_outcome_unchanged && resource.metric_outcome_unchanged,
+        "metric final cancellation atomicity");
 }
 
 void Replay() {
@@ -948,8 +997,6 @@ void ObserveScrub(void* context, dt::IntervalScrubClassV3 which, const p::byte* 
   for (p::u64 index = 0; index < extent; ++index) if (bytes[index] != 0) tracker.all_zero = false;
 }
 
-struct CancelState { unsigned calls = 0, cancel_at = 0; };
-bool CancelAt(void* context) noexcept { auto& state = *static_cast<CancelState*>(context); return ++state.calls == state.cancel_at; }
 dt::IntervalExecutionControlV3 CancelFinal(unsigned checkpoint, CancelState& state) {
   state = {0, checkpoint}; dt::IntervalExecutionControlV3 control; control.cancelled = CancelAt; control.cancellation_context = &state; return control;
 }
@@ -1156,6 +1203,34 @@ void ResourceAtomicity(const std::shared_ptr<const dt::IntervalValidatedProfileH
   Check(!owned.ok() && Diagnostic(owned, "RESOURCE.BUDGET_EXCEEDED") && owned.bytes.empty() && !allocation_probe::fail_next,
         "backup allocation failure");
 
+  const auto value_hash = dt::HashIntervalValueV3(value); Check(value_hash.ok(), "statistics value hash");
+  auto provider = std::make_shared<dt::IntervalStatisticsProviderEvidenceHandleV3>();
+  provider->provider_evidence_uuid = Id(0x41); provider->source_object_uuid = Id(0x42);
+  provider->authenticated_population = true; provider->source_authorized = true; provider->privacy_admitted = true;
+  provider->schema_epoch = 1; provider->collection_epoch = 2; provider->security_epoch = 3;
+  provider->row_count = 1; provider->null_count = 0; provider->value_count = 1; provider->equality_distinct_estimate = 1;
+  dt::IntervalStatisticsMcvRecordV3 mcv;
+  std::copy(value_hash.bytes.begin(), value_hash.bytes.end(), mcv.value_hash.begin());
+  mcv.frequency = 1; mcv.rank = 1; mcv.flags = 1; provider->mcv.push_back(mcv);
+  dt::IntervalStatisticsProjectionV3 statistics;
+  statistics.profile = profile; statistics.provider_evidence = provider; statistics.statistics_snapshot_uuid = Id(0x43);
+  statistics.source_object_uuid = provider->source_object_uuid; statistics.schema_epoch = 1;
+  statistics.collection_epoch = 2; statistics.security_epoch = 3; statistics.row_count = 1;
+  statistics.null_count = 0; statistics.value_count = 1; statistics.equality_distinct_estimate = 1;
+  statistics.mcv = provider->mcv;
+  auto statistics_bytes = dt::EncodeIntervalStatisticsProjectionV3(statistics);
+  Check(statistics_bytes.ok() && statistics_bytes.bytes.size() == 496, "statistics exact 496");
+  short_owned.maximum_allocation_bytes = 495;
+  statistics_bytes = dt::EncodeIntervalStatisticsProjectionV3(statistics, short_owned);
+  Check(!statistics_bytes.ok() && Diagnostic(statistics_bytes, "RESOURCE.BUDGET_EXCEEDED") && statistics_bytes.bytes.empty(),
+        "statistics one short no publication");
+  control = CancelFinal(3, cancel); statistics_bytes = dt::EncodeIntervalStatisticsProjectionV3(statistics, control);
+  Check(!statistics_bytes.ok() && Diagnostic(statistics_bytes, "PROCESS.CANCELLED") && statistics_bytes.bytes.empty(),
+        "statistics final cancel no publication");
+  allocation_probe::fail_next = true; statistics_bytes = dt::EncodeIntervalStatisticsProjectionV3(statistics);
+  Check(!statistics_bytes.ok() && Diagnostic(statistics_bytes, "RESOURCE.BUDGET_EXCEEDED") &&
+        statistics_bytes.bytes.empty() && !allocation_probe::fail_next, "statistics allocation failure no publication");
+
   for (unsigned iteration = 0; iteration < 4096; ++iteration) {
     const auto encoded = dt::EncodeCanonicalIntervalComponentV3(value);
     Check(encoded.ok() && encoded.bytes.size() == 16, "4096 publication cycle encode");
@@ -1184,6 +1259,29 @@ void ScrubCoverage(const std::shared_ptr<const dt::IntervalValidatedProfileHandl
   Check(dt::ProjectIntervalIndexValueV3(projection).ok(), "scrub equality projection");
   const auto backup = dt::EncodeIntervalBackupTupleV3(value, control);
   Check(backup.ok() && dt::DecodeIntervalBackupTupleNoAllocV3(*profile, true, backup.bytes, control).ok(), "scrub backup");
+  const auto hash = dt::HashIntervalValueV3(value, control); Check(hash.ok(), "scrub statistics hash");
+  auto provider = std::make_shared<dt::IntervalStatisticsProviderEvidenceHandleV3>();
+  provider->provider_evidence_uuid = Id(0x51); provider->source_object_uuid = Id(0x52);
+  provider->authenticated_population = provider->source_authorized = provider->privacy_admitted = true;
+  provider->schema_epoch = 1; provider->collection_epoch = 2; provider->security_epoch = 3;
+  provider->row_count = provider->value_count = provider->equality_distinct_estimate = 1;
+  dt::IntervalStatisticsMcvRecordV3 record;
+  std::copy(hash.bytes.begin(), hash.bytes.end(), record.value_hash.begin()); record.frequency = record.rank = record.flags = 1;
+  provider->mcv.push_back(record);
+  dt::IntervalStatisticsProjectionV3 statistics;
+  statistics.profile = profile; statistics.provider_evidence = provider; statistics.statistics_snapshot_uuid = Id(0x53);
+  statistics.source_object_uuid = provider->source_object_uuid; statistics.schema_epoch = 1;
+  statistics.collection_epoch = 2; statistics.security_epoch = 3; statistics.row_count = 1;
+  statistics.value_count = 1; statistics.equality_distinct_estimate = 1; statistics.mcv = provider->mcv;
+  const auto statistics_bytes = dt::EncodeIntervalStatisticsProjectionV3(statistics, control);
+  Check(statistics_bytes.ok(), "scrub statistics encode");
+  dt::IntervalStatisticsReceivingFactsV3 facts;
+  facts.security_visible = facts.privacy_admitted = facts.authenticated_population = true;
+  facts.source_object_uuid = provider->source_object_uuid; facts.provider_evidence_uuid = provider->provider_evidence_uuid;
+  facts.schema_epoch = 1; facts.collection_epoch = 2; facts.security_epoch = 3;
+  facts.statistics_snapshot_uuid = statistics.statistics_snapshot_uuid; facts.row_count = 1;
+  facts.value_count = 1; facts.equality_distinct_estimate = 1; facts.mcv = provider->mcv;
+  Check(dt::DecodeIntervalStatisticsProjectionV3(profile, statistics_bytes.bytes, facts, control).ok(), "scrub statistics decode");
   std::array<std::int32_t, 1> months{1}, days{2}; std::array<std::int64_t, 1> nanos{3}; std::array<p::byte, 1> bitmap{};
   Check(dt::MaterializeIntervalBatchV3(profile, months, days, nanos, bitmap, control).ok(), "scrub batch");
   CancelState cancelled;
@@ -1197,13 +1295,12 @@ void ScrubCoverage(const std::shared_ptr<const dt::IntervalValidatedProfileHandl
   cancelled = {0, 5};
   Check(!dt::MaterializeIntervalBatchV3(profile, months, days, nanos, bitmap, cancelled_control).ok(), "scrub batch owned failure");
 
-  // These are literal generation-1 requirements. Statistics-only classes 23-24
-  // are covered by the statistics corpus after its receiving-facts API lands.
+  // These are literal generation-1 requirements.
   const std::array<unsigned, 31> expected_count{{
-      110,850,110,50,50,50,50,12,2,1,1,1,5,10,1,3,2,1,3,2,1,6,3,0,0,2,2,1,1,1,1}};
+      122,946,122,53,53,53,53,12,2,1,1,1,6,11,2,3,2,1,3,2,1,6,3,2,5,2,2,1,1,1,1}};
   const std::array<std::uint64_t, 31> expected_extent{{
-      3520,217600,14080,30400,17200,1600,1600,192,32,16,64,63,665,320,32,144,
-      32,48,120,32,40,448,51,0,0,752,177,4,4,8,1}};
+      3904,242176,15616,32224,18232,1696,1696,192,32,16,64,63,798,352,64,144,
+      32,48,120,32,40,448,51,7040,160,752,177,4,4,8,1}};
   for (unsigned ordinal = 0; ordinal < 31; ++ordinal) {
     current_case = ordinal;
     Check(tracker.count[ordinal] == expected_count[ordinal], "literal scrub class multiplicity");
@@ -1221,6 +1318,6 @@ int main() {
             << " wire_cases=243 diagnostic_route_cases=555 wire_parameter_cases=5"
             << " route_table_cases=6 production_cases=196 validation_cases=31 replay_cases=61"
             << " same_source_cells=25 valid_tuples=180 protection_cells=10 protection_combinations=32"
-            << " protection_mutations_executable=5 resource_cases_executable=59"
+            << " protection_mutations_executable=5 resource_cases_executable=66"
             << " pinned_reads=32768 publication_cycles=4096 scrub_classes=31\n";
 }
