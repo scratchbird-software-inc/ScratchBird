@@ -1,6 +1,11 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_filespace_directory.hpp"
+#include "native_directory_chain_backing.hpp"
+#include "native_metadata_memory.hpp"
+#include <atomic>
+#include <thread>
+#include <type_traits>
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -21,6 +26,7 @@
 #include <unistd.h>
 #ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
 #include "native_filespace_directory_memory.hpp"
+#include "native_directory_chain_memory.hpp"
 #include <thread>
 #endif
 namespace {
@@ -34,12 +40,28 @@ std::mutex pause_mutex;std::condition_variable pause_cv;
 bool pause_next=false,entered=false,released=false;
 void* last_read_buffer=nullptr;
 unsigned short_read=0,eof_read=0;
+std::uint64_t observed_directory_bytes=0;
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+std::recursive_mutex* observation_device_mutex=nullptr;
+unsigned memory_probes=0,locked_memory_probes=0;
+void ProbeObservation(){if(auto* mutex=observation_device_mutex){observation_device_mutex=nullptr;bool available=false;
+  std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();
+  ++memory_probes;if(!available)++locked_memory_probes;observation_device_mutex=mutex;}}
+#endif
 }
-void* operator new(std::size_t n){if(count_allocations)++allocations;
+void* operator new(std::size_t n){
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+  ProbeObservation();
+#endif
+  if(count_allocations)++allocations;
   if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
   if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
-void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
+void operator delete(void* p) noexcept{
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+  ProbeObservation();
+#endif
+  std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 #ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
 namespace {
@@ -50,14 +72,15 @@ void ProbeCleanup(){if(deallocation_device_mutex){auto* mutex=deallocation_devic
   bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();deallocation_lock_free=available;}}
 }
 void* operator new(std::size_t n,std::align_val_t a){
+  ProbeObservation();
   if(count_allocations)++allocations;
   if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
   if(allocation_device_mutex){auto* mutex=allocation_device_mutex;allocation_device_mutex=nullptr;
     bool available=false;std::thread worker([&]{available=mutex->try_lock();if(available)mutex->unlock();});worker.join();allocation_lock_free=available;}
   void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(a),n?n:1)==0)return p;throw std::bad_alloc();
 }
-void operator delete(void* p,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
-void operator delete(void* p,std::size_t,std::align_val_t)noexcept{ProbeCleanup();std::free(p);}
+void operator delete(void* p,std::align_val_t)noexcept{ProbeObservation();ProbeCleanup();std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{ProbeObservation();ProbeCleanup();std::free(p);}
 #endif
 #ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
 namespace {unsigned method_fault=0;}
@@ -80,7 +103,8 @@ extern "C" ssize_t __wrap_pread(int fd,void* p,size_t n,off_t o){++reads;last_re
   if(eof_read&&reads==eof_read)return 0;
   if(resize_at_read==reads)resized=::ftruncate(fd,resize_to)==0;
   {std::unique_lock lock(pause_mutex);if(pause_next){pause_next=false;entered=true;pause_cv.notify_all();pause_cv.wait(lock,[]{return released;});}}
-  return __real_pread(fd,p,short_read&&reads==short_read?n-1:n,o);}
+  const auto result=__real_pread(fd,p,short_read&&reads==short_read?n-1:n,o);
+  if(result>0)observed_directory_bytes+=result;return result;}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){++hash_calls;if(fail_hash==hash_calls)return nullptr;return __real_EVP_MD_CTX_new();}
 #ifdef NATIVE_HISTORICAL_IO_FAULTS
@@ -392,6 +416,190 @@ void MemoryTests(){
 #endif
 struct Fixture{std::filesystem::path root;Fixture(){char pattern[]="/tmp/sb-directory-test-XXXXXX";const auto p=mkdtemp(pattern);Check(p,"owned temporary fixture");root=p;}
   ~Fixture(){std::error_code e;std::filesystem::remove_all(root,e);}};
+
+void Empty(const p::NativeDirectoryChainView& r){
+  Check(!r.ok()&&r.pages.empty()&&!r.retained_image_bytes&&!r.backing_bytes_used,"no borrowed directory chain prefix");
+}
+void SameChain(const p::NativeFilespaceDirectoryChainResult& expected,const p::NativeDirectoryChainView& actual,
+    std::span<const byte> backing={}){
+  Check(expected.ok()&&actual.ok()&&expected.pages.size()==actual.pages.size()&&
+    expected.retained_image_bytes==actual.retained_image_bytes,"complete directory counts and accounting");
+  const auto inside=[&](const void* pointer,std::size_t n){if(backing.empty())return true;
+    const auto b=reinterpret_cast<std::uintptr_t>(backing.data()),p=reinterpret_cast<std::uintptr_t>(pointer);
+    return p>=b&&p-b<=backing.size()&&n<=backing.size()-(p-b);};
+  Check(inside(actual.pages.data(),actual.pages.size_bytes()),"directory chain descriptors reside in admitted backing");
+  for(std::size_t i=0;i<actual.pages.size();++i){
+    const auto& v=actual.pages[i];
+    Check(Oracle(v.directory)==expected.pages[i].bytes&&
+      std::equal(v.image.begin(),v.image.end(),expected.pages[i].bytes.begin(),expected.pages[i].bytes.end()),
+      "independent complete directory image and every decoded field oracle");
+    Check(inside(v.image.data(),v.image.size())&&inside(v.directory.records.data(),v.directory.records.size_bytes()),
+      "complete directory images and record metadata use admitted backing");
+  }
+}
+void ChainMemoryChecks(const std::vector<d::NativeFilespaceDevice>& devices,
+    const d::FilespaceRootReference& root,const std::vector<p::NativeHistoricalFilespaceImage>& history,
+    const Bytes& head,u64 current_allowance,bool deep){
+  using C=p::NativeDirectoryChainReadContext;
+  const auto database=Id(1);const auto digest=Hash(head);
+  const auto capacity=std::size_t(6*current_allowance+65536);
+  const auto old_writes=writes,old_syncs=syncs;
+  unsigned long fixture_writes=0,fixture_syncs=0;
+  const auto file_image=[&](d::FileDevice& device){const auto size=device.Size();Check(size.ok(),"observe whole directory fixture");
+    Bytes bytes(size.size_bytes);const auto io=device.ReadAt(0,bytes.data(),bytes.size());
+    Check(io.ok()&&io.bytes_transferred==bytes.size(),"independent whole directory source oracle");return bytes;};
+  std::vector<Bytes> originals;for(const auto& file:devices)originals.push_back(file_image(*file.device));
+  for(const auto context:{C::current,C::historical}){
+    std::vector<p::NativeHistoricalFilespaceImageView> retained;
+    u64 allowance=current_allowance;
+    if(context==C::historical)for(const auto& entry:history){retained.push_back({entry.filespace_uuid,entry.page_zero});allowance+=entry.page_zero.size()+4096;}
+    const auto* sha=context==C::historical?&digest:nullptr;
+    const auto expected=context==C::current?p::ReadNativeFilespaceDirectoryFromOpenDevices(database,devices,root,allowance):
+      p::ReadNativeFilespaceDirectoryAtHistoricalRootFromOpenDevices(database,devices,root,digest,history,allowance);
+    Bytes backing(capacity);std::vector<std::unique_ptr<d::FileDevice::ReadLatencyBatch>> owners;
+    std::vector<d::FileDevice::ReadLatencyBatch*> batches;
+    for(const auto& file:devices){owners.push_back(std::make_unique<d::FileDevice::ReadLatencyBatch>(*file.device));batches.push_back(owners.back().get());}
+    const auto direct=[&](std::span<byte> region,u64 limit,bool deny=true){
+      if(deny)allocation_budget=0;
+      auto r=p::ReadNativeFilespaceDirectoryChainInto(database,devices,root,limit,context,sha,retained,batches,region);
+      const bool unchanged=allocation_budget==0;if(deny)allocation_budget=-1;
+      if(deny)Check(unchanged,"complete directory read needs no uncharged payload or metadata heap");return r;
+    };
+    reads=stats=hash_calls=0;observed_directory_bytes=0;
+    const auto full=direct(backing,allowance);SameChain(expected,full.chain,backing);
+    Check(full.physical_bytes_read&&full.physical_bytes_read==observed_directory_bytes&&full.io_status.ok(),"actual directory syscall byte total");
+    const auto nr=reads,ns=stats,nh=hash_calls;const auto used=full.chain.backing_bytes_used;
+    Check(used&&used<=capacity,"bounded directory chain actual usage");
+    SameChain(expected,direct(std::span(backing).first(used),allowance).chain,backing);
+    auto short_backing=direct(std::span(backing).first(used-1),allowance);Empty(short_backing.chain);
+    Check(short_backing.chain.error==E::resource_exhausted,"one-byte-short complete backing refuses all directory results");
+    auto short_images=direct(backing,allowance-1);Empty(short_images.chain);
+    Check(short_images.chain.error==E::resource_exhausted,"directory verification allowance is separate from memory");
+    {
+      d::detail::NativeMetadataMemory resource(backing);p::NativeDirectoryChainDeviceRead composed;
+      // Preallocate outer lock storage before entering the tested no-heap region.
+      auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+      std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
+      allocation_budget=0;
+      for(const auto& file:ordered)guards.push_back(file.device->AcquireOperationGuard());
+      composed=p::detail::ReadNativeDirectoryChainBacked(database,devices,root,allowance,context,sha,retained,batches,resource);
+      guards.clear();const bool unchanged=allocation_budget==0;allocation_budget=-1;
+      Check(unchanged&&resource.used()==used,"full resource composition survives enclosing ordered fences without heap fallback");
+      SameChain(expected,composed.chain,backing);
+    }
+    if(deep){
+      const auto alias=[&](auto input){
+        const auto r=direct({reinterpret_cast<byte*>(const_cast<std::remove_const_t<typename decltype(input)::element_type>*>(input.data())),input.size_bytes()},allowance);
+        Empty(r.chain);Check(r.chain.error==E::invalid_backing&&!r.physical_bytes_read,"whole-input alias refuses before writes or I/O");};
+      alias(std::span{&database,1});alias(std::span{&root,1});alias(std::span(devices));
+      alias(std::span(batches));if(sha)alias(std::span{sha,1});
+      for(std::size_t i=0;i<devices.size();++i){alias(std::span{devices[i].device,1});alias(std::span{batches[i],1});}
+      if(!retained.empty()){alias(std::span(retained));for(const auto& image:retained)alias(image.page_zero);}
+      d::FileDevice foreign;d::FileDevice::ReadLatencyBatch wrong(foreign);auto* saved=batches.front();batches.front()=&wrong;
+      const auto mismatch=direct(backing,allowance);batches.front()=saved;
+      Empty(mismatch.chain);Check(!mismatch.physical_bytes_read,"foreign batch cannot substitute another source");
+      for(unsigned at=1;at<=nr;++at){
+        reads=0;observed_directory_bytes=0;fail_read=at;const auto r=direct(backing,allowance,false);fail_read=0;Empty(r.chain);
+        Check(r.chain.error==E::io_failure&&!r.io_status.ok()&&r.physical_bytes_read==observed_directory_bytes&&
+          r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT","every actual read fault retains exact typed receipt");
+      }
+      for(unsigned at=1;at<=ns;++at){
+        stats=0;observed_directory_bytes=0;fail_stat=at;const auto r=direct(backing,allowance,false);fail_stat=0;Empty(r.chain);
+        Check(r.chain.error==E::io_failure&&r.physical_bytes_read==observed_directory_bytes&&
+          r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-SIZE-FAILED","every member extent fault retains actual bytes and diagnostic");
+      }
+      for(unsigned at=1;at<=nh;++at){
+        hash_calls=0;fail_hash=at;const auto r=direct(backing,allowance);fail_hash=0;Empty(r.chain);
+        Check(r.chain.error==E::hash_failure,"every complete directory hash failure stays typed without diagnostic allocation");
+      }
+      reads=0;observed_directory_bytes=0;short_read=nr;eof_read=nr+1;
+      const auto partial=direct(backing,allowance,false);short_read=eof_read=0;Empty(partial.chain);
+      Check(partial.chain.error==E::io_failure&&partial.physical_bytes_read==observed_directory_bytes,
+        "partial directory read and EOF retain physical progress but no result");
+      SameChain(expected,direct(backing,allowance).chain,backing);
+    }
+#ifdef SB_NATIVE_DIRECTORY_MEMORY_TESTS
+    using M=db::NativeDirectoryChainMemoryError;
+    const db::NativeDirectoryChainMemoryLimits limits{allowance,capacity};
+    const auto call=[&](MemoryFixture& f,const db::NativeStorageMemoryBinding& binding){
+      reads=hash_calls=stats=0;observed_directory_bytes=0;
+      return db::ReadNativeDirectoryChainWithMemoryFromOpenDevices(database,devices,root,limits,
+        f.memory,binding,context,sha,retained);
+    };
+    const auto failed=[&](const auto& r){Check(!r.ok()&&!r.arena,"no failed directory backing owner");Empty(r.chain);};
+    MemoryFixture grant(capacity);auto result=call(grant,grant.binding);Check(result.ok(),"real binary grant backs whole directory and members");
+    SameChain(expected,result.chain);
+    Check(grant.manager.Snapshot().current_bytes==capacity&&grant.memory.Snapshot().allocated_bytes==capacity&&
+      grant.ledger.Snapshot().current_bytes==capacity&&result.arena.Snapshot().retained_bytes==capacity,
+      "whole directory actual resource manager parent and retained arena charges agree");
+    const auto exhausted=call(grant,grant.binding);failed(exhausted);
+    Check(exhausted.error==M::memory_allocation_failure&&!reads,"held directory prevents uncharged concurrent allocation");
+    for(unsigned n=0;n<4;++n){auto wrong=grant.binding;std::array<Uuid*,4> ids{&wrong.database_uuid,&wrong.operation_uuid,&wrong.owner_uuid,&wrong.context_uuid};
+      *ids[n]=Id(99);const auto r=call(grant,wrong);failed(r);Check(r.error==M::memory_binding_failure&&!reads,"all four binary grant identities checked before I/O");}
+    for(const auto& file:devices){
+      const auto path=file.device->path();const auto mode=file.device->read_only()?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing;
+      const auto w=writes,s=syncs;Check(file.device->Close().ok(),"close member with whole directory retained");
+      SameChain(expected,result.chain);Check(file.device->Open(path,mode).ok(),"reopen exact directory member");
+      fixture_writes+=writes-w;fixture_syncs+=syncs-s;
+    }
+    Check(grant.ledger.CleanupOwner(grant.binding.owner_uuid.bytes).retained_bytes==capacity,"revoke retains actual directory backing and charges");
+    const auto revoked=call(grant,grant.binding);failed(revoked);
+    Check(revoked.error==M::memory_binding_failure&&!reads,"revoked directory grant refuses new inspection");
+    grant.memory={};SameChain(expected,result.chain);Check(grant.manager.Snapshot().current_bytes==capacity,"retained directory outlives workspace");
+    result={};grant.Empty();
+    MemoryFixture small(capacity-1);const auto shortage=call(small,small.binding);failed(shortage);
+    Check(shortage.error==M::memory_allocation_failure&&!reads,"one-byte-short real directory grant refuses");
+    small.memory={};small.Empty();
+    if(deep){
+      MemoryFixture valid(capacity);const auto reservation=valid.ledger.Snapshot().current_bytes;
+      const auto clean=[&]{const auto s=valid.memory.Snapshot();Check(!valid.manager.Snapshot().current_bytes&&
+        !s.allocated_bytes&&s.allocation_count==s.release_count&&valid.ledger.Snapshot().current_bytes==reservation,
+        "faults release all actual payload while reusable grant remains reserved");};
+      for(const auto& file:devices){
+        {const auto guard=file.device->AcquireOperationGuard();observation_device_mutex=guard.mutex();}
+        memory_probes=locked_memory_probes=0;
+        {const auto r=call(valid,valid.binding);Check(r.ok(),"complete directory per-member memory fence probe");}
+        observation_device_mutex=nullptr;
+        Check(memory_probes&&!locked_memory_probes,"allocation observations and cleanup outside every ordered source fence");clean();
+        {const auto guard=file.device->AcquireOperationGuard();deallocation_device_mutex=guard.mutex();}
+        deallocation_lock_free=false;fail_read=1;const auto failure=call(valid,valid.binding);fail_read=0;failed(failure);
+        Check(deallocation_lock_free,"failure releases real backing outside every source fence");clean();
+      }
+      for(unsigned at=1;at<=nr;++at){fail_read=at;const auto r=call(valid,valid.binding);fail_read=0;failed(r);
+        Check(r.directory_error==E::io_failure&&r.physical_bytes_read==observed_directory_bytes,"governed full-directory physical read receipt");clean();}
+      for(unsigned at=1;at<=ns;++at){fail_stat=at;const auto r=call(valid,valid.binding);fail_stat=0;failed(r);
+        Check(r.directory_error==E::io_failure&&r.physical_bytes_read==observed_directory_bytes&&
+          r.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-SIZE-FAILED","governed member-size receipt");clean();}
+      for(unsigned at=1;at<=nh;++at){fail_hash=at;const auto r=call(valid,valid.binding);fail_hash=0;failed(r);
+        Check(r.directory_error==E::hash_failure,"governed every complete directory hash failure");clean();}
+      for(unsigned mode=1;mode<=5;++mode){method_fault=mode;const auto r=call(valid,valid.binding);failed(r);
+        Check(!method_fault&&r.directory_error==E::hash_failure,"all native provider phases preserve directory refusal");clean();}
+      unsigned long sites=0;{allocations=0;count_allocations=true;const auto r=call(valid,valid.binding);count_allocations=false;
+        Check(r.ok(),"actual complete-directory allocation measurement");sites=allocations;}
+      for(unsigned long n=0;n<sites;++n){allocation_budget=n;auto r=call(valid,valid.binding);allocation_budget=-1;
+        if(r.ok())SameChain(expected,r.chain);else failed(r);r={};clean();
+        const auto retry=call(valid,valid.binding);Check(retry.ok(),"same-owner directory retry after allocation refusal");}
+      for(const auto& file:devices){
+        const auto path=file.device->path();const auto mode=file.device->read_only()?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing;
+        {std::lock_guard lock(pause_mutex);pause_next=true;entered=false;released=false;}
+        auto reading=std::async(std::launch::async,[&]{return call(valid,valid.binding);});
+        bool reached=false;{std::unique_lock lock(pause_mutex);reached=pause_cv.wait_for(lock,std::chrono::seconds(5),[]{return entered;});}
+        std::atomic<bool> close_returned=false;bool blocked=false;std::promise<void> started;auto request=started.get_future();
+        std::thread release([&]{request.wait();std::this_thread::sleep_for(std::chrono::milliseconds(20));blocked=!close_returned.load();
+          std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();});
+        const auto w=writes,s=syncs;started.set_value();const auto closed=file.device->Close();close_returned=true;
+        release.join();auto complete=reading.get();Check(reached&&blocked&&closed.ok()&&complete.ok(),"each member Close waits for complete grant-backed directory read");
+        SameChain(expected,complete.chain);Check(file.device->Open(path,mode).ok(),"restore exact member after concurrent Close");
+        fixture_writes+=writes-w;fixture_syncs+=syncs-s;complete={};clean();
+      }
+      valid.memory={};valid.Empty();
+    }
+#endif
+    for(std::size_t i=0;i<devices.size();++i)Check(file_image(*devices[i].device)==originals[i],"whole source bytes unchanged in every member");
+    Check(writes==old_writes+fixture_writes&&syncs==old_syncs+fixture_syncs,"no reader writes or syncs beyond measured fixture ownership reopen");
+  }
+}
+
 void Historical(d::FileDevice& first,d::FileDevice& second,const d::FilespacePageZero& z1,
                 const d::FilespacePageZero& z2,const Bytes& head,const Bytes& tail) {
   const auto zero1=d::EncodeFilespacePageZero(z1),zero2=d::EncodeFilespacePageZero(z2);
@@ -466,11 +674,12 @@ void Historical(d::FileDevice& first,d::FileDevice& second,const d::FilespacePag
   auto reading=std::async(std::launch::async,[&]{return read(limit);});
   struct ReleasePause {~ReleasePause(){std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();}} release_pause;
   {std::unique_lock lock(pause_mutex);Check(pause_cv.wait_for(lock,std::chrono::seconds(5),[]{return entered;}),"historical directory reached actual read");}
-  std::promise<void> close_started;auto started=close_started.get_future();
-  auto closing=std::async(std::launch::async,[&]{close_started.set_value();return second.Close();});
-  started.wait();const bool held=closing.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
-  {std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();}
-  const auto completed=reading.get();const auto closed=closing.get();
+  std::atomic<bool> close_returned=false;bool held=false;
+  std::promise<void> started;auto request=started.get_future();
+  std::thread release([&]{request.wait();std::this_thread::sleep_for(std::chrono::milliseconds(20));held=!close_returned.load();
+    std::lock_guard lock(pause_mutex);released=true;pause_cv.notify_all();});
+  started.set_value();const auto closed=second.Close();close_returned=true;
+  release.join();const auto completed=reading.get();
   Check(held&&closed.ok(),"other member close waits while first member is being verified");verify(completed);
   Check(first.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing).ok()&&
         second.Open(path2,d::FileOpenMode::open_existing).ok(),"restore fixture ownership");
@@ -522,6 +731,22 @@ void Chains(){for(unsigned profile=0;profile<5;++profile)for(unsigned secondary=
     }
     auto missing=devices;missing.erase(missing.begin());Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),missing,ref,limit));
     auto duplicate=devices;duplicate.push_back(devices.front());Empty(p::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),duplicate,ref,limit));
+    const auto zero1=d::EncodeFilespacePageZero(z1),zero2=d::EncodeFilespacePageZero(z2);
+    Check(zero1.ok()&&zero2.ok(),"complete retained memory conformance source");
+    const std::vector<p::NativeHistoricalFilespaceImage> history{{Id(2),*zero1.bytes},{Id(3),*zero2.bytes}};
+    for(unsigned lineage=0;lineage<3;++lineage){
+      auto h=head,t=tail;
+      if(lineage){for(auto* image:{&h,&t}){image->creator_transaction_uuid={};image->creator_local_transaction_id=0;image->creator_operation_uuid=Id(101);}}
+      if(lineage==2){for(auto* image:{&h,&t})for(auto& record:image->records){
+        p::NativeFilespaceAllocationRoot allocation;allocation.page={record.bootstrap.filespace_uuid,6,2,record.bootstrap.page_size_profile_uuid};
+        allocation.object_uuid=Id(103);allocation.sha256[0]=1;allocation.map_generation=3;allocation.capacity_generation=4;
+        record.allocation_root=allocation;}}
+      h.next_sha256=Hash(Oracle(t));persist(h,t);
+      ChainMemoryChecks(devices,ref,history,Oracle(h),limit,profile==0&&secondary==0&&lineage==0);
+      auto reversed=devices;std::reverse(reversed.begin(),reversed.end());
+      auto reverse_history=history;std::reverse(reverse_history.begin(),reverse_history.end());
+      ChainMemoryChecks(reversed,ref,reverse_history,Oracle(h),limit,false);
+    }
     persist(head,tail);Historical(first,second,z1,z2,Oracle(head),Oracle(tail));
     Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,d::FileOpenMode::open_existing_read_only).ok(),"reopen owned read-only filespaces");
     Check(read(limit).ok()&&first.read_only()&&second.read_only(),"directory read-only reopen");

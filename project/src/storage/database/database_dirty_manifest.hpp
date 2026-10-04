@@ -92,6 +92,16 @@ struct NativeCheckpointRootResult {
   bool ok() const noexcept { return error == NativeCheckpointError::none && root.has_value(); }
 };
 NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot&) noexcept;
+struct NativeCheckpointRootEncodedView {
+  NativeCheckpointError error=NativeCheckpointError::invalid_family;
+  std::span<const core::platform::byte> bytes;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&!bytes.empty();}
+};
+// Canonical complete image encoding into disjoint caller-owned backing. No
+// heap fallback, allocation/selection/publication authority or successful prefix.
+// On failure output bytes may have been modified, but no image view is returned.
+NativeCheckpointRootEncodedView EncodeNativeCheckpointRootInto(
+  const NativeCheckpointRootView&,std::span<core::platform::byte>) noexcept;
 NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>&) noexcept;
 struct NativeCheckpointRootViewResult {
   NativeCheckpointError error=NativeCheckpointError::invalid_family;
@@ -131,6 +141,41 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
+
+// Complete actual checkpoint/inventory inspection using caller-owned backing.
+// All bytes and native metadata are retained in backing, never a publication
+// CAS base, serving grant or unchecked caller-constructed outcome assertion.
+struct NativeCheckpointRootDeviceRead {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  std::optional<NativeCheckpointRootView> root;
+  std::span<const core::platform::byte> bytes;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&root.has_value();}
+};
+struct NativeCheckpointInventoryView {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  page::NativeInventoryError inventory_error=page::NativeInventoryError::none;
+  std::optional<NativeCheckpointRootView> checkpoint;
+  std::array<core::platform::byte,32> checkpoint_sha256{};
+  page::NativeTransactionInventoryView inventory;
+  std::span<const NativeInventoryPageBinding> inventory_pages;
+  u64 inventory_generation=0,retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint.has_value();}
+};
+struct NativeCheckpointInventoryDeviceRead {
+  NativeCheckpointInventoryView inventory;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return inventory.ok();}
+};
+NativeCheckpointInventoryDeviceRead VerifyNativeCheckpointInventoryInto(
+  const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
+  const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes,
+  std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
 
 struct NativeCheckpointCatalogResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;
@@ -177,6 +222,46 @@ NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDe
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
+
+// Complete actual current-source inspection; not an execution or serving grant.
+struct NativeCheckpointAllocationView {
+ NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+ page::NativeAllocationError allocation_error=page::NativeAllocationError::none;
+ NativeCheckpointInventoryView checkpoint_inventory;
+ page::NativeAllocationChainView allocation;
+ u64 retained_image_bytes=0;
+ std::size_t backing_bytes_used=0;
+ bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint_inventory.ok()&&allocation.ok();}
+};
+struct NativeCurrentCheckpointAllocationDeviceRead {
+ NativeCheckpointAllocationView allocation;
+ core::platform::Status io_status;
+ core::platform::DiagnosticRecord io_diagnostic;
+ u64 physical_bytes_read=0;
+ bool ok() const noexcept{return allocation.ok();}
+};
+NativeCurrentCheckpointAllocationDeviceRead VerifyCurrentNativeCheckpointAllocationInto(
+ const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,const disk::FilespaceRootReference&,
+ u64,std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
+struct NativeCheckpointDirectoryView {
+ NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+ page::NativeDirectoryError directory_error=page::NativeDirectoryError::none;
+ NativeCheckpointInventoryView checkpoint_inventory;
+ page::NativeDirectoryChainView directory;
+ u64 retained_image_bytes=0;
+ std::size_t backing_bytes_used=0;
+ bool ok() const noexcept{return error==NativeCheckpointError::none&&checkpoint_inventory.ok()&&directory.ok();}
+};
+struct NativeCurrentCheckpointDirectoryDeviceRead {
+ NativeCheckpointDirectoryView directory;
+ core::platform::Status io_status;
+ core::platform::DiagnosticRecord io_diagnostic;
+ u64 physical_bytes_read=0;
+ bool ok() const noexcept{return directory.ok();}
+};
+NativeCurrentCheckpointDirectoryDeviceRead VerifyCurrentNativeCheckpointDirectoryInto(
+ const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,const disk::FilespaceRootReference&,
+ u64,std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<core::platform::byte>) noexcept;
 
 struct NativeCheckpointPolicyRootsResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;

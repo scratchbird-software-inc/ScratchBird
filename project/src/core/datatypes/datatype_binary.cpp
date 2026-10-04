@@ -1034,6 +1034,16 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
           "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
           "datatype.bit_string.serialization_profile_missing");
     }
+    if (value.type_id == CanonicalTypeId::date) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "datatype.date.serialization_profile_missing");
+    }
+    if (value.type_id == CanonicalTypeId::time) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "datatype.time.serialization_profile_missing");
+    }
     DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
     return result;
@@ -1047,6 +1057,32 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
     return BinaryViewError(
         "CTB.BIT.SERIALIZATION_PROFILE_MISSING",
         "datatype.bit_string.serialization_profile_missing");
+  }
+  // Canonical type 400 has a structural LE4 component, but those bytes and
+  // the enum do not establish the exact d708 receipt or 584-byte profile.
+  // Date semantic publication is available only through datatype_date.
+  if (value.type_id == CanonicalTypeId::date) {
+    if (value.payload_is_toast_reference || value.payload_bytes != 4) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "datatype.date.canonical_component_invalid");
+    }
+    return BinaryViewError(
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.date.serialization_profile_missing");
+  }
+  // Canonical type 401 has an unsigned LE8 component, but the bytes and enum
+  // do not establish the exact d708 receipt or complete time profile.
+  if (value.type_id == CanonicalTypeId::time) {
+    if (value.payload_is_toast_reference || value.payload_bytes != 8 ||
+        LoadLittle64(value.payload_data) > 86'399'999'999'999ull) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "datatype.time.canonical_component_invalid");
+    }
+    return BinaryViewError(
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.time.serialization_profile_missing");
   }
 
   // The storage descriptor/TOAST locator is not the canonical decimal VALUE.

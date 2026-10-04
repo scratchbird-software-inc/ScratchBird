@@ -3,6 +3,7 @@
 #pragma once
 #include "native_common_page_header.hpp"
 #include "filespace_page_zero.hpp"
+#include "disk_device.hpp"
 #include <array>
 #include <optional>
 #include <span>
@@ -91,4 +92,34 @@ NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryAtHistoricalRoot
     const disk::FilespaceRootReference& head, const std::array<byte, 32>& root_sha256,
     const std::vector<NativeHistoricalFilespaceImage>&,
     u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeHistoricalFilespaceImageView {Uuid filespace_uuid;std::span<const byte> page_zero;};
+enum class NativeDirectoryChainReadContext { current,historical };
+struct NativeDirectoryChainPageView {NativeFilespaceDirectoryView directory;std::span<const byte> image;};
+struct NativeDirectoryChainView {
+  NativeDirectoryError error=NativeDirectoryError::invalid_reference;
+  std::span<const NativeDirectoryChainPageView> pages;
+  u64 retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeDirectoryError::none&&!pages.empty();}
+};
+struct NativeDirectoryChainDeviceRead {
+  NativeDirectoryChainView chain;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return chain.ok();}
+};
+// Complete current/historical directory and supplied-member inspection using
+// explicit disjoint backing. Batches correspond to supplied device order and
+// outlive ALL enclosing source fences. Every returned image/record/descriptor
+// remains in backing, not in temporary containers. No current member admission,
+// attachment, visibility, permission, allocation or execution authority.
+NativeDirectoryChainDeviceRead ReadNativeFilespaceDirectoryChainInto(
+    const Uuid&,std::span<const disk::NativeFilespaceDevice>,
+    const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes,
+    NativeDirectoryChainReadContext,const std::array<byte,32>* root_sha256,
+    std::span<const NativeHistoricalFilespaceImageView>,
+    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<byte> backing) noexcept;
+
 }  // namespace scratchbird::storage::page

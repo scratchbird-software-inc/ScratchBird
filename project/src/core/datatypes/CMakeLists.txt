@@ -11,6 +11,10 @@ add_library(sb_core_datatypes
   datatype_binary.cpp
   datatype_bit_string.cpp
   datatype_bit_string_projection.cpp
+  datatype_date.cpp
+  datatype_date_projection.cpp
+  datatype_time.cpp
+  datatype_time_projection.cpp
   datatype_catalog_manifest.cpp
   datatype_conformance_manifest.cpp
   datatype_descriptor.cpp

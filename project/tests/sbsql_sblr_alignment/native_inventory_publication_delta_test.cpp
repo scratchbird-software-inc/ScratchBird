@@ -1,6 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_inventory_publication_delta.hpp"
+#include "native_inventory_delta_backing.hpp"
+#include "native_metadata_decode_scratch.hpp"
+#include <tuple>
 #include "isolation.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -14,6 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 namespace {
+bool bounded_checks=false;
 long allocation_budget=-1; bool counting=false; unsigned long allocations=0;
 unsigned hash_fault=0,hash_target=0,hash_seen=0; bool hash_counting=false,hash_active=false;
 }
@@ -21,6 +25,12 @@ void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+void* operator new(std::size_t n,std::align_val_t a){
+  if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}
+  if(allocation_budget>0)--allocation_budget;void* p=nullptr;
+  if(posix_memalign(&p,static_cast<std::size_t>(a),n?n:1)==0)return p;throw std::bad_alloc();}
+void operator delete(void* p,std::align_val_t)noexcept{std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
@@ -55,6 +65,7 @@ Bytes Oracle(const page::NativeTransactionInventoryPage& p){
  Num(b,288,8,oit);Num(b,296,8,oat);Num(b,304,8,oat);Seal(b);return b;
 }
 Entry MakeEntry(u64 local,State state=State::created){Entry e;e.identity.transaction_uuid={UuidKind::transaction,Id(100+local)};e.identity.local_id=mga::MakeLocalTransactionId(local);e.identity.scope=mga::TransactionScope::local_node;e.state=state;e.begin_unix_epoch_millis=1000+local;e.begin_visible_through_local_transaction_id=local-1;e.begin_visible_through_commit_sequence=local==1?0:1;if(state==State::committed){e.commit_sequence=1;e.final_unix_epoch_millis=2000;e.evidence_record_written=true;}return e;}
+template<class F> void CheckBoundedDelta(F&,u64,const db::NativeInventoryDeltaResult&);
 struct Fixture {
  std::vector<page::NativeTransactionInventoryPage> before,after;Images old_images,new_images;db::NativeCheckpointRootReference old_root,new_root;u64 budget=0;
  Fixture(unsigned first=0,unsigned second=0){
@@ -64,8 +75,94 @@ struct Fixture {
  }
  void Relink(){for(auto* chain:{&before,&after})for(std::size_t i=0;i<chain->size();++i){auto& p=(*chain)[i];p.previous=i?std::optional{Ref((*chain)[i-1])}:std::nullopt;p.next=i+1<chain->size()?std::optional{Ref((*chain)[i+1])}:std::nullopt;}}
  void Refresh(){old_images.clear();new_images.clear();budget=0;for(auto* chain:{&before,&after})for(const auto& p:*chain){auto bytes=Oracle(p);budget+=4*bytes.size();(chain==&before?old_images:new_images).push_back(std::move(bytes));}old_root={1,0x301,Ref(before.front()),Id(3),Sha(old_images.front())};new_root={1,0x301,Ref(after.front()),Id(3),Sha(new_images.front())};}
- auto CheckDelta(u64 allowance=0){return db::ValidateNativeInventoryPublicationDelta(Id(1),old_root,new_root,9,old_images,new_images,allowance?allowance:budget);}
+ auto CheckDelta(u64 allowance=0){const bool test_bounded=bounded_checks&&!counting&&allocation_budget<0&&!hash_counting&&!hash_fault;
+   const auto limit=allowance?allowance:budget;auto result=db::ValidateNativeInventoryPublicationDelta(Id(1),old_root,new_root,9,old_images,new_images,limit);
+   if(test_bounded)CheckBoundedDelta(*this,limit,result);return result;}
 };
+
+template<class A,class B> bool SameEntry(const A& a,const B& b){
+  return std::tie(a.identity.local_id.value,a.identity.transaction_uuid.kind,a.identity.transaction_uuid.value,a.identity.scope,a.state,a.archived_from_state,a.begin_unix_epoch_millis,a.final_unix_epoch_millis,a.begin_visible_through_local_transaction_id,a.begin_visible_through_commit_sequence,a.commit_sequence,a.evidence_record_required,a.evidence_record_written,a.rollback_only,a.stable_snapshot)==
+    std::tie(b.identity.local_id.value,b.identity.transaction_uuid.kind,b.identity.transaction_uuid.value,b.identity.scope,b.state,b.archived_from_state,b.begin_unix_epoch_millis,b.final_unix_epoch_millis,b.begin_visible_through_local_transaction_id,b.begin_visible_through_commit_sequence,b.commit_sequence,b.evidence_record_required,b.evidence_record_written,b.rollback_only,b.stable_snapshot);
+}
+void SameDelta(const db::NativeInventoryDeltaResult& expected,const db::NativeInventoryDeltaViewResult& actual,
+    std::span<const byte> backing){
+  Check(expected.error==actual.error&&expected.ok()==actual.ok(),"complete borrowed inventory delta preserves exact owning disposition");
+  if(!expected.ok()){Check(!actual.delta,"failed borrowed delta exposes no inventory or difference prefix");return;}
+  const auto& a=*expected.delta;const auto& b=*actual.delta;
+  Check(a.verified_image_bytes==b.verified_image_bytes&&a.cluster_difference==b.cluster_difference&&
+    a.differences.size()==b.differences.size(),"all retained difference metadata and classification");
+  const auto inside=[&](const void* p,std::size_t size){if(!size)return true;
+    const auto base=reinterpret_cast<std::uintptr_t>(backing.data()),at=reinterpret_cast<std::uintptr_t>(p);
+    return at>=base&&at-base<=backing.size()&&size<=backing.size()-(at-base);};
+  const auto inventory=[&](const auto& x,const auto& y){Check(!x.publication_base&&
+    x.next_local_transaction_id==y.next_local_transaction_id&&x.next_commit_sequence==y.next_commit_sequence&&
+    x.entries.size()==y.entries.size()&&inside(y.entries.data(),y.entries.size_bytes()),
+    "all inventory counters and entries with no CAS base and actual caller backing");
+    for(std::size_t i=0;i<x.entries.size();++i)Check(SameEntry(x.entries[i],y.entries[i]),"every native inventory identity state boundary evidence and snapshot field");};
+  inventory(a.before,b.before);inventory(a.after,b.after);
+  Check(inside(b.differences.data(),b.differences.size_bytes())&&b.backing_bytes_used&&
+    b.backing_bytes_used<=backing.size(),"actual difference storage and used-byte accounting");
+  for(std::size_t i=0;i<a.differences.size();++i){
+    const auto& x=a.differences[i];const auto& y=b.differences[i];
+    Check(bool(x.before)==bool(y.before)&&bool(x.after)==bool(y.after)&&
+      (!x.before||SameEntry(*x.before,*y.before))&&(!x.after||SameEntry(*x.after,*y.after)),
+      "removed changed added differences retain every exact value and presence bit");
+  }
+}
+template<class F> void CheckBoundedDelta(F& f,u64 allowance,const db::NativeInventoryDeltaResult& expected){
+  const auto database=Id(1);std::vector<std::span<const byte>> before,after;
+  for(const auto& raw:f.old_images)before.push_back(raw);for(const auto& raw:f.new_images)after.push_back(raw);
+  std::size_t capacity=65536;for(const auto& raw:before)capacity+=4*raw.size();for(const auto& raw:after)capacity+=4*raw.size();
+  Bytes backing(capacity);
+  const auto call=[&](std::span<byte> region){
+    allocation_budget=0;
+    auto result=db::ValidateNativeInventoryPublicationDeltaInto(database,f.old_root,f.new_root,9,before,after,allowance,region);
+    const bool untouched=allocation_budget==0;allocation_budget=-1;
+    Check(untouched,"complete inventory delta and every refusal have no hidden ordinary or aligned allocation");return result;};
+  const auto first=call(backing);SameDelta(expected,first,backing);
+  if(first.ok()){
+    const auto used=first.delta->backing_bytes_used;
+    SameDelta(expected,call(std::span(backing).first(used)),backing);
+    const auto short_result=call(std::span(backing).first(used-1));
+    Check(short_result.error==E::resource_exhausted&&!short_result.delta,"one byte below complete delta backing refuses every prefix");
+  }
+}
+void BoundedDeltaFaults(){
+  Fixture f(0,4);const auto expected=f.CheckDelta();const auto database=Id(1);
+  std::vector<std::span<const byte>> before,after;
+  for(const auto& image:f.old_images)before.push_back(image);for(const auto& image:f.new_images)after.push_back(image);
+  Bytes backing(4*f.budget+65536);
+  const auto call=[&](std::span<byte> region){allocation_budget=0;
+    auto r=db::ValidateNativeInventoryPublicationDeltaInto(database,f.old_root,f.new_root,9,before,after,f.budget,region);
+    const bool unchanged=allocation_budget==0;allocation_budget=-1;Check(unchanged,"full delta provider paths never render or allocate diagnostic text");return r;};
+  hash_seen=0;hash_counting=true;auto initial=call(backing);hash_counting=false;const auto sites=hash_seen;
+  SameDelta(expected,initial,backing);
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=sites;++at){
+    hash_target=at;hash_fault=mode;hash_seen=0;const auto result=call(backing);const bool consumed=!hash_fault;
+    hash_fault=0;hash_active=false;Check(consumed&&result.error==E::hash_failure&&!result.delta,
+      "every borrowed whole-chain and provider hash phase retains exact refusal without a prefix");
+  }
+  const auto alias=[&](auto input){const auto result=call({reinterpret_cast<byte*>(
+    const_cast<std::remove_const_t<typename decltype(input)::element_type>*>(input.data())),input.size_bytes()});
+    Check(result.error==E::invalid_backing&&!result.delta,"whole descriptor and image alias refused before writes");};
+  const auto old=f.old_images,next=f.new_images;
+  alias(std::span{&database,1});alias(std::span{&f.old_root,1});alias(std::span{&f.new_root,1});
+  alias(std::span(before));alias(std::span(after));for(const auto& image:before)alias(image);for(const auto& image:after)alias(image);
+  Check(old==f.old_images&&next==f.new_images,"alias refusal preserves every complete input byte");
+  auto retained=call(backing);SameDelta(expected,retained,backing);
+  f.old_images.clear();f.new_images.clear();before.clear();after.clear();
+  SameDelta(expected,retained,backing);
+  // The source coordinator may reuse the same complete algorithm within its
+  // already admitted resource; no additional grant or weaker decoder is involved.
+  std::vector<std::span<const byte>> old_views,new_views;
+  for(const auto& image:old)old_views.push_back(image);for(const auto& image:next)new_views.push_back(image);
+  db::detail::NativeMetadataMemory resource(backing);allocation_budget=0;
+  auto composed=db::detail::ValidateNativeInventoryPublicationDeltaBacked(database,f.old_root,f.new_root,9,old_views,new_views,f.budget,resource);
+  const bool unchanged=allocation_budget==0;allocation_budget=-1;
+  Check(unchanged&&composed.ok(),"complete admitted-resource delta composition without heap fallback");
+  composed.delta->backing_bytes_used=resource.used();SameDelta(expected,composed,backing);
+}
+
 void Failed(const db::NativeInventoryDeltaResult& r){Check(!r.ok()&&!r.delta,"failure carries no inventory or difference prefix");}
 void ColdFaults(){
  Fixture f(0,4);int channel[2];Check(pipe(channel)==0,"cold allocation measurement pipe");const auto child=fork();Check(child>=0,"cold allocation baseline fork");
@@ -285,4 +382,4 @@ void Faults(){Fixture f(0,4);allocations=0;counting=true;const auto base=f.Check
  hash_seen=0;hash_counting=true;const auto hashed=f.CheckDelta();hash_counting=false;const auto hashes=hash_seen;Check(hashed.ok()&&hashes,"hash baseline");for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_target=at;hash_fault=mode;hash_seen=0;const auto result=f.CheckDelta();const bool consumed=!hash_fault;hash_fault=0;hash_active=false;Check(consumed&&result.error==E::hash_failure,"every digest failure consumed and classified");Failed(result);}std::cout<<"allocation sites="<<sites<<" hashes="<<hashes<<"\n";
 }
 }
-int main(){try{ColdFaults();Profiles();Negatives();Differences();Boundaries();BeginCandidates();BeginCounterEdges();BeginIsolation();StableSnapshotBoundary();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(){try{ColdFaults();bounded_checks=true;Profiles();BoundedDeltaFaults();Negatives();Differences();Boundaries();BeginCandidates();BeginCounterEdges();BeginIsolation();StableSnapshotBoundary();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

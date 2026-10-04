@@ -117,6 +117,85 @@ db::NativeCheckpointRoot Example(unsigned profile=0,unsigned member=0,unsigned c
     ref.role=role;ref.page_type=types[role];ref.page={Id(3),30+role,80+role,target.uuid};ref.object_uuid=Id(100+role);ref.sha256.fill(byte(role));r.roots.push_back(ref);}
   if(count>=14){r.flags=4;r.cluster_quorum_transaction_id=15;}return r;
 }
+
+auto EncodeView(db::NativeCheckpointRoot& r){db::NativeCheckpointRootView v;
+  v.header=r.header;
+  v.object_uuid=r.object_uuid;
+  v.checkpoint_generation=r.checkpoint_generation;
+  v.root_set_generation=r.root_set_generation;
+  v.selected_local_transaction_id=r.selected_local_transaction_id;
+  v.stable_local_transaction_id=r.stable_local_transaction_id;
+  v.local_durable_transaction_id=r.local_durable_transaction_id;
+  v.cluster_quorum_transaction_id=r.cluster_quorum_transaction_id;
+  v.timeline_uuid=r.timeline_uuid;
+  v.creator_transaction_uuid=r.creator_transaction_uuid;
+  v.creator_local_transaction_id=r.creator_local_transaction_id;
+  v.flags=r.flags;
+  v.predecessor=r.predecessor;
+  v.predecessor_sha256=r.predecessor_sha256;
+  v.completed=r.completed;
+  v.roots=r.roots;
+  v.creator_operation_uuid=r.creator_operation_uuid;
+  return v;
+}
+void Encoders(){
+  for(unsigned profile=0;profile<5;++profile)for(unsigned member=0;member<5;++member)
+    for(unsigned count=10;count<=16;++count)for(bool operation:{false,true})for(bool complete:{false,true}){
+      auto value=Example(profile,member,count);value.completed=complete;
+      if(operation){value.creator_transaction_uuid={};value.creator_local_transaction_id=0;value.creator_operation_uuid=Id(23);}
+      auto view=EncodeView(value);const auto oracle=Oracle(value);Bytes backing(oracle.size()+1,0x55);
+      const auto encoded=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,backing);});
+      const auto owned=db::EncodeNativeCheckpointRoot(value);
+      Check(encoded.ok()&&encoded.bytes.data()==backing.data()&&encoded.bytes.size()==oracle.size()&&
+        std::equal(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin(),oracle.end())&&
+        owned.ok()&&owned.bytes==oracle&&backing.back()==0x55,"complete checkpoint canonical encode matches independent oracle in both creator forms with no tail write");
+      Check(DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,std::span(backing).first(oracle.size()));}).ok(),"exact native checkpoint encoding buffer succeeds");
+      std::fill(backing.begin(),backing.end(),0x55);
+      const auto shortage=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,std::span(backing).first(oracle.size()-1));});
+      Check(shortage.error==E::resource_exhausted&&shortage.bytes.empty()&&std::all_of(backing.begin(),backing.end(),[](byte b){return b==0x55;}),
+        "one-byte-short output refuses without partial image or write");
+      auto alias=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,
+        {reinterpret_cast<byte*>(view.roots.data()),view.roots.size_bytes()});});
+      Check(alias.error==E::invalid_backing&&alias.bytes.empty()&&Oracle(value)==oracle,"root-array overlap is rejected before mutation");
+      alias=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,{reinterpret_cast<byte*>(&view),sizeof(view)});});
+      Check(alias.error==E::invalid_backing&&alias.bytes.empty()&&Oracle(view)==oracle,"whole root descriptor overlap is rejected");
+    }
+  auto value=Example();auto view=EncodeView(value);Bytes backing(value.header.page_size_bytes);
+  for(unsigned site=1;site<=2;++site){
+    hashes=0;hash_at=site;const auto result=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,backing);});hash_at=0;
+    Check(result.error==E::hash_failure&&result.bytes.empty()&&hashes==site,"each actual checkpoint encoding hash context fails closed without hidden allocation");
+    for(unsigned mode=1;mode<=4;++mode){hashes=0;fault_context=site;fault=mode;
+      const auto failed=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,backing);});
+      Check(!fault&&failed.error==E::hash_failure&&failed.bytes.empty(),"all provider phases and short digest produce no successful image");
+    }
+  }
+  fault_context=1;
+  for(unsigned variant=0;variant<18;++variant){auto bad=value;
+    switch(variant){
+      case 0:bad.header.page_type=1;break;case 1:bad.header.page_size_bytes=0;break;
+      case 2:bad.object_uuid={};break;case 3:bad.timeline_uuid={};break;
+      case 4:bad.creator_local_transaction_id=0;break;case 5:bad.creator_operation_uuid=Id(23);break;
+      case 6:bad.checkpoint_generation=0;break;case 7:bad.root_set_generation=0;break;
+      case 8:bad.selected_local_transaction_id=0;break;case 9:bad.stable_local_transaction_id=17;break;
+      case 10:bad.local_durable_transaction_id=18;break;case 11:bad.flags=16;break;
+      case 12:bad.predecessor=d::NativePageReference{Id(4),1,1,d::kCanonicalFilespacePageProfiles[0].uuid};break;
+      case 13:bad.checkpoint_generation=2;break;case 14:bad.roots.clear();break;
+      case 15:bad.roots.front().sha256={};break;case 16:bad.roots[1].role=1;break;
+      case 17:bad.roots[0].page={bad.header.filespace_uuid,bad.header.page_number,bad.header.page_generation,bad.header.page_size_profile_uuid};break;
+    }
+    auto borrowed=EncodeView(bad);const auto owned=db::EncodeNativeCheckpointRoot(bad);
+    std::fill(backing.begin(),backing.end(),0x55);
+    const auto result=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(borrowed,backing);});
+    Check(!owned.ok()&&result.error==owned.error&&result.bytes.empty()&&
+      std::all_of(backing.begin(),backing.end(),[](byte b){return b==0x55;}),"every invalid header creator counter root and predecessor retains owning error without output effects");
+  }
+  value.checkpoint_generation=2;value.predecessor=d::NativePageReference{Id(4),7,9,d::kCanonicalFilespacePageProfiles[4].uuid};
+  value.predecessor_sha256.fill(0x91);view=EncodeView(value);const auto oracle=Oracle(value);
+  const auto retained=DenyCodecAllocation([&]{return db::EncodeNativeCheckpointRootInto(view,backing);});
+  Check(retained.ok(),"bounded linked predecessor image");value.roots.clear();view={};
+  Check(std::equal(retained.bytes.begin(),retained.bytes.end(),oracle.begin(),oracle.end()),"complete encoded result outlives all input metadata");
+}
+
 namespace m=scratchbird::core::memory;
 using ME=db::NativeCheckpointRootMemoryError;
 struct MemoryFixture {
@@ -312,5 +391,5 @@ void Codecs(){
     Check(!result.root&&result.error==E::invalid_roots,"conflicting shared root metadata cannot be interpreted as a valid alias");}
 }
 }
-int main(){try{Codecs();MemoryTests();std::cout<<"PASS governed checkpoint checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
+int main(){try{Encoders();Codecs();MemoryTests();std::cout<<"PASS governed checkpoint checks="<<checks<<" not_SQL_E2E=true\n";return 0;}
   catch(...){budget=-1;std::cerr<<"FAIL checks="<<checks<<'\n';return 1;}}

@@ -873,6 +873,148 @@ void TestBitStringRequiresSpecializedV3Carrier() {
           "invalid raw bit descriptor did not precede dirty-NULL state");
 }
 
+void TestDateRequiresSpecializedD708Carrier() {
+  dt::DatatypeOperationValue raw{
+      dt::CanonicalTypeId::date, std::string("\0\0\0\0", 4), false};
+  dt::DatatypeCastRequest cast;
+  cast.value = raw;
+  cast.target_type_id = dt::CanonicalTypeId::character;
+  cast.context = dt::DatatypeCastContext::explicit_cast;
+  const auto cast_result = dt::CastDatatypeValue(cast);
+  Require(!cast_result.ok() &&
+              cast_result.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::date,
+                                       dt::CanonicalTypeId::date) ==
+                  dt::DatatypeCastCategory::forbidden,
+          "raw date cast/catch-all bypassed d708 profile authority");
+  Require(!dt::CompareDatatypeValues({raw, raw}).ok() &&
+              !dt::MakeDatatypeSortKey({raw}).ok() &&
+              !dt::HashDatatypeValue({raw}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({raw}).ok() &&
+              !dt::ExtractDatatypeField({raw, "year"}).ok(),
+          "raw date generic operation bypassed specialized carrier");
+  const auto serialized = dt::SerializeDatatypeValue({raw});
+  Require(!serialized.ok() &&
+              serialized.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "raw date SBDV1 serialization was admitted");
+  dt::DatatypeDeserializationRequest decode;
+  decode.expected_type_id = dt::CanonicalTypeId::date;
+  decode.serialized_value = "SBDV1;type=date;state=value;payload=00000000";
+  const auto deserialized = dt::DeserializeDatatypeValue(decode);
+  Require(!deserialized.ok() &&
+              deserialized.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "raw date SBDV1 deserialization was admitted");
+
+  auto dirty_null = raw;
+  dirty_null.is_null = true;
+  dirty_null.descriptor = Descriptor(dt::CanonicalTypeId::date);
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "DATATYPE.NULL_STATE.INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::MakeDatatypeSortKey({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::HashDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::SerializeDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::RenderDatatypeValueForDisplay({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "raw date dirty-NULL precedence drifted");
+  ++dirty_null.descriptor.descriptor_epoch;
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+          "invalid raw date descriptor did not precede dirty-NULL state");
+}
+
+void TestTimeRequiresSpecializedD708Carrier() {
+  dt::DatatypeOperationValue raw{
+      dt::CanonicalTypeId::time, std::string(8, '\0'), false};
+  dt::DatatypeCastRequest cast;
+  cast.value = raw;
+  cast.target_type_id = dt::CanonicalTypeId::character;
+  cast.context = dt::DatatypeCastContext::explicit_cast;
+  const auto cast_result = dt::CastDatatypeValue(cast);
+  Require(!cast_result.ok() &&
+              cast_result.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              dt::ClassifyDatatypeCast(dt::CanonicalTypeId::time,
+                                       dt::CanonicalTypeId::time) ==
+                  dt::DatatypeCastCategory::forbidden,
+          "raw time cast/catch-all bypassed d708 profile authority");
+  Require(!dt::CompareDatatypeValues({raw, raw}).ok() &&
+              !dt::MakeDatatypeSortKey({raw}).ok() &&
+              !dt::HashDatatypeValue({raw}).ok() &&
+              !dt::RenderDatatypeValueForDisplay({raw}).ok() &&
+              !dt::ExtractDatatypeField({raw, "hour"}).ok(),
+          "raw time generic operation bypassed specialized carrier");
+  const auto serialized = dt::SerializeDatatypeValue({raw});
+  Require(!serialized.ok() &&
+              serialized.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "raw time SBDV1 serialization was admitted");
+  dt::DatatypeDeserializationRequest decode;
+  decode.expected_type_id = dt::CanonicalTypeId::time;
+  decode.serialized_value = "SBDV1;type=time;state=value;payload=0000000000000000";
+  const auto deserialized = dt::DeserializeDatatypeValue(decode);
+  Require(!deserialized.ok() &&
+              deserialized.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "raw time SBDV1 deserialization was admitted");
+
+  auto dirty_null = raw;
+  dirty_null.is_null = true;
+  dirty_null.descriptor = Descriptor(dt::CanonicalTypeId::time);
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "DATATYPE.NULL_STATE.INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::MakeDatatypeSortKey({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::HashDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::SerializeDatatypeValue({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID" &&
+              dt::RenderDatatypeValueForDisplay({dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "raw time dirty-NULL precedence drifted");
+  ++dirty_null.descriptor.descriptor_epoch;
+  Require(dt::CastDatatypeValue(
+              {dirty_null, dt::CanonicalTypeId::character,
+               dt::DatatypeCastContext::explicit_cast})
+                  .diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              dt::CompareDatatypeValues({dirty_null, raw})
+                      .diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+          "invalid raw time descriptor did not precede dirty-NULL state");
+}
+
 void TestBinaryUuidOperations() {
   const std::string bytes("\x01\x02\x03\x04\x05\x06\x70\x00\x80\x00\x09\x0a\x3b\x7c\x00\xff", 16);
   const auto value = UuidValue(bytes);
@@ -1483,6 +1625,8 @@ int main(int argc, char** argv) {
   TestStableHashAndDeserializationRefusals();
   TestExplicitDisplayBoundaryRendering();
   TestBitStringRequiresSpecializedV3Carrier();
+  TestDateRequiresSpecializedD708Carrier();
+  TestTimeRequiresSpecializedD708Carrier();
   std::cout << "current_core_datatype_comparison_cast_gate=passed\n";
   return EXIT_SUCCESS;
 }

@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_allocation.hpp"
+#include "native_control_allocation_backing.hpp"
+#include "native_metadata_memory.hpp"
 #include "native_creation_workspace.hpp"
 #include "disk_device.hpp"
 #include <filesystem>
@@ -22,6 +24,11 @@ void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
+void* operator new(std::size_t n,std::align_val_t a){if(counting)++allocations;
+ if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
+ void* p=nullptr;if(posix_memalign(&p,static_cast<std::size_t>(a),n?n:1)==0)return p;throw std::bad_alloc();}
+void operator delete(void* p,std::align_val_t)noexcept{std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t)noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
@@ -164,6 +171,7 @@ void Rechain(Pages& pages,db::NativeManagementExtentRoot& root){std::array<byte,
 
 
 using CE=db::NativeManagementControlAllocationError;
+#include "native_management_control_allocation_memory_checks.hpp"
 namespace page=scratchbird::storage::page;
 using State=page::NativeAllocationState;
 using Maps=std::vector<page::NativeAllocationMap>;
@@ -227,10 +235,15 @@ struct Graph {
  }
  void Refresh(){after_bytes=EncodeMaps(after);auto& root=*std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==4;});root.page=Self(after.front().header);root.object_uuid=after.front().object_uuid;root.sha256=Sha(after_bytes.front());target_bytes=Finish(plan,target);plan_bytes=Oracle(plan);}
  u64 Budget()const{u64 n=base_bytes.size()+target_bytes.size()+plan_bytes.size();for(const auto* v:{&before_bytes,&after_bytes,&extent})for(const auto& b:*v)n+=b.size();return n;}
- CE CheckGraph(u64 budget=0)const{return db::ValidateNativeManagementControlAllocation(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,budget?budget:Budget());}
+ CE CheckGraph(u64 budget=0)const{
+  const bool bounded=!counting&&allocation_budget<0&&!hash_counting&&!hash_fault;const auto limit=budget?budget:Budget();
+  const auto result=db::ValidateNativeManagementControlAllocation(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,limit);
+  if(bounded)BoundedControlCheck(base_bytes,target_bytes,plan_bytes,extent,before_bytes,after_bytes,limit,{},{},nullptr,result);
+  return result;}
 };
 void Test(unsigned profile){
- Fixture fixture(profile);Graph graph(fixture);Check(graph.CheckGraph()==CE::none,"complete immutable control allocation");Check(graph.CheckGraph(graph.Budget()-1)==CE::resource_exhausted,"exact input allowance");Graph mixed(fixture,true);Check(mixed.CheckGraph()==CE::none,"retained mixed operation lineage preserved");
+ Fixture fixture(profile);Graph graph(fixture);
+ BoundedControlCheck(graph.base_bytes,graph.target_bytes,graph.plan_bytes,graph.extent,graph.before_bytes,graph.after_bytes,graph.Budget(),{},{},nullptr,CE::none,profile==0);Check(graph.CheckGraph()==CE::none,"complete immutable control allocation");Check(graph.CheckGraph(graph.Budget()-1)==CE::resource_exhausted,"exact input allowance");Graph mixed(fixture,true);Check(mixed.CheckGraph()==CE::none,"retained mixed operation lineage preserved");
  Graph successor(fixture,false,1,&graph);Check(successor.CheckGraph()==CE::none,"successor retains operation-owned control allocations");successor.plan.previous_plan_sha256[0]^=1;successor.Refresh();Check(successor.CheckGraph()!=CE::none,"exact previous plan binding");
  if(profile!=0)return;
  Graph large(fixture,false,3);Check(large.extent.size()>3&&large.CheckGraph()==CE::none,"large extent with independent decoder allowance");

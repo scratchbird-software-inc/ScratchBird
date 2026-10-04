@@ -14,6 +14,7 @@
 #include "transaction_inventory.hpp"
 #include "native_common_page_header.hpp"
 #include "filespace_page_zero.hpp"
+#include "disk_device.hpp"
 
 #include <array>
 #include <map>
@@ -127,6 +128,38 @@ NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainAtHisto
     const std::array<byte,32>& root_sha256,
     const std::map<scratchbird::core::platform::Uuid,std::vector<byte>>& page_zero_images,
     u64 maximum_retained_image_bytes) noexcept;
+
+
+struct NativeInventoryHistoricalPageZero {scratchbird::core::platform::Uuid filespace_uuid;std::span<const byte> image;};
+enum class NativeInventoryChainReadContext { current,historical };
+struct NativeInventoryChainPageView {NativeTransactionInventoryPageView page;std::span<const byte> image;};
+struct NativeInventoryChainView {
+  NativeInventoryError error=NativeInventoryError::invalid_reference;
+  std::span<const NativeInventoryChainPageView> pages;
+  NativeTransactionInventoryView inventory;
+  LocalTransactionHorizons horizons;
+  u64 retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeInventoryError::none&&!pages.empty()&&horizons.valid;}
+};
+struct NativeInventoryChainDeviceRead {
+  NativeInventoryChainView chain;
+  Status io_status;
+  DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept{return chain.ok();}
+};
+// Complete current/historical actual inventory with caller-owned input-disjoint
+// backing and exact-device batches surviving ALL enclosing source fences.
+// Shared image/chain/global-structure/horizon rules; no publication CAS base,
+// selected inventory, transaction outcome or cleanup authority is granted.
+NativeInventoryChainDeviceRead ReadNativeTransactionInventoryChainInto(
+    const scratchbird::core::platform::Uuid&,
+    std::span<const scratchbird::storage::disk::NativeFilespaceDevice>,
+    const scratchbird::storage::disk::FilespaceRootReference&,u64,
+    NativeInventoryChainReadContext,const std::array<byte,32>* root_sha256,
+    std::span<const NativeInventoryHistoricalPageZero>,
+    std::span<scratchbird::storage::disk::FileDevice::ReadLatencyBatch* const>,std::span<byte> backing) noexcept;
 
 inline constexpr u32 kTransactionInventoryPageDigestBytes = 32;
 inline constexpr u32 kTransactionInventoryPageBodyHeaderBytes = 152;

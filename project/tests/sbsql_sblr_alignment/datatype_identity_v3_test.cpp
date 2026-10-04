@@ -8,9 +8,31 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <new>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
+
+namespace allocation_probe {
+thread_local bool fail_next = false;
+}
+
+void* operator new(std::size_t bytes) {
+  if (allocation_probe::fail_next) {
+    allocation_probe::fail_next = false;
+    throw std::bad_alloc();
+  }
+  if (void* value = std::malloc(bytes == 0 ? 1 : bytes)) return value;
+  throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+
+void operator delete(void* value) noexcept { std::free(value); }
+void operator delete[](void* value) noexcept { std::free(value); }
+void operator delete(void* value, std::size_t) noexcept { std::free(value); }
+void operator delete[](void* value, std::size_t) noexcept { std::free(value); }
 
 namespace {
 namespace dt = scratchbird::core::datatypes;
@@ -30,6 +52,123 @@ concept HasDescriptorPolicyMember = requires(T value) {
 };
 
 using Byte = scratchbird::core::platform::byte;
+
+struct CorePolicyFixture {
+  std::string_view uuid;
+  std::uint64_t generation;
+};
+
+struct CoreD708RowFixture {
+  std::string_view canonical_name;
+  std::string_view descriptor_uuid;
+  std::uint64_t descriptor_generation;
+  std::string_view type_uuid;
+  std::uint64_t type_generation;
+  std::string_view codec_uuid;
+  std::string_view codec_id;
+  std::uint16_t codec_version;
+  std::uint64_t codec_generation;
+  std::uint32_t canonical_value_bytes;
+  bool null_supported;
+  std::uint32_t minimum_bytes;
+  std::uint32_t maximum_bytes;
+  std::uint32_t exact_or_transport_bytes;
+  bool variable_width;
+  bool exact_zero_is_width_marker;
+  bool has_byte_order;
+  std::string_view byte_order;
+  bool has_signed;
+  bool signed_value;
+  std::string_view representation;
+  std::string_view charset;
+  bool shortest_form_utf8_required;
+  bool descriptor_bound_collation_required;
+  bool empty_value_distinct_from_sql_null;
+  bool sql_null_requires_zero_payload;
+  bool variable_width_storage_without_truncation;
+  bool has_invalid_encoding_diagnostic;
+  std::string_view invalid_encoding_diagnostic_id;
+  std::string_view numeric_context_uuid;
+  std::uint64_t numeric_context_generation;
+  std::string_view special_value_policy_uuid;
+  std::uint64_t special_value_policy_generation;
+  std::string_view comparison_policy_uuid;
+  std::uint64_t comparison_policy_generation;
+  std::string_view comparison_profile;
+  bool allow_special_values;
+  bool has_canonical_type_code;
+  std::uint32_t canonical_type_code;
+  CorePolicyFixture descriptor_policy;
+  CorePolicyFixture canonicalization_policy;
+  CorePolicyFixture ordering_policy;
+  CorePolicyFixture hash_policy;
+  CorePolicyFixture operation_policy;
+};
+
+
+inline constexpr std::string_view kCoreD708RowsCanonicalJson =
+R"CORE_D708_JSON([{"canonical_name":"boolean","canonical_value_bytes":{"byte_order":"single_byte","exact":1,"maximum":1,"minimum":1,"representation":"exact_00_FALSE_or_01_TRUE_all_other_bytes_invalid","signed":false},"codec_generation":1,"codec_id":"datatype.boolean.u8.v1","codec_uuid":"01a1010b-2e50-73c3-bdc8-ca82fc1fae5c","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"01000000-626f-7f6c-a561-6e0000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.boolean.v1","type_generation":1,"type_uuid":"01000000-626f-7f6c-a561-6e0000000000","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"int32","canonical_value_bytes":{"byte_order":"little_endian","exact":4,"maximum":4,"minimum":4,"representation":"twos_complement","signed":true},"codec_generation":1,"codec_id":"datatype.int32.le.v1","codec_uuid":"01a1010b-2e51-7c10-b90a-af9f08d9cd79","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d716","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.int32.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d717","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"bigint","canonical_value_bytes":{"byte_order":"little_endian","exact":8,"maximum":8,"minimum":8,"representation":"twos_complement","signed":true},"codec_generation":1,"codec_id":"datatype.int64.le.v1","codec_uuid":"01a1010b-2e52-79a4-8669-a9a7cb89bd21","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d711","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"unsupported_in_sblr_literal_v1","row_id":"datatype.bigint.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d712","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"decimal","canonical_value_bytes":{"byte_order":"little_endian","exact":24,"maximum":24,"maximum_precision":38,"maximum_scale":38,"minimum":24,"representation":"exact_decimal_header_and_five_base1e9_coefficient_groups","signed":true},"codec_generation":1,"codec_id":"datatype.decimal.base1e9.le.v1","codec_uuid":"01a1010b-2e54-777f-8089-a807f43084c2","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"a0000000-6465-7369-ad61-6c0000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"unsupported_in_sblr_literal_v1","row_id":"datatype.decimal.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d713","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"int128","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"twos_complement","signed":true},"codec_generation":1,"codec_id":"datatype.int128.le.v1","codec_uuid":"01a1010b-2e53-7fef-b6fa-1d9300cd10c8","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d714","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.int128.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d715","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"text","canonical_value_bytes":{"byte_order":"byte_sequence","exact":0,"exact_zero_semantics":"descriptor_width_marker_not_payload_length","maximum":16777216,"minimum":0,"representation":"exact_well_formed_UTF8_scalar_sequence_without_implicit_normalization","signed":false,"width":"variable"},"codec_generation":1,"codec_id":"datatype.text.utf8.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d71a","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d718","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.text.v1","text_semantics":{"canonical_family":"text","charset":"UTF-8","charset_rule":"exact_well_formed_shortest_form_UTF8_Unicode_scalar_values_and_no_charset_inference_from_name_or_payload","collation":"exact_descriptor_bound_collation_UUID_generation_and_resource_epoch_required_for_equality_ordering_grouping_hashing_or_indexing_with_no_codec_name_byte_or_host_locale_fallback","empty_value":"admitted_value_present_with_zero_payload_bytes_and_distinct_from_SQL_NULL","length_bytes":"0_to_16777216_under_the_live_operation_and_resource_ceiling","length_chars":"descriptor_bound_or_unbounded_when_the_descriptor_field_is_null","length_units":"byte_length_and_Unicode_scalar_value_length_are_distinct","malformed_sequence":"reject_with_CTB.TEXT.INVALID_ENCODING","normalization":"exact_descriptor_bound_normalization_policy_and_resource_epoch_required_when_the_operation_requires_normalization_with_no_implicit_default","null_state":"SQL_NULL_only_in_the_containing_slot_null_state_with_zero_payload_bytes","operation_bound":"minimum_of_16777216_live_resource_grant_and_the_calling_operation_profile_ceiling","padding":"none_in_the_canonical_type_and_only_an_explicit_domain_or_compatibility_profile_may_add_padding","storage":"variable_width_inline_or_overflow_without_truncation"},"type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d719","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"real64","canonical_value_bytes":{"byte_order":"little_endian","exact":8,"maximum":8,"minimum":8,"representation":"IEEE754_binary64"},"codec_generation":1,"codec_id":"datatype.real64.ieee754.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d733","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d731","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.real64.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d732","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uuid","canonical_value_bytes":{"byte_order":"byte_sequence","exact":16,"maximum":16,"minimum":16,"representation":"sixteen_UUID_value_octets_without_text_conversion","value_uuid_versions":"all_128_bit_values_including_nil_system_identity_validation_remains_separate"},"codec_generation":1,"codec_id":"datatype.uuid.binary16.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d736","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d734","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uuid.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d735","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"geometry","canonical_value_bytes":{"byte_order":"byte_sequence","coordinates":"two_IEEE754_binary64_big_endian_values","maximum":24,"minimum":24,"negative_zero":"refuse","nonfinite":"refuse","other_geometry_encodings":"refuse_until_separately_admitted","prefix_hex":"5342503101020000","representation":"SBP1_finite_2D_point_big_endian_coordinates","transport_width":0},"codec_generation":1,"codec_id":"datatype.geometry.sbp1.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d739","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d737","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.geometry.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d738","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uint64","canonical_value_bytes":{"byte_order":"little_endian","exact":8,"maximum":8,"minimum":8,"representation":"unsigned_64_bit_integer","signed":false},"codec_generation":1,"codec_id":"datatype.uint64.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d73c","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d73a","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uint64.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d73b","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"json_document","canonical_value_bytes":{"maximum":16777216,"minimum":1,"nesting_limit":256,"normalization":"none","numbers":"JSON_number_grammar_preserve_lexeme","object_keys":"preserve_order_and_duplicates","representation":"well_formed_UTF8_JSON_document","strings":"scalar_UTF8_and_paired_UTF16_escapes","transport_width":0,"whitespace":"JSON_whitespace_only"},"codec_generation":1,"codec_id":"datatype.json.utf8.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d73f","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d73d","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.json_document.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d73e","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"list","canonical_value_bytes":{"element_types":"TEXT_only","header":"magic8_then_u32LE_count","item":"u8_state_then_u32LE_length_then_UTF8_bytes","magic":"SBTL0001","maximum":16777216,"minimum":12,"normalization":"none","null":"zero_length","representation":"nullable_TEXT_list","states":"zero_null_one_value","trailing_bytes":"refuse","transport_width":0},"codec_generation":1,"codec_id":"datatype.list.text.framed.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d742","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"019d0000-0000-7000-8000-00000000d740","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.list.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d741","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"binary","canonical_value_bytes":{"byte_order":"byte_sequence","empty":"value_present_with_zero_bytes_distinct_from_SQL_NULL","maximum":16777216,"minimum":0,"normalization":"none","representation":"exact_octets_without_text_conversion","transport_width":0},"canonicalization_policy_generation":1,"canonicalization_policy_uuid":"01a0fea5-8a12-7466-9adb-e25464c65b6a","codec_generation":1,"codec_id":"datatype.binary.octets.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d744","codec_version":1,"descriptor_generation":1,"descriptor_identity":"retained_exact_existing_Core_binary_manifest_identity_not_runtime_name_derivation","descriptor_policy_generation":1,"descriptor_policy_uuid":"01a0fea5-8a12-7da5-9d9d-839bc81b09ca","descriptor_uuid":"2d010000-6269-7e61-b279-000000000000","hash_policy_generation":1,"hash_policy_uuid":"01a0fea5-8a12-737b-a482-e696fe7141f8","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","ordering_policy_generation":1,"ordering_policy_uuid":"01a0fea5-8a12-7073-a5b7-32606cd091e6","row_id":"datatype.binary.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d743","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"int8","canonical_value_bytes":{"byte_order":"little_endian","exact":1,"maximum":1,"minimum":1,"representation":"twos_complement_integer"},"codec_generation":1,"codec_id":"datatype.int8.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d801","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"64000000-696e-7438-8000-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.int8.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d800","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"int16","canonical_value_bytes":{"byte_order":"little_endian","exact":2,"maximum":2,"minimum":2,"representation":"twos_complement_integer"},"codec_generation":1,"codec_id":"datatype.int16.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d803","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"65000000-696e-7431-b600-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.int16.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d802","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uint8","canonical_value_bytes":{"byte_order":"little_endian","exact":1,"maximum":1,"minimum":1,"representation":"unsigned_integer"},"codec_generation":1,"codec_id":"datatype.uint8.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d805","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"78000000-7569-7e74-b800-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uint8.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d804","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uint16","canonical_value_bytes":{"byte_order":"little_endian","exact":2,"maximum":2,"minimum":2,"representation":"unsigned_integer"},"codec_generation":1,"codec_id":"datatype.uint16.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d807","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"79000000-7569-7e74-b136-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uint16.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d806","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uint32","canonical_value_bytes":{"byte_order":"little_endian","exact":4,"maximum":4,"minimum":4,"representation":"unsigned_integer"},"codec_generation":1,"codec_id":"datatype.uint32.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d809","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"7a000000-7569-7e74-b332-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uint32.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d808","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"uint128","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"unsigned_integer"},"codec_generation":1,"codec_id":"datatype.uint128.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d80b","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"7c000000-7569-7e74-b132-380000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.uint128.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d80a","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"bfloat16","canonical_value_bytes":{"byte_order":"little_endian","exact":2,"maximum":2,"minimum":2,"representation":"bfloat16_bits"},"codec_generation":1,"codec_id":"datatype.bfloat16.ieee754.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d80d","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"8a000000-6266-7c6f-a174-313600000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.bfloat16.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d80c","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"real16","canonical_value_bytes":{"byte_order":"little_endian","exact":2,"maximum":2,"minimum":2,"representation":"IEEE754_binary16"},"codec_generation":1,"codec_id":"datatype.real16.ieee754.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d80f","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"8b000000-7265-716c-b136-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.real16.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d80e","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"real32","canonical_value_bytes":{"byte_order":"little_endian","exact":4,"maximum":4,"minimum":4,"representation":"IEEE754_binary32"},"codec_generation":1,"codec_id":"datatype.real32.ieee754.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d811","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"8c000000-7265-716c-b332-000000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.real32.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d810","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"real128","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"IEEE754_binary128"},"codec_generation":1,"codec_id":"datatype.real128.ieee754.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d813","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"8e000000-7265-716c-b132-380000000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.real128.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d812","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"ip_address","canonical_value_bytes":{"byte_order":"byte_sequence","exact":16,"maximum":16,"minimum":16,"representation":"IPv6_network_order_with_IPv4_mapped_prefix"},"codec_generation":1,"codec_id":"datatype.ip_address.network.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d815","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"d2000000-6970-7f61-a464-726573730000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.ip_address.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d814","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"network_prefix","canonical_value_bytes":{"byte_order":"byte_sequence","exact":18,"maximum":18,"minimum":18,"representation":"address16_prefix_length_u8_address_family_u8"},"codec_generation":1,"codec_id":"datatype.network_prefix.network.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d817","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"d3000000-071d-7477-af72-6b5f70726566","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.network_prefix.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d816","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"mac_address","canonical_value_bytes":{"byte_order":"byte_sequence","exact":8,"maximum":8,"minimum":8,"representation":"eight_network_order_octets_six_octet_values_zero_extended"},"codec_generation":1,"codec_id":"datatype.mac_address.network.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d819","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"d4000000-6d61-735f-a164-647265737300","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.mac_address.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d818","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"enum_value","canonical_value_bytes":{"byte_order":"byte_sequence","exact":16,"maximum":16,"minimum":16,"representation":"descriptor_bound_member_UUID_octets"},"codec_generation":1,"codec_id":"datatype.enum_value.binary16.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d81b","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"6c020000-656e-756d-9f76-616c75650000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.enum_value.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d81a","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"date","canonical_value_bytes":{"byte_order":"little_endian","exact":4,"maximum":4,"minimum":4,"representation":"signed_i32_days_since_Unix_epoch"},"canonicalization_policy_generation":1,"canonicalization_policy_uuid":"01a1008e-b7f1-72b9-ba08-95b604caebf3","codec_generation":1,"codec_id":"datatype.date.days.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d81d","codec_version":1,"descriptor_generation":1,"descriptor_policy_generation":1,"descriptor_policy_uuid":"01a1008e-b7f0-7913-9a16-000409f9ffb1","descriptor_uuid":"90010000-6461-7465-8000-000000000000","hash_policy_generation":1,"hash_policy_uuid":"01a1008e-b7f3-7a61-a159-5ddb1cbc1df6","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","operation_policy_generation":1,"operation_policy_uuid":"01a1008e-b7f6-7b7a-8ee0-ffbacbcd7dff","ordering_policy_generation":1,"ordering_policy_uuid":"01a1008e-b7f2-7feb-85a8-2d74fe2fde38","row_id":"datatype.date.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d81c","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"time","canonical_value_bytes":{"byte_order":"little_endian","exact":8,"maximum":8,"minimum":8,"representation":"unsigned_u64_nanoseconds_since_midnight"},"canonicalization_policy_generation":1,"canonicalization_policy_uuid":"01a1032b-9f51-7229-977b-45730f3dff35","codec_generation":1,"codec_id":"datatype.time.nanos.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d81f","codec_version":1,"descriptor_generation":1,"descriptor_policy_generation":1,"descriptor_policy_uuid":"01a1032b-9f51-7229-977b-45730f3dff34","descriptor_uuid":"91010000-7469-7d65-8000-000000000000","hash_policy_generation":1,"hash_policy_uuid":"01a1032b-9f51-7229-977b-45730f3dff37","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","operation_policy_generation":1,"operation_policy_uuid":"01a1032b-9f51-7229-977b-45730f3dff3a","ordering_policy_generation":1,"ordering_policy_uuid":"01a1032b-9f51-7229-977b-45730f3dff36","row_id":"datatype.time.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d81e","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"timestamp","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"i64_Unix_seconds_u32_nanoseconds_u32_reserved_zero"},"codec_generation":1,"codec_id":"datatype.timestamp.utc_tuple.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d821","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"92010000-7469-7d65-b374-616d70000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.timestamp.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d820","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"interval","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"i32_months_i32_days_i64_nanoseconds"},"codec_generation":1,"codec_id":"datatype.interval.tuple.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d823","codec_version":1,"descriptor_generation":1,"descriptor_uuid":"93010000-696e-7465-b276-616c00000000","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","row_id":"datatype.interval.v1","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d822","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"decimal_float","canonical_value_bytes":{"byte_order":"little_endian","exact":16,"maximum":16,"minimum":16,"representation":"IEEE754_decimal128_canonical_BID"},"codec_generation":1,"codec_id":"datatype.decimal128.bid.le.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d825","codec_version":1,"comparison_policy_generation":1,"comparison_policy_uuid":"019d0000-0000-7000-8000-00000000d828","comparison_profile":"decimal128_numeric_total_nan_last_v1","descriptor_generation":1,"descriptor_identity":"retained_exact_existing_manifest_identity_as_constant_not_runtime_name_derivation","descriptor_uuid":"a1000000-1065-7369-ad61-6c5f666c6f61","equality_and_hash":"equal_finite_cohorts_all_signed_quantum_zeros_and_all_NaNs_share_the_exact_same_21_byte_comparison_key","invalid_encoding_diagnostic_id":"DATATYPE.DESCRIPTOR.INVALID","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","numeric_context":"precision34_quantum_minus6176_through6111_exact_conversion_no_rounding_or_inexact_substitution","numeric_context_generation":1,"numeric_context_uuid":"019d0000-0000-7000-8000-00000000d826","physical_authority":"DPE-DECIMAL128-BID-EXACT-CODEC-V1","row_id":"datatype.decimal_float.bid.v1","special_value_policy_generation":1,"special_value_policy_uuid":"019d0000-0000-7000-8000-00000000d827","special_values":"canonical_infinities_quiet_and_signaling_NaNs_allowed_sign_class_payload_preserved_in_storage","type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d824","unique_index":"uses_comparison_equivalence_not_raw_BID_representation_SQL_NULL_remains_external_state","visibility":"authenticated_statement_descriptor_projection"},{"canonical_name":"bit_string","canonical_type_code":302,"canonical_value_bytes":{"byte_order":"u32_logical_bit_count_little_endian_then_byte_sequence","empty_present":"00000000","logical_bit_maximum":16777216,"logical_bit_minimum":0,"maximum":2097156,"minimum":4,"representation":"logical_count_then_MSB_first_packed_bits_unused_low_tail_zero","transport_width":0,"variable_width":true},"canonicalization_policy_generation":1,"canonicalization_policy_uuid":"01a0ff27-2716-7c83-9ae4-23bbc73e6a9d","codec_generation":1,"codec_id":"datatype.bit_string.msb0.packed.v1","codec_uuid":"019d0000-0000-7000-8000-00000000d82b","codec_version":1,"descriptor_generation":1,"descriptor_policy_generation":1,"descriptor_policy_uuid":"01a0ff27-2715-75d2-98fb-c853527d3811","descriptor_uuid":"019d0000-0000-7000-8000-00000000d829","hash_policy_generation":1,"hash_policy_uuid":"01a0ff27-2718-7e29-b4b3-7de1719709b8","invalid_encoding_diagnostic_id":"CTB.BIT.CANONICAL_ENCODING_INVALID","lifecycle":"receipt_catalog_snapshot_bound","null_encoding":"containing_slot_value_or_null_state","operation_policy_generation":1,"operation_policy_uuid":"01a0ff27-271b-74de-8bc6-d6a93484ac36","ordering_policy_generation":1,"ordering_policy_uuid":"01a0ff27-2717-7a54-bdbc-a3c1fee7c5e3","row_id":"datatype.bit_string.msb0.packed.v1","sql_null_value_payload_bytes":0,"type_generation":1,"type_uuid":"019d0000-0000-7000-8000-00000000d82a","visibility":"authenticated_statement_descriptor_projection"}])CORE_D708_JSON";
+
+const std::array<CoreD708RowFixture, 33> kCoreD708Rows{{
+    CoreD708RowFixture{"boolean", "01000000-626f-7f6c-a561-6e0000000000", 1, "01000000-626f-7f6c-a561-6e0000000000", 1, "01a1010b-2e50-73c3-bdc8-ca82fc1fae5c", "datatype.boolean.u8.v1", 1, 1, 1, true, 1, 1, 1, false, false, true, "single_byte", true, false, "exact_00_FALSE_or_01_TRUE_all_other_bytes_invalid", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"int32", "019d0000-0000-7000-8000-00000000d716", 1, "019d0000-0000-7000-8000-00000000d717", 1, "01a1010b-2e51-7c10-b90a-af9f08d9cd79", "datatype.int32.le.v1", 1, 1, 4, true, 4, 4, 4, false, false, true, "little_endian", true, true, "twos_complement", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"bigint", "019d0000-0000-7000-8000-00000000d711", 1, "019d0000-0000-7000-8000-00000000d712", 1, "01a1010b-2e52-79a4-8669-a9a7cb89bd21", "datatype.int64.le.v1", 1, 1, 8, false, 8, 8, 8, false, false, true, "little_endian", true, true, "twos_complement", "", false, false, false, false, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"decimal", "a0000000-6465-7369-ad61-6c0000000000", 1, "019d0000-0000-7000-8000-00000000d713", 1, "01a1010b-2e54-777f-8089-a807f43084c2", "datatype.decimal.base1e9.le.v1", 1, 1, 24, false, 24, 24, 24, false, false, true, "little_endian", true, true, "exact_decimal_header_and_five_base1e9_coefficient_groups", "", false, false, false, false, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"int128", "019d0000-0000-7000-8000-00000000d714", 1, "019d0000-0000-7000-8000-00000000d715", 1, "01a1010b-2e53-7fef-b6fa-1d9300cd10c8", "datatype.int128.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", true, true, "twos_complement", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"text", "019d0000-0000-7000-8000-00000000d718", 1, "019d0000-0000-7000-8000-00000000d719", 1, "019d0000-0000-7000-8000-00000000d71a", "datatype.text.utf8.v1", 1, 1, 0, true, 0, 16777216, 0, true, true, true, "byte_sequence", true, false, "exact_well_formed_UTF8_scalar_sequence_without_implicit_normalization", "UTF-8", true, true, true, true, true, true, "CTB.TEXT.INVALID_ENCODING", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"real64", "019d0000-0000-7000-8000-00000000d731", 1, "019d0000-0000-7000-8000-00000000d732", 1, "019d0000-0000-7000-8000-00000000d733", "datatype.real64.ieee754.le.v1", 1, 1, 8, true, 8, 8, 8, false, false, true, "little_endian", false, false, "IEEE754_binary64", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uuid", "019d0000-0000-7000-8000-00000000d734", 1, "019d0000-0000-7000-8000-00000000d735", 1, "019d0000-0000-7000-8000-00000000d736", "datatype.uuid.binary16.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "byte_sequence", false, false, "sixteen_UUID_value_octets_without_text_conversion", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"geometry", "019d0000-0000-7000-8000-00000000d737", 1, "019d0000-0000-7000-8000-00000000d738", 1, "019d0000-0000-7000-8000-00000000d739", "datatype.geometry.sbp1.v1", 1, 1, 0, true, 24, 24, 0, false, true, true, "byte_sequence", false, false, "SBP1_finite_2D_point_big_endian_coordinates", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uint64", "019d0000-0000-7000-8000-00000000d73a", 1, "019d0000-0000-7000-8000-00000000d73b", 1, "019d0000-0000-7000-8000-00000000d73c", "datatype.uint64.le.v1", 1, 1, 8, true, 8, 8, 8, false, false, true, "little_endian", true, false, "unsigned_64_bit_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"json_document", "019d0000-0000-7000-8000-00000000d73d", 1, "019d0000-0000-7000-8000-00000000d73e", 1, "019d0000-0000-7000-8000-00000000d73f", "datatype.json.utf8.v1", 1, 1, 0, true, 1, 16777216, 0, true, true, false, "", false, false, "well_formed_UTF8_JSON_document", "", false, false, false, true, true, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"list", "019d0000-0000-7000-8000-00000000d740", 1, "019d0000-0000-7000-8000-00000000d741", 1, "019d0000-0000-7000-8000-00000000d742", "datatype.list.text.framed.v1", 1, 1, 0, true, 12, 16777216, 0, true, true, false, "", false, false, "nullable_TEXT_list", "", false, false, false, true, true, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"binary", "2d010000-6269-7e61-b279-000000000000", 1, "019d0000-0000-7000-8000-00000000d743", 1, "019d0000-0000-7000-8000-00000000d744", "datatype.binary.octets.v1", 1, 1, 0, true, 0, 16777216, 0, true, true, true, "byte_sequence", false, false, "exact_octets_without_text_conversion", "", false, false, true, true, true, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "01a0fea5-8a12-7da5-9d9d-839bc81b09ca", 1, "01a0fea5-8a12-7466-9adb-e25464c65b6a", 1, "01a0fea5-8a12-7073-a5b7-32606cd091e6", 1, "01a0fea5-8a12-737b-a482-e696fe7141f8", 1, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"int8", "64000000-696e-7438-8000-000000000000", 1, "019d0000-0000-7000-8000-00000000d800", 1, "019d0000-0000-7000-8000-00000000d801", "datatype.int8.le.v1", 1, 1, 1, true, 1, 1, 1, false, false, true, "little_endian", false, false, "twos_complement_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"int16", "65000000-696e-7431-b600-000000000000", 1, "019d0000-0000-7000-8000-00000000d802", 1, "019d0000-0000-7000-8000-00000000d803", "datatype.int16.le.v1", 1, 1, 2, true, 2, 2, 2, false, false, true, "little_endian", false, false, "twos_complement_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uint8", "78000000-7569-7e74-b800-000000000000", 1, "019d0000-0000-7000-8000-00000000d804", 1, "019d0000-0000-7000-8000-00000000d805", "datatype.uint8.le.v1", 1, 1, 1, true, 1, 1, 1, false, false, true, "little_endian", false, false, "unsigned_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uint16", "79000000-7569-7e74-b136-000000000000", 1, "019d0000-0000-7000-8000-00000000d806", 1, "019d0000-0000-7000-8000-00000000d807", "datatype.uint16.le.v1", 1, 1, 2, true, 2, 2, 2, false, false, true, "little_endian", false, false, "unsigned_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uint32", "7a000000-7569-7e74-b332-000000000000", 1, "019d0000-0000-7000-8000-00000000d808", 1, "019d0000-0000-7000-8000-00000000d809", "datatype.uint32.le.v1", 1, 1, 4, true, 4, 4, 4, false, false, true, "little_endian", false, false, "unsigned_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"uint128", "7c000000-7569-7e74-b132-380000000000", 1, "019d0000-0000-7000-8000-00000000d80a", 1, "019d0000-0000-7000-8000-00000000d80b", "datatype.uint128.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", false, false, "unsigned_integer", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"bfloat16", "8a000000-6266-7c6f-a174-313600000000", 1, "019d0000-0000-7000-8000-00000000d80c", 1, "019d0000-0000-7000-8000-00000000d80d", "datatype.bfloat16.ieee754.le.v1", 1, 1, 2, true, 2, 2, 2, false, false, true, "little_endian", false, false, "bfloat16_bits", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"real16", "8b000000-7265-716c-b136-000000000000", 1, "019d0000-0000-7000-8000-00000000d80e", 1, "019d0000-0000-7000-8000-00000000d80f", "datatype.real16.ieee754.le.v1", 1, 1, 2, true, 2, 2, 2, false, false, true, "little_endian", false, false, "IEEE754_binary16", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"real32", "8c000000-7265-716c-b332-000000000000", 1, "019d0000-0000-7000-8000-00000000d810", 1, "019d0000-0000-7000-8000-00000000d811", "datatype.real32.ieee754.le.v1", 1, 1, 4, true, 4, 4, 4, false, false, true, "little_endian", false, false, "IEEE754_binary32", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"real128", "8e000000-7265-716c-b132-380000000000", 1, "019d0000-0000-7000-8000-00000000d812", 1, "019d0000-0000-7000-8000-00000000d813", "datatype.real128.ieee754.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", false, false, "IEEE754_binary128", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"ip_address", "d2000000-6970-7f61-a464-726573730000", 1, "019d0000-0000-7000-8000-00000000d814", 1, "019d0000-0000-7000-8000-00000000d815", "datatype.ip_address.network.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "byte_sequence", false, false, "IPv6_network_order_with_IPv4_mapped_prefix", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"network_prefix", "d3000000-071d-7477-af72-6b5f70726566", 1, "019d0000-0000-7000-8000-00000000d816", 1, "019d0000-0000-7000-8000-00000000d817", "datatype.network_prefix.network.v1", 1, 1, 18, true, 18, 18, 18, false, false, true, "byte_sequence", false, false, "address16_prefix_length_u8_address_family_u8", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"mac_address", "d4000000-6d61-735f-a164-647265737300", 1, "019d0000-0000-7000-8000-00000000d818", 1, "019d0000-0000-7000-8000-00000000d819", "datatype.mac_address.network.v1", 1, 1, 8, true, 8, 8, 8, false, false, true, "byte_sequence", false, false, "eight_network_order_octets_six_octet_values_zero_extended", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"enum_value", "6c020000-656e-756d-9f76-616c75650000", 1, "019d0000-0000-7000-8000-00000000d81a", 1, "019d0000-0000-7000-8000-00000000d81b", "datatype.enum_value.binary16.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "byte_sequence", false, false, "descriptor_bound_member_UUID_octets", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"date", "90010000-6461-7465-8000-000000000000", 1, "019d0000-0000-7000-8000-00000000d81c", 1, "019d0000-0000-7000-8000-00000000d81d", "datatype.date.days.le.v1", 1, 1, 4, true, 4, 4, 4, false, false, true, "little_endian", false, false, "signed_i32_days_since_Unix_epoch", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "01a1008e-b7f0-7913-9a16-000409f9ffb1", 1, "01a1008e-b7f1-72b9-ba08-95b604caebf3", 1, "01a1008e-b7f2-7feb-85a8-2d74fe2fde38", 1, "01a1008e-b7f3-7a61-a159-5ddb1cbc1df6", 1, "01a1008e-b7f6-7b7a-8ee0-ffbacbcd7dff", 1},
+    CoreD708RowFixture{"time", "91010000-7469-7d65-8000-000000000000", 1, "019d0000-0000-7000-8000-00000000d81e", 1, "019d0000-0000-7000-8000-00000000d81f", "datatype.time.nanos.le.v1", 1, 1, 8, true, 8, 8, 8, false, false, true, "little_endian", false, false, "unsigned_u64_nanoseconds_since_midnight", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "01a1032b-9f51-7229-977b-45730f3dff34", 1, "01a1032b-9f51-7229-977b-45730f3dff35", 1, "01a1032b-9f51-7229-977b-45730f3dff36", 1, "01a1032b-9f51-7229-977b-45730f3dff37", 1, "01a1032b-9f51-7229-977b-45730f3dff3a", 1},
+    CoreD708RowFixture{"timestamp", "92010000-7469-7d65-b374-616d70000000", 1, "019d0000-0000-7000-8000-00000000d820", 1, "019d0000-0000-7000-8000-00000000d821", "datatype.timestamp.utc_tuple.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", false, false, "i64_Unix_seconds_u32_nanoseconds_u32_reserved_zero", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"interval", "93010000-696e-7465-b276-616c00000000", 1, "019d0000-0000-7000-8000-00000000d822", 1, "019d0000-0000-7000-8000-00000000d823", "datatype.interval.tuple.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", false, false, "i32_months_i32_days_i64_nanoseconds", "", false, false, false, true, false, false, "", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"decimal_float", "a1000000-1065-7369-ad61-6c5f666c6f61", 1, "019d0000-0000-7000-8000-00000000d824", 1, "019d0000-0000-7000-8000-00000000d825", "datatype.decimal128.bid.le.v1", 1, 1, 16, true, 16, 16, 16, false, false, true, "little_endian", false, false, "IEEE754_decimal128_canonical_BID", "", false, false, false, true, false, true, "DATATYPE.DESCRIPTOR.INVALID", "019d0000-0000-7000-8000-00000000d826", 1, "019d0000-0000-7000-8000-00000000d827", 1, "019d0000-0000-7000-8000-00000000d828", 1, "decimal128_numeric_total_nan_last_v1", true, false, 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0},
+    CoreD708RowFixture{"bit_string", "019d0000-0000-7000-8000-00000000d829", 1, "019d0000-0000-7000-8000-00000000d82a", 1, "019d0000-0000-7000-8000-00000000d82b", "datatype.bit_string.msb0.packed.v1", 1, 1, 0, true, 4, 2097156, 0, true, true, true, "u32_logical_bit_count_little_endian_then_byte_sequence", false, false, "logical_count_then_MSB_first_packed_bits_unused_low_tail_zero", "", false, false, true, true, true, true, "CTB.BIT.CANONICAL_ENCODING_INVALID", "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "00000000-0000-0000-0000-000000000000", 0, "", false, true, 302, "01a0ff27-2715-75d2-98fb-c853527d3811", 1, "01a0ff27-2716-7c83-9ae4-23bbc73e6a9d", 1, "01a0ff27-2717-7a54-bdbc-a3c1fee7c5e3", 1, "01a0ff27-2718-7e29-b4b3-7de1719709b8", 1, "01a0ff27-271b-74de-8bc6-d6a93484ac36", 1},
+}};
+
+
+scratchbird::core::platform::Uuid RuntimeFixtureUuid(std::string_view text) {
+  Check(text.size() == 36, "Core fixture UUID has an invalid extent");
+  scratchbird::core::platform::Uuid value{};
+  const auto hex = [](char c) -> unsigned {
+    if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return static_cast<unsigned>(c - 'A' + 10);
+    Fail("Core fixture UUID has a non-hexadecimal digit");
+  };
+  unsigned nibble = 0;
+  for (std::size_t index = 0; index < text.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) {
+      Check(text[index] == '-', "Core fixture UUID has a bad separator");
+      continue;
+    }
+    const auto digit = hex(text[index]);
+    value.bytes[nibble / 2] |= static_cast<Byte>(
+        digit << ((nibble % 2) == 0 ? 4 : 0));
+    ++nibble;
+  }
+  Check(nibble == 32, "Core fixture UUID has a bad digit count");
+  return value;
+}
 
 bool SameLegacyIdentity(const dt::DatatypeTypeCodecIdentityRowV1& left,
                         const dt::DatatypeTypeCodecIdentityRowV1& right) {
@@ -88,8 +227,8 @@ bool SameLegacyIdentity(const dt::DatatypeTypeCodecIdentityRowV1& left,
          left.allow_special_values == right.allow_special_values;
 }
 
-bool SamePolicy(const dt::DatatypePolicyIdentityV1& left,
-                const dt::DatatypePolicyIdentityV1& right) {
+bool SamePolicy(const dt::DatatypePolicyIdentityV3& left,
+                const dt::DatatypePolicyIdentityV3& right) {
   return left.uuid == right.uuid && left.generation == right.generation;
 }
 
@@ -183,12 +322,12 @@ void AppendLegacy(std::vector<Byte>* out,
 }
 
 void AppendPolicy(std::vector<Byte>* out,
-                  const dt::DatatypePolicyIdentityV1& policy) {
+                  const dt::DatatypePolicyIdentityV3& policy) {
   AppendUuid(out, policy.uuid);
   AppendU64(out, policy.generation);
 }
 
-std::string RegistryDigest(
+std::string InternalCompiledMaterialDigest(
     std::span<const dt::DatatypeTypeCodecIdentityRowV3> rows) {
   std::vector<Byte> material;
   const std::string domain =
@@ -205,51 +344,166 @@ std::string RegistryDigest(
   }
   const auto digest =
       scratchbird::core::hash::ComputeSha256Digest(material);
-  Check(digest.ok(), "V3 authority oracle SHA-256 failed");
+  Check(digest.ok(), "internal compiled-material SHA-256 failed");
   return scratchbird::core::hash::HexLower(digest.digest);
+}
+
+void TestCoreD708CanonicalJsonAndCompiledRows() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const Byte*>(kCoreD708RowsCanonicalJson.data()),
+      kCoreD708RowsCanonicalJson.size());
+  Check(kCoreD708RowsCanonicalJson.size() == 26946,
+        "Core d708 canonical JSON byte count changed");
+  Check(digest.ok() && scratchbird::core::hash::HexLower(digest.digest) ==
+          dt::kDatatypeCohortV8IdentityDigestSha256,
+        "Core d708 canonical JSON digest does not match the published seal");
+
+  std::array<const dt::DatatypeTypeCodecIdentityRowV3*, 33> actual{};
+  std::size_t count = 0;
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    if (row.legacy_fields.catalog_snapshot_uuid == dt::kDatatypeCohortV8 &&
+        row.legacy_fields.catalog_generation == 8 &&
+        row.legacy_fields.registry_generation == 8) {
+      Check(count < actual.size(), "compiled d708 has excess rows");
+      actual[count++] = &row;
+    }
+  }
+  Check(count == actual.size(), "compiled d708 row count differs from Core");
+
+  const auto policy_matches = [&](const dt::DatatypePolicyIdentityV3& value,
+                                  const CorePolicyFixture& expected) {
+    return value.uuid == RuntimeFixtureUuid(expected.uuid) &&
+           value.generation == expected.generation;
+  };
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    const auto& row = *actual[index];
+    const auto& legacy = row.legacy_fields;
+    const auto& expected = kCoreD708Rows[index];
+    Check(legacy.catalog_snapshot_uuid == dt::kDatatypeCohortV8 &&
+              legacy.catalog_generation == 8 &&
+              legacy.registry_generation == 8,
+          "compiled d708 receipt tuple differs from Core");
+    Check(legacy.canonical_name == expected.canonical_name &&
+              legacy.descriptor_uuid == RuntimeFixtureUuid(expected.descriptor_uuid) &&
+              legacy.descriptor_generation == expected.descriptor_generation &&
+              legacy.type_uuid == RuntimeFixtureUuid(expected.type_uuid) &&
+              legacy.type_generation == expected.type_generation &&
+              legacy.codec_uuid == RuntimeFixtureUuid(expected.codec_uuid) &&
+              legacy.codec_id == expected.codec_id &&
+              legacy.codec_version == expected.codec_version &&
+              legacy.codec_generation == expected.codec_generation,
+          "compiled d708 descriptor/type/codec row or declared order differs from Core");
+    Check(legacy.canonical_value_bytes == expected.canonical_value_bytes &&
+              legacy.null_supported == expected.null_supported &&
+              legacy.canonical_value_minimum_bytes == expected.minimum_bytes &&
+              legacy.canonical_value_maximum_bytes == expected.maximum_bytes &&
+              legacy.canonical_value_exact_bytes == expected.exact_or_transport_bytes &&
+              legacy.canonical_value_variable_width == expected.variable_width &&
+              legacy.canonical_value_exact_zero_is_width_marker ==
+                  expected.exact_zero_is_width_marker &&
+              (!expected.has_byte_order ||
+               legacy.canonical_byte_order == expected.byte_order) &&
+              (!expected.has_signed || legacy.signed_code == expected.signed_value) &&
+              legacy.canonical_representation == expected.representation,
+          "compiled d708 canonical value semantics differ from Core");
+    Check(legacy.canonical_charset == expected.charset &&
+              legacy.shortest_form_utf8_required ==
+                  expected.shortest_form_utf8_required &&
+              legacy.descriptor_bound_collation_required ==
+                  expected.descriptor_bound_collation_required &&
+              legacy.empty_value_distinct_from_sql_null ==
+                  expected.empty_value_distinct_from_sql_null &&
+              legacy.sql_null_requires_zero_payload ==
+                  expected.sql_null_requires_zero_payload &&
+              legacy.variable_width_storage_without_truncation ==
+                  expected.variable_width_storage_without_truncation &&
+              (!expected.has_invalid_encoding_diagnostic ||
+               legacy.invalid_encoding_diagnostic_id ==
+                   expected.invalid_encoding_diagnostic_id),
+          "compiled d708 text/null/storage semantics differ from Core");
+    Check(legacy.numeric_context_uuid ==
+                  RuntimeFixtureUuid(expected.numeric_context_uuid) &&
+              legacy.numeric_context_generation == expected.numeric_context_generation &&
+              legacy.special_value_policy_uuid ==
+                  RuntimeFixtureUuid(expected.special_value_policy_uuid) &&
+              legacy.special_value_policy_generation ==
+                  expected.special_value_policy_generation &&
+              legacy.comparison_policy_uuid ==
+                  RuntimeFixtureUuid(expected.comparison_policy_uuid) &&
+              legacy.comparison_policy_generation ==
+                  expected.comparison_policy_generation &&
+              legacy.comparison_profile == expected.comparison_profile &&
+              legacy.allow_special_values == expected.allow_special_values &&
+              (!expected.has_canonical_type_code ||
+               legacy.canonical_binary_type_code == expected.canonical_type_code),
+          "compiled d708 numeric/comparison semantics differ from Core");
+    Check(policy_matches(row.descriptor_policy, expected.descriptor_policy) &&
+              policy_matches(row.canonicalization_policy,
+                             expected.canonicalization_policy) &&
+              policy_matches(row.ordering_policy, expected.ordering_policy) &&
+              policy_matches(row.hash_policy, expected.hash_policy) &&
+              policy_matches(row.operation_policy, expected.operation_policy),
+          "compiled d708 policy identity pair differs from Core");
+  }
 }
 
 void TestPopulationAndAuthoritativeRows() {
   static_assert(!HasDescriptorPolicyMember<dt::DatatypeTypeCodecIdentityRowV1>);
   static_assert(HasDescriptorPolicyMember<dt::DatatypeTypeCodecIdentityRowV3>);
+  static_assert(!std::is_same_v<dt::DatatypePolicyIdentityV1,
+                                dt::DatatypePolicyIdentityV3>);
 
   const auto v3 = dt::CurrentDatatypeTypeCodecIdentityRowsV3();
-  Check(v3.size() == 127, "V3 registry does not contain 127 rows");
+  Check(v3.size() == 193, "V3 registry does not contain 193 rows");
 
-  std::array<std::size_t, 6> counts{};
+  std::array<std::size_t, 8> counts{};
   for (const auto& row : v3) {
     const auto generation = row.legacy_fields.catalog_generation;
-    Check(generation >= 1 && generation <= 6 &&
+    Check(generation >= 1 && generation <= 8 &&
               row.legacy_fields.registry_generation == generation,
           "V3 row has a mixed or invalid cohort generation");
     ++counts[generation - 1];
   }
-  Check(counts == std::array<std::size_t, 6>{6, 12, 13, 31, 32, 33},
-        "V3 cohort row counts differ from Core V6");
+  Check(counts == std::array<std::size_t, 8>{6, 12, 13, 31, 32, 33, 33, 33},
+        "V3 cohort row counts differ from admitted Core d708");
 
-  const auto registry_digest = RegistryDigest(v3);
+  Check(dt::kDatatypeCohortV7IdentityDigestSha256 ==
+            "f10857ec395d4ebca02ec21c785251a668d98f3c0e69eeba11324f3807832dcc",
+        "d707 Core cohort digest binding changed");
+  Check(dt::kDatatypeCohortV8IdentityDigestSha256 ==
+            "7ff7530978f049864ad10ba5a7a1d4ba78246369ad30be7e7aeb5d7f4261bae5",
+        "d708 Core cohort digest binding changed");
+
+  const auto registry_digest = InternalCompiledMaterialDigest(v3);
   if (registry_digest !=
-      "3d34b8e5ae035272b60f65ea4839a175060e137216f93d04f38c5b6bc1d2e7e1") {
-    std::cerr << "observed_v3_authority_digest=" << registry_digest << '\n';
-    Fail("materialized V3 authority rows changed");
+      "da32d9e8c249b67ae51dc16271206ccc600613051d79e6c5edf8670cab77acc9") {
+    std::cerr << "observed_internal_compiled_material_digest=" << registry_digest << '\n';
+    Fail("internal compiled V3 material changed");
   }
 
-  constexpr std::array<std::string_view, 6> expected_cohort_digests{{
+  constexpr std::array<std::string_view, 8> expected_cohort_digests{{
       "c3f32a278b09243fe3556ba9520c6ad95fb0995035813f92244c775b1bc4e3e2",
       "72399142c162281c1f81e1ec64175f546b26baa45f0fd241abab5823d913e166",
       "3ca980ce8e214c713d53bffcfb34e73bc64094065c8e2f93ed264e530cfeb299",
       "e2487d9e772f3e0ddb1a9873dffd70f13f55b930df111efc07e7889eb7581968",
       "d2422a08f9c7f4eb5c5c7cc984c6df54128ce5375a7fde25000c0a9842c436ad",
       "f5b95f6de3b668d5fe325f0016d224d2faa591076327e795e63b0858e35aa2b0",
+      "f8f70ee80dbc9e877bd497d7f07d117d99abd994126403b7bfd0f3c684357e3b",
+      "2ba35727670308890132276ed9a64fffffe72046690e4a7adf962d2fe02132c2",
   }};
-  for (std::uint64_t generation = 1; generation <= 6; ++generation) {
+  for (std::uint64_t generation = 1; generation <= 8; ++generation) {
     std::vector<dt::DatatypeTypeCodecIdentityRowV3> cohort;
     for (const auto& row : v3) {
       if (row.legacy_fields.catalog_generation == generation)
         cohort.push_back(row);
     }
-    Check(RegistryDigest(cohort) == expected_cohort_digests[generation - 1],
-          "materialized V3 predecessor cohort digest changed");
+    const auto cohort_digest = InternalCompiledMaterialDigest(cohort);
+    if (cohort_digest != expected_cohort_digests[generation - 1]) {
+      std::cerr << "generation=" << generation
+                << " observed_internal_cohort_material_digest=" << cohort_digest << '\n';
+      Fail("internal compiled cohort material changed");
+    }
   }
 
   using scratchbird::tests::FixtureUuidLiteral;
@@ -257,8 +511,14 @@ void TestPopulationAndAuthoritativeRows() {
       FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
   const auto bit_descriptor =
       FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+  const auto time_descriptor =
+      FixtureUuidLiteral("91010000-7469-7d65-8000-000000000000");
   std::size_t binary_policy_rows = 0;
   std::size_t bit_policy_rows = 0;
+  std::size_t date_policy_rows = 0;
+  std::size_t time_policy_rows = 0;
   for (const auto& row : v3) {
     const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
         row.legacy_fields.catalog_snapshot_uuid,
@@ -290,6 +550,34 @@ void TestPopulationAndAuthoritativeRows() {
                 !row.operation_policy.uuid.is_nil(),
             "base.bit_string V3 policy authority is incomplete");
       ++bit_policy_rows;
+    } else if (row.legacy_fields.descriptor_uuid == date_descriptor &&
+               row.legacy_fields.catalog_generation >= 7) {
+      Check(!row.descriptor_policy.uuid.is_nil() &&
+                !row.canonicalization_policy.uuid.is_nil() &&
+                !row.ordering_policy.uuid.is_nil() &&
+                !row.hash_policy.uuid.is_nil() &&
+                !row.operation_policy.uuid.is_nil() &&
+                row.descriptor_policy.generation == 1 &&
+                row.canonicalization_policy.generation == 1 &&
+                row.ordering_policy.generation == 1 &&
+                row.hash_policy.generation == 1 &&
+                row.operation_policy.generation == 1,
+            "base.date current policy authority is incomplete");
+      ++date_policy_rows;
+    } else if (row.legacy_fields.descriptor_uuid == time_descriptor &&
+               row.legacy_fields.catalog_generation == 8) {
+      Check(!row.descriptor_policy.uuid.is_nil() &&
+                !row.canonicalization_policy.uuid.is_nil() &&
+                !row.ordering_policy.uuid.is_nil() &&
+                !row.hash_policy.uuid.is_nil() &&
+                !row.operation_policy.uuid.is_nil() &&
+                row.descriptor_policy.generation == 1 &&
+                row.canonicalization_policy.generation == 1 &&
+                row.ordering_policy.generation == 1 &&
+                row.hash_policy.generation == 1 &&
+                row.operation_policy.generation == 1,
+            "base.time d708 policy authority is incomplete");
+      ++time_policy_rows;
     } else {
       Check(row.descriptor_policy.uuid.is_nil() &&
                 row.descriptor_policy.generation == 0 &&
@@ -304,11 +592,12 @@ void TestPopulationAndAuthoritativeRows() {
             "V3 row contains an unregistered policy identity");
     }
   }
-  Check(binary_policy_rows == 4 && bit_policy_rows == 1,
+  Check(binary_policy_rows == 6 && bit_policy_rows == 3 &&
+            date_policy_rows == 2 && time_policy_rows == 1,
         "V3 policy-bearing row population changed");
 
-  const std::array<std::size_t, 6> expected_inherited{0, 6, 12, 13, 31, 32};
-  std::array<std::size_t, 6> inherited_counts{};
+  const std::array<std::size_t, 8> expected_inherited{0, 6, 12, 13, 31, 32, 27, 25};
+  std::array<std::size_t, 8> inherited_counts{};
   for (const auto& current : v3) {
     const auto generation = current.legacy_fields.catalog_generation;
     if (generation == 1) continue;
@@ -325,6 +614,25 @@ void TestPopulationAndAuthoritativeRows() {
           current.legacy_fields.catalog_snapshot_uuid;
       expected_legacy.catalog_generation = generation;
       expected_legacy.registry_generation = generation;
+      const bool d707_codec_closure = generation == 7 &&
+          (current.legacy_fields.canonical_name == "boolean" ||
+           current.legacy_fields.canonical_name == "int32" ||
+           current.legacy_fields.canonical_name == "bigint" ||
+           current.legacy_fields.canonical_name == "decimal" ||
+           current.legacy_fields.canonical_name == "int128");
+      const bool d707_date_closure = generation == 7 &&
+          current.legacy_fields.canonical_name == "date";
+      const bool d708_current_materialization = generation == 8 &&
+          (current.legacy_fields.canonical_name == "boolean" ||
+           current.legacy_fields.canonical_name == "int32" ||
+           current.legacy_fields.canonical_name == "bigint" ||
+           current.legacy_fields.canonical_name == "decimal" ||
+           current.legacy_fields.canonical_name == "int128" ||
+           current.legacy_fields.canonical_name == "geometry" ||
+           current.legacy_fields.canonical_name == "list" ||
+           current.legacy_fields.canonical_name == "time");
+      if (d707_codec_closure || d707_date_closure ||
+          d708_current_materialization) continue;
       Check(SameLegacyIdentity(expected_legacy, current.legacy_fields) &&
                 SamePolicy(predecessor.descriptor_policy,
                            current.descriptor_policy) &&
@@ -341,6 +649,81 @@ void TestPopulationAndAuthoritativeRows() {
   }
   Check(inherited_counts == expected_inherited,
         "V3 successor inheritance counts changed");
+
+  const std::array<std::string_view, 5> codec_closure_names{
+      "boolean", "int32", "bigint", "decimal", "int128"};
+  std::size_t codec_closures = 0;
+  for (const auto& row : v3) {
+    if (row.legacy_fields.catalog_generation != 7) continue;
+    Check(!row.legacy_fields.codec_uuid.is_nil() &&
+              row.legacy_fields.codec_uuid != row.legacy_fields.descriptor_uuid &&
+              row.legacy_fields.codec_uuid != row.legacy_fields.type_uuid,
+          "d707 executable row lacks a distinct codec UUID");
+    for (const auto name : codec_closure_names) {
+      if (row.legacy_fields.canonical_name == name) ++codec_closures;
+    }
+  }
+  Check(codec_closures == codec_closure_names.size(),
+        "d707 codec-identity closure population changed");
+
+  std::vector<const dt::DatatypeTypeCodecIdentityRowV3*> d706;
+  std::vector<const dt::DatatypeTypeCodecIdentityRowV3*> d707;
+  std::vector<const dt::DatatypeTypeCodecIdentityRowV3*> d708;
+  for (const auto& row : v3) {
+    if (row.legacy_fields.catalog_generation == 6) d706.push_back(&row);
+    if (row.legacy_fields.catalog_generation == 7) d707.push_back(&row);
+    if (row.legacy_fields.catalog_generation == 8) d708.push_back(&row);
+  }
+  Check(d706.size() == 33 && d707.size() == 33 && d708.size() == 33,
+        "successor cohorts are incomplete");
+  for (std::size_t i = 0; i < d707.size(); ++i) {
+    Check(d706[i]->legacy_fields.descriptor_uuid ==
+              d707[i]->legacy_fields.descriptor_uuid,
+          "d707 row order differs from its declared predecessor order");
+    for (std::size_t j = i + 1; j < d707.size(); ++j) {
+      Check(d707[i]->legacy_fields.descriptor_uuid !=
+                d707[j]->legacy_fields.descriptor_uuid &&
+                d707[i]->legacy_fields.type_uuid !=
+                    d707[j]->legacy_fields.type_uuid &&
+                d707[i]->legacy_fields.codec_uuid !=
+                    d707[j]->legacy_fields.codec_uuid,
+            "d707 same-role UUID is not globally unique");
+    }
+  }
+  std::size_t cross_role_aliases = 0;
+  for (const auto* left : d707) {
+    for (const auto* right : d707) {
+      if (left->legacy_fields.descriptor_uuid ==
+          right->legacy_fields.type_uuid) {
+        Check(left->legacy_fields.canonical_name == "boolean" &&
+                  right->legacy_fields.canonical_name == "boolean",
+              "unapproved d707 descriptor/type cross-role alias");
+        ++cross_role_aliases;
+      }
+      Check(left->legacy_fields.codec_uuid !=
+                    right->legacy_fields.descriptor_uuid &&
+                left->legacy_fields.codec_uuid !=
+                    right->legacy_fields.type_uuid,
+            "d707 codec UUID aliases another authority role");
+    }
+  }
+  Check(cross_role_aliases == 1,
+        "boolean is not the sole d707 descriptor/type alias");
+
+  for (std::size_t i = 0; i < d708.size(); ++i) {
+    Check(d708[i]->legacy_fields.descriptor_uuid ==
+              RuntimeFixtureUuid(kCoreD708Rows[i].descriptor_uuid),
+          "d708 row order differs from the declared Core order");
+    for (std::size_t j = i + 1; j < d708.size(); ++j) {
+      Check(d708[i]->legacy_fields.descriptor_uuid !=
+                d708[j]->legacy_fields.descriptor_uuid &&
+                d708[i]->legacy_fields.type_uuid !=
+                    d708[j]->legacy_fields.type_uuid &&
+                d708[i]->legacy_fields.codec_uuid !=
+                    d708[j]->legacy_fields.codec_uuid,
+            "d708 same-role UUID is not globally unique");
+    }
+  }
 }
 
 void TestExactBitStringIdentity() {
@@ -349,9 +732,9 @@ void TestExactBitStringIdentity() {
   const auto type = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82a");
   const auto codec = FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d82b");
   const auto lookup = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
+      dt::kDatatypeCohortV8, 8, 8, descriptor, 1);
   Check(lookup.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(lookup.row),
-        "exact V6 bit-string row did not resolve");
+        "exact d708 bit-string row did not resolve");
   const auto& row = lookup.row;
   const auto& legacy = row.legacy_fields;
   Check(legacy.type_uuid == type && legacy.codec_uuid == codec &&
@@ -368,7 +751,7 @@ void TestExactBitStringIdentity() {
                 "logical_count_then_MSB_first_packed_bits_unused_low_tail_zero" &&
             legacy.invalid_encoding_diagnostic_id ==
                 "CTB.BIT.CANONICAL_ENCODING_INVALID",
-        "V6 bit-string identity/bounds/representation drifted");
+        "d708 bit-string identity/bounds/representation drifted");
   Check(row.descriptor_policy.uuid == FixtureUuidLiteral("01a0ff27-2715-75d2-98fb-c853527d3811") &&
             row.canonicalization_policy.uuid == FixtureUuidLiteral("01a0ff27-2716-7c83-9ae4-23bbc73e6a9d") &&
             row.ordering_policy.uuid == FixtureUuidLiteral("01a0ff27-2717-7a54-bdbc-a3c1fee7c5e3") &&
@@ -379,22 +762,22 @@ void TestExactBitStringIdentity() {
             row.ordering_policy.generation == 1 &&
             row.hash_policy.generation == 1 &&
             row.operation_policy.generation == 1,
-        "V6 bit-string policy identity drifted");
+        "d708 bit-string policy identity drifted");
 
   for (unsigned generation = 1; generation <= 5; ++generation) {
-    auto snapshot = dt::kDatatypeCohortV6;
+    auto snapshot = dt::kDatatypeCohortV8;
     snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
     Check(!dt::LookupDatatypeTypeCodecIdentityV3(
                snapshot, generation, generation, descriptor, 1).ok,
           "bit-string identity leaked into a predecessor cohort");
   }
-  Check(!dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 5, 6,
+  Check(!dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV8, 7, 8,
                                                descriptor, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 5,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV8, 8, 7,
                                                    descriptor, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 6,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV8, 8, 8,
                                                    type, 1).ok &&
-            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV6, 6, 6,
+            !dt::LookupDatatypeTypeCodecIdentityV3(dt::kDatatypeCohortV8, 8, 8,
                                                    codec, 1).ok,
         "V3 lookup inferred an identity from a mismatched tuple");
 
@@ -429,8 +812,14 @@ void TestExactBitStringIdentity() {
                   "altered descriptor generation admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.type_generation; },
                   "altered type generation admitted");
-  reject_mutation([](auto& value) { value.legacy_fields.codec_id += ".other"; },
-                  "altered codec id admitted");
+  auto renamed_codec = row;
+  renamed_codec.legacy_fields.codec_id = "packed_bit_sequence_codec";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(renamed_codec),
+        "renamed bit-string codec label changed exact identity");
+  auto translated_codec = row;
+  translated_codec.legacy_fields.codec_id = "codec_cadena_de_bits";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(translated_codec),
+        "translated bit-string codec label changed exact identity");
   reject_mutation([](auto& value) { ++value.legacy_fields.codec_version; },
                   "altered codec version admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.codec_generation; },
@@ -439,8 +828,14 @@ void TestExactBitStringIdentity() {
                   "altered canonical value width admitted");
   reject_mutation([](auto& value) { value.legacy_fields.null_supported = false; },
                   "altered NULL support admitted");
-  reject_mutation([](auto& value) { value.legacy_fields.canonical_name += ".other"; },
-                  "altered canonical name admitted");
+  auto renamed = row;
+  renamed.legacy_fields.canonical_name = "bit_sequence";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(renamed),
+        "renamed bit-string presentation label changed exact identity");
+  auto translated = row;
+  translated.legacy_fields.canonical_name = "cadena_de_bits";
+  Check(dt::IsExactCanonicalBitStringTypeCodecIdentityV3(translated),
+        "translated bit-string presentation label changed exact identity");
   reject_mutation([](auto& value) { ++value.legacy_fields.datatype_identity_code; },
                   "altered datatype identity code admitted");
   reject_mutation([](auto& value) { ++value.legacy_fields.null_encoding_code; },
@@ -530,15 +925,360 @@ void TestExactBitStringIdentity() {
   }
 
   const auto projected = dt::ProjectDatatypeTypeCodecIdentityV3ToV1(row);
-  Check(SameLegacyIdentity(projected, legacy),
+  Check(projected.ok && projected.diagnostic_id.empty() &&
+            SameLegacyIdentity(projected.row, legacy),
         "one-way V3-to-V1 projection changed legacy fields");
+}
+
+void TestExactCurrentBinaryDateAndCodecClosures() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto binary_descriptor =
+      FixtureUuidLiteral("2d010000-6269-7e61-b279-000000000000");
+  const auto bit_descriptor =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d829");
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+  const auto time_descriptor =
+      FixtureUuidLiteral("91010000-7469-7d65-8000-000000000000");
+
+  const auto binary = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, binary_descriptor, 1);
+  const auto bit = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, bit_descriptor, 1);
+  const auto date = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, date_descriptor, 1);
+  const auto time = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, time_descriptor, 1);
+  Check(binary.ok && dt::IsExactCanonicalBinaryTypeCodecIdentityV3(binary.row),
+        "exact current binary identity is absent");
+  Check(bit.ok && dt::IsExactCanonicalBitStringTypeCodecIdentityV3(bit.row),
+        "exact current bit-string identity is absent");
+  Check(date.ok && dt::IsExactCanonicalDateTypeCodecIdentityV3(date.row),
+        "exact current date identity is absent");
+  Check(time.ok && dt::IsExactCanonicalTimeTypeCodecIdentityV3(time.row),
+        "exact current time identity is absent");
+
+  auto renamed_binary = binary.row;
+  renamed_binary.legacy_fields.canonical_name = "octet_sequence";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(renamed_binary),
+        "renamed binary presentation label changed exact identity");
+  auto translated_binary = binary.row;
+  translated_binary.legacy_fields.canonical_name = "secuencia_binaria";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(translated_binary),
+        "translated binary presentation label changed exact identity");
+  auto renamed_binary_codec = binary.row;
+  renamed_binary_codec.legacy_fields.codec_id = "octet_sequence_codec";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(renamed_binary_codec),
+        "renamed binary codec label changed exact identity");
+  auto translated_binary_codec = binary.row;
+  translated_binary_codec.legacy_fields.codec_id = "codec_secuencia_binaria";
+  Check(dt::IsExactCanonicalBinaryTypeCodecIdentityV3(
+            translated_binary_codec),
+        "translated binary codec label changed exact identity");
+
+  auto renamed_date = date.row;
+  renamed_date.legacy_fields.canonical_name = "calendar_date";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(renamed_date),
+        "renamed date presentation label changed exact identity");
+  auto translated_date = date.row;
+  translated_date.legacy_fields.canonical_name = "fecha";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(translated_date),
+        "translated date presentation label changed exact identity");
+  auto renamed_date_codec = date.row;
+  renamed_date_codec.legacy_fields.codec_id = "epoch_day_codec";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(renamed_date_codec),
+        "renamed date codec label changed exact identity");
+  auto translated_date_codec = date.row;
+  translated_date_codec.legacy_fields.codec_id = "codec_dias_desde_epoca";
+  Check(dt::IsExactCanonicalDateTypeCodecIdentityV3(translated_date_codec),
+        "translated date codec label changed exact identity");
+
+  Check(date.row.legacy_fields.type_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81c") &&
+            date.row.legacy_fields.codec_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81d") &&
+            date.row.legacy_fields.codec_id == "datatype.date.days.le.v1" &&
+            date.row.legacy_fields.codec_version == 1 &&
+            date.row.legacy_fields.codec_generation == 1 &&
+            date.row.legacy_fields.canonical_value_minimum_bytes == 4 &&
+            date.row.legacy_fields.canonical_value_maximum_bytes == 4 &&
+            date.row.legacy_fields.canonical_value_exact_bytes == 4 &&
+            date.row.legacy_fields.canonical_binary_type_code == 400 &&
+            date.row.legacy_fields.canonical_byte_order == "little_endian" &&
+            date.row.legacy_fields.canonical_representation ==
+                "signed_i32_days_since_Unix_epoch",
+        "current date descriptor/type/codec material drifted");
+  Check(date.row.descriptor_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f0-7913-9a16-000409f9ffb1") &&
+            date.row.canonicalization_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f1-72b9-ba08-95b604caebf3") &&
+            date.row.ordering_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f2-7feb-85a8-2d74fe2fde38") &&
+            date.row.hash_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f3-7a61-a159-5ddb1cbc1df6") &&
+            date.row.operation_policy.uuid ==
+            FixtureUuidLiteral("01a1008e-b7f6-7b7a-8ee0-ffbacbcd7dff"),
+        "current date policy tuple drifted");
+
+  Check(time.row.legacy_fields.type_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81e") &&
+            time.row.legacy_fields.codec_uuid ==
+            FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d81f") &&
+            time.row.legacy_fields.canonical_value_minimum_bytes == 8 &&
+            time.row.legacy_fields.canonical_value_maximum_bytes == 8 &&
+            time.row.legacy_fields.canonical_value_exact_bytes == 8 &&
+            time.row.legacy_fields.canonical_binary_type_code == 401 &&
+            time.row.legacy_fields.canonical_byte_order == "little_endian" &&
+            time.row.legacy_fields.canonical_representation ==
+                "unsigned_u64_nanoseconds_since_midnight",
+        "current time descriptor/type/codec material drifted");
+  Check(time.row.descriptor_policy.uuid ==
+            FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff34") &&
+            time.row.canonicalization_policy.uuid ==
+            FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff35") &&
+            time.row.ordering_policy.uuid ==
+            FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff36") &&
+            time.row.hash_policy.uuid ==
+            FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff37") &&
+            time.row.operation_policy.uuid ==
+            FixtureUuidLiteral("01a1032b-9f51-7229-977b-45730f3dff3a"),
+        "current time policy tuple drifted");
+  auto renamed_time = time.row;
+  renamed_time.legacy_fields.canonical_name = "heure";
+  renamed_time.legacy_fields.codec_id = "codec_nanos_depuis_minuit";
+  Check(dt::IsExactCanonicalTimeTypeCodecIdentityV3(renamed_time),
+        "translated time presentation labels changed exact identity");
+  const auto reject_time_mutation = [&](auto mutate,
+                                        std::string_view message) {
+    auto changed = time.row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalTimeTypeCodecIdentityV3(changed), message);
+  };
+  reject_time_mutation([](auto& value) {
+      value.legacy_fields.catalog_snapshot_uuid.bytes[15] ^= 1;
+    }, "mutated time receipt UUID was admitted");
+  reject_time_mutation([](auto& value) {
+      --value.legacy_fields.registry_generation;
+    }, "mutated time registry generation was admitted");
+  reject_time_mutation([](auto& value) {
+      value.legacy_fields.canonical_value_exact_bytes = 4;
+    }, "mutated time extent was admitted");
+  reject_time_mutation([](auto& value) {
+      value.hash_policy.uuid.bytes[15] ^= 1;
+    }, "mutated time hash policy was admitted");
+
+  const auto reject_date_mutation = [&](auto mutate,
+                                        std::string_view message) {
+    auto changed = date.row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed), message);
+  };
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.catalog_snapshot_uuid.bytes[15] ^= 1;
+    }, "mutated date receipt UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.catalog_generation;
+    }, "mutated date catalog generation was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.registry_generation;
+    }, "mutated date registry generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.descriptor_uuid.bytes[0] ^= 1;
+    }, "mutated date descriptor UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.descriptor_generation;
+    }, "mutated date descriptor generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.type_uuid.bytes[0] ^= 1;
+    }, "mutated date type UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.type_generation;
+    }, "mutated date type generation was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.codec_uuid.bytes[0] ^= 1;
+    }, "mutated date codec UUID was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.codec_version;
+    }, "mutated date codec version was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.codec_generation;
+    }, "mutated date codec generation was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_minimum_bytes;
+    }, "mutated date minimum extent was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_maximum_bytes;
+    }, "mutated date maximum extent was admitted");
+  reject_date_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_exact_bytes;
+    }, "mutated date exact extent was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.canonical_byte_order += ".other";
+    }, "mutated date byte order was admitted");
+  reject_date_mutation([](auto& value) {
+      value.legacy_fields.canonical_representation += ".other";
+    }, "mutated date representation was admitted");
+  for (const auto member : {
+           &dt::DatatypeTypeCodecIdentityRowV3::descriptor_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::canonicalization_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::ordering_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::hash_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::operation_policy}) {
+    auto changed = date.row;
+    (changed.*member).uuid.bytes[0] ^= 1;
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed),
+          "mutated date policy UUID was admitted");
+    changed = date.row;
+    (changed.*member).generation = 2;
+    Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(changed),
+          "mutated date policy generation was admitted");
+  }
+
+  const auto reject_binary_mutation = [&](auto mutate,
+                                          std::string_view message) {
+    auto changed = binary.row;
+    mutate(changed);
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed), message);
+  };
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.catalog_snapshot_uuid.bytes[15] ^= 1;
+    }, "mutated binary receipt UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.catalog_generation;
+    }, "mutated binary catalog generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.registry_generation;
+    }, "mutated binary registry generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.descriptor_uuid.bytes[0] ^= 1;
+    }, "mutated binary descriptor UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.descriptor_generation;
+    }, "mutated binary descriptor generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.type_uuid.bytes[0] ^= 1;
+    }, "mutated binary type UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.type_generation;
+    }, "mutated binary type generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.codec_uuid.bytes[0] ^= 1;
+    }, "mutated binary codec UUID was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.codec_version;
+    }, "mutated binary codec version was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.codec_generation;
+    }, "mutated binary codec generation was admitted");
+  reject_binary_mutation([](auto& value) {
+      ++value.legacy_fields.canonical_value_maximum_bytes;
+    }, "mutated binary maximum extent was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.canonical_byte_order += ".other";
+    }, "mutated binary byte order was admitted");
+  reject_binary_mutation([](auto& value) {
+      value.legacy_fields.canonical_representation += ".other";
+    }, "mutated binary representation was admitted");
+  for (const auto member : {
+           &dt::DatatypeTypeCodecIdentityRowV3::descriptor_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::canonicalization_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::ordering_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::hash_policy,
+           &dt::DatatypeTypeCodecIdentityRowV3::operation_policy}) {
+    auto changed = binary.row;
+    (changed.*member).uuid.bytes[15] ^= 1;
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed),
+          "mutated binary policy UUID was admitted");
+    changed = binary.row;
+    (changed.*member).generation = 2;
+    Check(!dt::IsExactCanonicalBinaryTypeCodecIdentityV3(changed),
+          "mutated binary policy generation was admitted");
+  }
+  Check(!dt::IsExactCanonicalDateTypeCodecIdentityV3(
+            dt::LookupDatatypeTypeCodecIdentityV3(
+                dt::kDatatypeCohortV6, 6, 6, date_descriptor, 1).row),
+        "historical date row was admitted as current");
+
+  constexpr std::array<std::array<scratchbird::core::platform::Uuid, 2>, 5>
+      closures{{
+      {FixtureUuidLiteral("01000000-626f-7f6c-a561-6e0000000000"),
+       FixtureUuidLiteral("01a1010b-2e50-73c3-bdc8-ca82fc1fae5c")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d716"),
+       FixtureUuidLiteral("01a1010b-2e51-7c10-b90a-af9f08d9cd79")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d711"),
+       FixtureUuidLiteral("01a1010b-2e52-79a4-8669-a9a7cb89bd21")},
+      {FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d714"),
+       FixtureUuidLiteral("01a1010b-2e53-7fef-b6fa-1d9300cd10c8")},
+      {FixtureUuidLiteral("a0000000-6465-7369-ad61-6c0000000000"),
+       FixtureUuidLiteral("01a1010b-2e54-777f-8089-a807f43084c2")},
+  }};
+  for (const auto& closure : closures) {
+    const auto row = dt::LookupDatatypeTypeCodecIdentityV3(
+        dt::kDatatypeCohortV8, 8, 8, closure[0], 1);
+    Check(row.ok &&
+              row.row.legacy_fields.codec_uuid == closure[1],
+          "d708 codec-identity closure differs from Core");
+  }
+}
+
+void TestLookupAllocationFailureIsContained() {
+  using scratchbird::tests::FixtureUuidLiteral;
+  const auto date_descriptor =
+      FixtureUuidLiteral("90010000-6461-7465-8000-000000000000");
+
+  allocation_probe::fail_next = true;
+  const auto invalid = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 7, 8, date_descriptor, 1);
+  const bool invalid_path_did_not_allocate = allocation_probe::fail_next;
+  allocation_probe::fail_next = false;
+  Check(invalid_path_did_not_allocate && !invalid.ok &&
+            invalid.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
+        "invalid identity lookup allocated its diagnostic");
+
+  allocation_probe::fail_next = true;
+  const auto refused = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, date_descriptor, 1);
+  Check(!allocation_probe::fail_next,
+        "identity row copy did not exercise the allocation-failure probe");
+  Check(!refused.ok &&
+            refused.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED" &&
+            SameV3Identity(refused.row, {}),
+        "identity row allocation failure escaped or lost its admitted diagnostic");
+
+  const auto recovered = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, date_descriptor, 1);
+  Check(recovered.ok && recovered.diagnostic_id.empty() &&
+            dt::IsExactCanonicalDateTypeCodecIdentityV3(recovered.row),
+        "identity lookup did not recover after an injected allocation failure");
+
+  const auto projection_source = recovered.row;
+  const dt::DatatypeTypeCodecIdentityRowV1 default_projection_row;
+  allocation_probe::fail_next = true;
+  const auto projection_refused =
+      dt::ProjectDatatypeTypeCodecIdentityV3ToV1(projection_source);
+  Check(!allocation_probe::fail_next,
+        "V3-to-V1 projection did not exercise the allocation-failure probe");
+  Check(!projection_refused.ok &&
+            projection_refused.diagnostic_id == "RESOURCE.BUDGET_EXCEEDED" &&
+            SameLegacyIdentity(projection_refused.row, default_projection_row),
+        "V3-to-V1 projection failure escaped, published a partial row, or lost its diagnostic");
+
+  const auto projection_recovered =
+      dt::ProjectDatatypeTypeCodecIdentityV3ToV1(projection_source);
+  Check(projection_recovered.ok && projection_recovered.diagnostic_id.empty() &&
+            SameLegacyIdentity(projection_recovered.row,
+                               projection_source.legacy_fields),
+        "V3-to-V1 projection did not recover with exact legacy fields");
 }
 
 }  // namespace
 
 int main() {
+  TestCoreD708CanonicalJsonAndCompiledRows();
   TestPopulationAndAuthoritativeRows();
   TestExactBitStringIdentity();
+  TestExactCurrentBinaryDateAndCodecClosures();
+  TestLookupAllocationFailureIsContained();
   std::cout << "datatype_identity_v3_test=passed\n";
   return EXIT_SUCCESS;
 }

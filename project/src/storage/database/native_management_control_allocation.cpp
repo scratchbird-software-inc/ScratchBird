@@ -1,6 +1,11 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_allocation.hpp"
+#include "native_control_allocation_backing.hpp"
+#include "native_inventory_delta_backing.hpp"
+#include "native_management_control_bundle_backing.hpp"
+#include "native_metadata_decode_scratch.hpp"
+#include "native_decoded_storage_ranges.hpp"
 #include "native_inventory_publication_delta.hpp"
 #include "native_storage_action_intent.hpp"
 #include "native_filespace_directory.hpp"
@@ -15,15 +20,16 @@
 namespace scratchbird::storage::database {
 namespace {
 using E=NativeManagementControlAllocationError;
-using Bytes=std::vector<byte>;
-using Maps=std::vector<page::NativeAllocationMap>;
+using Bytes=std::span<const byte>;
+using Maps=std::pmr::vector<page::NativeAllocationMapView>;
+using Scratch=detail::NativeMetadataScratch;
 using H=disk::NativeCommonPageHeader;
 using S=page::NativeAllocationState;
 void Require(bool ok,E e){if(!ok)throw e;}
-auto Hash(const Bytes& bytes){const auto hash=core::hash::ComputeSha256Digest(bytes);Require(hash.ok(),E::hash_failure);return hash.digest;}
+auto Hash(const Bytes& bytes){const auto hash=core::hash::ComputeSha256DigestNative(bytes.data(),bytes.size());Require(hash.ok(),E::hash_failure);return hash.digest;}
 auto Self(const H& h){return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
 bool SameFile(const H& a,const H& b){return a.database_uuid==b.database_uuid&&a.filespace_uuid==b.filespace_uuid&&a.page_size_profile_uuid==b.page_size_profile_uuid&&a.page_size_bytes==b.page_size_bytes;}
-const NativeCheckpointRootReference* Root(const NativeCheckpointRoot& cp,u16 role){const auto it=std::find_if(cp.roots.begin(),cp.roots.end(),[&](const auto& r){return r.role==role;});return it==cp.roots.end()?nullptr:&*it;}
+const NativeCheckpointRootReference* Root(const NativeCheckpointRootView& cp,u16 role){const auto it=std::find_if(cp.roots.begin(),cp.roots.end(),[&](const auto& r){return r.role==role;});return it==cp.roots.end()?nullptr:&*it;}
 void CheckpointError(NativeCheckpointError e){if(e==NativeCheckpointError::none)return;throw e==NativeCheckpointError::hash_failure?E::hash_failure:e==NativeCheckpointError::resource_exhausted?E::resource_exhausted:E::invalid_checkpoint;}
 void PlanError(NativePublicationPlanError e){if(e==NativePublicationPlanError::none)return;throw e==NativePublicationPlanError::hash_failure?E::hash_failure:e==NativePublicationPlanError::resource_exhausted?E::resource_exhausted:e==NativePublicationPlanError::cluster_requires_authority?E::cluster_requires_authority:E::invalid_plan;}
 const page::NativeAllocationRecord* Record(const Maps& maps,u64 n,S* state=nullptr){
@@ -34,9 +40,9 @@ const page::NativeAllocationRecord* Record(const Maps& maps,u64 n,S* state=nullp
   throw E::invalid_allocation;
 }
 void Allocated(const Maps& maps,const H& h,const Uuid& owner){S state{};const auto* r=Record(maps,h.page_number,&state);Require(r&&state==S::allocated&&r->page_uuid==h.page_uuid&&r->page_generation==h.page_generation&&r->page_type==h.page_type&&r->owner_uuid==owner,E::binding_mismatch);}
-Maps DecodeMaps(const std::vector<Bytes>& bytes,const NativeCheckpointRootReference& root,const H& file){
-  Require(!bytes.empty(),E::invalid_allocation);Maps maps;maps.reserve(bytes.size());std::set<u64> slots;std::set<Uuid> ids,allocations,record_pages;u64 covered=0;
-  for(const auto& b:bytes){auto decoded=page::DecodeNativeAllocationMap(b);
+Maps DecodeMaps(std::span<const Bytes> bytes,const NativeCheckpointRootReference& root,const H& file,Scratch& scratch){
+  Require(!bytes.empty(),E::invalid_allocation);Maps maps(scratch.resource);maps.reserve(bytes.size());std::pmr::set<u64> slots(scratch.resource);std::pmr::set<Uuid> ids(scratch.resource),allocations(scratch.resource),record_pages(scratch.resource);u64 covered=0;
+  for(const auto& b:bytes){auto decoded=scratch.Map(b);
     if(!decoded.ok())throw decoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:decoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:E::invalid_allocation;
     auto m=std::move(*decoded.map);const auto& h=m.header;Require(!h.flags,E::cluster_requires_authority);
     Require(SameFile(h,file)&&m.object_uuid==root.object_uuid&&m.first_page==covered&&slots.insert(h.page_number).second&&ids.insert(h.page_uuid).second,E::binding_mismatch);
@@ -50,7 +56,7 @@ Maps DecodeMaps(const std::vector<Bytes>& bytes,const NativeCheckpointRootRefere
   return maps;
 }
 struct Control {H header;Uuid owner;};
-using Pages=std::vector<Bytes>;
+using Pages=std::span<const Bytes>;
 using Member=page::NativeFilespaceDirectoryRecord;
 bool SameBootstrap(const disk::FilespaceBootstrap& a,const disk::FilespaceBootstrap& b){
   return std::tie(a.database_uuid,a.filespace_uuid,a.page_size_profile_uuid,a.checksum_profile_uuid,a.encryption_profile_uuid,
@@ -61,12 +67,13 @@ bool SameBootstrap(const disk::FilespaceBootstrap& a,const disk::FilespaceBootst
 bool SameMember(const Member& a,const Member& b){return SameBootstrap(a.bootstrap,b.bootstrap)&&
   std::tie(a.locator_uuid,a.page_zero_uuid,a.page_zero_generation,a.root_set_generation,a.total_pages,a.verification_epoch,a.operation,a.allocation_root)==
   std::tie(b.locator_uuid,b.page_zero_uuid,b.page_zero_generation,b.root_set_generation,b.total_pages,b.verification_epoch,b.operation,b.allocation_root);}
-struct Directory {page::NativeFilespaceDirectory head;std::vector<H> headers;std::map<Uuid,Member> members;};
-Directory DecodeDirectory(const Pages& images,const NativeCheckpointRootReference& root,const H& file){
-  Require(!images.empty()&&root.page_type==9,E::invalid_delta);Directory out;u64 covered=0;
+struct Directory {page::NativeFilespaceDirectoryView head;std::pmr::vector<H> headers;std::pmr::map<Uuid,Member> members;
+  explicit Directory(Scratch& scratch):headers(scratch.resource),members(scratch.resource){};};
+Directory DecodeDirectory(const Pages& images,const NativeCheckpointRootReference& root,const H& file,Scratch& scratch){
+  Require(!images.empty()&&root.page_type==9,E::invalid_delta);Directory out(scratch);u64 covered=0;
   std::optional<disk::NativePageReference> next=root.page;auto sha=root.sha256;
-  std::set<Uuid> page_ids,zero_ids;std::set<u64> slots;std::optional<Uuid> previous;
-  for(const auto& raw:images){const auto decoded=page::DecodeNativeFilespaceDirectory(raw);
+  std::pmr::set<Uuid> page_ids(scratch.resource),zero_ids(scratch.resource);std::pmr::set<u64> slots(scratch.resource);std::optional<Uuid> previous;
+  for(const auto& raw:images){const auto decoded=scratch.Directory(raw);
     if(!decoded.ok())throw decoded.error==page::NativeDirectoryError::hash_failure?E::hash_failure:
       decoded.error==page::NativeDirectoryError::resource_exhausted?E::resource_exhausted:E::invalid_delta;
     const auto& d=*decoded.directory;const auto& h=d.header;
@@ -82,13 +89,13 @@ Directory DecodeDirectory(const Pages& images,const NativeCheckpointRootReferenc
   }
   Require(!next&&covered==out.head.total_records&&out.members.contains(file.filespace_uuid),E::binding_mismatch);return out;
 }
-using Groups=std::map<Uuid,Maps>;
+using Groups=std::pmr::map<Uuid,Maps>;
 Groups DecodeGroups(const Pages& images,const Directory& directory,const NativeCheckpointRootReference& primary,
-    const std::map<Uuid,disk::FilespacePageZero>& zeros,const H& file,bool candidate){
-  std::map<Uuid,Pages> grouped;
+    const std::pmr::map<Uuid,disk::FilespacePageZeroView>& zeros,const H& file,bool candidate,Scratch& scratch){
+  std::pmr::map<Uuid,std::pmr::vector<Bytes>> grouped(scratch.resource);
   for(const auto& raw:images){Require(raw.size()>=128,E::invalid_allocation);const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);
     Require(h.ok(),E::invalid_allocation);grouped[h.header->filespace_uuid].push_back(raw);}
-  Require(grouped.contains(file.filespace_uuid),E::binding_mismatch);Groups out;
+  Require(grouped.contains(file.filespace_uuid),E::binding_mismatch);Groups out(scratch.resource);
   for(const auto& [fs,pages]:grouped){const auto member=directory.members.find(fs);const auto zero=zeros.find(fs);
     Require(member!=directory.members.end()&&zero!=zeros.end(),E::binding_mismatch);const auto& r=member->second;
     H expected=file;expected.filespace_uuid=fs;expected.page_size_profile_uuid=r.bootstrap.page_size_profile_uuid;expected.page_size_bytes=r.bootstrap.page_size_bytes;
@@ -98,7 +105,7 @@ Groups DecodeGroups(const Pages& images,const Directory& directory,const NativeC
     else {Require(!candidate,E::binding_mismatch);const auto& z=zero->second;
       const auto a=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& v){return v.kind==3;});
       Require(a!=z.roots.end(),E::binding_mismatch);root={4,3,{a->filespace_uuid,a->page_number,a->page_generation,a->page_size_profile_uuid},a->object_uuid,Hash(pages.front())};}
-    auto maps=DecodeMaps(pages,root,expected);const auto& first=maps.front();Require(first.total_pages==r.total_pages,E::binding_mismatch);
+    auto maps=DecodeMaps(pages,root,expected,scratch);const auto& first=maps.front();Require(first.total_pages==r.total_pages,E::binding_mismatch);
     if(r.allocation_root){const auto& a=*r.allocation_root;Require(a.page==root.page&&a.object_uuid==root.object_uuid&&a.sha256==root.sha256&&
       a.map_generation==first.map_generation&&a.capacity_generation==first.capacity_generation,E::binding_mismatch);}
     else Require(!candidate,E::binding_mismatch);
@@ -106,20 +113,37 @@ Groups DecodeGroups(const Pages& images,const Directory& directory,const NativeC
   }
   return out;
 }
-void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRoot& a,const NativeCheckpointRoot& b,
-    const Pages& extent_bytes,const Pages& before_bytes,const Pages& after_bytes,const NativeManagementDirectoryBase& base,
-    const Pages& after_directory,const Pages& after_inventory,const Pages& growth_images,const std::vector<H>& bundle_headers,u64 budget){
+
+bool EqualImage(Bytes a,Bytes b){return std::equal(a.begin(),a.end(),b.begin(),b.end());}
+bool EqualImages(Pages a,Pages b){return a.size()==b.size()&&std::equal(a.begin(),a.end(),b.begin(),[](auto x,auto y){return EqualImage(x,y);});}
+NativeManagementExtentViewRead DecodeExtent(Pages images,const NativeManagementExtentRoot& root,
+    const Uuid& database,const Uuid& bootstrap,u64 allowance,Scratch& scratch){
+  using X=NativeManagementExtentError;
+  const auto error=ValidateNativeManagementExtentRoot(root,database,bootstrap,allowance);
+  if(error!=X::none){NativeManagementExtentViewRead r;r.error=error;return r;}
+  const auto count=std::size_t(root.aggregate_bytes>=512?(root.aggregate_bytes-512)/256:0);
+  const auto page_count=std::size_t(root.page_count);
+  if(page_count>(std::numeric_limits<std::size_t>::max()-1)/2){NativeManagementExtentViewRead r;r.error=X::resource_exhausted;return r;}
+  NativeManagementExtentViewWorkspace workspace{scratch.Array<byte>(root.aggregate_bytes),
+    scratch.Array<H>(page_count),scratch.Array<NativeManagementStepView>(count),
+    scratch.Array<Uuid>(std::max(2*page_count+1,2*count+7))};
+  return DecodeNativeManagementExtentInto(images,root,database,bootstrap,allowance,workspace);
+}
+
+void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRootView& a,const NativeCheckpointRootView& b,
+    const Pages& extent_bytes,const Pages& before_bytes,const Pages& after_bytes,const NativeManagementDirectoryBaseView& base,
+    const Pages& after_directory,const Pages& after_inventory,const Pages& growth_images,std::span<const H> bundle_headers,u64 budget,Scratch& scratch){
   const auto* old_dir=Root(a,3);const auto* new_dir=Root(b,3);const auto* old_map=Root(a,4);const auto* new_map=Root(b,4);
   Require(old_dir&&new_dir&&old_map&&new_map,E::invalid_delta);
-  const auto before_directory=DecodeDirectory(base.directory_images,*old_dir,p.header);
-  const auto target_directory=DecodeDirectory(after_directory,*new_dir,p.header);
+  const auto before_directory=DecodeDirectory(base.directory_images,*old_dir,p.header,scratch);
+  const auto target_directory=DecodeDirectory(after_directory,*new_dir,p.header,scratch);
   Require(before_directory.head.object_uuid==target_directory.head.object_uuid&&
     before_directory.head.directory_generation<target_directory.head.directory_generation&&
     target_directory.head.directory_generation==p.reserved_generation&&target_directory.head.header.page_generation==p.reserved_generation&&
     target_directory.head.creator_operation_uuid==p.operation_uuid&&target_directory.head.creator_transaction_uuid.is_nil()&&
     !target_directory.head.creator_local_transaction_id&&before_directory.members.size()==target_directory.members.size(),E::invalid_delta);
-  std::map<Uuid,disk::FilespacePageZero> zeros;std::map<Uuid,const Bytes*> zero_bytes;
-  for(const auto& raw:base.page_zero_images){const auto z=disk::DecodeFilespacePageZero(raw.data(),raw.size());
+  std::pmr::map<Uuid,disk::FilespacePageZeroView> zeros(scratch.resource);std::pmr::map<Uuid,const Bytes*> zero_bytes(scratch.resource);
+  for(const auto& raw:base.page_zero_images){const auto z=scratch.PageZero(raw);
     if(!z.ok())throw z.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
       z.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::binding_mismatch;
     const auto& v=*z.record;const auto& fs=v.bootstrap.filespace_uuid;
@@ -130,16 +154,16 @@ void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRo
       v.total_pages==r->second.total_pages&&zeros.emplace(fs,v).second&&zero_bytes.emplace(fs,&raw).second,E::binding_mismatch);
   }
   Require(zeros.contains(p.header.filespace_uuid)&&zeros.at(p.header.filespace_uuid).page_uuid==p.bootstrap_uuid,E::binding_mismatch);
-  const auto before=DecodeGroups(before_bytes,before_directory,*old_map,zeros,p.header,false);
-  const auto after=DecodeGroups(after_bytes,target_directory,*new_map,zeros,p.header,true);
+  const auto before=DecodeGroups(before_bytes,before_directory,*old_map,zeros,p.header,false,scratch);
+  const auto after=DecodeGroups(after_bytes,target_directory,*new_map,zeros,p.header,true,scratch);
   Require(before.size()==after.size()&&zeros.size()==before.size(),E::invalid_delta);
-  std::optional<NativeStorageActionIntent> request;std::optional<disk::FilespacePageZero> growth;
+  std::optional<NativeStorageActionIntent> request;std::optional<disk::FilespacePageZeroView> growth;
   if(p.intent.recovery_profile==3||p.intent.recovery_profile==4){const auto& e=*p.management_extent;
     const auto allowance=u64{e.page_count}*p.header.page_size_bytes+4*u64{e.aggregate_bytes}+2*u64{p.header.page_size_bytes};
-    const auto operation=DecodeNativeManagementExtent(extent_bytes,e,p.header.database_uuid,p.bootstrap_uuid,allowance);
+    const auto operation=DecodeExtent(extent_bytes,e,p.header.database_uuid,p.bootstrap_uuid,allowance,scratch);
     if(!operation.ok())throw operation.error==NativeManagementExtentError::hash_failure?E::hash_failure:
       operation.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:E::invalid_extent;
-    const auto decoded=ReadNativeStorageActionIntentFromOperation(*operation.record,budget);
+    const auto decoded=ReadNativeStorageActionIntentFromOperationView(*operation.record,budget,scratch.Array<Uuid>(2*operation.record->steps.size()+7));
     if(!decoded.ok())throw decoded.error==NativeStorageIntentError::hash_failure?E::hash_failure:
       decoded.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
     request=*decoded.intent;const auto& i=*request;
@@ -157,8 +181,8 @@ void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRo
       i.checkpoint.page_generation==p.base_checkpoint.page_generation&&i.checkpoint.page_size_profile_uuid==p.base_checkpoint.page_size_profile_uuid&&
       i.checkpoint.object_uuid==p.base_checkpoint_object_uuid&&i.checkpoint_sha256==p.base_checkpoint_sha256&&
       i.checkpoint_generation==p.base_checkpoint_generation&&i.checkpoint_root_set_generation==p.base_root_set_generation,E::binding_mismatch);
-    if(p.intent.recovery_profile==4){Require(growth_images.size()==2&&growth_images.front()==*zero_bytes.at(i.filespace_uuid),E::binding_mismatch);
-      const auto& raw=growth_images.back();const auto decoded=disk::DecodeFilespacePageZero(raw.data(),raw.size());if(!decoded.ok())throw decoded.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:decoded.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::invalid_delta;
+    if(p.intent.recovery_profile==4){Require(growth_images.size()==2&&EqualImage(growth_images.front(),*zero_bytes.at(i.filespace_uuid)),E::binding_mismatch);
+      const auto& raw=growth_images.back();const auto decoded=scratch.PageZero(raw);if(!decoded.ok())throw decoded.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:decoded.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::invalid_delta;
       growth=*decoded.record;Require(growth->bootstrap.filespace_uuid==i.filespace_uuid&&i.first_page==m.total_pages&&
         growth->total_pages>m.total_pages&&growth->total_pages-m.total_pages==i.page_count,E::invalid_delta);}
   }
@@ -167,7 +191,7 @@ void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRo
     if(after.contains(fs))normalized.allocation_root=old.allocation_root;
     if(growth&&fs==growth->bootstrap.filespace_uuid){normalized.page_zero_generation=old.page_zero_generation;normalized.root_set_generation=old.root_set_generation;normalized.total_pages=old.total_pages;}
     Require(SameMember(old,normalized),E::invalid_delta);}
-  std::set<Uuid> old_allocations,old_pages,new_pages;std::map<std::pair<Uuid,u64>,Control> controls;
+  std::pmr::set<Uuid> old_allocations(scratch.resource),old_pages(scratch.resource),new_pages(scratch.resource);std::pmr::map<std::pair<Uuid,u64>,Control> controls(scratch.resource);
   for(const auto& [fs,maps]:before){Require(after.contains(fs),E::invalid_delta);const auto& x=maps.front();const auto& y=after.at(fs).front();const bool grows=growth&&fs==growth->bootstrap.filespace_uuid;
     Require(x.object_uuid==y.object_uuid&&y.map_generation==p.reserved_generation&&y.map_generation>x.map_generation&&
       (grows?(x.capacity_generation<std::numeric_limits<u64>::max()&&y.capacity_generation==x.capacity_generation+1&&y.total_pages==growth->total_pages):
@@ -212,15 +236,16 @@ void DirectoryAllocation(const NativePublicationPlan& p,const NativeCheckpointRo
 }
 NativeManagementControlAllocationError ValidateControlAllocation(
   const Bytes& base_bytes,const Bytes& target_bytes,const Bytes& plan_bytes,
-  const std::vector<Bytes>& extent_bytes,const std::vector<Bytes>& before_bytes,
-  const std::vector<Bytes>& after_bytes,u64 budget,const std::vector<Bytes>& bundle_bytes,
-  const std::vector<Bytes>& before_inventory,const NativeManagementDirectoryBase* directory_base) noexcept {
+  const Pages& extent_bytes,const Pages& before_bytes,
+  const Pages& after_bytes,u64 budget,const Pages& bundle_bytes,
+  const Pages& before_inventory,const NativeManagementDirectoryBaseView* directory_base,std::pmr::memory_resource& resource) noexcept {
   try{
+    Scratch scratch{&resource};
     u64 used=0;const auto charge=[&](const Bytes& b){Require(b.size()<=budget-used,E::resource_exhausted);used+=b.size();};
     charge(base_bytes);charge(target_bytes);charge(plan_bytes);for(const auto* group:{&extent_bytes,&before_bytes,&after_bytes,&bundle_bytes})for(const auto& b:*group)charge(b);
     if(directory_base)for(const auto* group:{&directory_base->directory_images,&directory_base->page_zero_images})for(const auto& raw:*group)charge(raw);
-    auto base=DecodeNativeCheckpointRoot(base_bytes);CheckpointError(base.error);auto target=DecodeNativeCheckpointRoot(target_bytes);CheckpointError(target.error);
-    auto encoded=DecodeNativePublicationPlan(plan_bytes);PlanError(encoded.error);const auto& p=*encoded.plan;const auto& a=*base.root;const auto& b=*target.root;
+    auto base=scratch.Checkpoint(base_bytes);CheckpointError(base.error);auto target=scratch.Checkpoint(target_bytes);CheckpointError(target.error);
+    auto encoded=DecodeNativePublicationPlanView(plan_bytes);PlanError(encoded.error);const auto& p=*encoded.plan;const auto& a=*base.root;const auto& b=*target.root;
     Require(p.management_extent.has_value(),E::invalid_plan);
     const bool directory=p.control_bundle&&p.control_bundle->directory_count;
     Require(directory==bool(directory_base),E::invalid_plan);
@@ -232,12 +257,16 @@ NativeManagementControlAllocationError ValidateControlAllocation(
       if(!directory)charge_inventory(p.control_bundle->inventory_count,4*u64{p.header.page_size_bytes});}
     const auto& extent=*p.management_extent;
     const u64 extent_budget=u64{extent.page_count}*p.header.page_size_bytes+4*u64{extent.aggregate_bytes}+2*u64{p.header.page_size_bytes};
-    PlanError(BindNativePublicationPlanToManagementExtent(p,extent_bytes,extent_budget));
-    std::vector<H> bundle_headers;std::vector<Bytes> after_inventory,after_directory,growth_images;
+    const auto operation=DecodeExtent(extent_bytes,extent,p.header.database_uuid,p.bootstrap_uuid,extent_budget,scratch);
+    if(!operation.ok())PlanError(operation.error==NativeManagementExtentError::hash_failure?NativePublicationPlanError::hash_failure:
+      operation.error==NativeManagementExtentError::resource_exhausted?NativePublicationPlanError::resource_exhausted:NativePublicationPlanError::binding_mismatch);
+    PlanError(BindNativePublicationPlanToManagementRecordInto(p,operation.aggregate,scratch.OperationWorkspace(operation.aggregate)));
+    for(const auto& header:operation.page_headers)PlanError(header.page_uuid==p.header.page_uuid?NativePublicationPlanError::invalid_identity:NativePublicationPlanError::none);
+    std::span<const H> bundle_headers;Pages after_inventory,after_directory,growth_images;
     if(p.control_bundle){const auto& r=*p.control_bundle;const u64 allowance=r.page_count*p.header.page_size_bytes+4*(directory?r.payload_bytes:(r.map_count+r.inventory_count)*p.header.page_size_bytes)+2*u64{p.header.page_size_bytes};
-      auto decoded=DecodeNativeManagementControlBundle(bundle_bytes,r,p.header.database_uuid,p.bootstrap_uuid,allowance);
+      auto decoded=detail::DecodeNativeManagementControlBundleBacked(bundle_bytes,r,p.header.database_uuid,p.bootstrap_uuid,allowance,resource);
       if(!decoded.ok())throw decoded.error==NativeManagementControlBundleError::resource_exhausted?E::resource_exhausted:decoded.error==NativeManagementControlBundleError::hash_failure?E::hash_failure:decoded.error==NativeManagementControlBundleError::cluster_requires_authority?E::cluster_requires_authority:E::invalid_allocation;
-      Require(decoded.allocation_images==after_bytes,E::binding_mismatch);bundle_headers=std::move(decoded.page_headers);after_inventory=std::move(decoded.inventory_images);
+      Require(EqualImages(decoded.allocation_images,after_bytes),E::binding_mismatch);bundle_headers=std::move(decoded.page_headers);after_inventory=std::move(decoded.inventory_images);
       after_directory=std::move(decoded.directory_images);growth_images=std::move(decoded.growth_images);
       if(directory&&inventory)for(const auto& raw:after_inventory){Require(raw.size()<=(budget-used)/4,E::resource_exhausted);used+=4*raw.size();inventory_work+=4*raw.size();}
     }else Require(bundle_bytes.empty(),E::invalid_request);
@@ -246,11 +275,11 @@ NativeManagementControlAllocationError ValidateControlAllocation(
     Require(p.target_checkpoint==Self(b.header)&&p.target_checkpoint_object_uuid==b.object_uuid&&p.operation_uuid==b.creator_operation_uuid&&b.creator_transaction_uuid.is_nil()&&!b.creator_local_transaction_id&&p.reserved_generation==b.checkpoint_generation&&p.reserved_generation==b.header.page_generation&&p.target_root_set_generation==b.root_set_generation&&b.predecessor==p.base_checkpoint&&b.predecessor_sha256==p.base_checkpoint_sha256,E::binding_mismatch);
     const auto* head=Root(b,16);Require(head&&head->page_type==0x500&&head->page==Self(p.header)&&head->object_uuid==p.object_uuid&&head->sha256==encoded.sha256,E::binding_mismatch);
     const auto* old_head=Root(a,16);if(old_head)Require(p.previous_plan&&*p.previous_plan==old_head->page&&p.previous_plan_object_uuid==old_head->object_uuid&&p.previous_plan_sha256==old_head->sha256,E::binding_mismatch);else Require(!p.previous_plan,E::binding_mismatch);
-    const auto graph=ComputeNativePublicationTargetGraphDigest(target_bytes);PlanError(graph.error);Require(graph.sha256==p.target_graph_sha256,E::binding_mismatch);
+    const auto graph=ComputeNativePublicationTargetGraphDigestInto(target_bytes,scratch.Array<NativeCheckpointRootReference>(16));PlanError(graph.error);Require(graph.sha256==p.target_graph_sha256,E::binding_mismatch);
     Require(b.roots.size()==a.roots.size()+(old_head?0u:1u),E::invalid_delta);
     for(const auto& r:a.roots)if(r.role!=4&&r.role!=16&&!(inventory&&r.role==1)&&!(directory&&r.role==3)){const auto* next=Root(b,r.role);Require(next&&r==*next,E::invalid_delta);}
     if(inventory){const auto* old_inventory=Root(a,1);const auto* new_inventory=Root(b,1);Require(old_inventory&&new_inventory,E::invalid_delta);
-      const auto delta=ValidateNativeInventoryPublicationDelta(p.header.database_uuid,*old_inventory,*new_inventory,p.reserved_generation,before_inventory,after_inventory,inventory_work);
+      const auto delta=detail::ValidateNativeInventoryPublicationDeltaBacked(p.header.database_uuid,*old_inventory,*new_inventory,p.reserved_generation,before_inventory,after_inventory,inventory_work,resource);
       if(!delta.ok())throw delta.error==NativeInventoryDeltaError::resource_exhausted?E::resource_exhausted:delta.error==NativeInventoryDeltaError::hash_failure?E::hash_failure:delta.error==NativeInventoryDeltaError::encrypted_requires_authority?E::encrypted_requires_authority:E::invalid_delta;
       Require(!delta.delta->cluster_difference,E::cluster_requires_authority);
       Require(a.selected_local_transaction_id==delta.delta->before.next_local_transaction_id-1&&b.selected_local_transaction_id==delta.delta->after.next_local_transaction_id-1,E::invalid_delta);
@@ -268,17 +297,17 @@ NativeManagementControlAllocationError ValidateControlAllocation(
     }
     auto normalized=b;normalized.header=a.header;normalized.creator_transaction_uuid=a.creator_transaction_uuid;normalized.creator_local_transaction_id=a.creator_local_transaction_id;normalized.creator_operation_uuid=a.creator_operation_uuid;normalized.checkpoint_generation=a.checkpoint_generation;normalized.root_set_generation=a.root_set_generation;normalized.predecessor=a.predecessor;normalized.predecessor_sha256=a.predecessor_sha256;normalized.roots=a.roots;
     if(inventory)normalized.selected_local_transaction_id=a.selected_local_transaction_id;
-    const auto unchanged=EncodeNativeCheckpointRoot(normalized);CheckpointError(unchanged.error);Require(unchanged.bytes==base_bytes,E::invalid_delta);
-    if(directory){DirectoryAllocation(p,a,b,extent_bytes,before_bytes,after_bytes,*directory_base,after_directory,after_inventory,growth_images,bundle_headers,budget);return E::none;}
+    const auto unchanged=EncodeNativeCheckpointRootInto(normalized,scratch.Array<byte>(normalized.header.page_size_bytes));CheckpointError(unchanged.error);Require(EqualImage(unchanged.bytes,base_bytes),E::invalid_delta);
+    if(directory){DirectoryAllocation(p,a,b,extent_bytes,before_bytes,after_bytes,*directory_base,after_directory,after_inventory,growth_images,bundle_headers,budget,scratch);return E::none;}
     const auto* old_root=Root(a,4);const auto* new_root=Root(b,4);Require(old_root&&new_root,E::invalid_allocation);
-    const auto before=DecodeMaps(before_bytes,*old_root,p.header);const auto after=DecodeMaps(after_bytes,*new_root,p.header);
+    const auto before=DecodeMaps(before_bytes,*old_root,p.header,scratch);const auto after=DecodeMaps(after_bytes,*new_root,p.header,scratch);
     Require(before.front().total_pages==after.front().total_pages&&before.front().object_uuid==after.front().object_uuid&&before.front().capacity_generation==after.front().capacity_generation&&after.front().map_generation>before.front().map_generation,E::invalid_delta);
     std::optional<NativeStorageActionIntent> preallocation;
     if(p.intent.recovery_profile==3){
-      const auto operation=DecodeNativeManagementExtent(extent_bytes,extent,p.header.database_uuid,p.bootstrap_uuid,extent_budget);
+      const auto operation=DecodeExtent(extent_bytes,extent,p.header.database_uuid,p.bootstrap_uuid,extent_budget,scratch);
       if(!operation.ok())throw operation.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:
         operation.error==NativeManagementExtentError::hash_failure?E::hash_failure:E::invalid_extent;
-      const auto request=ReadNativeStorageActionIntentFromOperation(*operation.record,budget);
+      const auto request=ReadNativeStorageActionIntentFromOperationView(*operation.record,budget,scratch.Array<Uuid>(2*operation.record->steps.size()+7));
       if(!request.ok())throw request.error==NativeStorageIntentError::resource_exhausted?E::resource_exhausted:
         request.error==NativeStorageIntentError::hash_failure?E::hash_failure:E::binding_mismatch;
       preallocation=*request.intent;const auto& i=*preallocation;
@@ -294,7 +323,7 @@ NativeManagementControlAllocationError ValidateControlAllocation(
         i.map_generation==before.front().map_generation&&i.capacity_generation==before.front().capacity_generation,E::binding_mismatch);
     }
     Allocated(before,a.header,a.object_uuid);
-    std::map<u64,Control> controls;std::set<Uuid> page_ids,old_allocations,old_pages;
+    std::pmr::map<u64,Control> controls(scratch.resource);std::pmr::set<Uuid> page_ids(scratch.resource),old_allocations(scratch.resource),old_pages(scratch.resource);
     for(const auto& m:before)for(const auto& r:m.records){old_allocations.insert(r.allocation_uuid);if(!r.page_uuid.is_nil())old_pages.insert(r.page_uuid);}
     const auto add=[&](const H& h,const Uuid& owner){Require(SameFile(h,p.header)&&!h.flags&&h.page_generation==p.reserved_generation&&controls.emplace(h.page_number,Control{h,owner}).second&&page_ids.insert(h.page_uuid).second&&!old_pages.contains(h.page_uuid),E::invalid_delta);S state{};const auto* record=Record(before,h.page_number,&state);Require(!record&&state==S::free,E::invalid_delta);};
     add(b.header,b.object_uuid);add(p.header,p.object_uuid);
@@ -322,15 +351,56 @@ NativeManagementControlAllocationError ValidateControlAllocation(
   }catch(E e){return e;}catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_request;}
 }
 } // namespace
+
+NativeManagementControlAllocationError detail::ValidateNativeManagementControlAllocationBacked(
+    const NativeManagementControlAllocationInputs& i,std::pmr::memory_resource& resource) noexcept {
+  return ValidateControlAllocation(i.base_checkpoint,i.target_checkpoint,i.plan,i.extent,i.base_allocation,
+    i.target_allocation,i.maximum_input_image_bytes,i.control_bundle,i.base_inventory,i.directory,resource);
+}
+NativeManagementControlAllocationViewResult ValidateNativeManagementControlAllocationInto(
+    const NativeManagementControlAllocationInputs& input,std::span<byte> backing) noexcept {
+  const auto disjoint=[&](auto in){return disk::detail::DisjointNativeDecodeRegions(backing,in);};
+  bool valid=disjoint(std::span{&input,1})&&disjoint(input.base_checkpoint)&&disjoint(input.target_checkpoint)&&disjoint(input.plan);
+  const auto images=[&](auto group){if(!disjoint(group))return false;
+    for(const auto& raw:group)if(!disjoint(raw))return false;return true;};
+  for(const auto group:{input.extent,input.base_allocation,input.target_allocation,input.control_bundle,input.base_inventory})
+    valid=valid&&images(group);
+  if(input.directory)valid=valid&&disjoint(std::span{input.directory,1})&&
+    images(input.directory->directory_images)&&images(input.directory->page_zero_images);
+  if(!valid)return {E::invalid_workspace,0};
+  detail::NativeMetadataMemory resource(backing);
+  const auto result=detail::ValidateNativeManagementControlAllocationBacked(input,resource);
+  return {result,result==E::none?resource.used():0};
+}
+namespace {
+using OwnedBytes=std::vector<byte>;
+using OwnedPages=std::vector<OwnedBytes>;
+E ValidateOwned(const OwnedBytes& base,const OwnedBytes& target,const OwnedBytes& plan,
+    const OwnedPages& extent,const OwnedPages& before,const OwnedPages& after,u64 budget,
+    const OwnedPages& bundle,const OwnedPages& inventory,const NativeManagementDirectoryBase* directory) noexcept {
+  try {
+    detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);
+    const auto borrow=[&](const OwnedPages& values){std::pmr::vector<Bytes> out(&resource);
+      out.reserve(values.size());for(const auto& image:values)out.push_back(image);return out;};
+    const auto e=borrow(extent),b=borrow(before),a=borrow(after),c=borrow(bundle),i=borrow(inventory);
+    std::pmr::vector<Bytes> d(&resource),z(&resource);NativeManagementDirectoryBaseView context;
+    if(directory){d=borrow(directory->directory_images);z=borrow(directory->page_zero_images);context={d,z};}
+    const NativeManagementControlAllocationInputs input{base,target,plan,e,b,a,c,i,directory?&context:nullptr,budget};
+    return detail::ValidateNativeManagementControlAllocationBacked(input,resource);
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}
+   catch(const std::length_error&){return E::resource_exhausted;}
+   catch(...){return E::invalid_request;}
+}
+}
 NativeManagementControlAllocationError ValidateNativeManagementControlAllocation(
-  const Bytes& base,const Bytes& target,const Bytes& plan,const Pages& extent,
-  const Pages& before,const Pages& after,u64 budget,const Pages& bundle,const Pages& inventory) noexcept {
-  return ValidateControlAllocation(base,target,plan,extent,before,after,budget,bundle,inventory,nullptr);
+  const OwnedBytes& base,const OwnedBytes& target,const OwnedBytes& plan,const OwnedPages& extent,
+  const OwnedPages& before,const OwnedPages& after,u64 budget,const OwnedPages& bundle,const OwnedPages& inventory) noexcept {
+  return ValidateOwned(base,target,plan,extent,before,after,budget,bundle,inventory,nullptr);
 }
 NativeManagementControlAllocationError ValidateNativeManagementDirectoryControlAllocation(
-  const Bytes& base,const Bytes& target,const Bytes& plan,const Pages& extent,
-  const Pages& before,const Pages& after,const NativeManagementDirectoryBase& directory,u64 budget,
-  const Pages& bundle,const Pages& inventory) noexcept {
-  return ValidateControlAllocation(base,target,plan,extent,before,after,budget,bundle,inventory,&directory);
+  const OwnedBytes& base,const OwnedBytes& target,const OwnedBytes& plan,const OwnedPages& extent,
+  const OwnedPages& before,const OwnedPages& after,const NativeManagementDirectoryBase& directory,u64 budget,
+  const OwnedPages& bundle,const OwnedPages& inventory) noexcept {
+  return ValidateOwned(base,target,plan,extent,before,after,budget,bundle,inventory,&directory);
 }
 } // namespace scratchbird::storage::database

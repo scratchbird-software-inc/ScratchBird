@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_bundle.hpp"
 #include "native_management_control_authority.hpp"
+#include "native_management_control_authority_memory.hpp"
+#include "native_bound_checkpoint_selection_memory.hpp"
+#include "native_current_checkpoint_source_memory.hpp"
+#include "native_checkpoint_inventory_memory.hpp"
 #include "native_management_publication_recovery.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_history.hpp"
@@ -25,6 +29,7 @@
 #include <chrono>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
 bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;
+std::uint64_t history_observed_read_bytes=0;
 struct IoEvent {char kind;off_t offset;std::size_t length;};IoEvent io_events[8192];unsigned io_event_count=0;bool trace_io=false;
 void Trace(char kind,off_t offset=0,std::size_t length=0){if(trace_io&&io_event_count<8192)io_events[io_event_count++]={kind,offset,length};}
 }
@@ -32,6 +37,11 @@ void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
+void* operator new(std::size_t n,std::align_val_t a){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
+ void* p=nullptr;if(posix_memalign(&p,std::max<std::size_t>(sizeof(void*),static_cast<std::size_t>(a)),n?n:1))throw std::bad_alloc();return p;}
+void* operator new[](std::size_t n,std::align_val_t a){return ::operator new(n,a);}
+void operator delete(void* p,std::align_val_t) noexcept{std::free(p);}void operator delete[](void* p,std::align_val_t) noexcept{std::free(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t,std::align_val_t) noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
@@ -54,6 +64,7 @@ extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
  if(io_counting)Trace('r',at,n);
  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
+ if(io_counting&&result>0)history_observed_read_bytes+=static_cast<std::size_t>(result);
  if(io_counting&&reads==corrupt_read&&result>0)static_cast<unsigned char*>(data)[result-1]^=1;return result;
 }
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
@@ -781,6 +792,12 @@ void ResolutionPlanCodec(){
   SequenceCodecFaults(g,*held.lease);
  }
 }
+#include "native_management_control_authority_memory_checks.hpp"
+#include "native_checkpoint_inventory_memory_checks.hpp"
+#define SB_BOUND_SELECTION_HASH_PROBE 1
+#include "native_bound_checkpoint_selection_memory_checks.hpp"
+#define SB_CURRENT_SOURCE_HASH_PROBE 1
+#include "native_current_checkpoint_source_memory_checks.hpp"
 void Sequences(){
  for(unsigned profile=0;profile<5;++profile){
   Fixture f(profile);f.budget*=4;
@@ -824,7 +841,17 @@ void Sequences(){
   const auto reconstructed=db::ResumeNativeManagementControlGraphOnLease(*resumed.lease,f.budget);Check(reconstructed.ok(),"cold reconstruction with original selector sequence");resumed.lease.reset();
   const auto stored=db::DecodeNativePublicationPlan(f.Read(g.plan.header.page_number));Check(stored.ok()&&stored.bytes==g.plan_bytes&&stored.plan->base_selection_generation==1&&f.Read(g.plan.target_checkpoint.page_number)==g.target_bytes,"cold reconstruction neither rewrites counter nor mints identities");
   Check(GraphRead(f,Anchor(g)).ok()&&Read(f).ok()&&Read(f).publications.empty()&&!Inventory(f,g).ok(),"reconstructed graph does not grant selected status");
+  const d::FilespaceRootReference inventory_root{9,0x300,g.plan.target_checkpoint.filespace_uuid,g.plan.target_checkpoint.page_number,
+   g.plan.target_checkpoint.page_generation,g.plan.target_checkpoint.page_size_profile_uuid,g.plan.target_checkpoint_object_uuid};
+  checkpoint_inventory_memory::Checks(f.devices,inventory_root,Inventory(f,g),f.budget);
   SelectFixture(f,g);Good(f,g,1);
+  checkpoint_inventory_memory::Checks(f.devices,inventory_root,Inventory(f,g),f.budget,true);
+  bound_selection_memory::Checks(f.devices,Bound(f),f.budget,profile==0);
+  const auto allocation=db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),f.devices,inventory_root,f.budget);
+  Check(allocation.ok(),"actual selected operation current allocation proof");
+  current_source_memory::Checks<true>(f.devices,inventory_root,allocation,f.budget,true);
+  const auto complete=Read(f);control_authority_memory::Checks(f.devices,complete,f.budget,control_authority_memory::C::selected,nullptr,nullptr,profile==0);
+
   const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
   Check(selected.ok()&&selected.snapshot->selection.selection_generation==2&&selected.snapshot->selection.checkpoint_generation==5,"selected sequence increments once despite three real reservation burns");
   for(unsigned slot=0;slot<2;++slot){const auto ref=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+slot;});auto s=*db::DecodeNativeCheckpointSelection(f.Read(ref->page_number)).selection;
@@ -841,7 +868,9 @@ void Sequences(){
 void Profiles(){
  for(unsigned profile=0;profile<5;++profile){Fixture f(profile);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);
   const auto unselected=Read(f);Check(unselected.ok()&&unselected.publications.empty()&&!Inventory(f,g).ok(),"unselected graphs cannot supply selected creator authority");
-  SelectFixture(f,g);Good(f,g,1);Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"actual reopened node");Good(f,g,1);
+  SelectFixture(f,g);Good(f,g,1);
+  const auto complete=Read(f);control_authority_memory::Checks(f.devices,complete,f.budget,control_authority_memory::C::selected,nullptr,nullptr,profile==0);
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"actual reopened node");Good(f,g,1);
   if(profile==0){Graph next(f,false,1,&g);Bundle next_bundle(next);next.plan.control_bundle=next_bundle.root;next.Refresh();Install(f,next,next_bundle);SelectFixture(f,next);Good(f,next,2);}
   Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen");const auto read=Read(f);Check(read.ok(),"read-only selected creator proof");
  }
@@ -856,6 +885,7 @@ void Graphs(){
   Check(graph.ok()&&graph.anchor==anchor&&graph.publications.size()==1&&history.ok()&&history.anchor==anchor&&history.entries.size()==1,"actual installed unselected immutable graph inspection");
   Check(!writes&&!syncs&&f.Read(0,256)==original,"unselected graph inspection cannot mutate selectors or any node byte");
   Check(Read(f).ok()&&Read(f).publications.empty()&&!Inventory(f,g).ok(),"graph inspection never promotes unselected publication");
+  control_authority_memory::Checks(f.devices,graph,f.budget,control_authority_memory::C::anchored,&anchor);
   Check(GraphRead(f,anchor,graph.verified_image_bytes).ok()&&GraphHistory(f,anchor,history.verified_image_bytes).ok(),"exact anchored verification budgets");
   Empty(GraphRead(f,anchor,graph.verified_image_bytes-1));Empty(GraphHistory(f,anchor,history.verified_image_bytes-1));
   for(unsigned field=0;field<12;++field){auto bad=anchor;

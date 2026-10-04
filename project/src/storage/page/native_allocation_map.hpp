@@ -4,6 +4,7 @@
 
 #include "native_common_page_header.hpp"
 #include "filespace_page_zero.hpp"
+#include "disk_device.hpp"
 #include <array>
 #include <optional>
 #include <span>
@@ -61,7 +62,7 @@ enum class NativeAllocationError {
   invalid_state, invalid_record, invalid_reference, invalid_integrity,
   hash_failure, resource_exhausted, invalid_filespace, binding_mismatch,
   chain_mismatch, physical_owner_mismatch, counter_mismatch, io_failure,
-  cluster_requires_authority, physical_extent_changed
+  cluster_requires_authority, physical_extent_changed, invalid_workspace
 };
 struct NativeAllocationMapResult {
   NativeAllocationError error = NativeAllocationError::invalid_family;
@@ -111,4 +112,38 @@ NativeAllocationChainResult ReadNativeAllocationChainAtHistoricalRootFromOpenDev
     const disk::FilespaceRootReference&, const std::array<byte, 32>& root_sha256,
     const std::vector<byte>& historical_page_zero,
     u64 maximum_retained_image_bytes) noexcept;
+
+enum class NativeAllocationChainReadContext { bootstrap, selected, historical };
+struct NativeAllocationChainPageView {
+  NativeAllocationMapView map;
+  std::span<const byte> image;
+};
+struct NativeAllocationChainView {
+  NativeAllocationError error=NativeAllocationError::invalid_reference;
+  std::span<const NativeAllocationChainPageView> pages;
+  std::array<u64,8> state_counts{};
+  u64 retained_image_bytes=0;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept {return error==NativeAllocationError::none&&!pages.empty();}
+};
+struct NativeAllocationChainDeviceRead {
+  NativeAllocationChainView chain;
+  core::platform::Status io_status;
+  core::platform::DiagnosticRecord io_diagnostic;
+  u64 physical_bytes_read=0;
+  bool ok() const noexcept {return chain.ok();}
+};
+// Complete bootstrap / explicit current / historical chain, sharing all owning
+// reader validation. Every image, decoded array, index and retained descriptor
+// lives in backing. The exact-device batch must outlive ALL enclosing fences.
+// All backing is disjoint from input descriptors, historical bytes, device and
+// batch objects. Failure withholds the entire chain while retaining actual I/O
+// diagnostics/bytes. No capacity, creator admission, selection or reuse grant.
+NativeAllocationChainDeviceRead ReadNativeAllocationChainInto(
+    disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
+    u64 maximum_retained_image_bytes,NativeAllocationChainReadContext,
+    const disk::FilespaceRootReference*,const std::array<byte,32>* root_sha256,
+    std::span<const byte> historical_page_zero,
+    disk::FileDevice::ReadLatencyBatch&,std::span<byte> backing) noexcept;
+
 }  // namespace scratchbird::storage::page

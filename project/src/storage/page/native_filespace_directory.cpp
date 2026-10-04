@@ -1,6 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_filespace_directory.hpp"
+#include "native_directory_chain_backing.hpp"
+#include "native_metadata_memory.hpp"
+#include <map>
 #include "native_decoded_storage_ranges.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
@@ -151,102 +154,200 @@ NativeFilespaceDirectoryViewResult DecodeNativeFilespaceDirectoryInto(std::span<
    catch(...){return {E::invalid_family,{}};}
 }
 
-static NativeFilespaceDirectoryChainResult ReadDirectory(
-    const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
+static NativeDirectoryChainView ReadDirectoryBacked(
+    const Uuid& database_uuid,std::span<const disk::NativeFilespaceDevice> devices,
     const disk::FilespaceRootReference& head,u64 budget,
-    const std::vector<NativeHistoricalFilespaceImage>* history=nullptr,
-    const std::array<byte,32>* root_sha256=nullptr) noexcept {
+    const std::span<const NativeHistoricalFilespaceImageView>* history,
+    const std::array<byte,32>* root_sha256,std::pmr::memory_resource& resource,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> observations,
+    NativeDirectoryChainDeviceRead& receipt) noexcept {
+  const auto fail=[](E e){NativeDirectoryChainView r;r.error=e;return r;};
   try{
+    disk::detail::NativeMetadataScratch scratch{&resource};
+    std::pmr::map<disk::FileDevice*,disk::FileDevice::ReadLatencyBatch*> batches(&resource);
+    const auto read=[&](disk::FileDevice& device,u64 offset,void* bytes,std::size_t count){
+      const auto it=batches.find(&device);
+      auto io=it==batches.end()?device.ReadAt(offset,bytes,count):it->second->ReadAt(offset,bytes,count);
+      receipt.io_status=io.status;receipt.io_diagnostic=std::move(io.diagnostic);
+      if(io.bytes_transferred>std::numeric_limits<u64>::max()-receipt.physical_bytes_read)throw E::invalid_reference;
+      receipt.physical_bytes_read+=io.bytes_transferred;return io;
+    };
+    const auto extent=[&](disk::FileDevice& device){auto io=device.Size();
+      receipt.io_status=io.status;receipt.io_diagnostic=std::move(io.diagnostic);return io;};
+
     if(!V7(database_uuid)||!V7(head.object_uuid)||head.kind!=5||head.page_type!=9||devices.empty()||
-        !Ref({head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid}))return ChainFail(E::invalid_reference);
+        !Ref({head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid}))return fail(E::invalid_reference);
     if(history&&(!root_sha256||Zero(root_sha256->data(),root_sha256->size())||history->size()!=devices.size()))
-      return ChainFail(E::invalid_reference);
-    auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
-    std::vector<std::unique_lock<std::recursive_mutex>> guards;std::vector<disk::FilespacePageZero> zeros;
-    std::vector<u64> sizes;
-    std::vector<const NativeHistoricalFilespaceImage*> historical_images;
+      return fail(E::invalid_reference);
+    if(!observations.empty()){
+      if(observations.size()!=devices.size())return fail(E::invalid_reference);
+      for(std::size_t i=0;i<devices.size();++i){
+        if(!devices[i].device||!observations[i]||&observations[i]->device()!=devices[i].device)return fail(E::invalid_reference);
+        batches.emplace(devices[i].device,observations[i]);
+      }
+    }
+    std::pmr::vector<disk::NativeFilespaceDevice> ordered(devices.begin(),devices.end(),&resource);std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    std::pmr::vector<std::unique_lock<std::recursive_mutex>> guards(&resource);std::pmr::vector<disk::FilespacePageZeroView> zeros(&resource);
+    std::pmr::vector<u64> sizes(&resource);
+    std::pmr::vector<const NativeHistoricalFilespaceImageView*> historical_images(&resource);
     u64 retained_bytes=0;
     guards.reserve(ordered.size());zeros.reserve(ordered.size());
-    std::set<disk::FileDevice*> device_ids;Uuid prior;
+    std::pmr::set<disk::FileDevice*> device_ids(&resource);Uuid prior;
     for(const auto& device:ordered){if(!V7(device.filespace_uuid)||!(prior<device.filespace_uuid)||!device.device||!device_ids.insert(device.device).second||
-        !disk::FindCanonicalFilespacePageProfile(device.page_size_profile_uuid))return ChainFail(E::invalid_filespace);
+        !disk::FindCanonicalFilespacePageProfile(device.page_size_profile_uuid))return fail(E::invalid_filespace);
       guards.push_back(device.device->AcquireOperationGuard());prior=device.filespace_uuid;}
     if(history){
       sizes.reserve(ordered.size());historical_images.reserve(history->size());
       for(const auto& image:*history)historical_images.push_back(&image);
       std::sort(historical_images.begin(),historical_images.end(),[](const auto* a,const auto* b){return a->filespace_uuid<b->filespace_uuid;});
       for(std::size_t i=0;i<ordered.size();++i)
-        if(historical_images[i]->filespace_uuid!=ordered[i].filespace_uuid)return ChainFail(E::invalid_filespace);
+        if(historical_images[i]->filespace_uuid!=ordered[i].filespace_uuid)return fail(E::invalid_filespace);
     }
     for(const auto& device:ordered){const disk::FilespaceBootstrapBinding binding{database_uuid,device.filespace_uuid,device.page_size_profile_uuid};
-      const std::vector<byte>* bytes=nullptr;
+      const std::span<const byte>* bytes=nullptr;
       if(history){
         bytes=&historical_images[zeros.size()]->page_zero;
-        if(bytes->size()>budget-retained_bytes)return ChainFail(E::resource_exhausted);
+        if(bytes->size()>budget-retained_bytes)return fail(E::resource_exhausted);
         retained_bytes+=bytes->size();
-        if(disk::kFilespaceBootstrapBytes>budget-retained_bytes)return ChainFail(E::resource_exhausted);
+        if(disk::kFilespaceBootstrapBytes>budget-retained_bytes)return fail(E::resource_exhausted);
         retained_bytes+=disk::kFilespaceBootstrapBytes;
       }
-      auto zero=bytes?disk::DecodeFilespacePageZero(bytes->data(),bytes->size(),&binding):
-                     disk::ReadFilespacePageZeroFromOpenDevice(*device.device,&binding);
-      if(!zero.ok())return ChainFail(zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
+      std::span<const byte> zero_image;
+      auto zero=bytes?disk::DecodeFilespacePageZeroInto(scratch.Copy<byte>(*bytes),scratch.Array<disk::FilespaceRootReference>(32),&binding):
+        disk::detail::ReadNativeMetadataPageZero(binding,scratch,
+          [&](u64 offset,void* data,std::size_t count){return read(*device.device,offset,data,count);},
+          [&]{return extent(*device.device);},zero_image);
+      if(!zero.ok())return fail(zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
         zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:
         zero.error==disk::FilespacePageZeroError::io_failure?E::io_failure:E::invalid_filespace);
       if(history){
-        const auto actual=disk::ReadFilespaceBootstrapFromOpenDevice(*device.device,&binding);
-        if(!actual.ok())return ChainFail(actual.error==disk::FilespaceBootstrapError::resource_exhausted?E::resource_exhausted:
+        auto prefix=scratch.Array<byte>(disk::kFilespaceBootstrapBytes);
+        const auto io=read(*device.device,0,prefix.data(),prefix.size());
+        if(!io.ok()||io.bytes_transferred!=prefix.size())return fail(E::io_failure);
+        const auto actual=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
+        if(!actual.ok())return fail(actual.error==disk::FilespaceBootstrapError::resource_exhausted?E::resource_exhausted:
           actual.error==disk::FilespaceBootstrapError::hash_provider_failure?E::hash_failure:
           actual.error==disk::FilespaceBootstrapError::io_failure||actual.error==disk::FilespaceBootstrapError::device_not_open?E::io_failure:E::invalid_filespace);
-        const auto size=device.device->Size();if(!size.ok())return ChainFail(E::io_failure);
-        if(size.size_bytes<zero.record->total_pages*zero.record->bootstrap.page_size_bytes)return ChainFail(E::invalid_filespace);
+        const auto size=extent(*device.device);if(!size.ok())return fail(E::io_failure);
+        if(size.size_bytes<zero.record->total_pages*zero.record->bootstrap.page_size_bytes)return fail(E::invalid_filespace);
         sizes.push_back(size.size_bytes);
       }
       zeros.push_back(std::move(*zero.record));}
-    NativeFilespaceDirectoryChainResult result;disk::NativePageReference next{head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid};
+    std::pmr::vector<NativeDirectoryChainPageView> pages(&resource);NativeDirectoryChainView result;disk::NativePageReference next{head.filespace_uuid,head.page_number,head.page_generation,head.page_size_profile_uuid};
     result.retained_image_bytes=retained_bytes;
-    std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;Uuid last_record;
+    std::pmr::set<std::pair<Uuid,u64>> slots(&resource);std::pmr::set<Uuid> page_ids(&resource);Uuid last_record;
     u64 ordinal=0;
     while(true){const auto it=std::lower_bound(ordered.begin(),ordered.end(),next.filespace_uuid,[](const auto& a,const auto& b){return a.filespace_uuid<b;});
-      if(it==ordered.end()||it->filespace_uuid!=next.filespace_uuid||it->page_size_profile_uuid!=next.page_size_profile_uuid)return ChainFail(E::invalid_filespace);
+      if(it==ordered.end()||it->filespace_uuid!=next.filespace_uuid||it->page_size_profile_uuid!=next.page_size_profile_uuid)return fail(E::invalid_filespace);
       const auto& zero=zeros[static_cast<std::size_t>(it-ordered.begin())];const auto size=zero.bootstrap.page_size_bytes;
-      if(zero.bootstrap.filespace_role>4||next.page_number>=zero.total_pages)return ChainFail(E::invalid_filespace);
-      if(!slots.insert({next.filespace_uuid,next.page_number}).second)return ChainFail(E::chain_mismatch);
-      if(size>budget-result.retained_image_bytes)return ChainFail(E::resource_exhausted);
-      std::vector<byte> bytes(size);const auto io=it->device->ReadAt(next.page_number*size,bytes.data(),size);
-      if(!io.ok()||io.bytes_transferred!=size)return ChainFail(E::io_failure);
-      if(result.pages.empty()&&root_sha256){const auto digest=Digest(bytes,false);
-        if(!digest.ok())return ChainFail(E::hash_failure);
-        if(digest.digest!=*root_sha256)return ChainFail(E::invalid_integrity);}
-      auto loaded=DecodeNativeFilespaceDirectory(bytes);if(!loaded.ok())return ChainFail(loaded.error);const auto& d=*loaded.directory;const auto& h=d.header;
+      if(zero.bootstrap.filespace_role>4||next.page_number>=zero.total_pages)return fail(E::invalid_filespace);
+      if(!slots.insert({next.filespace_uuid,next.page_number}).second)return fail(E::chain_mismatch);
+      if(size>budget-result.retained_image_bytes)return fail(E::resource_exhausted);
+      auto bytes=scratch.Array<byte>(size);const auto io=read(*it->device,next.page_number*size,bytes.data(),size);
+      if(!io.ok()||io.bytes_transferred!=size)return fail(E::io_failure);
+      if(pages.empty()&&root_sha256){const auto digest=Digest(bytes,false);
+        if(!digest.ok())return fail(E::hash_failure);
+        if(digest.digest!=*root_sha256)return fail(E::invalid_integrity);}
+      const auto count=std::min<std::size_t>(LoadLittle32(bytes.data()+208),(bytes.size()-384)/192);
+      auto loaded=DecodeNativeFilespaceDirectoryInto(bytes,scratch.Array<NativeFilespaceDirectoryRecord>(count),scratch.Array<Uuid>(count));
+      if(!loaded.ok())return fail(loaded.error);const auto& d=*loaded.directory;const auto& h=d.header;
       if(h.database_uuid!=database_uuid||h.filespace_uuid!=next.filespace_uuid||h.page_size_profile_uuid!=next.page_size_profile_uuid||
-          h.page_number!=next.page_number||h.page_generation!=next.page_generation||d.object_uuid!=head.object_uuid)return ChainFail(E::binding_mismatch);
-      if(!page_ids.insert(h.page_uuid).second||d.first_record!=ordinal||!(last_record<d.records.front().bootstrap.filespace_uuid))return ChainFail(E::chain_mismatch);
-      if(!result.pages.empty()){const auto& first=*result.pages.front().directory;const auto& prev=*result.pages.back().directory;
-        const auto digest=Digest(bytes,false);if(!digest.ok())return ChainFail(E::hash_failure);
-        if(digest.digest!=prev.next_sha256)return ChainFail(E::invalid_integrity);
+          h.page_number!=next.page_number||h.page_generation!=next.page_generation||d.object_uuid!=head.object_uuid)return fail(E::binding_mismatch);
+      if(!page_ids.insert(h.page_uuid).second||d.first_record!=ordinal||!(last_record<d.records.front().bootstrap.filespace_uuid))return fail(E::chain_mismatch);
+      if(!pages.empty()){const auto& first=pages.front().directory;const auto& prev=pages.back().directory;
+        const auto digest=Digest(bytes,false);if(!digest.ok())return fail(E::hash_failure);
+        if(digest.digest!=prev.next_sha256)return fail(E::invalid_integrity);
         if(d.directory_generation!=first.directory_generation||d.creator_transaction_uuid!=first.creator_transaction_uuid||
-            d.creator_local_transaction_id!=first.creator_local_transaction_id||d.creator_operation_uuid!=first.creator_operation_uuid||d.total_records!=first.total_records)return ChainFail(E::chain_mismatch);}
+            d.creator_local_transaction_id!=first.creator_local_transaction_id||d.creator_operation_uuid!=first.creator_operation_uuid||d.total_records!=first.total_records)return fail(E::chain_mismatch);}
       ordinal+=d.records.size();last_record=d.records.back().bootstrap.filespace_uuid;
-      const auto successor=d.next;result.retained_image_bytes+=size;result.pages.push_back(std::move(loaded));
+      const auto successor=d.next;result.retained_image_bytes+=size;pages.push_back({d,bytes});
       if(!successor)break;next=*successor;
     }
-    std::vector<const NativeFilespaceDirectoryRecord*> records;
-    for(const auto& image:result.pages)for(const auto& r:image.directory->records){
-      if(!page_ids.insert(r.page_zero_uuid).second)return ChainFail(E::chain_mismatch);records.push_back(&r);}
+    std::pmr::vector<const NativeFilespaceDirectoryRecord*> records(&resource);
+    for(const auto& image:pages)for(const auto& r:image.directory.records){
+      if(!page_ids.insert(r.page_zero_uuid).second)return fail(E::chain_mismatch);records.push_back(&r);}
     const auto lookup=[&](const Uuid& id){return std::lower_bound(records.begin(),records.end(),id,[](const auto* a,const auto& b){return a->bootstrap.filespace_uuid<b;});};
     for(const auto& zero:zeros){const auto it=lookup(zero.bootstrap.filespace_uuid);
-      if(it==records.end()||(*it)->bootstrap.filespace_uuid!=zero.bootstrap.filespace_uuid)return ChainFail(E::binding_mismatch);const auto& r=**it;
+      if(it==records.end()||(*it)->bootstrap.filespace_uuid!=zero.bootstrap.filespace_uuid)return fail(E::binding_mismatch);const auto& r=**it;
       if(!SameBootstrap(r.bootstrap,zero.bootstrap)||r.page_zero_uuid!=zero.page_uuid||r.page_zero_generation!=zero.page_generation||
-          r.root_set_generation!=zero.root_set_generation||r.total_pages!=zero.total_pages)return ChainFail(E::binding_mismatch);}
+          r.root_set_generation!=zero.root_set_generation||r.total_pages!=zero.total_pages)return fail(E::binding_mismatch);}
     for(const auto* r:records)if(r->operation){const auto it=lookup(r->operation->filespace_uuid);
       if(it!=records.end()&&(*it)->bootstrap.filespace_uuid==r->operation->filespace_uuid&&
-          ((*it)->bootstrap.page_size_profile_uuid!=r->operation->page_size_profile_uuid||r->operation->page_number>=(*it)->total_pages))return ChainFail(E::invalid_reference);}
+          ((*it)->bootstrap.page_size_profile_uuid!=r->operation->page_size_profile_uuid||r->operation->page_number>=(*it)->total_pages))return fail(E::invalid_reference);}
     if(history)for(std::size_t i=0;i<ordered.size();++i){
-      const auto size=ordered[i].device->Size();if(!size.ok())return ChainFail(E::io_failure);
-      if(size.size_bytes!=sizes[i])return ChainFail(E::physical_extent_changed);
+      const auto size=extent(*ordered[i].device);if(!size.ok())return fail(E::io_failure);
+      if(size.size_bytes!=sizes[i])return fail(E::physical_extent_changed);
     }
-    result.error=E::none;return result;
-  }catch(const std::bad_alloc&){return ChainFail(E::resource_exhausted);}catch(const std::length_error&){return ChainFail(E::resource_exhausted);}catch(...){return ChainFail(E::io_failure);}
+    result.pages=scratch.Copy<NativeDirectoryChainPageView>(pages);result.error=E::none;return result;
+  }catch(E e){return fail(e);}catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::io_failure);}
+}
+
+
+static NativeFilespaceDirectoryChainResult ReadDirectory(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& files,
+    const disk::FilespaceRootReference& head,u64 budget,
+    const std::vector<NativeHistoricalFilespaceImage>* history=nullptr,
+    const std::array<byte,32>* root_sha256=nullptr) noexcept {
+  try{
+    disk::detail::NativeMetadataHeapMemory heap;std::pmr::monotonic_buffer_resource resource(&heap);
+    disk::detail::NativeMetadataScratch scratch{&resource};
+    std::span<NativeHistoricalFilespaceImageView> input;
+    if(history){input=scratch.Array<NativeHistoricalFilespaceImageView>(history->size());
+      for(std::size_t i=0;i<history->size();++i)input[i]={(*history)[i].filespace_uuid,(*history)[i].page_zero};}
+    const std::span<const NativeHistoricalFilespaceImageView> retained=input;
+    NativeDirectoryChainDeviceRead receipt;
+    const auto view=ReadDirectoryBacked(database,files,head,budget,history?&retained:nullptr,
+      root_sha256,resource,{},receipt);
+    if(!view.ok())return ChainFail(view.error);
+    NativeFilespaceDirectoryChainResult out;out.retained_image_bytes=view.retained_image_bytes;
+    out.pages.reserve(view.pages.size());
+    // Owning compatibility materializes only after complete source verification.
+    for(const auto& image:view.pages){
+      const auto& d=image.directory;NativeFilespaceDirectory copy;
+      copy.header=d.header;copy.object_uuid=d.object_uuid;copy.directory_generation=d.directory_generation;
+      copy.creator_transaction_uuid=d.creator_transaction_uuid;copy.creator_local_transaction_id=d.creator_local_transaction_id;
+      copy.creator_operation_uuid=d.creator_operation_uuid;copy.total_records=d.total_records;
+      copy.first_record=d.first_record;copy.next=d.next;copy.next_sha256=d.next_sha256;
+      copy.records.assign(d.records.begin(),d.records.end());
+      NativeFilespaceDirectoryResult page;page.error=E::none;page.directory=std::move(copy);
+      page.bytes.assign(image.image.begin(),image.image.end());out.pages.push_back(std::move(page));
+    }
+    out.error=E::none;return out;
+  }catch(const std::bad_alloc&){return ChainFail(E::resource_exhausted);}
+   catch(const std::length_error&){return ChainFail(E::resource_exhausted);}
+   catch(...){return ChainFail(E::io_failure);}
+}
+NativeDirectoryChainDeviceRead detail::ReadNativeDirectoryChainBacked(
+    const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,
+    const disk::FilespaceRootReference& head,u64 budget,NativeDirectoryChainReadContext context,
+    const std::array<byte,32>* root_sha256,std::span<const NativeHistoricalFilespaceImageView> history,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches,std::pmr::memory_resource& resource) noexcept {
+  NativeDirectoryChainDeviceRead out;using C=NativeDirectoryChainReadContext;
+  if((context!=C::current&&context!=C::historical)||
+     (context==C::historical?(!root_sha256||history.size()!=files.size()):(root_sha256||!history.empty()))||
+     files.empty()||files.size()!=batches.size())return out;
+  out.chain=ReadDirectoryBacked(database,files,head,budget,context==C::historical?&history:nullptr,
+    root_sha256,resource,batches,out);return out;
+}
+NativeDirectoryChainDeviceRead ReadNativeFilespaceDirectoryChainInto(
+    const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,
+    const disk::FilespaceRootReference& head,u64 budget,NativeDirectoryChainReadContext context,
+    const std::array<byte,32>* root_sha256,std::span<const NativeHistoricalFilespaceImageView> history,
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches,std::span<byte> backing) noexcept {
+  NativeDirectoryChainDeviceRead out;using C=NativeDirectoryChainReadContext;
+  if((context!=C::current&&context!=C::historical)||
+     (context==C::historical?(!root_sha256||history.size()!=files.size()):(root_sha256||!history.empty()))||
+     files.empty()||files.size()!=batches.size())return out;
+  for(std::size_t i=0;i<files.size();++i)if(!files[i].device||!batches[i]||&batches[i]->device()!=files[i].device)return out;
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(backing,input);};
+  bool valid=disjoint(std::span{&database,1})&&disjoint(files)&&disjoint(std::span{&head,1})&&
+    disjoint(history)&&disjoint(batches)&&(!root_sha256||disjoint(std::span{root_sha256,1}));
+  for(std::size_t i=0;i<files.size();++i)valid=valid&&disjoint(std::span{files[i].device,1})&&disjoint(std::span{batches[i],1});
+  for(const auto& entry:history)valid=valid&&disjoint(entry.page_zero);
+  if(!valid){out.chain.error=E::invalid_backing;return out;}
+  disk::detail::NativeMetadataMemory resource(backing);
+  out=detail::ReadNativeDirectoryChainBacked(database,files,head,budget,context,root_sha256,history,batches,resource);
+  if(out.ok())out.chain.backing_bytes_used=resource.used();return out;
 }
 NativeFilespaceDirectoryChainResult ReadNativeFilespaceDirectoryFromOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,

@@ -49,6 +49,9 @@ struct NativeManagementControlBundleViewRead {
   u64 total_pages=0;
   std::span<const std::span<const byte>> inventory_images,directory_images,growth_images;
   std::size_t backing_bytes_used=0;
+  // Actual-file reads retain exact physical chunks in the same backing.
+  // Pure decoding does not claim observation of physical storage.
+  std::span<const std::span<const byte>> physical_images;
   bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&!allocation_images.empty()&&!page_headers.empty()&&total_pages;}
 };
 // Complete shared validation of every bundle/image family. The supplied buffer
