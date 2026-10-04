@@ -122,6 +122,31 @@ IntervalIndexCandidateFactsV3 ClassifyIntervalIndexCandidateV3(
     bool source_row_predicate_equal) noexcept;
 IntervalIndexProjectionResultV3 ProjectIntervalIndexValueV3(
     const IntervalIndexProjectionRequestV3& request) noexcept;
+
+struct IntervalEqualityProjectionValidationResultV3 {
+  Status status;
+  IntervalDiagnosticFactV3 diagnostic;
+  IntervalIndexResolutionV3 resolution;
+  IntervalIndexCandidateFactsV3 candidate;
+  IntervalValueStateV3 projected_state = IntervalValueStateV3::value;
+  bool projection_candidate_equal = false;
+  bool exact_state_component_equal = false;
+  bool ok() const noexcept { return status.ok(); }
+};
+
+// Validates one stored SBINIH01 candidate against an exact comparison value,
+// then performs the mandatory source-row state/component recheck against the
+// supplied candidate value. Candidate mismatch is a successful validation
+// result with final_match=false; malformed or unauthenticated bytes are an
+// error and publish only the default result.
+IntervalEqualityProjectionValidationResultV3
+ValidateIntervalEqualityProjectionV3(
+    const IntervalIndexCompatibilityIdentityV3& expected_family,
+    std::span<const byte> encoded,
+    const IntervalOwnedValueV3& candidate_value,
+    const IntervalOwnedValueV3& comparison_value,
+    const IntervalExecutionControlV3& control = {}) noexcept;
+
 struct IntervalCoveringValueViewV3 {
   const IntervalValidatedProfileHandleV3* profile_handle = nullptr;
   IntervalValueStateV3 state = IntervalValueStateV3::value;
@@ -214,6 +239,13 @@ struct IntervalStatisticsReceivingFactsV3 {
   u64 schema_epoch = 0;
   u64 collection_epoch = 0;
   u64 security_epoch = 0;
+  platform::Uuid statistics_snapshot_uuid{};
+  bool authenticated_population = false;
+  u64 row_count = 0;
+  u64 null_count = 0;
+  u64 value_count = 0;
+  u64 equality_distinct_estimate = 0;
+  std::span<const IntervalStatisticsMcvRecordV3> mcv;
 };
 
 enum class IntervalStatisticsReceivingDispositionV3 : std::uint8_t {

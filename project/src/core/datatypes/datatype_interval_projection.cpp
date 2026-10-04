@@ -258,6 +258,15 @@ IntervalIndexProjectionResultV3 FailIndex(const IntervalIndexResolutionV3& reque
   IntervalIndexProjectionResultV3 r;r.requested_resolution=requested;r.resolution=effective;
   r.status=code=="RESOURCE.BUDGET_EXCEEDED"?BudgetError():Error();r.diagnostic={r.status,code,detail};r.owner_fact_only=owner;return r;
 }
+IntervalEqualityProjectionValidationResultV3 FailEquality(
+    const IntervalIndexResolutionV3& resolution, std::string_view code,
+    std::string_view detail = {}) noexcept {
+  IntervalEqualityProjectionValidationResultV3 result;
+  result.resolution = resolution;
+  result.status = code == "RESOURCE.BUDGET_EXCEEDED" ? BudgetError() : Error();
+  result.diagnostic = {result.status, code, detail};
+  return result;
+}
 bool ValidFamily(IntervalIndexFamilyV3 f) noexcept {return static_cast<unsigned>(f)<16;}
 bool SameResolution(const IntervalIndexResolutionV3& a,const IntervalIndexResolutionV3& b) noexcept {
  return a.family==b.family&&a.compatibility_uuid==b.compatibility_uuid&&a.compatibility_generation==b.compatibility_generation&&a.disposition==b.disposition&&a.projection==b.projection&&a.exact_state_component_recheck_required==b.exact_state_component_recheck_required&&a.receiving_owner_resolution_required==b.receiving_owner_resolution_required;
@@ -274,6 +283,12 @@ void EncodeComponentRaw(const IntervalOwnedValueV3& v,byte* p) noexcept {
 }
 void EncodeComponentRaw(const IntervalValueViewV3& v,byte* p) noexcept {
   StoreLittle32(p,static_cast<u32>(v.months));StoreLittle32(p+4,static_cast<u32>(v.civil_days));StoreLittle64(p+8,static_cast<u64>(v.fixed_nanoseconds));
+}
+bool SameExactIntervalValue(const IntervalOwnedValueV3& a,
+                            const IntervalOwnedValueV3& b) noexcept {
+  return a.state == b.state && a.months == b.months &&
+      a.civil_days == b.civil_days &&
+      a.fixed_nanoseconds == b.fixed_nanoseconds;
 }
 
 bool CanonicalMcv(std::span<const IntervalStatisticsMcvRecordV3> rows,u64 value_count) noexcept {
@@ -351,7 +366,7 @@ IntervalIndexPredicateResolutionV3 ResolveIntervalIndexPredicateV3(const Interva
   r.diagnostic="OPTIMIZER.INDEX_COMPATIBILITY_MISSING";return r;
 }
 IntervalIndexCandidateFactsV3 ClassifyIntervalIndexCandidateV3(IntervalIndexPredicateFactV3 fact,bool candidate,bool exact,bool source) noexcept {
-  using D=IntervalIndexCandidateDispositionV3;using F=IntervalIndexPredicateFactV3;IntervalIndexCandidateFactsV3 r;if(!candidate||fact==F::refused)return r;if(fact==F::exact_no_recheck_after_decode_reencode){r.disposition=D::exact_match;r.final_match=true;return r;}if(fact==F::requires_exact_state_component_recheck_never_final_match){r.exact_state_component_recheck_required=true;r.final_match=exact;r.disposition=exact?D::exact_match:D::exact_state_component_recheck_required;return r;}if(fact==F::prune_only_mandatory_source_row_predicate_recheck_never_final_match){r.source_row_predicate_recheck_required=true;r.final_match=source;r.disposition=source?D::exact_match:D::source_row_predicate_recheck_required;}return r;
+  using D=IntervalIndexCandidateDispositionV3;using F=IntervalIndexPredicateFactV3;IntervalIndexCandidateFactsV3 r;if(!candidate||fact==F::refused)return r;if(fact==F::exact_no_recheck_after_decode_reencode){r.disposition=D::exact_match;r.final_match=true;return r;}if(fact==F::requires_exact_state_component_recheck_never_final_match){r.exact_state_component_recheck_required=true;r.final_match=exact;r.disposition=exact?D::exact_match:D::exact_state_component_recheck_required;return r;}if(fact==F::prune_only_mandatory_source_row_predicate_recheck_never_final_match){r.source_row_predicate_recheck_required=true;r.final_match=exact&&source;r.disposition=r.final_match?D::exact_match:D::source_row_predicate_recheck_required;}return r;
 }
 
 IntervalBytesResultV3 EncodeIntervalCoveringValueV3(const IntervalOwnedValueV3& input,const IntervalExecutionControlV3& c) noexcept {
@@ -387,9 +402,120 @@ IntervalIndexProjectionResultV3 ProjectIntervalIndexValueV3(const IntervalIndexP
   if(q.control.maximum_allocation_bytes<need)return FailIndex(requested,effective,"RESOURCE.BUDGET_EXCEEDED","allocation_grant");
   if(Cancelled(q.control))return FailIndex(requested,effective,"PROCESS.CANCELLED","before_allocation");
   IntervalIndexProjectionResultV3 out;out.requested_resolution=requested;out.resolution=effective;VectorClearGuard clear(&out.bytes,IntervalScrubClassV3::projection_owned_buffer,&q.control);if(!Reserve(&out.bytes,need))return FailIndex(requested,effective,"RESOURCE.BUDGET_EXCEEDED","allocation");
-  if(effective.projection==P::covering_value){out.bytes[0]=q.value->state==IntervalValueStateV3::sql_null?1:0;if(need==17)EncodeComponentRaw(*q.value,out.bytes.data()+1);auto self_control=q.control;self_control.maximum_allocation_bytes=~u64{0};self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;if(!DecodeIntervalCoveringValueNoAllocV3(*q.value->profile,true,out.bytes,self_control).ok())return FailIndex(requested,effective,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");}else if(effective.projection==P::equality_hash){auto* b=out.bytes.data();std::memcpy(b,"SBINIH01",8);StoreUuid(b+8,q.value->profile->receipt.catalog_snapshot_uuid);StoreLittle64(b+24,q.value->profile->receipt.catalog_generation);StoreLittle64(b+32,q.value->profile->receipt.registry_generation);std::memcpy(b+40,q.value->profile->equality_fingerprint.data(),32);StorePolicy(b+72,q.value->profile->index_policy);StoreUuid(b+96,effective.compatibility_uuid);StoreLittle64(b+112,effective.compatibility_generation);b[120]=q.value->state==IntervalValueStateV3::sql_null?1:0;std::array<byte,32> hash{};ArrayClearGuard<32> hash_clear(&hash,IntervalScrubClassV3::equality_projection,&q.control);auto hash_control=q.control;hash_control.maximum_allocation_bytes=~u64{0};const auto hr=HashIntervalValueIntoNoAllocV3(*q.value,hash.data(),hash.size(),hash_control);if(!hr.ok()||hr.bytes_written!=32)return FailIndex(requested,effective,hr.diagnostic.diagnostic_code,hr.diagnostic.detail);std::memcpy(b+128,hash.data(),32);if(q.control.force_reencode_mismatch_for_conformance)return FailIndex(requested,effective,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","equality_projection_reencode");}else return FailIndex(requested,effective,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING","projection_absent",true);
+  if(effective.projection==P::covering_value){out.bytes[0]=q.value->state==IntervalValueStateV3::sql_null?1:0;if(need==17)EncodeComponentRaw(*q.value,out.bytes.data()+1);auto self_control=q.control;self_control.maximum_allocation_bytes=~u64{0};self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;if(!DecodeIntervalCoveringValueNoAllocV3(*q.value->profile,true,out.bytes,self_control).ok())return FailIndex(requested,effective,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","covering_self_check");}else if(effective.projection==P::equality_hash){auto* b=out.bytes.data();std::memcpy(b,"SBINIH01",8);StoreUuid(b+8,q.value->profile->receipt.catalog_snapshot_uuid);StoreLittle64(b+24,q.value->profile->receipt.catalog_generation);StoreLittle64(b+32,q.value->profile->receipt.registry_generation);std::memcpy(b+40,q.value->profile->equality_fingerprint.data(),32);StorePolicy(b+72,q.value->profile->index_policy);StoreUuid(b+96,effective.compatibility_uuid);StoreLittle64(b+112,effective.compatibility_generation);b[120]=q.value->state==IntervalValueStateV3::sql_null?1:0;std::array<byte,32> hash{};ArrayClearGuard<32> hash_clear(&hash,IntervalScrubClassV3::equality_projection,&q.control);auto hash_control=q.control;hash_control.maximum_allocation_bytes=~u64{0};hash_control.cancelled=nullptr;hash_control.cancellation_context=nullptr;const auto hr=HashIntervalValueIntoNoAllocV3(*q.value,hash.data(),hash.size(),hash_control);if(!hr.ok()||hr.bytes_written!=32)return FailIndex(requested,effective,hr.diagnostic.diagnostic_code,hr.diagnostic.detail);std::memcpy(b+128,hash.data(),32);auto self_control=q.control;self_control.maximum_allocation_bytes=~u64{0};self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;const IntervalIndexCompatibilityIdentityV3 identity{effective.family,effective.compatibility_uuid,effective.compatibility_generation};const auto self=ValidateIntervalEqualityProjectionV3(identity,out.bytes,*q.value,*q.value,self_control);if(!self.ok()||!self.candidate.final_match)return FailIndex(requested,effective,self.ok()?"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID":self.diagnostic.diagnostic_code,self.ok()?"equality_projection_self_check":self.diagnostic.detail);}else return FailIndex(requested,effective,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING","projection_absent",true);
   if(Cancelled(q.control))return FailIndex(requested,effective,"PROCESS.CANCELLED","before_publication");
   out.status=Ok();clear.Disarm();return out;
+}
+
+IntervalEqualityProjectionValidationResultV3
+ValidateIntervalEqualityProjectionV3(
+    const IntervalIndexCompatibilityIdentityV3& expected_family,
+    std::span<const byte> encoded,
+    const IntervalOwnedValueV3& candidate_input,
+    const IntervalOwnedValueV3& comparison_input,
+    const IntervalExecutionControlV3& control) noexcept {
+  IntervalIndexResolutionV3 resolution;
+  resolution.family = expected_family.family;
+
+  const auto candidate = candidate_input;
+  const auto comparison = comparison_input;
+  const auto candidate_valid = ValidateValue(candidate, &control);
+  if (!candidate_valid.status.ok())
+    return FailEquality(resolution, candidate_valid.diagnostic_code,
+                        candidate_valid.detail);
+  const auto comparison_valid = ValidateValue(comparison, &control);
+  if (!comparison_valid.status.ok())
+    return FailEquality(resolution, comparison_valid.diagnostic_code,
+                        comparison_valid.detail);
+  if (!SameProfile(*candidate.profile, *comparison.profile))
+    return FailEquality(resolution, "CTI.INTERVAL.DESCRIPTOR_INVALID",
+                        "equality_projection_profile_mismatch");
+
+  if (encoded.size() != kEqualityProjectionBytes ||
+      std::memcmp(encoded.data(), "SBINIH01", 8) != 0)
+    return FailEquality(resolution, "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                        "equality_projection_structure");
+  byte reserved = 0;
+  for (std::size_t i = 121; i < 128; ++i) reserved |= encoded[i];
+  if (reserved != 0 || encoded[120] > 1)
+    return FailEquality(resolution, "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                        "equality_projection_state_reserved");
+
+  const auto& profile = *candidate.profile;
+  if (LoadUuid(encoded.data() + 8) != profile.receipt.catalog_snapshot_uuid ||
+      LoadLittle64(encoded.data() + 24) != profile.receipt.catalog_generation ||
+      LoadLittle64(encoded.data() + 32) != profile.receipt.registry_generation ||
+      std::memcmp(encoded.data() + 40, profile.equality_fingerprint.data(), 32) != 0 ||
+      !PolicyEquals(encoded.data() + 72, profile.index_policy))
+    return FailEquality(resolution, "CTI.INTERVAL.DESCRIPTOR_INVALID",
+                        "equality_projection_authority");
+
+  const auto admitted = AdmitIntervalIndexCompatibilityV3(expected_family);
+  resolution = admitted.resolution;
+  if (!admitted.admitted ||
+      (resolution.family != IntervalIndexFamilyV3::bitmap &&
+       resolution.family != IntervalIndexFamilyV3::hash) ||
+      resolution.projection != IntervalProjectionKindV3::equality_hash) {
+    return FailEquality(resolution, "OPTIMIZER.INDEX_COMPATIBILITY_MISSING",
+                        "equality_projection_family");
+  }
+  if (LoadUuid(encoded.data() + 96) != resolution.compatibility_uuid ||
+      LoadLittle64(encoded.data() + 112) != resolution.compatibility_generation)
+    return FailEquality(resolution, "OPTIMIZER.INDEX_COMPATIBILITY_MISSING",
+                        "equality_projection_family");
+
+  const auto projected_state = encoded[120] == 1
+      ? IntervalValueStateV3::sql_null : IntervalValueStateV3::value;
+  std::array<byte, 32> comparison_hash{};
+  ArrayClearGuard<32> hash_clear(&comparison_hash,
+                                IntervalScrubClassV3::equality_projection,
+                                &control);
+  auto hash_control = control;
+  hash_control.maximum_allocation_bytes = ~u64{0};
+  hash_control.cancelled = nullptr;
+  hash_control.cancellation_context = nullptr;
+  const auto hashed = HashIntervalValueIntoNoAllocV3(
+      comparison, comparison_hash.data(), comparison_hash.size(), hash_control);
+  if (!hashed.ok() || hashed.bytes_written != comparison_hash.size())
+    return FailEquality(resolution, hashed.diagnostic.diagnostic_code,
+                        hashed.diagnostic.detail);
+
+  std::array<byte, kEqualityProjectionBytes> canonical{};
+  ArrayClearGuard<kEqualityProjectionBytes> canonical_clear(
+      &canonical, IntervalScrubClassV3::equality_projection, &control);
+  std::memcpy(canonical.data(), "SBINIH01", 8);
+  StoreUuid(canonical.data() + 8, profile.receipt.catalog_snapshot_uuid);
+  StoreLittle64(canonical.data() + 24, profile.receipt.catalog_generation);
+  StoreLittle64(canonical.data() + 32, profile.receipt.registry_generation);
+  std::memcpy(canonical.data() + 40, profile.equality_fingerprint.data(), 32);
+  StorePolicy(canonical.data() + 72, profile.index_policy);
+  StoreUuid(canonical.data() + 96, resolution.compatibility_uuid);
+  StoreLittle64(canonical.data() + 112, resolution.compatibility_generation);
+  canonical[120] = encoded[120];
+  std::memcpy(canonical.data() + 128, encoded.data() + 128, 32);
+  if (control.force_reencode_mismatch_for_conformance ||
+      std::memcmp(canonical.data(), encoded.data(), canonical.size()) != 0)
+    return FailEquality(resolution, "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+                        "equality_projection_reencode");
+
+  const bool projection_equal = projected_state == comparison.state &&
+      ConstantTimeEqual(encoded.data() + 128, comparison_hash.data(), 32);
+  const bool exact_equal = SameExactIntervalValue(candidate, comparison);
+  if (Cancelled(control))
+    return FailEquality(resolution, "PROCESS.CANCELLED",
+                        "equality_projection_before_publication");
+
+  IntervalEqualityProjectionValidationResultV3 result;
+  result.status = Ok();
+  result.resolution = resolution;
+  result.projected_state = projected_state;
+  result.projection_candidate_equal = projection_equal;
+  result.exact_state_component_equal = exact_equal;
+  result.candidate = ClassifyIntervalIndexCandidateV3(
+      IntervalIndexPredicateFactV3::
+          requires_exact_state_component_recheck_never_final_match,
+      projection_equal, exact_equal, false);
+  return result;
 }
 
 namespace {
@@ -402,6 +528,14 @@ bool IsAuthorityUuid(const IntervalValidatedProfileHandleV3& h,const platform::U
   const auto bytes=u.bytes;
   const std::array<byte,15> prefix{{0x01,0xa1,0x06,0x64,0x77,0xd0,0x73,0xf4,0xa0,0xdd,0xb6,0x87,0x2f,0xd4,0x1a}};
   if(std::equal(prefix.begin(),prefix.end(),bytes.begin())&&((bytes[15]>=0xb1&&bytes[15]<=0xb6)||(bytes[15]>=0xba&&bytes[15]<=0xc9)))return true;
+  // The exact base.interval diagnostic authority set is the closed published
+  // route table. Instance identities may not reuse any of those UUIDs.
+  for (const auto& route : IntervalDiagnosticMetricRoutesV3())
+    if (u == route.key.diagnostic_uuid) return true;
+  // CTI.DONOR.MAPPING_MISSING is registered for base.interval but deliberately
+  // has no generation-1 metric route. It remains a diagnostic authority UUID.
+  if (u == Uuid({0x94,0xda,0x3a,0xc4,0xab,0x0a,0x5a,0xa3,
+                 0xbc,0x5d,0xab,0x4b,0x2a,0x72,0xd7,0x30})) return true;
   return false;
 }
 bool ValidInstanceUuids(const IntervalValidatedProfileHandleV3& h,const platform::Uuid& statistics,const platform::Uuid& source,const platform::Uuid& provider) noexcept {
@@ -411,6 +545,106 @@ void WriteStatisticsFixed(byte* b,const IntervalValidatedProfileHandleV3& h,u32 
   std::memcpy(b,kStatisticsMagic,8);StoreLittle16(b+8,1);StoreLittle16(b+10,kIntervalStatisticsHeaderBytesV3);StoreLittle32(b+12,total);StoreLittle32(b+16,1);StoreLittle32(b+20,count);PutCommonIdentity(b+32,h);StorePolicy(b+144,h.statistics_policy);StorePolicy(b+168,h.identity.hash_policy);StorePolicy(b+192,h.identity.ordering_policy);StorePolicy(b+216,h.storage_epoch_policy);StoreUuid(b+264,statistics);StoreUuid(b+280,source);StoreUuid(b+296,provider);StoreLittle64(b+312,schema);StoreLittle64(b+320,collection);StoreLittle64(b+328,security);StoreLittle64(b+336,rows);StoreLittle64(b+344,nulls);StoreLittle64(b+352,values);StoreLittle64(b+360,distinct);std::memcpy(b+400,h.profile_fingerprint.data(),32);
 }
 void WriteMcv(byte* b,const IntervalStatisticsMcvRecordV3& row) noexcept {std::memcpy(b,row.value_hash.data(),32);StoreLittle64(b+32,row.frequency);StoreLittle32(b+40,row.rank);StoreLittle32(b+44,row.flags);}
+bool SelfValidateStatisticsEncoding(
+    const IntervalValidatedProfileHandleV3& profile,
+    std::span<const byte> encoded,
+    const IntervalExecutionControlV3& control) noexcept {
+  if (encoded.size() < kIntervalStatisticsHeaderBytesV3 ||
+      encoded.size() > kIntervalStatisticsMaximumBytesV3 ||
+      std::memcmp(encoded.data(), kStatisticsMagic, 8) != 0 ||
+      LoadLittle16(encoded.data() + 8) != 1 ||
+      LoadLittle16(encoded.data() + 10) != kIntervalStatisticsHeaderBytesV3)
+    return false;
+  const u32 total = LoadLittle32(encoded.data() + 12);
+  const u32 flags = LoadLittle32(encoded.data() + 16);
+  const u32 count = LoadLittle32(encoded.data() + 20);
+  if (flags != 1 || count > kIntervalStatisticsMaximumMcvRecordsV3 ||
+      total != encoded.size() ||
+      total != kIntervalStatisticsHeaderBytesV3 +
+          count * kIntervalStatisticsMcvRecordBytesV3)
+    return false;
+  byte reserved = 0;
+  for (std::size_t i = 24; i < 32; ++i) reserved |= encoded[i];
+  for (std::size_t i = 132; i < 136; ++i) reserved |= encoded[i];
+  for (std::size_t i = 240; i < 264; ++i) reserved |= encoded[i];
+  for (std::size_t i = 432; i < 448; ++i) reserved |= encoded[i];
+  if (reserved != 0) return false;
+
+  std::array<byte, 32> digest{};
+  ArrayClearGuard<32> digest_clear(
+      &digest, IntervalScrubClassV3::statistics_prior_hash, &control);
+  if (!HashRecord(kStatisticsDomain, encoded, 368, false, &digest, &control) ||
+      !ConstantTimeEqual(digest.data(), encoded.data() + 368, digest.size()))
+    return false;
+  if (!CommonIdentityEquals(encoded.data() + 32, profile) ||
+      !PolicyEquals(encoded.data() + 144, profile.statistics_policy) ||
+      !PolicyEquals(encoded.data() + 168, profile.identity.hash_policy) ||
+      !PolicyEquals(encoded.data() + 192, profile.identity.ordering_policy) ||
+      !PolicyEquals(encoded.data() + 216, profile.storage_epoch_policy) ||
+      std::memcmp(encoded.data() + 400, profile.profile_fingerprint.data(), 32) != 0)
+    return false;
+
+  const auto statistics = LoadUuid(encoded.data() + 264);
+  const auto source = LoadUuid(encoded.data() + 280);
+  const auto provider = LoadUuid(encoded.data() + 296);
+  const u64 schema = LoadLittle64(encoded.data() + 312);
+  const u64 collection = LoadLittle64(encoded.data() + 320);
+  const u64 security = LoadLittle64(encoded.data() + 328);
+  const u64 rows = LoadLittle64(encoded.data() + 336);
+  const u64 nulls = LoadLittle64(encoded.data() + 344);
+  const u64 values = LoadLittle64(encoded.data() + 352);
+  const u64 distinct = LoadLittle64(encoded.data() + 360);
+  if (!ValidInstanceUuids(profile, statistics, source, provider) || schema == 0 ||
+      collection == 0 || security == 0 ||
+      !CountsValid(rows, nulls, values, distinct))
+    return false;
+
+  std::array<byte, kIntervalStatisticsMaximumBytesV3> canonical{};
+  ArrayClearGuard<kIntervalStatisticsMaximumBytesV3> canonical_clear(
+      &canonical, IntervalScrubClassV3::statistics_decode_reencode, &control);
+  WriteStatisticsFixed(canonical.data(), profile, total, count, statistics,
+                       source, provider, schema, collection, security, rows,
+                       nulls, values, distinct);
+  for (u32 i = 0; i < count; ++i) {
+    const byte* input = encoded.data() + kIntervalStatisticsHeaderBytesV3 +
+        i * kIntervalStatisticsMcvRecordBytesV3;
+    IntervalStatisticsMcvRecordV3 row;
+    std::memcpy(row.value_hash.data(), input, row.value_hash.size());
+    row.frequency = LoadLittle64(input + 32);
+    row.rank = LoadLittle32(input + 40);
+    row.flags = LoadLittle32(input + 44);
+    if (row.frequency > values || row.rank != i + 1 || row.flags != 1)
+      return false;
+    for (u32 j = 0; j < i; ++j) {
+      const byte* prior = encoded.data() + kIntervalStatisticsHeaderBytesV3 +
+          j * kIntervalStatisticsMcvRecordBytesV3;
+      if (std::memcmp(prior, row.value_hash.data(), row.value_hash.size()) == 0)
+        return false;
+    }
+    if (i != 0) {
+      const byte* prior = input - kIntervalStatisticsMcvRecordBytesV3;
+      const u64 prior_frequency = LoadLittle64(prior + 32);
+      if (prior_frequency < row.frequency ||
+          (prior_frequency == row.frequency &&
+           std::memcmp(prior, row.value_hash.data(), row.value_hash.size()) >= 0))
+        return false;
+    }
+    WriteMcv(canonical.data() + kIntervalStatisticsHeaderBytesV3 +
+                 i * kIntervalStatisticsMcvRecordBytesV3,
+             row);
+  }
+  std::array<byte, 32> canonical_digest{};
+  ArrayClearGuard<32> canonical_digest_clear(
+      &canonical_digest, IntervalScrubClassV3::statistics_prior_hash, &control);
+  if (!HashRecord(kStatisticsDomain,
+                  std::span<const byte>(canonical.data(), total), 368, false,
+                  &canonical_digest, &control))
+    return false;
+  std::memcpy(canonical.data() + 368, canonical_digest.data(),
+              canonical_digest.size());
+  return !control.force_reencode_mismatch_for_conformance &&
+      std::memcmp(canonical.data(), encoded.data(), total) == 0;
+}
 IntervalStatisticsReadAdmissionResultV3 StatsRefuse(IntervalStatisticsReadAdmissionDispositionV3 disposition,std::string_view code,std::string_view detail={},bool attempted=false,u32 read=0) noexcept {IntervalStatisticsReadAdmissionResultV3 r;r.disposition=disposition;r.diagnostic={code=="RESOURCE.BUDGET_EXCEEDED"?BudgetError():Error(),code,detail};r.decode_attempted=attempted;r.mcv_records_read=read;return r;}
 IntervalStatisticsReadAdmissionResultV3 DecodeStatisticsInternal(const std::shared_ptr<const IntervalValidatedProfileHandleV3>& profile,std::span<const byte> e,const IntervalStatisticsReceivingFactsV3& current,const IntervalExecutionControlV3& c) noexcept {
   using D=IntervalStatisticsReadAdmissionDispositionV3;
@@ -425,20 +659,21 @@ IntervalStatisticsReadAdmissionResultV3 DecodeStatisticsInternal(const std::shar
   byte structural=0;for(std::size_t i=24;i<32;++i)structural|=e[i];for(std::size_t i=432;i<448;++i)structural|=e[i];if(structural!=0)return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_reserved");
   std::array<byte,32> digest{};ArrayClearGuard<32> digest_clear(&digest,IntervalScrubClassV3::statistics_prior_hash,&c);if(!HashRecord(kStatisticsDomain,e,368,false,&digest,&c))return StatsRefuse(D::resource_refused,"RESOURCE.BUDGET_EXCEEDED","statistics_hash");if(!ConstantTimeEqual(digest.data(),e.data()+368,32))return StatsRefuse(D::format_refused,"SBLR.ENVELOPE.CHECKSUM_INVALID","statistics_integrity");
   if(!CommonIdentityEquals(e.data()+32,*profile)||!PolicyEquals(e.data()+144,profile->statistics_policy)||!PolicyEquals(e.data()+168,profile->identity.hash_policy)||!PolicyEquals(e.data()+192,profile->identity.ordering_policy)||!PolicyEquals(e.data()+216,profile->storage_epoch_policy)||std::memcmp(e.data()+400,profile->profile_fingerprint.data(),32))return StatsRefuse(D::profile_refused,"CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_authority");
-  byte covered=0;for(std::size_t i=132;i<136;++i)covered|=e[i];for(std::size_t i=240;i<264;++i)covered|=e[i];if(covered!=0)return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_reserved");
+  byte covered=0;for(std::size_t i=132;i<136;++i)covered|=e[i];for(std::size_t i=240;i<264;++i)covered|=e[i];if(covered!=0)return StatsRefuse(D::profile_refused,"CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_reserved");
   IntervalDecodedStatisticsV3 decoded;decoded.profile=profile;decoded.statistics_snapshot_uuid=LoadUuid(e.data()+264);decoded.source_object_uuid=LoadUuid(e.data()+280);decoded.provider_evidence_uuid=LoadUuid(e.data()+296);decoded.schema_epoch=LoadLittle64(e.data()+312);decoded.collection_epoch=LoadLittle64(e.data()+320);decoded.security_epoch=LoadLittle64(e.data()+328);decoded.row_count=LoadLittle64(e.data()+336);decoded.null_count=LoadLittle64(e.data()+344);decoded.value_count=LoadLittle64(e.data()+352);decoded.equality_distinct_estimate=LoadLittle64(e.data()+360);
-  if(decoded.source_object_uuid!=current.source_object_uuid)return StatsRefuse(D::provider_evidence_mismatch,"CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_provider_evidence");
+  if(!ValidInstanceUuids(*profile,decoded.statistics_snapshot_uuid,decoded.source_object_uuid,decoded.provider_evidence_uuid))return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_population");
+  if(!current.authenticated_population)return StatsRefuse(D::provider_evidence_mismatch,"OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_population_evidence");
+  if(decoded.statistics_snapshot_uuid!=current.statistics_snapshot_uuid||decoded.source_object_uuid!=current.source_object_uuid||decoded.provider_evidence_uuid!=current.provider_evidence_uuid)return StatsRefuse(D::provider_evidence_mismatch,"OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_provider_evidence");
   if(decoded.schema_epoch!=current.schema_epoch)return StatsRefuse(D::schema_epoch_mismatch,"OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_schema_epoch");
   if(decoded.collection_epoch!=current.collection_epoch)return StatsRefuse(D::collection_epoch_mismatch,"OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_collection_epoch");
   if(decoded.security_epoch!=current.security_epoch)return StatsRefuse(D::security_epoch_mismatch,"OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_security_epoch");
-  if(decoded.provider_evidence_uuid!=current.provider_evidence_uuid)return StatsRefuse(D::provider_evidence_mismatch,"CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_provider_evidence");
-  if(!ValidInstanceUuids(*profile,decoded.statistics_snapshot_uuid,decoded.source_object_uuid,decoded.provider_evidence_uuid)||decoded.schema_epoch==0||decoded.collection_epoch==0||decoded.security_epoch==0||!CountsValid(decoded.row_count,decoded.null_count,decoded.value_count,decoded.equality_distinct_estimate))return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_population");
+  if(decoded.schema_epoch==0||decoded.collection_epoch==0||decoded.security_epoch==0||!CountsValid(decoded.row_count,decoded.null_count,decoded.value_count,decoded.equality_distinct_estimate)||decoded.row_count!=current.row_count||decoded.null_count!=current.null_count||decoded.value_count!=current.value_count||decoded.equality_distinct_estimate!=current.equality_distinct_estimate)return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_population");
   if(e.size()>c.maximum_allocation_bytes)return StatsRefuse(D::resource_refused,"RESOURCE.BUDGET_EXCEEDED","statistics_allocation");
   if(Cancelled(c))return StatsRefuse(D::cancelled,"PROCESS.CANCELLED","statistics_before_allocation");
   try{decoded.mcv.reserve(count);}catch(...){return StatsRefuse(D::resource_refused,"RESOURCE.BUDGET_EXCEEDED","statistics_allocation");}
   u32 read=0;
   for(u32 i=0;i<count;++i){const byte* b=e.data()+kIntervalStatisticsHeaderBytesV3+i*kIntervalStatisticsMcvRecordBytesV3;IntervalStatisticsMcvRecordV3 row;std::memcpy(row.value_hash.data(),b,32);row.frequency=LoadLittle64(b+32);row.rank=LoadLittle32(b+40);row.flags=LoadLittle32(b+44);try{decoded.mcv.push_back(row);}catch(...){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(row));return StatsRefuse(D::resource_refused,"RESOURCE.BUDGET_EXCEEDED","statistics_allocation",true,read);}++read;if(Cancelled(c)){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(row));return StatsRefuse(D::cancelled,"PROCESS.CANCELLED","statistics_record_decode",true,read);}}
-  if(!CanonicalMcv(decoded.mcv,decoded.value_count)){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(IntervalStatisticsMcvRecordV3));return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_mcv",true,read);}
+  if(!CanonicalMcv(decoded.mcv,decoded.value_count)||decoded.mcv.size()!=current.mcv.size()||!std::equal(decoded.mcv.begin(),decoded.mcv.end(),current.mcv.begin())){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(IntervalStatisticsMcvRecordV3));return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_mcv",true,read);}
   std::array<byte,kIntervalStatisticsMaximumBytesV3> canonical{};ArrayClearGuard<kIntervalStatisticsMaximumBytesV3> canonical_clear(&canonical,IntervalScrubClassV3::statistics_decode_reencode,&c);WriteStatisticsFixed(canonical.data(),*profile,total,count,decoded.statistics_snapshot_uuid,decoded.source_object_uuid,decoded.provider_evidence_uuid,decoded.schema_epoch,decoded.collection_epoch,decoded.security_epoch,decoded.row_count,decoded.null_count,decoded.value_count,decoded.equality_distinct_estimate);for(u32 i=0;i<count;++i)WriteMcv(canonical.data()+kIntervalStatisticsHeaderBytesV3+i*kIntervalStatisticsMcvRecordBytesV3,decoded.mcv[i]);std::array<byte,32> canonical_hash{};ArrayClearGuard<32> hash_clear(&canonical_hash,IntervalScrubClassV3::statistics_prior_hash,&c);HashRecord(kStatisticsDomain,std::span<const byte>(canonical.data(),total),368,false,&canonical_hash,&c);std::memcpy(canonical.data()+368,canonical_hash.data(),32);if(c.force_reencode_mismatch_for_conformance||std::memcmp(canonical.data(),e.data(),total)){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(IntervalStatisticsMcvRecordV3));return StatsRefuse(D::format_refused,"CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_reencode",true,read);}
   if(ResolveIntervalStatisticsReceivingFactsV3(decoded,current)!=IntervalStatisticsReceivingDispositionV3::admitted){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(IntervalStatisticsMcvRecordV3));return StatsRefuse(D::provider_evidence_mismatch,"CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_receiving_facts",true,read);}
   if(Cancelled(c)){SecureClear(decoded.mcv.data(),decoded.mcv.size()*sizeof(IntervalStatisticsMcvRecordV3));return StatsRefuse(D::cancelled,"PROCESS.CANCELLED","statistics_before_publication",true,read);}
@@ -449,14 +684,14 @@ IntervalStatisticsReadAdmissionResultV3 DecodeStatisticsInternal(const std::shar
 IntervalBytesResultV3 EncodeIntervalStatisticsProjectionV3(const IntervalStatisticsProjectionV3& p,const IntervalExecutionControlV3& c) noexcept {
   auto provider=p.provider_evidence;if(!provider)return FailBytes("CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_provider_evidence");if(!provider->source_authorized)return FailBytes("SECURITY.ACCESS_DENIED","statistics_source_authorization");if(!provider->privacy_admitted)return FailBytes("OPTIMIZER.STATISTICS_PRIVACY_DENIED","statistics_privacy");auto profile=p.profile;if(!profile||!ValidProfile(*profile,&c))return FailBytes("CTI.INTERVAL.DESCRIPTOR_INVALID","statistics_profile");
   if(provider->provider_evidence_uuid.is_nil()||provider->source_object_uuid.is_nil()||!provider->authenticated_population)return FailBytes("OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_population_evidence");
-  const bool same_mcv=p.mcv.size()==provider->mcv.size()&&std::equal(p.mcv.begin(),p.mcv.end(),provider->mcv.begin());if(p.source_object_uuid!=provider->source_object_uuid||p.schema_epoch!=provider->schema_epoch||p.collection_epoch!=provider->collection_epoch||p.security_epoch!=provider->security_epoch||p.row_count!=provider->row_count||p.null_count!=provider->null_count||p.value_count!=provider->value_count||p.equality_distinct_estimate!=provider->equality_distinct_estimate||!same_mcv)return FailBytes("OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_population_evidence");
+  const bool same_mcv=p.mcv.size()==provider->mcv.size()&&std::equal(p.mcv.begin(),p.mcv.end(),provider->mcv.begin());if(p.source_object_uuid!=provider->source_object_uuid||p.schema_epoch!=provider->schema_epoch||p.collection_epoch!=provider->collection_epoch||p.security_epoch!=provider->security_epoch||p.row_count!=provider->row_count||p.null_count!=provider->null_count||p.value_count!=provider->value_count||p.equality_distinct_estimate!=provider->equality_distinct_estimate||!same_mcv)return FailBytes("OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_population_evidence");const auto& rows=provider->mcv;
   if(!ValidInstanceUuids(*profile,p.statistics_snapshot_uuid,p.source_object_uuid,provider->provider_evidence_uuid))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_instance_identity");
   if(p.schema_epoch==0||p.collection_epoch==0||p.security_epoch==0)return FailBytes("OPTIMIZER.STATISTICS_EPOCH_MISMATCH","statistics_population_evidence");
-  if(p.mcv.size()>kIntervalStatisticsMaximumMcvRecordsV3||!CountsValid(p.row_count,p.null_count,p.value_count,p.equality_distinct_estimate)||!CanonicalMcv(p.mcv,p.value_count))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_population_evidence");
-  const u64 total=kIntervalStatisticsHeaderBytesV3+kIntervalStatisticsMcvRecordBytesV3*p.mcv.size();if(total>kIntervalStatisticsMaximumBytesV3||total>c.maximum_allocation_bytes)return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_allocation");if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_before_allocation");IntervalBytesResultV3 r;VectorClearGuard clear(&r.bytes,IntervalScrubClassV3::projection_owned_buffer,&c);if(!Reserve(&r.bytes,total))return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_allocation");WriteStatisticsFixed(r.bytes.data(),*profile,static_cast<u32>(total),static_cast<u32>(p.mcv.size()),p.statistics_snapshot_uuid,p.source_object_uuid,provider->provider_evidence_uuid,p.schema_epoch,p.collection_epoch,p.security_epoch,p.row_count,p.null_count,p.value_count,p.equality_distinct_estimate);for(std::size_t i=0;i<p.mcv.size();++i){WriteMcv(r.bytes.data()+kIntervalStatisticsHeaderBytesV3+i*kIntervalStatisticsMcvRecordBytesV3,p.mcv[i]);if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_record_encode");}std::array<byte,32> digest{};ArrayClearGuard<32> digest_clear(&digest,IntervalScrubClassV3::statistics_prior_hash,&c);if(!HashRecord(kStatisticsDomain,r.bytes,368,false,&digest,&c))return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_hash");std::memcpy(r.bytes.data()+368,digest.data(),32);if(c.force_reencode_mismatch_for_conformance)return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_reencode");if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_before_publication");r.status=Ok();clear.Disarm();return r;
+  if(rows.size()>kIntervalStatisticsMaximumMcvRecordsV3||!CountsValid(p.row_count,p.null_count,p.value_count,p.equality_distinct_estimate)||!CanonicalMcv(rows,p.value_count))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_population_evidence");
+  const u64 total=kIntervalStatisticsHeaderBytesV3+kIntervalStatisticsMcvRecordBytesV3*rows.size();if(total>kIntervalStatisticsMaximumBytesV3||total>c.maximum_allocation_bytes)return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_allocation");if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_before_allocation");IntervalBytesResultV3 r;VectorClearGuard clear(&r.bytes,IntervalScrubClassV3::projection_owned_buffer,&c);if(!Reserve(&r.bytes,total))return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_allocation");WriteStatisticsFixed(r.bytes.data(),*profile,static_cast<u32>(total),static_cast<u32>(rows.size()),p.statistics_snapshot_uuid,p.source_object_uuid,provider->provider_evidence_uuid,p.schema_epoch,p.collection_epoch,p.security_epoch,p.row_count,p.null_count,p.value_count,p.equality_distinct_estimate);for(std::size_t i=0;i<rows.size();++i){WriteMcv(r.bytes.data()+kIntervalStatisticsHeaderBytesV3+i*kIntervalStatisticsMcvRecordBytesV3,rows[i]);if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_record_encode");}std::array<byte,32> digest{};ArrayClearGuard<32> digest_clear(&digest,IntervalScrubClassV3::statistics_prior_hash,&c);if(!HashRecord(kStatisticsDomain,r.bytes,368,false,&digest,&c))return FailBytes("RESOURCE.BUDGET_EXCEEDED","statistics_hash");std::memcpy(r.bytes.data()+368,digest.data(),32);auto self_control=c;self_control.cancelled=nullptr;self_control.cancellation_context=nullptr;if(!SelfValidateStatisticsEncoding(*profile,r.bytes,self_control))return FailBytes("CTI.TEMPORAL.CANONICAL_ENCODING_INVALID","statistics_reencode");if(Cancelled(c))return FailBytes("PROCESS.CANCELLED","statistics_before_publication");r.status=Ok();clear.Disarm();return r;
 }
 
-IntervalStatisticsReceivingDispositionV3 ResolveIntervalStatisticsReceivingFactsV3(const IntervalDecodedStatisticsV3& d,const IntervalStatisticsReceivingFactsV3& c) noexcept {using D=IntervalStatisticsReceivingDispositionV3;if(!c.security_visible)return D::security_denied;if(!c.privacy_admitted)return D::privacy_denied;if(d.source_object_uuid!=c.source_object_uuid)return D::provider_evidence_mismatch;if(d.schema_epoch!=c.schema_epoch)return D::schema_epoch_mismatch;if(d.collection_epoch!=c.collection_epoch)return D::collection_epoch_mismatch;if(d.security_epoch!=c.security_epoch)return D::security_epoch_mismatch;if(d.provider_evidence_uuid!=c.provider_evidence_uuid)return D::provider_evidence_mismatch;return D::admitted;}
+IntervalStatisticsReceivingDispositionV3 ResolveIntervalStatisticsReceivingFactsV3(const IntervalDecodedStatisticsV3& d,const IntervalStatisticsReceivingFactsV3& c) noexcept {using D=IntervalStatisticsReceivingDispositionV3;if(!c.security_visible)return D::security_denied;if(!c.privacy_admitted)return D::privacy_denied;if(!c.authenticated_population||d.statistics_snapshot_uuid!=c.statistics_snapshot_uuid||d.source_object_uuid!=c.source_object_uuid||d.provider_evidence_uuid!=c.provider_evidence_uuid)return D::provider_evidence_mismatch;if(d.schema_epoch!=c.schema_epoch)return D::schema_epoch_mismatch;if(d.collection_epoch!=c.collection_epoch)return D::collection_epoch_mismatch;if(d.security_epoch!=c.security_epoch)return D::security_epoch_mismatch;if(d.row_count!=c.row_count||d.null_count!=c.null_count||d.value_count!=c.value_count||d.equality_distinct_estimate!=c.equality_distinct_estimate||d.mcv.size()!=c.mcv.size()||!std::equal(d.mcv.begin(),d.mcv.end(),c.mcv.begin()))return D::provider_evidence_mismatch;return D::admitted;}
 IntervalStatisticsReadAdmissionResultV3 AdmitIntervalStatisticsReadV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>& profile,std::span<const byte> encoded,const IntervalStatisticsReceivingFactsV3& current,const IntervalExecutionControlV3& control) noexcept {return DecodeStatisticsInternal(profile,encoded,current,control);}
 IntervalStatisticsDecodeResultV3 DecodeIntervalStatisticsProjectionV3(const std::shared_ptr<const IntervalValidatedProfileHandleV3>& profile,std::span<const byte> encoded,const IntervalStatisticsReceivingFactsV3& current,const IntervalExecutionControlV3& control) noexcept {auto admitted=DecodeStatisticsInternal(profile,encoded,current,control);IntervalStatisticsDecodeResultV3 r;r.diagnostic=admitted.diagnostic;r.mcv_records_read=admitted.mcv_records_read;if(admitted.ok()){r.status=Ok();r.statistics=std::move(admitted.statistics);}else r.status=admitted.diagnostic.status;return r;}
 
