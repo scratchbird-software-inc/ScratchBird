@@ -8,6 +8,7 @@
 
 #include "datatype_physical_encoding.hpp"
 #include "datatype_date.hpp"
+#include "datatype_time.hpp"
 
 #include <array>
 #include <cstdint>
@@ -90,10 +91,31 @@ void TestEveryCanonicalDatatypePhysicalRoundTrip() {
 
 std::shared_ptr<const dt::DateValidatedProfileHandleV3> DateProfile() {
   const auto result =
-      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV8);
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV9);
   Require(result.ok(), "MDF-013 current date profile did not resolve");
   return std::make_shared<const dt::DateValidatedProfileHandleV3>(
       result.profile);
+}
+
+std::shared_ptr<const dt::TimeValidatedProfileHandleV3> TimeProfile() {
+  const auto result =
+      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV9);
+  Require(result.ok(), "MDF-013 current time profile did not resolve");
+  return std::make_shared<const dt::TimeValidatedProfileHandleV3>(
+      result.profile);
+}
+
+void TestD708TemporalProfileReceiptsAreRefusedAsCurrent() {
+  const auto date =
+      dt::BuildCurrentDateValidatedProfileHandleV3(dt::kDatatypeCohortV8);
+  const auto time =
+      dt::BuildCurrentTimeValidatedProfileHandleV3(dt::kDatatypeCohortV8);
+  Require(!date.ok() && !time.ok() &&
+              date.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID" &&
+              time.diagnostic.diagnostic_code ==
+                  "CTI.TEMPORAL.DESCRIPTOR_INVALID",
+          "MDF-013 admitted historical d708 temporal receipt as current");
 }
 
 void TestDateStructuralBoundaryAndComposedAuthority() {
@@ -186,6 +208,20 @@ void TestTimeStructuralBoundaryAndRawRefusal() {
               raw_decode.diagnostic.diagnostic_code ==
                   "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
           "MDF-013 raw time SBDPV semantic path was not refused");
+
+  const auto profile = TimeProfile();
+  const dt::TimeOwnedValueV3 value{
+      profile, dt::TimeValueStateV3::value, 0};
+  const auto composed = dt::EncodeTimeSbdpvComposedV3(value, false);
+  Require(composed.ok() && composed.bytes ==
+              std::vector<platform::byte>(frame.begin(), frame.end()),
+          "MDF-013 composed time SBDPV bytes differ from structural envelope");
+  const auto decoded = dt::DecodeTimeSbdpvComposedNoAllocV3(
+      *profile, false, composed.bytes);
+  Require(decoded.ok() && decoded.value.profile == profile.get() &&
+              decoded.value.state == dt::TimeValueStateV3::value &&
+              decoded.value.nanoseconds_since_midnight == 0,
+          "MDF-013 composed time SBDPV did not preserve typed midnight");
 
   const auto malformed = dt::EncodeDatatypePhysicalValue(
       {dt::CanonicalTypeId::time, dt::DatatypePhysicalValueState::value,
@@ -395,6 +431,7 @@ int main() {
   TestBitStringStructuralBoundaryAndRawRefusal();
   TestDateStructuralBoundaryAndComposedAuthority();
   TestTimeStructuralBoundaryAndRawRefusal();
+  TestD708TemporalProfileReceiptsAreRefusedAsCurrent();
   TestOverflowLocatorOpaqueAndProtectedStates();
   TestMalformedPhysicalPayloadsAreRefused();
   TestRestartPersistenceRoundTrip();

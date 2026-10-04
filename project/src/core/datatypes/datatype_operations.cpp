@@ -3172,7 +3172,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure("time_target_descriptor_invalid",
                          DatatypeCastCategory::forbidden,
                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
-    return CastFailure("time_d708_profile_required",
+    return CastFailure("time_d709_profile_required",
                        DatatypeCastCategory::forbidden,
                        "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
@@ -3188,7 +3188,7 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       return CastFailure("date_target_descriptor_invalid",
                          DatatypeCastCategory::forbidden,
                          "CTI.TEMPORAL.DESCRIPTOR_INVALID");
-    return CastFailure("date_d708_profile_required",
+    return CastFailure("date_d709_profile_required",
                        DatatypeCastCategory::forbidden,
                        "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
@@ -4005,13 +4005,13 @@ DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request
   if (request.value.type_id == CanonicalTypeId::time) {
     if (const char* code = GenericTimeStructuralDiagnosticCode(request.value))
       return ExtractFailure("time_generic_structural_refusal", code);
-    return ExtractFailure("time_d708_profile_required",
+    return ExtractFailure("time_d709_profile_required",
                           "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
   if (request.value.type_id == CanonicalTypeId::date) {
     if (const char* code = GenericDateStructuralDiagnosticCode(request.value))
       return ExtractFailure("date_generic_structural_refusal", code);
-    return ExtractFailure("date_d708_profile_required",
+    return ExtractFailure("date_d709_profile_required",
                           "CTI.TEMPORAL.DESCRIPTOR_INVALID");
   }
   if (IsBinary(request.value.type_id) &&
@@ -5429,7 +5429,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.comparison.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d708_profile_required");
+                             : "time_d709_profile_required");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::date ||
@@ -5443,7 +5443,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.comparison.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d708_profile_required");
+                             : "date_d709_profile_required");
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::bit_string ||
@@ -6518,7 +6518,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.sort_key.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d708_profile_required");
+                             : "time_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -6529,7 +6529,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.sort_key.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d708_profile_required");
+                             : "date_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
@@ -6933,7 +6933,7 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.hash.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d708_profile_required");
+                             : "time_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -6944,7 +6944,7 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.hash.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d708_profile_required");
+                             : "date_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {
@@ -7779,7 +7779,7 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         time_code != nullptr ? time_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.display_render.rejected",
         time_code != nullptr ? "time_generic_structural_refusal"
-                             : "time_d708_profile_required");
+                             : "time_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::date) {
@@ -7790,7 +7790,7 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
         date_code != nullptr ? date_code : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
         "datatype.display_render.rejected",
         date_code != nullptr ? "date_generic_structural_refusal"
-                             : "date_d708_profile_required");
+                             : "date_d709_profile_required");
     return result;
   }
   if (request.value.type_id == CanonicalTypeId::bit_string) {

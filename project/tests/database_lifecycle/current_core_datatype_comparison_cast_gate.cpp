@@ -873,7 +873,7 @@ void TestBitStringRequiresSpecializedV3Carrier() {
           "invalid raw bit descriptor did not precede dirty-NULL state");
 }
 
-void TestDateRequiresSpecializedD708Carrier() {
+void TestDateRequiresSpecializedD709Carrier() {
   dt::DatatypeOperationValue raw{
       dt::CanonicalTypeId::date, std::string("\0\0\0\0", 4), false};
   dt::DatatypeCastRequest cast;
@@ -887,7 +887,7 @@ void TestDateRequiresSpecializedD708Carrier() {
               dt::ClassifyDatatypeCast(dt::CanonicalTypeId::date,
                                        dt::CanonicalTypeId::date) ==
                   dt::DatatypeCastCategory::forbidden,
-          "raw date cast/catch-all bypassed d708 profile authority");
+          "raw date cast/catch-all bypassed d709 profile authority");
   Require(!dt::CompareDatatypeValues({raw, raw}).ok() &&
               !dt::MakeDatatypeSortKey({raw}).ok() &&
               !dt::HashDatatypeValue({raw}).ok() &&
@@ -944,7 +944,7 @@ void TestDateRequiresSpecializedD708Carrier() {
           "invalid raw date descriptor did not precede dirty-NULL state");
 }
 
-void TestTimeRequiresSpecializedD708Carrier() {
+void TestTimeRequiresSpecializedD709Carrier() {
   dt::DatatypeOperationValue raw{
       dt::CanonicalTypeId::time, std::string(8, '\0'), false};
   dt::DatatypeCastRequest cast;
@@ -958,7 +958,7 @@ void TestTimeRequiresSpecializedD708Carrier() {
               dt::ClassifyDatatypeCast(dt::CanonicalTypeId::time,
                                        dt::CanonicalTypeId::time) ==
                   dt::DatatypeCastCategory::forbidden,
-          "raw time cast/catch-all bypassed d708 profile authority");
+          "raw time cast/catch-all bypassed d709 profile authority");
   Require(!dt::CompareDatatypeValues({raw, raw}).ok() &&
               !dt::MakeDatatypeSortKey({raw}).ok() &&
               !dt::HashDatatypeValue({raw}).ok() &&
@@ -1625,8 +1625,8 @@ int main(int argc, char** argv) {
   TestStableHashAndDeserializationRefusals();
   TestExplicitDisplayBoundaryRendering();
   TestBitStringRequiresSpecializedV3Carrier();
-  TestDateRequiresSpecializedD708Carrier();
-  TestTimeRequiresSpecializedD708Carrier();
+  TestDateRequiresSpecializedD709Carrier();
+  TestTimeRequiresSpecializedD709Carrier();
   std::cout << "current_core_datatype_comparison_cast_gate=passed\n";
   return EXIT_SUCCESS;
 }

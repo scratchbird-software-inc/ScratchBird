@@ -28,9 +28,9 @@ std::exit(1);
 }void Check(bool v,std::string_view m){++checks;
 if(!v)Fail(m);
 }
-p::Uuid D708(){return{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,8}};
+p::Uuid D709(){return{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,9}};
 }
-std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimeValidatedProfileHandleV3(D708());
+std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimeValidatedProfileHandleV3(D709());
 Check(r.ok(),"profile");
 return std::make_shared<const dt::TimeValidatedProfileHandleV3>(r.profile);
 }

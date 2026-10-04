@@ -188,7 +188,7 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_descriptor_serialization_refused",
-        "SBDTV001 cannot carry the exact d708 receipt or complete date profile");
+        "SBDTV001 cannot carry the exact d709 receipt or complete date profile");
     return result;
   }
   if (descriptor.type_id == CanonicalTypeId::time) {
@@ -197,7 +197,7 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_descriptor_serialization_refused",
-        "SBDTV001 cannot carry the exact d708 receipt or complete time profile");
+        "SBDTV001 cannot carry the exact d709 receipt or complete time profile");
     return result;
   }
   result.status = DatatypeExchangeOkStatus();
@@ -267,7 +267,7 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_descriptor_parse_refused",
-        "SBDTV001 cannot establish exact d708 date authority");
+        "SBDTV001 cannot establish exact d709 date authority");
     return result;
   }
   if (type_id == CanonicalTypeId::time) {
@@ -276,7 +276,7 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_descriptor_parse_refused",
-        "SBDTV001 cannot establish exact d708 time authority");
+        "SBDTV001 cannot establish exact d709 time authority");
     return result;
   }
 
@@ -374,7 +374,7 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.date.legacy_conversion_description_refused",
-        "canonical enum or name cannot replace the exact d708 date profile and closed cast registry");
+        "canonical enum or name cannot replace the exact d709 date profile and closed cast registry");
     return result;
   }
   if (source_type_id == CanonicalTypeId::time ||
@@ -385,7 +385,7 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         result.status,
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_conversion_description_refused",
-        "canonical enum or name cannot replace the exact d708 time profile and closed cast registry");
+        "canonical enum or name cannot replace the exact d709 time profile and closed cast registry");
     return result;
   }
 

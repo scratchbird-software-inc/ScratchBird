@@ -262,7 +262,7 @@ void ContextualBindingPreservesTargetType() {
       if (descriptor.type_id == dt::CanonicalTypeId::date ||
           descriptor.type_id == dt::CanonicalTypeId::time) {
         CheckRejectedAs(bound, "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic contextual temporal NULL without D708 profile");
+                        "generic contextual temporal NULL without D709 profile");
         dt::DatatypeCastRequest identity;
         identity.value = TypedNull(descriptor.type_id, target_descriptor);
         identity.target_type_id = descriptor.type_id;
@@ -270,7 +270,7 @@ void ContextualBindingPreservesTargetType() {
         identity.target_descriptor = target_descriptor;
         CheckRejectedAs(dt::CastDatatypeValue(identity),
                         "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic typed temporal NULL identity without D708 profile");
+                        "generic typed temporal NULL identity without D709 profile");
         continue;
       }
       Check(bound.ok(), "contextual NULL did not bind in " + label);
@@ -879,13 +879,13 @@ void DurableCodecsRequireConcreteTypes() {
     if (descriptor.type_id == dt::CanonicalTypeId::date ||
         descriptor.type_id == dt::CanonicalTypeId::time) {
       CheckRejectedAs(encoded, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL binary encode without D708 profile");
+                      "generic temporal NULL binary encode without D709 profile");
       dt::DatatypePhysicalValue physical_null;
       physical_null.type_id = descriptor.type_id;
       physical_null.state = dt::DatatypePhysicalValueState::sql_null;
       CheckRejectedAs(dt::EncodeDatatypePhysicalValue(physical_null),
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL physical encode without D708 profile");
+                      "generic temporal NULL physical encode without D709 profile");
       continue;
     }
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
@@ -982,7 +982,7 @@ void SerializationRetainsConcreteType() {
         descriptor.type_id == dt::CanonicalTypeId::time) {
       CheckRejectedAs(serialized,
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL serialization without D708 profile");
+                      "generic temporal NULL serialization without D709 profile");
       Check(serialized.serialized_value.empty(),
             "generic temporal NULL serialization published output");
       continue;

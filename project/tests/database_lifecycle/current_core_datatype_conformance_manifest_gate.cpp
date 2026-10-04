@@ -44,27 +44,27 @@ dt::BitStringAuthorityReceiptV3 BitStringReceipt() {
   receipt.statement_receipt_uuid.bytes = {
       0x01, 0xa0, 0xff, 0x27, 0x45, 0x62, 0x7a, 0x11,
       0x8b, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV8;
-  receipt.catalog_generation = 8;
-  receipt.registry_generation = 8;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_generation = 9;
+  receipt.registry_generation = 9;
   return receipt;
 }
 
 dt::DateAuthorityReceiptV3 DateReceipt() {
   dt::DateAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV8;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV8;
-  receipt.catalog_generation = 8;
-  receipt.registry_generation = 8;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_generation = 9;
+  receipt.registry_generation = 9;
   return receipt;
 }
 
 dt::TimeAuthorityReceiptV3 TimeReceipt() {
   dt::TimeAuthorityReceiptV3 receipt;
-  receipt.statement_receipt_uuid = dt::kDatatypeCohortV8;
-  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV8;
-  receipt.catalog_generation = 8;
-  receipt.registry_generation = 8;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_generation = 9;
+  receipt.registry_generation = 9;
   return receipt;
 }
 
@@ -126,17 +126,17 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(bit.canonical_component.size() == 4,
           "MDF-015 bit-string example must use canonical empty PRESENT bytes");
   Require(loaded.manifest.date_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d708 date example");
+          "MDF-015 must carry exactly one separate d709 date example");
   const auto& date = loaded.manifest.date_examples.front();
   Require(dt::IsExactCanonicalDateTypeCodecIdentityV3(date.identity),
-          "MDF-015 date example must carry the exact d708 identity");
+          "MDF-015 date example must carry the exact d709 identity");
   Require(date.canonical_component == std::vector<scratchbird::core::platform::byte>(4, 0),
           "MDF-015 date example must use the exact epoch LE4 component");
   Require(loaded.manifest.time_examples.size() == 1,
-          "MDF-015 must carry exactly one separate d708 time example");
+          "MDF-015 must carry exactly one separate d709 time example");
   const auto& time = loaded.manifest.time_examples.front();
   Require(dt::IsExactCanonicalTimeTypeCodecIdentityV3(time.identity),
-          "MDF-015 time example must carry the exact d708 identity");
+          "MDF-015 time example must carry the exact d709 identity");
   Require(time.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(8, 0),
           "MDF-015 time example must use the exact midnight LE8 component");
@@ -149,9 +149,9 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(executed.executed_bit_string_examples == 1,
           "MDF-015 did not execute the exact V3 bit-string example");
   Require(executed.executed_date_examples == 1,
-          "MDF-015 did not execute the exact d708 date example");
+          "MDF-015 did not execute the exact d709 date example");
   Require(executed.executed_time_examples == 1,
-          "MDF-015 did not execute the exact d708 time example");
+          "MDF-015 did not execute the exact d709 time example");
 }
 
 void TestLegacyTimeEvidenceIsRefused() {
@@ -240,6 +240,37 @@ void TestLegacyDateEvidenceIsRefused() {
   Require(!invalid_null.ok(), "MDF-015 accepted date SQL NULL with bytes");
   Require(HasDiagnostic(invalid_null, "DATATYPE.NULL_STATE.INVALID"),
           "MDF-015 date NULL_STATE diagnostic missing");
+}
+
+void TestD708TemporalIdentitiesRemainHistoricalOnly() {
+  const scratchbird::core::platform::Uuid date_descriptor{{
+      0x90,0x01,0x00,0x00,0x64,0x61,0x74,0x65,
+      0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+  const scratchbird::core::platform::Uuid time_descriptor{{
+      0x91,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
+      0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+  const auto historical_date = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, date_descriptor, 1);
+  const auto historical_time = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV8, 8, 8, time_descriptor, 1);
+  Require(historical_date.ok && historical_time.ok,
+          "MDF-015 historical d708 temporal identities are unavailable");
+
+  auto loaded = LoadManifest();
+  loaded.manifest.date_examples[0].identity = historical_date.row;
+  const auto date_result =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!date_result.ok() &&
+              HasDiagnostic(date_result, "CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+          "MDF-015 admitted historical d708 date identity as current");
+
+  loaded = LoadManifest();
+  loaded.manifest.time_examples[0].identity = historical_time.row;
+  const auto time_result =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!time_result.ok() &&
+              HasDiagnostic(time_result, "CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+          "MDF-015 admitted historical d708 time identity as current");
 }
 
 void TestLegacyBitStringEvidenceIsRefused() {
@@ -406,6 +437,7 @@ int main() {
   TestLegacyBitStringEvidenceIsRefused();
   TestLegacyDateEvidenceIsRefused();
   TestLegacyTimeEvidenceIsRefused();
+  TestD708TemporalIdentitiesRemainHistoricalOnly();
   std::cout << "current_core_datatype_conformance_manifest_gate=passed\n";
   return EXIT_SUCCESS;
 }

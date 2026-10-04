@@ -82,7 +82,7 @@ enum class DateTextCarrierKindV3 : u8 {
 };
 
 // Logical TextOperand from the admitted intrinsic contract.  The V3 identity
-// carries the d708 text profile/codec authority; the execution descriptor is
+// carries the d709 text profile/codec authority; the execution descriptor is
 // the independently validated live descriptor.  `extent` is supplied rather
 // than inferred so a malformed dynamic carrier cannot be normalized by this
 // API before the canonical gate observes it.
@@ -441,7 +441,7 @@ struct DateComparisonResultV3 {
 DateComparisonResultV3 CompareDateValuesV3(const DateValueViewV3& left,
                                            const DateValueViewV3& right) noexcept;
 // Conformance-only seam for exercising a separately validated comparison
-// cohort that cannot otherwise coexist with the sole admitted d708 profile.
+// cohort that cannot otherwise coexist with the sole admitted d709 profile.
 DateComparisonResultV3 CompareDateValuesWithValidatedCohortForConformanceV3(
     const DateValueViewV3& left, const DateValueViewV3& right,
     const std::array<byte, 32>& validated_right_comparison_fingerprint) noexcept;

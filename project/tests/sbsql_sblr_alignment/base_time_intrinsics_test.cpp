@@ -11,9 +11,9 @@
 namespace dt=scratchbird::core::datatypes;namespace p=scratchbird::core::platform;
 namespace{
 void Check(bool v,std::string_view m){if(!v){std::cerr<<"FAIL "<<m<<'\n';std::exit(1);}}
-p::Uuid D708(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,8}};}
-std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(){auto b=dt::BuildCurrentTimeValidatedProfileHandleV3(D708());Check(b.ok(),"profile");return std::make_shared<const dt::TimeValidatedProfileHandleV3>(b.profile);}
-const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==D708()&&row.legacy_fields.catalog_generation==8&&row.legacy_fields.registry_generation==8&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
+p::Uuid D709(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,9}};}
+std::shared_ptr<const dt::TimeValidatedProfileHandleV3> Profile(){auto b=dt::BuildCurrentTimeValidatedProfileHandleV3(D709());Check(b.ok(),"profile");return std::make_shared<const dt::TimeValidatedProfileHandleV3>(b.profile);}
+const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==D709()&&row.legacy_fields.catalog_generation==9&&row.legacy_fields.registry_generation==9&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
 scratchbird::engine::ExecutionTypeDescriptor Descriptor(dt::CanonicalTypeId type){auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();Check(manifest.ok(),"catalog");auto row=dt::LookupDatatypeCatalogRow(manifest.manifest,type);Check(row.ok()&&row.manifest.descriptor_rows.size()==1,"descriptor row");dt::CatalogExecutionTypeMetadata metadata;metadata.descriptor_uuid=row.manifest.descriptor_rows.front().descriptor_uuid;metadata.descriptor_epoch=row.manifest.descriptor_rows.front().descriptor_epoch;auto result=dt::LookupExecutionTypeDescriptorFromCatalog(type,metadata);Check(result.ok(),"execution descriptor");return result.descriptor;}
 bool Stop(void*)noexcept{return true;}
 struct Invalid{std::string_view text,code;};

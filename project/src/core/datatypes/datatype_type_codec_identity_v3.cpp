@@ -1346,8 +1346,8 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 226> kIdentityRowsV3 = [] {
     successor.legacy_fields.catalog_generation = 8;
     successor.legacy_fields.registry_generation = 8;
 
-    // D708 is the current executable materialization. Correct representable
-    // Core fields that the frozen predecessor carrier did not populate exactly.
+    // D708 is the immutable executable predecessor. Correct representable Core
+    // fields that its frozen predecessor carrier did not populate exactly.
     auto& legacy = successor.legacy_fields;
     legacy.sql_null_requires_zero_payload = legacy.null_supported;
     if (legacy.canonical_name == "boolean") {

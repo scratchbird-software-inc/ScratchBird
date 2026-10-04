@@ -34,7 +34,7 @@ constexpr platform::Uuid U(std::array<byte, 16> bytes) noexcept {
 }
 
 inline constexpr platform::Uuid kSnapshot = U(
-    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x08});
+    {0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x09});
 inline constexpr platform::Uuid kDescriptor = U(
     {0x90,0x01,0x00,0x00,0x64,0x61,0x74,0x65,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00});
 inline constexpr platform::Uuid kType = U(
@@ -80,22 +80,11 @@ inline constexpr DatatypePolicyIdentityV3 kMetricPolicy{U(
     {0x01,0xa1,0x00,0x8e,0xb8,0x04,0x74,0x9f,0xab,0x09,0xbd,0xde,0xe3,0x6e,0xe5,0xef}),1};
 
 inline constexpr std::array<byte, 32> kProfileFingerprint{{
-    0xdd,0x7d,0x30,0x9f,0x89,0x5a,0x6b,0x5b,0x96,0x85,0x0a,0x53,0x88,0xe2,0x72,0x96,
-    0xdb,0x73,0x1f,0x24,0xb7,0xb2,0x03,0x41,0x30,0x67,0xc1,0x27,0x2c,0x44,0x5a,0x05}};
+    0xfc,0x6e,0x4b,0xb3,0xa6,0xcc,0xdb,0x34,0x76,0x7a,0xb6,0xc8,0x03,0xa8,0x83,0x81,
+    0x69,0xb8,0xd6,0x40,0x2c,0x33,0xe2,0xca,0xcc,0xe7,0xdb,0x5f,0x15,0x61,0xd6,0xc7}};
 inline constexpr std::array<byte, 32> kComparisonFingerprint{{
-    0x7d,0x94,0x71,0xb2,0x84,0x57,0xdf,0x47,0x5b,0x5a,0xa1,0x82,0xf5,0xa1,0x7e,0xd7,
-    0xa5,0x3e,0x3a,0x52,0xf7,0x99,0x53,0xc5,0x1a,0x9d,0x96,0x9b,0xdf,0xd4,0x1d,0x11}};
-
-constexpr bool Same(const DatatypePolicyIdentityV1& a,
-                    const DatatypePolicyIdentityV1& b) noexcept {
-  return a.uuid == b.uuid && a.generation == b.generation;
-}
-
-constexpr bool Same(const DatatypePolicyIdentityV3& current,
-                    const DatatypePolicyIdentityV1& legacy) noexcept {
-  return current.uuid == legacy.uuid &&
-         current.generation == legacy.generation;
-}
+    0xda,0x43,0xf7,0x4c,0xbf,0x04,0x0c,0x5c,0xc7,0x34,0xf8,0x3d,0x1f,0xa4,0x60,0x88,
+    0x6c,0x14,0xe5,0xab,0x0e,0xaf,0x98,0x88,0x69,0x8d,0x18,0x5d,0x4e,0x6f,0xfa,0xc9}};
 
 constexpr bool Same(const DatatypePolicyIdentityV3& left,
                     const DatatypePolicyIdentityV3& right) noexcept {
@@ -195,7 +184,7 @@ const DatatypeTypeCodecIdentityRowV3* CurrentIdentityFor(
   for (const auto& row : CurrentDatatypeTypeCodecIdentityRowsV3()) {
     const auto& legacy = row.legacy_fields;
     if (legacy.catalog_snapshot_uuid != kSnapshot ||
-        legacy.catalog_generation != 8 || legacy.registry_generation != 8 ||
+        legacy.catalog_generation != 9 || legacy.registry_generation != 9 ||
         legacy.canonical_binary_type_code != code) continue;
     if (match != nullptr) return nullptr;
     match = &row;
@@ -501,8 +490,8 @@ DatatypeTypeCodecIdentityRowV3 ExpectedDateIdentity() {
   DatatypeTypeCodecIdentityRowV3 row;
   auto& legacy = row.legacy_fields;
   legacy.catalog_snapshot_uuid = kSnapshot;
-  legacy.catalog_generation = 8;
-  legacy.registry_generation = 8;
+  legacy.catalog_generation = 9;
+  legacy.registry_generation = 9;
   legacy.descriptor_uuid = kDescriptor;
   legacy.descriptor_generation = 1;
   legacy.type_uuid = kType;
@@ -551,7 +540,7 @@ bool ExactDateIdentity(const DatatypeTypeCodecIdentityRowV3& row) noexcept {
 bool ExactReceipt(const DateAuthorityReceiptV3& receipt) noexcept {
   return receipt.statement_receipt_uuid == kSnapshot &&
       receipt.catalog_snapshot_uuid == kSnapshot &&
-      receipt.catalog_generation == 8 && receipt.registry_generation == 8;
+      receipt.catalog_generation == 9 && receipt.registry_generation == 9;
 }
 
 std::array<byte, kDateProfileMaterialBytesV3> BuildProfileMaterial(
@@ -1060,7 +1049,7 @@ DateProfileResultV3 BuildCurrentDateValidatedProfileHandleV3(
     const platform::Uuid& statement_receipt_uuid) noexcept {
   try {
     return BuildDateValidatedProfileHandleV3(
-        {statement_receipt_uuid, kSnapshot, 8, 8}, ExpectedDateIdentity());
+        {statement_receipt_uuid, kSnapshot, 9, 9}, ExpectedDateIdentity());
   } catch (...) {
     return Failure<DateProfileResultV3>("RESOURCE.BUDGET_EXCEEDED",
                                         "profile_identity_allocation",
