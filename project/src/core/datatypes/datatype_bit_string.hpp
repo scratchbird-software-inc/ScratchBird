@@ -15,136 +15,136 @@ namespace scratchbird::core::datatypes {
 
 using platform::u8;
 
-inline constexpr u32 kBitStringMaximumLogicalBitsV1 = 16'777'216;
-inline constexpr u32 kBitStringProfileMaterialBytesV1 = 432;
-inline constexpr u32 kBitStringComparisonMaterialBytesV1 = 216;
-inline constexpr u32 kBitStringSortKeyHeaderBytesV1 = 104;
-inline constexpr u32 kBitStringMaximumSortKeyBytesV1 = 16'777'321;
-inline constexpr u32 kBitStringClosedCastPolicyRowsV1 = 221;
+inline constexpr u32 kBitStringMaximumLogicalBitsV3 = 16'777'216;
+inline constexpr u32 kBitStringProfileMaterialBytesV3 = 432;
+inline constexpr u32 kBitStringComparisonMaterialBytesV3 = 216;
+inline constexpr u32 kBitStringSortKeyHeaderBytesV3 = 104;
+inline constexpr u32 kBitStringMaximumSortKeyBytesV3 = 16'777'321;
+inline constexpr u32 kBitStringClosedCastPolicyRowsV3 = 221;
 
-struct BitStringAuthorityReceiptV1 {
+struct BitStringAuthorityReceiptV3 {
   platform::Uuid statement_receipt_uuid;
   platform::Uuid catalog_snapshot_uuid;
   u64 catalog_generation = 0;
   u64 registry_generation = 0;
 };
 
-struct BitStringDescriptorProfileV1 {
-  BitStringAuthorityReceiptV1 receipt;
+struct BitStringDescriptorProfileV3 {
+  BitStringAuthorityReceiptV3 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
   u32 length_bits = 0;
   bool fixed_length = false;
-  DatatypePolicyIdentityV1 padding;
-  DatatypePolicyIdentityV1 render;
-  DatatypePolicyIdentityV1 cast;
-  DatatypePolicyIdentityV1 boolean_alias;
-  DatatypePolicyIdentityV1 no_auto_lob;
-  DatatypePolicyIdentityV1 index;
-  DatatypePolicyIdentityV1 statistics;
-  DatatypePolicyIdentityV1 backup_transport;
-  DatatypePolicyIdentityV1 protection;
-  std::array<byte, kBitStringProfileMaterialBytesV1> canonical_profile_material{};
+  DatatypePolicyIdentityV3 padding;
+  DatatypePolicyIdentityV3 render;
+  DatatypePolicyIdentityV3 cast;
+  DatatypePolicyIdentityV3 boolean_alias;
+  DatatypePolicyIdentityV3 no_auto_lob;
+  DatatypePolicyIdentityV3 index;
+  DatatypePolicyIdentityV3 statistics;
+  DatatypePolicyIdentityV3 backup_transport;
+  DatatypePolicyIdentityV3 protection;
+  std::array<byte, kBitStringProfileMaterialBytesV3> canonical_profile_material{};
   std::array<byte, 32> profile_fingerprint{};
   std::array<byte, 32> comparison_cohort_fingerprint{};
 };
 
-enum class BitStringSurfaceProfileKindV1 : u8 {
+enum class BitStringSurfaceProfileKindV3 : u8 {
   unqualified = 0,
   fixed = 1,
   varying = 2,
 };
 
-struct BitStringProfileRequestV1 {
-  BitStringAuthorityReceiptV1 receipt;
+struct BitStringProfileRequestV3 {
+  BitStringAuthorityReceiptV3 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
-  BitStringSurfaceProfileKindV1 kind =
-      BitStringSurfaceProfileKindV1::unqualified;
-  u32 length_bits = kBitStringMaximumLogicalBitsV1;
+  BitStringSurfaceProfileKindV3 kind =
+      BitStringSurfaceProfileKindV3::unqualified;
+  u32 length_bits = kBitStringMaximumLogicalBitsV3;
 };
 
-enum class BitStringValueStateV1 : u8 { present = 0, sql_null = 1 };
-enum class BitStringOwnershipV1 : u8 { borrowed = 0, owned = 1 };
+enum class BitStringValueStateV3 : u8 { present = 0, sql_null = 1 };
+enum class BitStringOwnershipV3 : u8 { borrowed = 0, owned = 1 };
 
-struct BitStringValueViewV1 {
-  const BitStringDescriptorProfileV1* profile = nullptr;
-  BitStringValueStateV1 state = BitStringValueStateV1::present;
+struct BitStringValueViewV3 {
+  const BitStringDescriptorProfileV3* profile = nullptr;
+  BitStringValueStateV3 state = BitStringValueStateV3::present;
   u32 logical_bit_count = 0;
   std::span<const byte> packed_msb0;
-  BitStringOwnershipV1 ownership = BitStringOwnershipV1::borrowed;
+  BitStringOwnershipV3 ownership = BitStringOwnershipV3::borrowed;
 };
 
-struct BitStringOwnedValueV1 {
-  BitStringDescriptorProfileV1 profile;
-  BitStringValueStateV1 state = BitStringValueStateV1::present;
+struct BitStringOwnedValueV3 {
+  BitStringDescriptorProfileV3 profile;
+  BitStringValueStateV3 state = BitStringValueStateV3::present;
   u32 logical_bit_count = 0;
   std::vector<byte> packed_msb0;
 
-  BitStringValueViewV1 view() const noexcept {
+  BitStringValueViewV3 view() const noexcept {
     return {&profile, state, logical_bit_count, packed_msb0,
-            BitStringOwnershipV1::owned};
+            BitStringOwnershipV3::owned};
   }
 };
 
-struct BitStringExecutionControlV1 {
+struct BitStringExecutionControlV3 {
   u64 maximum_allocation_bytes = ~u64{0};
   bool (*cancelled)(void*) noexcept = nullptr;
   void* cancellation_context = nullptr;
 };
 
-struct BitStringResultV1 {
+struct BitStringResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
-  BitStringOwnedValueV1 value;
+  BitStringOwnedValueV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
 
-struct BitStringViewResultV1 {
+struct BitStringViewResultV3 {
   Status status;
   struct {
     Status status;
     std::string_view diagnostic_code;
     std::string_view detail;
   } diagnostic;
-  BitStringValueViewV1 value;
+  BitStringValueViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
 
-struct BitStringProfileResultV1 {
+struct BitStringProfileResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
-  BitStringDescriptorProfileV1 profile;
+  BitStringDescriptorProfileV3 profile;
   bool ok() const noexcept { return status.ok(); }
 };
 
-struct BitStringBytesResultV1 {
+struct BitStringBytesResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
   std::vector<byte> bytes;
   bool ok() const noexcept { return status.ok(); }
 };
 
-BitStringProfileResultV1 BuildBitStringDescriptorProfileV1(
-    const BitStringProfileRequestV1& request) noexcept;
-BitStringProfileResultV1 DecodeBitStringDescriptorProfileMaterialV1(
-    const BitStringAuthorityReceiptV1& receipt,
+BitStringProfileResultV3 BuildBitStringDescriptorProfileV3(
+    const BitStringProfileRequestV3& request) noexcept;
+BitStringProfileResultV3 DecodeBitStringDescriptorProfileMaterialV3(
+    const BitStringAuthorityReceiptV3& receipt,
     const DatatypeTypeCodecIdentityRowV3& expected_identity,
     std::span<const byte> material) noexcept;
-BitStringProfileResultV1 ValidateBitStringDescriptorProfileV1(
-    const BitStringDescriptorProfileV1& profile) noexcept;
+BitStringProfileResultV3 ValidateBitStringDescriptorProfileV3(
+    const BitStringDescriptorProfileV3& profile) noexcept;
 
-BitStringViewResultV1 ValidateBitStringValueViewV1(
-    const BitStringValueViewV1& value, bool null_allowed) noexcept;
-BitStringViewResultV1 DecodeCanonicalBitStringComponentNoAllocV1(
-    const BitStringDescriptorProfileV1& profile, BitStringValueStateV1 state,
+BitStringViewResultV3 ValidateBitStringValueViewV3(
+    const BitStringValueViewV3& value, bool null_allowed) noexcept;
+BitStringViewResultV3 DecodeCanonicalBitStringComponentNoAllocV3(
+    const BitStringDescriptorProfileV3& profile, BitStringValueStateV3 state,
     bool null_allowed, std::span<const byte> component) noexcept;
-BitStringBytesResultV1 EncodeCanonicalBitStringComponentV1(
-    const BitStringValueViewV1& value,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 MaterializeBitStringValueV1(
-    const BitStringValueViewV1& value, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+BitStringBytesResultV3 EncodeCanonicalBitStringComponentV3(
+    const BitStringValueViewV3& value,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 MaterializeBitStringValueV3(
+    const BitStringValueViewV3& value, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-enum class BitStringIntrinsicOperationV1 : u8 {
+enum class BitStringIntrinsicOperationV3 : u8 {
   validate,
   logical_length,
   at,
@@ -160,7 +160,7 @@ enum class BitStringIntrinsicOperationV1 : u8 {
   shift_right,
 };
 
-struct BitStringScalarResultV1 {
+struct BitStringScalarResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
   bool is_null = false;
@@ -169,48 +169,48 @@ struct BitStringScalarResultV1 {
   bool ok() const noexcept { return status.ok(); }
 };
 
-BitStringScalarResultV1 BitStringLogicalLengthV1(
-    const BitStringValueViewV1& value, bool null_allowed) noexcept;
-BitStringScalarResultV1 BitStringAtV1(const BitStringValueViewV1& value,
+BitStringScalarResultV3 BitStringLogicalLengthV3(
+    const BitStringValueViewV3& value, bool null_allowed) noexcept;
+BitStringScalarResultV3 BitStringAtV3(const BitStringValueViewV3& value,
                                      bool null_allowed, u64 index) noexcept;
-BitStringScalarResultV1 BitStringCountV1(
-    const BitStringValueViewV1& value, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringSetV1(
-    const BitStringValueViewV1& value, bool null_allowed, u64 index,
-    bool bit, const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringConcatenateV1(
-    const BitStringValueViewV1& left, const BitStringValueViewV1& right,
-    const BitStringDescriptorProfileV1& target_profile, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringSliceV1(
-    const BitStringValueViewV1& value,
-    const BitStringDescriptorProfileV1& target_profile, bool null_allowed,
+BitStringScalarResultV3 BitStringCountV3(
+    const BitStringValueViewV3& value, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringSetV3(
+    const BitStringValueViewV3& value, bool null_allowed, u64 index,
+    bool bit, const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringConcatenateV3(
+    const BitStringValueViewV3& left, const BitStringValueViewV3& right,
+    const BitStringDescriptorProfileV3& target_profile, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringSliceV3(
+    const BitStringValueViewV3& value,
+    const BitStringDescriptorProfileV3& target_profile, bool null_allowed,
     u64 start, u64 count,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringNotV1(
-    const BitStringValueViewV1& value, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringAndV1(
-    const BitStringValueViewV1& left, const BitStringValueViewV1& right,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringNotV3(
+    const BitStringValueViewV3& value, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringAndV3(
+    const BitStringValueViewV3& left, const BitStringValueViewV3& right,
     bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringOrV1(
-    const BitStringValueViewV1& left, const BitStringValueViewV1& right,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringOrV3(
+    const BitStringValueViewV3& left, const BitStringValueViewV3& right,
     bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringXorV1(
-    const BitStringValueViewV1& left, const BitStringValueViewV1& right,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringXorV3(
+    const BitStringValueViewV3& left, const BitStringValueViewV3& right,
     bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringShiftLeftV1(
-    const BitStringValueViewV1& value, bool null_allowed, u64 count,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringResultV1 BitStringShiftRightV1(
-    const BitStringValueViewV1& value, bool null_allowed, u64 count,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringShiftLeftV3(
+    const BitStringValueViewV3& value, bool null_allowed, u64 count,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringResultV3 BitStringShiftRightV3(
+    const BitStringValueViewV3& value, bool null_allowed, u64 count,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-struct BitStringSearchResultV1 {
+struct BitStringSearchResultV3 {
   Status status;
   struct {
     Status status;
@@ -226,22 +226,22 @@ struct BitStringSearchResultV1 {
 // Allocation-free logical search. Empty needles are refused. Later public
 // position owners convert a found zero-based position to exact int64 one-based
 // form and use zero for absence; this primitive registers no public function.
-BitStringSearchResultV1 SearchBitStringValueNoAllocV1(
-    const BitStringValueViewV1& haystack,
-    const BitStringValueViewV1& needle, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+BitStringSearchResultV3 SearchBitStringValueNoAllocV3(
+    const BitStringValueViewV3& haystack,
+    const BitStringValueViewV3& needle, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-enum class BitStringComparisonModeV1 : u8 {
+enum class BitStringComparisonModeV3 : u8 {
   scalar_3vl,
   distinct,
   grouping,
   ordered,
   present_only,
 };
-enum class BitStringSortDirectionV1 : u8 { ascending = 0, descending = 1 };
-enum class BitStringNullModeV1 : u8 { nulls_first = 0, nulls_last = 1 };
+enum class BitStringSortDirectionV3 : u8 { ascending = 0, descending = 1 };
+enum class BitStringNullModeV3 : u8 { nulls_first = 0, nulls_last = 1 };
 
-struct BitStringComparisonResultV1 {
+struct BitStringComparisonResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
   bool is_null = false;
@@ -250,89 +250,89 @@ struct BitStringComparisonResultV1 {
   bool ok() const noexcept { return status.ok(); }
 };
 
-BitStringComparisonResultV1 CompareBitStringValuesV1(
-    const BitStringValueViewV1& left, const BitStringValueViewV1& right,
-    BitStringComparisonModeV1 mode) noexcept;
-BitStringBytesResultV1 HashBitStringValueV1(
-    const BitStringValueViewV1& value) noexcept;
-BitStringBytesResultV1 MakeBitStringSortKeyV1(
-    const BitStringValueViewV1& value, BitStringSortDirectionV1 direction,
-    BitStringNullModeV1 null_mode,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+BitStringComparisonResultV3 CompareBitStringValuesV3(
+    const BitStringValueViewV3& left, const BitStringValueViewV3& right,
+    BitStringComparisonModeV3 mode) noexcept;
+BitStringBytesResultV3 HashBitStringValueV3(
+    const BitStringValueViewV3& value) noexcept;
+BitStringBytesResultV3 MakeBitStringSortKeyV3(
+    const BitStringValueViewV3& value, BitStringSortDirectionV3 direction,
+    BitStringNullModeV3 null_mode,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-struct BitStringSortKeyViewV1 {
-  const BitStringDescriptorProfileV1* profile = nullptr;
-  BitStringSortDirectionV1 direction = BitStringSortDirectionV1::ascending;
-  BitStringNullModeV1 null_mode = BitStringNullModeV1::nulls_first;
-  BitStringValueStateV1 state = BitStringValueStateV1::present;
+struct BitStringSortKeyViewV3 {
+  const BitStringDescriptorProfileV3* profile = nullptr;
+  BitStringSortDirectionV3 direction = BitStringSortDirectionV3::ascending;
+  BitStringNullModeV3 null_mode = BitStringNullModeV3::nulls_first;
+  BitStringValueStateV3 state = BitStringValueStateV3::present;
   u32 logical_bit_count = 0;
   std::span<const byte> encoded_suffix;
 };
-struct BitStringSortKeyViewResultV1 {
+struct BitStringSortKeyViewResultV3 {
   Status status;
   struct {
     Status status;
     std::string_view diagnostic_code;
     std::string_view detail;
   } diagnostic;
-  BitStringSortKeyViewV1 value;
+  BitStringSortKeyViewV3 value;
   bool ok() const noexcept { return status.ok(); }
 };
-BitStringSortKeyViewResultV1 DecodeBitStringSortKeyNoAllocV1(
-    const BitStringDescriptorProfileV1& expected_profile,
+BitStringSortKeyViewResultV3 DecodeBitStringSortKeyNoAllocV3(
+    const BitStringDescriptorProfileV3& expected_profile,
     std::span<const byte> encoded) noexcept;
 
-struct BitStringRenderResultV1 {
+struct BitStringRenderResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
   std::string text;
   bool containing_null = false;
   bool ok() const noexcept { return status.ok(); }
 };
-BitStringRenderResultV1 RenderBitStringValueV1(
-    const BitStringValueViewV1& value, bool export_literal,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+BitStringRenderResultV3 RenderBitStringValueV3(
+    const BitStringValueViewV3& value, bool export_literal,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-struct BitStringCastRequestV1 {
-  const BitStringValueViewV1* bit_source = nullptr;
+struct BitStringCastRequestV3 {
+  const BitStringValueViewV3* bit_source = nullptr;
   const DatatypeOperationValue* scalar_source = nullptr;
-  const BitStringDescriptorProfileV1* bit_target = nullptr;
+  const BitStringDescriptorProfileV3* bit_target = nullptr;
   CanonicalTypeId scalar_target = CanonicalTypeId::unknown;
   scratchbird::engine::ExecutionTypeDescriptor scalar_target_descriptor;
   DatatypeCastContext context = DatatypeCastContext::implicit;
   bool target_null_allowed = true;
-  BitStringExecutionControlV1 control;
+  BitStringExecutionControlV3 control;
 };
 
-struct BitStringCastResultV1 {
+struct BitStringCastResultV3 {
   Status status;
   DiagnosticRecord diagnostic;
   DatatypeCastCategory category = DatatypeCastCategory::forbidden;
   bool produced_bit_string = false;
-  BitStringOwnedValueV1 bit_value;
+  BitStringOwnedValueV3 bit_value;
   DatatypeOperationValue scalar_value;
   bool ok() const noexcept { return status.ok(); }
 };
-BitStringCastResultV1 CastBitStringValueV1(
-    const BitStringCastRequestV1& request) noexcept;
+BitStringCastResultV3 CastBitStringValueV3(
+    const BitStringCastRequestV3& request) noexcept;
 
 // The composed adapters are the only admitted semantic use of type code 302.
 // They accept an exact live profile and wrap or unwrap the unchanged structural
 // SBDVAL01 frame. Generic SBDV1/SBDTV001 APIs remain refused.
-BitStringViewResultV1 DecodeBitStringSbdvalComposedNoAllocV1(
-    const BitStringDescriptorProfileV1& profile, bool null_allowed,
+BitStringViewResultV3 DecodeBitStringSbdvalComposedNoAllocV3(
+    const BitStringDescriptorProfileV3& profile, bool null_allowed,
     std::span<const byte> encoded) noexcept;
-BitStringBytesResultV1 EncodeBitStringSbdvalComposedV1(
-    const BitStringValueViewV1& value, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
-BitStringViewResultV1 DecodeBitStringSbdpvComposedNoAllocV1(
-    const BitStringDescriptorProfileV1& profile, bool null_allowed,
+BitStringBytesResultV3 EncodeBitStringSbdvalComposedV3(
+    const BitStringValueViewV3& value, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
+BitStringViewResultV3 DecodeBitStringSbdpvComposedNoAllocV3(
+    const BitStringDescriptorProfileV3& profile, bool null_allowed,
     std::span<const byte> encoded) noexcept;
-BitStringBytesResultV1 EncodeBitStringSbdpvComposedV1(
-    const BitStringValueViewV1& value, bool null_allowed,
-    const BitStringExecutionControlV1& control = {}) noexcept;
+BitStringBytesResultV3 EncodeBitStringSbdpvComposedV3(
+    const BitStringValueViewV3& value, bool null_allowed,
+    const BitStringExecutionControlV3& control = {}) noexcept;
 
-enum class BitStringMetricV1 : u8 {
+enum class BitStringMetricV3 : u8 {
   descriptor_admissions,
   descriptor_refusals,
   values_admitted,
@@ -356,22 +356,22 @@ enum class BitStringMetricV1 : u8 {
   operation_input_bits,
 };
 
-enum class BitStringMetricUpdateV1 : u8 {
+enum class BitStringMetricUpdateV3 : u8 {
   counter_add,
   histogram_observe,
   gauge_set,
 };
-enum class BitStringMetricValueStateLabelV1 : u8 {
+enum class BitStringMetricValueStateLabelV3 : u8 {
   present, sql_null, not_applicable = 0xff,
 };
-enum class BitStringMetricResultLabelV1 : u8 {
+enum class BitStringMetricResultLabelV3 : u8 {
   admitted, not_applicable = 0xff,
 };
-enum class BitStringMetricAllocationClassV1 : u8 {
+enum class BitStringMetricAllocationClassV3 : u8 {
   owned_value, decode_scratch, encode_scratch, key_scratch,
   statistics_scratch, not_applicable = 0xff,
 };
-enum class BitStringMetricOperationV1 : u8 {
+enum class BitStringMetricOperationV3 : u8 {
   validate, canonicalize, logical_bit_length, bit_at_zero_based, concatenate,
   contained_slice_zero_based, bitwise_not, equal_length_bitwise_and,
   equal_length_bitwise_or, equal_length_bitwise_xor, compare, hash, sort_key,
@@ -379,57 +379,57 @@ enum class BitStringMetricOperationV1 : u8 {
   shift_left_uint64, shift_right_uint64, cast_character, cast_integer,
   not_applicable = 0xff,
 };
-enum class BitStringMetricReasonV1 : u8 {
+enum class BitStringMetricReasonV3 : u8 {
   absent, stale, multiple, mismatch, short_value, trailing, count_extent,
   dirty_tail, maximum, padding, policy, provider_budget, profile_missing,
   unsupported, privacy, epoch, manual_review, not_applicable = 0xff,
 };
-enum class BitStringMetricIndexFamilyV1 : u8 {
+enum class BitStringMetricIndexFamilyV3 : u8 {
   aggregate_sketch, bitmap, brin_like, btree, columnar_zone_map,
   covering_included, document_path, expression, full_text, graph, hash,
   partial_filtered, range_exclusion, spatial, temporary_work, vector_ann,
   not_applicable = 0xff,
 };
-enum class BitStringMetricLaneClassV1 : u8 {
+enum class BitStringMetricLaneClassV3 : u8 {
   native_sbwp, parser_server_ipc, canonical_sblr,
   reference_engine_compatibility, not_applicable = 0xff,
 };
-enum class BitStringMetricBoundaryV1 : u8 {
+enum class BitStringMetricBoundaryV3 : u8 {
   component, sblr, parser_server_ipc, native_sbwp, backup, restore,
   replication, cluster, index, statistics, not_applicable = 0xff,
 };
-enum class BitStringMetricLayerV1 : u8 {
+enum class BitStringMetricLayerV3 : u8 {
   canonical, inner_compression, inner_encryption, outer_compression,
   outer_protection, protected_index, not_applicable = 0xff,
 };
 
-struct BitStringMetricRecordV1 {
-  BitStringMetricV1 metric = BitStringMetricV1::operation_attempts;
-  BitStringMetricUpdateV1 update = BitStringMetricUpdateV1::counter_add;
+struct BitStringMetricRecordV3 {
+  BitStringMetricV3 metric = BitStringMetricV3::operation_attempts;
+  BitStringMetricUpdateV3 update = BitStringMetricUpdateV3::counter_add;
   platform::Uuid database_uuid;
   platform::Uuid node_uuid;
   u64 value = 0;
   bool represented_event_committed = false;
   bool cluster_series = false;
-  BitStringMetricResultLabelV1 result =
-      BitStringMetricResultLabelV1::not_applicable;
-  BitStringMetricValueStateLabelV1 value_state =
-      BitStringMetricValueStateLabelV1::not_applicable;
-  BitStringMetricAllocationClassV1 allocation_class =
-      BitStringMetricAllocationClassV1::not_applicable;
-  BitStringMetricOperationV1 operation =
-      BitStringMetricOperationV1::not_applicable;
-  BitStringMetricReasonV1 reason = BitStringMetricReasonV1::not_applicable;
-  BitStringMetricIndexFamilyV1 index_family =
-      BitStringMetricIndexFamilyV1::not_applicable;
-  BitStringMetricLaneClassV1 lane_class =
-      BitStringMetricLaneClassV1::not_applicable;
-  BitStringMetricBoundaryV1 boundary =
-      BitStringMetricBoundaryV1::not_applicable;
-  BitStringMetricLayerV1 layer = BitStringMetricLayerV1::not_applicable;
+  BitStringMetricResultLabelV3 result =
+      BitStringMetricResultLabelV3::not_applicable;
+  BitStringMetricValueStateLabelV3 value_state =
+      BitStringMetricValueStateLabelV3::not_applicable;
+  BitStringMetricAllocationClassV3 allocation_class =
+      BitStringMetricAllocationClassV3::not_applicable;
+  BitStringMetricOperationV3 operation =
+      BitStringMetricOperationV3::not_applicable;
+  BitStringMetricReasonV3 reason = BitStringMetricReasonV3::not_applicable;
+  BitStringMetricIndexFamilyV3 index_family =
+      BitStringMetricIndexFamilyV3::not_applicable;
+  BitStringMetricLaneClassV3 lane_class =
+      BitStringMetricLaneClassV3::not_applicable;
+  BitStringMetricBoundaryV3 boundary =
+      BitStringMetricBoundaryV3::not_applicable;
+  BitStringMetricLayerV3 layer = BitStringMetricLayerV3::not_applicable;
 };
 
-enum class BitStringMetricRecordDispositionV1 : u8 {
+enum class BitStringMetricRecordDispositionV3 : u8 {
   recorded,
   event_not_committed,
   identity_invalid,
@@ -440,14 +440,14 @@ enum class BitStringMetricRecordDispositionV1 : u8 {
   sink_unavailable,
   sink_failure_isolated,
 };
-using BitStringMetricSinkV1 = bool (*)(const BitStringMetricRecordV1&,
+using BitStringMetricSinkV3 = bool (*)(const BitStringMetricRecordV3&,
                                       void*) noexcept;
-void SetBitStringMetricSinkV1(BitStringMetricSinkV1 sink,
+void SetBitStringMetricSinkV3(BitStringMetricSinkV3 sink,
                               void* context) noexcept;
-BitStringMetricRecordDispositionV1 RecordBitStringMetricAfterCommitV1(
-    const BitStringMetricRecordV1& record) noexcept;
+BitStringMetricRecordDispositionV3 RecordBitStringMetricAfterCommitV3(
+    const BitStringMetricRecordV3& record) noexcept;
 
-DiagnosticRecord MakeBitStringDiagnosticV1(Status status,
+DiagnosticRecord MakeBitStringDiagnosticV3(Status status,
                                            std::string diagnostic_code,
                                            std::string message_key,
                                            std::string detail = {});

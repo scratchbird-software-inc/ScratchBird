@@ -264,43 +264,43 @@ struct SealedSortKeyFixture {
   std::string_view name;
   std::string_view bits;
   bool is_null;
-  dt::BitStringSortDirectionV1 direction;
-  dt::BitStringNullModeV1 null_mode;
+  dt::BitStringSortDirectionV3 direction;
+  dt::BitStringNullModeV3 null_mode;
   std::string_view hex;
 };
 static constexpr SealedSortKeyFixture kSealedSortKeys[] = {
-  {"ascending_nulls_first_0", "0", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e3010000000000000000000100000000000100"},
-  {"ascending_nulls_first_00", "00", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000010100"},
-  {"ascending_nulls_first_01", "01", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000010200"},
-  {"ascending_nulls_first_1", "1", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e3010000000000000000000100000000000200"},
-  {"ascending_nulls_first_10", "10", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000020100"},
-  {"ascending_nulls_first_11", "11", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000020200"},
-  {"ascending_nulls_first_NULL", "", true, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000000000000000000"},
-  {"ascending_nulls_first_empty", "", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e30100000000000000000001000000000000"},
-  {"ascending_nulls_last_0", "0", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e3010000000000000000010100000000000100"},
-  {"ascending_nulls_last_00", "00", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000010100"},
-  {"ascending_nulls_last_01", "01", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000010200"},
-  {"ascending_nulls_last_1", "1", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e3010000000000000000010100000000000200"},
-  {"ascending_nulls_last_10", "10", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000020100"},
-  {"ascending_nulls_last_11", "11", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000020200"},
-  {"ascending_nulls_last_NULL", "", true, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000001020000000000"},
-  {"ascending_nulls_last_empty", "", false, dt::BitStringSortDirectionV1::ascending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e30100000000000000000101000000000000"},
-  {"descending_nulls_first_0", "0", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000feff"},
-  {"descending_nulls_first_00", "00", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fefeff"},
-  {"descending_nulls_first_01", "01", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fefdff"},
-  {"descending_nulls_first_1", "1", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdff"},
-  {"descending_nulls_first_10", "10", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdfeff"},
-  {"descending_nulls_first_11", "11", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdfdff"},
-  {"descending_nulls_first_NULL", "", true, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100000000000000"},
-  {"descending_nulls_first_empty", "", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_first, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000ff"},
-  {"descending_nulls_last_0", "0", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000feff"},
-  {"descending_nulls_last_00", "00", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fefeff"},
-  {"descending_nulls_last_01", "01", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fefdff"},
-  {"descending_nulls_last_1", "1", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdff"},
-  {"descending_nulls_last_10", "10", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdfeff"},
-  {"descending_nulls_last_11", "11", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdfdff"},
-  {"descending_nulls_last_NULL", "", true, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101020000000000"},
-  {"descending_nulls_last_empty", "", false, dt::BitStringSortDirectionV1::descending, dt::BitStringNullModeV1::nulls_last, "53424249544b3031019d000000007000800000000000d70808000000000000000800000000000000f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc8201a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000ff"},
+  {"ascending_nulls_first_0", "0", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e3010000000000000000000100000000000100"},
+  {"ascending_nulls_first_00", "00", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000010100"},
+  {"ascending_nulls_first_01", "01", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000010200"},
+  {"ascending_nulls_first_1", "1", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e3010000000000000000000100000000000200"},
+  {"ascending_nulls_first_10", "10", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000020100"},
+  {"ascending_nulls_first_11", "11", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000000010000000000020200"},
+  {"ascending_nulls_first_NULL", "", true, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000000000000000000"},
+  {"ascending_nulls_first_empty", "", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e30100000000000000000001000000000000"},
+  {"ascending_nulls_last_0", "0", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e3010000000000000000010100000000000100"},
+  {"ascending_nulls_last_00", "00", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000010100"},
+  {"ascending_nulls_last_01", "01", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000010200"},
+  {"ascending_nulls_last_1", "1", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e3010000000000000000010100000000000200"},
+  {"ascending_nulls_last_10", "10", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000020100"},
+  {"ascending_nulls_last_11", "11", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000001010000000000020200"},
+  {"ascending_nulls_last_NULL", "", true, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000001020000000000"},
+  {"ascending_nulls_last_empty", "", false, dt::BitStringSortDirectionV3::ascending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e30100000000000000000101000000000000"},
+  {"descending_nulls_first_0", "0", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000feff"},
+  {"descending_nulls_first_00", "00", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fefeff"},
+  {"descending_nulls_first_01", "01", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fefdff"},
+  {"descending_nulls_first_1", "1", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdff"},
+  {"descending_nulls_first_10", "10", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdfeff"},
+  {"descending_nulls_first_11", "11", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000fdfdff"},
+  {"descending_nulls_first_NULL", "", true, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100000000000000"},
+  {"descending_nulls_first_empty", "", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_first, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000100010000000000ff"},
+  {"descending_nulls_last_0", "0", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000feff"},
+  {"descending_nulls_last_00", "00", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fefeff"},
+  {"descending_nulls_last_01", "01", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fefdff"},
+  {"descending_nulls_last_1", "1", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdff"},
+  {"descending_nulls_last_10", "10", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdfeff"},
+  {"descending_nulls_last_11", "11", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000fdfdff"},
+  {"descending_nulls_last_NULL", "", true, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101020000000000"},
+  {"descending_nulls_last_empty", "", false, dt::BitStringSortDirectionV3::descending, dt::BitStringNullModeV3::nulls_last, "53424249544b3031019d000000007000800000000000d709090000000000000009000000000000003f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e01a0ff2727177a54bdbca3c1fee7c5e301000000000000000101010000000000ff"},
 };
 
 
@@ -313,17 +313,17 @@ void Check(bool value, std::string_view message) {
   if (!value) Fail(message);
 }
 
-dt::BitStringDescriptorProfileV1 Profile(
-    dt::BitStringSurfaceProfileKindV1 kind =
-        dt::BitStringSurfaceProfileKindV1::unqualified,
-    std::uint32_t length = dt::kBitStringMaximumLogicalBitsV1) {
+dt::BitStringDescriptorProfileV3 Profile(
+    dt::BitStringSurfaceProfileKindV3 kind =
+        dt::BitStringSurfaceProfileKindV3::unqualified,
+    std::uint32_t length = dt::kBitStringMaximumLogicalBitsV3) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV8, 8, 8,
+      dt::kDatatypeCohortV9, 9, 9,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"), 1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "exact D708 bit identity lookup failed");
+        "exact D709 bit identity lookup failed");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6,
       scratchbird::tests::FixtureUuidLiteral(
@@ -331,14 +331,14 @@ dt::BitStringDescriptorProfileV1 Profile(
   Check(historical.ok &&
             !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
         "d706 bit identity did not remain historical-only");
-  const auto historical_profile = dt::BuildBitStringDescriptorProfileV1(
+  const auto historical_profile = dt::BuildBitStringDescriptorProfileV3(
       {{scratchbird::tests::FixtureUuid(9902, 2), dt::kDatatypeCohortV6,
         6, 6}, historical.row, kind, length});
   Check(!historical_profile.ok(),
         "d706 historical identity established a current bit profile");
-  dt::BitStringAuthorityReceiptV1 receipt{
-      scratchbird::tests::FixtureUuid(9902, 1), dt::kDatatypeCohortV8, 8, 8};
-  const auto profile = dt::BuildBitStringDescriptorProfileV1(
+  dt::BitStringAuthorityReceiptV3 receipt{
+      scratchbird::tests::FixtureUuid(9902, 1), dt::kDatatypeCohortV9, 9, 9};
+  const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {receipt, identity.row, kind, length});
   Check(profile.ok(), "bit profile construction failed");
   return profile.profile;
@@ -361,17 +361,17 @@ std::vector<platform::byte> Hex(std::string_view text) {
   return out;
 }
 
-dt::BitStringValueViewV1 View(const dt::BitStringDescriptorProfileV1& profile,
+dt::BitStringValueViewV3 View(const dt::BitStringDescriptorProfileV3& profile,
                               std::string_view bits,
                               std::vector<platform::byte>* storage) {
   *storage = Pack(bits);
-  return {&profile, dt::BitStringValueStateV1::present,
+  return {&profile, dt::BitStringValueStateV3::present,
           static_cast<std::uint32_t>(bits.size()), *storage,
-          dt::BitStringOwnershipV1::borrowed};
+          dt::BitStringOwnershipV3::borrowed};
 }
 
-bool IsBits(const dt::BitStringOwnedValueV1& value, std::string_view bits) {
-  if (value.state != dt::BitStringValueStateV1::present ||
+bool IsBits(const dt::BitStringOwnedValueV3& value, std::string_view bits) {
+  if (value.state != dt::BitStringValueStateV3::present ||
       value.logical_bit_count != bits.size()) return false;
   const auto expected = Pack(bits);
   return value.packed_msb0 == expected;
@@ -452,88 +452,88 @@ void Operations() {
   std::vector<platform::byte> a_bytes, b_bytes;
   const auto a = View(profile, "10101", &a_bytes);
   const auto b = View(profile, "11000", &b_bytes);
-  Check(dt::BitStringLogicalLengthV1(a, true).unsigned_value == 5,
+  Check(dt::BitStringLogicalLengthV3(a, true).unsigned_value == 5,
         "logical length failed");
-  Check(dt::BitStringCountV1(a, true).unsigned_value == 3,
+  Check(dt::BitStringCountV3(a, true).unsigned_value == 3,
         "population count failed");
-  Check(dt::BitStringAtV1(a, true, 0).boolean_value &&
-            !dt::BitStringAtV1(a, true, 1).boolean_value,
+  Check(dt::BitStringAtV3(a, true, 0).boolean_value &&
+            !dt::BitStringAtV3(a, true, 1).boolean_value,
         "zero-based bit access failed");
-  Check(!dt::BitStringAtV1(a, true, 5).ok(),
+  Check(!dt::BitStringAtV3(a, true, 5).ok(),
         "out-of-range bit access was admitted");
-  Check(IsBits(dt::BitStringSetV1(a, true, 1, true).value, "11101"),
+  Check(IsBits(dt::BitStringSetV3(a, true, 1, true).value, "11101"),
         "bit set failed");
-  Check(IsBits(dt::BitStringNotV1(a, true).value, "01010"), "NOT failed");
-  Check(IsBits(dt::BitStringAndV1(a, b, true).value, "10000"), "AND failed");
-  Check(IsBits(dt::BitStringOrV1(a, b, true).value, "11101"), "OR failed");
-  Check(IsBits(dt::BitStringXorV1(a, b, true).value, "01101"), "XOR failed");
-  Check(IsBits(dt::BitStringShiftLeftV1(a, true, 2).value, "10100"),
+  Check(IsBits(dt::BitStringNotV3(a, true).value, "01010"), "NOT failed");
+  Check(IsBits(dt::BitStringAndV3(a, b, true).value, "10000"), "AND failed");
+  Check(IsBits(dt::BitStringOrV3(a, b, true).value, "11101"), "OR failed");
+  Check(IsBits(dt::BitStringXorV3(a, b, true).value, "01101"), "XOR failed");
+  Check(IsBits(dt::BitStringShiftLeftV3(a, true, 2).value, "10100"),
         "left shift failed");
-  Check(IsBits(dt::BitStringShiftRightV1(a, true, 2).value, "00101"),
+  Check(IsBits(dt::BitStringShiftRightV3(a, true, 2).value, "00101"),
         "right shift failed");
-  Check(IsBits(dt::BitStringShiftLeftV1(a, true, 99).value, "00000"),
+  Check(IsBits(dt::BitStringShiftLeftV3(a, true, 99).value, "00000"),
         "overshift did not zero-fill");
-  Check(IsBits(dt::BitStringSliceV1(a, profile, true, 1, 3).value, "010"),
+  Check(IsBits(dt::BitStringSliceV3(a, profile, true, 1, 3).value, "010"),
         "contained slice failed");
-  Check(IsBits(dt::BitStringConcatenateV1(a, b, profile, true).value,
+  Check(IsBits(dt::BitStringConcatenateV3(a, b, profile, true).value,
                "1010111000"),
         "concatenation failed");
   std::vector<platform::byte> needle_bytes, absent_bytes, empty_bytes;
   const auto needle = View(profile, "101", &needle_bytes);
   const auto absent = View(profile, "111", &absent_bytes);
   const auto empty = View(profile, "", &empty_bytes);
-  const auto found = dt::SearchBitStringValueNoAllocV1(a, needle, true);
+  const auto found = dt::SearchBitStringValueNoAllocV3(a, needle, true);
   Check(found.ok() && found.found && found.zero_based_position == 0,
         "allocation-free logical search did not find first match");
-  const auto missing = dt::SearchBitStringValueNoAllocV1(a, absent, true);
+  const auto missing = dt::SearchBitStringValueNoAllocV3(a, absent, true);
   Check(missing.ok() && !missing.found,
         "allocation-free logical search reported absent needle");
-  Check(!dt::SearchBitStringValueNoAllocV1(a, empty, true).ok(),
+  Check(!dt::SearchBitStringValueNoAllocV3(a, empty, true).ok(),
         "allocation-free logical search admitted empty needle");
 
-  dt::BitStringValueViewV1 typed_null{
-      &profile, dt::BitStringValueStateV1::sql_null, 0, {},
-      dt::BitStringOwnershipV1::borrowed};
+  dt::BitStringValueViewV3 typed_null{
+      &profile, dt::BitStringValueStateV3::sql_null, 0, {},
+      dt::BitStringOwnershipV3::borrowed};
   std::array<platform::byte, 1> dirty_tail{0x81};
-  dt::BitStringValueViewV1 dirty_present{
-      &profile, dt::BitStringValueStateV1::present, 1, dirty_tail,
-      dt::BitStringOwnershipV1::borrowed};
+  dt::BitStringValueViewV3 dirty_present{
+      &profile, dt::BitStringValueStateV3::present, 1, dirty_tail,
+      dt::BitStringOwnershipV3::borrowed};
   for (const auto result : {
-           dt::BitStringAndV1(typed_null, dirty_present, true),
-           dt::BitStringOrV1(typed_null, dirty_present, true),
-           dt::BitStringXorV1(typed_null, dirty_present, true)})
+           dt::BitStringAndV3(typed_null, dirty_present, true),
+           dt::BitStringOrV3(typed_null, dirty_present, true),
+           dt::BitStringXorV3(typed_null, dirty_present, true)})
     Check(result.ok() &&
-              result.value.state == dt::BitStringValueStateV1::sql_null &&
+              result.value.state == dt::BitStringValueStateV3::sql_null &&
               result.value.packed_msb0.empty(),
           "strict binary NULL inspected a PRESENT peer payload");
   const auto null_concat =
-      dt::BitStringConcatenateV1(typed_null, dirty_present, profile, true);
+      dt::BitStringConcatenateV3(typed_null, dirty_present, profile, true);
   Check(null_concat.ok() &&
-            null_concat.value.state == dt::BitStringValueStateV1::sql_null,
+            null_concat.value.state == dt::BitStringValueStateV3::sql_null,
         "strict concatenate NULL inspected a PRESENT peer payload");
   const auto null_search =
-      dt::SearchBitStringValueNoAllocV1(typed_null, dirty_present, true);
+      dt::SearchBitStringValueNoAllocV3(typed_null, dirty_present, true);
   Check(null_search.ok() && null_search.is_null,
         "strict search NULL inspected a PRESENT peer payload");
   auto invalid_profile = profile;
   invalid_profile.receipt.registry_generation = 5;
   auto invalid_profile_present = dirty_present;
   invalid_profile_present.profile = &invalid_profile;
-  Check(!dt::BitStringAndV1(typed_null, invalid_profile_present, true).ok(),
+  Check(!dt::BitStringAndV3(typed_null, invalid_profile_present, true).ok(),
         "strict binary NULL masked invalid peer profile");
   auto invalid_null = typed_null;
   invalid_null.packed_msb0 = dirty_tail;
-  Check(dt::BitStringAndV1(invalid_null, dirty_present, true)
+  Check(dt::BitStringAndV3(invalid_null, dirty_present, true)
                 .diagnostic.diagnostic_code == "DATATYPE.NULL_STATE.INVALID",
         "invalid strict NULL state did not precede PRESENT payload");
-  Check(dt::DecodeCanonicalBitStringComponentNoAllocV1(
-                invalid_profile, dt::BitStringValueStateV1::sql_null, true,
+  Check(dt::DecodeCanonicalBitStringComponentNoAllocV3(
+                invalid_profile, dt::BitStringValueStateV3::sql_null, true,
                 dirty_tail)
                 .diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
         "component decode state masked invalid profile");
 
-  const auto render = dt::RenderBitStringValueV1(a, false);
-  const auto export_render = dt::RenderBitStringValueV1(a, true);
+  const auto render = dt::RenderBitStringValueV3(a, false);
+  const auto export_render = dt::RenderBitStringValueV3(a, true);
   Check(render.ok() && render.text == "0b10101", "display rendering failed");
   Check(export_render.ok() && export_render.text == "B'10101'",
         "export rendering failed");
@@ -542,9 +542,9 @@ void Operations() {
 struct MetricCapture {
   unsigned calls = 0;
   bool accept = true;
-  dt::BitStringMetricRecordV1 last;
+  dt::BitStringMetricRecordV3 last;
 };
-bool CaptureMetric(const dt::BitStringMetricRecordV1& record,
+bool CaptureMetric(const dt::BitStringMetricRecordV3& record,
                    void* context) noexcept {
   auto* capture = static_cast<MetricCapture*>(context);
   ++capture->calls;
@@ -554,117 +554,117 @@ bool CaptureMetric(const dt::BitStringMetricRecordV1& record,
 
 void TypedMetricApi() {
   MetricCapture capture;
-  dt::SetBitStringMetricSinkV1(CaptureMetric, &capture);
-  dt::BitStringMetricRecordV1 record;
+  dt::SetBitStringMetricSinkV3(CaptureMetric, &capture);
+  dt::BitStringMetricRecordV3 record;
   record.database_uuid = scratchbird::tests::FixtureUuid(9902, 40);
   record.node_uuid = scratchbird::tests::FixtureUuid(9902, 41);
   record.represented_event_committed = true;
-  record.metric = dt::BitStringMetricV1::operation_success;
-  record.update = dt::BitStringMetricUpdateV1::counter_add;
+  record.metric = dt::BitStringMetricV3::operation_success;
+  record.update = dt::BitStringMetricUpdateV3::counter_add;
   record.value = 1;
-  record.operation = dt::BitStringMetricOperationV1::bit_count;
-  Check(dt::RecordBitStringMetricAfterCommitV1(record) ==
-            dt::BitStringMetricRecordDispositionV1::recorded &&
+  record.operation = dt::BitStringMetricOperationV3::bit_count;
+  Check(dt::RecordBitStringMetricAfterCommitV3(record) ==
+            dt::BitStringMetricRecordDispositionV3::recorded &&
             capture.calls == 1,
         "typed operation metric was not recorded after commit");
 
   for (unsigned id = 0;
-       id <= static_cast<unsigned>(dt::BitStringMetricV1::operation_input_bits);
+       id <= static_cast<unsigned>(dt::BitStringMetricV3::operation_input_bits);
        ++id) {
-    dt::BitStringMetricRecordV1 row;
+    dt::BitStringMetricRecordV3 row;
     row.database_uuid = record.database_uuid;
     row.node_uuid = record.node_uuid;
     row.represented_event_committed = true;
-    row.metric = static_cast<dt::BitStringMetricV1>(id);
+    row.metric = static_cast<dt::BitStringMetricV3>(id);
     row.value = 1;
     switch (row.metric) {
-      case dt::BitStringMetricV1::descriptor_admissions:
-        row.result = dt::BitStringMetricResultLabelV1::admitted; break;
-      case dt::BitStringMetricV1::values_admitted:
-        row.value_state = dt::BitStringMetricValueStateLabelV1::present; break;
-      case dt::BitStringMetricV1::owned_bytes:
-        row.update = dt::BitStringMetricUpdateV1::gauge_set;
-        row.allocation_class = dt::BitStringMetricAllocationClassV1::owned_value; break;
-      case dt::BitStringMetricV1::descriptor_refusals:
-      case dt::BitStringMetricV1::padding_refusals:
-      case dt::BitStringMetricV1::canonical_encoding_refusals:
-      case dt::BitStringMetricV1::statistics_stale:
-      case dt::BitStringMetricV1::merge_manual_review:
-        row.reason = dt::BitStringMetricReasonV1::policy; break;
-      case dt::BitStringMetricV1::length_refusals:
-      case dt::BitStringMetricV1::operation_attempts:
-      case dt::BitStringMetricV1::operation_success:
-        row.operation = dt::BitStringMetricOperationV1::validate; break;
-      case dt::BitStringMetricV1::operation_input_bits:
-        row.operation = dt::BitStringMetricOperationV1::validate;
-        row.update = dt::BitStringMetricUpdateV1::histogram_observe; break;
-      case dt::BitStringMetricV1::logical_length:
-        row.update = dt::BitStringMetricUpdateV1::histogram_observe; break;
-      case dt::BitStringMetricV1::operation_refusals:
-        row.operation = dt::BitStringMetricOperationV1::validate;
-        row.reason = dt::BitStringMetricReasonV1::policy; break;
-      case dt::BitStringMetricV1::index_admission_refusals:
-        row.index_family = dt::BitStringMetricIndexFamilyV1::btree;
-        row.reason = dt::BitStringMetricReasonV1::policy; break;
-      case dt::BitStringMetricV1::compatibility_mapping_misses:
-      case dt::BitStringMetricV1::transport_refusals:
-        row.lane_class = dt::BitStringMetricLaneClassV1::canonical_sblr;
-        row.reason = dt::BitStringMetricReasonV1::unsupported; break;
-      case dt::BitStringMetricV1::serialization_refusals:
-        row.boundary = dt::BitStringMetricBoundaryV1::component;
-        row.reason = dt::BitStringMetricReasonV1::profile_missing; break;
-      case dt::BitStringMetricV1::protection_refusals:
-        row.layer = dt::BitStringMetricLayerV1::inner_encryption;
-        row.reason = dt::BitStringMetricReasonV1::unsupported; break;
+      case dt::BitStringMetricV3::descriptor_admissions:
+        row.result = dt::BitStringMetricResultLabelV3::admitted; break;
+      case dt::BitStringMetricV3::values_admitted:
+        row.value_state = dt::BitStringMetricValueStateLabelV3::present; break;
+      case dt::BitStringMetricV3::owned_bytes:
+        row.update = dt::BitStringMetricUpdateV3::gauge_set;
+        row.allocation_class = dt::BitStringMetricAllocationClassV3::owned_value; break;
+      case dt::BitStringMetricV3::descriptor_refusals:
+      case dt::BitStringMetricV3::padding_refusals:
+      case dt::BitStringMetricV3::canonical_encoding_refusals:
+      case dt::BitStringMetricV3::statistics_stale:
+      case dt::BitStringMetricV3::merge_manual_review:
+        row.reason = dt::BitStringMetricReasonV3::policy; break;
+      case dt::BitStringMetricV3::length_refusals:
+      case dt::BitStringMetricV3::operation_attempts:
+      case dt::BitStringMetricV3::operation_success:
+        row.operation = dt::BitStringMetricOperationV3::validate; break;
+      case dt::BitStringMetricV3::operation_input_bits:
+        row.operation = dt::BitStringMetricOperationV3::validate;
+        row.update = dt::BitStringMetricUpdateV3::histogram_observe; break;
+      case dt::BitStringMetricV3::logical_length:
+        row.update = dt::BitStringMetricUpdateV3::histogram_observe; break;
+      case dt::BitStringMetricV3::operation_refusals:
+        row.operation = dt::BitStringMetricOperationV3::validate;
+        row.reason = dt::BitStringMetricReasonV3::policy; break;
+      case dt::BitStringMetricV3::index_admission_refusals:
+        row.index_family = dt::BitStringMetricIndexFamilyV3::btree;
+        row.reason = dt::BitStringMetricReasonV3::policy; break;
+      case dt::BitStringMetricV3::compatibility_mapping_misses:
+      case dt::BitStringMetricV3::transport_refusals:
+        row.lane_class = dt::BitStringMetricLaneClassV3::canonical_sblr;
+        row.reason = dt::BitStringMetricReasonV3::unsupported; break;
+      case dt::BitStringMetricV3::serialization_refusals:
+        row.boundary = dt::BitStringMetricBoundaryV3::component;
+        row.reason = dt::BitStringMetricReasonV3::profile_missing; break;
+      case dt::BitStringMetricV3::protection_refusals:
+        row.layer = dt::BitStringMetricLayerV3::inner_encryption;
+        row.reason = dt::BitStringMetricReasonV3::unsupported; break;
       default: break;
     }
-    Check(dt::RecordBitStringMetricAfterCommitV1(row) ==
-              dt::BitStringMetricRecordDispositionV1::recorded,
+    Check(dt::RecordBitStringMetricAfterCommitV3(row) ==
+              dt::BitStringMetricRecordDispositionV3::recorded,
           "one of the exact 21 metric rows was refused");
   }
 
   const unsigned committed_calls = capture.calls;
   auto missing_result = record;
-  missing_result.metric = dt::BitStringMetricV1::descriptor_admissions;
-  missing_result.operation = dt::BitStringMetricOperationV1::not_applicable;
-  Check(dt::RecordBitStringMetricAfterCommitV1(missing_result) ==
-            dt::BitStringMetricRecordDispositionV1::label_combination_invalid,
+  missing_result.metric = dt::BitStringMetricV3::descriptor_admissions;
+  missing_result.operation = dt::BitStringMetricOperationV3::not_applicable;
+  Check(dt::RecordBitStringMetricAfterCommitV3(missing_result) ==
+            dt::BitStringMetricRecordDispositionV3::label_combination_invalid,
         "descriptor admission metric accepted missing result label");
-  missing_result.result = dt::BitStringMetricResultLabelV1::admitted;
-  missing_result.reason = dt::BitStringMetricReasonV1::policy;
-  Check(dt::RecordBitStringMetricAfterCommitV1(missing_result) ==
-            dt::BitStringMetricRecordDispositionV1::label_combination_invalid,
+  missing_result.result = dt::BitStringMetricResultLabelV3::admitted;
+  missing_result.reason = dt::BitStringMetricReasonV3::policy;
+  Check(dt::RecordBitStringMetricAfterCommitV3(missing_result) ==
+            dt::BitStringMetricRecordDispositionV3::label_combination_invalid,
         "descriptor admission metric accepted an undeclared extra label");
   auto invalid = record;
-  invalid.reason = dt::BitStringMetricReasonV1::policy;
-  Check(dt::RecordBitStringMetricAfterCommitV1(invalid) ==
-            dt::BitStringMetricRecordDispositionV1::label_combination_invalid &&
+  invalid.reason = dt::BitStringMetricReasonV3::policy;
+  Check(dt::RecordBitStringMetricAfterCommitV3(invalid) ==
+            dt::BitStringMetricRecordDispositionV3::label_combination_invalid &&
             capture.calls == committed_calls,
         "undeclared metric-label Cartesian product was admitted");
   invalid = record;
   invalid.represented_event_committed = false;
-  Check(dt::RecordBitStringMetricAfterCommitV1(invalid) ==
-            dt::BitStringMetricRecordDispositionV1::event_not_committed,
+  Check(dt::RecordBitStringMetricAfterCommitV3(invalid) ==
+            dt::BitStringMetricRecordDispositionV3::event_not_committed,
         "metric advanced before represented event committed");
   invalid = record;
   invalid.cluster_series = true;
-  Check(dt::RecordBitStringMetricAfterCommitV1(invalid) ==
-            dt::BitStringMetricRecordDispositionV1::cluster_series_forbidden,
+  Check(dt::RecordBitStringMetricAfterCommitV3(invalid) ==
+            dt::BitStringMetricRecordDispositionV3::cluster_series_forbidden,
         "datatype runtime admitted a cluster metric series");
   invalid = record;
-  invalid.metric = dt::BitStringMetricV1::logical_length;
-  invalid.operation = dt::BitStringMetricOperationV1::not_applicable;
-  invalid.update = dt::BitStringMetricUpdateV1::histogram_observe;
-  invalid.value = dt::kBitStringMaximumLogicalBitsV1 + 1u;
-  Check(dt::RecordBitStringMetricAfterCommitV1(invalid) ==
-            dt::BitStringMetricRecordDispositionV1::update_invalid,
+  invalid.metric = dt::BitStringMetricV3::logical_length;
+  invalid.operation = dt::BitStringMetricOperationV3::not_applicable;
+  invalid.update = dt::BitStringMetricUpdateV3::histogram_observe;
+  invalid.value = dt::kBitStringMaximumLogicalBitsV3 + 1u;
+  Check(dt::RecordBitStringMetricAfterCommitV3(invalid) ==
+            dt::BitStringMetricRecordDispositionV3::update_invalid,
         "logical-length histogram admitted an out-of-domain observation");
 
   capture.accept = false;
-  Check(dt::RecordBitStringMetricAfterCommitV1(record) ==
-            dt::BitStringMetricRecordDispositionV1::sink_failure_isolated,
+  Check(dt::RecordBitStringMetricAfterCommitV3(record) ==
+            dt::BitStringMetricRecordDispositionV3::sink_failure_isolated,
         "metric sink failure was not isolated");
-  dt::SetBitStringMetricSinkV1(nullptr, nullptr);
+  dt::SetBitStringMetricSinkV3(nullptr, nullptr);
 }
 
 void ComparisonHashAndKeys() {
@@ -673,83 +673,83 @@ void ComparisonHashAndKeys() {
   const auto a = View(profile, "10101", &a_bytes);
   const auto prefix = View(profile, "101", &prefix_bytes);
   const auto one = View(profile, "1", &one_bytes);
-  const auto compare = dt::CompareBitStringValuesV1(
-      prefix, a, dt::BitStringComparisonModeV1::ordered);
+  const auto compare = dt::CompareBitStringValuesV3(
+      prefix, a, dt::BitStringComparisonModeV3::ordered);
   Check(compare.ok() && compare.comparison < 0,
         "shorter exact prefix did not sort first");
-  const auto equal = dt::CompareBitStringValuesV1(
-      a, a, dt::BitStringComparisonModeV1::scalar_3vl);
+  const auto equal = dt::CompareBitStringValuesV3(
+      a, a, dt::BitStringComparisonModeV3::scalar_3vl);
   Check(equal.ok() && !equal.is_null && equal.boolean_value,
         "scalar equality failed");
 
-  dt::BitStringValueViewV1 null_value{
-      &profile, dt::BitStringValueStateV1::sql_null, 0, {},
-      dt::BitStringOwnershipV1::borrowed};
-  Check(dt::CompareBitStringValuesV1(
-            a, null_value, dt::BitStringComparisonModeV1::scalar_3vl).is_null,
+  dt::BitStringValueViewV3 null_value{
+      &profile, dt::BitStringValueStateV3::sql_null, 0, {},
+      dt::BitStringOwnershipV3::borrowed};
+  Check(dt::CompareBitStringValuesV3(
+            a, null_value, dt::BitStringComparisonModeV3::scalar_3vl).is_null,
         "scalar NULL comparison did not return typed NULL state");
-  Check(dt::CompareBitStringValuesV1(
+  Check(dt::CompareBitStringValuesV3(
             null_value, null_value,
-            dt::BitStringComparisonModeV1::distinct).boolean_value,
+            dt::BitStringComparisonModeV3::distinct).boolean_value,
         "two typed NULLs were not distinct-equivalent");
-  Check(dt::CompareBitStringValuesV1(
+  Check(dt::CompareBitStringValuesV3(
             null_value, null_value,
-            dt::BitStringComparisonModeV1::grouping).boolean_value,
+            dt::BitStringComparisonModeV3::grouping).boolean_value,
         "grouping did not make two typed NULLs equivalent");
-  Check(dt::CompareBitStringValuesV1(
+  Check(dt::CompareBitStringValuesV3(
             null_value, a,
-            dt::BitStringComparisonModeV1::ordered).comparison < 0 &&
-            dt::CompareBitStringValuesV1(
+            dt::BitStringComparisonModeV3::ordered).comparison < 0 &&
+            dt::CompareBitStringValuesV3(
                 a, null_value,
-                dt::BitStringComparisonModeV1::ordered).comparison > 0,
+                dt::BitStringComparisonModeV3::ordered).comparison > 0,
         "ordered NULL placement drifted");
-  Check(!dt::CompareBitStringValuesV1(
+  Check(!dt::CompareBitStringValuesV3(
              null_value, a,
-             dt::BitStringComparisonModeV1::distinct).boolean_value &&
-            !dt::CompareBitStringValuesV1(
+             dt::BitStringComparisonModeV3::distinct).boolean_value &&
+            !dt::CompareBitStringValuesV3(
                  null_value, a,
-                 dt::BitStringComparisonModeV1::grouping).boolean_value,
+                 dt::BitStringComparisonModeV3::grouping).boolean_value,
         "distinct/grouping NULL-versus-present modes drifted");
-  Check(!dt::CompareBitStringValuesV1(
+  Check(!dt::CompareBitStringValuesV3(
              null_value, null_value,
-             dt::BitStringComparisonModeV1::present_only).ok(),
+             dt::BitStringComparisonModeV3::present_only).ok(),
         "present-only comparator admitted NULL");
   std::array<platform::byte, 1> dirty_compare_tail{0x81};
-  dt::BitStringValueViewV1 dirty_compare_present{
-      &profile, dt::BitStringValueStateV1::present, 1, dirty_compare_tail,
-      dt::BitStringOwnershipV1::borrowed};
-  Check(dt::CompareBitStringValuesV1(
+  dt::BitStringValueViewV3 dirty_compare_present{
+      &profile, dt::BitStringValueStateV3::present, 1, dirty_compare_tail,
+      dt::BitStringOwnershipV3::borrowed};
+  Check(dt::CompareBitStringValuesV3(
             null_value, dirty_compare_present,
-            dt::BitStringComparisonModeV1::scalar_3vl).is_null &&
-            !dt::CompareBitStringValuesV1(
+            dt::BitStringComparisonModeV3::scalar_3vl).is_null &&
+            !dt::CompareBitStringValuesV3(
                  null_value, dirty_compare_present,
-                 dt::BitStringComparisonModeV1::distinct).boolean_value &&
-            !dt::CompareBitStringValuesV1(
+                 dt::BitStringComparisonModeV3::distinct).boolean_value &&
+            !dt::CompareBitStringValuesV3(
                  null_value, dirty_compare_present,
-                 dt::BitStringComparisonModeV1::grouping).boolean_value &&
-            dt::CompareBitStringValuesV1(
+                 dt::BitStringComparisonModeV3::grouping).boolean_value &&
+            dt::CompareBitStringValuesV3(
                  null_value, dirty_compare_present,
-                 dt::BitStringComparisonModeV1::ordered).comparison < 0,
+                 dt::BitStringComparisonModeV3::ordered).comparison < 0,
         "NULL comparison inspected a PRESENT peer payload");
 
-  const auto hash = dt::HashBitStringValueV1(a);
+  const auto hash = dt::HashBitStringValueV3(a);
   Check(hash.ok() && hash.bytes.size() == 32,
         "stable value hash failed");
-  const auto null_hash = dt::HashBitStringValueV1(null_value);
+  const auto null_hash = dt::HashBitStringValueV3(null_value);
   Check(null_hash.ok() && null_hash.bytes ==
-            Hex("d0b315f07764735c64e0144d8d9a9b7ce8f6895af1ba0dc671021a36c9dbd036"),
+            Hex("80e5dad2630881be1d1256d5e32054a47876bbfdc001c86a393b21c6eceb758f"),
         "sealed SQL NULL value hash drifted");
-  const auto key = dt::MakeBitStringSortKeyV1(
-      one, dt::BitStringSortDirectionV1::ascending,
-      dt::BitStringNullModeV1::nulls_first);
+  const auto key = dt::MakeBitStringSortKeyV3(
+      one, dt::BitStringSortDirectionV3::ascending,
+      dt::BitStringNullModeV3::nulls_first);
   Check(key.ok() && key.bytes.size() == 106 &&
             std::equal(key.bytes.begin(), key.bytes.begin() + 8,
                        reinterpret_cast<const platform::byte*>("SBBITK01")) &&
             key.bytes[98] == 1 && key.bytes[104] == 2 && key.bytes[105] == 0,
         "SBBITK01 present key bytes drifted");
-  const auto null_key = dt::MakeBitStringSortKeyV1(
-      null_value, dt::BitStringSortDirectionV1::descending,
-      dt::BitStringNullModeV1::nulls_last);
+  const auto null_key = dt::MakeBitStringSortKeyV3(
+      null_value, dt::BitStringSortDirectionV3::descending,
+      dt::BitStringNullModeV3::nulls_last);
   Check(null_key.ok() && null_key.bytes.size() == 104 &&
             null_key.bytes[96] == 1 && null_key.bytes[97] == 1 &&
             null_key.bytes[98] == 2,
@@ -758,51 +758,51 @@ void ComparisonHashAndKeys() {
   unsigned key_count=0;
   for(const auto& item:kSealedSortKeys){
     std::vector<platform::byte> packed=Pack(item.bits);
-    dt::BitStringValueViewV1 value{&profile,item.is_null?dt::BitStringValueStateV1::sql_null:dt::BitStringValueStateV1::present,item.is_null?0u:static_cast<std::uint32_t>(item.bits.size()),item.is_null?std::span<const platform::byte>{}:std::span<const platform::byte>{packed},dt::BitStringOwnershipV1::borrowed};
-      const auto actual=dt::MakeBitStringSortKeyV1(value,item.direction,item.null_mode);Check(actual.ok(),"one of 32 sort-key vectors was refused");
+    dt::BitStringValueViewV3 value{&profile,item.is_null?dt::BitStringValueStateV3::sql_null:dt::BitStringValueStateV3::present,item.is_null?0u:static_cast<std::uint32_t>(item.bits.size()),item.is_null?std::span<const platform::byte>{}:std::span<const platform::byte>{packed},dt::BitStringOwnershipV3::borrowed};
+      const auto actual=dt::MakeBitStringSortKeyV3(value,item.direction,item.null_mode);Check(actual.ok(),"one of 32 sort-key vectors was refused");
       Check(actual.bytes == Hex(item.hex),
             std::string(item.name) + " did not match exact sealed key bytes");
-      const auto decoded_key=dt::DecodeBitStringSortKeyNoAllocV1(profile,actual.bytes);Check(decoded_key.ok()&&decoded_key.value.state==value.state,"one of 32 sort-key vectors did not decode");
+      const auto decoded_key=dt::DecodeBitStringSortKeyNoAllocV3(profile,actual.bytes);Check(decoded_key.ok()&&decoded_key.value.state==value.state,"one of 32 sort-key vectors did not decode");
       const std::size_t expected_size=104+(item.is_null?0:item.bits.size()+1);Check(actual.bytes.size()==expected_size,"sort-key vector extent drifted");
       Check(actual.bytes[96]==static_cast<unsigned>(item.direction)&&actual.bytes[97]==static_cast<unsigned>(item.null_mode),"sort-key direction/null mode drifted");
-      const platform::byte rank=item.is_null?(item.null_mode==dt::BitStringNullModeV1::nulls_first?0:2):1;Check(actual.bytes[98]==rank,"sort-key state rank drifted");
-      if(!item.is_null){for(std::size_t i=0;i<item.bits.size();++i){const platform::byte expected=item.direction==dt::BitStringSortDirectionV1::ascending?(item.bits[i]=='1'?2:1):(item.bits[i]=='1'?0xfd:0xfe);Check(actual.bytes[104+i]==expected,"sort-key logical symbol drifted");}Check(actual.bytes.back()==(item.direction==dt::BitStringSortDirectionV1::ascending?0:0xff),"sort-key terminator drifted");}
+      const platform::byte rank=item.is_null?(item.null_mode==dt::BitStringNullModeV3::nulls_first?0:2):1;Check(actual.bytes[98]==rank,"sort-key state rank drifted");
+      if(!item.is_null){for(std::size_t i=0;i<item.bits.size();++i){const platform::byte expected=item.direction==dt::BitStringSortDirectionV3::ascending?(item.bits[i]=='1'?2:1):(item.bits[i]=='1'?0xfd:0xfe);Check(actual.bytes[104+i]==expected,"sort-key logical symbol drifted");}Check(actual.bytes.back()==(item.direction==dt::BitStringSortDirectionV3::ascending?0:0xff),"sort-key terminator drifted");}
       ++key_count;
   }
   Check(key_count==32,"did not execute all 32 sealed sort-key vectors");
-  auto valid_key=dt::MakeBitStringSortKeyV1(one,dt::BitStringSortDirectionV1::ascending,dt::BitStringNullModeV1::nulls_first).bytes;
-  for(const std::size_t offset:{0u,8u,24u,32u,40u,72u,88u,98u,99u,104u,105u}){auto changed=valid_key;changed[offset]^=1;Check(!dt::DecodeBitStringSortKeyNoAllocV1(profile,changed).ok(),"mutated SBBITK01 field was admitted");}
+  auto valid_key=dt::MakeBitStringSortKeyV3(one,dt::BitStringSortDirectionV3::ascending,dt::BitStringNullModeV3::nulls_first).bytes;
+  for(const std::size_t offset:{0u,8u,24u,32u,40u,72u,88u,98u,99u,104u,105u}){auto changed=valid_key;changed[offset]^=1;Check(!dt::DecodeBitStringSortKeyNoAllocV3(profile,changed).ok(),"mutated SBBITK01 field was admitted");}
   for (const std::size_t offset : {96u, 97u}) {
     auto changed = valid_key;
     changed[offset] = 0xff;
-    Check(!dt::DecodeBitStringSortKeyNoAllocV1(profile, changed).ok(),
+    Check(!dt::DecodeBitStringSortKeyNoAllocV3(profile, changed).ok(),
           "invalid SBBITK01 direction/null mode was admitted");
   }
-  auto excess=valid_key;excess.push_back(0);Check(!dt::DecodeBitStringSortKeyNoAllocV1(profile,excess).ok(),"SBBITK01 trailing excess was admitted");
-  auto fixed_profile = Profile(dt::BitStringSurfaceProfileKindV1::fixed, 8);
-  auto varying_profile = Profile(dt::BitStringSurfaceProfileKindV1::varying, 1);
-  Check(!dt::DecodeBitStringSortKeyNoAllocV1(fixed_profile, valid_key).ok(),
+  auto excess=valid_key;excess.push_back(0);Check(!dt::DecodeBitStringSortKeyNoAllocV3(profile,excess).ok(),"SBBITK01 trailing excess was admitted");
+  auto fixed_profile = Profile(dt::BitStringSurfaceProfileKindV3::fixed, 8);
+  auto varying_profile = Profile(dt::BitStringSurfaceProfileKindV3::varying, 1);
+  Check(!dt::DecodeBitStringSortKeyNoAllocV3(fixed_profile, valid_key).ok(),
         "SBBITK01 reopened a fixed-profile count mismatch");
-  Check(!dt::DecodeBitStringSortKeyNoAllocV1(varying_profile, valid_key).ok(),
+  Check(!dt::DecodeBitStringSortKeyNoAllocV3(varying_profile, valid_key).ok(),
         "SBBITK01 reopened a varying-profile bound mismatch");
 
-  struct HashVector { dt::BitStringSurfaceProfileKindV1 kind;std::uint32_t bound;std::string_view bits;std::string_view hash; };
-  static constexpr HashVector hashes[]={{dt::BitStringSurfaceProfileKindV1::unqualified,1,"","a8d3182977dcd0961e21e2c8b67700e3c6ca2d8230cb21ff98974bc8b7277034"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"0","29ca13e19f19c01dd86cee20f307b5eee7df4a0c40a7d4fda2f40f70190a18f2"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"1","e6a8f52447d129c83fb1d96da0fbe30f0dd393b1fcf5e5c48b2efd57099e9cf6"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"10","385cd52f5cf212de5eb0c6a831a0082c5a1b7c701df4843f5b512e5458305d29"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"101","a0191842a93aa562fc9133472e9a18d092843d8897043e0653c9069afc5b51bf"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"1010","2afecef814e93adad648a692c6b5cc867f1352ba3340b3bc117451aec19ee965"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"10101","be6dcf0dfdc3ef7218e801db5935b2b9cac16951db823edf030f8a36a8e0d38c"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"101010","8b16df800ebbf097fbe72fa3ba8e4a2b2abd19c918d0abf2d1f7421bd5312bc2"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"1010101","23be74f269dfffdae9eaa64d3e34d79b4f580e167ab50f3bfb4e3b2eb60e812e"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"10101010","63e5db6220c5b144d89a76baf903da44c05388960db787fcb95f64420550e986"},{dt::BitStringSurfaceProfileKindV1::unqualified,1,"101010101","0b0934f1a787bf84af0a1cae8dde34ba6613cea9d44f683d98f93088ab9f43c3"},{dt::BitStringSurfaceProfileKindV1::fixed,8,"10100000","4e3285ec7808c0a66c030d955dc2b2767f8401b75827212181576de3b980374a"},{dt::BitStringSurfaceProfileKindV1::fixed,8,"11001010","a31a76e31cc57ec03b3be965c33bfd9717e8fb445e186f6e78cfbfbb6b523504"},{dt::BitStringSurfaceProfileKindV1::varying,8,"","9d6fb7532918df7dfe8ce9c40485784adacfe1b7cfe7652825d44666d87287ff"},{dt::BitStringSurfaceProfileKindV1::varying,8,"00110101","aac998b8500fc164043975f8f98f2f1724e930855f9d0ee119566343245ff414"}};
-  for(const auto& fixture:hashes){auto p=Profile(fixture.kind,fixture.bound);auto packed=Pack(fixture.bits);dt::BitStringValueViewV1 value{&p,dt::BitStringValueStateV1::present,static_cast<std::uint32_t>(fixture.bits.size()),packed,dt::BitStringOwnershipV1::borrowed};const auto actual=dt::HashBitStringValueV1(value);Check(actual.ok()&&actual.bytes==Hex(fixture.hash),"sealed value-hash vector drifted");}
+  struct HashVector { dt::BitStringSurfaceProfileKindV3 kind;std::uint32_t bound;std::string_view bits;std::string_view hash; };
+  static constexpr HashVector hashes[]={{dt::BitStringSurfaceProfileKindV3::unqualified,1,"","a6ca9a15abfac085707265332478949946f578524b5f3e8e43bbdf634eb340bd"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"0","ac62b69a4c6c75ae3187e95a644d12eed1b1bac74bc16a6da7d3a4e5a7bfc78d"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1","3f0c6b5490fbb7ff5a247bb74b428c001cd0418ad3adfb68420da812ba518e8b"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10","0f78340a124712ddd9d9265fa17ab24c0fd18856eee8f76d225d429678e69067"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101","d62e7a0f52eb9bc32fd3b1b593ec003b0a6cebc75569368f13aae4b6989774e5"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1010","cc69410379c669899ab1832bfabb8bfc50a35aad09943304f4769da2f67e630c"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10101","6e5c4df0e384a14e8087f81e5b43fc4730ca0f632a0a4284c8e04a6586682233"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101010","2fcf9457b67e904d3ac55fe8e26139df99801793bc02466723033287e9daa661"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"1010101","52d5bbf039233d240c600e03c48febe49243265a682f6f72471a8966d72e191b"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"10101010","83f771774eccfcc2b9063c4def2c8d47bfb627dbbe46690e17084e0caddd7bf4"},{dt::BitStringSurfaceProfileKindV3::unqualified,1,"101010101","ee236d0faa4c9117c67bb5381c7a6c6eb060411709d45493023565d12123e08d"},{dt::BitStringSurfaceProfileKindV3::fixed,8,"10100000","1d98887057a95db58a35ce10dc6dd73c933c239448b012941b920104bb49ef78"},{dt::BitStringSurfaceProfileKindV3::fixed,8,"11001010","75528ad53ae79b02f9698ab843bdfe6932c675525e0daeebdea84d2c1e6f29dd"},{dt::BitStringSurfaceProfileKindV3::varying,8,"","00cbb64489bf2bef39b341a2684230ed5c2a83529d8e925d9cd47ba740fc1457"},{dt::BitStringSurfaceProfileKindV3::varying,8,"00110101","09d93df1940bcaa53195f2dae08d2808d653fac0fb6cbf1c8f226ecb842776e6"}};
+  for(const auto& fixture:hashes){auto p=Profile(fixture.kind,fixture.bound);auto packed=Pack(fixture.bits);dt::BitStringValueViewV3 value{&p,dt::BitStringValueStateV3::present,static_cast<std::uint32_t>(fixture.bits.size()),packed,dt::BitStringOwnershipV3::borrowed};const auto actual=dt::HashBitStringValueV3(value);Check(actual.ok()&&actual.bytes==Hex(fixture.hash),"sealed value-hash vector drifted");}
 
-  std::vector<platform::byte> maximum(2'097'152,0xff);dt::BitStringValueViewV1 maximum_value{&profile,dt::BitStringValueStateV1::present,dt::kBitStringMaximumLogicalBitsV1,maximum,dt::BitStringOwnershipV1::borrowed};const auto maximum_hash=dt::HashBitStringValueV1(maximum_value);Check(maximum_hash.ok()&&maximum_hash.bytes==Hex("c53d226d65c6f7b3507019140881ae247e2554acd1c72e5594ceb52f08ff8a67"),"maximum value hash drifted");const auto maximum_key=dt::MakeBitStringSortKeyV1(maximum_value,dt::BitStringSortDirectionV1::ascending,dt::BitStringNullModeV1::nulls_first);Check(maximum_key.ok()&&maximum_key.bytes.size()==dt::kBitStringMaximumSortKeyBytesV1,"maximum SBBITK01 extent drifted");Check(dt::DecodeBitStringSortKeyNoAllocV1(profile,maximum_key.bytes).ok(),"maximum SBBITK01 did not decode allocation-free");
+  std::vector<platform::byte> maximum(2'097'152,0xff);dt::BitStringValueViewV3 maximum_value{&profile,dt::BitStringValueStateV3::present,dt::kBitStringMaximumLogicalBitsV3,maximum,dt::BitStringOwnershipV3::borrowed};const auto maximum_hash=dt::HashBitStringValueV3(maximum_value);Check(maximum_hash.ok()&&maximum_hash.bytes==Hex("dc05d507f99ff2895c6875a603f0fff38108ece197c30b4bea9f7668d2056780"),"maximum value hash drifted");const auto maximum_key=dt::MakeBitStringSortKeyV3(maximum_value,dt::BitStringSortDirectionV3::ascending,dt::BitStringNullModeV3::nulls_first);Check(maximum_key.ok()&&maximum_key.bytes.size()==dt::kBitStringMaximumSortKeyBytesV3,"maximum SBBITK01 extent drifted");Check(dt::DecodeBitStringSortKeyNoAllocV3(profile,maximum_key.bytes).ok(),"maximum SBBITK01 did not decode allocation-free");
 }
 
 void CastsAndClosedRegistry() {
   auto profile = Profile();
-  auto fixed8 = Profile(dt::BitStringSurfaceProfileKindV1::fixed, 8);
-  auto varying8 = Profile(dt::BitStringSurfaceProfileKindV1::varying, 8);
+  auto fixed8 = Profile(dt::BitStringSurfaceProfileKindV3::fixed, 8);
+  auto varying8 = Profile(dt::BitStringSurfaceProfileKindV3::varying, 8);
   auto text = Scalar(dt::CanonicalTypeId::character, "0b101");
-  dt::BitStringCastRequestV1 to_bit;
+  dt::BitStringCastRequestV3 to_bit;
   to_bit.scalar_source = &text;
   to_bit.bit_target = &profile;
   to_bit.context = dt::DatatypeCastContext::explicit_cast;
-  auto cast = dt::CastBitStringValueV1(to_bit);
+  auto cast = dt::CastBitStringValueV3(to_bit);
   Check(cast.ok() && IsBits(cast.bit_value, "101"),
         "strict character-to-bit cast failed");
   const auto expect_descriptor_refusal = [&](auto mutate,
@@ -810,7 +810,7 @@ void CastsAndClosedRegistry() {
     auto changed = text;
     mutate(changed.descriptor);
     to_bit.scalar_source = &changed;
-    const auto result = dt::CastBitStringValueV1(to_bit);
+    const auto result = dt::CastBitStringValueV3(to_bit);
     Check(!result.ok() && result.diagnostic.diagnostic_code ==
                               "CTB.BIT.DESCRIPTOR_INVALID", message);
   };
@@ -822,7 +822,7 @@ void CastsAndClosedRegistry() {
   auto localized_alias = text;
   localized_alias.descriptor.stable_name = "chaine_de_caracteres";
   to_bit.scalar_source = &localized_alias;
-  Check(dt::CastBitStringValueV1(to_bit).ok(),
+  Check(dt::CastBitStringValueV3(to_bit).ok(),
         "presentation/localized scalar alias was treated as identity");
   to_bit.scalar_source = &text;
   expect_descriptor_refusal([](auto& d){++d.bit_width;},"mutated scalar bit width admitted");
@@ -847,21 +847,21 @@ void CastsAndClosedRegistry() {
   short_declared.descriptor.modifier_flags =
       engine::ExecutionTypeModifierFlagBit(engine::ExecutionTypeModifierFlag::length);
   to_bit.scalar_source = &short_declared;
-  const auto too_long = dt::CastBitStringValueV1(to_bit);
+  const auto too_long = dt::CastBitStringValueV3(to_bit);
   Check(!too_long.ok() && too_long.diagnostic.diagnostic_code ==
                             "CTB.BIT.LENGTH_EXCEEDED",
         "character source declared length was ignored");
   for (std::string bad : {"0B1", " 0b1", "0b2", "0b1_0", "0b\xc2\xb9"}) {
     auto value = Scalar(dt::CanonicalTypeId::character, bad);
     to_bit.scalar_source = &value;
-    const auto refused = dt::CastBitStringValueV1(to_bit);
+    const auto refused = dt::CastBitStringValueV3(to_bit);
     Check(!refused.ok() && refused.diagnostic.diagnostic_code ==
                                "CTB.BIT.CAST_TEXT_INVALID",
           "malformed strict bit text was admitted or misdiagnosed");
   }
   to_bit.scalar_source = &text;
   to_bit.context = dt::DatatypeCastContext::implicit;
-  Check(!dt::CastBitStringValueV1(to_bit).ok(),
+  Check(!dt::CastBitStringValueV3(to_bit).ok(),
         "character-to-bit implicit cast was admitted");
 
   std::string int_bytes;
@@ -871,38 +871,38 @@ void CastsAndClosedRegistry() {
   to_bit.scalar_source = &integer;
   to_bit.bit_target = &fixed8;
   to_bit.context = dt::DatatypeCastContext::explicit_cast;
-  cast = dt::CastBitStringValueV1(to_bit);
+  cast = dt::CastBitStringValueV3(to_bit);
   Check(cast.ok() && IsBits(cast.bit_value, "00000101"),
         "integer-to-fixed-bit left extension failed");
 
   std::vector<platform::byte> bits;
   const auto bit5 = View(profile, "101", &bits);
   std::array<platform::byte, 1> dirty_cast_tail{0x81};
-  dt::BitStringValueViewV1 dirty_cast_source{
-      &profile, dt::BitStringValueStateV1::present, 1, dirty_cast_tail,
-      dt::BitStringOwnershipV1::borrowed};
-  dt::BitStringCastRequestV1 forbidden_dirty_cast;
+  dt::BitStringValueViewV3 dirty_cast_source{
+      &profile, dt::BitStringValueStateV3::present, 1, dirty_cast_tail,
+      dt::BitStringOwnershipV3::borrowed};
+  dt::BitStringCastRequestV3 forbidden_dirty_cast;
   forbidden_dirty_cast.bit_source = &dirty_cast_source;
   forbidden_dirty_cast.scalar_target = dt::CanonicalTypeId::boolean;
   forbidden_dirty_cast.scalar_target_descriptor =
       Descriptor(dt::CanonicalTypeId::boolean);
   forbidden_dirty_cast.context = dt::DatatypeCastContext::explicit_cast;
-  Check(dt::CastBitStringValueV1(forbidden_dirty_cast)
+  Check(dt::CastBitStringValueV3(forbidden_dirty_cast)
                 .diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN",
         "forbidden pair classification inspected PRESENT payload");
-  dt::BitStringCastRequestV1 forbidden_dirty_profile_cast;
+  dt::BitStringCastRequestV3 forbidden_dirty_profile_cast;
   forbidden_dirty_profile_cast.bit_source = &dirty_cast_source;
   forbidden_dirty_profile_cast.bit_target = &fixed8;
   forbidden_dirty_profile_cast.context = dt::DatatypeCastContext::implicit;
-  Check(dt::CastBitStringValueV1(forbidden_dirty_profile_cast)
+  Check(dt::CastBitStringValueV3(forbidden_dirty_profile_cast)
                 .diagnostic.diagnostic_code == "DATATYPE.CAST_FORBIDDEN",
         "profile cast context classification inspected PRESENT payload");
-  dt::BitStringCastRequestV1 to_integer;
+  dt::BitStringCastRequestV3 to_integer;
   to_integer.bit_source = &bit5;
   to_integer.scalar_target = dt::CanonicalTypeId::uint64;
   to_integer.scalar_target_descriptor = Descriptor(dt::CanonicalTypeId::uint64);
   to_integer.context = dt::DatatypeCastContext::explicit_cast;
-  const auto integer_result = dt::CastBitStringValueV1(to_integer);
+  const auto integer_result = dt::CastBitStringValueV3(to_integer);
   std::uint64_t decoded = 0;
   Check(integer_result.ok() &&
             dt::DecodeCanonicalUint64Value(
@@ -918,27 +918,27 @@ void CastsAndClosedRegistry() {
   negative_request.scalar_source = &negative_integer;
   negative_request.bit_target = &profile;
   negative_request.context = dt::DatatypeCastContext::explicit_cast;
-  Check(dt::CastBitStringValueV1(negative_request)
+  Check(dt::CastBitStringValueV3(negative_request)
                 .diagnostic.diagnostic_code == "SCALAR.OUT_OF_RANGE",
         "negative integer cast lost its range diagnostic");
   std::vector<platform::byte> empty_integer_bits;
   const auto empty_integer = View(profile, "", &empty_integer_bits);
   auto empty_integer_request = to_integer;
   empty_integer_request.bit_source = &empty_integer;
-  Check(dt::CastBitStringValueV1(empty_integer_request)
+  Check(dt::CastBitStringValueV3(empty_integer_request)
                 .diagnostic.diagnostic_code == "SCALAR.OUT_OF_RANGE",
         "empty bit-to-integer cast lost its range diagnostic");
-  dt::BitStringCastRequestV1 to_character;
+  dt::BitStringCastRequestV3 to_character;
   to_character.bit_source = &bit5;
   to_character.scalar_target = dt::CanonicalTypeId::character;
   to_character.scalar_target_descriptor = Descriptor(dt::CanonicalTypeId::character);
   to_character.context = dt::DatatypeCastContext::explicit_cast;
-  Check(dt::CastBitStringValueV1(to_character).ok(),
+  Check(dt::CastBitStringValueV3(to_character).ok(),
         "bit-to-character cast failed");
   to_character.scalar_target_descriptor.length = 4;
   to_character.scalar_target_descriptor.modifier_flags =
       engine::ExecutionTypeModifierFlagBit(engine::ExecutionTypeModifierFlag::length);
-  const auto target_short = dt::CastBitStringValueV1(to_character);
+  const auto target_short = dt::CastBitStringValueV3(to_character);
   Check(!target_short.ok() && target_short.diagnostic.diagnostic_code ==
                                   "CTB.BIT.LENGTH_EXCEEDED",
         "character target declared length was ignored");
@@ -969,34 +969,34 @@ void CastsAndClosedRegistry() {
   }
   unsigned integer_directions=0;
   for (const auto& source_integer : integer_sources) {
-    dt::BitStringCastRequestV1 incoming;
+    dt::BitStringCastRequestV3 incoming;
     incoming.scalar_source=&source_integer;incoming.bit_target=&profile;
     incoming.context=dt::DatatypeCastContext::explicit_cast;
-    const auto as_bits=dt::CastBitStringValueV1(incoming);
+    const auto as_bits=dt::CastBitStringValueV3(incoming);
     Check(as_bits.ok()&&IsBits(as_bits.bit_value,"101"),"one of ten explicit integer-to-bit directions failed");
-    for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment}){incoming.context=context;Check(!dt::CastBitStringValueV1(incoming).ok(),"integer-to-bit non-explicit context admitted");}
+    for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment}){incoming.context=context;Check(!dt::CastBitStringValueV3(incoming).ok(),"integer-to-bit non-explicit context admitted");}
     incoming.context=dt::DatatypeCastContext::explicit_cast;
-    dt::BitStringCastRequestV1 outgoing;
+    dt::BitStringCastRequestV3 outgoing;
     const auto as_bits_view=as_bits.bit_value.view();outgoing.bit_source=&as_bits_view;
     outgoing.scalar_target=source_integer.type_id;outgoing.scalar_target_descriptor=source_integer.descriptor;outgoing.context=dt::DatatypeCastContext::explicit_cast;
-    Check(dt::CastBitStringValueV1(outgoing).ok(),"one of ten explicit bit-to-integer directions failed");
-    for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment}){outgoing.context=context;Check(!dt::CastBitStringValueV1(outgoing).ok(),"bit-to-integer non-explicit context admitted");}
+    Check(dt::CastBitStringValueV3(outgoing).ok(),"one of ten explicit bit-to-integer directions failed");
+    for(auto context:{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment}){outgoing.context=context;Check(!dt::CastBitStringValueV3(outgoing).ok(),"bit-to-integer non-explicit context admitted");}
     integer_directions+=2;
   }
   Check(integer_directions==20,"did not execute all 20 explicit integer directions");
 
-  dt::BitStringCastRequestV1 profile_cast;
+  dt::BitStringCastRequestV3 profile_cast;
   profile_cast.bit_source = &bit5;
   profile_cast.bit_target = &fixed8;
   profile_cast.context = dt::DatatypeCastContext::explicit_cast;
-  const auto padded = dt::CastBitStringValueV1(profile_cast);
+  const auto padded = dt::CastBitStringValueV3(profile_cast);
   Check(padded.ok() && IsBits(padded.bit_value, "10100000"),
         "ordinary fixed profile right padding failed");
   profile_cast.bit_target = &varying8;
-  Check(dt::CastBitStringValueV1(profile_cast).ok(),
+  Check(dt::CastBitStringValueV3(profile_cast).ok(),
         "explicit varying profile conversion failed");
 
-  Check(std::size(kClosedCastPolicy) == dt::kBitStringClosedCastPolicyRowsV1,
+  Check(std::size(kClosedCastPolicy) == dt::kBitStringClosedCastPolicyRowsV3,
         "compiled closed cast fixture row count drifted");
   const std::array contexts{
       dt::DatatypeCastContext::implicit,
@@ -1027,7 +1027,7 @@ void CastsAndClosedRegistry() {
     }
     for (std::size_t context_index = 0; context_index < contexts.size();
          ++context_index) {
-      dt::BitStringCastRequestV1 request;
+      dt::BitStringCastRequestV3 request;
       request.context = contexts[context_index];
       if (source_is_bit)
         request.bit_source = &bit5;
@@ -1040,7 +1040,7 @@ void CastsAndClosedRegistry() {
         if (row.identities_resolved)
           request.scalar_target_descriptor = Descriptor(target_type);
       }
-      const auto actual = dt::CastBitStringValueV1(request);
+      const auto actual = dt::CastBitStringValueV3(request);
       const auto expected = row.contexts[context_index];
       const auto message = std::string(row.row_id) + " context " +
           std::to_string(context_index) + " disagreed with closed registry; actual=" +
@@ -1088,25 +1088,25 @@ void ResourceCancellationAndGenericRefusal() {
   auto profile = Profile();
   std::vector<platform::byte> storage((65'537 + 7) / 8, 0xaa);
   storage.back() &= 0x80;
-  dt::BitStringValueViewV1 large{
-      &profile, dt::BitStringValueStateV1::present, 65'537, storage,
-      dt::BitStringOwnershipV1::borrowed};
+  dt::BitStringValueViewV3 large{
+      &profile, dt::BitStringValueStateV3::present, 65'537, storage,
+      dt::BitStringOwnershipV3::borrowed};
   unsigned calls = 0;
-  dt::BitStringExecutionControlV1 control;
+  dt::BitStringExecutionControlV3 control;
   control.cancelled = CancelOnSecondCheck;
   control.cancellation_context = &calls;
-  const auto cancelled = dt::BitStringNotV1(large, true, control);
+  const auto cancelled = dt::BitStringNotV3(large, true, control);
   Check(!cancelled.ok() && cancelled.value.packed_msb0.empty() &&
             cancelled.diagnostic.diagnostic_code == "PROCESS.CANCELLED",
         "cancellation did not preserve atomic publication");
   std::vector<platform::byte> exact_storage(65'536 / 8, 0xaa);
-  dt::BitStringValueViewV1 exact{
-      &profile, dt::BitStringValueStateV1::present, 65'536, exact_storage,
-      dt::BitStringOwnershipV1::borrowed};
+  dt::BitStringValueViewV3 exact{
+      &profile, dt::BitStringValueStateV3::present, 65'536, exact_storage,
+      dt::BitStringOwnershipV3::borrowed};
   const auto require_atomic_checkpoint =
       [&](auto operation, std::string_view message) {
         CancelAtCall state{0, 2};
-        dt::BitStringExecutionControlV1 c;
+        dt::BitStringExecutionControlV3 c;
         c.cancelled = CancelAt;
         c.cancellation_context = &state;
         const auto result = operation(c);
@@ -1116,41 +1116,41 @@ void ResourceCancellationAndGenericRefusal() {
               message);
       };
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringSetV1(exact, true, 0, true, c); },
+      [&](const auto& c) { return dt::BitStringSetV3(exact, true, 0, true, c); },
       "bit set missed exact cancellation/atomicity");
   require_atomic_checkpoint(
       [&](const auto& c) {
-        return dt::BitStringConcatenateV1(exact, exact, profile, true, c);
+        return dt::BitStringConcatenateV3(exact, exact, profile, true, c);
       },
       "concatenate missed exact cancellation/atomicity");
   require_atomic_checkpoint(
       [&](const auto& c) {
-        return dt::BitStringSliceV1(exact, profile, true, 0, 65'536, c);
+        return dt::BitStringSliceV3(exact, profile, true, 0, 65'536, c);
       },
       "slice missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringNotV1(exact, true, c); },
+      [&](const auto& c) { return dt::BitStringNotV3(exact, true, c); },
       "NOT missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringAndV1(exact, exact, true, c); },
+      [&](const auto& c) { return dt::BitStringAndV3(exact, exact, true, c); },
       "AND missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringOrV1(exact, exact, true, c); },
+      [&](const auto& c) { return dt::BitStringOrV3(exact, exact, true, c); },
       "OR missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringXorV1(exact, exact, true, c); },
+      [&](const auto& c) { return dt::BitStringXorV3(exact, exact, true, c); },
       "XOR missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringShiftLeftV1(exact, true, 1, c); },
+      [&](const auto& c) { return dt::BitStringShiftLeftV3(exact, true, 1, c); },
       "left shift missed exact cancellation/atomicity");
   require_atomic_checkpoint(
-      [&](const auto& c) { return dt::BitStringShiftRightV1(exact, true, 1, c); },
+      [&](const auto& c) { return dt::BitStringShiftRightV3(exact, true, 1, c); },
       "right shift missed exact cancellation/atomicity");
   CancelAtCall count_state{0, 2};
-  dt::BitStringExecutionControlV1 count_control;
+  dt::BitStringExecutionControlV3 count_control;
   count_control.cancelled = CancelAt;
   count_control.cancellation_context = &count_state;
-  Check(dt::BitStringCountV1(exact, true, count_control)
+  Check(dt::BitStringCountV3(exact, true, count_control)
                 .diagnostic.diagnostic_code == "PROCESS.CANCELLED" &&
             count_state.calls == 2,
         "bit count missed the exact 65,536-bit checkpoint");
@@ -1158,7 +1158,7 @@ void ResourceCancellationAndGenericRefusal() {
   auto materialize_control = count_control;
   materialize_control.cancellation_context = &materialize_state;
   const auto materialize_cancelled =
-      dt::MaterializeBitStringValueV1(exact, true, materialize_control);
+      dt::MaterializeBitStringValueV3(exact, true, materialize_control);
   Check(!materialize_cancelled.ok() &&
             materialize_cancelled.value.packed_msb0.empty() &&
             materialize_state.calls == 2,
@@ -1167,19 +1167,19 @@ void ResourceCancellationAndGenericRefusal() {
   auto component_control = count_control;
   component_control.cancellation_context = &component_state;
   const auto component_cancelled =
-      dt::EncodeCanonicalBitStringComponentV1(exact, component_control);
+      dt::EncodeCanonicalBitStringComponentV3(exact, component_control);
   Check(!component_cancelled.ok() && component_cancelled.bytes.empty() &&
             component_state.calls == 2,
         "component encode missed the exact 65,536-bit checkpoint");
 
-  dt::BitStringCastRequestV1 bit_to_character;
+  dt::BitStringCastRequestV3 bit_to_character;
   bit_to_character.bit_source = &exact;
   bit_to_character.scalar_target = dt::CanonicalTypeId::character;
   bit_to_character.scalar_target_descriptor =
       Descriptor(dt::CanonicalTypeId::character);
   bit_to_character.context = dt::DatatypeCastContext::explicit_cast;
   bit_to_character.control.maximum_allocation_bytes = 65'537;
-  const auto cast_budget = dt::CastBitStringValueV1(bit_to_character);
+  const auto cast_budget = dt::CastBitStringValueV3(bit_to_character);
   Check(!cast_budget.ok() && cast_budget.diagnostic.diagnostic_code ==
                                  "RESOURCE.BUDGET_EXCEEDED" &&
             cast_budget.scalar_value.encoded_value.empty(),
@@ -1189,7 +1189,7 @@ void ResourceCancellationAndGenericRefusal() {
   bit_to_character.control.cancelled = CancelAt;
   bit_to_character.control.cancellation_context = &outgoing_cast_state;
   const auto outgoing_cast_cancelled =
-      dt::CastBitStringValueV1(bit_to_character);
+      dt::CastBitStringValueV3(bit_to_character);
   Check(!outgoing_cast_cancelled.ok() &&
             outgoing_cast_cancelled.diagnostic.diagnostic_code ==
                 "PROCESS.CANCELLED" &&
@@ -1199,7 +1199,7 @@ void ResourceCancellationAndGenericRefusal() {
   CancelAtCall preallocation_cast_state{0, 1};
   bit_to_character.control.cancellation_context = &preallocation_cast_state;
   const auto preallocation_cast_cancelled =
-      dt::CastBitStringValueV1(bit_to_character);
+      dt::CastBitStringValueV3(bit_to_character);
   Check(!preallocation_cast_cancelled.ok() &&
             preallocation_cast_cancelled.diagnostic.diagnostic_code ==
                 "PROCESS.CANCELLED" &&
@@ -1210,12 +1210,12 @@ void ResourceCancellationAndGenericRefusal() {
   std::string large_text = "0b" + std::string(65'536, '1');
   auto large_character =
       Scalar(dt::CanonicalTypeId::character, std::move(large_text));
-  dt::BitStringCastRequestV1 character_to_bit;
+  dt::BitStringCastRequestV3 character_to_bit;
   character_to_bit.scalar_source = &large_character;
   character_to_bit.bit_target = &profile;
   character_to_bit.context = dt::DatatypeCastContext::explicit_cast;
   character_to_bit.control.maximum_allocation_bytes = 8'191;
-  const auto incoming_budget = dt::CastBitStringValueV1(character_to_bit);
+  const auto incoming_budget = dt::CastBitStringValueV3(character_to_bit);
   Check(!incoming_budget.ok() && incoming_budget.diagnostic.diagnostic_code ==
                                      "RESOURCE.BUDGET_EXCEEDED" &&
             incoming_budget.bit_value.packed_msb0.empty(),
@@ -1225,7 +1225,7 @@ void ResourceCancellationAndGenericRefusal() {
   character_to_bit.control.cancelled = CancelAt;
   character_to_bit.control.cancellation_context = &incoming_cast_state;
   const auto incoming_cast_cancelled =
-      dt::CastBitStringValueV1(character_to_bit);
+      dt::CastBitStringValueV3(character_to_bit);
   Check(!incoming_cast_cancelled.ok() &&
             incoming_cast_cancelled.diagnostic.diagnostic_code ==
                 "PROCESS.CANCELLED" &&

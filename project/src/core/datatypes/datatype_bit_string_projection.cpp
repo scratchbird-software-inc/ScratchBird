@@ -33,54 +33,54 @@ Status BudgetError() noexcept {
           Subsystem::datatypes};
 }
 
-BitStringBytesResultV1 BytesFailure(std::string_view code, std::string_view key,
+BitStringBytesResultV3 BytesFailure(std::string_view code, std::string_view key,
                                     std::string_view detail = {}) noexcept {
-  BitStringBytesResultV1 r;
+  BitStringBytesResultV3 r;
   r.status = code=="RESOURCE.BUDGET_EXCEEDED"?BudgetError():Error();
-  try { r.diagnostic = MakeBitStringDiagnosticV1(
+  try { r.diagnostic = MakeBitStringDiagnosticV3(
       r.status,std::string(code),std::string(key),std::string(detail)); }
   catch (...) {}
   return r;
 }
-BitStringIndexProjectionResultV1 IndexFailure(
-    BitStringIndexResolutionV1 resolution, std::string_view code,
+BitStringIndexProjectionResultV3 IndexFailure(
+    BitStringIndexResolutionV3 resolution, std::string_view code,
     std::string_view detail = {}) noexcept {
-  BitStringIndexProjectionResultV1 r;
+  BitStringIndexProjectionResultV3 r;
   r.status = code=="RESOURCE.BUDGET_EXCEEDED"?BudgetError():Error();
   r.resolution = resolution;
-  try { r.diagnostic = MakeBitStringDiagnosticV1(
+  try { r.diagnostic = MakeBitStringDiagnosticV3(
       r.status,std::string(code),"datatype.bit_string.index_projection_refused",
       std::string(detail)); } catch (...) {}
   return r;
 }
-BitStringIndexProjectionResultV1 IndexBudgetFailure(
-    BitStringIndexResolutionV1 resolution, u64 required, u64 maximum) noexcept {
+BitStringIndexProjectionResultV3 IndexBudgetFailure(
+    BitStringIndexResolutionV3 resolution, u64 required, u64 maximum) noexcept {
   auto r = IndexFailure(resolution, "CTB.BIT.INDEX_KEY_REFUSED",
                         "provider_key_budget_exceeded");
   (void)required;(void)maximum;
   return r;
 }
-BitStringIndexProjectionResultV1 IndexOwnerFactFailure(
-    BitStringIndexResolutionV1 resolution) noexcept {
-  BitStringIndexProjectionResultV1 r;
+BitStringIndexProjectionResultV3 IndexOwnerFactFailure(
+    BitStringIndexResolutionV3 resolution) noexcept {
+  BitStringIndexProjectionResultV3 r;
   r.status=Error();r.resolution=resolution;
   return r;
 }
-BitStringBytesResultV1 ViewFailureBytes(
-    const BitStringViewResultV1& source) noexcept {
-  BitStringBytesResultV1 r; r.status=source.status;
-  try { r.diagnostic=MakeBitStringDiagnosticV1(
+BitStringBytesResultV3 ViewFailureBytes(
+    const BitStringViewResultV3& source) noexcept {
+  BitStringBytesResultV3 r; r.status=source.status;
+  try { r.diagnostic=MakeBitStringDiagnosticV3(
       r.status,std::string(source.diagnostic.diagnostic_code),
       "datatype.bit_string.projection_input_invalid",
       std::string(source.diagnostic.detail)); } catch (...) {}
   return r;
 }
-BitStringIndexProjectionResultV1 ViewFailureIndex(
-    const BitStringViewResultV1& source,
-    BitStringIndexResolutionV1 resolution) noexcept {
-  BitStringIndexProjectionResultV1 r; r.status=source.status;
+BitStringIndexProjectionResultV3 ViewFailureIndex(
+    const BitStringViewResultV3& source,
+    BitStringIndexResolutionV3 resolution) noexcept {
+  BitStringIndexProjectionResultV3 r; r.status=source.status;
   r.resolution=resolution;
-  try { r.diagnostic=MakeBitStringDiagnosticV1(
+  try { r.diagnostic=MakeBitStringDiagnosticV3(
       r.status,std::string(source.diagnostic.diagnostic_code),
       "datatype.bit_string.index_projection_refused",
       std::string(source.diagnostic.detail)); } catch (...) {}
@@ -102,19 +102,19 @@ bool CheckedAdd(u64 a, u64 b, u64* out) noexcept {
   if (a > std::numeric_limits<u64>::max() - b) return false;
   *out = a + b; return true;
 }
-bool ExactResolution(const BitStringIndexResolutionV1& left,
-                     const BitStringIndexResolutionV1& right) noexcept {
+bool ExactResolution(const BitStringIndexResolutionV3& left,
+                     const BitStringIndexResolutionV3& right) noexcept {
   return left.family==right.family && left.disposition==right.disposition &&
       left.projection==right.projection &&
       left.exact_recheck_required==right.exact_recheck_required &&
       left.refusal_diagnostic==right.refusal_diagnostic;
 }
-bool ControlCancelled(const BitStringExecutionControlV1& control) noexcept {
+bool ControlCancelled(const BitStringExecutionControlV3& control) noexcept {
   return control.cancelled!=nullptr &&
       control.cancelled(control.cancellation_context);
 }
-bool ExactProfileBinding(const BitStringDescriptorProfileV1& left,
-                         const BitStringDescriptorProfileV1& right) noexcept {
+bool ExactProfileBinding(const BitStringDescriptorProfileV3& left,
+                         const BitStringDescriptorProfileV3& right) noexcept {
   return left.receipt.statement_receipt_uuid==right.receipt.statement_receipt_uuid &&
       left.receipt.catalog_snapshot_uuid==right.receipt.catalog_snapshot_uuid &&
       left.receipt.catalog_generation==right.receipt.catalog_generation &&
@@ -124,12 +124,12 @@ bool ExactProfileBinding(const BitStringDescriptorProfileV1& left,
       left.comparison_cohort_fingerprint==right.comparison_cohort_fingerprint;
 }
 
-BitStringBytesResultV1 CoveringValue(const BitStringValueViewV1& value,
+BitStringBytesResultV3 CoveringValue(const BitStringValueViewV3& value,
                                      u64 maximum,
-                                     const BitStringExecutionControlV1& control) noexcept {
-  auto checked = ValidateBitStringValueViewV1(value, true);
+                                     const BitStringExecutionControlV3& control) noexcept {
+  auto checked = ValidateBitStringValueViewV3(value, true);
   if (!checked.ok()) return ViewFailureBytes(checked);
-  const u64 required = value.state == BitStringValueStateV1::sql_null
+  const u64 required = value.state == BitStringValueStateV3::sql_null
       ? 1 : static_cast<u64>(5) + value.packed_msb0.size();
   if (required > maximum) {
     return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
@@ -144,9 +144,9 @@ BitStringBytesResultV1 CoveringValue(const BitStringValueViewV1& value,
     return BytesFailure("PROCESS.CANCELLED",
                         "datatype.bit_string.projection_cancelled");
   try {
-    BitStringBytesResultV1 r; r.status = Ok(); r.bytes.resize(required);
-    r.bytes[0] = value.state == BitStringValueStateV1::sql_null ? 0 : 2;
-    if (value.state == BitStringValueStateV1::present) {
+    BitStringBytesResultV3 r; r.status = Ok(); r.bytes.resize(required);
+    r.bytes[0] = value.state == BitStringValueStateV3::sql_null ? 0 : 2;
+    if (value.state == BitStringValueStateV3::present) {
       StoreLittle32(r.bytes.data() + 1, value.logical_bit_count);
       constexpr std::size_t kCheckpointBytes=65'536/8;
       std::size_t copied=0;
@@ -162,7 +162,7 @@ BitStringBytesResultV1 CoveringValue(const BitStringValueViewV1& value,
                               "covering_value_copy_checkpoint");
       }
     }
-    if (!DecodeBitStringCoveringValueNoAllocV1(*value.profile,r.bytes).ok())
+    if (!DecodeBitStringCoveringValueNoAllocV3(*value.profile,r.bytes).ok())
       return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                           "datatype.bit_string.index_key_refused",
                           "covering_value_self_recheck_failed");
@@ -179,72 +179,72 @@ constexpr platform::Uuid kStatisticsPrivacyUuid{{
 
 }  // namespace
 
-BitStringIndexResolutionV1 ResolveBitStringIndexFamilyV1(
-    BitStringIndexFamilyV1 family) noexcept {
-  using D = BitStringIndexDispositionV1; using P = BitStringProjectionKindV1;
+BitStringIndexResolutionV3 ResolveBitStringIndexFamilyV3(
+    BitStringIndexFamilyV3 family) noexcept {
+  using D = BitStringIndexDispositionV3; using P = BitStringProjectionKindV3;
   switch (family) {
-    case BitStringIndexFamilyV1::aggregate_sketch:
+    case BitStringIndexFamilyV3::aggregate_sketch:
       return {family,D::admitted_projection_only,P::cohort_hash32,true,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::bitmap:
-    case BitStringIndexFamilyV1::hash:
+    case BitStringIndexFamilyV3::bitmap:
+    case BitStringIndexFamilyV3::hash:
       return {family,D::admitted_with_recheck,P::cohort_hash32,true,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::brin_like:
-    case BitStringIndexFamilyV1::columnar_zone_map:
+    case BitStringIndexFamilyV3::brin_like:
+    case BitStringIndexFamilyV3::columnar_zone_map:
       return {family,D::admitted_with_recheck,P::zone_map,true,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::btree:
+    case BitStringIndexFamilyV3::btree:
       return {family,D::admitted_exact_if_budget,P::sort_key,false,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::covering_included:
+    case BitStringIndexFamilyV3::covering_included:
       return {family,D::admitted_payload_only,P::covering_value,false,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::expression:
+    case BitStringIndexFamilyV3::expression:
       return {family,D::conditional,P::conditional_result,true,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING"};
-    case BitStringIndexFamilyV1::partial_filtered:
+    case BitStringIndexFamilyV3::partial_filtered:
       return {family,D::conditional,P::conditional_underlying,true,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING"};
-    case BitStringIndexFamilyV1::temporary_work:
+    case BitStringIndexFamilyV3::temporary_work:
       return {family,D::admitted_exact_selected_mode,P::none,true,"CTB.BIT.INDEX_KEY_REFUSED"};
-    case BitStringIndexFamilyV1::document_path:
-    case BitStringIndexFamilyV1::full_text:
-    case BitStringIndexFamilyV1::graph:
-    case BitStringIndexFamilyV1::range_exclusion:
-    case BitStringIndexFamilyV1::spatial:
-    case BitStringIndexFamilyV1::vector_ann:
+    case BitStringIndexFamilyV3::document_path:
+    case BitStringIndexFamilyV3::full_text:
+    case BitStringIndexFamilyV3::graph:
+    case BitStringIndexFamilyV3::range_exclusion:
+    case BitStringIndexFamilyV3::spatial:
+    case BitStringIndexFamilyV3::vector_ann:
       return {family,D::not_applicable,P::none,false,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING"};
   }
   return {family,D::not_applicable,P::none,false,"OPTIMIZER.INDEX_COMPATIBILITY_MISSING"};
 }
 
-BitStringIndexProjectionResultV1 ProjectBitStringIndexValueV1(
-    const BitStringIndexProjectionRequestV1& request) noexcept {
-  auto resolution = ResolveBitStringIndexFamilyV1(request.family);
+BitStringIndexProjectionResultV3 ProjectBitStringIndexValueV3(
+    const BitStringIndexProjectionRequestV3& request) noexcept {
+  auto resolution = ResolveBitStringIndexFamilyV3(request.family);
   if (request.value == nullptr)
     return IndexFailure(resolution, "CTB.BIT.DESCRIPTOR_INVALID", "value_missing");
-  const auto checked = ValidateBitStringValueViewV1(*request.value, true);
+  const auto checked = ValidateBitStringValueViewV3(*request.value, true);
   if (!checked.ok()) return ViewFailureIndex(checked, resolution);
-  if (resolution.disposition == BitStringIndexDispositionV1::not_applicable)
+  if (resolution.disposition == BitStringIndexDispositionV3::not_applicable)
     return IndexOwnerFactFailure(resolution);
-  if (request.family == BitStringIndexFamilyV1::temporary_work) {
-    if (request.temporary_mode == BitStringTemporaryProjectionModeV1::equality_hash)
-      resolution.projection = BitStringProjectionKindV1::cohort_hash32;
-    else if (request.temporary_mode == BitStringTemporaryProjectionModeV1::ordered_sort) {
-      resolution.projection = BitStringProjectionKindV1::sort_key;
+  if (request.family == BitStringIndexFamilyV3::temporary_work) {
+    if (request.temporary_mode == BitStringTemporaryProjectionModeV3::equality_hash)
+      resolution.projection = BitStringProjectionKindV3::cohort_hash32;
+    else if (request.temporary_mode == BitStringTemporaryProjectionModeV3::ordered_sort) {
+      resolution.projection = BitStringProjectionKindV3::sort_key;
       resolution.exact_recheck_required = false;
     } else return IndexFailure(resolution, "CTB.BIT.INDEX_KEY_REFUSED",
                                "temporary_projection_mode_missing");
   }
-  if (resolution.disposition == BitStringIndexDispositionV1::conditional) {
+  if (resolution.disposition == BitStringIndexDispositionV3::conditional) {
     if (request.selected_conditional_family == nullptr)
       return IndexOwnerFactFailure(resolution);
-    const auto canonical=ResolveBitStringIndexFamilyV1(
+    const auto canonical=ResolveBitStringIndexFamilyV3(
         request.selected_conditional_family->family);
     if (!ExactResolution(*request.selected_conditional_family,canonical) ||
-        canonical.disposition==BitStringIndexDispositionV1::conditional ||
-        canonical.disposition==BitStringIndexDispositionV1::not_applicable)
+        canonical.disposition==BitStringIndexDispositionV3::conditional ||
+        canonical.disposition==BitStringIndexDispositionV3::not_applicable)
       return IndexOwnerFactFailure(resolution);
     resolution = *request.selected_conditional_family;
   }
 
-  BitStringBytesResultV1 bytes;
+  BitStringBytesResultV3 bytes;
   switch (resolution.projection) {
-    case BitStringProjectionKindV1::cohort_hash32:
+    case BitStringProjectionKindV3::cohort_hash32:
       if (request.provider_max_key_bytes < 32)
         return IndexBudgetFailure(resolution, 32, request.provider_max_key_bytes);
       if (request.control.maximum_allocation_bytes < 32)
@@ -253,25 +253,25 @@ BitStringIndexProjectionResultV1 ProjectBitStringIndexValueV1(
       if (ControlCancelled(request.control))
         return IndexFailure(resolution,"PROCESS.CANCELLED",
                             "cohort_hash_prepublication_cancelled");
-      bytes = HashBitStringValueV1(*request.value);
+      bytes = HashBitStringValueV3(*request.value);
       break;
-    case BitStringProjectionKindV1::sort_key: {
-      u64 required = kBitStringSortKeyHeaderBytesV1;
-      if (request.value->state == BitStringValueStateV1::present &&
+    case BitStringProjectionKindV3::sort_key: {
+      u64 required = kBitStringSortKeyHeaderBytesV3;
+      if (request.value->state == BitStringValueStateV3::present &&
           !CheckedAdd(required, static_cast<u64>(request.value->logical_bit_count) + 1,
                       &required))
         return IndexFailure(resolution, "CTB.BIT.INDEX_KEY_REFUSED", "size_overflow");
       if (required > request.provider_max_key_bytes)
         return IndexBudgetFailure(resolution, required, request.provider_max_key_bytes);
-      bytes = MakeBitStringSortKeyV1(*request.value, request.direction,
+      bytes = MakeBitStringSortKeyV3(*request.value, request.direction,
                                     request.null_mode, request.control);
       break;
     }
-    case BitStringProjectionKindV1::covering_value:
+    case BitStringProjectionKindV3::covering_value:
       bytes = CoveringValue(*request.value, request.provider_max_key_bytes,
                             request.control);
       break;
-    case BitStringProjectionKindV1::zone_map:
+    case BitStringProjectionKindV3::zone_map:
       return IndexFailure(resolution, "CTB.BIT.INDEX_KEY_REFUSED",
                           "zone_map_requires_aggregate_request");
     default:
@@ -281,10 +281,10 @@ BitStringIndexProjectionResultV1 ProjectBitStringIndexValueV1(
   return {bytes.status, {}, resolution, std::move(bytes.bytes)};
 }
 
-BitStringViewResultV1 DecodeBitStringCoveringValueNoAllocV1(
-    const BitStringDescriptorProfileV1& profile,
+BitStringViewResultV3 DecodeBitStringCoveringValueNoAllocV3(
+    const BitStringDescriptorProfileV3& profile,
     std::span<const byte> encoded) noexcept {
-  if (!ValidateBitStringDescriptorProfileV1(profile).ok())
+  if (!ValidateBitStringDescriptorProfileV3(profile).ok())
     return {Error(), {Error(), "CTB.BIT.DESCRIPTOR_INVALID",
                       "covering_value_profile_invalid"}, {}};
   if (encoded.empty() || encoded.size() > 2'097'157)
@@ -294,8 +294,8 @@ BitStringViewResultV1 DecodeBitStringCoveringValueNoAllocV1(
     if (encoded.size() != 1)
       return {Error(), {Error(), "DATATYPE.NULL_STATE.INVALID",
                         "covering_null_has_component"}, {}};
-    return DecodeCanonicalBitStringComponentNoAllocV1(
-        profile, BitStringValueStateV1::sql_null, true, {});
+    return DecodeCanonicalBitStringComponentNoAllocV3(
+        profile, BitStringValueStateV3::sql_null, true, {});
   }
   if (encoded[0] != 2)
     return {Error(), {Error(), "CTB.BIT.CANONICAL_ENCODING_INVALID",
@@ -303,19 +303,19 @@ BitStringViewResultV1 DecodeBitStringCoveringValueNoAllocV1(
   // The canonical component has one exact representation.  Its decoder checks
   // the count/extent equation and unused tail bits, which is the allocation-free
   // equivalent of decode/re-encode byte equality for this projection.
-  return DecodeCanonicalBitStringComponentNoAllocV1(
-      profile, BitStringValueStateV1::present, true, encoded.subspan(1));
+  return DecodeCanonicalBitStringComponentNoAllocV3(
+      profile, BitStringValueStateV3::present, true, encoded.subspan(1));
 }
 
-BitStringZoneMapViewResultV1 DecodeBitStringZoneMapNoAllocV1(
-    const BitStringDescriptorProfileV1& profile,
+BitStringZoneMapViewResultV3 DecodeBitStringZoneMapNoAllocV3(
+    const BitStringDescriptorProfileV3& profile,
     std::span<const byte> encoded) noexcept {
   const auto fail=[](std::string_view detail) noexcept {
     const auto status=Error();
-    return BitStringZoneMapViewResultV1{
+    return BitStringZoneMapViewResultV3{
         status,{status,"CTB.BIT.INDEX_KEY_REFUSED",detail},{}};
   };
-  if (!ValidateBitStringDescriptorProfileV1(profile).ok())
+  if (!ValidateBitStringDescriptorProfileV3(profile).ok())
     return {Error(), {Error(), "CTB.BIT.DESCRIPTOR_INVALID",
                       "zone_map_profile_invalid"}, {}};
   if (encoded.size() < 64 || encoded.size() > 33'554'706 ||
@@ -338,10 +338,10 @@ BitStringZoneMapViewResultV1 DecodeBitStringZoneMapNoAllocV1(
   const u32 maximum_bytes=LoadLittle32(encoded.data()+60);
   if (empty_count>present_count || has_present!=(present_count!=0))
     return fail("zone_map_count_flags_invalid");
-  BitStringZoneMapViewResultV1 result;
+  BitStringZoneMapViewResultV3 result;
   result.status=Ok();result.value.profile=&profile;
-  result.value.null_mode=(flags&2)!=0?BitStringNullModeV1::nulls_first:
-                                      BitStringNullModeV1::nulls_last;
+  result.value.null_mode=(flags&2)!=0?BitStringNullModeV3::nulls_first:
+                                      BitStringNullModeV3::nulls_last;
   result.value.null_count=null_count;result.value.present_count=present_count;
   result.value.empty_present_count=empty_count;
   result.value.minimum_logical_bits=minimum_bits;
@@ -352,21 +352,21 @@ BitStringZoneMapViewResultV1 DecodeBitStringZoneMapNoAllocV1(
       return fail("zone_map_empty_set_invalid");
     return result;
   }
-  if (minimum_bits>maximum_bits || maximum_bits>kBitStringMaximumLogicalBitsV1 ||
-      minimum_bytes!=static_cast<u64>(kBitStringSortKeyHeaderBytesV1)+minimum_bits+1 ||
-      maximum_bytes!=static_cast<u64>(kBitStringSortKeyHeaderBytesV1)+maximum_bits+1)
+  if (minimum_bits>maximum_bits || maximum_bits>kBitStringMaximumLogicalBitsV3 ||
+      minimum_bytes!=static_cast<u64>(kBitStringSortKeyHeaderBytesV3)+minimum_bits+1 ||
+      maximum_bytes!=static_cast<u64>(kBitStringSortKeyHeaderBytesV3)+maximum_bits+1)
     return fail("zone_map_length_invalid");
   const u64 expected=64ull+minimum_bytes+maximum_bytes;
   if (expected!=encoded.size()) return fail("zone_map_key_extent_invalid");
   const auto minimum=encoded.subspan(64,minimum_bytes);
   const auto maximum=encoded.subspan(64+minimum_bytes,maximum_bytes);
-  const auto min_view=DecodeBitStringSortKeyNoAllocV1(profile,minimum);
-  const auto max_view=DecodeBitStringSortKeyNoAllocV1(profile,maximum);
+  const auto min_view=DecodeBitStringSortKeyNoAllocV3(profile,minimum);
+  const auto max_view=DecodeBitStringSortKeyNoAllocV3(profile,maximum);
   if (!min_view.ok() || !max_view.ok() ||
-      min_view.value.state!=BitStringValueStateV1::present ||
-      max_view.value.state!=BitStringValueStateV1::present ||
-      min_view.value.direction!=BitStringSortDirectionV1::ascending ||
-      max_view.value.direction!=BitStringSortDirectionV1::ascending ||
+      min_view.value.state!=BitStringValueStateV3::present ||
+      max_view.value.state!=BitStringValueStateV3::present ||
+      min_view.value.direction!=BitStringSortDirectionV3::ascending ||
+      max_view.value.direction!=BitStringSortDirectionV3::ascending ||
       min_view.value.null_mode!=result.value.null_mode ||
       max_view.value.null_mode!=result.value.null_mode ||
       min_view.value.logical_bit_count!=minimum_bits ||
@@ -379,15 +379,15 @@ BitStringZoneMapViewResultV1 DecodeBitStringZoneMapNoAllocV1(
   return result;
 }
 
-BitStringBytesResultV1 EncodeBitStringZoneMapV1(
-    const BitStringZoneMapRequestV1& request) noexcept {
+BitStringBytesResultV3 EncodeBitStringZoneMapV3(
+    const BitStringZoneMapRequestV3& request) noexcept {
   if (request.profile == nullptr ||
-      !ValidateBitStringDescriptorProfileV1(*request.profile).ok())
+      !ValidateBitStringDescriptorProfileV3(*request.profile).ok())
     return BytesFailure("CTB.BIT.DESCRIPTOR_INVALID",
                         "datatype.bit_string.index_key_refused",
                         "zone_map_profile_missing_or_invalid");
-  if (request.null_mode!=BitStringNullModeV1::nulls_first &&
-      request.null_mode!=BitStringNullModeV1::nulls_last)
+  if (request.null_mode!=BitStringNullModeV3::nulls_first &&
+      request.null_mode!=BitStringNullModeV3::nulls_last)
     return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                         "datatype.bit_string.index_key_refused",
                         "zone_map_null_mode_invalid");
@@ -410,12 +410,12 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
       return BytesFailure("PROCESS.CANCELLED",
                           "datatype.bit_string.projection_cancelled");
     try {
-      BitStringBytesResultV1 r; r.status=Ok(); r.bytes.assign(64,0);
+      BitStringBytesResultV3 r; r.status=Ok(); r.bytes.assign(64,0);
       std::memcpy(r.bytes.data(),"SBBITZ01",8); StoreLittle16(r.bytes.data()+8,1);
       StoreLittle16(r.bytes.data()+10,64); StoreLittle32(r.bytes.data()+12,64);
-      StoreLittle32(r.bytes.data()+16, request.null_mode==BitStringNullModeV1::nulls_first?2:4);
+      StoreLittle32(r.bytes.data()+16, request.null_mode==BitStringNullModeV3::nulls_first?2:4);
       StoreLittle64(r.bytes.data()+24,request.null_count);
-      if (!DecodeBitStringZoneMapNoAllocV1(*request.profile,r.bytes).ok())
+      if (!DecodeBitStringZoneMapNoAllocV3(*request.profile,r.bytes).ok())
         return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                             "datatype.bit_string.index_key_refused",
                             "zone_map_self_recheck_failed");
@@ -426,21 +426,21 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
     }
   }
   if (request.minimum == nullptr || request.maximum == nullptr ||
-      request.minimum->state != BitStringValueStateV1::present ||
-      request.maximum->state != BitStringValueStateV1::present)
+      request.minimum->state != BitStringValueStateV3::present ||
+      request.maximum->state != BitStringValueStateV3::present)
     return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                         "datatype.bit_string.index_key_refused", "present_extrema_missing");
-  auto min_checked=ValidateBitStringValueViewV1(*request.minimum,false);
+  auto min_checked=ValidateBitStringValueViewV3(*request.minimum,false);
   if(!min_checked.ok()) return ViewFailureBytes(min_checked);
-  auto max_checked=ValidateBitStringValueViewV1(*request.maximum,false);
+  auto max_checked=ValidateBitStringValueViewV3(*request.maximum,false);
   if(!max_checked.ok()) return ViewFailureBytes(max_checked);
   if(!ExactProfileBinding(*request.profile,*request.minimum->profile) ||
      !ExactProfileBinding(*request.profile,*request.maximum->profile))
     return BytesFailure("CTB.BIT.DESCRIPTOR_INVALID",
                         "datatype.bit_string.index_key_refused",
                         "zone_map_extrema_profile_mismatch");
-  auto comparison=CompareBitStringValuesV1(*request.minimum,*request.maximum,
-                                           BitStringComparisonModeV1::present_only);
+  auto comparison=CompareBitStringValuesV3(*request.minimum,*request.maximum,
+                                           BitStringComparisonModeV3::present_only);
   if(!comparison.ok() || comparison.comparison>0)
     return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                         "datatype.bit_string.index_key_refused", "extrema_order_invalid");
@@ -458,10 +458,10 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
     return BytesFailure("RESOURCE.BUDGET_EXCEEDED",
                         "datatype.bit_string.resource_budget_exceeded",
                         "zone_map_allocation_grant");
-  auto min_key=MakeBitStringSortKeyV1(*request.minimum,BitStringSortDirectionV1::ascending,
+  auto min_key=MakeBitStringSortKeyV3(*request.minimum,BitStringSortDirectionV3::ascending,
                                       request.null_mode,request.control);
   if(!min_key.ok()) return min_key;
-  auto max_key=MakeBitStringSortKeyV1(*request.maximum,BitStringSortDirectionV1::ascending,
+  auto max_key=MakeBitStringSortKeyV3(*request.maximum,BitStringSortDirectionV3::ascending,
                                       request.null_mode,request.control);
   if(!max_key.ok()) return max_key;
   if(ControlCancelled(request.control))
@@ -469,10 +469,10 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
                         "datatype.bit_string.projection_cancelled",
                         "zone_map_before_outer_allocation");
   try {
-    BitStringBytesResultV1 r; r.status=Ok(); r.bytes.assign(required,0);
+    BitStringBytesResultV3 r; r.status=Ok(); r.bytes.assign(required,0);
     std::memcpy(r.bytes.data(),"SBBITZ01",8); StoreLittle16(r.bytes.data()+8,1);
     StoreLittle16(r.bytes.data()+10,64); StoreLittle32(r.bytes.data()+12,required);
-    StoreLittle32(r.bytes.data()+16,1|(request.null_mode==BitStringNullModeV1::nulls_first?2:4));
+    StoreLittle32(r.bytes.data()+16,1|(request.null_mode==BitStringNullModeV3::nulls_first?2:4));
     StoreLittle64(r.bytes.data()+24,request.null_count);
     StoreLittle64(r.bytes.data()+32,request.present_count);
     StoreLittle64(r.bytes.data()+40,request.empty_present_count);
@@ -499,7 +499,7 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
       return BytesFailure("PROCESS.CANCELLED",
                           "datatype.bit_string.projection_cancelled",
                           "zone_map_copy_checkpoint");
-    if (!DecodeBitStringZoneMapNoAllocV1(*request.profile,r.bytes).ok())
+    if (!DecodeBitStringZoneMapNoAllocV3(*request.profile,r.bytes).ok())
       return BytesFailure("CTB.BIT.INDEX_KEY_REFUSED",
                           "datatype.bit_string.index_key_refused",
                           "zone_map_self_recheck_failed");
@@ -514,17 +514,17 @@ BitStringBytesResultV1 EncodeBitStringZoneMapV1(
 }
 
 namespace {
-BitStringBytesResultV1 StatisticsFailure(std::string_view detail) noexcept {
+BitStringBytesResultV3 StatisticsFailure(std::string_view detail) noexcept {
   return BytesFailure("CTB.BIT.CANONICAL_ENCODING_INVALID",
                       "datatype.bit_string.statistics_projection_invalid",
                       detail);
 }
 }
 
-BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
-    const BitStringStatisticsProjectionV1& p) noexcept {
+BitStringBytesResultV3 EncodeBitStringStatisticsProjectionV3(
+    const BitStringStatisticsProjectionV3& p) noexcept {
   if (p.profile == nullptr) return StatisticsFailure("profile_missing");
-  auto profile = ValidateBitStringDescriptorProfileV1(*p.profile);
+  auto profile = ValidateBitStringDescriptorProfileV3(*p.profile);
   if (!profile.ok()) return {profile.status, profile.diagnostic, {}};
   if (p.mcv.size() > 64 || IsNil(p.statistics_uuid) ||
       IsNil(p.source_object_uuid) || IsNil(p.provider_evidence_uuid))
@@ -541,7 +541,7 @@ BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
   if(histogram_total!=p.present_count) return StatisticsFailure("histogram_total_mismatch");
   if ((p.present_count==0 && (p.minimum_logical_bits!=0||p.maximum_logical_bits!=0)) ||
       (p.present_count!=0 && p.minimum_logical_bits>p.maximum_logical_bits) ||
-      p.maximum_logical_bits>kBitStringMaximumLogicalBitsV1)
+      p.maximum_logical_bits>kBitStringMaximumLogicalBitsV3)
     return StatisticsFailure("length_extrema_invalid");
   // SBBITS01 generation 1 has an explicit zero selectivity-model identity.
   // Therefore it cannot claim an exact or estimated distinct model either;
@@ -556,7 +556,7 @@ BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
   for(std::size_t i=0;i<p.mcv.size();++i) {
     if(p.mcv[i].frequency==0 ||
        mcv_frequency_total>std::numeric_limits<u64>::max()-p.mcv[i].frequency ||
-       p.mcv[i].logical_bits>kBitStringMaximumLogicalBitsV1 ||
+       p.mcv[i].logical_bits>kBitStringMaximumLogicalBitsV3 ||
        (i && (p.mcv[i-1].frequency<p.mcv[i].frequency ||
         (p.mcv[i-1].frequency==p.mcv[i].frequency &&
          p.mcv[i-1].cohort_hash>=p.mcv[i].cohort_hash))))
@@ -570,7 +570,7 @@ BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
     return StatisticsFailure("mcv_frequency_total_invalid");
   const u32 total_bytes=832u+static_cast<u32>(p.mcv.size())*64u;
   try {
-    BitStringBytesResultV1 r; r.status=Ok(); r.bytes.assign(total_bytes,0);
+    BitStringBytesResultV3 r; r.status=Ok(); r.bytes.assign(total_bytes,0);
     auto* b=r.bytes.data(); std::memcpy(b,"SBBITS01",8);
     StoreLittle16(b+8,1); StoreLittle16(b+10,480); StoreLittle32(b+12,total_bytes);
     u32 flags=1;
@@ -608,7 +608,7 @@ BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
     StoreLittle64(b+440,static_cast<u64>(p.correlation_scaled_1e9));
     StoreUuid(b+456,p.provider_evidence_uuid);
     for(std::size_t i=0;i<22;++i) {
-      byte* h=b+480+i*16; StoreLittle32(h,kBitStringLengthHistogramBoundsV1[i]);
+      byte* h=b+480+i*16; StoreLittle32(h,kBitStringLengthHistogramBoundsV3[i]);
       StoreLittle64(h+8,p.length_histogram_counts[i]);
     }
     for(std::size_t i=0;i<p.mcv.size();++i) {
@@ -630,20 +630,20 @@ BitStringBytesResultV1 EncodeBitStringStatisticsProjectionV1(
   }
 }
 
-BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
-    const BitStringDescriptorProfileV1& profile,
+BitStringStatisticsDecodeResultV3 DecodeBitStringStatisticsProjectionV3(
+    const BitStringDescriptorProfileV3& profile,
     std::span<const byte> encoded) noexcept {
   const auto fail=[&](std::string_view detail) noexcept {
-    BitStringStatisticsDecodeResultV1 r;r.status=Error();
-    try { r.diagnostic=MakeBitStringDiagnosticV1(
+    BitStringStatisticsDecodeResultV3 r;r.status=Error();
+    try { r.diagnostic=MakeBitStringDiagnosticV3(
         r.status,"CTB.BIT.CANONICAL_ENCODING_INVALID",
         "datatype.bit_string.statistics_projection_invalid",std::string(detail)); }
     catch (...) {}
     return r;
   };
-  const auto profile_ok=ValidateBitStringDescriptorProfileV1(profile);
+  const auto profile_ok=ValidateBitStringDescriptorProfileV3(profile);
   if(!profile_ok.ok()) {
-    BitStringStatisticsDecodeResultV1 r;r.status=profile_ok.status;
+    BitStringStatisticsDecodeResultV3 r;r.status=profile_ok.status;
     r.diagnostic=profile_ok.diagnostic;return r;
   }
   if(encoded.size()<832 || encoded.size()>4928 ||
@@ -693,7 +693,7 @@ BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
   const auto provider_uuid=LoadUuid(encoded.data()+456);
   if(missing_count!=0 || null_count>row_count || row_count-null_count!=present_count ||
      empty_count>present_count || distinct_kind!=0 || distinct_count!=0 ||
-     min_bits>max_bits || max_bits>kBitStringMaximumLogicalBitsV1 ||
+     min_bits>max_bits || max_bits>kBitStringMaximumLogicalBitsV3 ||
      (present_count==0&&(min_bits!=0||max_bits!=0)) ||
      IsNil(statistics_uuid) || IsNil(source_object_uuid) || !IsNil(model_uuid) ||
      LoadLittle64(encoded.data()+344)!=0 || IsNil(provider_uuid))
@@ -707,7 +707,7 @@ BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
   u64 histogram_total=0;
   for(std::size_t i=0;i<22;++i){const auto* h=encoded.data()+480+i*16;
     const u64 count=LoadLittle64(h+8);
-    if(LoadLittle32(h)!=kBitStringLengthHistogramBoundsV1[i]||LoadLittle32(h+4)!=0||
+    if(LoadLittle32(h)!=kBitStringLengthHistogramBoundsV3[i]||LoadLittle32(h+4)!=0||
        histogram_total>std::numeric_limits<u64>::max()-count)
       return fail("histogram_invalid");
     histogram_total+=count;
@@ -716,7 +716,7 @@ BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
   u64 mcv_total=0;
   for(std::size_t i=0;i<mcv_count;++i){const auto* m=encoded.data()+832+i*64;
     const u64 frequency=LoadLittle64(m+32);const u32 logical=LoadLittle32(m+40);
-    if(frequency==0||logical>kBitStringMaximumLogicalBitsV1||LoadLittle32(m+44)!=2||
+    if(frequency==0||logical>kBitStringMaximumLogicalBitsV3||LoadLittle32(m+44)!=2||
        LoadLittle32(m+48)!=0||LoadLittle32(m+52)!=0||LoadLittle64(m+56)!=0||
        mcv_total>std::numeric_limits<u64>::max()-frequency) return fail("mcv_invalid");
     if(i){const auto* prev=m-64;const u64 previous_frequency=LoadLittle64(prev+32);
@@ -738,7 +738,7 @@ BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
   if(!digest.ok()||std::memcmp(digest.digest.data(),encoded.data()+376,32)!=0)
     return fail("records_hash_invalid");
   try {
-    BitStringStatisticsDecodeResultV1 r;r.status=Ok();auto& out=r.statistics;
+    BitStringStatisticsDecodeResultV3 r;r.status=Ok();auto& out=r.statistics;
     out.statistics_uuid=statistics_uuid;
     out.source_object_uuid=source_object_uuid;
     out.schema_epoch=LoadLittle64(encoded.data()+200);out.sample_epoch=LoadLittle64(encoded.data()+208);
@@ -748,24 +748,24 @@ BitStringStatisticsDecodeResultV1 DecodeBitStringStatisticsProjectionV1(
     std::memcpy(out.sum_logical_bits_u128_le.data(),encoded.data()+296,16);
     for(std::size_t i=0;i<22;++i)out.length_histogram_counts[i]=LoadLittle64(encoded.data()+488+i*16);
     out.mcv.reserve(mcv_count);
-    for(std::size_t i=0;i<mcv_count;++i){const auto* m=encoded.data()+832+i*64;BitStringStatisticsMcvV1 row;
+    for(std::size_t i=0;i<mcv_count;++i){const auto* m=encoded.data()+832+i*64;BitStringStatisticsMcvV3 row;
       std::memcpy(row.cohort_hash.data(),m,32);row.frequency=LoadLittle64(m+32);row.logical_bits=LoadLittle32(m+40);out.mcv.push_back(row);}
     out.correlation_scaled_1e9=correlation;out.provider_evidence_uuid=provider_uuid;
     return r;
   } catch(const std::bad_alloc&) {
-    BitStringStatisticsDecodeResultV1 r;r.status=BudgetError();
-    try{r.diagnostic=MakeBitStringDiagnosticV1(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","statistics_decode_allocation");}catch(...){}
+    BitStringStatisticsDecodeResultV3 r;r.status=BudgetError();
+    try{r.diagnostic=MakeBitStringDiagnosticV3(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","statistics_decode_allocation");}catch(...){}
     return r;
   }
 }
 
-BitStringBackupTupleResultV1 ProjectBitStringBackupTupleV1(
-    const BitStringValueViewV1& value) noexcept {
-  BitStringBackupTupleResultV1 r;
-  auto checked=ValidateBitStringValueViewV1(value,true);
+BitStringBackupTupleResultV3 ProjectBitStringBackupTupleV3(
+    const BitStringValueViewV3& value) noexcept {
+  BitStringBackupTupleResultV3 r;
+  auto checked=ValidateBitStringValueViewV3(value,true);
   r.status=checked.status;
   if(!checked.ok()) {
-    try { r.diagnostic=MakeBitStringDiagnosticV1(
+    try { r.diagnostic=MakeBitStringDiagnosticV3(
         checked.status,std::string(checked.diagnostic.diagnostic_code),
         "datatype.bit_string.backup_projection_invalid",
         std::string(checked.diagnostic.detail)); } catch (...) {}
@@ -776,30 +776,30 @@ BitStringBackupTupleResultV1 ProjectBitStringBackupTupleV1(
   r.tuple.registry_generation=value.profile->receipt.registry_generation;
   r.tuple.profile_fingerprint=value.profile->profile_fingerprint;
   r.tuple.state=value.state;
-  r.tuple.logical_bit_count=value.state==BitStringValueStateV1::present?value.logical_bit_count:0;
-  r.tuple.packed_msb0=value.state==BitStringValueStateV1::present?value.packed_msb0:std::span<const byte>{};
+  r.tuple.logical_bit_count=value.state==BitStringValueStateV3::present?value.logical_bit_count:0;
+  r.tuple.packed_msb0=value.state==BitStringValueStateV3::present?value.packed_msb0:std::span<const byte>{};
   return r;
 }
 
-BitStringOwnedBackupTupleResultV1 EncodeBitStringBackupTupleV1(
-    const BitStringValueViewV1& value,
-    const BitStringExecutionControlV1& control) noexcept {
-  BitStringOwnedBackupTupleResultV1 r;
-  auto projected=ProjectBitStringBackupTupleV1(value);
+BitStringOwnedBackupTupleResultV3 EncodeBitStringBackupTupleV3(
+    const BitStringValueViewV3& value,
+    const BitStringExecutionControlV3& control) noexcept {
+  BitStringOwnedBackupTupleResultV3 r;
+  auto projected=ProjectBitStringBackupTupleV3(value);
   r.status=projected.status;r.diagnostic=projected.diagnostic;
   if(!projected.ok()) return r;
   if(projected.tuple.packed_msb0.size()>control.maximum_allocation_bytes) {
     r.status=BudgetError();
-    try{r.diagnostic=MakeBitStringDiagnosticV1(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","backup_tuple_allocation_grant");}catch(...){}
+    try{r.diagnostic=MakeBitStringDiagnosticV3(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","backup_tuple_allocation_grant");}catch(...){}
     return r;
   }
   if(control.cancelled&&control.cancelled(control.cancellation_context)) {
     r.status=Error();
-    try{r.diagnostic=MakeBitStringDiagnosticV1(r.status,"PROCESS.CANCELLED","datatype.bit_string.projection_cancelled");}catch(...){}
+    try{r.diagnostic=MakeBitStringDiagnosticV3(r.status,"PROCESS.CANCELLED","datatype.bit_string.projection_cancelled");}catch(...){}
     return r;
   }
   try {
-    BitStringOwnedBackupTupleV1 candidate;
+    BitStringOwnedBackupTupleV3 candidate;
     candidate.catalog_snapshot_uuid=projected.tuple.catalog_snapshot_uuid;
     candidate.catalog_generation=projected.tuple.catalog_generation;
     candidate.registry_generation=projected.tuple.registry_generation;
@@ -817,7 +817,7 @@ BitStringOwnedBackupTupleResultV1 EncodeBitStringBackupTupleV1(
       copied+=chunk;
       if(copied%kCheckpointBytes==0 && ControlCancelled(control)) {
         r={};r.status=Error();
-        try{r.diagnostic=MakeBitStringDiagnosticV1(
+        try{r.diagnostic=MakeBitStringDiagnosticV3(
             r.status,"PROCESS.CANCELLED",
             "datatype.bit_string.projection_cancelled",
             "backup_tuple_copy_checkpoint");}catch(...){}
@@ -826,7 +826,7 @@ BitStringOwnedBackupTupleResultV1 EncodeBitStringBackupTupleV1(
     }
     if(ControlCancelled(control)) {
       r={};r.status=Error();
-      try{r.diagnostic=MakeBitStringDiagnosticV1(
+      try{r.diagnostic=MakeBitStringDiagnosticV3(
           r.status,"PROCESS.CANCELLED",
           "datatype.bit_string.projection_cancelled",
           "backup_tuple_before_publication");}catch(...){}
@@ -836,36 +836,36 @@ BitStringOwnedBackupTupleResultV1 EncodeBitStringBackupTupleV1(
     return r;
   } catch(const std::bad_alloc&) {
     r={};r.status=BudgetError();
-    try{r.diagnostic=MakeBitStringDiagnosticV1(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","backup_tuple_allocation");}catch(...){}
+    try{r.diagnostic=MakeBitStringDiagnosticV3(r.status,"RESOURCE.BUDGET_EXCEEDED","datatype.bit_string.resource_budget_exceeded","backup_tuple_allocation");}catch(...){}
     return r;
   }
 }
 
-BitStringResultV1 DecodeBitStringBackupTupleV1(
-    const BitStringDescriptorProfileV1& profile,
-    const BitStringOwnedBackupTupleV1& tuple, bool null_allowed,
-    const BitStringExecutionControlV1& control) noexcept {
-  const auto profile_ok=ValidateBitStringDescriptorProfileV1(profile);
+BitStringResultV3 DecodeBitStringBackupTupleV3(
+    const BitStringDescriptorProfileV3& profile,
+    const BitStringOwnedBackupTupleV3& tuple, bool null_allowed,
+    const BitStringExecutionControlV3& control) noexcept {
+  const auto profile_ok=ValidateBitStringDescriptorProfileV3(profile);
   if(!profile_ok.ok()) {
-    BitStringResultV1 r;r.status=profile_ok.status;r.diagnostic=profile_ok.diagnostic;return r;
+    BitStringResultV3 r;r.status=profile_ok.status;r.diagnostic=profile_ok.diagnostic;return r;
   }
   if(tuple.catalog_snapshot_uuid!=profile.receipt.catalog_snapshot_uuid ||
      tuple.catalog_generation!=profile.receipt.catalog_generation ||
      tuple.registry_generation!=profile.receipt.registry_generation ||
      tuple.profile_fingerprint!=profile.profile_fingerprint) {
-    BitStringResultV1 r;r.status=Error();
-    try{r.diagnostic=MakeBitStringDiagnosticV1(r.status,"CTB.BIT.DESCRIPTOR_INVALID","datatype.bit_string.backup_tuple_profile_invalid");}catch(...){}
+    BitStringResultV3 r;r.status=Error();
+    try{r.diagnostic=MakeBitStringDiagnosticV3(r.status,"CTB.BIT.DESCRIPTOR_INVALID","datatype.bit_string.backup_tuple_profile_invalid");}catch(...){}
     return r;
   }
-  const BitStringValueViewV1 view{
+  const BitStringValueViewV3 view{
       &profile,tuple.state,tuple.logical_bit_count,tuple.packed_msb0,
-      BitStringOwnershipV1::borrowed};
-  return MaterializeBitStringValueV1(view,null_allowed,control);
+      BitStringOwnershipV3::borrowed};
+  return MaterializeBitStringValueV3(view,null_allowed,control);
 }
 
-BitStringProtectionResolutionV1 ResolveBitStringProtectionV1(
-    BitStringProtectionCellV1 cell) noexcept {
-  using C=BitStringProtectionCellV1;
+BitStringProtectionResolutionV3 ResolveBitStringProtectionV3(
+    BitStringProtectionCellV3 cell) noexcept {
+  using C=BitStringProtectionCellV3;
   switch(cell) {
     case C::canonical_plain:
       return {cell,true,false,"admitted_datatype_component","CTB.BIT.CANONICAL_ENCODING_INVALID"};
@@ -884,9 +884,9 @@ BitStringProtectionResolutionV1 ResolveBitStringProtectionV1(
   return {cell,false,false,"forbidden","CTB.BIT.PROTECTION_UNSUPPORTED"};
 }
 
-BitStringWireLaneResolutionV1 ResolveBitStringWireLaneV1(
-    BitStringWireLaneV1 lane) noexcept {
-  const bool native=static_cast<u8>(lane)<=static_cast<u8>(BitStringWireLaneV1::canonical_sblr);
+BitStringWireLaneResolutionV3 ResolveBitStringWireLaneV3(
+    BitStringWireLaneV3 lane) noexcept {
+  const bool native=static_cast<u8>(lane)<=static_cast<u8>(BitStringWireLaneV3::canonical_sblr);
   return {lane,false,native,
       native?"unsupported_current_v1_exact_v3_behavior_candidate_outer_version_unallocated":
              "unsupported_no_manifest_listed_compatibility_profile",

@@ -1324,14 +1324,17 @@ const DatatypeTypeCodecIdentityRowV3* FindD707Row(
   return nullptr;
 }
 
-const std::array<DatatypeTypeCodecIdentityRowV3, 193> kIdentityRowsV3 = [] {
-  std::array<DatatypeTypeCodecIdentityRowV3, 193> rows{};
+const std::array<DatatypeTypeCodecIdentityRowV3, 226> kIdentityRowsV3 = [] {
+  std::array<DatatypeTypeCodecIdentityRowV3, 226> rows{};
   std::copy(kIdentityRowsThroughV7.begin(), kIdentityRowsThroughV7.end(),
             rows.begin());
   std::size_t output = kIdentityRowsThroughV7.size();
   const platform::Uuid time_descriptor{{
       0x91,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
       0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
+  const platform::Uuid timestamp_descriptor{{
+      0x92,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
+      0xb3,0x74,0x61,0x6d,0x70,0x00,0x00,0x00}};
   for (const auto& descriptor : kD708DescriptorOrder) {
     const auto* predecessor = FindD707Row(descriptor);
     if (predecessor == nullptr) {
@@ -1386,15 +1389,67 @@ const std::array<DatatypeTypeCodecIdentityRowV3, 193> kIdentityRowsV3 = [] {
     }
     rows[output++] = std::move(successor);
   }
+
+  // D709 materializes every d708 row under the new exact receipt. Only the
+  // timestamp row changes semantic/codec identity: it is a timezone-free
+  // local-civil tuple. The historical d821 UTC tuple remains in d701-d708.
+  for (const auto& descriptor : kD708DescriptorOrder) {
+    const DatatypeTypeCodecIdentityRowV3* predecessor = nullptr;
+    for (std::size_t index = 0; index < output; ++index) {
+      const auto& candidate = rows[index].legacy_fields;
+      if (candidate.catalog_snapshot_uuid == kDatatypeCohortV8 &&
+          candidate.catalog_generation == 8 &&
+          candidate.registry_generation == 8 &&
+          candidate.descriptor_uuid == descriptor &&
+          candidate.descriptor_generation == 1) {
+        predecessor = &rows[index];
+        break;
+      }
+    }
+    if (predecessor == nullptr) {
+      ++output;
+      continue;
+    }
+    auto successor = *predecessor;
+    auto& legacy = successor.legacy_fields;
+    legacy.catalog_snapshot_uuid = kDatatypeCohortV9;
+    legacy.catalog_generation = 9;
+    legacy.registry_generation = 9;
+    if (descriptor == timestamp_descriptor) {
+      legacy.codec_id = "datatype.timestamp.civil_tuple.le.v1";
+      legacy.codec_uuid = Uuid({{
+          0x01,0xa1,0x04,0xf5,0xfb,0x16,0x75,0x00,
+          0x93,0xe8,0x4a,0x99,0xc8,0x6d,0x11,0x30}});
+      legacy.canonical_byte_order = "little_endian";
+      legacy.canonical_representation =
+          "i64_local_civil_seconds_u32_nanoseconds_u32_reserved_zero";
+      successor.descriptor_policy = {Uuid({{
+          0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,
+          0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0a}}), 1};
+      successor.canonicalization_policy = {Uuid({{
+          0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,
+          0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0b}}), 1};
+      successor.ordering_policy = {Uuid({{
+          0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,
+          0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0c}}), 1};
+      successor.hash_policy = {Uuid({{
+          0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,
+          0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0d}}), 1};
+      successor.operation_policy = {Uuid({{
+          0x01,0xa1,0x04,0xec,0x8e,0x3c,0x7d,0xff,
+          0x8e,0x89,0x86,0x8e,0xcc,0x2a,0x8a,0x0e}}), 1};
+    }
+    rows[output++] = std::move(successor);
+  }
   return rows;
 }();
 
 const DatatypeTypeCodecIdentityRowV3* CurrentRow(
     const platform::Uuid& descriptor) noexcept {
   for (const auto& row : kIdentityRowsV3) {
-    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV8 &&
-        row.legacy_fields.catalog_generation == 8 &&
-        row.legacy_fields.registry_generation == 8 &&
+    if (row.legacy_fields.catalog_snapshot_uuid == kDatatypeCohortV9 &&
+        row.legacy_fields.catalog_generation == 9 &&
+        row.legacy_fields.registry_generation == 9 &&
         row.legacy_fields.descriptor_uuid == descriptor &&
         row.legacy_fields.descriptor_generation == 1) {
       return &row;
@@ -1503,6 +1558,13 @@ bool IsExactCanonicalTimeTypeCodecIdentityV3(
       0x91,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
       0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00}};
   return IsExactCurrentRow(row, descriptor);
+}
+
+bool IsExactCanonicalTimestampTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept {
+  return IsExactCurrentRow(
+      row, Uuid({{0x92,0x01,0x00,0x00,0x74,0x69,0x7d,0x65,
+                  0xb3,0x74,0x61,0x6d,0x70,0x00,0x00,0x00}}));
 }
 
 DatatypeTypeCodecIdentityProjectionV1 ProjectDatatypeTypeCodecIdentityV3ToV1(

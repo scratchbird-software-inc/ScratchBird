@@ -48,21 +48,21 @@ std::vector<platform::byte> Hex(std::string_view text) {
   return result;
 }
 
-dt::BitStringAuthorityReceiptV1 Receipt() {
-  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV8,
-          8, 8};
+dt::BitStringAuthorityReceiptV3 Receipt() {
+  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV9,
+          9, 9};
 }
 
-dt::BitStringDescriptorProfileV1 Profile(
-    dt::BitStringSurfaceProfileKindV1 kind, std::uint32_t length) {
+dt::BitStringDescriptorProfileV3 Profile(
+    dt::BitStringSurfaceProfileKindV3 kind, std::uint32_t length) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV8, 8, 8,
+      dt::kDatatypeCohortV9, 9, 9,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"),
       1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "exact D708 bit identity lookup failed");
+        "exact D709 bit identity lookup failed");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6,
       scratchbird::tests::FixtureUuidLiteral(
@@ -71,12 +71,12 @@ dt::BitStringDescriptorProfileV1 Profile(
   Check(historical.ok &&
             !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
         "d706 bit identity did not remain historical-only");
-  const auto historical_profile = dt::BuildBitStringDescriptorProfileV1(
+  const auto historical_profile = dt::BuildBitStringDescriptorProfileV3(
       {{scratchbird::tests::FixtureUuid(9901, 2), dt::kDatatypeCohortV6,
         6, 6}, historical.row, kind, length});
   Check(!historical_profile.ok(),
         "d706 historical identity established a current bit profile");
-  const auto profile = dt::BuildBitStringDescriptorProfileV1(
+  const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {Receipt(), identity.row, kind, length});
   Check(profile.ok(), "profile construction failed");
   return profile.profile;
@@ -90,11 +90,11 @@ void CheckDigest(const std::array<platform::byte, 32>& actual,
 }
 
 void ProfilesAreExact() {
-  auto unqualified = Profile(dt::BitStringSurfaceProfileKindV1::unqualified, 1);
-  auto varying_max = Profile(dt::BitStringSurfaceProfileKindV1::varying,
-                             dt::kBitStringMaximumLogicalBitsV1);
-  auto fixed8 = Profile(dt::BitStringSurfaceProfileKindV1::fixed, 8);
-  auto varying8 = Profile(dt::BitStringSurfaceProfileKindV1::varying, 8);
+  auto unqualified = Profile(dt::BitStringSurfaceProfileKindV3::unqualified, 1);
+  auto varying_max = Profile(dt::BitStringSurfaceProfileKindV3::varying,
+                             dt::kBitStringMaximumLogicalBitsV3);
+  auto fixed8 = Profile(dt::BitStringSurfaceProfileKindV3::fixed, 8);
+  auto varying8 = Profile(dt::BitStringSurfaceProfileKindV3::varying, 8);
 
   Check(unqualified.canonical_profile_material.size() == 432,
         "profile material is not 432 bytes");
@@ -102,36 +102,36 @@ void ProfilesAreExact() {
             varying_max.canonical_profile_material,
         "unqualified and varying(max) differ");
   CheckDigest(unqualified.profile_fingerprint,
-              "2c1922cb962cc6810e4ee5d107bc7a395924a732ad0243b84ec3a22d2b5b9139",
+              "df8df3aad936c1b5df7bc9273be4140aa1c17f234db053ee5f4ecd5eb1970205",
               "unqualified profile fingerprint drifted");
   CheckDigest(unqualified.comparison_cohort_fingerprint,
-              "f152ea108a4cbbe968373073c9c7e89f6b83c45a4ffd3b58315b85a8cb7dbc82",
+              "3f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e",
               "unqualified cohort fingerprint drifted");
   CheckDigest(fixed8.profile_fingerprint,
-              "37cd9ff7e24564347548876a2f2af4e8cd02fe6b772f175ba38dcbd0d25bfbce",
+              "5902d69362aac21d7d428490d391c74728fac7d57f8ed84e7c79ec833dd3bbc9",
               "fixed8 profile fingerprint drifted");
   CheckDigest(varying8.profile_fingerprint,
-              "fd422448fd133232cfed2c4edd312257009070a5912533d3837093556262ee5c",
+              "ca0177eec7e79c3797a436d0b2ea441ac34478350144d1f94282b25b85371d50",
               "varying8 profile fingerprint drifted");
 
-  const auto decoded = dt::DecodeBitStringDescriptorProfileMaterialV1(
+  const auto decoded = dt::DecodeBitStringDescriptorProfileMaterialV3(
       Receipt(), unqualified.identity, unqualified.canonical_profile_material);
   Check(decoded.ok() && decoded.profile.profile_fingerprint ==
                             unqualified.profile_fingerprint,
         "profile material did not round trip");
   auto dirty = unqualified.canonical_profile_material;
   dirty[117] = 1;
-  Check(!dt::DecodeBitStringDescriptorProfileMaterialV1(
+  Check(!dt::DecodeBitStringDescriptorProfileMaterialV3(
              Receipt(), unqualified.identity, dirty).ok(),
         "reserved profile byte was admitted");
   auto substituted = unqualified;
   substituted.render.generation = 2;
-  Check(!dt::ValidateBitStringDescriptorProfileV1(substituted).ok(),
+  Check(!dt::ValidateBitStringDescriptorProfileV3(substituted).ok(),
         "substituted render policy was admitted");
 }
 
 struct AcceptedVector {
-  dt::BitStringSurfaceProfileKindV1 kind;
+  dt::BitStringSurfaceProfileKindV3 kind;
   std::uint32_t bound;
   std::string_view bits;
   std::string_view component;
@@ -139,39 +139,39 @@ struct AcceptedVector {
 
 void AcceptedAndNegativeVectors() {
   static constexpr std::array<AcceptedVector, 15> accepted{{
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "", "00000000"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "0", "0100000000"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "1", "0100000080"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "10", "0200000080"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "101", "03000000a0"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "1010", "04000000a0"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "10101", "05000000a8"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "101010", "06000000a8"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "1010101", "07000000aa"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "10101010", "08000000aa"},
-      {dt::BitStringSurfaceProfileKindV1::unqualified, 1, "101010101", "09000000aa80"},
-      {dt::BitStringSurfaceProfileKindV1::fixed, 8, "10100000", "08000000a0"},
-      {dt::BitStringSurfaceProfileKindV1::fixed, 8, "11001010", "08000000ca"},
-      {dt::BitStringSurfaceProfileKindV1::varying, 8, "", "00000000"},
-      {dt::BitStringSurfaceProfileKindV1::varying, 8, "00110101", "0800000035"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "", "00000000"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "0", "0100000000"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "1", "0100000080"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "10", "0200000080"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "101", "03000000a0"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "1010", "04000000a0"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "10101", "05000000a8"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "101010", "06000000a8"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "1010101", "07000000aa"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "10101010", "08000000aa"},
+      {dt::BitStringSurfaceProfileKindV3::unqualified, 1, "101010101", "09000000aa80"},
+      {dt::BitStringSurfaceProfileKindV3::fixed, 8, "10100000", "08000000a0"},
+      {dt::BitStringSurfaceProfileKindV3::fixed, 8, "11001010", "08000000ca"},
+      {dt::BitStringSurfaceProfileKindV3::varying, 8, "", "00000000"},
+      {dt::BitStringSurfaceProfileKindV3::varying, 8, "00110101", "0800000035"},
   }};
   unsigned admitted = 0;
   for (const auto& vector : accepted) {
     auto profile = Profile(vector.kind, vector.bound);
     const auto component = Hex(vector.component);
-    const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV1(
-        profile, dt::BitStringValueStateV1::present, true, component);
+    const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV3(
+        profile, dt::BitStringValueStateV3::present, true, component);
     Check(decoded.ok(), "accepted canonical vector was refused");
     Check(decoded.value.logical_bit_count == vector.bits.size(),
           "accepted vector logical length changed");
-    const auto encoded = dt::EncodeCanonicalBitStringComponentV1(decoded.value);
+    const auto encoded = dt::EncodeCanonicalBitStringComponentV3(decoded.value);
     Check(encoded.ok() && encoded.bytes == component,
           "accepted vector did not decode/re-encode identically");
     ++admitted;
   }
   Check(admitted == 15, "did not consume all 15 accepted sealed vectors");
 
-  auto unqualified = Profile(dt::BitStringSurfaceProfileKindV1::unqualified, 1);
+  auto unqualified = Profile(dt::BitStringSurfaceProfileKindV3::unqualified, 1);
   unsigned rejected = 0;
   for (unsigned residual = 1; residual <= 7; ++residual) {
     const unsigned unused_bits = 8 - residual;
@@ -180,8 +180,8 @@ void AcceptedAndNegativeVectors() {
       std::array<platform::byte, 5> component{
           static_cast<platform::byte>(residual), 0, 0, 0,
           static_cast<platform::byte>(canonical | tail)};
-      const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV1(
-          unqualified, dt::BitStringValueStateV1::present, true, component);
+      const auto decoded = dt::DecodeCanonicalBitStringComponentNoAllocV3(
+          unqualified, dt::BitStringValueStateV3::present, true, component);
       Check(!decoded.ok() && decoded.diagnostic.diagnostic_code ==
                                  "CTB.BIT.CANONICAL_ENCODING_INVALID",
             "dirty-tail vector was admitted or misdiagnosed");
@@ -191,11 +191,11 @@ void AcceptedAndNegativeVectors() {
   Check(rejected == 247, "dirty-tail vector count is not 247");
 
   const auto expect_component_refusal = [&](std::span<const platform::byte> bytes,
-                                            dt::BitStringValueStateV1 state,
+                                            dt::BitStringValueStateV3 state,
                                             bool nullable,
                                             std::string_view code,
                                             std::string_view message) {
-    const auto result = dt::DecodeCanonicalBitStringComponentNoAllocV1(
+    const auto result = dt::DecodeCanonicalBitStringComponentNoAllocV3(
         unqualified, state, nullable, bytes);
     Check(!result.ok() && result.diagnostic.diagnostic_code == code, message);
     ++rejected;
@@ -204,25 +204,25 @@ void AcceptedAndNegativeVectors() {
   const auto truncated3 = Hex("090000");
   const auto short9 = Hex("0900000080");
   const auto trailing8 = Hex("08000000aa00");
-  expect_component_refusal(truncated0, dt::BitStringValueStateV1::present,
+  expect_component_refusal(truncated0, dt::BitStringValueStateV3::present,
       true, "CTB.BIT.CANONICAL_ENCODING_INVALID", "truncated_count_0 drifted");
-  expect_component_refusal(truncated3, dt::BitStringValueStateV1::present,
+  expect_component_refusal(truncated3, dt::BitStringValueStateV3::present,
       true, "CTB.BIT.CANONICAL_ENCODING_INVALID", "truncated_count_3 drifted");
-  expect_component_refusal(short9, dt::BitStringValueStateV1::present,
+  expect_component_refusal(short9, dt::BitStringValueStateV3::present,
       true, "CTB.BIT.CANONICAL_ENCODING_INVALID", "short_payload_9 drifted");
-  expect_component_refusal(trailing8, dt::BitStringValueStateV1::present,
+  expect_component_refusal(trailing8, dt::BitStringValueStateV3::present,
       true, "CTB.BIT.CANONICAL_ENCODING_INVALID", "trailing_payload_8 drifted");
   std::vector<platform::byte> maximum_plus_one(4 + 2'097'153, 0);
   maximum_plus_one[0] = 0x01;
   maximum_plus_one[3] = 0x01;
   expect_component_refusal(maximum_plus_one,
-      dt::BitStringValueStateV1::present, true, "CTB.BIT.LENGTH_EXCEEDED",
+      dt::BitStringValueStateV3::present, true, "CTB.BIT.LENGTH_EXCEEDED",
       "maximum_plus_one drifted");
   const auto null_component = Hex("00000000");
   expect_component_refusal(null_component,
-      dt::BitStringValueStateV1::sql_null, true,
+      dt::BitStringValueStateV3::sql_null, true,
       "DATATYPE.NULL_STATE.INVALID", "null_with_component drifted");
-  expect_component_refusal({}, dt::BitStringValueStateV1::sql_null, false,
+  expect_component_refusal({}, dt::BitStringValueStateV3::sql_null, false,
       "DATATYPE.NULL_NOT_ADMITTED", "null_not_admitted drifted");
 
   const auto one_component = Hex("0100000080");
@@ -251,13 +251,13 @@ void AcceptedAndNegativeVectors() {
       dt::DecodeDatatypeBinaryStructuralValueViewNoAlloc(
           malformed_binary.data(), malformed_binary.size());
   const auto malformed_binary_composed =
-      dt::DecodeBitStringSbdvalComposedNoAllocV1(
+      dt::DecodeBitStringSbdvalComposedNoAllocV3(
           invalid_profile, true, malformed_binary);
   Check(!malformed_binary_direct.ok() && !malformed_binary_composed.ok() &&
             malformed_binary_composed.diagnostic.diagnostic_code ==
                 malformed_binary_direct.diagnostic.diagnostic_code,
         "SBDVAL structural failure was masked by invalid profile");
-  Check(dt::DecodeBitStringSbdvalComposedNoAllocV1(
+  Check(dt::DecodeBitStringSbdvalComposedNoAllocV3(
                 invalid_profile, true, binary_frame)
                 .diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
         "valid SBDVAL did not apply profile before component");
@@ -271,10 +271,10 @@ void AcceptedAndNegativeVectors() {
             dirty_binary_view, dirty_binary_frame.data(),
             dirty_binary_frame.size()).ok(),
         "dirty SBDVAL structural fixture failed");
-  Check(dt::DecodeBitStringSbdvalComposedNoAllocV1(
+  Check(dt::DecodeBitStringSbdvalComposedNoAllocV3(
                 invalid_profile, true, dirty_binary_frame)
                 .diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID" &&
-            dt::DecodeBitStringSbdvalComposedNoAllocV1(
+            dt::DecodeBitStringSbdvalComposedNoAllocV3(
                 unqualified, true, dirty_binary_frame)
                 .diagnostic.diagnostic_code ==
                     "CTB.BIT.CANONICAL_ENCODING_INVALID",
@@ -310,13 +310,13 @@ void AcceptedAndNegativeVectors() {
       dt::DecodeDatatypePhysicalStructuralValueViewNoAlloc(
           malformed_physical.data(), malformed_physical.size());
   const auto malformed_physical_composed =
-      dt::DecodeBitStringSbdpvComposedNoAllocV1(
+      dt::DecodeBitStringSbdpvComposedNoAllocV3(
           invalid_profile, true, malformed_physical);
   Check(!malformed_physical_direct.ok() && !malformed_physical_composed.ok() &&
             malformed_physical_composed.diagnostic.diagnostic_code ==
                 malformed_physical_direct.diagnostic.diagnostic_code,
         "SBDPV structural failure was masked by invalid profile");
-  Check(dt::DecodeBitStringSbdpvComposedNoAllocV1(
+  Check(dt::DecodeBitStringSbdpvComposedNoAllocV3(
                 invalid_profile, true, physical_frame)
                 .diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID",
         "valid SBDPV did not apply profile before component");
@@ -330,10 +330,10 @@ void AcceptedAndNegativeVectors() {
             dirty_physical_view, dirty_physical_frame.data(),
             dirty_physical_frame.size()).ok(),
         "dirty SBDPV structural fixture failed");
-  Check(dt::DecodeBitStringSbdpvComposedNoAllocV1(
+  Check(dt::DecodeBitStringSbdpvComposedNoAllocV3(
                 invalid_profile, true, dirty_physical_frame)
                 .diagnostic.diagnostic_code == "CTB.BIT.DESCRIPTOR_INVALID" &&
-            dt::DecodeBitStringSbdpvComposedNoAllocV1(
+            dt::DecodeBitStringSbdpvComposedNoAllocV3(
                 unqualified, true, dirty_physical_frame)
                 .diagnostic.diagnostic_code ==
                     "CTB.BIT.CANONICAL_ENCODING_INVALID",
@@ -349,30 +349,30 @@ void AcceptedAndNegativeVectors() {
 }
 
 void BoundsOwnershipAndAtomicity() {
-  auto profile = Profile(dt::BitStringSurfaceProfileKindV1::unqualified, 1);
+  auto profile = Profile(dt::BitStringSurfaceProfileKindV3::unqualified, 1);
   std::vector<platform::byte> source{0x80};
-  dt::BitStringValueViewV1 view{&profile, dt::BitStringValueStateV1::present,
+  dt::BitStringValueViewV3 view{&profile, dt::BitStringValueStateV3::present,
                                 1, source,
-                                dt::BitStringOwnershipV1::borrowed};
-  const auto owned = dt::MaterializeBitStringValueV1(view, true);
+                                dt::BitStringOwnershipV3::borrowed};
+  const auto owned = dt::MaterializeBitStringValueV3(view, true);
   Check(owned.ok(), "borrowed value did not materialize");
   source[0] = 0;
   Check(owned.value.packed_msb0 == std::vector<platform::byte>{0x80},
         "owned value retained borrowed storage");
 
-  dt::BitStringValueViewV1 typed_null{
-      &profile, dt::BitStringValueStateV1::sql_null, 0, {},
-      dt::BitStringOwnershipV1::borrowed};
-  const auto owned_null = dt::MaterializeBitStringValueV1(typed_null, true);
+  dt::BitStringValueViewV3 typed_null{
+      &profile, dt::BitStringValueStateV3::sql_null, 0, {},
+      dt::BitStringOwnershipV3::borrowed};
+  const auto owned_null = dt::MaterializeBitStringValueV3(typed_null, true);
   Check(owned_null.ok() && owned_null.value.state ==
-                               dt::BitStringValueStateV1::sql_null &&
+                               dt::BitStringValueStateV3::sql_null &&
             owned_null.value.logical_bit_count == 0 &&
             owned_null.value.packed_msb0.empty(),
         "typed NULL did not remain payload-free through materialization");
 
-  dt::BitStringExecutionControlV1 denied;
+  dt::BitStringExecutionControlV3 denied;
   denied.maximum_allocation_bytes = 0;
-  const auto refused = dt::MaterializeBitStringValueV1(view, true, denied);
+  const auto refused = dt::MaterializeBitStringValueV3(view, true, denied);
   Check(!refused.ok() && refused.value.packed_msb0.empty() &&
             refused.diagnostic.diagnostic_code == "RESOURCE.BUDGET_EXCEEDED",
         "resource refusal published partial bytes");
@@ -385,27 +385,27 @@ void BoundsOwnershipAndAtomicity() {
     if ((logical_bits & 7u) != 0)
       storage.back() &= static_cast<platform::byte>(
           0xffu << (8u - (logical_bits & 7u)));
-    dt::BitStringValueViewV1 boundary_value{
-        &profile, dt::BitStringValueStateV1::present, logical_bits, storage,
-        dt::BitStringOwnershipV1::borrowed};
+    dt::BitStringValueViewV3 boundary_value{
+        &profile, dt::BitStringValueStateV3::present, logical_bits, storage,
+        dt::BitStringOwnershipV3::borrowed};
     const auto validated =
-        dt::ValidateBitStringValueViewV1(boundary_value, true);
+        dt::ValidateBitStringValueViewV3(boundary_value, true);
     const auto encoded =
-        dt::EncodeCanonicalBitStringComponentV1(boundary_value);
+        dt::EncodeCanonicalBitStringComponentV3(boundary_value);
     Check(validated.ok() && encoded.ok() &&
               encoded.bytes.size() == 4u + storage.size(),
           "required length/histogram boundary was not canonical");
   }
 
   std::vector<platform::byte> maximum(2'097'152, 0xff);
-  dt::BitStringValueViewV1 max_view{
-      &profile, dt::BitStringValueStateV1::present,
-      dt::kBitStringMaximumLogicalBitsV1, maximum,
-      dt::BitStringOwnershipV1::borrowed};
-  Check(dt::ValidateBitStringValueViewV1(max_view, true).ok(),
+  dt::BitStringValueViewV3 max_view{
+      &profile, dt::BitStringValueStateV3::present,
+      dt::kBitStringMaximumLogicalBitsV3, maximum,
+      dt::BitStringOwnershipV3::borrowed};
+  Check(dt::ValidateBitStringValueViewV3(max_view, true).ok(),
         "maximum canonical value was refused");
   const auto maximum_component =
-      dt::EncodeCanonicalBitStringComponentV1(max_view);
+      dt::EncodeCanonicalBitStringComponentV3(max_view);
   Check(maximum_component.ok() && maximum_component.bytes.size() == 2'097'156 &&
             maximum_component.bytes[0] == 0 &&
             maximum_component.bytes[1] == 0 &&
@@ -422,18 +422,18 @@ void BoundsOwnershipAndAtomicity() {
                                         component_digest.digest.end()) ==
                 Hex("4d9300e99759561a1adf3fd28eeb2faa55922c46a6ed6fa82e182c40113cb692"),
         "maximum canonical component hash drifted");
-  Check(dt::HashBitStringValueV1(max_view).bytes ==
-            Hex("c53d226d65c6f7b3507019140881ae247e2554acd1c72e5594ceb52f08ff8a67"),
+  Check(dt::HashBitStringValueV3(max_view).bytes ==
+            Hex("dc05d507f99ff2895c6875a603f0fff38108ece197c30b4bea9f7668d2056780"),
         "maximum value hash drifted");
 
   std::array<bool, 4> concurrent_ok{};
   std::array<std::thread, 4> readers;
   for (std::size_t index = 0; index < readers.size(); ++index) {
     readers[index] = std::thread([&, index] {
-      const auto validated = dt::ValidateBitStringValueViewV1(max_view, true);
-      const auto count = dt::BitStringCountV1(max_view, true);
+      const auto validated = dt::ValidateBitStringValueViewV3(max_view, true);
+      const auto count = dt::BitStringCountV3(max_view, true);
       concurrent_ok[index] = validated.ok() && count.ok() &&
-          count.unsigned_value == dt::kBitStringMaximumLogicalBitsV1;
+          count.unsigned_value == dt::kBitStringMaximumLogicalBitsV3;
     });
   }
   for (auto& reader : readers) reader.join();
@@ -442,9 +442,9 @@ void BoundsOwnershipAndAtomicity() {
         "immutable borrowed value was not safe for concurrent reads");
 
   auto cancel_immediately = [](void*) noexcept { return true; };
-  dt::BitStringExecutionControlV1 cancelled_before;
+  dt::BitStringExecutionControlV3 cancelled_before;
   cancelled_before.cancelled = cancel_immediately;
-  const auto before = dt::MaterializeBitStringValueV1(
+  const auto before = dt::MaterializeBitStringValueV3(
       max_view, true, cancelled_before);
   Check(!before.ok() && before.diagnostic.diagnostic_code ==
                             "PROCESS.CANCELLED" &&
@@ -454,10 +454,10 @@ void BoundsOwnershipAndAtomicity() {
   auto cancel_second = [](void* context) noexcept {
     return ++*static_cast<unsigned*>(context) == 2;
   };
-  dt::BitStringExecutionControlV1 at_boundary;
+  dt::BitStringExecutionControlV3 at_boundary;
   at_boundary.cancelled = cancel_second;
   at_boundary.cancellation_context = &cancellation_checks;
-  const auto boundary = dt::BitStringNotV1(max_view, true, at_boundary);
+  const auto boundary = dt::BitStringNotV3(max_view, true, at_boundary);
   Check(!boundary.ok() && boundary.diagnostic.diagnostic_code ==
                               "PROCESS.CANCELLED" &&
             boundary.value.packed_msb0.empty() && cancellation_checks == 2,

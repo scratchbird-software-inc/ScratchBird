@@ -63,13 +63,15 @@ DatatypeTypeCodecIdentityLookupV3 LookupDatatypeTypeCodecIdentityV3(
     const platform::Uuid& descriptor_uuid,
     u64 descriptor_generation) noexcept;
 
-// Core's canonical JSON digests of the exact 33-row d707 and d708 cohorts.
+// Core's canonical JSON digests of the exact 33-row d707-d709 cohorts.
 inline constexpr std::string_view kDatatypeCohortV7IdentityDigestSha256 =
     "f10857ec395d4ebca02ec21c785251a668d98f3c0e69eeba11324f3807832dcc";
 inline constexpr std::string_view kDatatypeCohortV8IdentityDigestSha256 =
     "7ff7530978f049864ad10ba5a7a1d4ba78246369ad30be7e7aeb5d7f4261bae5";
+inline constexpr std::string_view kDatatypeCohortV9IdentityDigestSha256 =
+    "7c3eed94150522b474faa22307a3f94a7753898084de09c67bd108e36fa3a978";
 
-// These predicates compare the semantic current d708 row. Canonical-name and
+// These predicates compare the semantic current d709 row. Canonical-name and
 // codec-id strings are presentation labels and never establish identity. Type
 // codes, payloads, and predecessor identities cannot substitute for the exact
 // UUID/generation/codec-version/policy tuple and physical/semantic fields.
@@ -83,6 +85,9 @@ bool IsExactCanonicalDateTypeCodecIdentityV3(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 bool IsExactCanonicalTimeTypeCodecIdentityV3(
+    const DatatypeTypeCodecIdentityRowV3& row) noexcept;
+
+bool IsExactCanonicalTimestampTypeCodecIdentityV3(
     const DatatypeTypeCodecIdentityRowV3& row) noexcept;
 
 // The only cross-carrier conversion is the explicit lossy V3-to-V1

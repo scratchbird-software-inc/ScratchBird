@@ -179,7 +179,7 @@ const char* DatatypeConformanceExampleSourceName(
 }
 
 DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
-    const BitStringAuthorityReceiptV1& bit_string_receipt,
+    const BitStringAuthorityReceiptV3& bit_string_receipt,
     bool bit_string_null_allowed,
     const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,
@@ -240,23 +240,23 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     return result;
   }
 
-  BitStringProfileRequestV1 request;
+  BitStringProfileRequestV3 request;
   request.receipt = bit_string_receipt;
   request.identity = *bit_identity;
-  request.kind = BitStringSurfaceProfileKindV1::unqualified;
-  request.length_bits = kBitStringMaximumLogicalBitsV1;
-  const auto profile = BuildBitStringDescriptorProfileV1(request);
+  request.kind = BitStringSurfaceProfileKindV3::unqualified;
+  request.length_bits = kBitStringMaximumLogicalBitsV3;
+  const auto profile = BuildBitStringDescriptorProfileV3(request);
   if (!profile.ok()) {
     AddOwnedFailure(&result, profile.diagnostic);
     return result;
   }
 
-  BitStringConformanceExampleV1 bit_example;
+  BitStringConformanceExampleV3 bit_example;
   bit_example.receipt = request.receipt;
   bit_example.identity = *bit_identity;
   bit_example.profile = profile.profile;
   bit_example.null_allowed = bit_string_null_allowed;
-  bit_example.state = BitStringValueStateV1::present;
+  bit_example.state = BitStringValueStateV3::present;
   bit_example.canonical_component = {0, 0, 0, 0};
   bit_example.source = DatatypeConformanceExampleSource::current_core_registry;
   bit_example.evidence_path =
@@ -455,7 +455,7 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                "datatype.conformance.bit_string_v3_example_count",
                std::to_string(manifest.bit_string_examples.size()));
   }
-  for (const BitStringConformanceExampleV1& example :
+  for (const BitStringConformanceExampleV3& example :
        manifest.bit_string_examples) {
     if (example.source !=
         DatatypeConformanceExampleSource::current_core_registry) {
@@ -478,7 +478,7 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  "datatype.conformance.bit_string_identity_refused");
       continue;
     }
-    const auto profile = ValidateBitStringDescriptorProfileV1(example.profile);
+    const auto profile = ValidateBitStringDescriptorProfileV3(example.profile);
     if (!profile.ok()) {
       AddOwnedFailure(&result, profile.diagnostic);
       continue;
@@ -496,13 +496,13 @@ DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
                  "datatype.conformance.bit_string_receipt_refused");
       continue;
     }
-    const auto decoded = DecodeCanonicalBitStringComponentNoAllocV1(
+    const auto decoded = DecodeCanonicalBitStringComponentNoAllocV3(
         example.profile, example.state, example.null_allowed,
         example.canonical_component);
     if (!decoded.ok()) {
       AddOwnedFailure(
           &result,
-          MakeBitStringDiagnosticV1(
+          MakeBitStringDiagnosticV3(
               decoded.status,
               std::string(decoded.diagnostic.diagnostic_code),
               "datatype.conformance.bit_string_component_refused",

@@ -44,12 +44,12 @@ struct DatatypeConformanceExample {
 // Bit strings cannot use the legacy SBDTV001 descriptor example above: that
 // carrier has no V3 policy identities, live receipt, or profile material.
 // Their conformance evidence therefore remains a separate exact carrier.
-struct BitStringConformanceExampleV1 {
-  BitStringAuthorityReceiptV1 receipt;
+struct BitStringConformanceExampleV3 {
+  BitStringAuthorityReceiptV3 receipt;
   DatatypeTypeCodecIdentityRowV3 identity;
-  BitStringDescriptorProfileV1 profile;
+  BitStringDescriptorProfileV3 profile;
   bool null_allowed = false;
-  BitStringValueStateV1 state = BitStringValueStateV1::present;
+  BitStringValueStateV3 state = BitStringValueStateV3::present;
   std::vector<byte> canonical_component;
   DatatypeConformanceExampleSource source =
       DatatypeConformanceExampleSource::unknown;
@@ -91,7 +91,7 @@ struct DatatypeConformanceManifest {
   std::string manifest_key;
   std::string inventory_source_path;
   std::vector<DatatypeConformanceExample> examples;
-  std::vector<BitStringConformanceExampleV1> bit_string_examples;
+  std::vector<BitStringConformanceExampleV3> bit_string_examples;
   std::vector<DateConformanceExampleV3> date_examples;
   std::vector<TimeConformanceExampleV3> time_examples;
   bool parser_authority_allowed = false;
@@ -116,7 +116,7 @@ const char* DatatypeConformanceExampleSourceName(
     DatatypeConformanceExampleSource source);
 
 DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
-    const BitStringAuthorityReceiptV1& bit_string_receipt,
+    const BitStringAuthorityReceiptV3& bit_string_receipt,
     bool bit_string_null_allowed,
     const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,

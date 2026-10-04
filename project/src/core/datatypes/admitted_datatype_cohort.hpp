@@ -3,7 +3,7 @@
 #pragma once
 #include "../platform/runtime_platform.hpp"
 namespace scratchbird::core::datatypes {
-// Immutable datatype codec cohorts V1-V8: codec admission only. A caller
+// Immutable datatype codec cohorts V1-V9: codec admission only. A caller
 // must additionally match its engine-owned live statement receipt.
 inline constexpr platform::Uuid kDatatypeCohortV1{{
     0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}};
@@ -21,6 +21,8 @@ inline constexpr platform::Uuid kDatatypeCohortV7{{
     0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x07}};
 inline constexpr platform::Uuid kDatatypeCohortV8{{
     0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x08}};
+inline constexpr platform::Uuid kDatatypeCohortV9{{
+    0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x09}};
 inline bool IsAdmittedDatatypeCohort(const platform::Uuid& snapshot,
     platform::u64 catalog_generation, platform::u64 registry_generation) {
   return (snapshot == kDatatypeCohortV1 && catalog_generation == 1 && registry_generation == 1) ||
@@ -30,7 +32,8 @@ inline bool IsAdmittedDatatypeCohort(const platform::Uuid& snapshot,
          (snapshot == kDatatypeCohortV5 && catalog_generation == 5 && registry_generation == 5) ||
          (snapshot == kDatatypeCohortV6 && catalog_generation == 6 && registry_generation == 6) ||
          (snapshot == kDatatypeCohortV7 && catalog_generation == 7 && registry_generation == 7) ||
-         (snapshot == kDatatypeCohortV8 && catalog_generation == 8 && registry_generation == 8);
+         (snapshot == kDatatypeCohortV8 && catalog_generation == 8 && registry_generation == 8) ||
+         (snapshot == kDatatypeCohortV9 && catalog_generation == 9 && registry_generation == 9);
 }
 inline bool IsAdmittedDatatypeCohort(const std::array<platform::byte, 16>& snapshot,
     platform::u64 catalog_generation, platform::u64 registry_generation) {

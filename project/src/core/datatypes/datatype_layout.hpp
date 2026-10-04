@@ -61,7 +61,9 @@ enum class DatatypeBinaryEncoding : u16 {
   result_set_descriptor,
   unknown,
   // Appended to preserve every previously published enum value.
-  u32le_bit_count_msb0_packed
+  u32le_bit_count_msb0_packed,
+  // Distinct current d709 timezone-free local-civil timestamp encoding.
+  timestamp_civil_tuple
 };
 
 struct DatatypeStorageLayout {

@@ -114,6 +114,7 @@ const char* DatatypeBinaryEncodingName(DatatypeBinaryEncoding encoding) {
     case DatatypeBinaryEncoding::opaque_extension_binary: return "opaque_extension_binary";
     case DatatypeBinaryEncoding::result_set_descriptor: return "result_set_descriptor";
     case DatatypeBinaryEncoding::u32le_bit_count_msb0_packed: return "u32le_bit_count_msb0_packed";
+    case DatatypeBinaryEncoding::timestamp_civil_tuple: return "timestamp_civil_tuple";
     case DatatypeBinaryEncoding::unknown: return "unknown";
   }
   return "unknown";
@@ -152,12 +153,15 @@ const std::vector<DatatypeStorageLayout>& BuiltinDatatypeStorageLayouts() {
       Layout(CanonicalTypeId::date, DatatypeStorageClass::inline_fixed,
              DatatypeBinaryEncoding::days_since_unix_epoch_i32, 4, 4, true,
              false, false, false, false, true,
-             "signed i32 Unix-day LE4; semantic use requires the exact d708 date descriptor and complete profile"),
+             "signed i32 Unix-day LE4; semantic use requires the exact d709 date descriptor and complete profile"),
       Layout(CanonicalTypeId::time, DatatypeStorageClass::inline_fixed,
              DatatypeBinaryEncoding::nanoseconds_since_midnight_u64, 8, 8,
              true, false, false, true, false, true,
-             "unsigned u64 nanoseconds since local midnight LE8; semantic use requires the exact d708 time descriptor and complete profile"),
-      Layout(CanonicalTypeId::timestamp, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::timestamp_utc_tuple, 16, 8, false, false, false, true, false, true),
+             "unsigned u64 nanoseconds since local midnight LE8; semantic use requires the exact d709 time descriptor and complete profile"),
+      Layout(CanonicalTypeId::timestamp, DatatypeStorageClass::inline_fixed,
+             DatatypeBinaryEncoding::timestamp_civil_tuple, 16, 8, true,
+             false, false, false, false, true,
+             "signed i64 local-civil seconds from 1970-01-01, u32 nanoseconds-of-second, u32 zero; semantic use requires exact d709 timestamp profile; no timezone authority"),
       Layout(CanonicalTypeId::interval, DatatypeStorageClass::inline_fixed, DatatypeBinaryEncoding::interval_tuple, 16, 8, true),
       Layout(CanonicalTypeId::blob, DatatypeStorageClass::toast_reference, DatatypeBinaryEncoding::toast_locator, 24, 8, true, false, false, false, true),
       Layout(CanonicalTypeId::document, DatatypeStorageClass::descriptor_payload, DatatypeBinaryEncoding::structured_canonical_binary, 0, 8, true, false, false, false, true),

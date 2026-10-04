@@ -39,8 +39,8 @@ bool HasDiagnostic(const dt::DatatypeConformanceManifestResult& result,
   return false;
 }
 
-dt::BitStringAuthorityReceiptV1 BitStringReceipt() {
-  dt::BitStringAuthorityReceiptV1 receipt;
+dt::BitStringAuthorityReceiptV3 BitStringReceipt() {
+  dt::BitStringAuthorityReceiptV3 receipt;
   receipt.statement_receipt_uuid.bytes = {
       0x01, 0xa0, 0xff, 0x27, 0x45, 0x62, 0x7a, 0x11,
       0x8b, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
@@ -308,7 +308,7 @@ void TestLegacyBitStringEvidenceIsRefused() {
 
   loaded = LoadManifest();
   auto& nullable = loaded.manifest.bit_string_examples[0];
-  nullable.state = dt::BitStringValueStateV1::sql_null;
+  nullable.state = dt::BitStringValueStateV3::sql_null;
   nullable.canonical_component.clear();
   const auto unauthorized_null =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
@@ -320,7 +320,7 @@ void TestLegacyBitStringEvidenceIsRefused() {
   loaded = LoadManifest();
   auto& dirty_null = loaded.manifest.bit_string_examples[0];
   dirty_null.null_allowed = true;
-  dirty_null.state = dt::BitStringValueStateV1::sql_null;
+  dirty_null.state = dt::BitStringValueStateV3::sql_null;
   const auto invalid_null =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
   Require(!invalid_null.ok(), "MDF-015 accepted SQL NULL with payload");

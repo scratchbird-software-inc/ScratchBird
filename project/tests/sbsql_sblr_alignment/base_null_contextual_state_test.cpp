@@ -2042,32 +2042,32 @@ void BitStringNullRequiresExactV3Profile() {
   const auto descriptor = platform::Uuid{{
       0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV8, 8, 8, descriptor, 1);
+      dt::kDatatypeCohortV9, 9, 9, descriptor, 1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "lookup exact current D708 bit-string identity for typed NULL");
+        "lookup exact current D709 bit-string identity for typed NULL");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
   Check(historical.ok &&
             !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
         "d706 bit-string identity remains exact historical evidence");
-  dt::BitStringAuthorityReceiptV1 receipt{
-      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV8, 8, 8};
-  const auto profile = dt::BuildBitStringDescriptorProfileV1(
+  dt::BitStringAuthorityReceiptV3 receipt{
+      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV9, 9, 9};
+  const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {receipt, identity.row,
-       dt::BitStringSurfaceProfileKindV1::unqualified,
-       dt::kBitStringMaximumLogicalBitsV1});
+       dt::BitStringSurfaceProfileKindV3::unqualified,
+       dt::kBitStringMaximumLogicalBitsV3});
   Check(profile.ok(), "build exact bit-string profile for typed NULL");
-  dt::BitStringValueViewV1 typed_null{
-      &profile.profile, dt::BitStringValueStateV1::sql_null, 0, {},
-      dt::BitStringOwnershipV1::borrowed};
-  Check(dt::ValidateBitStringValueViewV1(typed_null, true).ok(),
+  dt::BitStringValueViewV3 typed_null{
+      &profile.profile, dt::BitStringValueStateV3::sql_null, 0, {},
+      dt::BitStringOwnershipV3::borrowed};
+  Check(dt::ValidateBitStringValueViewV3(typed_null, true).ok(),
         "exact-profile typed bit-string NULL was refused");
-  Check(!dt::ValidateBitStringValueViewV1(typed_null, false).ok(),
+  Check(!dt::ValidateBitStringValueViewV3(typed_null, false).ok(),
         "nonnullable bit-string NULL was admitted");
   std::array<platform::byte, 1> dirty{0};
   typed_null.packed_msb0 = dirty;
-  const auto invalid = dt::ValidateBitStringValueViewV1(typed_null, true);
+  const auto invalid = dt::ValidateBitStringValueViewV3(typed_null, true);
   Check(!invalid.ok() && invalid.diagnostic.diagnostic_code ==
                              "DATATYPE.NULL_STATE.INVALID",
         "payload-bearing bit-string NULL lost null-state precedence");
