@@ -49,20 +49,20 @@ std::vector<platform::byte> Hex(std::string_view text) {
 }
 
 dt::BitStringAuthorityReceiptV3 Receipt() {
-  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV9,
-          9, 9};
+  return {scratchbird::tests::FixtureUuid(9901, 1), dt::kDatatypeCohortV10,
+          10, 10};
 }
 
 dt::BitStringDescriptorProfileV3 Profile(
     dt::BitStringSurfaceProfileKindV3 kind, std::uint32_t length) {
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9,
+      dt::kDatatypeCohortV10, 10, 10,
       scratchbird::tests::FixtureUuidLiteral(
           "019d0000-0000-7000-8000-00000000d829"),
       1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "exact D709 bit identity lookup failed");
+        "exact D710 bit identity lookup failed");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6,
       scratchbird::tests::FixtureUuidLiteral(
@@ -102,10 +102,10 @@ void ProfilesAreExact() {
             varying_max.canonical_profile_material,
         "unqualified and varying(max) differ");
   CheckDigest(unqualified.profile_fingerprint,
-              "df8df3aad936c1b5df7bc9273be4140aa1c17f234db053ee5f4ecd5eb1970205",
+              "6b591a716ed950c86c2559ff1d81912ce9d60af9a19b4bb34263d722e35743e8",
               "unqualified profile fingerprint drifted");
   CheckDigest(unqualified.comparison_cohort_fingerprint,
-              "3f9a497b21e8b4f589a690077c9ec0df18c3bb0f77fc5026b63a3d39b5f81a5e",
+              "e1860523736b5b688bfb921c3eac0e786d20b639683d6d51cd4ce1515e961c89",
               "unqualified cohort fingerprint drifted");
   CheckDigest(fixed8.profile_fingerprint,
               "5902d69362aac21d7d428490d391c74728fac7d57f8ed84e7c79ec833dd3bbc9",
@@ -423,7 +423,7 @@ void BoundsOwnershipAndAtomicity() {
                 Hex("4d9300e99759561a1adf3fd28eeb2faa55922c46a6ed6fa82e182c40113cb692"),
         "maximum canonical component hash drifted");
   Check(dt::HashBitStringValueV3(max_view).bytes ==
-            Hex("dc05d507f99ff2895c6875a603f0fff38108ece197c30b4bea9f7668d2056780"),
+            Hex("7dd37e8abfa3587147537577e141b45ab7f3fed8abf134bff9bacfd1ed32bfe2"),
         "maximum value hash drifted");
 
   std::array<bool, 4> concurrent_ok{};

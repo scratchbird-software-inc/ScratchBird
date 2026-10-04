@@ -1722,7 +1722,7 @@ void TestOwnerAndObservabilityRegistries() {
   route_mutated_payload[2].uuid_value.bytes[15] ^= 1;
   require_route_refusal(
       route_mutated_payload, DX::invalid_scalar_value,
-      "diagnostic non-D709 statement receipt refusal without mutation");
+      "diagnostic non-D710 statement receipt refusal without mutation");
   route_mutated_payload = route_payload;
   route_mutated_payload[4].enum_value = "not_registered";
   require_route_refusal(route_mutated_payload, DX::invalid_scalar_value,
@@ -1972,7 +1972,7 @@ void TestOwnerAndObservabilityRegistries() {
       "after_primary_diagnostic_commit", "after_primary_diagnostic_commit",
       "after_primary_diagnostic_commit"}};
   const std::array<std::string_view, 21> conditions{{
-      "exact_d709_profile_admitted", "CTI.TEMPORAL.INVALID_LITERAL",
+      "exact_d710_profile_admitted", "CTI.TEMPORAL.INVALID_LITERAL",
       "CTI.TEMPORAL.RANGE_EXCEEDED", "classified_attempt_operation_id",
       "admitted_success_operation_id", "declared_operation_reason_tuple",
       "admitted_cast_pair_and_context", "admitted_cast_target",

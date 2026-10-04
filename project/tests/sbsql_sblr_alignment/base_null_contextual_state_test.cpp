@@ -265,7 +265,7 @@ void ContextualBindingPreservesTargetType() {
           descriptor.type_id == dt::CanonicalTypeId::time ||
           descriptor.type_id == dt::CanonicalTypeId::timestamp) {
         CheckRejectedAs(bound, "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic contextual temporal NULL without D709 profile");
+                        "generic contextual temporal NULL without D710 profile");
         dt::DatatypeCastRequest identity;
         identity.value = TypedNull(descriptor.type_id, target_descriptor);
         identity.target_type_id = descriptor.type_id;
@@ -273,7 +273,7 @@ void ContextualBindingPreservesTargetType() {
         identity.target_descriptor = target_descriptor;
         CheckRejectedAs(dt::CastDatatypeValue(identity),
                         "CTI.TEMPORAL.DESCRIPTOR_INVALID",
-                        "generic typed temporal NULL identity without D709 profile");
+                        "generic typed temporal NULL identity without D710 profile");
         continue;
       }
       Check(bound.ok(), "contextual NULL did not bind in " + label);
@@ -884,13 +884,13 @@ void DurableCodecsRequireConcreteTypes() {
         descriptor.type_id == dt::CanonicalTypeId::time ||
         descriptor.type_id == dt::CanonicalTypeId::timestamp) {
       CheckRejectedAs(encoded, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL binary encode without D709 profile");
+                      "generic temporal NULL binary encode without D710 profile");
       dt::DatatypePhysicalValue physical_null;
       physical_null.type_id = descriptor.type_id;
       physical_null.state = dt::DatatypePhysicalValueState::sql_null;
       CheckRejectedAs(dt::EncodeDatatypePhysicalValue(physical_null),
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL physical encode without D709 profile");
+                      "generic temporal NULL physical encode without D710 profile");
       continue;
     }
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
@@ -988,7 +988,7 @@ void SerializationRetainsConcreteType() {
         descriptor.type_id == dt::CanonicalTypeId::timestamp) {
       CheckRejectedAs(serialized,
                       "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-                      "generic temporal NULL serialization without D709 profile");
+                      "generic temporal NULL serialization without D710 profile");
       Check(serialized.serialized_value.empty(),
             "generic temporal NULL serialization published output");
       continue;
@@ -2048,17 +2048,17 @@ void BitStringNullRequiresExactV3Profile() {
   const auto descriptor = platform::Uuid{{
       0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd8,0x29}};
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, descriptor, 1);
+      dt::kDatatypeCohortV10, 10, 10, descriptor, 1);
   Check(identity.ok &&
             dt::IsExactCanonicalBitStringTypeCodecIdentityV3(identity.row),
-        "lookup exact current D709 bit-string identity for typed NULL");
+        "lookup exact current D710 bit-string identity for typed NULL");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6, descriptor, 1);
   Check(historical.ok &&
             !dt::IsExactCanonicalBitStringTypeCodecIdentityV3(historical.row),
         "d706 bit-string identity remains exact historical evidence");
   dt::BitStringAuthorityReceiptV3 receipt{
-      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV9, 9, 9};
+      TypedObjectUuid(0x62).value, dt::kDatatypeCohortV10, 10, 10};
   const auto profile = dt::BuildBitStringDescriptorProfileV3(
       {receipt, identity.row,
        dt::BitStringSurfaceProfileKindV3::unqualified,
@@ -2086,11 +2086,11 @@ void BitStringNullRequiresExactV3Profile() {
 }
 
 void TimestampNullRequiresExactV3Profile() {
-  const platform::Uuid d709{{
+  const platform::Uuid d710{{
       0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
-      0x80, 0, 0, 0, 0, 0, 0xd7, 0x09}};
-  auto built = dt::BuildCurrentTimestampValidatedProfileHandleV3(d709);
-  Check(built.ok(), "build exact current d709 timestamp profile for typed NULL");
+      0x80, 0, 0, 0, 0, 0, 0xd7, 0x10}};
+  auto built = dt::BuildCurrentTimestampValidatedProfileHandleV3(d710);
+  Check(built.ok(), "build exact current d710 timestamp profile for typed NULL");
   if (!built.ok()) {
     return;
   }

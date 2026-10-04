@@ -24,14 +24,14 @@ void Check(bool condition, std::string_view message) {
   }
 }
 
-p::Uuid D709() {
+p::Uuid D710() {
   return p::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
-                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x09}};
+                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x10}};
 }
 
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile() {
-  auto built = dt::BuildCurrentTimestampValidatedProfileHandleV3(D709());
-  Check(built.ok(), "build d709 timestamp profile");
+  auto built = dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());
+  Check(built.ok(), "build d710 timestamp profile");
   return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
       std::move(built.profile));
 }
@@ -130,10 +130,10 @@ void ProfileAuthority(const std::shared_ptr<const dt::TimestampValidatedProfileH
             std::memcmp(profile->comparison_material.data(), "SBTSPC01", 8) == 0,
         "exact 416-byte SBTSPC01 material");
   Check(profile->profile_fingerprint ==
-            Hex32("ecf26faa22945682ccc8c6599fc1ae1204fdf9e07621de56a590674a44aeffb2"),
+            Hex32("4aa13879ac9d345ceb2b17e1068f0a0049ff45508d76f4f5af5c6ddc1d07a3ca"),
         "exact timestamp profile fingerprint");
   Check(profile->comparison_fingerprint ==
-            Hex32("28d1b45892053180978e79c11a00267236b1ed94c1e02d82d4d2890d8c15321f"),
+            Hex32("35ce26afa08d48af46c79e08cd056a453b7deba80d3569e78ffdba5b1c93fee7"),
         "exact timestamp comparison fingerprint");
   Check(dt::ValidateTimestampProfileHandleV3(*profile).ok(),
         "exact profile validates");

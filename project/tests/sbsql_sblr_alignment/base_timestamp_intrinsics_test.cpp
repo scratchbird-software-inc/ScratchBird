@@ -14,8 +14,8 @@ namespace p = scratchbird::core::platform;
 namespace {
 unsigned checks=0;
 void Check(bool value,std::string_view message){++checks;if(!value){std::cerr<<"FAIL "<<message<<'\n';std::exit(1);}}
-p::Uuid D709(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,9}};}
-std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D709());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
+p::Uuid D710(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};}
+std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
 
 struct Classification { dt::TimestampIntrinsicOperationV3 operation; dt::TimestampIntrinsicDispositionV3 disposition; };
 constexpr std::array<Classification,33> kClassifications{{

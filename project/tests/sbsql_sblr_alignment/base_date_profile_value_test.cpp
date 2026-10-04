@@ -24,12 +24,12 @@ void Check(bool condition, std::string_view text) {
   if (!condition) Fail(text);
 }
 
-platform::Uuid D709() {
-  return {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x09}};
+platform::Uuid D710() {
+  return {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};
 }
 
 dt::DateValidatedProfileHandleV3 Profile() {
-  const auto result = dt::BuildCurrentDateValidatedProfileHandleV3(D709());
+  const auto result = dt::BuildCurrentDateValidatedProfileHandleV3(D710());
   Check(result.ok(), "current profile construction failed");
   return result.profile;
 }

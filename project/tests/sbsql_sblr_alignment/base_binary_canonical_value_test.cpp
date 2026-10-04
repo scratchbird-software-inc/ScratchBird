@@ -442,14 +442,14 @@ void ExactIdentityCohortsAndLayout() {
   }
 
   const auto current = dt::LookupDatatypeTypeCodecIdentityV3(
-      dt::kDatatypeCohortV9, 9, 9, kDescriptorUuid, 1);
+      dt::kDatatypeCohortV10, 10, 10, kDescriptorUuid, 1);
   Check(current.ok &&
             dt::IsExactCanonicalBinaryTypeCodecIdentityV3(current.row) &&
             SameUuidBytes(current.row.legacy_fields.type_uuid, kTypeUuid) &&
             SameUuidBytes(current.row.legacy_fields.codec_uuid, kCodecUuid) &&
             current.row.legacy_fields.codec_id == kCodecId &&
-            current.row.legacy_fields.catalog_generation == 9 &&
-            current.row.legacy_fields.registry_generation == 9 &&
+            current.row.legacy_fields.catalog_generation == 10 &&
+            current.row.legacy_fields.registry_generation == 10 &&
             SameUuidBytes(current.row.descriptor_policy.uuid,
                           kPolicyReceipt[0].uuid) &&
             current.row.descriptor_policy.generation == 1 &&
@@ -464,7 +464,7 @@ void ExactIdentityCohortsAndLayout() {
             current.row.hash_policy.generation == 1 &&
             current.row.operation_policy.uuid.is_nil() &&
             current.row.operation_policy.generation == 0,
-        "D709 V3 current authority preserves the exact binary tuple and policies");
+        "D710 V3 current authority preserves the exact binary tuple and policies");
   const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
       dt::kDatatypeCohortV6, 6, 6, kDescriptorUuid, 1);
   Check(historical.ok &&

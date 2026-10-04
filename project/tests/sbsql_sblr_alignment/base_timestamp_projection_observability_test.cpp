@@ -28,8 +28,8 @@ void Check(bool value, std::string_view message) {
   ++checks;
   if (!value) Fail(message);
 }
-p::Uuid D709() {
-  return p::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x09}};
+p::Uuid D710() {
+  return p::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};
 }
 p::Uuid V7(p::byte discriminator) {
   return p::Uuid{{0x01,0xa1,0x04,0xf5,0,discriminator,0x70,0,0x80,0,0,0,0,0,0,discriminator}};
@@ -42,8 +42,8 @@ p::Uuid IndexUuid(p::byte tail) {
   return p::Uuid{{0x01,0xa1,0x04,0xfb,0x3b,0xb7,0x77,0x16,0x93,0x9b,0x99,0x85,0x45,0xbd,0xbd,tail}};
 }
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile() {
-  auto result = dt::BuildCurrentTimestampValidatedProfileHandleV3(D709());
-  Check(result.ok(), "build d709 profile");
+  auto result = dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());
+  Check(result.ok(), "build d710 profile");
   return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(result.profile));
 }
 dt::TimestampOwnedValueV3 Value(

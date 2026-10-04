@@ -19,9 +19,9 @@ void Check(bool value, std::string_view message) {
   ++checks;
   if (!value) { std::cerr << "FAIL " << message << '\n'; std::exit(1); }
 }
-p::Uuid D709(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,9}};}
-std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D709());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
-const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==D709()&&row.legacy_fields.catalog_generation==9&&row.legacy_fields.registry_generation==9&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
+p::Uuid D710(){return p::Uuid{{1,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x10}};}
+std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile(){auto r=dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());Check(r.ok(),"profile");return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(std::move(r.profile));}
+const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type){for(const auto& row:dt::CurrentDatatypeTypeCodecIdentityRowsV3())if(row.legacy_fields.catalog_snapshot_uuid==D710()&&row.legacy_fields.catalog_generation==10&&row.legacy_fields.registry_generation==10&&row.legacy_fields.canonical_binary_type_code==static_cast<p::u32>(type))return &row;return nullptr;}
 scratchbird::engine::ExecutionTypeDescriptor Descriptor(dt::CanonicalTypeId type){auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();Check(manifest.ok(),"catalog");auto row=dt::LookupDatatypeCatalogRow(manifest.manifest,type);Check(row.ok()&&row.manifest.descriptor_rows.size()==1,"descriptor row");dt::CatalogExecutionTypeMetadata metadata;metadata.descriptor_uuid=row.manifest.descriptor_rows.front().descriptor_uuid;metadata.descriptor_epoch=row.manifest.descriptor_rows.front().descriptor_epoch;auto result=dt::LookupExecutionTypeDescriptorFromCatalog(type,metadata);Check(result.ok(),"execution descriptor");return result.descriptor;}
 
 struct CastShape { bool incoming=false, contextual=false, exact=false; dt::CanonicalTypeId peer=dt::CanonicalTypeId::unknown; };
@@ -60,28 +60,28 @@ CastShape Shape(unsigned row){
 
 struct ValueHash { std::int32_t day; p::u64 nanos; std::string_view hash; };
 constexpr std::array<ValueHash,20> kValueHashes{{
- {INT32_MIN,0,"2642abccdb75bbb49970a764d7b9fb4f94e7d55e555468771c5e4c0d1b300e99"},
- {INT32_MIN,86'399'999'999'999ull,"65d25c1e618c6197e387c5687dc26fcaf97d3fc93ee612d0a9387ea88f92b151"},
- {-719528,0,"60aee601628db8274bdd9fe7fcdc2cc367d6c7e619f49be4606607338d99cd6c"},
- {-719469,43'200'000'000'000ull,"dfc9df1b41eb5bf12b8ab89637e5c8d49c87b82a3de332b0c0d833224f316759"},
- {-1,86'399'999'999'999ull,"9ef7c39140dde00e549f6666ad3fb029451857feacbe659ef577fd21764422ed"},
- {0,0,"70ac0050666cfaee4f60e6b1ac9bf8f350d53fc756acd2cb01c1b849cc884a5b"},
- {0,1,"9921d9c0b74d9819272b3cd8063fccd9f3ef8e96e83ff90eb698cd28eb901270"},
- {0,123'400'000,"83cd90fb0df755166c631b8f0937e70f0690b4b6649c1ff929ee42a45a732690"},
- {789,0,"6680e5c4cd1b59fdf8fd12f5f2c04f8f6b65d63cfc25c4ad469fcf6334dd282d"},
- {-25509,86'399'000'000'000ull,"adb85bc4bc91b1dbcfe1026308af7ceab36472e134c175c28a830fd04358d91f"},
- {11016,45'296'123'400'000ull,"cb6f3ef04e0715e4cd6f38dea058e2b37795f4f2134820d041708666cbebf829"},
- {11322,86'399'999'999'999ull,"412589b3ee68eadd0fd6cd7b690be54cd54c96c1f3efa9c4099fc1288d2b68f2"},
- {11323,0,"dca56e0f14ae123c8e57b2fffa29be6b3f84df0fa186fbc6f6cd4972cab4f9e5"},
- {19904,43'200'000'000'000ull,"5f802fc9465c3b82e3613e9be16467384e3c70ef3eb60123d6e32011bdc8f634"},
- {19782,22'028'900'000'000ull,"ef03d0ee5e2e30dab11821743d328345669765e3b1ca3b7370ee4b3a0d709150"},
- {20090,11'045'100'000'000ull,"7259626574c552373b332309bdfe9b3e75a611a59c217271a4f0c5cac39148f3"},
- {20090,11'045'123'456'780ull,"9888e88883d7661fd336af2a5ed0b0268349d28cc5184adf30bdbf9a60adcf76"},
- {2932896,86'399'999'999'999ull,"003339967cac7bd80ba918bdab0ac206b0424fde60d91bdd6899a4d5b59aa117"},
- {2932897,0,"5fc51d5802674f72234d8575206c16e25f4b1f652e3afc65cb5711bfbb4ae8ab"},
- {INT32_MAX,86'399'999'999'999ull,"218a0446f90e1045b53f2f1d51f64329eb95820ca03e74c9a00db8490c18c4ef"},
+ {INT32_MIN,0,"79549c04c82189982af22598926d5990ae9ae5cc3d88a619fc3bcd69412fa5d1"},
+ {INT32_MIN,86'399'999'999'999ull,"8958dbe3655bada6a86696ba2c9c2fcc229004bc5ba0fde5cb26d83b1e04769c"},
+ {-719528,0,"6cb636ce5d78fa7c325f3f8396c53ceaf86729df823ed08a025e59a9c5687a73"},
+ {-719469,43'200'000'000'000ull,"bba23ad63920ee88f4823153ebe7192a735dbf3aa0633d400c948398426b15d4"},
+ {-1,86'399'999'999'999ull,"1a0e9cefc3c9489e3103c9fc7dad8cb29cbb302f49d945b3ca2253e4faed6680"},
+ {0,0,"42f156cd01adbabf7a295c4510cc12369186e36b2c645e7b1fb8879bebe363fe"},
+ {0,1,"512a389710a0b2642d922d2e4221a4d67fe949cccd142fbe94c9caeb4d0b26cd"},
+ {0,123'400'000,"4b0f8155a78fb33e5684489fb5129effad6a87a3bb064f0e65fcda82ddee2a4d"},
+ {789,0,"ea46a6dc11bc45884d991b7e455077e00f9962d3a636aaeda55fbac4aeb6e17a"},
+ {-25509,86'399'000'000'000ull,"647186e95340cad3fe84d3c279a8f5054a8541fda2ec0f671dca42895278bff0"},
+ {11016,45'296'123'400'000ull,"35ba1a8a1b402572d1b013969a36af3e0ef06b39f6fa23d1ae96cb2b3f975121"},
+ {11322,86'399'999'999'999ull,"72a2a5d0c7f66ad30faaf0bfa171ba770ed99c8ac09c177eb7881fde98e7287e"},
+ {11323,0,"5f5ce7144df76d034562215a9ea919a38d144c21d0c1224b1ecd52e2aaec0d0a"},
+ {19904,43'200'000'000'000ull,"a643ffcedfedfbe8556d01662929ce4b26781079ab2ab5ac31f48efa6d9781b0"},
+ {19782,22'028'900'000'000ull,"5e8c7cf4fa3f583c2344b114cc16c99836201ca93150090aa57090d81ca1100a"},
+ {20090,11'045'100'000'000ull,"d37a48c2a878999dbe3087bea61e5a4f2afd3f06608f24a310866fa38d258476"},
+ {20090,11'045'123'456'780ull,"da63e6b3ac33b1f031e9ca854d7be361ed2f7294adf209b7a311f886689228f2"},
+ {2932896,86'399'999'999'999ull,"33afbf1406ff55d8bce7f60c771339be2fea490deae78c3f607e9ca96263b02f"},
+ {2932897,0,"fe8b3f42380516d47ba841f45aa1c1849d5270dafce87d3c6146d2cbdd8c1739"},
+ {INT32_MAX,86'399'999'999'999ull,"a59e5f30764509f291dbaea607cb1dd25c1abf48a0285e11c4d1b97ecb044692"},
 }};
-constexpr std::string_view kNullHash="363cc0395d66be1eb59cfdbc266030d1fda560b7b3556d80635e0cf4cc0691bc";
+constexpr std::string_view kNullHash="e21379194989dd7aa6ae43ca7601c171a6deb8094d2bd409e41d56d3ca25047a";
 std::array<p::byte,32> Hex32(std::string_view text){std::array<p::byte,32> out{};auto n=[](char c){return static_cast<unsigned>(c<='9'?c-'0':(c|32)-'a'+10);};for(std::size_t i=0;i<out.size();++i)out[i]=static_cast<p::byte>((n(text[2*i])<<4)|n(text[2*i+1]));return out;}
 
 void HashAndCompare(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p0){
@@ -173,7 +173,7 @@ void Casts(const std::shared_ptr<const dt::TimestampValidatedProfileHandleV3>& p
   // Dynamic timestamp sources prove host carriers before policy lookup.
   dt::TimestampOperandV3 dynamic{p0,dt::TimestampValueStateV3::value,dt::TimestampDayCarrierKindV3::signed_i32,19782,dt::TimestampUnsignedCarrierKindV3::unsigned_u64,22'028'900'000'000ull};exact_out.scalar_target_descriptor=int32_descriptor;exact_out.dynamic_timestamp_source=&dynamic;exact_out.timestamp_source=nullptr;Check(dt::CastTimestampValueV3(exact_out).diagnostic.diagnostic_code=="DATATYPE.CAST_FORBIDDEN","dynamic exact endpoint reaches policy");dynamic.day_carrier=dt::TimestampDayCarrierKindV3::wrong_host_type;Check(dt::CastTimestampValueV3(exact_out).diagnostic.diagnostic_code=="SBLR.OPERAND_INVALID","dynamic carrier refusal precedes policy");dynamic.day_carrier=dt::TimestampDayCarrierKindV3::signed_i32;
 
-  // timestamp(p) has no admitted d709 profile: a precision modifier cannot be
+  // timestamp(p) has no admitted d710 profile: a precision modifier cannot be
   // rebound to base.timestamp and fails at the target descriptor gate.
   auto timestamp_p=timestamp_descriptor;timestamp_p.precision=3;timestamp_p.modifier_flags=scratchbird::engine::ExecutionTypeModifierFlagBit(scratchbird::engine::ExecutionTypeModifierFlag::precision);dt::TimestampCastRequestV3 parameterized;parameterized.one_based_policy_row=1;parameterized.scalar_source=&null_value;parameterized.timestamp_target=&p0;parameterized.timestamp_target_descriptor=&timestamp_p;Check(dt::CastTimestampValueV3(parameterized).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","timestamp(p) explicitly unsupported and fails closed");
   auto invalid_profile_mutable=std::make_shared<dt::TimestampValidatedProfileHandleV3>(*p0);invalid_profile_mutable->receipt.catalog_generation++;std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> invalid_profile=invalid_profile_mutable;parameterized.timestamp_target=&invalid_profile;parameterized.timestamp_target_descriptor=&timestamp_descriptor;Check(dt::CastTimestampValueV3(parameterized).diagnostic.diagnostic_code=="CTI.TEMPORAL.DESCRIPTOR_INVALID","timestamp target receipt mutation precedes NULL state and policy");

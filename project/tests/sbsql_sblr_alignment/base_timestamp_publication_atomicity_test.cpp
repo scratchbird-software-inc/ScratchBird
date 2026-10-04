@@ -53,26 +53,26 @@ void Check(bool value, std::string_view message) {
   }
 }
 
-p::Uuid D709() {
+p::Uuid D710() {
   return p::Uuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
-                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x09}};
+                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x10}};
 }
 p::Uuid V7(p::byte discriminator) {
   return p::Uuid{{0x01, 0xa1, 0x04, 0xf5, 0, discriminator, 0x70, 0,
                   0x80, 0, 0, 0, 0, 0, 0, discriminator}};
 }
 std::shared_ptr<const dt::TimestampValidatedProfileHandleV3> Profile() {
-  auto result = dt::BuildCurrentTimestampValidatedProfileHandleV3(D709());
-  Check(result.ok(), "current d709 timestamp profile builds");
+  auto result = dt::BuildCurrentTimestampValidatedProfileHandleV3(D710());
+  Check(result.ok(), "current d710 timestamp profile builds");
   return std::make_shared<const dt::TimestampValidatedProfileHandleV3>(
       std::move(result.profile));
 }
 
 const dt::DatatypeTypeCodecIdentityRowV3* Identity(dt::CanonicalTypeId type) {
   for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
-    if (row.legacy_fields.catalog_snapshot_uuid == D709() &&
-        row.legacy_fields.catalog_generation == 9 &&
-        row.legacy_fields.registry_generation == 9 &&
+    if (row.legacy_fields.catalog_snapshot_uuid == D710() &&
+        row.legacy_fields.catalog_generation == 10 &&
+        row.legacy_fields.registry_generation == 10 &&
         row.legacy_fields.canonical_binary_type_code ==
             static_cast<p::u32>(type)) return &row;
   }
