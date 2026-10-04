@@ -16,6 +16,7 @@
 #include <iostream>
 #include <set>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -693,6 +694,163 @@ void TestCurrentD709IdentitiesAndLayout() {
               !dt::IsExactCanonicalTimeTypeCodecIdentityV3(
                   historical_time.row),
           "D708 time identity was not preserved as historical-only");
+
+  const auto timestamp_descriptor =
+      FixtureUuidLiteral("92010000-7469-7d65-b374-616d70000000");
+  const auto timestamp_type =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d820");
+  const auto historical_timestamp_codec =
+      FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d821");
+  const auto current_timestamp_codec =
+      FixtureUuidLiteral("01a104f5-fb16-7500-93e8-4a99c86d1130");
+  const auto timestamp = dt::LookupDatatypeTypeCodecIdentityV3(
+      dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1);
+  Require(
+      timestamp.ok &&
+          dt::IsExactCanonicalTimestampTypeCodecIdentityV3(timestamp.row) &&
+          timestamp.row.legacy_fields.catalog_snapshot_uuid ==
+              dt::kDatatypeCohortV9 &&
+          timestamp.row.legacy_fields.catalog_generation == 9 &&
+          timestamp.row.legacy_fields.registry_generation == 9 &&
+          timestamp.row.legacy_fields.descriptor_uuid == timestamp_descriptor &&
+          timestamp.row.legacy_fields.descriptor_generation == 1 &&
+          timestamp.row.legacy_fields.type_uuid == timestamp_type &&
+          timestamp.row.legacy_fields.type_generation == 1 &&
+          timestamp.row.legacy_fields.codec_uuid == current_timestamp_codec &&
+          timestamp.row.legacy_fields.codec_id ==
+              "datatype.timestamp.civil_tuple.le.v1" &&
+          timestamp.row.legacy_fields.codec_version == 1 &&
+          timestamp.row.legacy_fields.codec_generation == 1 &&
+          timestamp.row.legacy_fields.canonical_value_bytes == 16 &&
+          timestamp.row.legacy_fields.canonical_value_minimum_bytes == 16 &&
+          timestamp.row.legacy_fields.canonical_value_maximum_bytes == 16 &&
+          timestamp.row.legacy_fields.canonical_value_exact_bytes == 16 &&
+          timestamp.row.legacy_fields.canonical_byte_order == "little_endian" &&
+          timestamp.row.legacy_fields.canonical_representation ==
+              "i64_local_civil_seconds_u32_nanoseconds_u32_reserved_zero" &&
+          timestamp.row.legacy_fields.canonical_binary_type_code ==
+              static_cast<std::uint32_t>(dt::CanonicalTypeId::timestamp) &&
+          timestamp.row.legacy_fields.null_supported &&
+          timestamp.row.legacy_fields.sql_null_requires_zero_payload,
+      "exact D709 local-civil timestamp identity is absent or incomplete");
+  Require(
+      timestamp.row.descriptor_policy.uuid ==
+              FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0a") &&
+          timestamp.row.descriptor_policy.generation == 1 &&
+          timestamp.row.canonicalization_policy.uuid ==
+              FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0b") &&
+          timestamp.row.canonicalization_policy.generation == 1 &&
+          timestamp.row.ordering_policy.uuid ==
+              FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0c") &&
+          timestamp.row.ordering_policy.generation == 1 &&
+          timestamp.row.hash_policy.uuid ==
+              FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0d") &&
+          timestamp.row.hash_policy.generation == 1 &&
+          timestamp.row.operation_policy.uuid ==
+              FixtureUuidLiteral("01a104ec-8e3c-7dff-8e89-868ecc2a8a0e") &&
+          timestamp.row.operation_policy.generation == 1,
+      "D709 timestamp policy anchors drifted");
+
+  const auto timestamp_catalog_row = dt::LookupDatatypeCatalogRow(
+      manifest.manifest, dt::CanonicalTypeId::timestamp);
+  Require(timestamp_catalog_row.ok() &&
+              timestamp_catalog_row.manifest.descriptor_rows.size() == 1 &&
+              timestamp_catalog_row.manifest.descriptor_rows.front()
+                      .descriptor_uuid.value == timestamp_descriptor &&
+              timestamp_catalog_row.manifest.descriptor_rows.front()
+                  .descriptor_authoritative,
+          "catalog manifest lost the exact timestamp descriptor authority");
+  const auto timestamp_layout =
+      dt::LookupDatatypeStorageLayout(dt::CanonicalTypeId::timestamp);
+  Require(
+      timestamp_layout.ok() &&
+          timestamp_layout.layout.storage_class ==
+              dt::DatatypeStorageClass::inline_fixed &&
+          timestamp_layout.layout.encoding ==
+              dt::DatatypeBinaryEncoding::timestamp_civil_tuple &&
+          std::string_view(dt::DatatypeBinaryEncodingName(
+              timestamp_layout.layout.encoding)) == "timestamp_civil_tuple" &&
+          timestamp_layout.layout.inline_bytes == 16 &&
+          timestamp_layout.layout.alignment_bytes == 8 &&
+          timestamp_layout.layout.requires_descriptor &&
+          !timestamp_layout.layout.requires_timezone &&
+          timestamp_layout.layout.fixed_sort_key,
+      "timestamp layout is not descriptor-bound local-civil LE16");
+  Require(dt::LookupDatatypeStorageIdentityV3(
+              dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1,
+              &storage) &&
+              storage.descriptor_uuid == timestamp_descriptor &&
+              storage.descriptor_generation == 1 &&
+              storage.type_uuid == timestamp_type &&
+              storage.type_id == dt::CanonicalTypeId::timestamp &&
+              storage.codec &&
+              storage.codec->legacy_fields.codec_uuid ==
+                  current_timestamp_codec &&
+              dt::IsExactCanonicalTimestampTypeCodecIdentityV3(*storage.codec),
+          "storage lookup lost exact current timestamp V3 authority");
+  Require(!dt::LookupDatatypeTypeCodecIdentityV1(
+               dt::kDatatypeCohortV9, 9, 9, timestamp_descriptor, 1).ok,
+          "current D709 timestamp was projected through the lossy V1 lookup");
+
+  for (unsigned generation = 4; generation <= 8; ++generation) {
+    auto historical_snapshot = dt::kDatatypeCohortV8;
+    historical_snapshot.bytes.back() = static_cast<std::uint8_t>(generation);
+    const auto historical = dt::LookupDatatypeTypeCodecIdentityV3(
+        historical_snapshot, generation, generation, timestamp_descriptor, 1);
+    Require(historical.ok &&
+                historical.row.legacy_fields.type_uuid == timestamp_type &&
+                historical.row.legacy_fields.codec_uuid ==
+                    historical_timestamp_codec &&
+                historical.row.legacy_fields.codec_id ==
+                    "datatype.timestamp.utc_tuple.le.v1" &&
+                !dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
+                    historical.row),
+            "D704-D708 timestamp storage evidence was not preserved exactly");
+    Require(dt::LookupDatatypeStorageIdentityV3(
+                historical_snapshot, generation, generation,
+                timestamp_descriptor, 1, &storage) &&
+                storage.type_uuid == timestamp_type && storage.codec &&
+                storage.codec->legacy_fields.codec_uuid ==
+                    historical_timestamp_codec,
+            "D704-D708 timestamp storage identity was not retained");
+  }
+
+  for (const auto& crossed :
+       std::array<std::pair<scratchbird::core::platform::Uuid,
+                            std::array<std::uint64_t, 2>>,
+                  6>{{
+           {dt::kDatatypeCohortV9, {8, 9}},
+           {dt::kDatatypeCohortV9, {9, 8}},
+           {dt::kDatatypeCohortV8, {9, 9}},
+           {dt::kDatatypeCohortV8, {8, 9}},
+           {dt::kDatatypeCohortV8, {9, 8}},
+           {dt::kDatatypeCohortV9, {8, 8}},
+       }}) {
+    Require(!dt::LookupDatatypeTypeCodecIdentityV3(
+                 crossed.first, crossed.second[0], crossed.second[1],
+                 timestamp_descriptor, 1).ok &&
+                !dt::LookupDatatypeStorageIdentityV3(
+                    crossed.first, crossed.second[0], crossed.second[1],
+                    timestamp_descriptor, 1, &storage),
+            "crossed D708/D709 timestamp receipt was admitted");
+  }
+
+  auto relabelled_historical =
+      dt::LookupDatatypeTypeCodecIdentityV3(
+          dt::kDatatypeCohortV8, 8, 8, timestamp_descriptor, 1)
+          .row;
+  relabelled_historical.legacy_fields.codec_id =
+      "datatype.timestamp.civil_tuple.le.v1";
+  Require(!dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
+              relabelled_historical),
+          "relabelled historical d821 timestamp was admitted as current");
+  relabelled_historical.legacy_fields.catalog_snapshot_uuid =
+      dt::kDatatypeCohortV9;
+  relabelled_historical.legacy_fields.catalog_generation = 9;
+  relabelled_historical.legacy_fields.registry_generation = 9;
+  Require(!dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
+              relabelled_historical),
+          "receipt-only historical timestamp rebind was admitted as current");
 }
 
 }  // namespace

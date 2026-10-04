@@ -200,6 +200,15 @@ DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const Datatype
         "SBDTV001 cannot carry the exact d709 receipt or complete time profile");
     return result;
   }
+  if (descriptor.type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_descriptor_serialization_refused",
+        "SBDTV001 cannot carry the exact d709 receipt or complete timestamp profile");
+    return result;
+  }
   result.status = DatatypeExchangeOkStatus();
   std::memcpy(result.serialized.data() + kOffsetMagic, kDatatypeDescriptorMagic.data(), kDatatypeDescriptorMagic.size());
   StoreLittle32(result.serialized.data() + kOffsetTypeId, static_cast<u32>(descriptor.type_id));
@@ -277,6 +286,15 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_descriptor_parse_refused",
         "SBDTV001 cannot establish exact d709 time authority");
+    return result;
+  }
+  if (type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact d709 timestamp authority");
     return result;
   }
 
@@ -386,6 +404,17 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.legacy_conversion_description_refused",
         "canonical enum or name cannot replace the exact d709 time profile and closed cast registry");
+    return result;
+  }
+  if (source_type_id == CanonicalTypeId::timestamp ||
+      target_type_id == CanonicalTypeId::timestamp) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.kind = ConversionDiagnosticKind::unsupported;
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.legacy_conversion_description_refused",
+        "canonical enum or name cannot replace the exact d709 timestamp profile and closed cast registry");
     return result;
   }
 

@@ -28,6 +28,10 @@ namespace {
 
 inline constexpr std::size_t kCanonicalCharacterMaximumBytes = 16'777'216;
 inline constexpr std::size_t kCanonicalBinaryMaximumBytes = 16'777'216;
+inline constexpr std::size_t kCanonicalTimestampComponentBytesV3 = 16;
+inline constexpr u64 kTimestampMinimumCivilSecondBitsV3 =
+    u64{0} - 185'542'587'187'200ull;
+inline constexpr u64 kTimestampMaximumCivilSecondV3 = 185'542'587'187'199ull;
 inline constexpr std::string_view kBinaryComponentBoundary = "SBDVAL01";
 inline constexpr scratchbird::core::platform::Uuid kCurrentBinaryDescriptorUuid{
     std::array<byte, 16>{0x2d, 0x01, 0x00, 0x00, 0x62, 0x69, 0x7e, 0x61,
@@ -83,6 +87,19 @@ Status BinaryOkStatus() noexcept {
 
 Status BinaryErrorStatus() noexcept {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
+}
+
+bool CanonicalTimestampComponentV3(const byte* data,
+                                   std::size_t size) noexcept {
+  if (data == nullptr || size != kCanonicalTimestampComponentBytesV3)
+    return false;
+  const u64 civil_second_bits = LoadLittle64(data);
+  const bool civil_second_valid =
+      (civil_second_bits & (u64{1} << 63)) == 0
+          ? civil_second_bits <= kTimestampMaximumCivilSecondV3
+          : civil_second_bits >= kTimestampMinimumCivilSecondBitsV3;
+  return civil_second_valid && LoadLittle32(data + 8) < 1'000'000'000U &&
+      LoadLittle32(data + 12) == 0;
 }
 
 DatatypeBinaryAllocationFreeViewResult BinaryNoAllocOk(
@@ -1044,6 +1061,11 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
           "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
           "datatype.time.serialization_profile_missing");
     }
+    if (value.type_id == CanonicalTypeId::timestamp) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "datatype.timestamp.serialization_profile_missing");
+    }
     DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
     return result;
@@ -1083,6 +1105,22 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
     return BinaryViewError(
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.time.serialization_profile_missing");
+  }
+  // Canonical type 402 has a structural LE16 component, but neither those
+  // bytes nor the enum establish the exact d709 receipt and complete
+  // local-civil timestamp profile. Semantic publication is available only
+  // through datatype_timestamp's profile-aware composed adapter.
+  if (value.type_id == CanonicalTypeId::timestamp) {
+    if (value.payload_is_toast_reference ||
+        !CanonicalTimestampComponentV3(value.payload_data,
+                                       value.payload_bytes)) {
+      return BinaryViewError(
+          "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID",
+          "datatype.timestamp.canonical_component_invalid");
+    }
+    return BinaryViewError(
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.timestamp.serialization_profile_missing");
   }
 
   // The storage descriptor/TOAST locator is not the canonical decimal VALUE.
@@ -1130,12 +1168,6 @@ DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryVal
                        "datatype.binary.text_payload_noncanonical");
   }
 
-  if (value.type_id == CanonicalTypeId::timestamp && !value.payload_is_toast_reference &&
-      (value.payload_bytes != 16 || LoadLittle32(value.payload_data + 8) >= 1'000'000'000U ||
-       LoadLittle32(value.payload_data + 12) != 0)) {
-    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
-                          "datatype.binary.timestamp_payload_noncanonical");
-  }
   if (value.type_id == CanonicalTypeId::geometry && !value.payload_is_toast_reference) {
     // The admitted geometry codec is exactly one finite 2D SBP1 point.
     constexpr std::array<byte, 8> prefix{'S','B','P','1',1,2,0,0};

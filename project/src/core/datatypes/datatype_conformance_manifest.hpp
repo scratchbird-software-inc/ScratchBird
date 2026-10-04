@@ -11,6 +11,7 @@
 #include "datatype_bit_string.hpp"
 #include "datatype_date.hpp"
 #include "datatype_time.hpp"
+#include "datatype_timestamp.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_exchange.hpp"
 #include "datatype_layout.hpp"
@@ -87,6 +88,21 @@ struct TimeConformanceExampleV3 {
   std::string source_marker;
 };
 
+// Timestamp requires its exact d709 receipt and complete V3 profile. The
+// generic SBDTV001 descriptor carrier cannot establish either one.
+struct TimestampConformanceExampleV3 {
+  TimestampAuthorityReceiptV3 receipt;
+  DatatypeTypeCodecIdentityRowV3 identity;
+  TimestampValidatedProfileHandleV3 profile;
+  bool null_allowed = false;
+  TimestampValueStateV3 state = TimestampValueStateV3::value;
+  std::vector<byte> canonical_component;
+  DatatypeConformanceExampleSource source =
+      DatatypeConformanceExampleSource::unknown;
+  std::string evidence_path;
+  std::string source_marker;
+};
+
 struct DatatypeConformanceManifest {
   std::string manifest_key;
   std::string inventory_source_path;
@@ -94,6 +110,7 @@ struct DatatypeConformanceManifest {
   std::vector<BitStringConformanceExampleV3> bit_string_examples;
   std::vector<DateConformanceExampleV3> date_examples;
   std::vector<TimeConformanceExampleV3> time_examples;
+  std::vector<TimestampConformanceExampleV3> timestamp_examples;
   bool parser_authority_allowed = false;
 };
 
@@ -106,6 +123,7 @@ struct DatatypeConformanceManifestResult {
   std::size_t executed_bit_string_examples = 0;
   std::size_t executed_date_examples = 0;
   std::size_t executed_time_examples = 0;
+  std::size_t executed_timestamp_examples = 0;
 
   bool ok() const {
     return status.ok() && diagnostics.empty();
@@ -121,7 +139,9 @@ DatatypeConformanceManifestResult LoadCurrentCoreDatatypeConformanceManifest(
     const DateAuthorityReceiptV3& date_receipt,
     bool date_null_allowed,
     const TimeAuthorityReceiptV3& time_receipt,
-    bool time_null_allowed);
+    bool time_null_allowed,
+    const TimestampAuthorityReceiptV3& timestamp_receipt,
+    bool timestamp_null_allowed);
 
 DatatypeConformanceManifestResult ExecuteDatatypeConformanceManifest(
     const DatatypeConformanceManifest& manifest);

@@ -68,9 +68,19 @@ dt::TimeAuthorityReceiptV3 TimeReceipt() {
   return receipt;
 }
 
+dt::TimestampAuthorityReceiptV3 TimestampReceipt() {
+  dt::TimestampAuthorityReceiptV3 receipt;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV9;
+  receipt.catalog_generation = 9;
+  receipt.registry_generation = 9;
+  return receipt;
+}
+
 dt::DatatypeConformanceManifestResult LoadManifest() {
   return dt::LoadCurrentCoreDatatypeConformanceManifest(
-      BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false);
+      BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false,
+      TimestampReceipt(), false);
 }
 
 dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
@@ -115,7 +125,8 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(loaded.manifest.examples.size() +
                   loaded.manifest.bit_string_examples.size() +
                   loaded.manifest.date_examples.size() +
-                  loaded.manifest.time_examples.size() ==
+                  loaded.manifest.time_examples.size() +
+                  loaded.manifest.timestamp_examples.size() ==
               dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 manifest must inventory every canonical datatype row");
   Require(loaded.manifest.bit_string_examples.size() == 1,
@@ -140,6 +151,15 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(time.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(8, 0),
           "MDF-015 time example must use the exact midnight LE8 component");
+  Require(loaded.manifest.timestamp_examples.size() == 1,
+          "MDF-015 must carry exactly one separate d709 timestamp example");
+  const auto& timestamp = loaded.manifest.timestamp_examples.front();
+  Require(dt::IsExactCanonicalTimestampTypeCodecIdentityV3(
+              timestamp.identity),
+          "MDF-015 timestamp example must carry the exact d709 identity");
+  Require(timestamp.canonical_component ==
+              std::vector<scratchbird::core::platform::byte>(16, 0),
+          "MDF-015 timestamp example must use the exact epoch LE16 component");
 
   const auto executed =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
@@ -152,6 +172,44 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
           "MDF-015 did not execute the exact d709 date example");
   Require(executed.executed_time_examples == 1,
           "MDF-015 did not execute the exact d709 time example");
+  Require(executed.executed_timestamp_examples == 1,
+          "MDF-015 did not execute the exact d709 timestamp example");
+}
+
+void TestLegacyTimestampEvidenceIsRefused() {
+  auto loaded = LoadManifest();
+  loaded.manifest.timestamp_examples[0].receipt.statement_receipt_uuid
+      .bytes[15] ^= 1u;
+  const auto crossed_receipt =
+      dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!crossed_receipt.ok(),
+          "MDF-015 accepted a substituted timestamp statement receipt");
+  Require(HasDiagnostic(crossed_receipt, "CTI.TEMPORAL.DESCRIPTOR_INVALID"),
+          "MDF-015 timestamp receipt-substitution diagnostic missing");
+
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::timestamp);
+  Require(descriptor.ok(), "MDF-015 timestamp descriptor row missing");
+  const auto encoded = dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Require(!encoded.ok(), "MDF-015 admitted timestamp through SBDTV001");
+  Require(encoded.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp serialization diagnostic mismatch");
+
+  const auto exact_legacy = EncodeDescriptorFixture(descriptor.descriptor);
+  const auto parsed = dt::ParseDatatypeDescriptor(exact_legacy);
+  Require(!parsed.ok(), "MDF-015 parsed timestamp through SBDTV001");
+  Require(parsed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp parse diagnostic mismatch");
+
+  const auto conversion = dt::DescribeDatatypeConversion(
+      dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::timestamp);
+  Require(!conversion.ok(),
+          "MDF-015 admitted enum-derived timestamp conversion evidence");
+  Require(conversion.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy timestamp conversion diagnostic mismatch");
 }
 
 void TestLegacyTimeEvidenceIsRefused() {
@@ -437,6 +495,7 @@ int main() {
   TestLegacyBitStringEvidenceIsRefused();
   TestLegacyDateEvidenceIsRefused();
   TestLegacyTimeEvidenceIsRefused();
+  TestLegacyTimestampEvidenceIsRefused();
   TestD708TemporalIdentitiesRemainHistoricalOnly();
   std::cout << "current_core_datatype_conformance_manifest_gate=passed\n";
   return EXIT_SUCCESS;
