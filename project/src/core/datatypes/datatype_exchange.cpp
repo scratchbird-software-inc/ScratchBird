@@ -248,6 +248,15 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
   if (!lookup.ok()) {
     return lookup;
   }
+  if (type_id == CanonicalTypeId::interval) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(
+        result.status,
+        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+        "datatype.interval.legacy_descriptor_parse_refused",
+        "SBDTV001 cannot establish exact d710 interval authority");
+    return result;
+  }
 
   const auto family = static_cast<TypeFamily>(LoadLittle16(serialized.data() + kOffsetFamily));
   const auto width_class = static_cast<TypeWidthClass>(LoadLittle16(serialized.data() + kOffsetWidthClass));
@@ -267,16 +276,6 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
                                                        "SB-DATATYPE-SERIALIZED-DESCRIPTOR-MISMATCH",
                                                        "datatype.serialized.descriptor_mismatch",
                                                        CanonicalTypeName(type_id));
-    return result;
-  }
-
-  if (type_id == CanonicalTypeId::interval) {
-    result.status = DatatypeExchangeErrorStatus();
-    result.diagnostic = MakeDatatypeExchangeDiagnostic(
-        result.status,
-        "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
-        "datatype.interval.legacy_descriptor_parse_refused",
-        "SBDTV001 cannot establish exact d710 interval authority");
     return result;
   }
 
