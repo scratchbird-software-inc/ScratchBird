@@ -9,6 +9,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_document.hpp"
+#include "datatype_exchange.hpp"
 #include "datatype_timestamp.hpp"
 #include "resource_seed_pack.hpp"
 #include "sbl_numeric.hpp"
@@ -1207,6 +1208,14 @@ void TestIntervalRequiresSpecializedD710Carrier() {
            dt::DatatypeDeserializationRequest{
                dt::CanonicalTypeId::character,
                "SBDV1;type=interval;state=value;payload=00000000000000000000000000000000",
+               Descriptor(dt::CanonicalTypeId::character)},
+           dt::DatatypeDeserializationRequest{
+               dt::CanonicalTypeId::character,
+               "SBDV1;state=value;payload=not_hex;type=interval",
+               Descriptor(dt::CanonicalTypeId::character)},
+           dt::DatatypeDeserializationRequest{
+               dt::CanonicalTypeId::character,
+               "SBDV1;type=INTERVAL;state=value;payload=not_hex",
                Descriptor(dt::CanonicalTypeId::character)}}) {
     const auto result = dt::DeserializeDatatypeValue(decode);
     Require(!result.ok() &&
@@ -1263,6 +1272,27 @@ void TestIntervalRequiresSpecializedD710Carrier() {
                       .diagnostic.diagnostic_code ==
                   "CTI.INTERVAL.DESCRIPTOR_INVALID",
           "interval descriptor mismatch did not precede dirty NULL");
+
+  Require(dt::CompareDatatypeValues({dirty_null, invalid_descriptor})
+                  .diagnostic.diagnostic_code ==
+              "CTI.INTERVAL.DESCRIPTOR_INVALID" &&
+              dt::CompareDatatypeValues({disallowed_null, dirty_null})
+                      .diagnostic.diagnostic_code ==
+                  "DATATYPE.NULL_STATE.INVALID",
+          "interval comparison did not preserve request-level structural precedence");
+
+  const auto unknown = static_cast<dt::CanonicalTypeId>(0xffffffffu);
+  for (const auto& conversion : {
+           dt::DescribeDatatypeConversion(dt::CanonicalTypeId::interval,
+                                          unknown),
+           dt::DescribeDatatypeConversion(unknown,
+                                          dt::CanonicalTypeId::interval)}) {
+    Require(!conversion.ok() &&
+                conversion.kind == dt::ConversionDiagnosticKind::unsupported &&
+                conversion.diagnostic.diagnostic_code ==
+                    "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+            "interval-incident conversion lost d710 diagnostic ownership");
+  }
 }
 
 void TestBinaryUuidOperations() {

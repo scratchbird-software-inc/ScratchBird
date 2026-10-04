@@ -380,17 +380,6 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
   result.source_type_id = source_type_id;
   result.target_type_id = target_type_id;
 
-  DatatypeDescriptorResult source = LookupDatatypeDescriptor(source_type_id);
-  DatatypeDescriptorResult target = LookupDatatypeDescriptor(target_type_id);
-  if (!source.ok() || !target.ok()) {
-    result.status = DatatypeExchangeErrorStatus();
-    result.kind = ConversionDiagnosticKind::unsupported;
-    result.diagnostic = MakeDatatypeExchangeDiagnostic(result.status,
-                                                       "SB-DATATYPE-CONVERSION-UNKNOWN-TYPE",
-                                                       "datatype.conversion.unknown_type");
-    return result;
-  }
-
   if (source_type_id == CanonicalTypeId::interval ||
       target_type_id == CanonicalTypeId::interval) {
     result.status = DatatypeExchangeErrorStatus();
@@ -400,6 +389,17 @@ DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId so
         "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
         "datatype.interval.legacy_conversion_description_refused",
         "canonical enum or name cannot replace the exact d710 interval profile and closed cast registry");
+    return result;
+  }
+
+  DatatypeDescriptorResult source = LookupDatatypeDescriptor(source_type_id);
+  DatatypeDescriptorResult target = LookupDatatypeDescriptor(target_type_id);
+  if (!source.ok() || !target.ok()) {
+    result.status = DatatypeExchangeErrorStatus();
+    result.kind = ConversionDiagnosticKind::unsupported;
+    result.diagnostic = MakeDatatypeExchangeDiagnostic(result.status,
+                                                       "SB-DATATYPE-CONVERSION-UNKNOWN-TYPE",
+                                                       "datatype.conversion.unknown_type");
     return result;
   }
 

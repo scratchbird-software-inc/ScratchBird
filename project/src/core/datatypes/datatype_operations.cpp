@@ -973,6 +973,35 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+bool LegacySbdv1EncodedTypeIs(std::string_view encoded,
+                              std::string_view wanted) noexcept {
+  constexpr std::string_view kMagic = "SBDV1;";
+  if (!encoded.starts_with(kMagic)) return false;
+  encoded.remove_prefix(kMagic.size());
+  while (!encoded.empty()) {
+    const auto separator = encoded.find(';');
+    const auto field = encoded.substr(0, separator);
+    constexpr std::string_view kTypeKey = "type=";
+    if (field.starts_with(kTypeKey)) {
+      const auto value = field.substr(kTypeKey.size());
+      if (value.size() == wanted.size()) {
+        bool equal = true;
+        for (std::size_t index = 0; index < value.size(); ++index) {
+          const auto current = static_cast<unsigned char>(value[index]);
+          if (static_cast<char>(std::tolower(current)) != wanted[index]) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) return true;
+      }
+    }
+    if (separator == std::string_view::npos) break;
+    encoded.remove_prefix(separator + 1);
+  }
+  return false;
+}
+
 bool TextSeedReady(const DatatypeTextSeedAuthority& seed) {
   return seed.active && uuid::IsEngineIdentityUuid(seed.database_uuid) &&
       uuid::IsEngineIdentityUuid(seed.charset_uuid) &&
@@ -5485,10 +5514,20 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   if (request.left.type_id == CanonicalTypeId::interval ||
       request.right.type_id == CanonicalTypeId::interval) {
-    const char* interval_code =
+    const char* left_code =
         GenericIntervalStructuralDiagnosticCode(request.left);
-    if (interval_code == nullptr)
-      interval_code = GenericIntervalStructuralDiagnosticCode(request.right);
+    const char* right_code =
+        GenericIntervalStructuralDiagnosticCode(request.right);
+    const char* interval_code = nullptr;
+    for (const char* candidate : {"CTI.INTERVAL.DESCRIPTOR_INVALID",
+                                  "DATATYPE.NULL_STATE.INVALID",
+                                  "DATATYPE.NULL_NOT_ADMITTED"}) {
+      if ((left_code != nullptr && std::strcmp(left_code, candidate) == 0) ||
+          (right_code != nullptr && std::strcmp(right_code, candidate) == 0)) {
+        interval_code = candidate;
+        break;
+      }
+    }
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status,
@@ -7467,7 +7506,7 @@ static DatatypeDeserializationResult DeserializeDatatypeValueUnchecked(
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
   if (request.expected_type_id == CanonicalTypeId::interval ||
-      StartsWith(request.serialized_value, "SBDV1;type=interval;")) {
+      LegacySbdv1EncodedTypeIs(request.serialized_value, "interval")) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(
         result.status, "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",

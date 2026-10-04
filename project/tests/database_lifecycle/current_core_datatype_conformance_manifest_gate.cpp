@@ -77,10 +77,19 @@ dt::TimestampAuthorityReceiptV3 TimestampReceipt() {
   return receipt;
 }
 
+dt::IntervalAuthorityReceiptV3 IntervalReceipt() {
+  dt::IntervalAuthorityReceiptV3 receipt;
+  receipt.statement_receipt_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_snapshot_uuid = dt::kDatatypeCohortV10;
+  receipt.catalog_generation = 10;
+  receipt.registry_generation = 10;
+  return receipt;
+}
+
 dt::DatatypeConformanceManifestResult LoadManifest() {
   return dt::LoadCurrentCoreDatatypeConformanceManifest(
       BitStringReceipt(), false, DateReceipt(), false, TimeReceipt(), false,
-      TimestampReceipt(), false);
+      TimestampReceipt(), false, IntervalReceipt(), false);
 }
 
 dt::SerializedDatatypeDescriptor EncodeDescriptorFixture(
@@ -126,7 +135,8 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
                   loaded.manifest.bit_string_examples.size() +
                   loaded.manifest.date_examples.size() +
                   loaded.manifest.time_examples.size() +
-                  loaded.manifest.timestamp_examples.size() ==
+                  loaded.manifest.timestamp_examples.size() +
+                  loaded.manifest.interval_examples.size() ==
               dt::BuiltinDatatypeDescriptors().size(),
           "MDF-015 manifest must inventory every canonical datatype row");
   Require(loaded.manifest.bit_string_examples.size() == 1,
@@ -160,6 +170,14 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
   Require(timestamp.canonical_component ==
               std::vector<scratchbird::core::platform::byte>(16, 0),
           "MDF-015 timestamp example must use the exact epoch LE16 component");
+  Require(loaded.manifest.interval_examples.size() == 1,
+          "MDF-015 must carry exactly one separate d710 interval example");
+  const auto& interval = loaded.manifest.interval_examples.front();
+  Require(dt::IsExactCanonicalIntervalTypeCodecIdentityV3(interval.identity),
+          "MDF-015 interval example must carry the exact d710 identity");
+  Require(interval.canonical_component ==
+              std::vector<scratchbird::core::platform::byte>(16, 0),
+          "MDF-015 interval example must use the exact zero-tuple LE16 component");
 
   const auto executed =
       dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
@@ -174,6 +192,82 @@ void TestManifestLoadsAndExecutesAllCurrentCoreRows() {
           "MDF-015 did not execute the exact d710 time example");
   Require(executed.executed_timestamp_examples == 1,
           "MDF-015 did not execute the exact d710 timestamp example");
+  Require(executed.executed_interval_examples == 1,
+          "MDF-015 did not execute the exact d710 interval example");
+}
+
+void TestLegacyAndMalformedIntervalEvidenceIsRefused() {
+  const auto descriptor =
+      dt::LookupDatatypeDescriptor(dt::CanonicalTypeId::interval);
+  Require(descriptor.ok(), "MDF-015 interval descriptor row missing");
+  const auto encoded = dt::SerializeDatatypeDescriptor(descriptor.descriptor);
+  Require(!encoded.ok(), "MDF-015 admitted interval through SBDTV001");
+  Require(encoded.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval serialization diagnostic mismatch");
+
+  const auto exact_legacy = EncodeDescriptorFixture(descriptor.descriptor);
+  const auto parsed = dt::ParseDatatypeDescriptor(exact_legacy);
+  Require(!parsed.ok(), "MDF-015 parsed interval through SBDTV001");
+  Require(parsed.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval parse diagnostic mismatch");
+
+  const auto conversion = dt::DescribeDatatypeConversion(
+      dt::CanonicalTypeId::interval, dt::CanonicalTypeId::interval);
+  Require(!conversion.ok() &&
+              conversion.kind == dt::ConversionDiagnosticKind::unsupported,
+          "MDF-015 admitted enum-derived interval conversion evidence");
+  Require(conversion.diagnostic.diagnostic_code ==
+              "CTI.TEMPORAL.SERIALIZATION_PROFILE_MISSING",
+          "MDF-015 legacy interval conversion diagnostic mismatch");
+
+  auto loaded = LoadManifest();
+  loaded.manifest.interval_examples[0]
+      .identity.legacy_fields.type_uuid.bytes[15] ^= 1u;
+  auto result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a mutated interval identity");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].receipt.statement_receipt_uuid
+      .bytes[15] ^= 1u;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a substituted interval receipt");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].profile.profile_fingerprint[0] ^= 1u;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "CTI.INTERVAL.DESCRIPTOR_INVALID"),
+          "MDF-015 accepted a mutated interval profile");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].state =
+      static_cast<dt::IntervalValueStateV3>(0xff);
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() &&
+              HasDiagnostic(result, "DATATYPE.NULL_STATE.INVALID"),
+          "MDF-015 accepted an invalid interval value state");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].canonical_component.pop_back();
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() && HasDiagnostic(
+                              result,
+                              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"),
+          "MDF-015 accepted an invalid interval component extent");
+
+  loaded = LoadManifest();
+  loaded.manifest.interval_examples[0].canonical_component[0] = 1;
+  result = dt::ExecuteDatatypeConformanceManifest(loaded.manifest);
+  Require(!result.ok() && HasDiagnostic(
+                              result,
+                              "CTI.TEMPORAL.CANONICAL_ENCODING_INVALID"),
+          "MDF-015 accepted a nonzero interval conformance component");
 }
 
 void TestLegacyTimestampEvidenceIsRefused() {
@@ -496,6 +590,7 @@ int main() {
   TestLegacyDateEvidenceIsRefused();
   TestLegacyTimeEvidenceIsRefused();
   TestLegacyTimestampEvidenceIsRefused();
+  TestLegacyAndMalformedIntervalEvidenceIsRefused();
   TestD708TemporalIdentitiesRemainHistoricalOnly();
   std::cout << "current_core_datatype_conformance_manifest_gate=passed\n";
   return EXIT_SUCCESS;
